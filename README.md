@@ -589,7 +589,7 @@ safeyolo/
 │   ├── service_discovery.py   # Docker container discovery
 │   ├── rate_limiter.py        # Per-domain rate limiting (GCRA)
 │   ├── circuit_breaker.py     # Fail-fast for unhealthy upstreams
-│   ├── credential_guard.py    # API key protection (flagship)
+│   ├── credential_guard.py    # API key protection
 │   ├── yara_scanner.py        # YARA threat detection (extended)
 │   ├── pattern_scanner.py     # Regex scanning for secrets/jailbreaks
 │   ├── prompt_injection.py    # ML classification (extended, experimental)
