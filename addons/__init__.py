@@ -1,0 +1,1 @@
+# SafeYolo native mitmproxy addons

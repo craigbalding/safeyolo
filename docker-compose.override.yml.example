@@ -1,0 +1,9 @@
+# Host-specific overrides (copy to docker-compose.override.yml)
+#
+# macmini: OLLAMA_URL=http://host.docker.internal:11434
+# kali:    OLLAMA_URL=http://bristol:11434 (via Tailscale)
+
+services:
+  safeyolo:
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434

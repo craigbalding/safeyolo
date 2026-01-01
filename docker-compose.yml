@@ -1,0 +1,83 @@
+# SafeYolo - Core Infrastructure
+#
+# Owns the internal network that all project containers join.
+# Provides: mitmproxy gateway, CC dev sidecar, service discovery
+#
+# Start first: docker compose up -d
+# Projects then join the safeyolo-internal network
+#
+# Networks:
+#   - safeyolo-internal: All containers (projects + CC) live here, no direct internet
+#   - default: SafeYolo's internet access (the only outbound path)
+
+services:
+  # ============================================================
+  # SafeYolo Gateway (mitmproxy with native addons)
+  # - Single chokepoint for ALL outbound internet traffic
+  # - Native mitmproxy addons: credential_guard, request_logger, admin_api
+  # - Docker socket for service discovery (future)
+  # ============================================================
+  safeyolo:
+    build:
+      context: .
+      target: base  # Lightweight core addons (~200MB)
+      # target: extended  # Uncomment for ML + YARA (~700MB)
+      # target: dev       # Development with pytest
+    container_name: safeyolo
+    restart: unless-stopped
+    networks:
+      safeyolo-internal:
+        ipv4_address: 172.30.0.10
+      default:
+        # Internet access
+    ports:
+      - "127.0.0.1:8888:8080"   # Proxy port (localhost only)
+      - "127.0.0.1:9090:9090"   # Admin API (localhost only)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - safeyolo-certs:/certs
+      - ./logs:/app/logs
+      - ./config:/app/config
+      # Dev: mount source for live editing (rw for hot-fixes, config auto-reloads)
+      - ./addons:/app/addons
+      - ./scripts:/app/scripts
+      - ./models:/app/models
+      - ./tests:/app/tests
+      # Shell mux agent for claude-dev command execution (read-only)
+      - ../claude-dev/lib/container_agent.py:/opt/shell_mux/container_agent.py:ro
+      # Runtime env (dynamically updatable)
+      - ./.env:/app/.env
+    command: ["/app/scripts/start-safeyolo.sh"]
+    env_file:
+      - .env
+    environment:
+      - PROXY_PORT=8080
+      - ADMIN_PORT=9090
+      # OLLAMA_URL loaded from .env (dynamically updatable)
+      # Shell mux agent config
+      - CONTAINER_NAME=safeyolo
+      - MUX_HOST=172.30.0.20
+      - MUX_PORT=9000
+      - WORKDIR=/app
+      - PROXY_HOST=localhost
+      - PROXY_PORT=8080
+      - IDLE_TIMEOUT_MINUTES=30
+
+networks:
+  # Internal network - all project containers join this
+  # No direct internet access - must go through SafeYolo
+  safeyolo-internal:
+    name: safeyolo-internal
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+  # Default network - only SafeYolo uses this for internet
+  default:
+    driver: bridge
+
+volumes:
+  safeyolo-certs:
+    name: safeyolo-certs

@@ -1,0 +1,1 @@
+# SafeYolo addon tests

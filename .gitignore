@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+logs/
+.claude/
+*.egg-info/
+.pytest_cache/
+
+# Host-specific config (each host has its own)
+docker-compose.override.yml
+.env
+
+# Large ML model files (regenerate with scripts/export_piguard_onnx_v2.py)
+models/piguard-onnx/model.onnx
+models/piguard-onnx/tokenizer.json
+
+# Archive folders (old prototype code, not for public release)
+_archive_prototype/
+_archive_plugins/
