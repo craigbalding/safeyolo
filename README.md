@@ -26,7 +26,7 @@ curl -x http://localhost:8888 \
 curl http://localhost:9090/stats | jq
 ```
 
-**It works!** Your fake OpenAI key was blocked from reaching httpbin.org.
+Your fake OpenAI key was blocked from reaching httpbin.org.
 
 **Watch logs in real-time:**
 ```bash
@@ -360,7 +360,7 @@ SafeYolo's primary use case is as an internet chokepoint for AI coding assistant
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Host Machine                      │
+│                    Host Machine                     │
 └─────────────────────────────────────────────────────┘
                            │
               ┌────────────┴────────────┐
