@@ -582,36 +582,56 @@ See mitmproxy docs: https://docs.mitmproxy.org/stable/addons-overview/
 
 ```
 safeyolo/
-├── addons/                    # Native mitmproxy addons
+├── addons/                    # Native mitmproxy addons (11 total)
 │   ├── utils.py               # Shared utilities (logging, responses)
+│   ├── sse_streaming.py       # SSE/streaming response handler
 │   ├── policy.py              # Unified policy engine
 │   ├── service_discovery.py   # Docker container discovery
-│   ├── rate_limiter.py        # Per-domain rate limiting
+│   ├── rate_limiter.py        # Per-domain rate limiting (GCRA)
 │   ├── circuit_breaker.py     # Fail-fast for unhealthy upstreams
-│   ├── credential_guard.py    # API key protection
-│   ├── yara_scanner.py        # YARA threat detection
-│   ├── pattern_scanner.py     # Regex scanning
-│   ├── prompt_injection.py    # ML classification
-│   ├── request_logger.py      # JSONL logging
-│   ├── metrics.py             # Statistics
-│   └── admin_api.py           # REST API
+│   ├── credential_guard.py    # API key protection (flagship)
+│   ├── yara_scanner.py        # YARA threat detection (extended)
+│   ├── pattern_scanner.py     # Regex scanning for secrets/jailbreaks
+│   ├── prompt_injection.py    # ML classification (extended, experimental)
+│   ├── request_logger.py      # JSONL structured logging
+│   ├── metrics.py             # Per-domain statistics
+│   └── admin_api.py           # REST API on :9090
 ├── config/
 │   ├── policy.yaml            # Per-domain/client addon config
 │   ├── credential_rules.json  # Credential patterns + allowed hosts
-│   └── rate_limits.json       # Per-domain rate limits
+│   ├── rate_limits.json       # Per-domain rate limits
+│   └── yara_rules/            # YARA rules (extended build)
+│       ├── default.yar        # Default threat detection rules
+│       └── README.md          # YARA rule documentation
 ├── scripts/
 │   ├── start-safeyolo.sh      # Docker entrypoint
-│   └── logtail.py             # Live log viewer with summaries
-├── tests/                     # Pytest test suite
+│   ├── test_build.sh          # Build target testing (base/extended/dev)
+│   ├── logtail.py             # Live log viewer with summaries
+│   ├── export_piguard_onnx.py # Export PIGuard model to ONNX
+│   └── test_*.py              # Classifier evaluation scripts
+├── models/
+│   └── piguard-onnx/          # PIGuard ONNX model files
+│       ├── config.json        # Model configuration
+│       ├── modeling_piguard.py # Custom model code
+│       ├── tokenizer_config.json
+│       └── special_tokens_map.json
+├── tests/                     # Pytest test suite (168 tests)
 │   ├── conftest.py            # Fixtures and setup
 │   ├── test_credential_guard.py
 │   ├── test_rate_limiter.py
 │   ├── test_circuit_breaker.py
+│   ├── test_pattern_scanner.py
+│   ├── test_policy.py
+│   ├── test_prompt_injection.py
+│   ├── test_admin_api.py
 │   └── test_integration.py
 ├── docs/
-│   └── SOLO_DEV_DOCKER.md     # Dev workflow guide
-├── Dockerfile
+│   ├── ADDONS.md              # Complete addon reference
+│   ├── FUTURE.md              # Ideas under consideration
+│   └── prompt-injection-classifier-evaluation.md
+├── Dockerfile                 # Multi-stage: base/extended/dev
 ├── docker-compose.yml
+├── LICENSE                    # MIT License
 └── README.md
 ```
 
