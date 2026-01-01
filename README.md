@@ -89,7 +89,7 @@ Includes all extended addons plus pytest, ipython, and tools for model export/te
 - Small teams running agents in CI
 - Security-conscious teams needing egress policy + audit trails
 
-**Questions?** Built by [craig@threatspotting.com](mailto:craig@threatspotting.com) · Commercial support & hosted options at [safeyolo.com](https://safeyolo.com)
+**Questions?** Built by [craig@threatspotting.com](mailto:craig@threatspotting.com) · If you need an independent view on controls and evidence visit [safeyolo.com](https://safeyolo.com/#help)
 
 ## Safety Net, Not a Firewall
 
