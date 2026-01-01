@@ -12,7 +12,7 @@ SafeYolo is a mitmproxy-based sidecar that prevents credential leakage, dampens 
 
 ```bash
 # Get SafeYolo running
-git clone https://github.com/craigbalding/safeyolo  # Update with actual repo
+git clone https://github.com/craigbalding/safeyolo
 cd safeyolo
 docker compose up -d
 
