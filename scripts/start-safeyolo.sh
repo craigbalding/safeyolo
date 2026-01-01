@@ -69,11 +69,11 @@ load_addon() {
     if [ -f "${addon_path}" ]; then
         ADDON_ARGS="${ADDON_ARGS} -s ${addon_path}"
         echo "  - $(basename ${addon_path})"
-        return 0
     else
         echo "  - $(basename ${addon_path}) (skipped - not in this build)"
-        return 1
     fi
+    # Always return 0 to avoid triggering 'set -e'
+    return 0
 }
 
 echo "Loading addons:"
