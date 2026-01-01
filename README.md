@@ -8,7 +8,7 @@ SafeYolo is a mitmproxy-based sidecar that prevents credential leakage, dampens 
 
 ---
 
-## Quick Start (30 seconds)
+## Quick Start
 
 ```bash
 # Get SafeYolo running
