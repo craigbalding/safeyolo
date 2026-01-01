@@ -35,7 +35,7 @@ docker logs -f safeyolo 2>&1 | python scripts/logtail.py
 ```
 
 **Next steps:**
-- Add your API providers to `config/credential_rules.json` (patterns + allowed hosts, not actual keys)
+- Add your missing API providers to `config/credential_rules.json` (patterns + allowed hosts, not actual keys)
 - Adjust rate limits in `config/rate_limits.json` if needed
 - Point your coding agent at `http://localhost:8888` as its proxy
 - [See detailed setup for Claude Code](#use-case-claude-code-sidecar)
@@ -44,12 +44,12 @@ docker logs -f safeyolo 2>&1 | python scripts/logtail.py
 
 ## Block-by-Default for Core Protections
 
-SafeYolo runs in **block mode by default** for credential guard and rate limiting - violations are blocked immediately to prevent credential leakage and runaway loops. This is safe because:
-- **Credential guard scans headers only by default** - extremely low false positive rate
+SafeYolo runs in **block mode by default** for credential guard and rate limiting - violations are blocked immediately to prevent credential leakage and runaway loops:
+- **Credential guard scans HTTP headers by default** - low false positive rate
 - **Rate limits are generous** - 10 req/sec default, 50 req/sec for LLM APIs (600+ requests/min)
 - **Easy to disable for development** - `--set credguard_block=false --set ratelimit_block=false`
 
-Other security addons (pattern_scanner in base, prompt_injection and yara_scanner in extended) default to warn-only mode for gradual rollout.
+Other security addons (pattern_scanner in base, prompt_injection and yara_scanner in extended) default to warn-only mode.
 
 ## Choosing Your Image
 
