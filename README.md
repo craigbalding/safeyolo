@@ -68,6 +68,12 @@ docker compose up -d
 ```
 Adds: prompt_injection (experimental ML classifier), yara_scanner (enterprise pattern matching)
 
+**Dev** - Development and testing environment
+```bash
+docker build --target dev -t safeyolo:dev .
+```
+Includes all extended addons plus pytest, ipython, and tools for model export/testing. For contributors only.
+
 **Why separate?** Most teams just need credential protection and rate limiting. ML models add ~500MB for experimental prompt injection detection that generates many false positives. Only use if you're prepared to tune it for your workload.
 
 ## Key Features
