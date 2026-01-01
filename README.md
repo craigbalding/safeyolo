@@ -380,7 +380,7 @@ SafeYolo's primary use case is as an internet chokepoint for AI coding assistant
                                          Internet
 ```
 
-Claude Code routes all traffic through SafeYolo, which:
+All traffic routes through SafeYolo, which:
 - Blocks credential leakage to wrong domains
 - Rate limits to prevent IP blacklisting
 - Circuit breaks failing services
