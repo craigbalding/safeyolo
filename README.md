@@ -10,6 +10,8 @@ SafeYolo is a mitmproxy-based sidecar that prevents credential leakage, dampens 
 
 ## Quick Start
 
+**Note:** Using `curl -k` for quick testing from your host machine. For production, [run your coding agent in a container](#setup-option-1-claude-code-in-a-container-recommended) with the SafeYolo CA cert properly mounted.
+
 ```bash
 # Get SafeYolo running
 git clone https://github.com/craigbalding/safeyolo
@@ -17,7 +19,7 @@ cd safeyolo
 docker compose up -d
 
 # Test it blocks credential leakage (fake key to httpbin.org)
-curl -x http://localhost:8888 \
+curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-test1234567890abcdefghijklmnopqrstuvwxyz123456" \
   https://httpbin.org/get
 # → 403 Blocked by credential-guard
@@ -161,6 +163,8 @@ Every request generates a JSONL entry with method, host, path, status, latency, 
 
 ## 5-Minute Demo
 
+**Note:** These demos use `curl -k` for quick testing from your host machine. For production, [run your coding agent in a container](#setup-option-1-claude-code-in-a-container-recommended) with the SafeYolo CA cert properly mounted.
+
 ### Quick Start
 
 ```bash
@@ -168,7 +172,7 @@ cd safeyolo
 docker compose up -d
 
 # Test basic proxy
-curl -x http://localhost:8888 https://httpbin.org/ip
+curl -k -x http://localhost:8888 https://httpbin.org/ip
 
 # Check admin API
 curl http://localhost:9090/health
@@ -182,33 +186,33 @@ docker exec -it safeyolo tmux attach
 ### Demo 1: Credential Routing Detection
 
 ```bash
-# OpenAI key pattern going to wrong host - detected as violation
-curl -x http://localhost:8888 \
+# OpenAI key pattern going to wrong host - blocked by default
+curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-abcd1234567890abcd1234567890abcd1234567890abcdef" \
   https://httpbin.org/get
+# → 403 CREDENTIAL ROUTING ERROR
 
-# In warn mode (default): Request succeeds, but violation logged
-# Check the log:
+# Check the log to see what happened:
 tail -1 logs/safeyolo.jsonl | jq .
 
-# To enable blocking:
-curl -X PUT http://localhost:9090/modes \
+# To disable blocking for development:
+curl -X PUT http://localhost:9090/plugins/credential-guard/mode \
   -H "Content-Type: application/json" \
-  -d '{"mode": "block"}'
+  -d '{"mode": "warn"}'
 
-# Now the same request returns 403 with credential routing error
+# Now the same request succeeds but logs a warning
 ```
 
 ### Demo 2: Typosquat Detection
 
 ```bash
-# Typosquat of openai.com - detected as credential routing violation
-curl -x http://localhost:8888 \
+# Typosquat of openai.com - blocked before reaching destination
+curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-abcd1234567890abcd1234567890abcd1234567890abcdef" \
   https://api.openal.com/v1/chat
+# → 403 blocked by credential-guard
 
-# In warn mode: Request attempts to reach destination (likely fails - domain doesn't exist)
-# In block mode: 403 blocked by credential-guard before reaching destination
+# Credential guard caught the typo before your key could leak
 ```
 
 ### Demo 3: Rate Limiter
@@ -216,11 +220,29 @@ curl -x http://localhost:8888 \
 ```bash
 # Fire 10 rapid requests - rate limiter kicks in
 for i in {1..10}; do
-  curl -x http://localhost:8888 -s -o /dev/null -w "%{http_code}\n" \
+  curl -k -x http://localhost:8888 -s -o /dev/null -w "%{http_code}\n" \
     https://httpbin.org/get
 done
 
-# Expected: First few return 200, then 429 (rate limited)
+# Expected: Mix of 200 and 429 responses as rate limiter enforces 10 req/sec
+```
+
+### Demo 4: Circuit Breaker
+
+```bash
+# Trigger 5 consecutive failures to open the circuit
+for i in {1..5}; do
+  curl -k -x http://localhost:8888 -s -o /dev/null -w "%{http_code}\n" \
+    https://httpbin.org/status/500
+done
+# → Five 500 responses
+
+# Circuit breaker opens - now returns 503 immediately
+curl -k -x http://localhost:8888 -s -o /dev/null -w "%{http_code}\n" \
+  https://httpbin.org/status/500
+# → 503 (circuit open, protecting the failing service)
+
+# After 60 seconds, circuit enters half-open state and allows test requests
 ```
 
 ### If mitmproxy crashes
@@ -315,32 +337,6 @@ SafeYolo includes 11 addons for security, reliability, and observability: 9 in t
 | **admin_api.py** | Base | REST API on port 9090 - runtime control, mode switching, stats, allowlist management | Options only | Always active |
 | **yara_scanner.py** | Extended | Enterprise pattern matching - scans for credentials, jailbreaks, PII using YARA rules | `config/yara_rules/` | Warn only |
 | **prompt_injection.py** | Extended | **Experimental** - ML classifier for prompt injection detection (high false positive rate, needs tuning) | Options only | Warn only |
-
-### Quick Examples
-
-**Rate Limiter** - Prevents runaway loops:
-```bash
-# LLM tries 100 req/sec to api.openai.com
-# After burst (100 requests), returns 429 with Retry-After header
-```
-
-**Circuit Breaker** - Fails fast when service is down:
-```bash
-# api.example.com returns 5 consecutive 500s
-# Circuit opens → immediate 503 for 60 seconds
-# After timeout → allows 3 test requests → auto-recovers if healthy
-```
-
-**Admin API** - Switch modes at runtime:
-```bash
-# Disable blocking for development
-curl -X PUT http://localhost:9090/plugins/credential-guard/mode \
-  -d '{"mode": "warn"}'
-
-# Enable blocking for prompt injection
-curl -X PUT http://localhost:9090/plugins/prompt-injection/mode \
-  -d '{"mode": "block"}'
-```
 
 **See [docs/ADDONS.md](docs/ADDONS.md) for complete reference** - configuration options, use cases, response formats, and examples for all addons (9 base + 2 extended).
 

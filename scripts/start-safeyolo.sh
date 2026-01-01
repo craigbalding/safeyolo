@@ -81,7 +81,7 @@ load_addon "/app/addons/sse_streaming.py"
 load_addon "/app/addons/policy.py"
 #load_addon "/app/addons/service_discovery.py"
 load_addon "/app/addons/rate_limiter.py"
-#load_addon "/app/addons/circuit_breaker.py"
+load_addon "/app/addons/circuit_breaker.py"
 load_addon "/app/addons/credential_guard.py"
 load_addon "/app/addons/prompt_injection.py"  # Extended build only
 #load_addon "/app/addons/yara_scanner.py"  # Extended build only
