@@ -1,19 +1,28 @@
 """
 prompt_injection.py - Native mitmproxy addon for ML-based injection detection
 
-Dual classifier architecture:
-1. PIGuard ONNX (sync, inline) - ~14ms, zero false positives
-2. phi3.5 via Ollama (async, warn-only) - catches subtle attacks PIGuard misses
+⚠️  EXPERIMENTAL - HIGH FALSE POSITIVE RATE ⚠️
 
-Design:
-- PIGuard runs inline for fast blocking (no HTTP roundtrip, zero FP)
-- phi3.5 runs async as second opinion for SAFE classifications
-- Models loaded once at startup
+This addon is experimental and generates many false positives in practice.
+Prompt injection detection is an unsolved problem. These classifiers can help
+identify suspicious inputs but should NOT be relied upon for security.
+
+RECOMMENDATIONS:
+- Keep in WARN-ONLY mode (default) - do not enable blocking unless prepared
+  to handle frequent false positives
+- Expect legitimate requests to be flagged (technical discussions, code examples,
+  documentation about security, etc.)
+- Use as a signal for investigation, not as a blocking control
+- This addon exists to be improved - contributions welcome
+
+Dual classifier architecture:
+1. PIGuard ONNX (sync, inline) - ~14ms, optimized for low false positives
+2. phi3.5 via Ollama (async, warn-only) - second opinion on edge cases
 
 Usage:
     mitmdump -s addons/prompt_injection.py
 
-Ollama verification (recommended):
+Ollama verification (optional):
     mitmdump -s addons/prompt_injection.py \
         --set injection_ollama_url=http://host.docker.internal:11434
 

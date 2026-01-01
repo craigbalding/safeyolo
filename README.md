@@ -28,6 +28,12 @@ curl http://localhost:9090/stats | jq
 
 **It works!** Your fake OpenAI key was blocked from reaching httpbin.org.
 
+**Watch logs in real-time:**
+```bash
+# Live log monitoring with colored output and 5-second summaries
+docker logs -f safeyolo 2>&1 | python scripts/logtail.py
+```
+
 **Next steps:**
 - Add your API providers to `config/credential_rules.json` (patterns + allowed hosts, not actual keys)
 - Adjust rate limits in `config/rate_limits.json` if needed
@@ -43,7 +49,7 @@ SafeYolo runs in **block mode by default** for credential guard and rate limitin
 - **Rate limits are generous** - 10 req/sec default, 50 req/sec for LLM APIs (600+ requests/min)
 - **Easy to disable for development** - `--set credguard_block=false --set ratelimit_block=false`
 
-Other security addons (prompt injection, pattern scanner, YARA) default to warn-only mode for gradual rollout.
+Other security addons (pattern_scanner in base, prompt_injection and yara_scanner in extended) default to warn-only mode for gradual rollout.
 
 ## Choosing Your Image
 
@@ -60,9 +66,9 @@ Includes: credential_guard, rate_limiter, circuit_breaker, pattern_scanner (rege
 # Edit docker-compose.yml: change target to 'extended'
 docker compose up -d
 ```
-Adds: prompt_injection (DeBERTa ML), yara_scanner (enterprise pattern matching)
+Adds: prompt_injection (experimental ML classifier), yara_scanner (enterprise pattern matching)
 
-**Why separate?** Most teams just need credential protection and rate limiting. ML models add ~500MB for an 80% solution to a niche problem. If you need prompt injection detection, uncomment `target: extended` in docker-compose.yml.
+**Why separate?** Most teams just need credential protection and rate limiting. ML models add ~500MB for experimental prompt injection detection that generates many false positives. Only use if you're prepared to tune it for your workload.
 
 ## Key Features
 
@@ -70,7 +76,6 @@ Adds: prompt_injection (DeBERTa ML), yara_scanner (enterprise pattern matching)
 - **Domain defense** - Blocks typosquats (`api.openal.com`) and homograph attacks (`api.оpenai.com` with Cyrillic 'о')
 - **Runaway loop dampening** - Per-domain rate limiter + circuit breaker
 - **Auditability** - JSONL logs, Prometheus metrics, admin API on :9090
-- **Prompt injection signals** - Regex + ML detection (80% solution, honest framing)
 
 ## Who It's For
 
@@ -82,7 +87,7 @@ Adds: prompt_injection (DeBERTa ML), yara_scanner (enterprise pattern matching)
 
 ## Safety Net, Not a Firewall
 
-SafeYolo catches accidents and obvious attacks at the network layer. It won't stop a sophisticated attacker, but it will catch the 80% of problems that come from LLM hallucinations, copy-paste errors, and basic prompt injection.
+SafeYolo catches accidents and obvious attacks at the network layer. It won't stop a sophisticated attacker, but it will catch problems from LLM hallucinations, typosquatted domains, and copy-paste errors.
 
 ---
 
@@ -118,7 +123,7 @@ Use AI agents with intentional constraints:
 - **Block credential leakage and runaway loops by default** - these cause immediate, measurable damage
 - **Make exceptions easy** - temp allowlist, admin API, runtime mode toggling
 - **LLM-friendly error messages** - the agent learns from blocks, not just fails silently
-- **Catch accidents, not APTs** - 80% of problems are hallucinations and prompt injection, not sophisticated attacks
+- **Catch accidents, not APTs** - Focus on hallucinations, typosquats, and configuration errors, not sophisticated attacks
 
 ### What Gets Logged
 
@@ -141,7 +146,7 @@ Every request generates a JSONL entry with method, host, path, status, latency, 
 
 ### What SafeYolo does NOT do:
 
-- Guarantee detection of advanced prompt injection (it's an 80% solution)
+- Detect prompt injection reliably (experimental addon with high false positive rate)
 - Replace app-layer authentication or authorization
 - Inspect streamed/huge response bodies (>10MB are passed through)
 - Stop attacks that don't go through the proxy
@@ -223,14 +228,14 @@ docker exec safeyolo cat /app/logs/mitmproxy.log
 
 ## Architecture
 
-SafeYolo runs mitmproxy with a chain of 11 native addons:
+SafeYolo runs mitmproxy with a chain of native addons (9 in base, 11 in extended):
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                           SafeYolo                              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  Request flow (11 addons):                                      │
+│  Request flow (9 base addons + 2 extended):                     │
 │                                                                 │
 │  ┌──────────────────┐                                           │
 │  │     policy       │ -> Unified config [config/policy.yaml]    │
@@ -254,16 +259,16 @@ SafeYolo runs mitmproxy with a chain of 11 native addons:
 │           │              HTTP header detection by default       │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
-│  │  yara_scanner    │ -> YARA rules for threats/credentials     │
-│  └────────┬─────────┘    Experimental - warn don't block        │
+│  │  yara_scanner    │ -> YARA rules [extended build only]       │
+│  └────────┬─────────┘    Warn mode by default                   │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
 │  │ pattern_scanner  │ -> Fast regex for secrets/jailbreaks      │
-│  └────────┬─────────┘    Experimental - warn don't block        │
+│  └────────┬─────────┘    Warn mode by default                   │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
-│  │prompt_injection  │ -> ML classifier (DeBERTa + Ollama)       │
-│  └────────┬─────────┘    Experimental - warn don't block        │
+│  │prompt_injection  │ -> ML classifier [extended build only]    │
+│  └────────┬─────────┘    Warn mode by default                   │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
 │  │ request_logger   │ -> JSONL structured logging               │
@@ -287,23 +292,23 @@ Each addon is a standalone Python file using mitmproxy's addon API. No framework
 
 ## Addons
 
-SafeYolo includes 11 addons for security, reliability, and observability. Each addon is a standalone Python file using mitmproxy's addon API.
+SafeYolo includes 11 addons for security, reliability, and observability: 9 in the base build (~200MB), plus 2 optional addons in the extended build (~700MB). Each addon is a standalone Python file using mitmproxy's addon API.
 
 **For detailed documentation**, see [docs/ADDONS.md](docs/ADDONS.md).
 
-| Addon | Description | Config File | Default Mode |
-|-------|-------------|-------------|--------------|
-| **policy.py** | Unified policy engine - controls which addons run on which domains/clients | `config/policy.yaml` | Always active |
-| **service_discovery.py** | Auto-discovers Docker containers on internal network for routing decisions | Options only | Always active |
-| **rate_limiter.py** | Per-domain rate limiting using GCRA - prevents IP blacklisting from runaway loops | `config/rate_limits.json` | **Block** (10 rps default, 50 for LLM APIs) |
-| **circuit_breaker.py** | Fail-fast for unhealthy upstreams - stops hammering services that are down | Options only | Always active (blocks when open) |
-| **credential_guard.py** | **Flagship security** - blocks API keys to unauthorized hosts (typosquats, prompt injection exfiltration) | `config/credential_rules.json` | **Block** (headers-only scanning) |
-| **yara_scanner.py** | Enterprise pattern matching - scans for credentials, jailbreaks, PII using YARA rules | `config/yara_rules/` | Warn only |
-| **pattern_scanner.py** | Fast regex scanning - lightweight detection of common secrets and jailbreak phrases | Built-in patterns | Warn only |
-| **prompt_injection.py** | Dual ML classifier (DeBERTa + Ollama) - detects prompt injection attempts (80% solution) | Options only | Warn only |
-| **request_logger.py** | JSONL structured logging for all requests - audit trail and debugging | Options only | Always active |
-| **metrics.py** | Per-domain statistics in JSON and Prometheus formats - monitoring and alerting | Options only | Always active |
-| **admin_api.py** | REST API on port 9090 - runtime control, mode switching, stats, allowlist management | Options only | Always active |
+| Addon | Build | Description | Config File | Default Mode |
+|-------|-------|-------------|-------------|--------------|
+| **policy.py** | Base | Unified policy engine - controls which addons run on which domains/clients | `config/policy.yaml` | Always active |
+| **service_discovery.py** | Base | Auto-discovers Docker containers on internal network for routing decisions | Options only | Always active |
+| **rate_limiter.py** | Base | Per-domain rate limiting using GCRA - prevents IP blacklisting from runaway loops | `config/rate_limits.json` | **Block** (10 rps default, 50 for LLM APIs) |
+| **circuit_breaker.py** | Base | Fail-fast for unhealthy upstreams - stops hammering services that are down | Options only | Always active (blocks when open) |
+| **credential_guard.py** | Base | **Flagship security** - blocks API keys to unauthorized hosts (typosquats, prompt injection exfiltration) | `config/credential_rules.json` | **Block** (headers-only scanning) |
+| **pattern_scanner.py** | Base | Fast regex scanning - lightweight detection of common secrets and jailbreak phrases | Built-in patterns | Warn only |
+| **request_logger.py** | Base | JSONL structured logging for all requests - audit trail and debugging | Options only | Always active |
+| **metrics.py** | Base | Per-domain statistics in JSON and Prometheus formats - monitoring and alerting | Options only | Always active |
+| **admin_api.py** | Base | REST API on port 9090 - runtime control, mode switching, stats, allowlist management | Options only | Always active |
+| **yara_scanner.py** | Extended | Enterprise pattern matching - scans for credentials, jailbreaks, PII using YARA rules | `config/yara_rules/` | Warn only |
+| **prompt_injection.py** | Extended | **Experimental** - ML classifier for prompt injection detection (high false positive rate, needs tuning) | Options only | Warn only |
 
 ### Quick Examples
 
@@ -339,7 +344,7 @@ curl -X PUT http://localhost:9090/plugins/prompt-injection/mode \
   -d '{"mode": "block"}'
 ```
 
-**See [docs/ADDONS.md](docs/ADDONS.md) for complete reference** - configuration options, use cases, response formats, and examples for all 11 addons.
+**See [docs/ADDONS.md](docs/ADDONS.md) for complete reference** - configuration options, use cases, response formats, and examples for all addons (9 base + 2 extended).
 
 ---
 
@@ -438,14 +443,17 @@ By default, mitmproxy buffers entire responses before passing them through addon
 
 SafeYolo enables `stream_large_bodies=10m` - responses over 10MB are streamed without buffering.
 
-**Security implication:** Streamed responses bypass body inspection. This is acceptable because:
-- Security addons (credential_guard, prompt_injection, pattern_scanner) operate on request bodies and LLM API responses
-- Large media files (podcasts, videos) aren't meaningfully scanned anyway
-- The alternative is crashing on large downloads
+**Security tradeoff:** Streamed responses bypass body inspection. We accept this because:
+- 10MB threshold is high enough to scan most text-based responses (LLM outputs, API responses, logs)
+- Large binary files (podcasts, videos, model weights) rarely contain scannable secrets
+- Pattern/regex scanning 500MB+ files is expensive and low-signal
+- The alternative is OOM crashes on legitimate large downloads
 
-To change the threshold, edit `scripts/start-safeyolo.sh`:
+**If you need to scan large responses:** Lower the threshold or disable streaming entirely (may cause OOM on media downloads):
 ```bash
-MITM_OPTS="${MITM_OPTS} --set stream_large_bodies=10m"  # Change 10m to your preference
+# Edit scripts/start-safeyolo.sh
+MITM_OPTS="${MITM_OPTS} --set stream_large_bodies=50m"  # Higher threshold
+MITM_OPTS="${MITM_OPTS} --set stream_large_bodies=0"    # Disable streaming (scan everything)
 ```
 
 ---
@@ -608,12 +616,6 @@ docker exec -it safeyolo python -m pytest tests/ -v
 
 # Locally (requires mitmproxy installed)
 cd safeyolo && python -m pytest tests/ -v
-```
-
-**Live log monitoring:**
-```bash
-# Tail docker logs with colored output and 5-second summaries
-docker logs -f safeyolo 2>&1 | python scripts/logtail.py
 ```
 
 ---
