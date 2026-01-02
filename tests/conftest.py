@@ -78,14 +78,30 @@ def taddons_ctx():
 
 @pytest.fixture
 def credential_guard():
-    """Create a fresh CredentialGuard instance with blocking enabled."""
+    """Create a fresh CredentialGuard instance with proper mitmproxy context."""
     from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+    from mitmproxy.test import taddons
 
     addon = CredentialGuard()
-    addon.rules = list(DEFAULT_RULES)
-    # Default to blocking mode for tests (production default is warn-only)
-    addon._should_block = lambda: True
-    return addon
+
+    # Set up proper mitmproxy context with options
+    with taddons.context(addon) as tctx:
+        # Configure options
+        tctx.options.credguard_block = True
+        tctx.options.credguard_scan_urls = False
+        tctx.options.credguard_scan_bodies = False
+        tctx.options.credguard_llm_response = True
+
+        # Load rules
+        addon.rules = list(DEFAULT_RULES)
+
+        # v2 initialization
+        addon.hmac_secret = b"test-secret-for-hmac-fingerprinting-in-tests"
+        addon.config = {}
+        addon.safe_headers_config = {}
+        # default_policy already initialized in __init__
+
+        yield addon  # Keep context alive during test
 
 
 @pytest.fixture
