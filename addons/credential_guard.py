@@ -452,6 +452,254 @@ def analyze_headers(
     return detections
 
 
+# --- Decision Engine (Phase 3) ---
+
+def determine_decision_type(
+    credential: str,
+    rule_name: str,
+    host: str,
+    path: str,
+    confidence: str,
+    rules: list,
+    policy: dict
+) -> tuple[str, dict]:
+    """Determine what action to take based on credential detection.
+
+    Args:
+        credential: The detected credential string
+        rule_name: The rule that matched (e.g., "openai", "unknown_secret")
+        host: Destination host
+        path: Request path
+        confidence: Detection confidence ("high" or "medium")
+        rules: List of CredentialRule objects
+        policy: Merged policy dict
+
+    Returns:
+        (decision_type, context) where decision_type is:
+        - "allow" - credential is in policy
+        - "greylist_mismatch" - known credential to wrong destination (self-correct)
+        - "greylist_approval" - requires human approval
+
+        context contains additional info needed for response
+    """
+    # Unknown credentials always require approval
+    if rule_name == "unknown_secret":
+        return ("greylist_approval", {
+            "reason": "unknown_credential_type"
+        })
+
+    # Find the rule for this credential type
+    matching_rule = None
+    for rule in rules:
+        if rule.name == rule_name:
+            matching_rule = rule
+            break
+
+    if not matching_rule:
+        # Shouldn't happen, but treat as unknown
+        return ("greylist_approval", {
+            "reason": "rule_not_found"
+        })
+
+    # Check if destination matches expected hosts for this credential type
+    # This is separate from policy - it's about whether the destination makes sense
+    expected_hosts = matching_rule.allowed_hosts
+    host_matches_expected = any(
+        matches_host_pattern(host, expected_host)
+        for expected_host in expected_hosts
+    )
+
+    if not host_matches_expected:
+        # Known credential to wrong destination - likely hallucination
+        return ("greylist_mismatch", {
+            "expected_hosts": expected_hosts,
+            "suggested_url": matching_rule.suggested_url or f"https://{expected_hosts[0]}" if expected_hosts else None
+        })
+
+    # Destination is plausible, but check if it's in policy
+    if check_policy_approval(credential, host, path, policy):
+        return ("allow", {})
+
+    # Plausible destination but not in policy - requires approval
+    return ("greylist_approval", {
+        "reason": "not_in_policy",
+        "plausible_destination": True
+    })
+
+
+def create_destination_mismatch_response(
+    credential_type: str,
+    destination_host: str,
+    expected_hosts: list[str],
+    suggested_url: Optional[str],
+    credential_fingerprint: str,
+    path: str
+) -> http.Response:
+    """Create a 428 response for destination mismatch (Type 1: self-correct).
+
+    This response tells the agent it's likely using the wrong URL and should
+    self-correct without requiring human approval.
+    """
+    reflection_prompt = f"""
+LIKELY HALLUCINATION DETECTED
+
+You attempted to send a {credential_type} credential to {destination_host}, but this
+credential type should only be used with: {', '.join(expected_hosts)}
+
+Common causes:
+1. Typo in the base URL (e.g., "api.openai-typo.com" instead of "api.openai.com")
+2. Using a test/staging URL that doesn't exist
+3. Hallucinating a plausible-looking but incorrect API endpoint
+
+ACTION REQUIRED:
+- Verify the correct base URL for {credential_type}
+- The correct URL is likely: {suggested_url or f"https://{expected_hosts[0]}"}
+- Retry your request with the corrected URL
+- Do NOT ask for approval - this appears to be a simple URL error
+
+If you genuinely need to use {credential_type} with {destination_host},
+contact the human operator to add this destination to the policy.
+""".strip()
+
+    response_body = {
+        "error": "credential_destination_mismatch",
+        "status": 428,
+        "message": "Credential sent to unexpected destination",
+        "blocked": {
+            "credential_type": credential_type,
+            "credential_fingerprint": credential_fingerprint,
+            "destination": destination_host,
+            "path": path
+        },
+        "expected": {
+            "hosts": expected_hosts,
+            "suggested_url": suggested_url or f"https://{expected_hosts[0]}"
+        },
+        "reflection_prompt": reflection_prompt,
+        "action": "self_correct",
+        "retry_guidance": {
+            "should_retry": True,
+            "correction_needed": "url",
+            "no_approval_needed": True
+        }
+    }
+
+    return http.Response.make(
+        428,
+        json.dumps(response_body, indent=2),
+        headers={
+            "Content-Type": "application/json",
+            "X-Credential-Guard": "destination-mismatch",
+            "X-Credential-Fingerprint": credential_fingerprint,
+            "X-Expected-Hosts": ",".join(expected_hosts)
+        }
+    )
+
+
+def create_requires_approval_response(
+    credential_type: str,
+    destination_host: str,
+    credential_fingerprint: str,
+    path: str,
+    reason: str,
+    approval_token: Optional[str] = None
+) -> http.Response:
+    """Create a 428 response requiring human approval (Type 2: wait).
+
+    This response tells the agent to wait for human approval before proceeding.
+    """
+    # Generate policy snippet for the approval
+    # Extract just the path prefix (e.g., /v1/chat/completions -> /v1/*)
+    path_parts = path.split('/')
+    if len(path_parts) >= 2:
+        path_pattern = f"/{path_parts[1]}/*"
+    else:
+        path_pattern = "/*"
+
+    policy_snippet = {
+        "credential_fingerprint": credential_fingerprint,
+        "hosts": [destination_host],
+        "paths": [path_pattern]
+    }
+
+    if reason == "unknown_credential_type":
+        reflection_prompt = f"""
+UNKNOWN CREDENTIAL DETECTED
+
+You're attempting to send an unrecognized credential to {destination_host}.
+
+This credential doesn't match any known API key patterns (OpenAI, Anthropic, GitHub, etc.).
+It may be:
+- A custom internal API key
+- A third-party service credential
+- Accidentally flagged high-entropy data (false positive)
+
+APPROVAL REQUIRED:
+- A notification has been sent for human review
+- DO NOT proceed until approved
+- Retry this request every 30 seconds for up to 1 hour
+- The approval will be automatically applied when granted
+
+If this is NOT actually a credential, report this as a false positive.
+""".strip()
+    else:
+        reflection_prompt = f"""
+APPROVAL REQUIRED
+
+You're attempting to use a {credential_type} credential with {destination_host}{path},
+which is not in the approved policy.
+
+While the destination appears plausible for this credential type, it hasn't been
+explicitly approved yet.
+
+NEXT STEPS:
+- A notification has been sent for human review
+- Wait for approval (retry every 30 seconds for up to 1 hour)
+- Do NOT attempt alternative approaches while waiting
+- The approval will be automatically applied when granted
+
+If you believe this should already be approved, verify the exact URL and path.
+""".strip()
+
+    response_body = {
+        "error": "credential_requires_approval",
+        "status": 428,
+        "message": "Credential usage requires human approval",
+        "blocked": {
+            "credential_type": credential_type,
+            "credential_fingerprint": credential_fingerprint,
+            "destination": destination_host,
+            "path": path,
+            "reason": reason
+        },
+        "policy_snippet": policy_snippet,
+        "approval": {
+            "method": "ntfy",  # TODO Phase 4: make this configurable
+            "token": approval_token or "pending",
+            "status": "pending"
+        },
+        "retry_strategy": {
+            "interval_seconds": 30,
+            "max_duration_seconds": 3600,
+            "backoff": "constant"
+        },
+        "reflection_prompt": reflection_prompt,
+        "action": "wait_for_approval"
+    }
+
+    return http.Response.make(
+        428,
+        json.dumps(response_body, indent=2),
+        headers={
+            "Content-Type": "application/json",
+            "X-Credential-Guard": "requires-approval",
+            "X-Credential-Fingerprint": credential_fingerprint,
+            "X-Approval-Token": approval_token or "pending",
+            "Retry-After": "30"
+        }
+    )
+
+
 @dataclass
 class CredentialRule:
     """Rule for detecting and validating a credential type."""
@@ -866,27 +1114,38 @@ class CredentialGuard:
             confidence = detection["confidence"]
             tier = detection["tier"]
 
-            # Check v2 policy (default + project-specific)
-            # Policy checks credential pattern + host + path
-            # TODO: Get project_id from service discovery in Phase 6
-            project_id = None
-            effective_policy = self._merge_policies(project_id)
-            if check_policy_approval(matched, host, flow.request.path, effective_policy):
-                log.info(f"Allowed by policy: {rule_name} -> {host}{flow.request.path}")
-                flow.metadata["credguard_policy_approved"] = True
-                continue
+            # Generate HMAC fingerprint (never log raw credential)
+            fingerprint = hmac_fingerprint(matched, self.hmac_secret)
 
-            # Check temp allowlist
+            # Check temp allowlist first (bypass decision engine)
             if self._is_temp_allowed(matched, host):
-                fingerprint = hmac_fingerprint(matched, self.hmac_secret)
                 log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
                 flow.metadata["credguard_allowlisted"] = True
                 continue
 
-            # VIOLATION DETECTED
-            # Generate HMAC fingerprint (never log raw credential)
-            fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+            # Use decision engine (Phase 3)
+            # TODO: Get project_id from service discovery in Phase 6
+            project_id = None
+            effective_policy = self._merge_policies(project_id)
 
+            decision_type, decision_context = determine_decision_type(
+                credential=matched,
+                rule_name=rule_name,
+                host=host,
+                path=flow.request.path,
+                confidence=confidence,
+                rules=self.rules,
+                policy=effective_policy
+            )
+
+            # Handle decision
+            if decision_type == "allow":
+                # In policy - allow
+                log.info(f"Allowed by policy: {rule_name} -> {host}{flow.request.path}")
+                flow.metadata["credguard_policy_approved"] = True
+                continue
+
+            # VIOLATION DETECTED (greylist_mismatch or greylist_approval)
             self._record_violation(rule_name, host, f"header:{header_name}")
             self._log_violation(
                 rule=rule_name,
@@ -895,6 +1154,7 @@ class CredentialGuard:
                 credential_fingerprint=f"hmac:{fingerprint}",
                 confidence=confidence,
                 tier=tier,
+                decision_type=decision_type,
             )
 
             flow.metadata["blocked_by"] = self.name
@@ -902,50 +1162,122 @@ class CredentialGuard:
             flow.metadata["blocked_host"] = host
             flow.metadata["detection_tier"] = tier
             flow.metadata["detection_confidence"] = confidence
+            flow.metadata["decision_type"] = decision_type
 
-            # Check if blocking is enabled
-            if self._should_block():
-                log.warning(f"BLOCKED: {rule_name} (tier {tier}, {confidence}) in {header_name} -> {host}{flow.request.path}")
-                # TODO Phase 3: Use _create_block_response_v2() with 428 greylist logic
-                # For now, use existing v1 response
-                # Create a temporary CredentialRule object for backward compatibility
-                temp_rule = CredentialRule(name=rule_name, patterns=[], allowed_hosts=[])
-                flow.response = self._create_block_response(temp_rule, host, f"header:{header_name}", f"hmac:{fingerprint}")
-                return
-            else:
-                log.warning(f"WARN: {rule_name} (tier {tier}, {confidence}) in {header_name} -> {host}{flow.request.path}")
-                continue  # Don't block, continue checking
+            # Create appropriate 428 response
+            if decision_type == "greylist_mismatch":
+                # Type 1: Destination mismatch - agent should self-correct
+                log.warning(f"BLOCKED (mismatch): {rule_name} -> {host} (expected: {decision_context.get('expected_hosts')})")
+                if self._should_block():
+                    flow.response = create_destination_mismatch_response(
+                        credential_type=rule_name,
+                        destination_host=host,
+                        expected_hosts=decision_context.get("expected_hosts", []),
+                        suggested_url=decision_context.get("suggested_url"),
+                        credential_fingerprint=f"hmac:{fingerprint}",
+                        path=flow.request.path
+                    )
+                    return
+                else:
+                    log.warning(f"WARN (mismatch): Would block but in warn mode")
+                    continue
+
+            elif decision_type == "greylist_approval":
+                # Type 2: Requires approval - agent should wait
+                reason = decision_context.get("reason", "unknown")
+                log.warning(f"BLOCKED (approval required): {rule_name} -> {host} (reason: {reason})")
+                if self._should_block():
+                    # TODO Phase 4: Generate approval token and send ntfy notification
+                    flow.response = create_requires_approval_response(
+                        credential_type=rule_name,
+                        destination_host=host,
+                        credential_fingerprint=f"hmac:{fingerprint}",
+                        path=flow.request.path,
+                        reason=reason,
+                        approval_token=None  # Will be implemented in Phase 4
+                    )
+                    return
+                else:
+                    log.warning(f"WARN (approval): Would block but in warn mode")
+                    continue
 
         # Check URL (opt-in)
         if ctx.options.credguard_scan_urls:
             for rule in self.rules:
                 matched = rule.matches(url)
-                if matched and not rule.host_allowed(host):
-                    if self._is_temp_allowed(matched, host):
-                        continue
+                if not matched:
+                    continue
 
-                    # Generate HMAC fingerprint
-                    fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+                # Generate HMAC fingerprint
+                fingerprint = hmac_fingerprint(matched, self.hmac_secret)
 
-                    self._record_violation(rule.name, host, "url")
-                    self._log_violation(
-                        rule=rule.name,
-                        host=host,
-                        location="url",
-                        credential_fingerprint=f"hmac:{fingerprint}",
-                    )
+                # Check temp allowlist first
+                if self._is_temp_allowed(matched, host):
+                    log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
+                    flow.metadata["credguard_allowlisted"] = True
+                    continue
 
-                    flow.metadata["blocked_by"] = self.name
-                    flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
-                    flow.metadata["blocked_host"] = host
+                # Use decision engine
+                project_id = None
+                effective_policy = self._merge_policies(project_id)
 
+                decision_type, decision_context = determine_decision_type(
+                    credential=matched,
+                    rule_name=rule.name,
+                    host=host,
+                    path=flow.request.path,
+                    confidence="high",  # URL matches are high confidence
+                    rules=self.rules,
+                    policy=effective_policy
+                )
+
+                # Handle decision
+                if decision_type == "allow":
+                    log.info(f"Allowed by policy: {rule.name} in URL -> {host}{flow.request.path}")
+                    flow.metadata["credguard_policy_approved"] = True
+                    continue
+
+                # VIOLATION DETECTED
+                self._record_violation(rule.name, host, "url")
+                self._log_violation(
+                    rule=rule.name,
+                    host=host,
+                    location="url",
+                    credential_fingerprint=f"hmac:{fingerprint}",
+                    decision_type=decision_type,
+                )
+
+                flow.metadata["blocked_by"] = self.name
+                flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
+                flow.metadata["blocked_host"] = host
+                flow.metadata["decision_type"] = decision_type
+
+                # Create appropriate 428 response
+                if decision_type == "greylist_mismatch":
+                    log.warning(f"BLOCKED (mismatch): {rule.name} in URL -> {host}")
                     if self._should_block():
-                        log.warning(f"BLOCKED: {rule.name} in URL -> {host}{flow.request.path}")
-                        flow.response = self._create_block_response(rule, host, "url", f"hmac:{fingerprint}")
+                        flow.response = create_destination_mismatch_response(
+                            credential_type=rule.name,
+                            destination_host=host,
+                            expected_hosts=decision_context.get("expected_hosts", []),
+                            suggested_url=decision_context.get("suggested_url"),
+                            credential_fingerprint=f"hmac:{fingerprint}",
+                            path=flow.request.path
+                        )
                         return
-                    else:
-                        log.warning(f"WARN: {rule.name} in URL -> {host}{flow.request.path}")
-                        # Don't return - continue checking body
+                elif decision_type == "greylist_approval":
+                    reason = decision_context.get("reason", "unknown")
+                    log.warning(f"BLOCKED (approval required): {rule.name} in URL -> {host}")
+                    if self._should_block():
+                        flow.response = create_requires_approval_response(
+                            credential_type=rule.name,
+                            destination_host=host,
+                            credential_fingerprint=f"hmac:{fingerprint}",
+                            path=flow.request.path,
+                            reason=reason,
+                            approval_token=None
+                        )
+                        return
 
         # Check body (opt-in)
         if ctx.options.credguard_scan_bodies:
@@ -955,35 +1287,79 @@ class CredentialGuard:
                 if any(t in content_type for t in ["json", "form", "text"]):
                     for rule in self.rules:
                         matched = rule.matches(body)
-                        if matched and not rule.host_allowed(host):
-                            if self._is_temp_allowed(matched, host):
-                                fingerprint = hmac_fingerprint(matched, self.hmac_secret)
-                                log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
-                                flow.metadata["credguard_allowlisted"] = True
-                                continue
+                        if not matched:
+                            continue
 
-                            # Generate HMAC fingerprint
-                            fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+                        # Generate HMAC fingerprint
+                        fingerprint = hmac_fingerprint(matched, self.hmac_secret)
 
-                            self._record_violation(rule.name, host, "body")
-                            self._log_violation(
-                                rule=rule.name,
-                                host=host,
-                                location="body",
-                                credential_fingerprint=f"hmac:{fingerprint}",
-                            )
+                        # Check temp allowlist first
+                        if self._is_temp_allowed(matched, host):
+                            log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
+                            flow.metadata["credguard_allowlisted"] = True
+                            continue
 
-                            flow.metadata["blocked_by"] = self.name
-                            flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
-                            flow.metadata["blocked_host"] = host
+                        # Use decision engine
+                        project_id = None
+                        effective_policy = self._merge_policies(project_id)
 
-                        if self._should_block():
-                            log.warning(f"BLOCKED: {rule.name} in body -> {host}{flow.request.path}")
-                            flow.response = self._create_block_response(rule, host, "body", f"hmac:{fingerprint}")
-                            return
-                        else:
-                            log.warning(f"WARN: {rule.name} in body -> {host}{flow.request.path}")
-                            continue  # Don't block
+                        decision_type, decision_context = determine_decision_type(
+                            credential=matched,
+                            rule_name=rule.name,
+                            host=host,
+                            path=flow.request.path,
+                            confidence="high",  # Body matches are high confidence
+                            rules=self.rules,
+                            policy=effective_policy
+                        )
+
+                        # Handle decision
+                        if decision_type == "allow":
+                            log.info(f"Allowed by policy: {rule.name} in body -> {host}{flow.request.path}")
+                            flow.metadata["credguard_policy_approved"] = True
+                            continue
+
+                        # VIOLATION DETECTED
+                        self._record_violation(rule.name, host, "body")
+                        self._log_violation(
+                            rule=rule.name,
+                            host=host,
+                            location="body",
+                            credential_fingerprint=f"hmac:{fingerprint}",
+                            decision_type=decision_type,
+                        )
+
+                        flow.metadata["blocked_by"] = self.name
+                        flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
+                        flow.metadata["blocked_host"] = host
+                        flow.metadata["decision_type"] = decision_type
+
+                        # Create appropriate 428 response
+                        if decision_type == "greylist_mismatch":
+                            log.warning(f"BLOCKED (mismatch): {rule.name} in body -> {host}")
+                            if self._should_block():
+                                flow.response = create_destination_mismatch_response(
+                                    credential_type=rule.name,
+                                    destination_host=host,
+                                    expected_hosts=decision_context.get("expected_hosts", []),
+                                    suggested_url=decision_context.get("suggested_url"),
+                                    credential_fingerprint=f"hmac:{fingerprint}",
+                                    path=flow.request.path
+                                )
+                                return
+                        elif decision_type == "greylist_approval":
+                            reason = decision_context.get("reason", "unknown")
+                            log.warning(f"BLOCKED (approval required): {rule.name} in body -> {host}")
+                            if self._should_block():
+                                flow.response = create_requires_approval_response(
+                                    credential_type=rule.name,
+                                    destination_host=host,
+                                    credential_fingerprint=f"hmac:{fingerprint}",
+                                    path=flow.request.path,
+                                    reason=reason,
+                                    approval_token=None
+                                )
+                                return
 
         # Passed all checks
         flow.metadata["credguard_passed"] = True

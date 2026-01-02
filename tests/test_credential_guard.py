@@ -107,7 +107,7 @@ class TestCredentialGuardBlocking:
         credential_guard.request(flow)
 
         assert flow.response is not None
-        assert flow.response.status_code == 403
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
         assert flow.metadata.get("blocked_by") == "credential-guard"
         assert flow.metadata.get("blocked_host") == "evil.com"
         assert flow.metadata.get("credential_fingerprint", "").startswith("hmac:")
@@ -143,8 +143,9 @@ class TestCredentialGuardBlocking:
         credential_guard.request(flow)
 
         assert flow.response is not None
-        assert flow.response.status_code == 403
-        assert b"credential-guard" in flow.response.headers.get("X-Blocked-By", "").encode()
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
+        # Phase 3: New responses use X-Credential-Guard header
+        assert flow.response.headers.get("X-Credential-Guard") in ["destination-mismatch", "requires-approval"]
 
     def test_blocks_key_in_url(self, credential_guard, make_flow):
         """Test that key in URL query string to wrong host is blocked (when URL scanning enabled)."""
@@ -163,7 +164,7 @@ class TestCredentialGuardBlocking:
             credential_guard.request(flow)
 
             assert flow.response is not None
-            assert flow.response.status_code == 403
+            assert flow.response.status_code == 428  # Phase 3: All code paths use 428
 
     def test_allows_non_credential_requests(self, credential_guard, make_flow):
         """Test that requests without credentials pass through."""
@@ -228,7 +229,7 @@ class TestTempAllowlist:
         credential_guard.request(flow)
 
         assert flow.response is not None
-        assert flow.response.status_code == 403
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
 
 
 class TestLLMFriendlyResponse:
@@ -335,7 +336,7 @@ class TestBlockingMode:
 
         # Should block
         assert flow.response is not None
-        assert flow.response.status_code == 403
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
         assert flow.metadata.get("blocked_by") == "credential-guard"
 
 
@@ -532,7 +533,7 @@ class TestDefaultPolicy:
 
         # Should block (path not in policy)
         assert flow.response is not None
-        assert flow.response.status_code == 403
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
 
     def test_openai_wrong_host_blocked(self, credential_guard, make_flow):
         """OpenAI key to evil.com blocked (not in default policy)."""
@@ -546,7 +547,7 @@ class TestDefaultPolicy:
 
         # Should block (host not in policy)
         assert flow.response is not None
-        assert flow.response.status_code == 403
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
 
     def test_check_policy_approval_all_criteria(self):
         """Policy approval requires pattern + host + path match."""
@@ -795,3 +796,173 @@ class TestAnalyzeHeaders:
         )
 
         assert len(detections) == 0  # Too short, doesn't meet min_length
+
+
+# --- Phase 3: 428 Greylist Responses Tests ---
+
+class TestDecisionEngine:
+    """Test 3-way decision engine."""
+
+    def test_unknown_credential_requires_approval(self):
+        """Unknown credentials always require approval."""
+        from addons.credential_guard import determine_decision_type, DEFAULT_RULES, DEFAULT_POLICY
+
+        decision_type, context = determine_decision_type(
+            credential="custom-api-key-abc123xyz456",
+            rule_name="unknown_secret",
+            host="internal-api.company.com",
+            path="/v1/data",
+            confidence="high",
+            rules=DEFAULT_RULES,
+            policy=DEFAULT_POLICY
+        )
+
+        assert decision_type == "greylist_approval"
+        assert context["reason"] == "unknown_credential_type"
+
+    def test_known_credential_wrong_host_mismatch(self):
+        """Known credential to wrong host triggers mismatch."""
+        from addons.credential_guard import determine_decision_type, DEFAULT_RULES, DEFAULT_POLICY
+
+        decision_type, context = determine_decision_type(
+            credential="sk-proj-abc123xyz456def789ghijk",
+            rule_name="openai",
+            host="api.openai-typo.com",
+            path="/v1/chat/completions",
+            confidence="high",
+            rules=DEFAULT_RULES,
+            policy=DEFAULT_POLICY
+        )
+
+        assert decision_type == "greylist_mismatch"
+        assert "api.openai.com" in context.get("expected_hosts", [])
+
+    def test_known_credential_correct_host_in_policy_allows(self):
+        """Known credential to correct host in policy is allowed."""
+        from addons.credential_guard import determine_decision_type, DEFAULT_RULES, DEFAULT_POLICY
+
+        decision_type, context = determine_decision_type(
+            credential="sk-proj-abc123xyz456def789ghijk",
+            rule_name="openai",
+            host="api.openai.com",
+            path="/v1/chat/completions",
+            confidence="high",
+            rules=DEFAULT_RULES,
+            policy=DEFAULT_POLICY
+        )
+
+        assert decision_type == "allow"
+
+    def test_known_credential_correct_host_wrong_path_requires_approval(self):
+        """Known credential to correct host but wrong path requires approval."""
+        from addons.credential_guard import determine_decision_type, DEFAULT_RULES, DEFAULT_POLICY
+
+        decision_type, context = determine_decision_type(
+            credential="sk-proj-abc123xyz456def789ghijk",
+            rule_name="openai",
+            host="api.openai.com",
+            path="/admin/secrets",  # Not in DEFAULT_POLICY
+            confidence="high",
+            rules=DEFAULT_RULES,
+            policy=DEFAULT_POLICY
+        )
+
+        assert decision_type == "greylist_approval"
+        assert context["reason"] == "not_in_policy"
+
+
+class Test428Responses:
+    """Test 428 greylist response builders."""
+
+    def test_destination_mismatch_response_format(self):
+        """Type 1 response has correct structure."""
+        from addons.credential_guard import create_destination_mismatch_response
+        import json
+
+        response = create_destination_mismatch_response(
+            credential_type="openai",
+            destination_host="api.openai-typo.com",
+            expected_hosts=["api.openai.com"],
+            suggested_url="https://api.openai.com",
+            credential_fingerprint="hmac:abc123",
+            path="/v1/chat/completions"
+        )
+
+        assert response.status_code == 428
+        body = json.loads(response.content)
+
+        assert body["error"] == "credential_destination_mismatch"
+        assert body["action"] == "self_correct"
+        assert body["blocked"]["credential_type"] == "openai"
+        assert body["blocked"]["destination"] == "api.openai-typo.com"
+        assert "api.openai.com" in body["expected"]["hosts"]
+        assert "reflection_prompt" in body
+        assert "HALLUCINATION" in body["reflection_prompt"]
+
+    def test_requires_approval_response_format(self):
+        """Type 2 response has correct structure."""
+        from addons.credential_guard import create_requires_approval_response
+        import json
+
+        response = create_requires_approval_response(
+            credential_type="unknown_secret",
+            destination_host="internal-api.company.com",
+            credential_fingerprint="hmac:xyz789",
+            path="/v1/data",
+            reason="unknown_credential_type",
+            approval_token="cap_abc123"
+        )
+
+        assert response.status_code == 428
+        body = json.loads(response.content)
+
+        assert body["error"] == "credential_requires_approval"
+        assert body["action"] == "wait_for_approval"
+        assert body["blocked"]["credential_type"] == "unknown_secret"
+        assert body["blocked"]["reason"] == "unknown_credential_type"
+        assert "policy_snippet" in body
+        assert body["policy_snippet"]["credential_fingerprint"] == "hmac:xyz789"
+        assert "retry_strategy" in body
+        assert body["retry_strategy"]["interval_seconds"] == 30
+        assert "approval" in body
+        assert body["approval"]["token"] == "cap_abc123"
+
+    def test_end_to_end_greylist_mismatch(self, credential_guard, make_flow):
+        """Test full flow for destination mismatch."""
+        import json
+
+        flow = make_flow(
+            method="POST",
+            url="https://api.openai-typo.com/v1/chat/completions",
+            headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijk"}
+        )
+
+        credential_guard.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+
+        body = json.loads(flow.response.content)
+        assert body["error"] == "credential_destination_mismatch"
+        assert body["action"] == "self_correct"
+        assert "api.openai.com" in body["expected"]["hosts"]
+
+    def test_end_to_end_greylist_approval(self, credential_guard, make_flow):
+        """Test full flow for unknown credential requiring approval."""
+        import json
+
+        flow = make_flow(
+            method="POST",
+            url="https://internal-api.company.com/v1/data",
+            headers={"X-API-Key": "custom-secret-key-abc123xyz456def789"}
+        )
+
+        credential_guard.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+
+        body = json.loads(flow.response.content)
+        assert body["error"] == "credential_requires_approval"
+        assert body["action"] == "wait_for_approval"
+        assert body["blocked"]["credential_type"] == "unknown_secret"
