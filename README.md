@@ -82,7 +82,7 @@ Includes all extended addons plus pytest, ipython, and tools for model export/te
 
 - **Credential routing** - API keys only go to authorized hosts (OpenAI key -> api.openai.com only)
 - **Smart detection** - 2-tier header analysis with entropy heuristics catches unknown secrets
-- **Human-in-the-loop** - Push notifications via Ntfy for approve/deny decisions on unknown credentials
+- **Human-in-the-loop** - Push notifications via Ntfy for approve/deny decisions; approvals persist to YAML files
 - **Domain defense** - Blocks typosquats (`api.openal.com`) and homograph attacks (`api.оpenai.com` with Cyrillic 'о')
 - **Runaway loop dampening** - Per-domain rate limiter + circuit breaker
 - **Auditability** - JSONL logs, Prometheus metrics, admin API on :9090 (credentials never logged raw, only HMAC fingerprints)
@@ -267,6 +267,13 @@ curl -X POST http://localhost:9090/admin/approve/{token}
 
 # Deny instead
 curl -X POST http://localhost:9090/admin/deny/{token}
+
+# Approvals persist to YAML files - view them on host
+cat data/policies/default.yaml
+# approved:
+#   - token_hmac: abc123...
+#     hosts: [api.example.com]
+#     paths: [/api/*]
 ```
 
 Subscribe to approval notifications: Set `NTFY_TOPIC` env var or check `data/ntfy_topic` for the auto-generated topic, then visit `https://ntfy.sh/{topic}`.
@@ -628,7 +635,9 @@ safeyolo/
 │       └── special_tokens_map.json
 ├── data/                      # Runtime-generated secrets (gitignored)
 │   ├── ntfy_topic             # Auto-generated Ntfy topic
-│   └── hmac_secret            # Auto-generated HMAC key
+│   ├── hmac_secret            # Auto-generated HMAC key
+│   └── policies/              # Persistent approval policies
+│       └── {project}.yaml     # Per-project approved credentials
 ├── tests/                     # Pytest test suite
 │   ├── conftest.py            # Fixtures and setup
 │   ├── test_credential_guard.py

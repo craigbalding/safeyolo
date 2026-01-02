@@ -220,7 +220,26 @@ Core security addon. Ensures credentials only go to authorized hosts with smart 
 - Push notifications with Approve/Deny buttons
 - Topic auto-generated on first run, stored in `data/ntfy_topic`
 - Pending approvals queryable via admin API
-- Approved credentials added to temp allowlist
+- Approved credentials added to temp allowlist AND persistent policy files
+
+**Persistent Policy Storage (Phase 5):**
+- Approved credentials written to `data/policies/{project}.yaml`
+- Files are human-readable YAML, editable on host
+- File watcher detects changes and hot-reloads (1s polling)
+- Policies persist across container restarts
+- Atomic writes prevent corruption
+
+**Policy file format:**
+```yaml
+# data/policies/default.yaml
+approved:
+  - token_hmac: "abc123def456"
+    hosts: ["api.example.com"]
+    paths: ["/v1/*"]
+    approved_at: "2025-01-02T14:30:00Z"
+    approved_by: "ntfy"
+    credential_type: "unknown_secret"
+```
 
 ### Configuration
 
@@ -461,6 +480,8 @@ REST API on port 9090 for runtime control.
 | `/admin/approvals/pending` | GET | List pending approval requests |
 | `/admin/approve/{token}` | POST | Approve a pending credential request |
 | `/admin/deny/{token}` | POST | Deny a pending credential request |
+| `/admin/policy/{project}` | GET | Get persistent policy for a project |
+| `/admin/policy/validate` | POST | Validate YAML content |
 
 **Example: Temporarily allow a blocked credential:**
 ```bash
@@ -483,6 +504,17 @@ curl -X POST http://localhost:9090/admin/deny/abc123xyz...
 ```
 
 Ntfy notifications include clickable Approve/Deny buttons that call these endpoints automatically.
+
+**Example: View and validate persistent policies:**
+```bash
+# View policy for default project
+curl http://localhost:9090/admin/policy/default | jq
+
+# Validate YAML before manual editing
+curl -X POST http://localhost:9090/admin/policy/validate \
+  -H "Content-Type: application/json" \
+  -d '{"content": "approved:\n  - token_hmac: abc123"}'
+```
 
 **Example: Switch addons between warn and block modes:**
 

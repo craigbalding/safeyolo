@@ -155,23 +155,41 @@ def matches_host_pattern(host: str, pattern: str) -> bool:
     return False
 
 
-def check_policy_approval(credential: str, host: str, path: str, policy: dict) -> bool:
+def check_policy_approval(credential: str, host: str, path: str, policy: dict, hmac_secret: Optional[bytes] = None) -> bool:
     """Check if a credential/host/path combination is approved in policy.
+
+    Supports two matching modes:
+    1. Pattern match (default policy) - uses 'pattern' field with regex
+    2. HMAC match (persistent approvals) - uses 'token_hmac' field
 
     Args:
         credential: The matched credential value
         host: The destination host
         path: The request path
         policy: The policy dict (merged from default + file + runtime)
+        hmac_secret: HMAC secret for fingerprint matching (required for HMAC rules)
 
     Returns:
         True if approved by policy
     """
+    # Pre-compute fingerprint if we have a secret
+    fingerprint = hmac_fingerprint(credential, hmac_secret) if hmac_secret else None
+
     for rule in policy.get("approved", []):
-        # Check credential pattern
+        # Method 1: Pattern match (default policy)
         pattern = rule.get("pattern", "")
-        if not re.match(pattern, credential):
-            continue
+        if pattern:
+            if not re.match(pattern, credential):
+                continue
+        else:
+            # Method 2: HMAC match (persistent approvals)
+            token_hmac = rule.get("token_hmac", "")
+            if token_hmac:
+                if not fingerprint or token_hmac != fingerprint:
+                    continue
+            else:
+                # Rule has neither pattern nor token_hmac - skip
+                continue
 
         # Check host
         allowed_hosts = rule.get("hosts", [])
@@ -611,7 +629,8 @@ def determine_decision_type(
     path: str,
     confidence: str,
     rules: list,
-    policy: dict
+    policy: dict,
+    hmac_secret: Optional[bytes] = None
 ) -> tuple[str, dict]:
     """Determine what action to take based on credential detection.
 
@@ -623,6 +642,7 @@ def determine_decision_type(
         confidence: Detection confidence ("high" or "medium")
         rules: List of CredentialRule objects
         policy: Merged policy dict
+        hmac_secret: HMAC secret for fingerprint matching in policy check
 
     Returns:
         (decision_type, context) where decision_type is:
@@ -667,7 +687,7 @@ def determine_decision_type(
         })
 
     # Destination is plausible, but check if it's in policy
-    if check_policy_approval(credential, host, path, policy):
+    if check_policy_approval(credential, host, path, policy, hmac_secret):
         return ("allow", {})
 
     # Plausible destination but not in policy - requires approval
@@ -968,6 +988,196 @@ DEFAULT_POLICY = {
 }
 
 
+# --- Project Policy Store (Phase 5.1) ---
+
+class ProjectPolicyStore:
+    """Persistent policy storage with file watching.
+
+    Stores approved credentials in YAML files per project.
+    Watches for file changes and reloads automatically.
+    """
+
+    def __init__(self, policy_dir: Path):
+        self.policy_dir = policy_dir
+        self._lock = threading.RLock()
+        self._policies: dict[str, dict] = {}  # project_id -> policy
+        self._mtimes: dict[str, float] = {}   # project_id -> last mtime
+
+        # Watcher state
+        self._watcher_thread: Optional[threading.Thread] = None
+        self._watcher_stop = threading.Event()
+
+    def load_all(self) -> None:
+        """Load all existing policy files from the policy directory."""
+        if not self.policy_dir.exists():
+            log.info(f"Policy directory {self.policy_dir} does not exist")
+            return
+
+        for policy_file in self.policy_dir.glob("*.yaml"):
+            project_id = policy_file.stem
+            self._reload_project(project_id)
+
+        log.info(f"Loaded {len(self._policies)} project policies from {self.policy_dir}")
+
+    def get_policy(self, project_id: str) -> dict:
+        """Get policy for a project (empty dict if none exists)."""
+        with self._lock:
+            return self._policies.get(project_id, {})
+
+    def add_approval(self, project_id: str, approval: dict) -> bool:
+        """Add approval to project policy file using atomic write.
+
+        Args:
+            project_id: The project identifier
+            approval: Dict with token_hmac, hosts, paths, approved_at, approved_by
+
+        Returns:
+            True if successfully written
+        """
+        with self._lock:
+            # Get or create policy
+            policy = self._policies.get(project_id, {"approved": []})
+            if "approved" not in policy:
+                policy["approved"] = []
+
+            # Append new approval
+            policy["approved"].append(approval)
+
+            # Write atomically
+            if self._write_policy_atomic(project_id, policy):
+                self._policies[project_id] = policy
+                return True
+            return False
+
+    def _write_policy_atomic(self, project_id: str, policy: dict) -> bool:
+        """Write policy to file atomically (temp file + rename).
+
+        Args:
+            project_id: The project identifier
+            policy: The policy dict to write
+
+        Returns:
+            True if successfully written
+        """
+        target = self.policy_dir / f"{project_id}.yaml"
+        tmp = self.policy_dir / f".{project_id}.yaml.tmp"
+
+        try:
+            # Ensure directory exists
+            self.policy_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write to temp file
+            content = yaml.dump(policy, default_flow_style=False, sort_keys=False)
+            tmp.write_text(content)
+
+            # Atomic rename
+            os.rename(tmp, target)
+
+            # Update mtime tracking
+            self._mtimes[project_id] = target.stat().st_mtime
+
+            log.info(f"Wrote policy for '{project_id}': {len(policy.get('approved', []))} rules")
+            return True
+
+        except Exception as e:
+            log.error(f"Failed to write policy for '{project_id}': {type(e).__name__}: {e}")
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            return False
+
+    def start_watcher(self) -> None:
+        """Start background thread to watch for file changes."""
+        if self._watcher_thread is not None:
+            return
+
+        def watch_loop():
+            while not self._watcher_stop.is_set():
+                try:
+                    self._check_for_changes()
+                except Exception as e:
+                    log.warning(f"Policy watch error: {type(e).__name__}: {e}")
+
+                self._watcher_stop.wait(timeout=1.0)  # 1s polling interval
+
+        self._watcher_thread = threading.Thread(target=watch_loop, daemon=True)
+        self._watcher_thread.start()
+        log.info(f"Started policy file watcher for {self.policy_dir}")
+
+    def stop_watcher(self) -> None:
+        """Stop the file watcher thread."""
+        if self._watcher_thread:
+            self._watcher_stop.set()
+            self._watcher_thread.join(timeout=2.0)
+            self._watcher_thread = None
+            self._watcher_stop.clear()
+            log.info("Stopped policy file watcher")
+
+    def _check_for_changes(self) -> None:
+        """Check all policy files for mtime changes."""
+        if not self.policy_dir.exists():
+            return
+
+        # Check for new or modified files
+        for policy_file in self.policy_dir.glob("*.yaml"):
+            # Skip temp files
+            if policy_file.name.startswith("."):
+                continue
+
+            project_id = policy_file.stem
+            try:
+                mtime = policy_file.stat().st_mtime
+                if mtime > self._mtimes.get(project_id, 0):
+                    log.info(f"Policy file changed: {policy_file}")
+                    self._reload_project(project_id)
+            except FileNotFoundError:
+                pass  # File was deleted between glob and stat
+
+        # Check for deleted files
+        with self._lock:
+            current_projects = {f.stem for f in self.policy_dir.glob("*.yaml") if not f.name.startswith(".")}
+            deleted = set(self._policies.keys()) - current_projects
+            for project_id in deleted:
+                log.info(f"Policy file deleted: {project_id}")
+                del self._policies[project_id]
+                if project_id in self._mtimes:
+                    del self._mtimes[project_id]
+
+    def _reload_project(self, project_id: str) -> bool:
+        """Reload a single project policy (validate YAML, keep old on error).
+
+        Args:
+            project_id: The project identifier
+
+        Returns:
+            True if successfully reloaded
+        """
+        path = self.policy_dir / f"{project_id}.yaml"
+
+        try:
+            content = path.read_text()
+            policy = yaml.safe_load(content) or {}
+
+            with self._lock:
+                self._policies[project_id] = policy
+                self._mtimes[project_id] = path.stat().st_mtime
+
+            log.info(f"Loaded policy for '{project_id}': {len(policy.get('approved', []))} rules")
+            return True
+
+        except yaml.YAMLError as e:
+            log.error(f"Invalid YAML in {path}, keeping old policy: {e}")
+            return False
+        except FileNotFoundError:
+            log.debug(f"Policy file not found: {path}")
+            return False
+        except Exception as e:
+            log.error(f"Failed to reload {path}: {type(e).__name__}: {e}")
+            return False
+
+
 # --- Ntfy Approval Backend (Phase 4.2) ---
 
 class NtfyApprovalBackend:
@@ -1184,6 +1394,9 @@ class CredentialGuard:
         self._pending_lock = threading.Lock()  # Protect pending_approvals access
         self.approval_backend: Optional[NtfyApprovalBackend] = None  # Initialized in configure()
 
+        # Phase 5: Persistent policy store
+        self.policy_store: Optional[ProjectPolicyStore] = None  # Initialized in _load_configs()
+
     def load(self, loader):
         """Register mitmproxy options."""
         loader.add_option(
@@ -1255,8 +1468,14 @@ class CredentialGuard:
         secret_path = Path("/app/data/hmac_secret")
         self.hmac_secret = load_or_generate_hmac_secret(secret_path)
 
-        # Load policy files
-        self._load_policies()
+        # Initialize persistent policy store (Phase 5)
+        policy_dir_path = self.config.get("policy", {}).get("policy_dir", "/app/data/policies")
+        policy_dir = Path(policy_dir_path)
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        self.policy_store = ProjectPolicyStore(policy_dir)
+        self.policy_store.load_all()
+        self.policy_store.start_watcher()
+        log.info(f"Initialized policy store at {policy_dir}")
 
         # Initialize approval backend (Phase 4.2)
         approval_config = self.config.get("approval", {})
@@ -1303,25 +1522,6 @@ class CredentialGuard:
         self.default_policy["approved"].append(rule)
         log.info(f"Added ntfy.sh/{topic} to approved policy for notifications")
 
-    def _load_policies(self):
-        """Load policy files from policy directory."""
-        policy_dir_path = self.config.get("policy", {}).get("policy_dir", "/app/data/policies")
-        policy_dir = Path(policy_dir_path)
-
-        if not policy_dir.exists():
-            log.info(f"Policy directory {policy_dir} does not exist, using default policy only")
-            return
-
-        # Load all .yaml files in policy directory
-        for policy_file in policy_dir.glob("*.yaml"):
-            project_id = policy_file.stem  # filename without extension
-            try:
-                policy_data = load_yaml_config(policy_file)
-                self.project_policies[project_id] = policy_data
-                log.info(f"Loaded policy for project '{project_id}' from {policy_file}")
-            except Exception as e:
-                log.error(f"Failed to load policy {policy_file}: {type(e).__name__}: {e}")
-
     def _merge_policies(self, project_id: Optional[str] = None) -> dict:
         """Merge default policy with project policy.
 
@@ -1334,12 +1534,15 @@ class CredentialGuard:
         # Start with default policy
         merged = {"approved": list(self.default_policy.get("approved", []))}
 
-        # Add project-specific policy if available
-        if project_id and project_id in self.project_policies:
-            project_policy = self.project_policies[project_id]
-            project_approved = project_policy.get("approved", [])
-            merged["approved"].extend(project_approved)
-            log.debug(f"Merged policy for project '{project_id}': {len(merged['approved'])} rules")
+        # Add project-specific policy from policy store if available
+        if self.policy_store:
+            # Use "default" project if no specific project_id provided
+            effective_project = project_id or "default"
+            project_policy = self.policy_store.get_policy(effective_project)
+            if project_policy:
+                project_approved = project_policy.get("approved", [])
+                merged["approved"].extend(project_approved)
+                log.debug(f"Merged policy for project '{effective_project}': {len(merged['approved'])} rules")
 
         return merged
 
@@ -1474,18 +1677,51 @@ class CredentialGuard:
         log.info(f"Created pending approval: token={token[:8]}... hmac:{fingerprint} -> {host}{path}")
         return token
 
-    def approve_pending(self, token: str, ttl_seconds: Optional[int] = None) -> bool:
+    def _derive_path_pattern(self, path: str) -> str:
+        """Derive a path pattern from a request path.
+
+        Examples:
+            /v1/chat/completions -> /v1/*
+            /api/v2/users/123 -> /api/v2/*
+            /health -> /*
+
+        Args:
+            path: The request path
+
+        Returns:
+            A wildcard pattern covering the path
+        """
+        # Strip query string
+        path = path.split("?")[0]
+
+        # Get path segments
+        segments = [s for s in path.split("/") if s]
+
+        if len(segments) >= 2:
+            # Keep first two segments: /v1/* or /api/v2/*
+            return f"/{segments[0]}/{segments[1]}/*" if len(segments) > 2 else f"/{segments[0]}/{segments[1]}/*"
+        elif len(segments) == 1:
+            return f"/{segments[0]}/*"
+        else:
+            return "/*"
+
+    def approve_pending(self, token: str, ttl_seconds: Optional[int] = None, project_id: str = "default") -> bool:
         """Approve a pending request.
 
-        Moves the pending approval to temp_allowlist.
+        Adds approval to both:
+        1. temp_allowlist for immediate access
+        2. persistent policy store for future requests
 
         Args:
             token: The approval token
-            ttl_seconds: TTL for allowlist entry (default from config)
+            ttl_seconds: TTL for temp allowlist entry (default from config)
+            project_id: Project to store the approval in (default: "default")
 
         Returns:
             True if approved, False if token not found
         """
+        from datetime import datetime, timezone
+
         if ttl_seconds is None:
             ttl_seconds = self.config.get("temp_allowlist_ttl", 300)
 
@@ -1495,18 +1731,33 @@ class CredentialGuard:
                 log.warning(f"Approval token not found: {token[:8]}...")
                 return False
 
-            # Move to temp allowlist
+            # Extract approval details
             fingerprint = pending["credential_fingerprint"]
             host = pending["host"]
+            path = pending["path"]
+            credential_type = pending.get("credential_type", "unknown")
 
+            # Add to temp allowlist for immediate access
             with self._allowlist_lock:
                 key = (fingerprint, host.lower())
                 self.temp_allowlist[key] = time.time() + ttl_seconds
 
-            # Mark as approved and remove from pending
+            # Write to persistent policy store (Phase 5)
+            if self.policy_store:
+                approval = {
+                    "token_hmac": fingerprint,
+                    "hosts": [host],
+                    "paths": [self._derive_path_pattern(path)],
+                    "approved_at": datetime.now(timezone.utc).isoformat(),
+                    "approved_by": "ntfy",
+                    "credential_type": credential_type,
+                }
+                self.policy_store.add_approval(project_id, approval)
+
+            # Remove from pending
             del self.pending_approvals[token]
 
-            log.info(f"APPROVED: hmac:{fingerprint} -> {host} for {ttl_seconds}s (token={token[:8]}...)")
+            log.info(f"APPROVED: hmac:{fingerprint} -> {host} (persistent + {ttl_seconds}s temp, token={token[:8]}...)")
             return True
 
     def deny_pending(self, token: str, reason: str = "denied_by_operator") -> bool:
@@ -1675,7 +1926,8 @@ class CredentialGuard:
                 path=flow.request.path,
                 confidence=confidence,
                 rules=self.rules,
-                policy=effective_policy
+                policy=effective_policy,
+                hmac_secret=self.hmac_secret
             )
 
             # Handle decision
@@ -1788,7 +2040,8 @@ class CredentialGuard:
                     path=flow.request.path,
                     confidence="high",  # URL matches are high confidence
                     rules=self.rules,
-                    policy=effective_policy
+                    policy=effective_policy,
+                    hmac_secret=self.hmac_secret
                 )
 
                 # Handle decision
@@ -1889,7 +2142,8 @@ class CredentialGuard:
                             path=flow.request.path,
                             confidence="high",  # Body matches are high confidence
                             rules=self.rules,
-                            policy=effective_policy
+                            policy=effective_policy,
+                            hmac_secret=self.hmac_secret
                         )
 
                         # Handle decision
@@ -1976,6 +2230,12 @@ class CredentialGuard:
             "rules": [r.name for r in self.rules],
             "temp_allowlist_count": len(self.temp_allowlist),
         }
+
+    def done(self):
+        """Cleanup on shutdown."""
+        if self.policy_store:
+            self.policy_store.stop_watcher()
+            log.info("Credential guard shutdown complete")
 
 
 # mitmproxy addon instance

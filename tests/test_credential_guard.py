@@ -1358,3 +1358,552 @@ class TestApprovalWorkflow:
         # Should be blocked again (new pending approval created)
         assert flow2.response is not None
         assert flow2.response.status_code == 428
+
+
+# --- Phase 5: Policy File Storage Tests ---
+
+class TestProjectPolicyStore:
+    """Tests for persistent policy storage."""
+
+    def test_policy_store_init(self, tmp_path):
+        """Test policy store initialization."""
+        from addons.credential_guard import ProjectPolicyStore
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        store = ProjectPolicyStore(policy_dir)
+        assert store.policy_dir == policy_dir
+        assert store._policies == {}
+
+    def test_load_all_empty_dir(self, tmp_path):
+        """Test loading from empty policy directory."""
+        from addons.credential_guard import ProjectPolicyStore
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        assert store._policies == {}
+
+    def test_load_all_with_files(self, tmp_path):
+        """Test loading existing policy files."""
+        from addons.credential_guard import ProjectPolicyStore
+        import yaml
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        # Create a policy file
+        policy = {
+            "approved": [
+                {
+                    "token_hmac": "abc123def456",
+                    "hosts": ["api.example.com"],
+                    "paths": ["/v1/*"],
+                }
+            ]
+        }
+        policy_file = policy_dir / "myproject.yaml"
+        policy_file.write_text(yaml.dump(policy))
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        assert "myproject" in store._policies
+        assert len(store._policies["myproject"]["approved"]) == 1
+        assert store._policies["myproject"]["approved"][0]["token_hmac"] == "abc123def456"
+
+    def test_get_policy_exists(self, tmp_path):
+        """Test getting policy that exists."""
+        from addons.credential_guard import ProjectPolicyStore
+        import yaml
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        policy = {"approved": [{"token_hmac": "test123"}]}
+        (policy_dir / "test.yaml").write_text(yaml.dump(policy))
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        result = store.get_policy("test")
+        assert result["approved"][0]["token_hmac"] == "test123"
+
+    def test_get_policy_not_exists(self, tmp_path):
+        """Test getting policy that doesn't exist returns empty dict."""
+        from addons.credential_guard import ProjectPolicyStore
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        result = store.get_policy("nonexistent")
+        assert result == {}
+
+    def test_add_approval_creates_file(self, tmp_path):
+        """Test adding approval creates policy file."""
+        from addons.credential_guard import ProjectPolicyStore
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        approval = {
+            "token_hmac": "newhash123",
+            "hosts": ["new-api.example.com"],
+            "paths": ["/api/*"],
+            "approved_at": "2025-01-02T10:00:00Z",
+            "approved_by": "ntfy",
+        }
+
+        success = store.add_approval("newproject", approval)
+        assert success is True
+
+        # File should exist
+        policy_file = policy_dir / "newproject.yaml"
+        assert policy_file.exists()
+
+        # Policy should be in memory
+        policy = store.get_policy("newproject")
+        assert len(policy["approved"]) == 1
+        assert policy["approved"][0]["token_hmac"] == "newhash123"
+
+    def test_add_approval_appends_to_existing(self, tmp_path):
+        """Test adding approval appends to existing policy."""
+        from addons.credential_guard import ProjectPolicyStore
+        import yaml
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        # Create existing policy
+        existing = {
+            "approved": [
+                {"token_hmac": "existing1", "hosts": ["api1.com"], "paths": ["/*"]}
+            ]
+        }
+        (policy_dir / "proj.yaml").write_text(yaml.dump(existing))
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        # Add new approval
+        new_approval = {
+            "token_hmac": "new2",
+            "hosts": ["api2.com"],
+            "paths": ["/v2/*"],
+        }
+        store.add_approval("proj", new_approval)
+
+        # Should now have 2 approvals
+        policy = store.get_policy("proj")
+        assert len(policy["approved"]) == 2
+        assert policy["approved"][0]["token_hmac"] == "existing1"
+        assert policy["approved"][1]["token_hmac"] == "new2"
+
+    def test_atomic_write_temp_file_cleanup(self, tmp_path):
+        """Test that temp files are cleaned up on write failure."""
+        from addons.credential_guard import ProjectPolicyStore
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        store = ProjectPolicyStore(policy_dir)
+
+        # Normal write should succeed and not leave temp files
+        store.add_approval("test", {"token_hmac": "abc"})
+
+        # No temp files should exist
+        temp_files = list(policy_dir.glob(".*tmp"))
+        assert len(temp_files) == 0
+
+    def test_invalid_yaml_keeps_old_policy(self, tmp_path):
+        """Test that invalid YAML doesn't replace existing policy."""
+        from addons.credential_guard import ProjectPolicyStore
+        import yaml
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        # Create valid policy
+        valid = {"approved": [{"token_hmac": "valid123"}]}
+        (policy_dir / "proj.yaml").write_text(yaml.dump(valid))
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        # Verify loaded
+        assert store.get_policy("proj")["approved"][0]["token_hmac"] == "valid123"
+
+        # Manually corrupt the file
+        (policy_dir / "proj.yaml").write_text("invalid: yaml: syntax: [[[")
+
+        # Force reload
+        store._reload_project("proj")
+
+        # Old policy should still be in memory (reload failed)
+        assert store.get_policy("proj")["approved"][0]["token_hmac"] == "valid123"
+
+
+class TestCheckPolicyApprovalWithHMAC:
+    """Tests for policy approval with HMAC matching."""
+
+    def test_pattern_matching_still_works(self):
+        """Pattern-based rules (default policy) still work."""
+        from addons.credential_guard import check_policy_approval, DEFAULT_POLICY
+
+        # Pattern match should work with or without hmac_secret
+        result = check_policy_approval(
+            "sk-proj-abc123xyz456def789ghijk",
+            "api.openai.com",
+            "/v1/chat/completions",
+            DEFAULT_POLICY,
+            hmac_secret=b"test-secret"
+        )
+        assert result is True
+
+    def test_hmac_matching_works(self):
+        """HMAC-based rules work for persistent approvals."""
+        from addons.credential_guard import check_policy_approval, hmac_fingerprint
+
+        secret = b"test-secret"
+        credential = "custom-api-key-abc123xyz456"
+        fingerprint = hmac_fingerprint(credential, secret)
+
+        # Policy with HMAC rule
+        policy = {
+            "approved": [
+                {
+                    "token_hmac": fingerprint,
+                    "hosts": ["custom-api.example.com"],
+                    "paths": ["/*"],
+                }
+            ]
+        }
+
+        result = check_policy_approval(
+            credential,
+            "custom-api.example.com",
+            "/endpoint",
+            policy,
+            hmac_secret=secret
+        )
+        assert result is True
+
+    def test_hmac_wrong_fingerprint_rejected(self):
+        """Wrong HMAC fingerprint is rejected."""
+        from addons.credential_guard import check_policy_approval
+
+        policy = {
+            "approved": [
+                {
+                    "token_hmac": "wrong-fingerprint",
+                    "hosts": ["api.example.com"],
+                    "paths": ["/*"],
+                }
+            ]
+        }
+
+        result = check_policy_approval(
+            "my-credential",
+            "api.example.com",
+            "/endpoint",
+            policy,
+            hmac_secret=b"test-secret"
+        )
+        assert result is False
+
+    def test_hmac_and_pattern_coexist(self):
+        """Policy can have both pattern and HMAC rules."""
+        from addons.credential_guard import check_policy_approval, hmac_fingerprint
+
+        secret = b"test-secret"
+        credential = "custom-key-abc123"
+        fingerprint = hmac_fingerprint(credential, secret)
+
+        policy = {
+            "approved": [
+                # Pattern-based rule
+                {
+                    "pattern": r"sk-proj-.*",
+                    "hosts": ["api.openai.com"],
+                    "paths": ["/v1/*"],
+                },
+                # HMAC-based rule
+                {
+                    "token_hmac": fingerprint,
+                    "hosts": ["custom.api.com"],
+                    "paths": ["/*"],
+                },
+            ]
+        }
+
+        # Pattern rule should match
+        assert check_policy_approval(
+            "sk-proj-test123",
+            "api.openai.com",
+            "/v1/chat",
+            policy,
+            hmac_secret=secret
+        ) is True
+
+        # HMAC rule should match
+        assert check_policy_approval(
+            credential,
+            "custom.api.com",
+            "/endpoint",
+            policy,
+            hmac_secret=secret
+        ) is True
+
+        # Neither should match
+        assert check_policy_approval(
+            "other-credential",
+            "other.api.com",
+            "/endpoint",
+            policy,
+            hmac_secret=secret
+        ) is False
+
+
+class TestDerivePathPattern:
+    """Tests for path pattern derivation."""
+
+    def test_two_segments(self):
+        """Paths with 2+ segments get /seg1/seg2/*"""
+        from addons.credential_guard import CredentialGuard
+
+        guard = CredentialGuard()
+
+        assert guard._derive_path_pattern("/v1/chat/completions") == "/v1/chat/*"
+        assert guard._derive_path_pattern("/api/v2/users/123") == "/api/v2/*"
+
+    def test_one_segment(self):
+        """Paths with 1 segment get /seg1/*"""
+        from addons.credential_guard import CredentialGuard
+
+        guard = CredentialGuard()
+
+        assert guard._derive_path_pattern("/health") == "/health/*"
+        assert guard._derive_path_pattern("/api") == "/api/*"
+
+    def test_root_path(self):
+        """Root path gets /*"""
+        from addons.credential_guard import CredentialGuard
+
+        guard = CredentialGuard()
+
+        assert guard._derive_path_pattern("/") == "/*"
+
+    def test_query_string_stripped(self):
+        """Query strings are stripped before deriving pattern."""
+        from addons.credential_guard import CredentialGuard
+
+        guard = CredentialGuard()
+
+        assert guard._derive_path_pattern("/v1/chat?model=gpt-4") == "/v1/chat/*"
+        assert guard._derive_path_pattern("/api?foo=bar&baz=qux") == "/api/*"
+
+
+class TestApprovePendingPersistence:
+    """Tests for approve_pending writing to policy store."""
+
+    def test_approve_writes_to_policy_store(self, tmp_path):
+        """Approving a pending request writes to policy store."""
+        from addons.credential_guard import CredentialGuard, ProjectPolicyStore, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            tctx.options.credguard_block = True
+
+            # Set up guard
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+            guard.config = {}
+            guard.policy_store = ProjectPolicyStore(policy_dir)
+            guard.policy_store.load_all()
+
+            # Create pending approval
+            token = guard.create_pending_approval(
+                credential="sk-proj-test-persist-123",
+                credential_type="openai",
+                host="api.example.com",
+                path="/v1/chat/completions",
+                reason="not_in_policy"
+            )
+
+            # Approve it
+            success = guard.approve_pending(token, project_id="default")
+            assert success is True
+
+            # Policy file should exist
+            policy_file = policy_dir / "default.yaml"
+            assert policy_file.exists()
+
+            # Policy should have the approval
+            policy = guard.policy_store.get_policy("default")
+            assert len(policy["approved"]) == 1
+            assert policy["approved"][0]["hosts"] == ["api.example.com"]
+            assert policy["approved"][0]["paths"] == ["/v1/chat/*"]
+
+    def test_approve_both_temp_and_persistent(self, tmp_path):
+        """Approving writes to both temp_allowlist AND policy store."""
+        from addons.credential_guard import CredentialGuard, ProjectPolicyStore, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            tctx.options.credguard_block = True
+
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+            guard.config = {"temp_allowlist_ttl": 60}
+            guard.policy_store = ProjectPolicyStore(policy_dir)
+            guard.policy_store.load_all()
+
+            # Create and approve
+            token = guard.create_pending_approval(
+                credential="sk-proj-dual-test",
+                credential_type="openai",
+                host="api.test.com",
+                path="/endpoint",
+                reason="test"
+            )
+
+            fingerprint = guard.pending_approvals[token]["credential_fingerprint"]
+            guard.approve_pending(token)
+
+            # Check temp_allowlist
+            allowlist_key = (fingerprint, "api.test.com")
+            assert allowlist_key in guard.temp_allowlist
+
+            # Check policy_store
+            policy = guard.policy_store.get_policy("default")
+            assert len(policy["approved"]) == 1
+            assert policy["approved"][0]["token_hmac"] == fingerprint
+
+
+class TestMergePoliciesWithStore:
+    """Tests for _merge_policies using policy store."""
+
+    def test_merge_includes_policy_store(self, tmp_path):
+        """Merged policy includes approvals from policy store."""
+        from addons.credential_guard import CredentialGuard, ProjectPolicyStore, DEFAULT_RULES
+        from mitmproxy.test import taddons
+        import yaml
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        # Create a policy file
+        policy = {
+            "approved": [
+                {"token_hmac": "stored123", "hosts": ["stored.api.com"], "paths": ["/*"]}
+            ]
+        }
+        (policy_dir / "default.yaml").write_text(yaml.dump(policy))
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+            guard.config = {}
+            guard.policy_store = ProjectPolicyStore(policy_dir)
+            guard.policy_store.load_all()
+
+            # Merge policies
+            merged = guard._merge_policies(project_id=None)  # Uses "default"
+
+            # Should have default policy rules + stored rules
+            hmacs = [r.get("token_hmac") for r in merged["approved"] if r.get("token_hmac")]
+            assert "stored123" in hmacs
+
+    def test_merge_without_store_still_works(self):
+        """Merging without policy store uses only default policy."""
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+            guard.config = {}
+            guard.policy_store = None  # No store
+
+            merged = guard._merge_policies()
+
+            # Should have default policy rules only
+            patterns = [r.get("pattern") for r in merged["approved"] if r.get("pattern")]
+            assert any("sk-proj" in p for p in patterns)  # OpenAI pattern
+
+
+class TestPolicyStoreWatcher:
+    """Tests for file watcher functionality."""
+
+    def test_watcher_starts_and_stops(self, tmp_path):
+        """Watcher can be started and stopped."""
+        from addons.credential_guard import ProjectPolicyStore
+        import time
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        store = ProjectPolicyStore(policy_dir)
+
+        # Start watcher
+        store.start_watcher()
+        assert store._watcher_thread is not None
+        assert store._watcher_thread.is_alive()
+
+        # Stop watcher
+        store.stop_watcher()
+        time.sleep(0.1)  # Give thread time to stop
+        assert store._watcher_thread is None
+
+    def test_watcher_detects_file_changes(self, tmp_path):
+        """Watcher detects when policy file changes."""
+        from addons.credential_guard import ProjectPolicyStore
+        import yaml
+        import time
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        # Create initial policy
+        (policy_dir / "test.yaml").write_text(yaml.dump({"approved": []}))
+
+        store = ProjectPolicyStore(policy_dir)
+        store.load_all()
+
+        # Verify initial state
+        assert store.get_policy("test") == {"approved": []}
+
+        # Modify the file
+        time.sleep(0.1)  # Ensure mtime changes
+        new_policy = {"approved": [{"token_hmac": "new123"}]}
+        (policy_dir / "test.yaml").write_text(yaml.dump(new_policy))
+
+        # Check for changes manually (simulating watcher)
+        store._check_for_changes()
+
+        # Should have detected and reloaded
+        assert store.get_policy("test")["approved"][0]["token_hmac"] == "new123"

@@ -214,6 +214,21 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(mode_info)
 
+        elif path.startswith("/admin/policy/"):
+            # GET /admin/policy/{project} - Read project policy file
+            project_id = path[14:]  # strip "/admin/policy/"
+            if not project_id:
+                self._send_json({"error": "missing project_id"}, 400)
+                return
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'policy_store') or not self.credential_guard.policy_store:
+                self._send_json({"error": "policy store not available"}, 501)
+                return
+            policy = self.credential_guard.policy_store.get_policy(project_id)
+            self._send_json({"project": project_id, "policy": policy})
+
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -304,6 +319,20 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "host": host,
                 "duration_minutes": duration,
             })
+
+        elif path == "/admin/policy/validate":
+            # POST /admin/policy/validate - Validate YAML content
+            data = self._read_json()
+            if not data or "content" not in data:
+                self._send_json({"error": "missing 'content' field"}, 400)
+                return
+
+            try:
+                import yaml
+                yaml.safe_load(data["content"])
+                self._send_json({"valid": True})
+            except yaml.YAMLError as e:
+                self._send_json({"valid": False, "error": str(e)}, 400)
 
         else:
             self._send_json({"error": "not found"}, 404)
