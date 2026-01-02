@@ -1742,11 +1742,12 @@ class TestApprovePendingPersistence:
                 credential_type="openai",
                 host="api.example.com",
                 path="/v1/chat/completions",
-                reason="not_in_policy"
+                reason="not_in_policy",
+                project_id="default"
             )
 
-            # Approve it
-            success = guard.approve_pending(token, project_id="default")
+            # Approve it (project_id is taken from pending data)
+            success = guard.approve_pending(token)
             assert success is True
 
             # Policy file should exist
@@ -1907,3 +1908,387 @@ class TestPolicyStoreWatcher:
 
         # Should have detected and reloaded
         assert store.get_policy("test")["approved"][0]["token_hmac"] == "new123"
+
+
+# --- Phase 6: Project Identification Tests ---
+
+class TestGetServiceByIp:
+    """Tests for ServiceDiscovery.get_service_by_ip()."""
+
+    def test_find_service_by_ip(self):
+        """Find service by exact IP match."""
+        from addons.service_discovery import ServiceDiscovery, DiscoveredService
+
+        discovery = ServiceDiscovery()
+
+        # Add a mock service
+        discovery._services = {
+            "myapp": DiscoveredService(
+                container_name="myapp",
+                container_id="abc123",
+                internal_ip="172.20.0.5",
+                ports=[8080],
+                labels={"com.docker.compose.project": "myproject"},
+                network="safeyolo-internal",
+                discovered_at=0,
+            )
+        }
+
+        # Should find by IP
+        service = discovery.get_service_by_ip("172.20.0.5")
+        assert service is not None
+        assert service.container_name == "myapp"
+        assert service.labels["com.docker.compose.project"] == "myproject"
+
+    def test_ip_not_found_returns_none(self):
+        """Unknown IP returns None."""
+        from addons.service_discovery import ServiceDiscovery, DiscoveredService
+
+        discovery = ServiceDiscovery()
+
+        discovery._services = {
+            "myapp": DiscoveredService(
+                container_name="myapp",
+                container_id="abc123",
+                internal_ip="172.20.0.5",
+                ports=[8080],
+                labels={},
+                network="safeyolo-internal",
+                discovered_at=0,
+            )
+        }
+
+        # Different IP should not match
+        service = discovery.get_service_by_ip("172.20.0.99")
+        assert service is None
+
+    def test_empty_services_returns_none(self):
+        """No services discovered returns None."""
+        from addons.service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+        discovery._services = {}
+
+        service = discovery.get_service_by_ip("172.20.0.5")
+        assert service is None
+
+
+class TestGetProjectId:
+    """Tests for CredentialGuard._get_project_id()."""
+
+    def test_project_from_compose_label(self):
+        """Uses com.docker.compose.project label when available."""
+        from addons.credential_guard import CredentialGuard
+        from addons.service_discovery import DiscoveredService
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch, MagicMock
+
+        guard = CredentialGuard()
+
+        # Create mock service with compose project label
+        mock_service = DiscoveredService(
+            container_name="webapp-1",
+            container_id="abc123",
+            internal_ip="172.20.0.10",
+            ports=[8080],
+            labels={"com.docker.compose.project": "myproject"},
+            network="safeyolo-internal",
+            discovered_at=0,
+        )
+
+        # Mock service discovery
+        mock_discovery = MagicMock()
+        mock_discovery.get_service_by_ip.return_value = mock_service
+
+        # Patch at the source module where get_service_discovery is defined
+        with patch("addons.service_discovery.get_service_discovery", return_value=mock_discovery):
+            with taddons.context(guard) as tctx:
+                # Create a mock HTTPFlow
+                http_flow = tflow.tflow()
+                http_flow.client_conn.peername = ("172.20.0.10", 54321)
+
+                project_id = guard._get_project_id(http_flow)
+                assert project_id == "myproject"
+
+    def test_fallback_to_container_name(self):
+        """Falls back to container name when no compose label."""
+        from addons.credential_guard import CredentialGuard
+        from addons.service_discovery import DiscoveredService
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch, MagicMock
+
+        guard = CredentialGuard()
+
+        # Create mock service WITHOUT compose project label
+        mock_service = DiscoveredService(
+            container_name="standalone-app",
+            container_id="abc123",
+            internal_ip="172.20.0.10",
+            ports=[8080],
+            labels={},  # No compose label
+            network="safeyolo-internal",
+            discovered_at=0,
+        )
+
+        mock_discovery = MagicMock()
+        mock_discovery.get_service_by_ip.return_value = mock_service
+
+        with patch("addons.service_discovery.get_service_discovery", return_value=mock_discovery):
+            with taddons.context(guard) as tctx:
+                http_flow = tflow.tflow()
+                http_flow.client_conn.peername = ("172.20.0.10", 54321)
+
+                project_id = guard._get_project_id(http_flow)
+                assert project_id == "standalone-app"
+
+    def test_fallback_no_service_discovery(self):
+        """Returns 'default' when service discovery unavailable."""
+        from addons.credential_guard import CredentialGuard
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch
+
+        guard = CredentialGuard()
+
+        with patch("addons.service_discovery.get_service_discovery", return_value=None):
+            with taddons.context(guard) as tctx:
+                http_flow = tflow.tflow()
+                http_flow.client_conn.peername = ("172.20.0.10", 54321)
+
+                project_id = guard._get_project_id(http_flow)
+                assert project_id == "default"
+
+    def test_fallback_no_client_ip(self):
+        """Returns 'default' when client IP not available."""
+        from addons.credential_guard import CredentialGuard
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch, MagicMock
+
+        guard = CredentialGuard()
+
+        mock_discovery = MagicMock()
+
+        with patch("addons.service_discovery.get_service_discovery", return_value=mock_discovery):
+            with taddons.context(guard) as tctx:
+                http_flow = tflow.tflow()
+                http_flow.client_conn.peername = None  # No peername
+
+                project_id = guard._get_project_id(http_flow)
+                assert project_id == "default"
+
+    def test_fallback_ip_not_in_services(self):
+        """Returns 'default' when client IP not found in services."""
+        from addons.credential_guard import CredentialGuard
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch, MagicMock
+
+        guard = CredentialGuard()
+
+        mock_discovery = MagicMock()
+        mock_discovery.get_service_by_ip.return_value = None  # IP not found
+
+        with patch("addons.service_discovery.get_service_discovery", return_value=mock_discovery):
+            with taddons.context(guard) as tctx:
+                http_flow = tflow.tflow()
+                http_flow.client_conn.peername = ("192.168.1.100", 54321)  # Unknown IP
+
+                project_id = guard._get_project_id(http_flow)
+                assert project_id == "default"
+
+    def test_exception_returns_default(self):
+        """Returns 'default' gracefully on any exception."""
+        from addons.credential_guard import CredentialGuard
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch
+
+        guard = CredentialGuard()
+
+        with patch("addons.service_discovery.get_service_discovery", side_effect=Exception("Network error")):
+            with taddons.context(guard) as tctx:
+                http_flow = tflow.tflow()
+                http_flow.client_conn.peername = ("172.20.0.10", 54321)
+
+                # Should not raise, should return default
+                project_id = guard._get_project_id(http_flow)
+                assert project_id == "default"
+
+
+class TestProjectIdInPendingApproval:
+    """Tests for project_id in pending approval workflow."""
+
+    def test_create_pending_stores_project_id(self):
+        """create_pending_approval stores project_id in pending data."""
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+
+            token = guard.create_pending_approval(
+                credential="sk-proj-test123",
+                credential_type="openai",
+                host="api.example.com",
+                path="/v1/chat",
+                reason="not_in_policy",
+                project_id="myproject"
+            )
+
+            # Check stored data
+            pending = guard.pending_approvals[token]
+            assert pending["project_id"] == "myproject"
+
+    def test_create_pending_default_project_id(self):
+        """create_pending_approval uses 'default' when not specified."""
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+
+            token = guard.create_pending_approval(
+                credential="sk-proj-test123",
+                credential_type="openai",
+                host="api.example.com",
+                path="/v1/chat",
+                reason="not_in_policy"
+                # project_id not specified
+            )
+
+            pending = guard.pending_approvals[token]
+            assert pending["project_id"] == "default"
+
+    def test_get_pending_includes_project_id(self):
+        """get_pending_approvals includes project_id in response."""
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+
+            guard.create_pending_approval(
+                credential="sk-proj-test123",
+                credential_type="openai",
+                host="api.example.com",
+                path="/v1/chat",
+                reason="not_in_policy",
+                project_id="webapp"
+            )
+
+            pending_list = guard.get_pending_approvals()
+            assert len(pending_list) == 1
+            assert pending_list[0]["project_id"] == "webapp"
+
+    def test_approve_uses_stored_project_id(self, tmp_path):
+        """approve_pending uses project_id from stored pending data."""
+        from addons.credential_guard import CredentialGuard, ProjectPolicyStore, DEFAULT_RULES
+        from mitmproxy.test import taddons
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        guard = CredentialGuard()
+
+        with taddons.context(guard) as tctx:
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+            guard.config = {}
+            guard.policy_store = ProjectPolicyStore(policy_dir)
+            guard.policy_store.load_all()
+
+            # Create pending with specific project
+            token = guard.create_pending_approval(
+                credential="sk-proj-test123",
+                credential_type="openai",
+                host="api.example.com",
+                path="/v1/chat/completions",
+                reason="not_in_policy",
+                project_id="webapp"
+            )
+
+            # Approve (no project_id parameter - should use stored one)
+            success = guard.approve_pending(token)
+            assert success is True
+
+            # Check that policy was written to correct project file
+            policy_file = policy_dir / "webapp.yaml"
+            assert policy_file.exists()
+
+            # Verify the approval is in the correct project
+            policy = guard.policy_store.get_policy("webapp")
+            assert len(policy["approved"]) == 1
+            assert policy["approved"][0]["hosts"] == ["api.example.com"]
+
+
+class TestProjectIdIntegration:
+    """Integration tests for project identification in request flow."""
+
+    def test_request_uses_discovered_project_id(self, tmp_path):
+        """Full flow: request detection uses correct project from service discovery."""
+        from addons.credential_guard import CredentialGuard, ProjectPolicyStore, DEFAULT_RULES
+        from addons.service_discovery import DiscoveredService
+        from mitmproxy.test import tflow, taddons
+        from unittest.mock import patch, MagicMock
+        import yaml
+
+        policy_dir = tmp_path / "policies"
+        policy_dir.mkdir()
+
+        # Create a project-specific policy that allows a credential
+        webapp_policy = {
+            "approved": [
+                {
+                    "token_hmac": "abc123",  # Will match our test credential
+                    "hosts": ["custom.api.com"],
+                    "paths": ["/*"]
+                }
+            ]
+        }
+        (policy_dir / "webapp.yaml").write_text(yaml.dump(webapp_policy))
+
+        guard = CredentialGuard()
+
+        # Create mock service that maps to "webapp" project
+        mock_service = DiscoveredService(
+            container_name="webapp-1",
+            container_id="container123",
+            internal_ip="172.20.0.50",
+            ports=[8080],
+            labels={"com.docker.compose.project": "webapp"},
+            network="safeyolo-internal",
+            discovered_at=0,
+        )
+
+        mock_discovery = MagicMock()
+        mock_discovery.get_service_by_ip.return_value = mock_service
+
+        with patch("addons.service_discovery.get_service_discovery", return_value=mock_discovery):
+            with taddons.context(guard) as tctx:
+                guard.rules = list(DEFAULT_RULES)
+                guard.hmac_secret = b"test-secret"
+                guard.config = {}
+                guard.policy_store = ProjectPolicyStore(policy_dir)
+                guard.policy_store.load_all()
+
+                # Create a flow from the webapp container
+                flow = tflow.tflow(req=tflow.treq(
+                    host="custom.api.com",
+                    path="/v1/test"
+                ))
+                flow.client_conn.peername = ("172.20.0.50", 54321)
+
+                # Get project ID
+                project_id = guard._get_project_id(flow)
+                assert project_id == "webapp"
+
+                # Verify merge includes webapp policy
+                merged = guard._merge_policies(project_id)
+                hmacs = [r.get("token_hmac") for r in merged["approved"] if r.get("token_hmac")]
+                assert "abc123" in hmacs

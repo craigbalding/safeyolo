@@ -82,7 +82,7 @@ Includes all extended addons plus pytest, ipython, and tools for model export/te
 
 - **Credential routing** - API keys only go to authorized hosts (OpenAI key -> api.openai.com only)
 - **Smart detection** - 2-tier header analysis with entropy heuristics catches unknown secrets
-- **Human-in-the-loop** - Push notifications via Ntfy for approve/deny decisions; approvals persist to YAML files
+- **Human-in-the-loop** - Push notifications via Ntfy for approve/deny decisions; approvals persist to per-project YAML files
 - **Domain defense** - Blocks typosquats (`api.openal.com`) and homograph attacks (`api.оpenai.com` with Cyrillic 'о')
 - **Runaway loop dampening** - Per-domain rate limiter + circuit breaker
 - **Auditability** - JSONL logs, Prometheus metrics, admin API on :9090 (credentials never logged raw, only HMAC fingerprints)
@@ -268,8 +268,10 @@ curl -X POST http://localhost:9090/admin/approve/{token}
 # Deny instead
 curl -X POST http://localhost:9090/admin/deny/{token}
 
-# Approvals persist to YAML files - view them on host
-cat data/policies/default.yaml
+# Approvals persist to per-project YAML files - view them on host
+# Project detected from source container's Docker compose project label
+cat data/policies/default.yaml    # Default project (host requests)
+cat data/policies/webapp.yaml     # Requests from 'webapp' compose project
 # approved:
 #   - token_hmac: abc123...
 #     hosts: [api.example.com]
@@ -303,7 +305,7 @@ SafeYolo runs mitmproxy with a chain of native addons (9 in base, 11 in extended
 │  └────────┬─────────┘                                           │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
-│  │service_discovery │ -> Docker container auto-discovery        │
+│  │service_discovery │ -> Docker container discovery + project ID │
 │  └────────┬─────────┘                                           │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │

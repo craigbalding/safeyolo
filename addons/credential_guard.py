@@ -1522,6 +1522,43 @@ class CredentialGuard:
         self.default_policy["approved"].append(rule)
         log.info(f"Added ntfy.sh/{topic} to approved policy for notifications")
 
+    def _get_project_id(self, flow: http.HTTPFlow) -> str:
+        """Get project ID for this request from service discovery.
+
+        Uses Docker compose project label, falls back to container name,
+        then to "default" if no match.
+
+        Args:
+            flow: The HTTP flow to get project ID for
+
+        Returns:
+            Project ID string (never None)
+        """
+        try:
+            from .service_discovery import get_service_discovery
+
+            discovery = get_service_discovery()
+            if not discovery:
+                return "default"
+
+            # Get client IP
+            client_ip = flow.client_conn.peername[0] if flow.client_conn.peername else None
+            if not client_ip:
+                return "default"
+
+            # Look up service by IP
+            service = discovery.get_service_by_ip(client_ip)
+            if not service:
+                return "default"
+
+            # Extract project ID from Docker compose label, fallback to container name
+            project_id = service.labels.get("com.docker.compose.project", service.container_name)
+            return project_id
+
+        except Exception as e:
+            log.debug(f"Project ID detection failed: {type(e).__name__}: {e}")
+            return "default"
+
     def _merge_policies(self, project_id: Optional[str] = None) -> dict:
         """Merge default policy with project policy.
 
@@ -1642,7 +1679,8 @@ class CredentialGuard:
         path: str,
         reason: str,
         confidence: str = "high",
-        tier: int = 1
+        tier: int = 1,
+        project_id: str = "default"
     ) -> str:
         """Create a pending approval request.
 
@@ -1654,6 +1692,7 @@ class CredentialGuard:
             reason: Why approval is needed
             confidence: Detection confidence level
             tier: Detection tier (1 or 2)
+            project_id: Project ID for policy storage
 
         Returns:
             Approval token (capability token)
@@ -1670,6 +1709,7 @@ class CredentialGuard:
                 "reason": reason,
                 "confidence": confidence,
                 "tier": tier,
+                "project_id": project_id,
                 "timestamp": time.time(),
                 "status": "pending"
             }
@@ -1705,7 +1745,7 @@ class CredentialGuard:
         else:
             return "/*"
 
-    def approve_pending(self, token: str, ttl_seconds: Optional[int] = None, project_id: str = "default") -> bool:
+    def approve_pending(self, token: str, ttl_seconds: Optional[int] = None) -> bool:
         """Approve a pending request.
 
         Adds approval to both:
@@ -1715,7 +1755,6 @@ class CredentialGuard:
         Args:
             token: The approval token
             ttl_seconds: TTL for temp allowlist entry (default from config)
-            project_id: Project to store the approval in (default: "default")
 
         Returns:
             True if approved, False if token not found
@@ -1736,6 +1775,7 @@ class CredentialGuard:
             host = pending["host"]
             path = pending["path"]
             credential_type = pending.get("credential_type", "unknown")
+            project_id = pending.get("project_id", "default")
 
             # Add to temp allowlist for immediate access
             with self._allowlist_lock:
@@ -1815,6 +1855,7 @@ class CredentialGuard:
                     "reason": data["reason"],
                     "confidence": data["confidence"],
                     "tier": data.get("tier", 1),
+                    "project_id": data.get("project_id", "default"),
                     "age_seconds": int(now - data["timestamp"]),
                     "status": data["status"]
                 }
@@ -1878,6 +1919,9 @@ class CredentialGuard:
         parsed = urlparse(url)
         host = parsed.netloc.lower()
 
+        # Get project ID from service discovery (Phase 6)
+        project_id = self._get_project_id(flow)
+
         # Check headers using smart 2-tier analysis (Phase 2)
         entropy_config = self.config.get("entropy", {
             "min_length": 20,
@@ -1915,8 +1959,6 @@ class CredentialGuard:
                 continue
 
             # Use decision engine (Phase 3)
-            # TODO: Get project_id from service discovery in Phase 6
-            project_id = None
             effective_policy = self._merge_policies(project_id)
 
             decision_type, decision_context = determine_decision_type(
@@ -1987,7 +2029,8 @@ class CredentialGuard:
                         path=flow.request.path,
                         reason=reason,
                         confidence=confidence,
-                        tier=tier
+                        tier=tier,
+                        project_id=project_id
                     )
                     # Phase 4.2: Send ntfy notification
                     if self.approval_backend and self.approval_backend.is_enabled():
@@ -2029,8 +2072,7 @@ class CredentialGuard:
                     flow.metadata["credguard_allowlisted"] = True
                     continue
 
-                # Use decision engine
-                project_id = None
+                # Use decision engine (project_id already set from service discovery)
                 effective_policy = self._merge_policies(project_id)
 
                 decision_type, decision_context = determine_decision_type(
@@ -2089,7 +2131,8 @@ class CredentialGuard:
                             path=flow.request.path,
                             reason=reason,
                             confidence="high",
-                            tier=1
+                            tier=1,
+                            project_id=project_id
                         )
                         if self.approval_backend and self.approval_backend.is_enabled():
                             self.approval_backend.send_approval_request(
@@ -2131,8 +2174,7 @@ class CredentialGuard:
                             flow.metadata["credguard_allowlisted"] = True
                             continue
 
-                        # Use decision engine
-                        project_id = None
+                        # Use decision engine (project_id already set from service discovery)
                         effective_policy = self._merge_policies(project_id)
 
                         decision_type, decision_context = determine_decision_type(
@@ -2191,7 +2233,8 @@ class CredentialGuard:
                                     path=flow.request.path,
                                     reason=reason,
                                     confidence="high",
-                                    tier=1
+                                    tier=1,
+                                    project_id=project_id
                                 )
                                 if self.approval_backend and self.approval_backend.is_enabled():
                                     self.approval_backend.send_approval_request(

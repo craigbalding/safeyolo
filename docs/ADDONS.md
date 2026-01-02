@@ -103,9 +103,17 @@ Auto-discovers Docker containers on the internal network.
 from addons.service_discovery import get_service_discovery
 
 sd = get_service_discovery()
+
+# Look up by port
 service = sd.get_service_by_port(8000)
 if service:
     print(f"Port 8000 is {service.container_name} at {service.internal_ip}")
+
+# Look up by internal IP (used by credential_guard for project identification)
+service = sd.get_service_by_ip("172.30.0.5")
+if service:
+    project = service.labels.get("com.docker.compose.project", service.container_name)
+    print(f"Request from project: {project}")
 ```
 
 ---
@@ -229,9 +237,19 @@ Core security addon. Ensures credentials only go to authorized hosts with smart 
 - Policies persist across container restarts
 - Atomic writes prevent corruption
 
+**Project Identification (Phase 6):**
+- Requests are mapped to projects via Docker service discovery
+- Client IP → container → `com.docker.compose.project` label
+- Falls back to container name, then "default" if no match
+- Enables per-project policy isolation:
+  - Requests from `webapp` container → `data/policies/webapp.yaml`
+  - Requests from host machine → `data/policies/default.yaml`
+- Graceful degradation: uses "default" when service discovery unavailable
+
 **Policy file format:**
 ```yaml
-# data/policies/default.yaml
+# data/policies/webapp.yaml (for requests from 'webapp' compose project)
+# data/policies/default.yaml (for host machine or unknown containers)
 approved:
   - token_hmac: "abc123def456"
     hosts: ["api.example.com"]
@@ -493,10 +511,12 @@ curl -X POST http://localhost:9090/plugins/credential-guard/allowlist \
 
 **Example: Human-in-the-loop approval workflow:**
 ```bash
-# List pending approvals
+# List pending approvals (includes project_id for each request)
 curl http://localhost:9090/admin/approvals/pending | jq
+# Returns: [{token, credential_type, host, path, project_id, ...}, ...]
 
 # Approve a request (token from Ntfy notification or pending list)
+# Approval writes to the project's policy file (e.g., data/policies/webapp.yaml)
 curl -X POST http://localhost:9090/admin/approve/abc123xyz...
 
 # Deny a request

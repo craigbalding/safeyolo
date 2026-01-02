@@ -264,6 +264,14 @@ class ServiceDiscovery:
         with self._lock:
             return self._services.get(name)
 
+    def get_service_by_ip(self, ip: str) -> Optional[DiscoveredService]:
+        """Get service by internal IP address."""
+        with self._lock:
+            for service in self._services.values():
+                if service.internal_ip == ip:
+                    return service
+            return None
+
     def get_target_for_port(self, port: int) -> Optional[str]:
         """Get target host:port for a discovered service port."""
         service = self.get_service_by_port(port)
