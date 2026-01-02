@@ -22,7 +22,7 @@ docker compose up -d
 curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-test1234567890abcdefghijklmnopqrstuvwxyz123456" \
   https://httpbin.org/get
-# → 403 Blocked by credential-guard
+# → 428 Precondition Required (credential detected, wrong destination)
 
 # Check what happened
 curl http://localhost:9090/stats | jq
@@ -81,9 +81,11 @@ Includes all extended addons plus pytest, ipython, and tools for model export/te
 ## Key Features
 
 - **Credential routing** - API keys only go to authorized hosts (OpenAI key -> api.openai.com only)
+- **Smart detection** - 2-tier header analysis with entropy heuristics catches unknown secrets
+- **Human-in-the-loop** - Push notifications via Ntfy for approve/deny decisions on unknown credentials
 - **Domain defense** - Blocks typosquats (`api.openal.com`) and homograph attacks (`api.оpenai.com` with Cyrillic 'о')
 - **Runaway loop dampening** - Per-domain rate limiter + circuit breaker
-- **Auditability** - JSONL logs, Prometheus metrics, admin API on :9090
+- **Auditability** - JSONL logs, Prometheus metrics, admin API on :9090 (credentials never logged raw, only HMAC fingerprints)
 
 ## Who It's For
 
@@ -190,7 +192,7 @@ docker exec -it safeyolo tmux attach
 curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-abcd1234567890abcd1234567890abcd1234567890abcdef" \
   https://httpbin.org/get
-# → 403 CREDENTIAL ROUTING ERROR
+# → 428 Precondition Required (destination mismatch - should go to api.openai.com)
 
 # Check the log to see what happened:
 tail -1 logs/safeyolo.jsonl | jq .
@@ -210,9 +212,10 @@ curl -X PUT http://localhost:9090/plugins/credential-guard/mode \
 curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-abcd1234567890abcd1234567890abcd1234567890abcdef" \
   https://api.openal.com/v1/chat
-# → 403 blocked by credential-guard
+# → 428 Precondition Required (destination mismatch)
 
 # Credential guard caught the typo before your key could leak
+# Response includes expected hosts and a reflection prompt for the agent
 ```
 
 ### Demo 3: Rate Limiter
@@ -244,6 +247,29 @@ curl -k -x http://localhost:8888 -s -o /dev/null -w "%{http_code}\n" \
 
 # After 60 seconds, circuit enters half-open state and allows test requests
 ```
+
+### Demo 5: Human-in-the-Loop Approval
+
+When credential guard detects an unknown credential or a request needing approval, it returns 428 and sends a push notification via Ntfy:
+
+```bash
+# Unknown credential triggers approval workflow
+curl -k -x http://localhost:8888 \
+  -H "X-Custom-Auth: secret-abc123xyz789def456ghi012jkl345mno" \
+  https://api.example.com/endpoint
+# → 428 Precondition Required (requires approval)
+
+# Check pending approvals
+curl http://localhost:9090/admin/approvals/pending | jq
+
+# Approve via admin API (or click button in Ntfy notification)
+curl -X POST http://localhost:9090/admin/approve/{token}
+
+# Deny instead
+curl -X POST http://localhost:9090/admin/deny/{token}
+```
+
+Subscribe to approval notifications: Set `NTFY_TOPIC` env var or check `data/ntfy_topic` for the auto-generated topic, then visit `https://ntfy.sh/{topic}`.
 
 ### If mitmproxy crashes
 
@@ -330,11 +356,11 @@ SafeYolo includes 11 addons for security, reliability, and observability: 9 in t
 | **service_discovery.py** | Base | Auto-discovers Docker containers on internal network for routing decisions | Options only | Always active |
 | **rate_limiter.py** | Base | Per-domain rate limiting using GCRA - prevents IP blacklisting from runaway loops | `config/rate_limits.json` | **Block** (10 rps default, 50 for LLM APIs) |
 | **circuit_breaker.py** | Base | Fail-fast for unhealthy upstreams - stops hammering services that are down | Options only | Always active (blocks when open) |
-| **credential_guard.py** | Base | **Flagship security** - blocks API keys to unauthorized hosts (typosquats, prompt injection exfiltration) | `config/credential_rules.json` | **Block** (headers-only scanning) |
+| **credential_guard.py** | Base | **Core security** - blocks API keys to unauthorized hosts with smart 2-tier detection, HMAC fingerprinting, and human-in-the-loop approval via Ntfy | `config/credential_guard.yaml` | **Block** (428 greylist responses) |
 | **pattern_scanner.py** | Base | Fast regex scanning - lightweight detection of common secrets and jailbreak phrases | Built-in patterns | Warn only |
 | **request_logger.py** | Base | JSONL structured logging for all requests - audit trail and debugging | Options only | Always active |
 | **metrics.py** | Base | Per-domain statistics in JSON and Prometheus formats - monitoring and alerting | Options only | Always active |
-| **admin_api.py** | Base | REST API on port 9090 - runtime control, mode switching, stats, allowlist management | Options only | Always active |
+| **admin_api.py** | Base | REST API on port 9090 - runtime control, mode switching, stats, allowlist management, approval endpoints | Options only | Always active |
 | **yara_scanner.py** | Extended | Enterprise pattern matching - scans for credentials, jailbreaks, PII using YARA rules | `config/yara_rules/` | Warn only |
 | **prompt_injection.py** | Extended | **Experimental** - ML classifier for prompt injection detection (high false positive rate, needs tuning) | Options only | Warn only |
 
@@ -581,7 +607,9 @@ safeyolo/
 │   └── admin_api.py           # REST API on :9090
 ├── config/
 │   ├── policy.yaml            # Per-domain/client addon config
+│   ├── credential_guard.yaml  # Credential Guard v2 config
 │   ├── credential_rules.json  # Credential patterns + allowed hosts
+│   ├── safe_headers.yaml      # Headers to skip in entropy analysis
 │   ├── rate_limits.json       # Per-domain rate limits
 │   └── yara_rules/            # YARA rules (extended build)
 │       ├── default.yar        # Default threat detection rules
@@ -598,7 +626,10 @@ safeyolo/
 │       ├── modeling_piguard.py # Custom model code
 │       ├── tokenizer_config.json
 │       └── special_tokens_map.json
-├── tests/                     # Pytest test suite (168 tests)
+├── data/                      # Runtime-generated secrets (gitignored)
+│   ├── ntfy_topic             # Auto-generated Ntfy topic
+│   └── hmac_secret            # Auto-generated HMAC key
+├── tests/                     # Pytest test suite
 │   ├── conftest.py            # Fixtures and setup
 │   ├── test_credential_guard.py
 │   ├── test_rate_limiter.py
@@ -607,7 +638,8 @@ safeyolo/
 │   ├── test_policy.py
 │   ├── test_prompt_injection.py
 │   ├── test_admin_api.py
-│   └── test_integration.py
+│   ├── test_integration.py
+│   └── test_ntfy_integration.py
 ├── docs/
 │   ├── ADDONS.md              # Complete addon reference
 │   ├── FUTURE.md              # Ideas under consideration
