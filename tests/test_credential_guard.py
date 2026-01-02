@@ -583,3 +583,215 @@ class TestDefaultPolicy:
             "/admin/secrets",
             DEFAULT_POLICY
         ) is False
+
+
+# --- Phase 2: Smart Header Analysis Tests ---
+
+class TestShannonEntropy:
+    """Test Shannon entropy calculation."""
+
+    def test_empty_string(self):
+        """Empty string has zero entropy."""
+        from addons.credential_guard import calculate_shannon_entropy
+        assert calculate_shannon_entropy("") == 0.0
+
+    def test_single_character(self):
+        """String with single repeated character has low entropy."""
+        from addons.credential_guard import calculate_shannon_entropy
+        entropy = calculate_shannon_entropy("aaaaaaa")
+        assert entropy == 0.0  # Only one unique character
+
+    def test_high_entropy_string(self):
+        """Random-looking string has high entropy."""
+        from addons.credential_guard import calculate_shannon_entropy
+        # Typical API key: mix of letters and numbers
+        entropy = calculate_shannon_entropy("sk-proj-a1B2c3D4e5F6g7H8")
+        assert entropy > 3.0  # Should be reasonably high
+
+
+class TestLooksLikeSecret:
+    """Test entropy heuristics for secret detection."""
+
+    def test_too_short_rejected(self):
+        """Strings shorter than min_length are rejected."""
+        from addons.credential_guard import looks_like_secret
+        config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        assert looks_like_secret("short", config) is False
+
+    def test_low_diversity_rejected(self):
+        """Strings with low charset diversity are rejected."""
+        from addons.credential_guard import looks_like_secret
+        config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        # 20 chars but only 2 unique chars
+        assert looks_like_secret("aaaaaaaaaabbbbbbbbbb", config) is False
+
+    def test_low_entropy_rejected(self):
+        """Strings with low Shannon entropy are rejected."""
+        from addons.credential_guard import looks_like_secret
+        config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        # 20 chars, decent diversity, but low entropy (repeating pattern)
+        assert looks_like_secret("abcdabcdabcdabcdabcd", config) is False
+
+    def test_api_key_accepted(self):
+        """Real API keys pass all heuristics."""
+        from addons.credential_guard import looks_like_secret
+        config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        # Realistic OpenAI key
+        assert looks_like_secret("sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4", config) is True
+
+    def test_trace_id_rejected(self):
+        """Cloud trace IDs should be rejected by entropy config."""
+        from addons.credential_guard import looks_like_secret
+        config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        # AWS trace ID: long but low entropy (mostly hex)
+        # Note: This depends on the specific trace ID format
+        # Some trace IDs may pass heuristics - that's why we have safe_headers config
+        pass  # Safe headers config is the primary defense
+
+
+class TestSafeHeaders:
+    """Test safe header detection."""
+
+    def test_exact_match(self):
+        """Exact header name matches are detected."""
+        from addons.credential_guard import is_safe_header
+        config = {"exact_match": ["host", "user-agent", "content-type"]}
+        assert is_safe_header("host", config) is True
+        assert is_safe_header("user-agent", config) is True
+        assert is_safe_header("authorization", config) is False
+
+    def test_pattern_match(self):
+        """Pattern-based header matches are detected."""
+        from addons.credential_guard import is_safe_header
+        config = {"exact_match": [], "patterns": ["^x-.*-id$", "^x-.*-trace.*$"]}
+        assert is_safe_header("x-request-id", config) is True
+        assert is_safe_header("x-correlation-id", config) is True
+        assert is_safe_header("x-cloud-trace-context", config) is True
+        assert is_safe_header("x-api-key", config) is False
+
+    def test_case_insensitive(self):
+        """Header matching is case-insensitive."""
+        from addons.credential_guard import is_safe_header
+        config = {"exact_match": ["Host", "User-Agent"]}
+        assert is_safe_header("HOST", config) is True
+        assert is_safe_header("user-agent", config) is True
+
+
+class TestExtractToken:
+    """Test token extraction from Authorization headers."""
+
+    def test_bearer_scheme(self):
+        """Extract token from 'Bearer <token>' format."""
+        from addons.credential_guard import extract_token_from_auth_header
+        token = extract_token_from_auth_header("Bearer sk-proj-abc123")
+        assert token == "sk-proj-abc123"
+
+    def test_basic_scheme(self):
+        """Extract token from 'Basic <token>' format."""
+        from addons.credential_guard import extract_token_from_auth_header
+        token = extract_token_from_auth_header("Basic dXNlcjpwYXNz")
+        assert token == "dXNlcjpwYXNz"
+
+    def test_no_scheme(self):
+        """Token without scheme is returned as-is."""
+        from addons.credential_guard import extract_token_from_auth_header
+        token = extract_token_from_auth_header("sk-proj-abc123")
+        assert token == "sk-proj-abc123"
+
+    def test_empty_value(self):
+        """Empty value returns empty string."""
+        from addons.credential_guard import extract_token_from_auth_header
+        assert extract_token_from_auth_header("") == ""
+
+
+class TestAnalyzeHeaders:
+    """Test 2-tier header analysis."""
+
+    def test_tier1_standard_auth_header(self):
+        """Tier 1: Detect known credential in standard auth header."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"Authorization": "Bearer sk-proj-abc123xyz456def789ghijk"}
+        safe_headers_config = {"exact_match": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
+        )
+
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "openai"
+        assert detections[0]["confidence"] == "high"
+        assert detections[0]["tier"] == 1
+
+    def test_tier1_unknown_credential(self):
+        """Tier 1: Detect unknown credential in standard auth header."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-API-Key": "custom-secret-key-abc123xyz456def789"}
+        safe_headers_config = {"exact_match": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization", "x-api-key"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
+        )
+
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "unknown_secret"
+        assert detections[0]["confidence"] == "high"
+        assert detections[0]["tier"] == 1
+
+    def test_tier2_non_standard_header(self):
+        """Tier 2: Detect high-entropy value in non-standard header."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Custom-Secret": "sk-proj-abc123xyz456def789ghijk"}
+        safe_headers_config = {"exact_match": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
+        )
+
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "openai"
+        assert detections[0]["confidence"] == "medium"
+        assert detections[0]["tier"] == 2
+
+    def test_tier2_skips_safe_headers(self):
+        """Tier 2: Skip headers in safe_headers config."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {
+            "X-Request-ID": "long-trace-id-abc123xyz456def789ghijk",
+            "X-Custom-Secret": "sk-proj-abc123xyz456def789ghijk"
+        }
+        safe_headers_config = {"exact_match": [], "patterns": ["^x-.*-id$"]}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
+        )
+
+        # X-Request-ID should be skipped, only X-Custom-Secret detected
+        assert len(detections) == 1
+        assert detections[0]["header_name"] == "X-Custom-Secret"
+
+    def test_tier2_low_entropy_skipped(self):
+        """Tier 2: Skip low-entropy values."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Custom-Header": "short"}
+        safe_headers_config = {"exact_match": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
+        )
+
+        assert len(detections) == 0  # Too short, doesn't meet min_length

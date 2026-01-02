@@ -211,6 +211,247 @@ Do not retry this request to {blocked_host} - it will be blocked again.
 TERSE_RESPONSE_TEMPLATE = '{{"error": "credential_routing_blocked", "credential_type": "{credential_type}", "blocked_host": "{blocked_host}"}}'
 
 
+# --- Smart Header Analysis (Phase 2) ---
+
+def calculate_shannon_entropy(s: str) -> float:
+    """Calculate Shannon entropy of a string (bits per character)."""
+    if not s:
+        return 0.0
+
+    from collections import Counter
+    import math
+
+    counts = Counter(s)
+    length = len(s)
+
+    entropy = 0.0
+    for count in counts.values():
+        p = count / length
+        if p > 0:
+            entropy -= p * math.log2(p)
+
+    return entropy
+
+
+def looks_like_secret(value: str, entropy_config: dict) -> bool:
+    """Apply entropy heuristics to detect if value looks like a secret.
+
+    Args:
+        value: The header value to check
+        entropy_config: Dict with min_length, min_charset_diversity, min_shannon_entropy
+
+    Returns:
+        True if value looks like a secret based on heuristics
+    """
+    if not value:
+        return False
+
+    # Check minimum length
+    min_length = entropy_config.get("min_length", 20)
+    if len(value) < min_length:
+        return False
+
+    # Check charset diversity (unique chars / total chars)
+    unique_chars = len(set(value))
+    charset_diversity = unique_chars / len(value)
+    min_diversity = entropy_config.get("min_charset_diversity", 0.5)
+    if charset_diversity < min_diversity:
+        return False
+
+    # Check Shannon entropy
+    entropy = calculate_shannon_entropy(value)
+    min_entropy = entropy_config.get("min_shannon_entropy", 3.5)
+    if entropy < min_entropy:
+        return False
+
+    return True
+
+
+def is_safe_header(header_name: str, safe_headers_config: dict) -> bool:
+    """Check if header should be skipped (not scanned for credentials).
+
+    Args:
+        header_name: The header name
+        safe_headers_config: Dict with 'exact_names' list and 'patterns' list
+
+    Returns:
+        True if header is safe (should be skipped)
+    """
+    header_lower = header_name.lower()
+
+    # Check exact name matches (case-insensitive)
+    exact_names = safe_headers_config.get("exact_names", [])
+    if not exact_names:
+        # Fallback to 'exact_match' for backward compatibility
+        exact_names = safe_headers_config.get("exact_match", [])
+
+    exact_names_lower = [h.lower() if isinstance(h, str) else h for h in exact_names]
+    if header_lower in exact_names_lower:
+        return True
+
+    # Check pattern matches
+    patterns = safe_headers_config.get("patterns", [])
+    for pattern_item in patterns:
+        # Handle both string patterns and dict format
+        if isinstance(pattern_item, dict):
+            pattern = pattern_item.get("pattern", "")
+        else:
+            pattern = pattern_item
+
+        if pattern and re.match(pattern, header_lower):
+            return True
+
+    return False
+
+
+def extract_token_from_auth_header(auth_value: str) -> str:
+    """Extract token from Authorization header (handles Bearer/Basic schemes).
+
+    Args:
+        auth_value: The Authorization header value
+
+    Returns:
+        Extracted token or original value if no scheme detected
+    """
+    if not auth_value:
+        return ""
+
+    # Handle "Bearer <token>"
+    if auth_value.startswith("Bearer "):
+        return auth_value[7:].strip()
+
+    # Handle "Basic <token>"
+    if auth_value.startswith("Basic "):
+        # Basic auth is base64 encoded, but we still want to check the encoded value
+        return auth_value[6:].strip()
+
+    # No scheme, return as-is
+    return auth_value.strip()
+
+
+def analyze_headers(
+    headers: dict,
+    rules: list,
+    safe_headers_config: dict,
+    entropy_config: dict,
+    standard_auth_headers: list
+) -> list[dict]:
+    """Analyze HTTP headers for credentials using 2-tier detection.
+
+    Tier 1: Standard auth headers (high confidence)
+    Tier 2: Non-standard headers with entropy heuristics (medium confidence)
+
+    Args:
+        headers: HTTP headers dict (case-insensitive)
+        rules: List of CredentialRule objects
+        safe_headers_config: Config for safe headers to skip
+        entropy_config: Config for entropy heuristics
+        standard_auth_headers: List of standard auth header names
+
+    Returns:
+        List of detected credentials: [
+            {
+                "credential": "sk-proj-...",
+                "rule_name": "openai" | "unknown_secret",
+                "header_name": "authorization",
+                "confidence": "high" | "medium",
+                "tier": 1 | 2
+            }
+        ]
+    """
+    detections = []
+
+    # Tier 1: Standard auth headers
+    for header_name, header_value in headers.items():
+        header_lower = header_name.lower()
+
+        if header_lower not in standard_auth_headers:
+            continue
+
+        # Extract token (handle Bearer/Basic)
+        token = extract_token_from_auth_header(header_value)
+        if not token:
+            continue
+
+        # Try to match against known credential patterns
+        matched_rule = None
+        matched_credential = None
+
+        for rule in rules:
+            matched = rule.matches(token)
+            if matched:
+                matched_rule = rule
+                matched_credential = matched
+                break
+
+        if matched_credential:
+            detections.append({
+                "credential": matched_credential,
+                "rule_name": matched_rule.name,
+                "header_name": header_name,
+                "confidence": "high",
+                "tier": 1
+            })
+        else:
+            # Unknown credential in standard auth header
+            # Still flag it since presence in auth header is strong signal
+            if len(token) >= entropy_config.get("min_length", 20):
+                detections.append({
+                    "credential": token,
+                    "rule_name": "unknown_secret",
+                    "header_name": header_name,
+                    "confidence": "high",
+                    "tier": 1
+                })
+
+    # Tier 2: Non-standard headers with heuristics
+    for header_name, header_value in headers.items():
+        header_lower = header_name.lower()
+
+        # Skip standard auth headers (already checked in Tier 1)
+        if header_lower in standard_auth_headers:
+            continue
+
+        # Skip safe headers
+        if is_safe_header(header_lower, safe_headers_config):
+            continue
+
+        # Apply entropy heuristics
+        if not looks_like_secret(header_value, entropy_config):
+            continue
+
+        # Try to match against known credential patterns
+        matched_rule = None
+        matched_credential = None
+
+        for rule in rules:
+            matched = rule.matches(header_value)
+            if matched:
+                matched_rule = rule
+                matched_credential = matched
+                break
+
+        if matched_credential:
+            detections.append({
+                "credential": matched_credential,
+                "rule_name": matched_rule.name,
+                "header_name": header_name,
+                "confidence": "medium",
+                "tier": 2
+            })
+        else:
+            # Unknown high-entropy value in non-standard header
+            detections.append({
+                "credential": header_value,
+                "rule_name": "unknown_secret",
+                "header_name": header_name,
+                "confidence": "medium",
+                "tier": 2
+            })
+
+    return detections
+
+
 @dataclass
 class CredentialRule:
     """Rule for detecting and validating a credential type."""
@@ -600,63 +841,80 @@ class CredentialGuard:
         parsed = urlparse(url)
         host = parsed.netloc.lower()
 
-        # Check headers
-        for header_name, header_value in flow.request.headers.items():
-            header_lower = header_name.lower()
+        # Check headers using smart 2-tier analysis (Phase 2)
+        entropy_config = self.config.get("entropy", {
+            "min_length": 20,
+            "min_charset_diversity": 0.5,
+            "min_shannon_entropy": 3.5
+        })
+        standard_auth_headers = self.config.get("standard_auth_headers", [
+            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+        ])
 
-            for rule in self.rules:
-                if header_lower not in rule.header_names:
-                    continue
+        detections = analyze_headers(
+            headers=dict(flow.request.headers),
+            rules=self.rules,
+            safe_headers_config=self.safe_headers_config,
+            entropy_config=entropy_config,
+            standard_auth_headers=standard_auth_headers
+        )
 
-                matched = rule.matches(header_value)
-                if not matched:
-                    continue
+        for detection in detections:
+            matched = detection["credential"]
+            rule_name = detection["rule_name"]
+            header_name = detection["header_name"]
+            confidence = detection["confidence"]
+            tier = detection["tier"]
 
-                # Check v2 policy (default + project-specific)
-                # Policy checks credential pattern + host + path
-                # TODO: Get project_id from service discovery in Phase 6
-                project_id = None
-                effective_policy = self._merge_policies(project_id)
-                if check_policy_approval(matched, host, flow.request.path, effective_policy):
-                    log.info(f"Allowed by policy: {rule.name} -> {host}{flow.request.path}")
-                    flow.metadata["credguard_policy_approved"] = True
-                    continue
+            # Check v2 policy (default + project-specific)
+            # Policy checks credential pattern + host + path
+            # TODO: Get project_id from service discovery in Phase 6
+            project_id = None
+            effective_policy = self._merge_policies(project_id)
+            if check_policy_approval(matched, host, flow.request.path, effective_policy):
+                log.info(f"Allowed by policy: {rule_name} -> {host}{flow.request.path}")
+                flow.metadata["credguard_policy_approved"] = True
+                continue
 
-                # NOTE: No legacy v1 rule.host_allowed() check
-                # v2 relies entirely on policy for credential approval
-                # This ensures path restrictions are enforced
-
-                # Check temp allowlist
-                if self._is_temp_allowed(matched, host):
-                    fingerprint = hmac_fingerprint(matched, self.hmac_secret)
-                    log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
-                    flow.metadata["credguard_allowlisted"] = True
-                    continue
-
-                # VIOLATION DETECTED
-                # Generate HMAC fingerprint (never log raw credential)
+            # Check temp allowlist
+            if self._is_temp_allowed(matched, host):
                 fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+                log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
+                flow.metadata["credguard_allowlisted"] = True
+                continue
 
-                self._record_violation(rule.name, host, "header")
-                self._log_violation(
-                    rule=rule.name,
-                    host=host,
-                    location="header",
-                    credential_fingerprint=f"hmac:{fingerprint}",
-                )
+            # VIOLATION DETECTED
+            # Generate HMAC fingerprint (never log raw credential)
+            fingerprint = hmac_fingerprint(matched, self.hmac_secret)
 
-                flow.metadata["blocked_by"] = self.name
-                flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
-                flow.metadata["blocked_host"] = host
+            self._record_violation(rule_name, host, f"header:{header_name}")
+            self._log_violation(
+                rule=rule_name,
+                host=host,
+                location=f"header:{header_name}",
+                credential_fingerprint=f"hmac:{fingerprint}",
+                confidence=confidence,
+                tier=tier,
+            )
 
-                # Check if blocking is enabled
-                if self._should_block():
-                    log.warning(f"BLOCKED: {rule.name} in {header_name} header -> {host}{flow.request.path}")
-                    flow.response = self._create_block_response(rule, host, "header", f"hmac:{fingerprint}")
-                    return
-                else:
-                    log.warning(f"WARN: {rule.name} in {header_name} header -> {host}{flow.request.path}")
-                    continue  # Don't block, continue checking
+            flow.metadata["blocked_by"] = self.name
+            flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
+            flow.metadata["blocked_host"] = host
+            flow.metadata["detection_tier"] = tier
+            flow.metadata["detection_confidence"] = confidence
+
+            # Check if blocking is enabled
+            if self._should_block():
+                log.warning(f"BLOCKED: {rule_name} (tier {tier}, {confidence}) in {header_name} -> {host}{flow.request.path}")
+                # TODO Phase 3: Use _create_block_response_v2() with 428 greylist logic
+                # For now, use existing v1 response
+                # Create a temporary CredentialRule object for backward compatibility
+                temp_rule = CredentialRule(name=rule_name, patterns=[], allowed_hosts=[])
+                flow.response = self._create_block_response(temp_rule, host, f"header:{header_name}", f"hmac:{fingerprint}")
+                return
+            else:
+                log.warning(f"WARN: {rule_name} (tier {tier}, {confidence}) in {header_name} -> {host}{flow.request.path}")
+                continue  # Don't block, continue checking
 
         # Check URL (opt-in)
         if ctx.options.credguard_scan_urls:
