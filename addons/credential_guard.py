@@ -13,11 +13,16 @@ Configuration via mitmproxy options:
     --set credguard_log_path=/app/logs/credguard.jsonl
 """
 
+import hashlib
+import hmac
 import json
 import logging
+import os
 import re
+import secrets
 import threading
 import time
+import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -31,6 +36,61 @@ except ImportError:
     from utils import write_jsonl
 
 log = logging.getLogger("safeyolo.credential-guard")
+
+
+# --- Configuration Loading ---
+
+def load_yaml_config(path: Path, default=None):
+    """Load YAML config file, return default if not found."""
+    if not path.exists():
+        return default or {}
+
+    try:
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        log.error(f"Failed to load {path}: {type(e).__name__}: {e}")
+        return default or {}
+
+
+def load_or_generate_hmac_secret(secret_path: Path) -> bytes:
+    """Load HMAC secret from file or generate new one."""
+    # Try environment variable first
+    env_secret = os.environ.get("CREDGUARD_HMAC_SECRET")
+    if env_secret:
+        log.info("Using HMAC secret from environment variable")
+        return env_secret.encode()
+
+    # Try loading from file
+    if secret_path.exists():
+        try:
+            with open(secret_path, "rb") as f:
+                secret = f.read().strip()
+            log.info(f"Loaded HMAC secret from {secret_path}")
+            return secret
+        except Exception as e:
+            log.error(f"Failed to load HMAC secret from {secret_path}: {type(e).__name__}: {e}")
+
+    # Generate new secret
+    log.warning(f"Generating new HMAC secret at {secret_path}")
+    secret = secrets.token_hex(32).encode()
+
+    try:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(secret_path, "wb") as f:
+            f.write(secret)
+        secret_path.chmod(0o600)  # Owner read/write only
+        log.info(f"Saved new HMAC secret to {secret_path}")
+    except Exception as e:
+        log.error(f"Failed to save HMAC secret: {type(e).__name__}: {e}")
+
+    return secret
+
+
+def hmac_fingerprint(credential: str, secret: bytes) -> str:
+    """Generate HMAC fingerprint for a credential."""
+    h = hmac.new(secret, credential.encode(), hashlib.sha256)
+    return h.hexdigest()[:16]  # First 16 chars (64 bits)
 
 
 # LLM-friendly response message
@@ -141,11 +201,16 @@ class CredentialGuard:
 
     def __init__(self):
         self.rules: list[CredentialRule] = []
-        self.temp_allowlist: dict[tuple[str, str], float] = {}  # (prefix, host) -> expiry
+        self.temp_allowlist: dict[tuple[str, str], float] = {}  # (hmac_fingerprint, host) -> expiry
         self._allowlist_lock = threading.Lock()  # Protect temp_allowlist access
         self.violations_total = 0
         self.violations_by_type: dict[str, int] = {}
         self.log_path: Optional[Path] = None
+
+        # v2 configuration
+        self.config: dict = {}
+        self.safe_headers_config: dict = {}
+        self.hmac_secret: bytes = b""
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -188,11 +253,35 @@ class CredentialGuard:
 
     def configure(self, updates):
         """Handle option changes."""
+        # Load configurations on startup or when updated
+        if not self.config:
+            self._load_configs()
+
         if "credguard_rules" in updates:
             self._load_rules()
         if "credguard_log_path" in updates:
             path = ctx.options.credguard_log_path
             self.log_path = Path(path) if path else None
+
+    def _load_configs(self):
+        """Load v2 configuration files."""
+        # Determine config directory (relative to addon file)
+        addon_dir = Path(__file__).parent
+        config_dir = addon_dir.parent / "config"
+
+        # Load credential guard config
+        config_path = config_dir / "credential_guard.yaml"
+        self.config = load_yaml_config(config_path)
+        log.info(f"Loaded credential guard config from {config_path}")
+
+        # Load safe headers config
+        safe_headers_path = config_dir / "safe_headers.yaml"
+        self.safe_headers_config = load_yaml_config(safe_headers_path)
+        log.info(f"Loaded safe headers config from {safe_headers_path}")
+
+        # Load or generate HMAC secret
+        secret_path = Path("/app/data/hmac_secret")
+        self.hmac_secret = load_or_generate_hmac_secret(secret_path)
 
     def _load_rules(self):
         """Load rules from file or use defaults."""
@@ -231,16 +320,24 @@ class CredentialGuard:
         except AttributeError:
             return False
 
-    def add_temp_allowlist(self, credential_prefix: str, host: str, ttl_seconds: int = 300):
-        """Add temporary allowlist entry (called by admin API)."""
-        key = (credential_prefix[:20], host.lower())
+    def add_temp_allowlist(self, credential: str, host: str, ttl_seconds: int = 300):
+        """Add temporary allowlist entry (called by admin API).
+
+        Args:
+            credential: The full credential to fingerprint
+            host: The destination host to allow
+            ttl_seconds: How long the allowlist entry is valid
+        """
+        fingerprint = hmac_fingerprint(credential, self.hmac_secret)
+        key = (fingerprint, host.lower())
         with self._allowlist_lock:
             self.temp_allowlist[key] = time.time() + ttl_seconds
-        log.info(f"Temp allowlist: {credential_prefix[:10]}... -> {host} for {ttl_seconds}s")
+        log.info(f"Temp allowlist: hmac:{fingerprint} -> {host} for {ttl_seconds}s")
 
     def _is_temp_allowed(self, credential: str, host: str) -> bool:
         """Check if credential is temporarily allowed for host."""
-        key = (credential[:20], host.lower())
+        fingerprint = hmac_fingerprint(credential, self.hmac_secret)
+        key = (fingerprint, host.lower())
         with self._allowlist_lock:
             expiry = self.temp_allowlist.get(key)
 
@@ -263,7 +360,7 @@ class CredentialGuard:
                 del self.temp_allowlist[k]
 
             return [
-                {"credential_prefix": k[0], "host": k[1], "expires_in": int(v - now)}
+                {"credential_fingerprint": f"hmac:{k[0]}", "host": k[1], "expires_in": int(v - now)}
                 for k, v in self.temp_allowlist.items()
             ]
 
@@ -272,7 +369,7 @@ class CredentialGuard:
         rule: CredentialRule,
         host: str,
         location: str,
-        credential_prefix: str,
+        credential_fingerprint: str,
     ) -> http.Response:
         """Create the block response."""
         allowed_str = ", ".join(rule.allowed_hosts)
@@ -307,7 +404,7 @@ class CredentialGuard:
                 "X-Blocked-By": self.name,
                 "X-Block-Reason": "credential-leak",
                 "X-Credential-Type": rule.name,
-                "X-Credential-Prefix": credential_prefix,
+                "X-Credential-Fingerprint": credential_fingerprint,
                 "X-Blocked-Host": host,
                 "X-Blocked-Location": location,
             }
@@ -336,27 +433,31 @@ class CredentialGuard:
 
                 # Check temp allowlist
                 if self._is_temp_allowed(matched, host):
-                    log.info(f"Allowed via temp allowlist: {matched[:10]}... -> {host}")
+                    fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+                    log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
                     flow.metadata["credguard_allowlisted"] = True
                     continue
 
                 # VIOLATION DETECTED
+                # Generate HMAC fingerprint (never log raw credential)
+                fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+
                 self._record_violation(rule.name, host, "header")
                 self._log_violation(
                     rule=rule.name,
                     host=host,
                     location="header",
-                    credential_prefix=matched[:20],
+                    credential_fingerprint=f"hmac:{fingerprint}",
                 )
 
                 flow.metadata["blocked_by"] = self.name
-                flow.metadata["credential_prefix"] = matched[:20]
+                flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
                 flow.metadata["blocked_host"] = host
 
                 # Check if blocking is enabled
                 if self._should_block():
                     log.warning(f"BLOCKED: {rule.name} in {header_name} header -> {host}{flow.request.path}")
-                    flow.response = self._create_block_response(rule, host, "header", matched[:20])
+                    flow.response = self._create_block_response(rule, host, "header", f"hmac:{fingerprint}")
                     return
                 else:
                     log.warning(f"WARN: {rule.name} in {header_name} header -> {host}{flow.request.path}")
@@ -370,21 +471,24 @@ class CredentialGuard:
                     if self._is_temp_allowed(matched, host):
                         continue
 
+                    # Generate HMAC fingerprint
+                    fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+
                     self._record_violation(rule.name, host, "url")
                     self._log_violation(
                         rule=rule.name,
                         host=host,
                         location="url",
-                        credential_prefix=matched[:20],
+                        credential_fingerprint=f"hmac:{fingerprint}",
                     )
 
                     flow.metadata["blocked_by"] = self.name
-                    flow.metadata["credential_prefix"] = matched[:20]
+                    flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
                     flow.metadata["blocked_host"] = host
 
                     if self._should_block():
                         log.warning(f"BLOCKED: {rule.name} in URL -> {host}{flow.request.path}")
-                        flow.response = self._create_block_response(rule, host, "url", matched[:20])
+                        flow.response = self._create_block_response(rule, host, "url", f"hmac:{fingerprint}")
                         return
                     else:
                         log.warning(f"WARN: {rule.name} in URL -> {host}{flow.request.path}")
@@ -400,25 +504,29 @@ class CredentialGuard:
                         matched = rule.matches(body)
                         if matched and not rule.host_allowed(host):
                             if self._is_temp_allowed(matched, host):
-                                log.info(f"Allowed via temp allowlist: {matched[:10]}... -> {host}")
+                                fingerprint = hmac_fingerprint(matched, self.hmac_secret)
+                                log.info(f"Allowed via temp allowlist: hmac:{fingerprint} -> {host}")
                                 flow.metadata["credguard_allowlisted"] = True
                                 continue
+
+                            # Generate HMAC fingerprint
+                            fingerprint = hmac_fingerprint(matched, self.hmac_secret)
 
                             self._record_violation(rule.name, host, "body")
                             self._log_violation(
                                 rule=rule.name,
                                 host=host,
                                 location="body",
-                                credential_prefix=matched[:20],
+                                credential_fingerprint=f"hmac:{fingerprint}",
                             )
 
                             flow.metadata["blocked_by"] = self.name
-                            flow.metadata["credential_prefix"] = matched[:20]
+                            flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
                             flow.metadata["blocked_host"] = host
 
                         if self._should_block():
                             log.warning(f"BLOCKED: {rule.name} in body -> {host}{flow.request.path}")
-                            flow.response = self._create_block_response(rule, host, "body", matched[:20])
+                            flow.response = self._create_block_response(rule, host, "body", f"hmac:{fingerprint}")
                             return
                         else:
                             log.warning(f"WARN: {rule.name} in body -> {host}{flow.request.path}")
