@@ -189,6 +189,17 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             entries = self.credential_guard.get_temp_allowlist()
             self._send_json({"allowlist": entries})
 
+        elif path == "/admin/approvals/pending":
+            # Phase 4.3: List pending approval requests
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'get_pending_approvals'):
+                self._send_json({"error": "approval workflow not available"}, 501)
+                return
+            pending = self.credential_guard.get_pending_approvals()
+            self._send_json({"pending_approvals": pending, "count": len(pending)})
+
         elif path == "/modes":
             # Get current mode for all switchable addons
             modes = self._get_all_modes()
@@ -211,7 +222,64 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/plugins/credential-guard/allowlist":
+        # Phase 4.3: Approval/deny endpoints
+        if path.startswith("/admin/approve/"):
+            # POST /admin/approve/{token}
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'approve_pending'):
+                self._send_json({"error": "approval workflow not available"}, 501)
+                return
+
+            token = path[15:]  # strip "/admin/approve/"
+            if not token:
+                self._send_json({"error": "missing token"}, 400)
+                return
+
+            success = self.credential_guard.approve_pending(token)
+            if success:
+                self._send_json({
+                    "status": "approved",
+                    "token": token[:8] + "...",
+                    "message": "Request approved and added to temp allowlist"
+                })
+            else:
+                self._send_json({
+                    "status": "not_found",
+                    "token": token[:8] + "...",
+                    "error": "Token not found or already processed"
+                }, 404)
+
+        elif path.startswith("/admin/deny/"):
+            # POST /admin/deny/{token}
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'deny_pending'):
+                self._send_json({"error": "approval workflow not available"}, 501)
+                return
+
+            token = path[12:]  # strip "/admin/deny/"
+            if not token:
+                self._send_json({"error": "missing token"}, 400)
+                return
+
+            success = self.credential_guard.deny_pending(token)
+            if success:
+                self._send_json({
+                    "status": "denied",
+                    "token": token[:8] + "...",
+                    "message": "Request denied and removed from pending"
+                })
+            else:
+                self._send_json({
+                    "status": "not_found",
+                    "token": token[:8] + "...",
+                    "error": "Token not found or already processed"
+                }, 404)
+
+        elif path == "/plugins/credential-guard/allowlist":
             if not self.credential_guard:
                 self._send_json({"error": "credential-guard not loaded"}, 404)
                 return
