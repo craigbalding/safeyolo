@@ -22,7 +22,7 @@ class TestAddonChainMetadata:
         credential_guard.request(flow)
 
         assert flow.metadata.get("blocked_by") == "credential-guard"
-        assert flow.metadata.get("credential_prefix") is not None
+        assert flow.metadata.get("credential_fingerprint") is not None
         assert flow.metadata.get("blocked_host") == "evil.com"
 
     def test_rate_limiter_sets_blocked_by(self, rate_limiter, make_flow):
@@ -100,6 +100,8 @@ class TestAddonChainOrder:
 
     def test_subsequent_addons_see_metadata(self, credential_guard, make_flow):
         """Test that subsequent addons can see metadata from earlier ones."""
+        from addons.policy import RequestPolicy, AddonPolicy
+
         flow = make_flow(
             method="POST",
             url="https://api.openai.com/v1/chat",
@@ -107,11 +109,16 @@ class TestAddonChainOrder:
             headers={"Content-Type": "application/json"},
         )
 
-        # Simulate first addon setting metadata
-        flow.metadata["policy"] = {
-            "credential_guard": {"enabled": True},
-            "yara_scanner": {"enabled": False},
-        }
+        # Simulate first addon (policy) setting metadata with RequestPolicy object
+        # Create a policy where credential_guard is enabled
+        policy = RequestPolicy(
+            addons={
+                "credential-guard": AddonPolicy(enabled=True, settings={}),
+                "yara_scanner": AddonPolicy(enabled=False, settings={}),
+            },
+            bypassed_addons=set()
+        )
+        flow.metadata["policy"] = policy
 
         # Credential guard should see this
         credential_guard.request(flow)
@@ -166,7 +173,7 @@ class TestRealisticScenarios:
         credential_guard.request(flow)
 
         assert flow.response is not None
-        assert flow.response.status_code == 403
+        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
         assert b"credential" in flow.response.content.lower()
 
     def test_circuit_opens_on_upstream_failures(self, circuit_breaker, make_flow, make_response):
@@ -237,56 +244,76 @@ class TestBlockingMode:
     def test_credential_guard_warn_mode_passes_request(self, make_flow):
         """Test credential_guard in warn mode allows request through."""
         from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from mitmproxy.test import taddons
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)
-        guard._should_block = lambda: False  # Warn-only mode
+        guard.hmac_secret = b"test-secret"
+        guard.config = {}
+        guard.safe_headers_config = {}
 
-        flow = make_flow(
-            method="POST",
-            url="https://evil.com/api",
-            content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
-        )
+        # Set up context with body scanning enabled
+        with taddons.context(guard) as tctx:
+            tctx.options.credguard_block = False  # Warn-only mode
+            tctx.options.credguard_scan_bodies = True
 
-        guard.request(flow)
+            flow = make_flow(
+                method="POST",
+                url="https://evil.com/api",
+                content='{"key": "sk-abc123xyz456def789ghijklmno"}',
+                headers={"Content-Type": "application/json"},
+            )
 
-        # Warn-only: no response set, request continues
-        assert flow.response is None
-        assert guard.violations_total == 1
+            guard.request(flow)
+
+            # Warn-only: no response set, request continues
+            assert flow.response is None
+            assert guard.violations_total == 1
 
     def test_warn_mode_still_logs_to_jsonl(self, make_flow, tmp_path):
         """Test that warn mode still logs violations."""
         from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from mitmproxy.test import taddons
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)
-        guard._should_block = lambda: False  # Warn-only mode
+        guard.hmac_secret = b"test-secret"
+        guard.config = {}
+        guard.safe_headers_config = {}
         guard.log_path = tmp_path / "violations.jsonl"
 
-        flow = make_flow(
-            method="POST",
-            url="https://evil.com/api",
-            content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
-        )
+        # Set up context with warn mode and body scanning
+        with taddons.context(guard) as tctx:
+            tctx.options.credguard_block = False  # Warn-only mode
+            tctx.options.credguard_scan_bodies = True
 
-        guard.request(flow)
+            flow = make_flow(
+                method="POST",
+                url="https://evil.com/api",
+                content='{"key": "sk-abc123xyz456def789ghijklmno"}',
+                headers={"Content-Type": "application/json"},
+            )
 
-        # Should have logged the violation
-        assert guard.log_path.exists()
-        import json
-        with open(guard.log_path) as f:
-            log_entry = json.loads(f.readline())
-        assert log_entry["event"] == "credential_violation"
-        assert log_entry["rule"] == "openai"
-        assert log_entry["host"] == "evil.com"
+            guard.request(flow)
 
-    def test_default_is_warn_only(self):
-        """Test that default behavior is warn-only (no blocking)."""
+            # Should have logged the violation
+            assert guard.log_path.exists()
+            import json
+            with open(guard.log_path) as f:
+                log_entry = json.loads(f.readline())
+            assert log_entry["event"] == "credential_violation"
+            assert log_entry["rule"] == "openai"
+            assert log_entry["host"] == "evil.com"
+
+    def test_default_is_block_mode(self):
+        """Test that default behavior is block mode."""
         from addons.credential_guard import CredentialGuard
+        from mitmproxy.test import taddons
 
-        # All security addons now default to warn-only mode
-        # _should_block() returns False when ctx.options unavailable
         guard = CredentialGuard()
-        assert guard._should_block() is False  # Default is warn-only
+
+        # When properly configured with context, default is block mode
+        with taddons.context(guard) as tctx:
+            # Default value for credguard_block option
+            assert tctx.options.credguard_block is True  # Default is block mode
+            assert guard._should_block() is True

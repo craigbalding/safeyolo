@@ -4,6 +4,20 @@
 
 # Exact header names (case-insensitive)
 exact_names:
+  # Standard HTTP headers
+  - host
+  - content-type
+  - content-length
+  - accept
+  - accept-encoding
+  - accept-language
+  - connection
+  - upgrade
+  - cache-control
+  - pragma
+  - referer
+  - origin
+
   # Trace/Request IDs
   - x-request-id
   - x-trace-id

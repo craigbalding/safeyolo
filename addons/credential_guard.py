@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import secrets
+import ssl
 import threading
 import time
 import yaml
@@ -304,6 +305,25 @@ def is_safe_header(header_name: str, safe_headers_config: dict) -> bool:
     return False
 
 
+def has_suspicious_name(header_name: str) -> bool:
+    """Check if header name suggests it might contain credentials.
+
+    Used in 'standard' detection level to filter which headers get entropy analysis.
+
+    Args:
+        header_name: The header name
+
+    Returns:
+        True if header name contains credential-related keywords
+    """
+    header_lower = header_name.lower()
+    suspicious_keywords = [
+        "key", "token", "auth", "secret", "credential",
+        "bearer", "api", "password", "pwd", "pass"
+    ]
+    return any(keyword in header_lower for keyword in suspicious_keywords)
+
+
 def extract_token_from_auth_header(auth_value: str) -> str:
     """Extract token from Authorization header (handles Bearer/Basic schemes).
 
@@ -334,12 +354,16 @@ def analyze_headers(
     rules: list,
     safe_headers_config: dict,
     entropy_config: dict,
-    standard_auth_headers: list
+    standard_auth_headers: list,
+    detection_level: str = "standard"
 ) -> list[dict]:
-    """Analyze HTTP headers for credentials using 2-tier detection.
+    """Analyze HTTP headers for credentials using configurable detection levels.
 
-    Tier 1: Standard auth headers (high confidence)
-    Tier 2: Non-standard headers with entropy heuristics (medium confidence)
+    Tier 1: Standard auth headers (high confidence) - always active
+    Tier 2: Configurable based on detection_level:
+      - paranoid: Entropy heuristics on ALL non-safe, non-standard headers
+      - standard: Entropy on suspicious-named headers + known patterns everywhere
+      - patterns-only: Only known patterns, no entropy heuristics
 
     Args:
         headers: HTTP headers dict (case-insensitive)
@@ -347,6 +371,7 @@ def analyze_headers(
         safe_headers_config: Config for safe headers to skip
         entropy_config: Config for entropy heuristics
         standard_auth_headers: List of standard auth header names
+        detection_level: Detection level (paranoid, standard, patterns-only)
 
     Returns:
         List of detected credentials: [
@@ -360,8 +385,9 @@ def analyze_headers(
         ]
     """
     detections = []
+    detected_credentials = set()  # Track (credential, header) to avoid duplicates
 
-    # Tier 1: Standard auth headers
+    # Tier 1: Standard auth headers (always active)
     for header_name, header_value in headers.items():
         header_lower = header_name.lower()
 
@@ -385,69 +411,193 @@ def analyze_headers(
                 break
 
         if matched_credential:
-            detections.append({
-                "credential": matched_credential,
-                "rule_name": matched_rule.name,
-                "header_name": header_name,
-                "confidence": "high",
-                "tier": 1
-            })
-        else:
-            # Unknown credential in standard auth header
-            # Still flag it since presence in auth header is strong signal
-            if len(token) >= entropy_config.get("min_length", 20):
+            key = (matched_credential, header_name)
+            if key not in detected_credentials:
+                detected_credentials.add(key)
                 detections.append({
-                    "credential": token,
-                    "rule_name": "unknown_secret",
+                    "credential": matched_credential,
+                    "rule_name": matched_rule.name,
                     "header_name": header_name,
                     "confidence": "high",
                     "tier": 1
                 })
-
-    # Tier 2: Non-standard headers with heuristics
-    for header_name, header_value in headers.items():
-        header_lower = header_name.lower()
-
-        # Skip standard auth headers (already checked in Tier 1)
-        if header_lower in standard_auth_headers:
-            continue
-
-        # Skip safe headers
-        if is_safe_header(header_lower, safe_headers_config):
-            continue
-
-        # Apply entropy heuristics
-        if not looks_like_secret(header_value, entropy_config):
-            continue
-
-        # Try to match against known credential patterns
-        matched_rule = None
-        matched_credential = None
-
-        for rule in rules:
-            matched = rule.matches(header_value)
-            if matched:
-                matched_rule = rule
-                matched_credential = matched
-                break
-
-        if matched_credential:
-            detections.append({
-                "credential": matched_credential,
-                "rule_name": matched_rule.name,
-                "header_name": header_name,
-                "confidence": "medium",
-                "tier": 2
-            })
         else:
-            # Unknown high-entropy value in non-standard header
-            detections.append({
-                "credential": header_value,
-                "rule_name": "unknown_secret",
-                "header_name": header_name,
-                "confidence": "medium",
-                "tier": 2
-            })
+            # Unknown credential in standard auth header
+            # Still flag it since presence in auth header is strong signal
+            if len(token) >= entropy_config.get("min_length", 20):
+                key = (token, header_name)
+                if key not in detected_credentials:
+                    detected_credentials.add(key)
+                    detections.append({
+                        "credential": token,
+                        "rule_name": "unknown_secret",
+                        "header_name": header_name,
+                        "confidence": "high",
+                        "tier": 1
+                    })
+
+    # Tier 2: Depends on detection level
+    if detection_level == "paranoid":
+        # Paranoid: Entropy heuristics on ALL non-safe, non-standard headers
+        for header_name, header_value in headers.items():
+            header_lower = header_name.lower()
+
+            # Skip tier-1 headers and safe headers
+            if header_lower in standard_auth_headers:
+                continue
+            if is_safe_header(header_lower, safe_headers_config):
+                continue
+
+            # Apply entropy heuristics
+            if not looks_like_secret(header_value, entropy_config):
+                continue
+
+            # Try to match against known credential patterns
+            matched_rule = None
+            matched_credential = None
+
+            for rule in rules:
+                matched = rule.matches(header_value)
+                if matched:
+                    matched_rule = rule
+                    matched_credential = matched
+                    break
+
+            if matched_credential:
+                key = (matched_credential, header_name)
+                if key not in detected_credentials:
+                    detected_credentials.add(key)
+                    detections.append({
+                        "credential": matched_credential,
+                        "rule_name": matched_rule.name,
+                        "header_name": header_name,
+                        "confidence": "medium",
+                        "tier": 2
+                    })
+            else:
+                # Unknown high-entropy value
+                key = (header_value, header_name)
+                if key not in detected_credentials:
+                    detected_credentials.add(key)
+                    detections.append({
+                        "credential": header_value,
+                        "rule_name": "unknown_secret",
+                        "header_name": header_name,
+                        "confidence": "medium",
+                        "tier": 2
+                    })
+
+    elif detection_level == "standard":
+        # Standard: Tier 2A (entropy on suspicious names) + Tier 2B (patterns everywhere)
+
+        # Tier 2A: Entropy heuristics on headers with suspicious names
+        for header_name, header_value in headers.items():
+            header_lower = header_name.lower()
+
+            # Skip tier-1 headers and safe headers
+            if header_lower in standard_auth_headers:
+                continue
+            if is_safe_header(header_lower, safe_headers_config):
+                continue
+
+            # Only check headers with suspicious names
+            if not has_suspicious_name(header_name):
+                continue
+
+            # Apply entropy heuristics
+            if not looks_like_secret(header_value, entropy_config):
+                continue
+
+            # Try to match against known credential patterns
+            matched_rule = None
+            matched_credential = None
+
+            for rule in rules:
+                matched = rule.matches(header_value)
+                if matched:
+                    matched_rule = rule
+                    matched_credential = matched
+                    break
+
+            if matched_credential:
+                key = (matched_credential, header_name)
+                if key not in detected_credentials:
+                    detected_credentials.add(key)
+                    detections.append({
+                        "credential": matched_credential,
+                        "rule_name": matched_rule.name,
+                        "header_name": header_name,
+                        "confidence": "medium",
+                        "tier": 2
+                    })
+            else:
+                # Unknown high-entropy value in suspicious-named header
+                key = (header_value, header_name)
+                if key not in detected_credentials:
+                    detected_credentials.add(key)
+                    detections.append({
+                        "credential": header_value,
+                        "rule_name": "unknown_secret",
+                        "header_name": header_name,
+                        "confidence": "medium",
+                        "tier": 2
+                    })
+
+        # Tier 2B: Known credential patterns in ANY header value
+        for header_name, header_value in headers.items():
+            header_lower = header_name.lower()
+
+            # Skip tier-1 headers and safe headers
+            if header_lower in standard_auth_headers:
+                continue
+            if is_safe_header(header_lower, safe_headers_config):
+                continue
+
+            # Try to match against known credential patterns
+            for rule in rules:
+                matched = rule.matches(header_value)
+                if matched:
+                    key = (matched, header_name)
+                    # Only add if not already detected (e.g., by Tier 2A)
+                    if key not in detected_credentials:
+                        detected_credentials.add(key)
+                        detections.append({
+                            "credential": matched,
+                            "rule_name": rule.name,
+                            "header_name": header_name,
+                            "confidence": "medium",
+                            "tier": 2
+                        })
+                    # Found a match, no need to check other rules for this header
+                    break
+
+    elif detection_level == "patterns-only":
+        # Patterns-only: Known credential patterns in ANY header value (no entropy)
+        for header_name, header_value in headers.items():
+            header_lower = header_name.lower()
+
+            # Skip tier-1 headers and safe headers
+            if header_lower in standard_auth_headers:
+                continue
+            if is_safe_header(header_lower, safe_headers_config):
+                continue
+
+            # Try to match against known credential patterns
+            for rule in rules:
+                matched = rule.matches(header_value)
+                if matched:
+                    key = (matched, header_name)
+                    if key not in detected_credentials:
+                        detected_credentials.add(key)
+                        detections.append({
+                            "credential": matched,
+                            "rule_name": rule.name,
+                            "header_name": header_name,
+                            "confidence": "medium",
+                            "tier": 2
+                        })
+                    # Found a match, no need to check other rules for this header
+                    break
 
     return detections
 
@@ -830,12 +980,67 @@ class NtfyApprovalBackend:
             config: Ntfy configuration dict from credential_guard.yaml
         """
         self.server = config.get("server", "https://ntfy.sh")
-        self.topic = config.get("topic") or os.environ.get("NTFY_TOPIC")
         self.priority = config.get("priority", 4)
         self.tags = config.get("tags", ["warning", "lock"])
 
-        if not self.topic:
+        # Get or generate topic
+        self.topic = self._get_or_generate_topic(config)
+
+        # SSL certificate verification context
+        # Create SSL context if custom cert exists, otherwise use system defaults
+        cert_path = config.get("ssl_cert_path", "/certs/mitmproxy-ca-cert.pem")
+        if cert_path and os.path.exists(cert_path):
+            self.ssl_context = ssl.create_default_context(cafile=cert_path)
+        else:
+            self.ssl_context = True  # Use httpx default (system CA bundle)
+
+        if self.topic:
+            log.info(f"Ntfy notifications enabled - subscribe at: {self.server}/{self.topic}")
+        else:
             log.warning("NTFY_TOPIC not configured - approval notifications disabled")
+
+        # Store reference to parent credential_guard for policy updates
+        self.credential_guard = None
+
+    def _get_or_generate_topic(self, config: dict) -> str:
+        """Get topic from config/env, or auto-generate and save if not set.
+
+        Returns:
+            Topic string, or empty string if disabled
+        """
+        import secrets
+        from pathlib import Path
+
+        # 1. Check config
+        topic = config.get("topic")
+        if topic:
+            return topic
+
+        # 2. Check environment
+        topic = os.environ.get("NTFY_TOPIC")
+        if topic:
+            return topic
+
+        # 3. Check persistent file
+        topic_file = Path("/app/data/ntfy_topic")
+        if topic_file.exists():
+            topic = topic_file.read_text().strip()
+            if topic:
+                log.info("Loaded ntfy topic from persistent storage")
+                return topic
+
+        # 4. Auto-generate and save
+        topic = f"safeyolo-{secrets.token_urlsafe(32)}"
+
+        # Ensure data directory exists
+        topic_file.parent.mkdir(parents=True, exist_ok=True)
+        topic_file.write_text(topic)
+        topic_file.chmod(0o600)  # Readable only by owner
+
+        log.warning(f"Auto-generated secure ntfy topic (saved to {topic_file})")
+        log.warning(f"Subscribe to notifications: {self.server}/{topic}")
+
+        return topic
 
     def is_enabled(self) -> bool:
         """Check if Ntfy is properly configured."""
@@ -925,19 +1130,23 @@ This destination is not in the approved policy.
 
         # Send to Ntfy
         try:
-            import urllib.request
-            req = urllib.request.Request(
-                f"{self.server}",
-                data=json.dumps(notification).encode(),
-                headers={"Content-Type": "application/json"}
+            import httpx
+
+            # POST to /{topic} for clearer path-based policy restriction
+            url = f"{self.server}/{self.topic}"
+
+            response = httpx.post(
+                url,
+                json=notification,
+                timeout=5.0,
+                verify=self.ssl_context
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                if response.status == 200:
-                    log.info(f"Sent approval notification: {credential_type} -> {host} (token={token[:8]}...)")
-                    return True
-                else:
-                    log.error(f"Ntfy returned status {response.status}")
-                    return False
+            if response.status_code == 200:
+                log.info(f"Sent approval notification: {credential_type} -> {host} (token={token[:8]}...)")
+                return True
+            else:
+                log.error(f"Ntfy returned status {response.status_code}")
+                return False
         except Exception as e:
             log.error(f"Failed to send Ntfy notification: {type(e).__name__}: {e}")
             return False
@@ -1017,7 +1226,7 @@ class CredentialGuard:
     def configure(self, updates):
         """Handle option changes."""
         # Load configurations on startup or when updated
-        if not self.config:
+        if not self.config or len(self.config) == 0:
             self._load_configs()
 
         if "credguard_rules" in updates:
@@ -1056,12 +1265,43 @@ class CredentialGuard:
         if backend_type == "ntfy":
             ntfy_config = approval_config.get("ntfy", {})
             self.approval_backend = NtfyApprovalBackend(ntfy_config)
+            self.approval_backend.credential_guard = self  # Link back for policy updates
+
             if self.approval_backend.is_enabled():
+                # Add ntfy topic to default policy to allow notification sends
+                self._add_ntfy_to_policy()
                 log.info("Initialized Ntfy approval backend")
             else:
                 log.warning("Ntfy backend configured but NTFY_TOPIC not set")
         else:
             log.info(f"Approval backend: {backend_type} (manual approval via admin API only)")
+
+    def _add_ntfy_to_policy(self):
+        """Add ntfy topic to default policy to allow notification sends."""
+        if not self.approval_backend or not self.approval_backend.topic:
+            return
+
+        if "approved" not in self.default_policy:
+            self.default_policy["approved"] = []
+
+        # Remove any existing ntfy rules (in case topic changed)
+        self.default_policy["approved"] = [
+            rule for rule in self.default_policy["approved"]
+            if not (rule.get("_ntfy_rule") is True)
+        ]
+
+        # Add rule to allow credentials in POST to the specific ntfy topic only
+        # This allows the notification payload (which contains approval tokens) to pass through
+        topic = self.approval_backend.topic
+        rule = {
+            "pattern": ".*",  # Match any credential in the payload
+            "hosts": ["ntfy.sh"],
+            "paths": [f"/{topic}", f"/{topic}/*"],  # Only the configured topic
+            "_ntfy_rule": True,  # Marker for cleanup on topic change
+        }
+
+        self.default_policy["approved"].append(rule)
+        log.info(f"Added ntfy.sh/{topic} to approved policy for notifications")
 
     def _load_policies(self):
         """Load policy files from policy directory."""
@@ -1378,6 +1618,11 @@ class CredentialGuard:
 
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
+        # Check if addon is bypassed by policy
+        policy = flow.metadata.get("policy")
+        if policy and not policy.is_addon_enabled("credential-guard"):
+            return
+
         url = flow.request.pretty_url
         parsed = urlparse(url)
         host = parsed.netloc.lower()
@@ -1391,13 +1636,15 @@ class CredentialGuard:
         standard_auth_headers = self.config.get("standard_auth_headers", [
             "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
         ])
+        detection_level = self.config.get("detection_level", "standard")
 
         detections = analyze_headers(
             headers=dict(flow.request.headers),
             rules=self.rules,
             safe_headers_config=self.safe_headers_config,
             entropy_config=entropy_config,
-            standard_auth_headers=standard_auth_headers
+            standard_auth_headers=standard_auth_headers,
+            detection_level=detection_level
         )
 
         for detection in detections:

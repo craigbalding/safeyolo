@@ -89,7 +89,7 @@ def credential_guard():
         # Configure options
         tctx.options.credguard_block = True
         tctx.options.credguard_scan_urls = False
-        tctx.options.credguard_scan_bodies = False
+        tctx.options.credguard_scan_bodies = True  # Enable for integration tests
         tctx.options.credguard_llm_response = True
 
         # Load rules

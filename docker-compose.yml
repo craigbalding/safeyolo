@@ -36,6 +36,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - safeyolo-certs:/certs
+      - ./data:/app/data
       - ./logs:/app/logs
       - ./config:/app/config
       # Dev: mount source for live editing (rw for hot-fixes, config auto-reloads)
@@ -80,4 +81,5 @@ networks:
 
 volumes:
   safeyolo-certs:
+    external: true
     name: safeyolo-certs

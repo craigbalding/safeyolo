@@ -707,96 +707,211 @@ class TestExtractToken:
 
 
 class TestAnalyzeHeaders:
-    """Test 2-tier header analysis."""
+    """Test header analysis - tier 1 works the same across all detection levels."""
 
-    def test_tier1_standard_auth_header(self):
-        """Tier 1: Detect known credential in standard auth header."""
+    def test_tier1_known_credential(self):
+        """Tier 1: Detect known credential in standard auth header (all modes)."""
         from addons.credential_guard import analyze_headers, DEFAULT_RULES
 
         headers = {"Authorization": "Bearer sk-proj-abc123xyz456def789ghijk"}
-        safe_headers_config = {"exact_match": [], "patterns": []}
+        safe_headers_config = {"exact_names": [], "patterns": []}
         entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         standard_auth_headers = ["authorization"]
 
-        detections = analyze_headers(
-            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
-        )
+        # Test all 3 modes - tier 1 should be identical
+        for mode in ["paranoid", "standard", "patterns-only"]:
+            detections = analyze_headers(
+                headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+                standard_auth_headers, detection_level=mode
+            )
 
-        assert len(detections) == 1
-        assert detections[0]["rule_name"] == "openai"
-        assert detections[0]["confidence"] == "high"
-        assert detections[0]["tier"] == 1
+            assert len(detections) == 1, f"Failed in {mode} mode"
+            assert detections[0]["rule_name"] == "openai"
+            assert detections[0]["confidence"] == "high"
+            assert detections[0]["tier"] == 1
 
     def test_tier1_unknown_credential(self):
-        """Tier 1: Detect unknown credential in standard auth header."""
+        """Tier 1: Detect unknown high-entropy credential in standard auth header (all modes)."""
         from addons.credential_guard import analyze_headers, DEFAULT_RULES
 
-        headers = {"X-API-Key": "custom-secret-key-abc123xyz456def789"}
-        safe_headers_config = {"exact_match": [], "patterns": []}
+        headers = {"X-API-Key": "customSecretKey1234567890abcdefghij"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
         entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         standard_auth_headers = ["authorization", "x-api-key"]
 
-        detections = analyze_headers(
-            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
-        )
+        # Test all 3 modes - tier 1 should be identical
+        for mode in ["paranoid", "standard", "patterns-only"]:
+            detections = analyze_headers(
+                headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+                standard_auth_headers, detection_level=mode
+            )
 
-        assert len(detections) == 1
-        assert detections[0]["rule_name"] == "unknown_secret"
-        assert detections[0]["confidence"] == "high"
-        assert detections[0]["tier"] == 1
+            assert len(detections) == 1, f"Failed in {mode} mode"
+            assert detections[0]["rule_name"] == "unknown_secret"
+            assert detections[0]["confidence"] == "high"
+            assert detections[0]["tier"] == 1
 
-    def test_tier2_non_standard_header(self):
-        """Tier 2: Detect high-entropy value in non-standard header."""
-        from addons.credential_guard import analyze_headers, DEFAULT_RULES
-
-        headers = {"X-Custom-Secret": "sk-proj-abc123xyz456def789ghijk"}
-        safe_headers_config = {"exact_match": [], "patterns": []}
-        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
-        standard_auth_headers = ["authorization"]
-
-        detections = analyze_headers(
-            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
-        )
-
-        assert len(detections) == 1
-        assert detections[0]["rule_name"] == "openai"
-        assert detections[0]["confidence"] == "medium"
-        assert detections[0]["tier"] == 2
-
-    def test_tier2_skips_safe_headers(self):
-        """Tier 2: Skip headers in safe_headers config."""
+    def test_safe_headers_always_skipped(self):
+        """Safe headers are skipped in all detection levels."""
         from addons.credential_guard import analyze_headers, DEFAULT_RULES
 
         headers = {
-            "X-Request-ID": "long-trace-id-abc123xyz456def789ghijk",
-            "X-Custom-Secret": "sk-proj-abc123xyz456def789ghijk"
+            "X-Request-ID": "sk-proj-abc123xyz456def789ghijk",  # Known pattern but safe header
+            "Host": "api.example.com"
         }
-        safe_headers_config = {"exact_match": [], "patterns": ["^x-.*-id$"]}
+        safe_headers_config = {"exact_names": ["host"], "patterns": ["^x-.*-id$"]}
         entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         standard_auth_headers = ["authorization"]
 
-        detections = analyze_headers(
-            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
-        )
+        # Test all 3 modes - safe headers always skipped
+        for mode in ["paranoid", "standard", "patterns-only"]:
+            detections = analyze_headers(
+                headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+                standard_auth_headers, detection_level=mode
+            )
 
-        # X-Request-ID should be skipped, only X-Custom-Secret detected
-        assert len(detections) == 1
-        assert detections[0]["header_name"] == "X-Custom-Secret"
+            assert len(detections) == 0, f"Safe headers not skipped in {mode} mode"
 
-    def test_tier2_low_entropy_skipped(self):
-        """Tier 2: Skip low-entropy values."""
+
+class TestDetectionLevels:
+    """Test material differences between paranoid, standard, and patterns-only modes."""
+
+    def test_paranoid_catches_unknown_entropy_in_any_header(self):
+        """Paranoid: Catches unknown high-entropy values in ANY non-safe, non-standard header."""
         from addons.credential_guard import analyze_headers, DEFAULT_RULES
 
-        headers = {"X-Custom-Header": "short"}
-        safe_headers_config = {"exact_match": [], "patterns": []}
+        # High-entropy value in header with NO suspicious name
+        headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
         entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         standard_auth_headers = ["authorization"]
 
         detections = analyze_headers(
-            headers, DEFAULT_RULES, safe_headers_config, entropy_config, standard_auth_headers
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="paranoid"
         )
 
-        assert len(detections) == 0  # Too short, doesn't meet min_length
+        # Paranoid mode should catch this (entropy heuristic on all headers)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "unknown_secret"
+        assert detections[0]["tier"] == 2
+        assert detections[0]["header_name"] == "X-Random-Header"
+
+    def test_standard_ignores_unknown_entropy_in_nonsuspicious_header(self):
+        """Standard: Does NOT catch unknown high-entropy in non-suspicious named headers."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        # High-entropy value in header with NO suspicious name
+        headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="standard"
+        )
+
+        # Standard mode should NOT catch this (no suspicious name, no known pattern)
+        assert len(detections) == 0
+
+    def test_standard_catches_unknown_entropy_in_suspicious_header(self):
+        """Standard: Catches unknown high-entropy values in suspicious-named headers."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        # High-entropy value in header WITH suspicious name "token"
+        headers = {"X-Custom-Token": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="standard"
+        )
+
+        # Standard mode SHOULD catch this (suspicious name "token" + high entropy)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "unknown_secret"
+        assert detections[0]["tier"] == 2
+        assert detections[0]["header_name"] == "X-Custom-Token"
+
+    def test_standard_catches_known_pattern_in_any_header(self):
+        """Standard: Catches known credential patterns in ANY header (even without suspicious name)."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        # Known OpenAI pattern in header without suspicious name
+        headers = {"X-Random-Header": "sk-proj-abc123xyz456def789ghijk"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="standard"
+        )
+
+        # Standard mode SHOULD catch this (known pattern, tier 2B)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "openai"
+        assert detections[0]["tier"] == 2
+        assert detections[0]["header_name"] == "X-Random-Header"
+
+    def test_patterns_only_catches_known_patterns(self):
+        """Patterns-only: Catches known patterns in any header."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Random-Header": "sk-proj-abc123xyz456def789ghijk"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="patterns-only"
+        )
+
+        # Should catch known pattern
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "openai"
+        assert detections[0]["tier"] == 2
+
+    def test_patterns_only_ignores_unknown_entropy(self):
+        """Patterns-only: Does NOT catch unknown high-entropy values (no entropy checks)."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        # High-entropy in suspicious-named header
+        headers = {"X-Custom-Token": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="patterns-only"
+        )
+
+        # Patterns-only should NOT catch this (no entropy heuristics)
+        assert len(detections) == 0
+
+    def test_deduplication_across_tiers(self):
+        """Same credential detected by tier 2A and 2B should only be reported once."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        # Known pattern in suspicious-named header (would match both 2A and 2B)
+        headers = {"X-Custom-Secret": "sk-proj-abc123xyz456def789ghijk"}
+        safe_headers_config = {"exact_names": [], "patterns": []}
+        entropy_config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
+        standard_auth_headers = ["authorization"]
+
+        detections = analyze_headers(
+            headers, DEFAULT_RULES, safe_headers_config, entropy_config,
+            standard_auth_headers, detection_level="standard"
+        )
+
+        # Should only be reported once (deduplication)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "openai"
 
 
 # --- Phase 3: 428 Greylist Responses Tests ---
