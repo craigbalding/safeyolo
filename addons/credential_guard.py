@@ -93,6 +93,101 @@ def hmac_fingerprint(credential: str, secret: bytes) -> str:
     return h.hexdigest()[:16]  # First 16 chars (64 bits)
 
 
+def path_matches_pattern(path: str, pattern: str) -> bool:
+    """Check if a path matches a wildcard pattern.
+
+    Supports:
+    - Exact match: /v1/chat/completions
+    - Suffix wildcard: /v1/*
+    - Prefix wildcard: */completions
+    - Full wildcard: /*
+
+    Args:
+        path: The request path (without query string)
+        pattern: The pattern to match against
+
+    Returns:
+        True if path matches pattern
+    """
+    # Strip query string from path
+    path = path.split("?")[0]
+
+    # Exact match
+    if pattern == path:
+        return True
+
+    # Full wildcard
+    if pattern == "/*":
+        return True
+
+    # Suffix wildcard: /v1/*
+    if pattern.endswith("/*"):
+        prefix = pattern[:-2]  # Remove /*
+        return path.startswith(prefix)
+
+    # Prefix wildcard: */completions
+    if pattern.startswith("*/"):
+        suffix = pattern[1:]  # Remove *
+        return path.endswith(suffix)
+
+    return False
+
+
+def matches_host_pattern(host: str, pattern: str) -> bool:
+    """Check if a host matches a pattern (supports *.example.com)."""
+    host = host.lower()
+    pattern = pattern.lower()
+
+    # Remove port if present
+    if ":" in host:
+        host = host.split(":")[0]
+
+    # Exact match
+    if host == pattern:
+        return True
+
+    # Wildcard subdomain match: *.example.com
+    if pattern.startswith("*."):
+        suffix = pattern[1:]  # Remove * but keep .
+        return host.endswith(suffix) or host == pattern[2:]
+
+    return False
+
+
+def check_policy_approval(credential: str, host: str, path: str, policy: dict) -> bool:
+    """Check if a credential/host/path combination is approved in policy.
+
+    Args:
+        credential: The matched credential value
+        host: The destination host
+        path: The request path
+        policy: The policy dict (merged from default + file + runtime)
+
+    Returns:
+        True if approved by policy
+    """
+    for rule in policy.get("approved", []):
+        # Check credential pattern
+        pattern = rule.get("pattern", "")
+        if not re.match(pattern, credential):
+            continue
+
+        # Check host
+        allowed_hosts = rule.get("hosts", [])
+        if not any(matches_host_pattern(host, h) for h in allowed_hosts):
+            continue
+
+        # Check path
+        allowed_paths = rule.get("paths", [])
+        if not any(path_matches_pattern(path, p) for p in allowed_paths):
+            continue
+
+        # All checks passed
+        return True
+
+    return False
+
+
 # LLM-friendly response message
 LLM_RESPONSE_TEMPLATE = """\
 CREDENTIAL ROUTING ERROR: Your request was blocked because it attempted to send \
@@ -190,6 +285,50 @@ DEFAULT_RULES = [
 ]
 
 
+# Default v2 policy - pre-approved credential patterns and destinations
+# These work out of the box without prompting the user
+DEFAULT_POLICY = {
+    "approved": [
+        {
+            "pattern": r"sk-proj-.*",
+            "hosts": ["api.openai.com"],
+            "paths": ["/v1/*"],
+            "description": "OpenAI API keys"
+        },
+        {
+            "pattern": r"sk-(?!ant-|or-).*",
+            "hosts": ["api.openai.com"],
+            "paths": ["/v1/*"],
+            "description": "OpenAI legacy API keys"
+        },
+        {
+            "pattern": r"sk-ant-.*",
+            "hosts": ["api.anthropic.com"],
+            "paths": ["/v1/*"],
+            "description": "Anthropic API keys"
+        },
+        {
+            "pattern": r"sk-or-.*",
+            "hosts": ["openrouter.ai", "api.openrouter.ai"],
+            "paths": ["/api/v1/*", "/v1/*"],
+            "description": "OpenRouter API keys"
+        },
+        {
+            "pattern": r"AIza.*",
+            "hosts": ["*.googleapis.com", "generativelanguage.googleapis.com"],
+            "paths": ["/*"],
+            "description": "Google API keys"
+        },
+        {
+            "pattern": r"gh[pousr]_.*",
+            "hosts": ["api.github.com", "github.com"],
+            "paths": ["/*"],
+            "description": "GitHub tokens"
+        },
+    ]
+}
+
+
 class CredentialGuard:
     """
     Native mitmproxy addon that blocks credential leakage.
@@ -211,6 +350,11 @@ class CredentialGuard:
         self.config: dict = {}
         self.safe_headers_config: dict = {}
         self.hmac_secret: bytes = b""
+
+        # v2 policies
+        self.default_policy: dict = DEFAULT_POLICY
+        self.project_policies: dict[str, dict] = {}  # project_id -> policy
+        self.effective_policy: dict = DEFAULT_POLICY.copy()  # Merged policy
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -282,6 +426,49 @@ class CredentialGuard:
         # Load or generate HMAC secret
         secret_path = Path("/app/data/hmac_secret")
         self.hmac_secret = load_or_generate_hmac_secret(secret_path)
+
+        # Load policy files
+        self._load_policies()
+
+    def _load_policies(self):
+        """Load policy files from policy directory."""
+        policy_dir_path = self.config.get("policy", {}).get("policy_dir", "/app/data/policies")
+        policy_dir = Path(policy_dir_path)
+
+        if not policy_dir.exists():
+            log.info(f"Policy directory {policy_dir} does not exist, using default policy only")
+            return
+
+        # Load all .yaml files in policy directory
+        for policy_file in policy_dir.glob("*.yaml"):
+            project_id = policy_file.stem  # filename without extension
+            try:
+                policy_data = load_yaml_config(policy_file)
+                self.project_policies[project_id] = policy_data
+                log.info(f"Loaded policy for project '{project_id}' from {policy_file}")
+            except Exception as e:
+                log.error(f"Failed to load policy {policy_file}: {type(e).__name__}: {e}")
+
+    def _merge_policies(self, project_id: Optional[str] = None) -> dict:
+        """Merge default policy with project policy.
+
+        Args:
+            project_id: The project identifier (from service discovery)
+
+        Returns:
+            Merged policy dict
+        """
+        # Start with default policy
+        merged = {"approved": list(self.default_policy.get("approved", []))}
+
+        # Add project-specific policy if available
+        if project_id and project_id in self.project_policies:
+            project_policy = self.project_policies[project_id]
+            project_approved = project_policy.get("approved", [])
+            merged["approved"].extend(project_approved)
+            log.debug(f"Merged policy for project '{project_id}': {len(merged['approved'])} rules")
+
+        return merged
 
     def _load_rules(self):
         """Load rules from file or use defaults."""
@@ -429,6 +616,15 @@ class CredentialGuard:
                     continue
 
                 if rule.host_allowed(host):
+                    continue
+
+                # Check v2 policy (default + project-specific)
+                # TODO: Get project_id from service discovery in Phase 6
+                project_id = None
+                effective_policy = self._merge_policies(project_id)
+                if check_policy_approval(matched, host, flow.request.path, effective_policy):
+                    log.info(f"Allowed by policy: {rule.name} -> {host}{flow.request.path}")
+                    flow.metadata["credguard_policy_approved"] = True
                     continue
 
                 # Check temp allowlist
