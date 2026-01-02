@@ -1,0 +1,61 @@
+# Safe Headers Configuration
+# Headers that commonly contain high-entropy values but are NOT credentials.
+# Used to reduce false positives in non-standard header detection.
+
+# Exact header names (case-insensitive)
+exact_names:
+  # Trace/Request IDs
+  - x-request-id
+  - x-trace-id
+  - x-correlation-id
+  - x-transaction-id
+  - x-session-id
+  - traceparent
+  - tracestate
+  - request-id
+  - correlation-id
+
+  # Cloud provider trace headers
+  - x-amzn-trace-id
+  - x-cloud-trace-context
+  - x-goog-request-id
+  - x-azure-request-id
+  - x-datadog-trace-id
+  - x-b3-traceid
+  - x-b3-spanid
+  - x-b3-parentspanid
+
+  # Fingerprinting/device IDs
+  - x-device-id
+  - x-client-id
+  - x-fingerprint
+
+  # Timestamps/nonces
+  - x-timestamp
+  - x-nonce
+  - x-request-timestamp
+
+  # User agents and client versions
+  - user-agent
+  - x-client-version
+  - x-app-version
+
+# Pattern-based matching (regex)
+patterns:
+  # UUID format (common in trace IDs)
+  - pattern: '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    description: "UUID format"
+
+  # Hex strings (common in trace IDs)
+  - pattern: '^[a-f0-9]{16,64}$'
+    description: "Hex trace ID"
+
+  # Base64 encoded session data (short)
+  - pattern: '^[A-Za-z0-9+/]{16,32}={0,2}$'
+    description: "Short base64 session token"
+
+# Notes:
+# - Exact names are case-insensitive
+# - Patterns are applied to header values (not names)
+# - This list is extensible - add custom headers as needed
+# - Conservative: better to flag a safe header than miss a credential
