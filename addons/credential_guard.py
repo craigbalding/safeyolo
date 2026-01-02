@@ -818,6 +818,131 @@ DEFAULT_POLICY = {
 }
 
 
+# --- Ntfy Approval Backend (Phase 4.2) ---
+
+class NtfyApprovalBackend:
+    """Sends approval notifications via Ntfy."""
+
+    def __init__(self, config: dict):
+        """Initialize Ntfy backend.
+
+        Args:
+            config: Ntfy configuration dict from credential_guard.yaml
+        """
+        self.server = config.get("server", "https://ntfy.sh")
+        self.topic = config.get("topic") or os.environ.get("NTFY_TOPIC")
+        self.priority = config.get("priority", 4)
+        self.tags = config.get("tags", ["warning", "lock"])
+
+        if not self.topic:
+            log.warning("NTFY_TOPIC not configured - approval notifications disabled")
+
+    def is_enabled(self) -> bool:
+        """Check if Ntfy is properly configured."""
+        return bool(self.topic)
+
+    def send_approval_request(
+        self,
+        token: str,
+        credential_type: str,
+        host: str,
+        path: str,
+        reason: str,
+        confidence: str,
+        tier: int,
+        admin_url: str = "http://localhost:8765"
+    ) -> bool:
+        """Send approval request notification.
+
+        Args:
+            token: Approval token (capability token)
+            credential_type: Type of credential detected
+            host: Destination host
+            path: Request path
+            reason: Why approval is needed
+            confidence: Detection confidence
+            tier: Detection tier (1 or 2)
+            admin_url: Base URL for admin API
+
+        Returns:
+            True if notification sent successfully
+        """
+        if not self.is_enabled():
+            log.debug("Ntfy not configured, skipping notification")
+            return False
+
+        # Build notification message
+        if reason == "unknown_credential_type":
+            title = "Unknown Credential Detected"
+            message = f"""An unrecognized credential was detected attempting to reach {host}.
+
+Destination: {host}{path}
+Confidence: {confidence} (tier {tier})
+
+This doesn't match any known API key patterns.
+"""
+        else:
+            title = f"{credential_type.title()} Credential Needs Approval"
+            message = f"""A {credential_type} credential is attempting to reach a new destination.
+
+Destination: {host}{path}
+Reason: {reason}
+Confidence: {confidence} (tier {tier})
+
+This destination is not in the approved policy.
+"""
+
+        # Build action buttons for approval/deny
+        approve_url = f"{admin_url}/admin/approve/{token}"
+        deny_url = f"{admin_url}/admin/deny/{token}"
+
+        # Ntfy actions format
+        actions = [
+            {
+                "action": "http",
+                "label": "Approve",
+                "url": approve_url,
+                "method": "POST"
+            },
+            {
+                "action": "http",
+                "label": "Deny",
+                "url": deny_url,
+                "method": "POST",
+                "clear": True
+            }
+        ]
+
+        # Build request
+        notification = {
+            "topic": self.topic,
+            "title": title,
+            "message": message,
+            "priority": self.priority,
+            "tags": self.tags,
+            "actions": actions
+        }
+
+        # Send to Ntfy
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{self.server}",
+                data=json.dumps(notification).encode(),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    log.info(f"Sent approval notification: {credential_type} -> {host} (token={token[:8]}...)")
+                    return True
+                else:
+                    log.error(f"Ntfy returned status {response.status}")
+                    return False
+        except Exception as e:
+            log.error(f"Failed to send Ntfy notification: {type(e).__name__}: {e}")
+            return False
+
+
 class CredentialGuard:
     """
     Native mitmproxy addon that blocks credential leakage.
@@ -844,6 +969,11 @@ class CredentialGuard:
         self.default_policy: dict = DEFAULT_POLICY
         self.project_policies: dict[str, dict] = {}  # project_id -> policy
         self.effective_policy: dict = DEFAULT_POLICY.copy()  # Merged policy
+
+        # Phase 4: Pending approvals store
+        self.pending_approvals: dict[str, dict] = {}  # token -> {credential_fingerprint, host, path, timestamp, ...}
+        self._pending_lock = threading.Lock()  # Protect pending_approvals access
+        self.approval_backend: Optional[NtfyApprovalBackend] = None  # Initialized in configure()
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -918,6 +1048,20 @@ class CredentialGuard:
 
         # Load policy files
         self._load_policies()
+
+        # Initialize approval backend (Phase 4.2)
+        approval_config = self.config.get("approval", {})
+        backend_type = approval_config.get("backend", "ntfy")
+
+        if backend_type == "ntfy":
+            ntfy_config = approval_config.get("ntfy", {})
+            self.approval_backend = NtfyApprovalBackend(ntfy_config)
+            if self.approval_backend.is_enabled():
+                log.info("Initialized Ntfy approval backend")
+            else:
+                log.warning("Ntfy backend configured but NTFY_TOPIC not set")
+        else:
+            log.info(f"Approval backend: {backend_type} (manual approval via admin API only)")
 
     def _load_policies(self):
         """Load policy files from policy directory."""
@@ -1035,6 +1179,155 @@ class CredentialGuard:
             return [
                 {"credential_fingerprint": f"hmac:{k[0]}", "host": k[1], "expires_in": int(v - now)}
                 for k, v in self.temp_allowlist.items()
+            ]
+
+    # --- Pending Approvals (Phase 4) ---
+
+    def _generate_approval_token(self) -> str:
+        """Generate a capability token for approval workflow.
+
+        Returns:
+            URL-safe token (32 bytes = ~43 chars base64)
+        """
+        return secrets.token_urlsafe(32)
+
+    def create_pending_approval(
+        self,
+        credential: str,
+        credential_type: str,
+        host: str,
+        path: str,
+        reason: str,
+        confidence: str = "high",
+        tier: int = 1
+    ) -> str:
+        """Create a pending approval request.
+
+        Args:
+            credential: The detected credential (will be fingerprinted)
+            credential_type: The rule name (e.g., "openai", "unknown_secret")
+            host: Destination host
+            path: Request path
+            reason: Why approval is needed
+            confidence: Detection confidence level
+            tier: Detection tier (1 or 2)
+
+        Returns:
+            Approval token (capability token)
+        """
+        token = self._generate_approval_token()
+        fingerprint = hmac_fingerprint(credential, self.hmac_secret)
+
+        with self._pending_lock:
+            self.pending_approvals[token] = {
+                "credential_fingerprint": fingerprint,
+                "credential_type": credential_type,
+                "host": host,
+                "path": path,
+                "reason": reason,
+                "confidence": confidence,
+                "tier": tier,
+                "timestamp": time.time(),
+                "status": "pending"
+            }
+
+        log.info(f"Created pending approval: token={token[:8]}... hmac:{fingerprint} -> {host}{path}")
+        return token
+
+    def approve_pending(self, token: str, ttl_seconds: Optional[int] = None) -> bool:
+        """Approve a pending request.
+
+        Moves the pending approval to temp_allowlist.
+
+        Args:
+            token: The approval token
+            ttl_seconds: TTL for allowlist entry (default from config)
+
+        Returns:
+            True if approved, False if token not found
+        """
+        if ttl_seconds is None:
+            ttl_seconds = self.config.get("temp_allowlist_ttl", 300)
+
+        with self._pending_lock:
+            pending = self.pending_approvals.get(token)
+            if not pending:
+                log.warning(f"Approval token not found: {token[:8]}...")
+                return False
+
+            # Move to temp allowlist
+            fingerprint = pending["credential_fingerprint"]
+            host = pending["host"]
+
+            with self._allowlist_lock:
+                key = (fingerprint, host.lower())
+                self.temp_allowlist[key] = time.time() + ttl_seconds
+
+            # Mark as approved and remove from pending
+            del self.pending_approvals[token]
+
+            log.info(f"APPROVED: hmac:{fingerprint} -> {host} for {ttl_seconds}s (token={token[:8]}...)")
+            return True
+
+    def deny_pending(self, token: str, reason: str = "denied_by_operator") -> bool:
+        """Deny a pending request.
+
+        Args:
+            token: The approval token
+            reason: Why it was denied
+
+        Returns:
+            True if denied, False if token not found
+        """
+        with self._pending_lock:
+            pending = self.pending_approvals.get(token)
+            if not pending:
+                log.warning(f"Denial token not found: {token[:8]}...")
+                return False
+
+            fingerprint = pending["credential_fingerprint"]
+            host = pending["host"]
+
+            # Remove from pending
+            del self.pending_approvals[token]
+
+            log.info(f"DENIED: hmac:{fingerprint} -> {host} (reason={reason}, token={token[:8]}...)")
+            return True
+
+    def get_pending_approvals(self) -> list[dict]:
+        """Get all pending approval requests (for admin API).
+
+        Returns:
+            List of pending approvals with their metadata
+        """
+        now = time.time()
+
+        with self._pending_lock:
+            # Clean very old pending approvals (>24 hours)
+            max_age = 86400  # 24 hours
+            expired = [
+                token for token, data in self.pending_approvals.items()
+                if now - data.get("timestamp", 0) > max_age
+            ]
+            for token in expired:
+                log.info(f"Cleaned up expired pending approval: {token[:8]}...")
+                del self.pending_approvals[token]
+
+            # Return current pending approvals
+            return [
+                {
+                    "token": token,
+                    "credential_fingerprint": f"hmac:{data['credential_fingerprint']}",
+                    "credential_type": data["credential_type"],
+                    "host": data["host"],
+                    "path": data["path"],
+                    "reason": data["reason"],
+                    "confidence": data["confidence"],
+                    "tier": data.get("tier", 1),
+                    "age_seconds": int(now - data["timestamp"]),
+                    "status": data["status"]
+                }
+                for token, data in self.pending_approvals.items()
             ]
 
     def _create_block_response(
@@ -1187,14 +1480,34 @@ class CredentialGuard:
                 reason = decision_context.get("reason", "unknown")
                 log.warning(f"BLOCKED (approval required): {rule_name} -> {host} (reason: {reason})")
                 if self._should_block():
-                    # TODO Phase 4: Generate approval token and send ntfy notification
+                    # Phase 4: Generate approval token and create pending approval
+                    approval_token = self.create_pending_approval(
+                        credential=matched,
+                        credential_type=rule_name,
+                        host=host,
+                        path=flow.request.path,
+                        reason=reason,
+                        confidence=confidence,
+                        tier=tier
+                    )
+                    # Phase 4.2: Send ntfy notification
+                    if self.approval_backend and self.approval_backend.is_enabled():
+                        self.approval_backend.send_approval_request(
+                            token=approval_token,
+                            credential_type=rule_name,
+                            host=host,
+                            path=flow.request.path,
+                            reason=reason,
+                            confidence=confidence,
+                            tier=tier
+                        )
                     flow.response = create_requires_approval_response(
                         credential_type=rule_name,
                         destination_host=host,
                         credential_fingerprint=f"hmac:{fingerprint}",
                         path=flow.request.path,
                         reason=reason,
-                        approval_token=None  # Will be implemented in Phase 4
+                        approval_token=approval_token
                     )
                     return
                 else:
@@ -1269,13 +1582,32 @@ class CredentialGuard:
                     reason = decision_context.get("reason", "unknown")
                     log.warning(f"BLOCKED (approval required): {rule.name} in URL -> {host}")
                     if self._should_block():
+                        approval_token = self.create_pending_approval(
+                            credential=matched,
+                            credential_type=rule.name,
+                            host=host,
+                            path=flow.request.path,
+                            reason=reason,
+                            confidence="high",
+                            tier=1
+                        )
+                        if self.approval_backend and self.approval_backend.is_enabled():
+                            self.approval_backend.send_approval_request(
+                                token=approval_token,
+                                credential_type=rule.name,
+                                host=host,
+                                path=flow.request.path,
+                                reason=reason,
+                                confidence="high",
+                                tier=1
+                            )
                         flow.response = create_requires_approval_response(
                             credential_type=rule.name,
                             destination_host=host,
                             credential_fingerprint=f"hmac:{fingerprint}",
                             path=flow.request.path,
                             reason=reason,
-                            approval_token=None
+                            approval_token=approval_token
                         )
                         return
 
@@ -1351,13 +1683,32 @@ class CredentialGuard:
                             reason = decision_context.get("reason", "unknown")
                             log.warning(f"BLOCKED (approval required): {rule.name} in body -> {host}")
                             if self._should_block():
+                                approval_token = self.create_pending_approval(
+                                    credential=matched,
+                                    credential_type=rule.name,
+                                    host=host,
+                                    path=flow.request.path,
+                                    reason=reason,
+                                    confidence="high",
+                                    tier=1
+                                )
+                                if self.approval_backend and self.approval_backend.is_enabled():
+                                    self.approval_backend.send_approval_request(
+                                        token=approval_token,
+                                        credential_type=rule.name,
+                                        host=host,
+                                        path=flow.request.path,
+                                        reason=reason,
+                                        confidence="high",
+                                        tier=1
+                                    )
                                 flow.response = create_requires_approval_response(
                                     credential_type=rule.name,
                                     destination_host=host,
                                     credential_fingerprint=f"hmac:{fingerprint}",
                                     path=flow.request.path,
                                     reason=reason,
-                                    approval_token=None
+                                    approval_token=approval_token
                                 )
                                 return
 
