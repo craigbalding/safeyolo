@@ -4,6 +4,7 @@ Tests for credential_guard.py addon.
 Tests credential detection, host authorization, and blocking behavior.
 """
 
+import json
 import pytest
 
 
@@ -966,3 +967,279 @@ class Test428Responses:
         assert body["error"] == "credential_requires_approval"
         assert body["action"] == "wait_for_approval"
         assert body["blocked"]["credential_type"] == "unknown_secret"
+
+
+class TestApprovalWorkflow:
+    """Test Phase 4: Pending approvals and approval workflow."""
+
+    def test_generate_approval_token(self, credential_guard):
+        """Test that approval tokens are generated correctly."""
+        token1 = credential_guard._generate_approval_token()
+        token2 = credential_guard._generate_approval_token()
+
+        # Tokens should be unique
+        assert token1 != token2
+
+        # Tokens should be URL-safe (no special chars that need encoding)
+        assert all(c.isalnum() or c in '-_' for c in token1)
+        assert all(c.isalnum() or c in '-_' for c in token2)
+
+        # Should be reasonably long (32 bytes = ~43 base64 chars)
+        assert len(token1) >= 40
+        assert len(token2) >= 40
+
+    def test_create_pending_approval(self, credential_guard):
+        """Test creating a pending approval request."""
+        token = credential_guard.create_pending_approval(
+            credential="sk-proj-test123abc456",
+            credential_type="openai",
+            host="evil.com",
+            path="/steal",
+            reason="not_in_policy",
+            confidence="high",
+            tier=1
+        )
+
+        # Token should be returned
+        assert token is not None
+        assert len(token) >= 40
+
+        # Should be stored in pending_approvals
+        assert token in credential_guard.pending_approvals
+
+        # Check stored data
+        pending = credential_guard.pending_approvals[token]
+        assert pending["credential_type"] == "openai"
+        assert pending["host"] == "evil.com"
+        assert pending["path"] == "/steal"
+        assert pending["reason"] == "not_in_policy"
+        assert pending["confidence"] == "high"
+        assert pending["tier"] == 1
+        assert pending["status"] == "pending"
+
+        # Credential should be HMAC fingerprinted, not stored raw
+        assert "credential_fingerprint" in pending
+        assert pending["credential_fingerprint"] != "sk-proj-test123abc456"
+        assert len(pending["credential_fingerprint"]) == 16  # HMAC truncated to 16 chars
+
+    def test_approve_pending_success(self, credential_guard):
+        """Test approving a pending request."""
+        # Create a pending approval
+        token = credential_guard.create_pending_approval(
+            credential="sk-proj-approve123",
+            credential_type="openai",
+            host="api.openai.com",
+            path="/v1/chat",
+            reason="not_in_policy"
+        )
+
+        fingerprint = credential_guard.pending_approvals[token]["credential_fingerprint"]
+
+        # Approve it
+        success = credential_guard.approve_pending(token)
+
+        assert success is True
+
+        # Should be removed from pending_approvals
+        assert token not in credential_guard.pending_approvals
+
+        # Should be added to temp_allowlist with HMAC fingerprint
+        allowlist_key = (fingerprint, "api.openai.com")
+        assert allowlist_key in credential_guard.temp_allowlist
+
+        # Should have an expiry time
+        expiry = credential_guard.temp_allowlist[allowlist_key]
+        assert expiry > 0
+
+    def test_approve_pending_not_found(self, credential_guard):
+        """Test approving a non-existent token."""
+        success = credential_guard.approve_pending("nonexistent-token-12345")
+        assert success is False
+
+    def test_deny_pending_success(self, credential_guard):
+        """Test denying a pending request."""
+        # Create a pending approval
+        token = credential_guard.create_pending_approval(
+            credential="sk-proj-deny123",
+            credential_type="openai",
+            host="evil.com",
+            path="/steal",
+            reason="not_in_policy"
+        )
+
+        fingerprint = credential_guard.pending_approvals[token]["credential_fingerprint"]
+
+        # Deny it
+        success = credential_guard.deny_pending(token)
+
+        assert success is True
+
+        # Should be removed from pending_approvals
+        assert token not in credential_guard.pending_approvals
+
+        # Should NOT be added to temp_allowlist
+        allowlist_key = (fingerprint, "evil.com")
+        assert allowlist_key not in credential_guard.temp_allowlist
+
+    def test_deny_pending_not_found(self, credential_guard):
+        """Test denying a non-existent token."""
+        success = credential_guard.deny_pending("nonexistent-token-67890")
+        assert success is False
+
+    def test_get_pending_approvals_empty(self, credential_guard):
+        """Test getting pending approvals when none exist."""
+        pending = credential_guard.get_pending_approvals()
+        assert pending == []
+
+    def test_get_pending_approvals_with_data(self, credential_guard):
+        """Test getting pending approvals with data."""
+        # Create multiple pending approvals
+        token1 = credential_guard.create_pending_approval(
+            credential="sk-proj-test1",
+            credential_type="openai",
+            host="host1.com",
+            path="/path1",
+            reason="not_in_policy"
+        )
+
+        token2 = credential_guard.create_pending_approval(
+            credential="sk-ant-test2",
+            credential_type="anthropic",
+            host="host2.com",
+            path="/path2",
+            reason="unknown_credential_type",
+            confidence="medium",
+            tier=2
+        )
+
+        pending = credential_guard.get_pending_approvals()
+
+        assert len(pending) == 2
+
+        # Check format of returned data
+        for item in pending:
+            assert "token" in item
+            assert "credential_fingerprint" in item
+            assert "credential_type" in item
+            assert "host" in item
+            assert "path" in item
+            assert "reason" in item
+            assert "confidence" in item
+            assert "tier" in item
+            assert "age_seconds" in item
+            assert "status" in item
+
+            # Credential fingerprint should be in hmac:xxx format
+            assert item["credential_fingerprint"].startswith("hmac:")
+
+        # Check specific values
+        tokens = [item["token"] for item in pending]
+        assert token1 in tokens
+        assert token2 in tokens
+
+    def test_get_pending_approvals_cleanup_expired(self, credential_guard):
+        """Test that expired pending approvals are cleaned up."""
+        import time
+
+        # Create a pending approval
+        token = credential_guard.create_pending_approval(
+            credential="sk-proj-old",
+            credential_type="openai",
+            host="old.com",
+            path="/old",
+            reason="test"
+        )
+
+        # Manually set timestamp to >24 hours ago
+        credential_guard.pending_approvals[token]["timestamp"] = time.time() - 86400 - 1
+
+        # Call get_pending_approvals (should trigger cleanup)
+        pending = credential_guard.get_pending_approvals()
+
+        # Should be empty (expired approval cleaned up)
+        assert len(pending) == 0
+        assert token not in credential_guard.pending_approvals
+
+    def test_full_approval_workflow_integration(self, credential_guard, make_flow):
+        """Test full workflow: detection → pending → approval → allowlist."""
+        # Make a request with unknown credential to trigger greylist_approval
+        flow = make_flow(
+            method="POST",
+            url="https://custom-api.example.com/endpoint",
+            headers={"X-API-Key": "custom-high-entropy-secret-key-abc123xyz456"}
+        )
+
+        credential_guard.request(flow)
+
+        # Should get 428 response
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+
+        body = json.loads(flow.response.content)
+        assert body["error"] == "credential_requires_approval"
+
+        # Should have created a pending approval
+        approval_token = body["approval"]["token"]
+        assert approval_token != "pending"  # Should be a real token now
+        assert len(credential_guard.pending_approvals) == 1
+
+        # Approve the request
+        success = credential_guard.approve_pending(approval_token)
+        assert success is True
+
+        # Should be in temp allowlist now
+        allowlist = credential_guard.get_temp_allowlist()
+        assert len(allowlist) == 1
+        assert allowlist[0]["host"] == "custom-api.example.com"
+
+        # Retry the request - should now be allowed
+        flow2 = make_flow(
+            method="POST",
+            url="https://custom-api.example.com/endpoint",
+            headers={"X-API-Key": "custom-high-entropy-secret-key-abc123xyz456"}
+        )
+
+        credential_guard.request(flow2)
+
+        # Should NOT be blocked this time
+        assert flow2.response is None  # No 428 response
+        assert flow2.metadata.get("credguard_allowlisted") is True
+
+    def test_full_denial_workflow_integration(self, credential_guard, make_flow):
+        """Test full workflow: detection → pending → denial → still blocked."""
+        # Make a request to trigger greylist_approval
+        flow = make_flow(
+            method="POST",
+            url="https://suspicious.com/endpoint",
+            headers={"X-API-Key": "suspicious-secret-abc123xyz456def789"}
+        )
+
+        credential_guard.request(flow)
+
+        # Should get 428 response
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+
+        body = json.loads(flow.response.content)
+        approval_token = body["approval"]["token"]
+
+        # Deny the request
+        success = credential_guard.deny_pending(approval_token)
+        assert success is True
+
+        # Should NOT be in temp allowlist
+        allowlist = credential_guard.get_temp_allowlist()
+        assert len(allowlist) == 0
+
+        # Retry the request - should still be blocked
+        flow2 = make_flow(
+            method="POST",
+            url="https://suspicious.com/endpoint",
+            headers={"X-API-Key": "suspicious-secret-abc123xyz456def789"}
+        )
+
+        credential_guard.request(flow2)
+
+        # Should be blocked again (new pending approval created)
+        assert flow2.response is not None
+        assert flow2.response.status_code == 428
