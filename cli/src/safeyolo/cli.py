@@ -4,6 +4,7 @@ import typer
 from rich.console import Console
 
 from . import __version__
+from .commands.admin import check, mode, policies
 from .commands.init import init
 from .commands.lifecycle import start, status, stop
 from .commands.logs import logs
@@ -50,6 +51,9 @@ app.command()(stop)
 app.command()(status)
 app.command()(logs)
 app.command()(watch)
+app.command()(check)
+app.command()(mode)
+app.command()(policies)
 
 
 # Convenience aliases

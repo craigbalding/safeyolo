@@ -1,0 +1,302 @@
+"""Administrative commands for SafeYolo."""
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from ..api import APIError, get_api
+from ..config import (
+    find_config_dir,
+    get_admin_token,
+    get_certs_dir,
+    get_config_path,
+    get_logs_dir,
+    get_rules_path,
+    load_config,
+)
+from ..docker import check_docker, get_container_status
+
+console = Console()
+
+
+def check() -> None:
+    """Verify SafeYolo setup is working correctly.
+
+    Checks configuration files, Docker, container status, and API connectivity.
+
+    Examples:
+
+        safeyolo check
+    """
+    all_ok = True
+
+    console.print("\n[bold]SafeYolo Health Check[/bold]\n")
+
+    # 1. Check config directory
+    config_dir = find_config_dir()
+    if config_dir:
+        console.print(f"  [green]OK[/green]  Config directory: {config_dir}")
+    else:
+        console.print(f"  [red]FAIL[/red]  Config directory not found")
+        console.print(f"        Run: [bold]safeyolo init[/bold]")
+        all_ok = False
+
+    # 2. Check config file
+    if config_dir:
+        config_path = get_config_path()
+        if config_path.exists():
+            console.print(f"  [green]OK[/green]  Config file: {config_path.name}")
+        else:
+            console.print(f"  [red]FAIL[/red]  Config file missing")
+            all_ok = False
+
+    # 3. Check rules file
+    if config_dir:
+        rules_path = get_rules_path()
+        if rules_path.exists():
+            console.print(f"  [green]OK[/green]  Rules file: {rules_path.name}")
+        else:
+            console.print(f"  [yellow]WARN[/yellow]  Rules file missing (using defaults)")
+
+    # 4. Check admin token
+    token = get_admin_token()
+    if token:
+        console.print(f"  [green]OK[/green]  Admin token configured")
+    else:
+        console.print(f"  [yellow]WARN[/yellow]  Admin token not set")
+
+    # 5. Check Docker
+    if check_docker():
+        console.print(f"  [green]OK[/green]  Docker available")
+    else:
+        console.print(f"  [red]FAIL[/red]  Docker not available")
+        all_ok = False
+
+    # 6. Check container status
+    status = get_container_status()
+    if status:
+        state = status.get("State", {})
+        if state.get("Running"):
+            console.print(f"  [green]OK[/green]  Container running")
+        else:
+            console.print(f"  [yellow]WARN[/yellow]  Container not running")
+            console.print(f"        Run: [bold]safeyolo start[/bold]")
+    else:
+        console.print(f"  [dim]--[/dim]  Container not created yet")
+
+    # 7. Check API connectivity
+    if status and status.get("State", {}).get("Running"):
+        try:
+            api = get_api()
+            health = api.health()
+            if health.get("status") == "healthy":
+                console.print(f"  [green]OK[/green]  Admin API responding")
+            else:
+                console.print(f"  [yellow]WARN[/yellow]  Admin API unhealthy: {health}")
+        except APIError as e:
+            console.print(f"  [red]FAIL[/red]  Admin API error: {e}")
+            all_ok = False
+        except Exception as e:
+            console.print(f"  [red]FAIL[/red]  Admin API unreachable: {e}")
+            all_ok = False
+
+    # 8. Check certs directory
+    if config_dir:
+        certs_dir = get_certs_dir()
+        ca_cert = certs_dir / "mitmproxy-ca-cert.pem"
+        if ca_cert.exists():
+            console.print(f"  [green]OK[/green]  CA certificate available")
+        else:
+            console.print(f"  [dim]--[/dim]  CA certificate (generated on first run)")
+
+    # Summary
+    console.print()
+    if all_ok:
+        console.print("[green]All checks passed![/green]")
+    else:
+        console.print("[yellow]Some issues found. See above for details.[/yellow]")
+        raise typer.Exit(1)
+
+
+def mode(
+    addon: str = typer.Argument(
+        None,
+        help="Addon name (credential-guard, rate-limiter, etc.)",
+    ),
+    new_mode: str = typer.Argument(
+        None,
+        help="New mode: 'warn' or 'block'",
+    ),
+) -> None:
+    """View or change addon modes.
+
+    Without arguments, shows current modes for all addons.
+    With addon name, shows mode for that addon.
+    With addon and mode, sets the new mode.
+
+    Examples:
+
+        safeyolo mode                           # Show all modes
+        safeyolo mode credential-guard          # Show specific addon
+        safeyolo mode credential-guard warn     # Set to warn mode
+        safeyolo mode credential-guard block    # Set to block mode
+    """
+    try:
+        api = get_api()
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Cannot connect to API: {e}")
+        console.print("Is SafeYolo running? Try: [bold]safeyolo start[/bold]")
+        raise typer.Exit(1)
+
+    # No arguments - show all modes
+    if addon is None:
+        try:
+            result = api.get_modes()
+            modes = result.get("modes", {})
+
+            if not modes:
+                console.print("[dim]No switchable addons found[/dim]")
+                return
+
+            table = Table(title="Addon Modes")
+            table.add_column("Addon", style="bold")
+            table.add_column("Mode")
+
+            for name, mode_val in modes.items():
+                style = "green" if mode_val == "block" else "yellow"
+                table.add_row(name, f"[{style}]{mode_val}[/{style}]")
+
+            console.print(table)
+
+        except APIError as e:
+            console.print(f"[red]API Error:[/red] {e}")
+            raise typer.Exit(1)
+        return
+
+    # Just addon name - show that addon's mode
+    if new_mode is None:
+        try:
+            result = api.get_modes()
+            modes = result.get("modes", {})
+
+            if addon in modes:
+                mode_val = modes[addon]
+                style = "green" if mode_val == "block" else "yellow"
+                console.print(f"{addon}: [{style}]{mode_val}[/{style}]")
+            else:
+                console.print(f"[red]Unknown addon:[/red] {addon}")
+                console.print(f"[dim]Available: {', '.join(modes.keys())}[/dim]")
+                raise typer.Exit(1)
+
+        except APIError as e:
+            console.print(f"[red]API Error:[/red] {e}")
+            raise typer.Exit(1)
+        return
+
+    # Both addon and mode - set the mode
+    if new_mode not in ("warn", "block"):
+        console.print(f"[red]Invalid mode:[/red] {new_mode}")
+        console.print("Mode must be 'warn' or 'block'")
+        raise typer.Exit(1)
+
+    try:
+        result = api.set_mode(addon, new_mode)
+        status = result.get("status", "")
+
+        if status == "updated":
+            style = "green" if new_mode == "block" else "yellow"
+            console.print(f"[green]Updated[/green] {addon} -> [{style}]{new_mode}[/{style}]")
+        else:
+            console.print(f"Result: {result}")
+
+    except APIError as e:
+        if e.status_code == 404:
+            console.print(f"[red]Unknown addon:[/red] {addon}")
+            # Try to get available addons
+            try:
+                modes_result = api.get_modes()
+                available = list(modes_result.get("modes", {}).keys())
+                if available:
+                    console.print(f"[dim]Available: {', '.join(available)}[/dim]")
+            except Exception:
+                pass
+        else:
+            console.print(f"[red]API Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+def policies(
+    project: str = typer.Argument(
+        None,
+        help="Project ID to show policy for",
+    ),
+) -> None:
+    """View credential approval policies.
+
+    Without arguments, lists all policies.
+    With project name, shows that project's policy details.
+
+    Examples:
+
+        safeyolo policies           # List all policies
+        safeyolo policies default   # Show default policy
+    """
+    try:
+        api = get_api()
+    except Exception as e:
+        console.print(f"[red]Error:[/red] Cannot connect to API: {e}")
+        raise typer.Exit(1)
+
+    if project is None:
+        # List all policies
+        try:
+            result = api.list_policies()
+            policy_list = result.get("policies", [])
+            policy_dir = result.get("policy_dir", "")
+
+            if not policy_list:
+                console.print("[dim]No policies found[/dim]")
+                console.print(f"[dim]Policy directory: {policy_dir}[/dim]")
+                return
+
+            console.print(f"[bold]Policies[/bold] ({policy_dir})\n")
+            for name in policy_list:
+                console.print(f"  - {name}")
+
+        except APIError as e:
+            console.print(f"[red]API Error:[/red] {e}")
+            raise typer.Exit(1)
+    else:
+        # Show specific policy
+        try:
+            result = api.get_policy(project)
+            policy = result.get("policy", {})
+
+            if not policy:
+                console.print(f"[dim]No policy found for '{project}'[/dim]")
+                return
+
+            approved = policy.get("approved", [])
+            console.print(f"[bold]Policy: {project}[/bold]\n")
+            console.print(f"Approved credentials: {len(approved)}\n")
+
+            if approved:
+                table = Table(show_header=True)
+                table.add_column("HMAC", style="dim", max_width=20)
+                table.add_column("Hosts")
+                table.add_column("Paths", style="dim")
+                table.add_column("Added", style="dim")
+
+                for rule in approved:
+                    hmac = rule.get("token_hmac", "")[:16] + "..."
+                    hosts = ", ".join(rule.get("hosts", []))
+                    paths = ", ".join(rule.get("paths", ["/**"]))
+                    added = rule.get("added", "")[:10] if rule.get("added") else ""
+                    table.add_row(hmac, hosts, paths, added)
+
+                console.print(table)
+
+        except APIError as e:
+            console.print(f"[red]API Error:[/red] {e}")
+            raise typer.Exit(1)
