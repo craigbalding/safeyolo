@@ -23,6 +23,8 @@ safeyolo cert install
 safeyolo check
 ```
 
+> **For strongest guarantees**, run your agent in Docker chokepoint mode where bypass attempts fail rather than leak. See [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/).
+
 For contributors building locally instead of pulling the image:
 
 ```bash
@@ -39,9 +41,40 @@ safeyolo cert install
 
 # Verify HTTPS inspection is working
 safeyolo check
+
+# When you're done with SafeYolo, remove the CA
+safeyolo cert uninstall
 ```
 
 The `cert install` command auto-detects your OS and runs the appropriate commands (requires sudo). Use `--dry-run` to see what it would do first.
+
+### Why does SafeYolo need a CA certificate?
+
+SafeYolo uses TLS interception (MITM) to inspect HTTPS requests for credentials. On first run it generates a **local, unique Certificate Authority**. When you trust that CA, SafeYolo can create certificates for each site on-the-fly and your client will accept them, enabling inspection.
+
+This is the same approach used by mitmproxy, Fiddler, Charles Proxy, and other interception proxies.
+
+### Security implications
+
+Installing a custom root CA expands what your machine will trust. Anyone who obtains the CA's private key could potentially impersonate HTTPS sites to your client.
+
+**Best practices:**
+- Only install the CA on a **development machine**, not production
+- Keep the CA private key secure (stored in `~/.safeyolo/certs/`)
+- **Never share or commit the CA private key**
+- Remove the CA when you stop using SafeYolo: `safeyolo cert uninstall`
+
+### Reversibility
+
+You can remove the SafeYolo CA at any time:
+
+```bash
+safeyolo cert uninstall
+```
+
+This removes the certificate from your system trust store. The command supports `--dry-run` to preview changes.
+
+### Verifying the setup
 
 `safeyolo check` verifies the full chain:
 - ✓ Config and Docker available
@@ -50,6 +83,8 @@ The `cert install` command auto-detects your OS and runs the appropriate command
 - ✓ CA certificate exists
 - ✓ Proxy reachable (HTTP)
 - ✓ HTTPS inspection working
+
+Use `safeyolo cert show` to see certificate details including its fingerprint.
 
 **Agent in Docker?** Mount the CA cert and update the trust store:
 
@@ -64,6 +99,10 @@ update-ca-certificates
 # Then inside the container:
 apk add --no-cache ca-certificates && update-ca-certificates
 ```
+
+### Certificate pinning
+
+Some applications use certificate pinning and will refuse connections even with the CA installed. For these apps, either exclude them from proxying or use TLS passthrough. See [docs/TLS_CERTIFICATE.md](docs/TLS_CERTIFICATE.md) for configuration options.
 
 ## Configuring Your Agent
 
@@ -142,7 +181,8 @@ See [docs/DOCKER_CHOKEPOINT.md](docs/DOCKER_CHOKEPOINT.md) for the locked-down c
 | `safeyolo stop` | Stop the proxy |
 | `safeyolo status` | Show health and stats |
 | `safeyolo cert install` | Install CA cert for HTTPS inspection |
-| `safeyolo cert show` | Show CA cert location and status |
+| `safeyolo cert uninstall` | Remove CA cert from system trust store |
+| `safeyolo cert show` | Show CA cert location and fingerprint |
 | `safeyolo check` | Verify setup, proxy, and HTTPS working |
 | `safeyolo watch` | Monitor and approve credentials |
 | `safeyolo logs -f` | Follow logs in real-time |

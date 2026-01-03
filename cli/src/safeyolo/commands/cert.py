@@ -187,6 +187,133 @@ def _install_windows(ca_cert: Path, dry_run: bool) -> None:
     raise typer.Exit(0)
 
 
+def uninstall(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run", "-n",
+        help="Show commands without executing",
+    ),
+) -> None:
+    """Remove SafeYolo CA certificate from system trust store.
+
+    Run this when you're done using SafeYolo to remove the trusted CA.
+    This is recommended security hygiene - don't leave unnecessary
+    root CAs installed.
+
+    Examples:
+
+        safeyolo cert uninstall        # Remove from system trust store
+        safeyolo cert uninstall -n     # Show what would be done
+    """
+    console.print("[bold]Removing SafeYolo CA certificate[/bold]\n")
+
+    system = platform.system()
+
+    if system == "Darwin":
+        _uninstall_macos(dry_run)
+    elif system == "Linux":
+        _uninstall_linux(dry_run)
+    elif system == "Windows":
+        _uninstall_windows(dry_run)
+    else:
+        console.print(f"[red]Unsupported OS:[/red] {system}")
+        console.print("\nManually remove the certificate from your system trust store.")
+        raise typer.Exit(1)
+
+
+def _uninstall_macos(dry_run: bool) -> None:
+    """Remove certificate from macOS trust store."""
+    # Find the cert by name in the keychain
+    cmd = [
+        "sudo", "security", "delete-certificate",
+        "-c", "mitmproxy",  # Match by common name
+        "/Library/Keychains/System.keychain",
+    ]
+
+    console.print("  OS: macOS\n")
+    console.print(f"[dim]Command: {' '.join(cmd)}[/dim]\n")
+
+    if dry_run:
+        console.print("[yellow]Dry run - no changes made[/yellow]")
+        return
+
+    console.print("This requires administrator privileges (sudo).\n")
+
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        console.print("[green]Certificate removed successfully![/green]")
+    except subprocess.CalledProcessError as e:
+        if "could not be found" in (e.stderr or "").lower():
+            console.print("[yellow]Certificate not found in trust store (already removed?)[/yellow]")
+        else:
+            console.print(f"[red]Removal failed:[/red] {e.stderr or e}")
+            console.print("\nYou can try manually:")
+            console.print("  Open Keychain Access > System > Certificates")
+            console.print("  Find 'mitmproxy' and delete it")
+            raise typer.Exit(1)
+
+
+def _uninstall_linux(dry_run: bool) -> None:
+    """Remove certificate from Linux trust store."""
+    # Check both Debian and RHEL paths
+    debian_path = Path("/usr/local/share/ca-certificates/safeyolo.crt")
+    rhel_path = Path("/etc/pki/ca-trust/source/anchors/safeyolo.crt")
+
+    if rhel_path.exists():
+        cert_path = rhel_path
+        update_cmd = "update-ca-trust"
+    else:
+        cert_path = debian_path
+        update_cmd = "update-ca-certificates"
+
+    console.print("  OS: Linux")
+    console.print(f"  Certificate: {cert_path}\n")
+
+    rm_cmd = ["sudo", "rm", "-f", str(cert_path)]
+    update_cmd_full = ["sudo", update_cmd]
+
+    console.print("[dim]Commands:[/dim]")
+    console.print(f"[dim]  {' '.join(rm_cmd)}[/dim]")
+    console.print(f"[dim]  {' '.join(update_cmd_full)}[/dim]\n")
+
+    if dry_run:
+        console.print("[yellow]Dry run - no changes made[/yellow]")
+        return
+
+    if not cert_path.exists():
+        console.print("[yellow]Certificate not found (already removed?)[/yellow]")
+        return
+
+    console.print("This requires administrator privileges (sudo).\n")
+
+    try:
+        subprocess.run(rm_cmd, check=True, capture_output=True, text=True)
+        subprocess.run(update_cmd_full, check=True, capture_output=True, text=True)
+        console.print("[green]Certificate removed successfully![/green]")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Removal failed:[/red] {e.stderr or e}")
+        raise typer.Exit(1)
+
+
+def _uninstall_windows(dry_run: bool) -> None:
+    """Remove certificate from Windows trust store."""
+    # Windows needs cert serial or thumbprint - show manual instructions
+    console.print("  OS: Windows\n")
+
+    if dry_run:
+        console.print("[yellow]Dry run - showing manual steps[/yellow]\n")
+
+    console.print("To remove the SafeYolo CA certificate:")
+    console.print("")
+    console.print("  1. Open 'certmgr.msc' (Certificate Manager)")
+    console.print("  2. Navigate to: Trusted Root Certification Authorities > Certificates")
+    console.print("  3. Find 'mitmproxy' in the list")
+    console.print("  4. Right-click > Delete")
+    console.print("")
+    console.print("Or run in Administrator PowerShell:")
+    console.print('  Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -like "*mitmproxy*" } | Remove-Item')
+
+
 def show() -> None:
     """Show CA certificate location and status.
 
@@ -234,4 +361,5 @@ cert_app = typer.Typer(
 )
 
 cert_app.command()(install)
+cert_app.command()(uninstall)
 cert_app.command()(show)
