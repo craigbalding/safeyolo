@@ -1,74 +1,104 @@
 #!/usr/bin/env python3
 """
-Test the Credential Guard approval workflow with real Ntfy.
-
-This script:
-1. Sends a test notification to Ntfy
-2. Verifies the notification includes action buttons
-3. Simulates the approval workflow
+Test approval notifications (Pushcut + ntfy).
 
 Usage:
-    # Generate a secure, hard-to-guess topic
-    python3 -c "import secrets; print(f'export NTFY_TOPIC=safeyolo-{secrets.token_urlsafe(32)}')"
-
-    # Or let the script generate one for you:
     python3 tests/test_ntfy_integration.py --generate-topic
-
-    # Then run the test
     python3 tests/test_ntfy_integration.py
-
-    # Subscribe to notifications in another terminal:
-    curl -s "https://ntfy.sh/$NTFY_TOPIC/json"
 """
 
-import json
 import os
 import secrets
 import sys
-import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from addons.credential_guard import NtfyApprovalBackend
+from addons.credential_guard import ApprovalNotifier
 
 
 def generate_secure_topic():
-    """Generate a secure, hard-to-guess Ntfy topic."""
-    # 32 bytes = ~43 characters URL-safe base64
-    topic = f"safeyolo-{secrets.token_urlsafe(32)}"
-    return topic
+    return f"safeyolo-{secrets.token_urlsafe(32)}"
 
 
-def test_ntfy_notification():
-    """Test sending a notification with action buttons."""
-    topic = os.environ.get("NTFY_TOPIC") or generate_secure_topic()
-
-    print(f"📡 Testing Ntfy integration with topic: {topic}")
-    print(f"📱 Subscribe to notifications: https://ntfy.sh/{topic}")
-    print()
-
-    # Create backend instance
+def test_notifier_pushcut_only():
+    """Pushcut-only config (most common use case)."""
     config = {
-        "server": "https://ntfy.sh",
-        "topic": topic,
-        "priority": 4,
-        "tags": ["warning", "lock"]
+        "pushcut_url": "https://api.pushcut.io/xxx/notifications/Test",
+        "callback_topic": "test-topic",
+        "ntfy_enabled": False,
     }
+    notifier = ApprovalNotifier(config)
 
-    backend = NtfyApprovalBackend(config)
+    assert notifier.is_enabled()
+    assert notifier.pushcut_url
+    assert not notifier.ntfy_enabled
+    print("Pushcut-only config")
 
-    assert backend.is_enabled(), "Backend not enabled (topic missing)"
-    print("✅ Backend initialized")
 
-    # Send test notification
-    print("\n Sending test approval notification...")
+def test_notifier_ntfy_only():
+    """ntfy-only config (Android users)."""
+    config = {
+        "ntfy_enabled": True,
+        "callback_topic": "test-topic",
+    }
+    notifier = ApprovalNotifier(config)
 
-    test_token = "test-token-abc123xyz456"
+    assert notifier.is_enabled()
+    assert notifier.ntfy_enabled
+    assert not notifier.pushcut_url
+    print("ntfy-only config")
 
-    success = backend.send_approval_request(
-        token=test_token,
+
+def test_notifier_both():
+    """Both channels enabled."""
+    config = {
+        "pushcut_url": "https://api.pushcut.io/xxx/notifications/Test",
+        "ntfy_enabled": True,
+        "callback_topic": "test-topic",
+    }
+    notifier = ApprovalNotifier(config)
+
+    assert notifier.is_enabled()
+    assert notifier.pushcut_url
+    assert notifier.ntfy_enabled
+    print("Both channels enabled")
+
+
+def test_notifier_disabled():
+    """No channels enabled."""
+    config = {
+        "callback_topic": "test-topic",
+    }
+    notifier = ApprovalNotifier(config)
+
+    assert not notifier.is_enabled()
+    print("No channels enabled")
+
+
+def test_topic_from_env():
+    """Topic from environment variable."""
+    with patch.dict(os.environ, {"NTFY_TOPIC": "env-topic"}):
+        config = {}
+        notifier = ApprovalNotifier(config)
+        assert notifier.callback_topic == "env-topic"
+    print("Topic from env")
+
+
+def test_send_ntfy(topic=None):
+    """Integration test - send to real ntfy."""
+    topic = topic or os.environ.get("NTFY_TOPIC") or generate_secure_topic()
+    print(f"\nSending to ntfy topic: {topic}")
+
+    config = {
+        "ntfy_enabled": True,
+        "callback_topic": topic,
+    }
+    notifier = ApprovalNotifier(config)
+
+    success = notifier.send_approval_request(
+        token="test-abc123",
         credential_type="openai",
         host="suspicious.example.com",
         path="/api/v1/chat",
@@ -77,100 +107,30 @@ def test_ntfy_notification():
         tier=1,
     )
 
-    assert success, "Failed to send notification"
-    print("Notification sent successfully!")
-    print(f"\nCheck your Ntfy app or: https://ntfy.sh/{topic}")
-    print("\nThe notification should have two buttons:")
-    print(f"   Approve -> POSTs 'approve:{test_token}' to ntfy topic")
-    print(f"   Deny    -> POSTs 'deny:{test_token}' to ntfy topic")
-    print("\nRun scripts/ntfy_approval_listener.py to process button clicks.")
-
-
-def test_unknown_credential_notification():
-    """Test notification for unknown credential type."""
-    topic = os.environ.get("NTFY_TOPIC") or generate_secure_topic()
-
-    config = {
-        "server": "https://ntfy.sh",
-        "topic": topic,
-        "priority": 4,
-        "tags": ["warning", "lock"]
-    }
-
-    backend = NtfyApprovalBackend(config)
-
-    print("\nSending unknown credential notification...")
-
-    test_token = "test-unknown-def789"
-
-    success = backend.send_approval_request(
-        token=test_token,
-        credential_type="unknown_secret",
-        host="custom-api.example.com",
-        path="/endpoint",
-        reason="unknown_credential_type",
-        confidence="medium",
-        tier=2,
-    )
-
-    assert success, "Failed to send notification"
-    print("Unknown credential notification sent!")
-
-
-def show_usage():
-    """Show how to monitor notifications."""
-    topic = os.environ.get("NTFY_TOPIC", "your-topic-here")
-
-    print("\n" + "="*60)
-    print("HOW TO USE NTFY APPROVALS")
-    print("="*60)
-    print("\n1. Start the approval listener (runs locally):")
-    print("   python3 scripts/ntfy_approval_listener.py")
-    print("\n2. Subscribe in browser:")
-    print(f"   https://ntfy.sh/{topic}")
-    print("\n3. Subscribe via curl (JSON stream):")
-    print(f"   curl -s 'https://ntfy.sh/{topic}/json'")
-    print("\n4. Ntfy mobile app:")
-    print("   - Download: https://ntfy.sh/docs/subscribe/phone/")
-    print(f"   - Subscribe to topic: {topic}")
-    print("\n" + "="*60)
+    assert success, "Failed to send"
+    print(f"Sent! Subscribe: https://ntfy.sh/{topic}")
 
 
 if __name__ == "__main__":
-    # Handle --generate-topic flag
     if "--generate-topic" in sys.argv:
         topic = generate_secure_topic()
-        print("🔐 Generated secure Ntfy topic (43+ characters):")
-        print()
         print(f'export NTFY_TOPIC="{topic}"')
-        print()
-        print("📋 Copy and run the above command, then run this test again.")
-        print()
-        print(f"📱 Subscribe in browser: https://ntfy.sh/{topic}")
+        print(f"Subscribe: https://ntfy.sh/{topic}")
         sys.exit(0)
 
-    print("=" * 60)
-    print("🧪 Credential Guard + Ntfy Integration Test")
-    print("=" * 60)
-    print()
+    print("--- Unit Tests ---")
+    test_notifier_pushcut_only()
+    test_notifier_ntfy_only()
+    test_notifier_both()
+    test_notifier_disabled()
+    test_topic_from_env()
+    print("\nUnit tests passed!")
 
+    print("\n--- Integration Test ---")
     try:
-        # Test 1: Send known credential notification
-        test_ntfy_notification()
-
-        # Test 2: Send unknown credential notification
-        test_unknown_credential_notification()
-
-        # Show monitoring info
-        show_usage()
-
-        print("\nAll tests passed!")
-        print("\nNext steps:")
-        print("   1. Start the listener: python3 scripts/ntfy_approval_listener.py")
-        print("   2. Check your Ntfy app for notifications")
-        print("   3. Tap Approve/Deny - listener will call the admin API")
-        sys.exit(0)
-
-    except AssertionError as e:
-        print(f"\n❌ Test failed: {e}")
+        test_send_ntfy()
+    except Exception as e:
+        print(f"Integration test failed: {e}")
         sys.exit(1)
+
+    print("\nAll tests passed!")

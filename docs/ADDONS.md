@@ -224,8 +224,11 @@ Core security addon. Ensures credentials only go to authorized hosts with smart 
 - **Greylist Type 1 (destination mismatch)**: Known credential going to wrong host → 428 with self-correction prompt
 - **Greylist Type 2 (requires approval)**: Unknown credential or not in policy → 428 with approval workflow
 
-**Human-in-the-Loop Approval (via Ntfy):**
+**Human-in-the-Loop Approval:**
 - Push notifications with Approve/Deny buttons
+- **iOS**: Pushcut notifications (save URL to `data/pushcut_url`)
+- **Android**: ntfy notifications (enable `ntfy_enabled` in config, install [ntfy app](https://ntfy.sh/docs/subscribe/phone/))
+- Both channels' buttons POST to same ntfy topic → `ntfy_approval_listener.py` handles callbacks
 - Topic auto-generated on first run, stored in `data/ntfy_topic`
 - Pending approvals queryable via admin API
 - Approved credentials added to temp allowlist AND persistent policy files
@@ -290,13 +293,13 @@ entropy:
   min_charset_diversity: 0.5
   min_shannon_entropy: 3.5
 
-# Approval backend
+# Approval notifications (iOS + Android)
 approval:
-  backend: ntfy
-  ntfy:
-    server: https://ntfy.sh
-    topic: null  # Auto-generated, or set NTFY_TOPIC env var
-    priority: 4
+  callback_topic: null     # or data/ntfy_topic (auto-generated)
+  pushcut_url: null        # or data/pushcut_url (iOS)
+  ntfy_enabled: false      # Set true for Android ntfy app
+  ntfy_server: https://ntfy.sh
+  ssl_cert_path: /certs/mitmproxy-ca-cert.pem  # All traffic via proxy
 ```
 
 **Safe headers (skipped in entropy analysis):** `config/safe_headers.yaml`

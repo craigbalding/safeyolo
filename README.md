@@ -286,23 +286,31 @@ cat data/policies/webapp.yaml     # Requests from 'webapp' compose project
 1. **Start the approval listener** on the same host as safeyolo:
    ```bash
    python3 scripts/ntfy_approval_listener.py
-   # Or with custom admin URL:
-   python3 scripts/ntfy_approval_listener.py --admin-url http://localhost:9090
    ```
 
-2. **Subscribe to notifications** - get the topic from `data/ntfy_topic` or set `NTFY_TOPIC` env var:
+2. **Configure notifications** - choose your platform:
+
+   **iOS (Pushcut - recommended):**
    ```bash
-   # Install ntfy app on your phone: https://ntfy.sh/docs/subscribe/phone/
-   # Subscribe to your topic (visible in data/ntfy_topic)
+   # Save your Pushcut webhook URL to data/pushcut_url
+   echo 'https://api.pushcut.io/xxx/notifications/SafeYolo' > data/pushcut_url
+   ```
+
+   **Android (ntfy):**
+   ```bash
+   # Enable ntfy notifications in config/credential_guard.yaml
+   # ntfy_enabled: true
+   # Install ntfy app: https://ntfy.sh/docs/subscribe/phone/
+   # Subscribe to topic in data/ntfy_topic
    ```
 
 3. **Approve from your phone** - when a credential needs approval:
-   - You get a push notification with Approve/Deny buttons
-   - Tapping a button posts back to ntfy
-   - The listener picks it up and calls the local admin API
-   - Request proceeds (or is denied) automatically
+   - Push notification with Approve/Deny buttons
+   - Button tap posts to ntfy topic
+   - Listener calls admin API
+   - Request proceeds (or is denied)
 
-The listener runs with exponential backoff and reconnects automatically. Logs go to `logs/approval_listener.log`.
+The listener runs with exponential backoff. Logs at `logs/approval_listener.log`.
 
 ### If mitmproxy crashes
 

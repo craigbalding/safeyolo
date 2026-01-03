@@ -406,63 +406,27 @@ Or:
 
 ### 9. Approval Workflows
 
-**Pluggable backends:**
+**Approval notifications:**
 
-**Phase 1: Ntfy (reference implementation)**
 ```yaml
-approval_backend: "ntfy"
-
-ntfy:
-  url: "https://ntfy.sh"
-  topic: "${NTFY_TOPIC}"
-  admin_api_url: "http://localhost:8081/admin"
+approval:
+  callback_topic: null      # env: NTFY_TOPIC, or auto-generated
+  pushcut_url: null         # env: PUSHCUT_NOTIFICATION_URL (iOS)
+  ntfy_enabled: false       # Enable for Android/web users
 ```
 
-**Ntfy notification with action buttons:**
-```json
-{
-  "topic": "safeyolo-alerts",
-  "title": "🔐 Credential Approval: unknown_secret",
-  "message": "unknown_secret → internal-api.company.com",
-  "priority": 4,
-  "actions": [
-    {
-      "action": "http",
-      "label": "✅ Approve",
-      "url": "http://localhost:8081/admin/approve/cap_xyz789",
-      "method": "POST",
-      "clear": true
-    },
-    {
-      "action": "http",
-      "label": "❌ Deny",
-      "url": "http://localhost:8081/admin/deny/cap_xyz789",
-      "method": "POST",
-      "clear": true
-    }
-  ]
-}
-```
+- **Pushcut** (iOS): Native push notifications
+- **ntfy** (Android/web): Optional, for Android users with Tasker integration
+- Both channels' buttons POST to the same ntfy callback topic
+- `ntfy_approval_listener.py` subscribes to callback topic, calls admin API
 
-**Phase 2: GitHub PR (future)**
-```yaml
-approval_backend: "pr"
-
-pr:
-  repository: "user/project"
-  policy_file: "safeyolo_policy.yaml"
-  branch_prefix: "safeyolo/approve-"
-```
-
-**Approval flow (same for both):**
+**Approval flow:**
 1. Agent makes request with unknown credential+destination
 2. Proxy returns 428 with `policy_snippet`
-3. Backend-specific approval request:
-   - Ntfy: Send notification with buttons
-   - PR: Agent creates PR with policy snippet
+3. Notification sent via Pushcut and/or ntfy
 4. Agent retries periodically (every 30s)
-5. Human approves when convenient (minutes or days)
-6. Policy updates (runtime or file)
+5. Human taps Approve/Deny
+6. Button POSTs to ntfy topic -> listener -> admin API -> policy updated
 7. Agent retry succeeds
 
 **No approval timeout** - agent gives up after max_duration (default 1 hour), but approval can happen anytime.

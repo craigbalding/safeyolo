@@ -1181,83 +1181,93 @@ class ProjectPolicyStore:
             return False
 
 
-# --- Ntfy Approval Backend (Phase 4.2) ---
+# --- Approval Notifications (Phase 4.2) ---
 
-class NtfyApprovalBackend:
-    """Sends approval notifications via Ntfy."""
+
+class ApprovalNotifier:
+    """Sends approval notifications via Pushcut (iOS) and/or ntfy (Android).
+
+    Buttons always callback to ntfy topic, where ntfy_approval_listener.py
+    receives approve/deny messages and calls the admin API.
+    """
 
     def __init__(self, config: dict):
-        """Initialize Ntfy backend.
+        self.callback_topic = self._get_or_generate_topic(config)
+        self.pushcut_url = self._get_pushcut_url(config)
+        self.ntfy_enabled = config.get("ntfy_enabled", False)
+        self.ntfy_server = config.get("ntfy_server", "https://ntfy.sh")
 
-        Args:
-            config: Ntfy configuration dict from credential_guard.yaml
-        """
-        self.server = config.get("server", "https://ntfy.sh")
-        self.priority = config.get("priority", 4)
-        self.tags = config.get("tags", ["warning", "lock"])
-
-        # Get or generate topic
-        self.topic = self._get_or_generate_topic(config)
-
-        # SSL certificate verification context
-        # Create SSL context if custom cert exists, otherwise use system defaults
+        # SSL context - all traffic goes through proxy
         cert_path = config.get("ssl_cert_path", "/certs/mitmproxy-ca-cert.pem")
         if cert_path and os.path.exists(cert_path):
             self.ssl_context = ssl.create_default_context(cafile=cert_path)
         else:
-            self.ssl_context = True  # Use httpx default (system CA bundle)
+            self.ssl_context = True
 
-        if self.topic:
-            log.info(f"Ntfy notifications enabled - subscribe at: {self.server}/{self.topic}")
+        self.credential_guard = None  # Back-reference, set by CredentialGuard
+
+        # Log what's configured
+        channels = []
+        if self.pushcut_url:
+            channels.append("pushcut")
+        if self.ntfy_enabled:
+            channels.append("ntfy")
+        if channels:
+            log.info(f"Approval notifications enabled: {', '.join(channels)}")
+            log.info(f"Callback topic: {self.callback_topic}")
         else:
-            log.warning("NTFY_TOPIC not configured - approval notifications disabled")
-
-        # Store reference to parent credential_guard for policy updates
-        self.credential_guard = None
+            log.warning("No approval notifications configured")
 
     def _get_or_generate_topic(self, config: dict) -> str:
-        """Get topic from config/env, or auto-generate and save if not set.
-
-        Returns:
-            Topic string, or empty string if disabled
-        """
+        """Get callback topic from config/env, or auto-generate and persist."""
         import secrets
         from pathlib import Path
 
-        # 1. Check config
-        topic = config.get("topic")
+        # Check config
+        topic = config.get("callback_topic")
         if topic:
             return topic
 
-        # 2. Check environment
+        # Check environment
         topic = os.environ.get("NTFY_TOPIC")
         if topic:
             return topic
 
-        # 3. Check persistent file
+        # Check persistent file
         topic_file = Path("/app/data/ntfy_topic")
         if topic_file.exists():
             topic = topic_file.read_text().strip()
             if topic:
-                log.info("Loaded ntfy topic from persistent storage")
                 return topic
 
-        # 4. Auto-generate and save
+        # Auto-generate and save
         topic = f"safeyolo-{secrets.token_urlsafe(32)}"
-
-        # Ensure data directory exists
         topic_file.parent.mkdir(parents=True, exist_ok=True)
         topic_file.write_text(topic)
-        topic_file.chmod(0o600)  # Readable only by owner
-
-        log.warning(f"Auto-generated secure ntfy topic (saved to {topic_file})")
-        log.warning(f"Subscribe to notifications: {self.server}/{topic}")
-
+        topic_file.chmod(0o600)
+        log.warning(f"Auto-generated callback topic (saved to {topic_file})")
         return topic
 
+    def _get_pushcut_url(self, config: dict) -> str | None:
+        """Get Pushcut URL from config or persistent file."""
+        from pathlib import Path
+
+        # Check config
+        url = config.get("pushcut_url")
+        if url:
+            return url
+
+        # Check persistent file
+        url_file = Path("/app/data/pushcut_url")
+        if url_file.exists():
+            url = url_file.read_text().strip()
+            if url:
+                return url
+
+        return None
+
     def is_enabled(self) -> bool:
-        """Check if Ntfy is properly configured."""
-        return bool(self.topic)
+        return bool(self.pushcut_url) or self.ntfy_enabled
 
     def send_approval_request(
         self,
@@ -1269,104 +1279,101 @@ class NtfyApprovalBackend:
         confidence: str,
         tier: int,
     ) -> bool:
-        """Send approval request notification.
+        """Send approval notification. Returns True if any channel succeeded."""
+        callback_url = f"{self.ntfy_server}/{self.callback_topic}"
 
-        Buttons POST back to the same ntfy topic with messages like
-        "approve:{token}" or "deny:{token}". A local listener
-        (ntfy_approval_listener.py) subscribes to the topic and
-        calls the admin API.
-
-        Args:
-            token: Approval token (capability token)
-            credential_type: Type of credential detected
-            host: Destination host
-            path: Request path
-            reason: Why approval is needed
-            confidence: Detection confidence
-            tier: Detection tier (1 or 2)
-
-        Returns:
-            True if notification sent successfully
-        """
-        if not self.is_enabled():
-            log.debug("Ntfy not configured, skipping notification")
-            return False
-
-        # Build notification message
+        # Format message
         if reason == "unknown_credential_type":
             title = "Unknown Credential Detected"
-            message = f"""An unrecognized credential was detected attempting to reach {host}.
-
-Destination: {host}{path}
-Confidence: {confidence} (tier {tier})
-
-This doesn't match any known API key patterns.
-"""
+            text = f"Unrecognized credential -> {host}{path}\nConfidence: {confidence} (tier {tier})"
         else:
-            title = f"{credential_type.title()} Credential Needs Approval"
-            message = f"""A {credential_type} credential is attempting to reach a new destination.
+            title = f"{credential_type.title()} Needs Approval"
+            text = f"{credential_type} -> {host}{path}\nReason: {reason}"
 
-Destination: {host}{path}
-Reason: {reason}
-Confidence: {confidence} (tier {tier})
+        success = False
 
-This destination is not in the approved policy.
-"""
+        if self.pushcut_url:
+            if self._send_pushcut(title, text, token, callback_url):
+                success = True
 
-        # Build action buttons that POST back to ntfy topic
-        # A local listener picks these up and calls the admin API
-        callback_url = f"{self.server}/{self.topic}"
+        if self.ntfy_enabled:
+            if self._send_ntfy(title, text, token, callback_url):
+                success = True
 
-        # Ntfy actions format - POST message body back to same topic
-        actions = [
-            {
-                "action": "http",
-                "label": "Approve",
-                "url": callback_url,
-                "method": "POST",
-                "body": f"approve:{token}"
-            },
-            {
-                "action": "http",
-                "label": "Deny",
-                "url": callback_url,
-                "method": "POST",
-                "body": f"deny:{token}",
-                "clear": True
-            }
-        ]
+        if success:
+            log.info(f"Sent approval notification: {credential_type} -> {host} (token={token[:8]}...)")
 
-        # Build request
-        notification = {
-            "topic": self.topic,
-            "title": title,
-            "message": message,
-            "priority": self.priority,
-            "tags": self.tags,
-            "actions": actions
-        }
+        return success
 
-        # Send to Ntfy
+    def _send_pushcut(self, title: str, text: str, token: str, callback_url: str) -> bool:
+        """Send via Pushcut (iOS)."""
         try:
             import httpx
-
-            # POST to /{topic} for clearer path-based policy restriction
-            url = f"{self.server}/{self.topic}"
-
-            response = httpx.post(
-                url,
-                json=notification,
-                timeout=5.0,
-                verify=self.ssl_context
-            )
+            with httpx.Client(verify=True) as client:
+                response = client.post(
+                    self.pushcut_url,
+                    json={
+                        "title": title,
+                        "text": text,
+                        "actions": [
+                            {
+                                "name": "Approve",
+                                "url": callback_url,
+                                "urlBackgroundOptions": {
+                                    "httpMethod": "POST",
+                                    "httpContentType": "text/plain",
+                                    "httpBody": f"approve:{token}"
+                                },
+                                "keepNotification": False
+                            },
+                            {
+                                "name": "Deny",
+                                "url": callback_url,
+                                "urlBackgroundOptions": {
+                                    "httpMethod": "POST",
+                                    "httpContentType": "text/plain",
+                                    "httpBody": f"deny:{token}"
+                                },
+                                "keepNotification": False
+                            }
+                        ]
+                    },
+                    timeout=10.0
+                )
             if response.status_code == 200:
-                log.info(f"Sent approval notification: {credential_type} -> {host} (token={token[:8]}...)")
                 return True
-            else:
-                log.error(f"Ntfy returned status {response.status_code}")
-                return False
+            log.error(f"Pushcut returned {response.status_code}")
+            return False
         except Exception as e:
-            log.error(f"Failed to send Ntfy notification: {type(e).__name__}: {e}")
+            log.error(f"Pushcut failed: {type(e).__name__}: {e}")
+            return False
+
+    def _send_ntfy(self, title: str, text: str, token: str, callback_url: str) -> bool:
+        """Send via ntfy (Android/web)."""
+        try:
+            import httpx
+            with httpx.Client(verify=True) as client:
+                response = client.post(
+                    f"{self.ntfy_server}/{self.callback_topic}",
+                    json={
+                        "topic": self.callback_topic,
+                        "title": title,
+                        "message": text,
+                        "priority": 4,
+                        "tags": ["warning", "lock"],
+                        "actions": [
+                            {"action": "http", "label": "Approve", "url": callback_url, "method": "POST", "body": f"approve:{token}"},
+                            {"action": "http", "label": "Deny", "url": callback_url, "method": "POST", "body": f"deny:{token}", "clear": True}
+                        ]
+                    },
+                    timeout=5.0
+                )
+            if response.status_code == 200:
+                return True
+            log.error(f"Ntfy returned {response.status_code}")
+            return False
+        except Exception as e:
+            log.error(f"Ntfy failed: {type(e).__name__}: {e}")
             return False
 
 
@@ -1400,7 +1407,7 @@ class CredentialGuard:
         # Phase 4: Pending approvals store
         self.pending_approvals: dict[str, dict] = {}  # token -> {credential_fingerprint, host, path, timestamp, ...}
         self._pending_lock = threading.Lock()  # Protect pending_approvals access
-        self.approval_backend: Optional[NtfyApprovalBackend] = None  # Initialized in configure()
+        self.approval_backend: Optional[ApprovalNotifier] = None  # Initialized in configure()
 
         # Phase 5: Persistent policy store
         self.policy_store: Optional[ProjectPolicyStore] = None  # Initialized in _load_configs()
@@ -1485,50 +1492,57 @@ class CredentialGuard:
         self.policy_store.start_watcher()
         log.info(f"Initialized policy store at {policy_dir}")
 
-        # Initialize approval backend (Phase 4.2)
+        # Initialize multi-channel approval notifier (Phase 4.2)
         approval_config = self.config.get("approval", {})
-        backend_type = approval_config.get("backend", "ntfy")
+        self.approval_backend = ApprovalNotifier(approval_config)
+        self.approval_backend.credential_guard = self  # Link back for policy updates
 
-        if backend_type == "ntfy":
-            ntfy_config = approval_config.get("ntfy", {})
-            self.approval_backend = NtfyApprovalBackend(ntfy_config)
-            self.approval_backend.credential_guard = self  # Link back for policy updates
-
-            if self.approval_backend.is_enabled():
-                # Add ntfy topic to default policy to allow notification sends
-                self._add_ntfy_to_policy()
-                log.info("Initialized Ntfy approval backend")
-            else:
-                log.warning("Ntfy backend configured but NTFY_TOPIC not set")
+        if self.approval_backend.is_enabled():
+            # Add ntfy/pushcut to default policy to allow notification sends
+            self._add_notification_channels_to_policy()
         else:
-            log.info(f"Approval backend: {backend_type} (manual approval via admin API only)")
+            log.info("No approval channels enabled (manual approval via admin API only)")
 
-    def _add_ntfy_to_policy(self):
-        """Add ntfy topic to default policy to allow notification sends."""
-        if not self.approval_backend or not self.approval_backend.topic:
+    def _add_notification_channels_to_policy(self):
+        """Add notification channel hosts to default policy.
+
+        Allows credentials to be included in notification payloads
+        (which contain approval tokens) when sending to ntfy/pushcut.
+        """
+        if not self.approval_backend or not self.approval_backend.callback_topic:
             return
 
         if "approved" not in self.default_policy:
             self.default_policy["approved"] = []
 
-        # Remove any existing ntfy rules (in case topic changed)
+        # Remove any existing notification rules (in case config changed)
         self.default_policy["approved"] = [
             rule for rule in self.default_policy["approved"]
-            if not (rule.get("_ntfy_rule") is True)
+            if not (rule.get("_notification_rule") is True)
         ]
 
-        # Add rule to allow credentials in POST to the specific ntfy topic only
-        # This allows the notification payload (which contains approval tokens) to pass through
-        topic = self.approval_backend.topic
-        rule = {
-            "pattern": ".*",  # Match any credential in the payload
-            "hosts": ["ntfy.sh"],
-            "paths": [f"/{topic}", f"/{topic}/*"],  # Only the configured topic
-            "_ntfy_rule": True,  # Marker for cleanup on topic change
-        }
+        topic = self.approval_backend.callback_topic
 
-        self.default_policy["approved"].append(rule)
-        log.info(f"Added ntfy.sh/{topic} to approved policy for notifications")
+        # Add rule for ntfy.sh (callback destination)
+        ntfy_rule = {
+            "pattern": ".*",
+            "hosts": ["ntfy.sh"],
+            "paths": [f"/{topic}", f"/{topic}/*"],
+            "_notification_rule": True,
+        }
+        self.default_policy["approved"].append(ntfy_rule)
+        log.info(f"Added ntfy.sh/{topic} to approved policy")
+
+        # Add rule for Pushcut if configured
+        if self.approval_backend.pushcut_url:
+            pushcut_rule = {
+                "pattern": ".*",
+                "hosts": ["api.pushcut.io"],
+                "paths": ["/*"],
+                "_notification_rule": True,
+            }
+            self.default_policy["approved"].append(pushcut_rule)
+            log.info("Added api.pushcut.io to approved policy")
 
     def _get_project_id(self, flow: http.HTTPFlow) -> str:
         """Get project ID for this request from service discovery.
@@ -2117,7 +2131,7 @@ class CredentialGuard:
                         tier=tier,
                         project_id=project_id
                     )
-                    # Phase 4.2: Send ntfy notification
+                    # Phase 4.2: Send notification
                     if self.approval_backend and self.approval_backend.is_enabled():
                         self.approval_backend.send_approval_request(
                             token=approval_token,
