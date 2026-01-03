@@ -95,4 +95,34 @@ credential_guard:
 - [ ] Document hot-reload capability
 
 **Current Status (2026-01)**: Not implemented. Env vars read at startup only. Container restart required for changes.
+
+## Denial Persistence for Approval Workflow
+
+**Problem**: When a credential is denied via mobile notification (Deny button), the denial is not persisted. If the same credential is retried, it triggers a new approval request and notification.
+
+**Current Workaround**: Use "Dismiss" instead of "Deny" - the pending approval stays in memory for 24h and deduplication prevents duplicate notifications during that window.
+
+**Goal**: Make "Deny" create a persistent denial record that prevents future approval requests for the same credential+host combination.
+
+**Proposed behavior**:
+1. User taps "Deny" on notification
+2. Denial persisted with TTL (e.g., 24h or configurable)
+3. Future requests with same credential+host check denial cache
+4. If denied, return 403 Forbidden (or still 428?) without creating new pending approval or sending notification
+
+**Work required**:
+- [ ] Add `self.denials: dict[tuple[str, str], float] = {}` to store (fingerprint, host) → denial_timestamp
+- [ ] Update `deny_pending()` to add to denials dict with timestamp
+- [ ] Update `create_pending_approval()` to check denials before creating pending approval
+- [ ] Add denial TTL cleanup (similar to pending approval 24h cleanup)
+- [ ] Decide on response status: 403 Forbidden vs 428 Precondition Required for denied credentials
+- [ ] Optional: Persist denials to disk to survive container restarts
+
+**Open questions**:
+- Should denials be persistent across restarts (disk storage) or in-memory only?
+- What TTL for denials? Same as pending approval (24h), or configurable?
+- Should denied credentials get different HTTP status than pending ones?
+
+**Current Status (2026-01)**: Not implemented. Use "Dismiss" workflow instead - pending approval stays for 24h and prevents duplicate notifications.
+
 - [ ] Fix duplicate log lines in ntfy_approval_listener.py (prints + writes, but shell also redirects)
