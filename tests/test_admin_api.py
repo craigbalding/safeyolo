@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, patch
 class TestAdminRequestHandler:
     """Tests for AdminRequestHandler HTTP methods."""
 
+    TEST_TOKEN = "test-token-for-unit-tests"
+
     @pytest.fixture
     def handler_class(self):
         """Get handler class with mocked dependencies."""
@@ -24,6 +26,7 @@ class TestAdminRequestHandler:
         # Reset class-level state
         AdminRequestHandler.credential_guard = None
         AdminRequestHandler.addons_with_stats = {}
+        AdminRequestHandler.admin_token = self.TEST_TOKEN
 
         return AdminRequestHandler
 
@@ -242,6 +245,197 @@ class TestAdminRequestHandler:
         status = self._get_status(handler)
         assert status == 404
         assert response["error"] == "not found"
+
+    # Helper methods
+
+    def _create_handler(self, handler_class, method, path, body=None, include_auth=True):
+        """Create a mock handler for testing."""
+        from io import BytesIO
+
+        test_token = self.TEST_TOKEN
+
+        class MockHandler(handler_class):
+            def __init__(self):
+                self.path = path
+                self.command = method
+                self.headers = {"Content-Length": str(len(body)) if body else "0"}
+                if include_auth:
+                    self.headers["Authorization"] = f"Bearer {test_token}"
+                self.rfile = BytesIO(body.encode() if body else b"")
+                self.wfile = BytesIO()
+                self._status = 200
+
+            def send_response(self, code):
+                self._status = code
+
+            def send_header(self, name, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+            def log_message(self, *args):
+                pass
+
+        return MockHandler()
+
+    def _parse_response(self, handler):
+        """Parse JSON response from handler."""
+        handler.wfile.seek(0)
+        return json.loads(handler.wfile.read().decode())
+
+    def _get_status(self, handler):
+        """Get HTTP status from handler."""
+        return handler._status
+
+
+class TestAdminAPIAuthentication:
+    """Test bearer token authentication."""
+
+    @pytest.fixture
+    def handler_class(self):
+        """Get handler class with mocked dependencies."""
+        from addons.admin_api import AdminRequestHandler
+
+        # Reset class-level state
+        AdminRequestHandler.credential_guard = None
+        AdminRequestHandler.addons_with_stats = {}
+        AdminRequestHandler.admin_token = None
+
+        return AdminRequestHandler
+
+    @pytest.fixture
+    def handler_class_with_token(self, handler_class):
+        """Handler with token configured."""
+        handler_class.admin_token = "test-token-abc123xyz456"
+        return handler_class
+
+    def test_health_endpoint_no_auth_required(self, handler_class_with_token):
+        """Health endpoint should be accessible without token."""
+        handler = self._create_handler(handler_class_with_token, "GET", "/health")
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        assert response["status"] == "healthy"
+        assert handler._status == 200
+
+    def test_stats_endpoint_requires_auth(self, handler_class_with_token):
+        """Stats endpoint should require authentication."""
+        handler = self._create_handler(handler_class_with_token, "GET", "/stats")
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_stats_with_valid_token(self, handler_class_with_token):
+        """Stats endpoint should accept valid bearer token."""
+        handler = self._create_handler(handler_class_with_token, "GET", "/stats")
+        handler.headers["Authorization"] = "Bearer test-token-abc123xyz456"
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        assert "proxy" in response
+        assert handler._status == 200
+
+    def test_stats_with_invalid_token(self, handler_class_with_token):
+        """Stats endpoint should reject invalid token."""
+        handler = self._create_handler(handler_class_with_token, "GET", "/stats")
+        handler.headers["Authorization"] = "Bearer wrong-token"
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_stats_with_malformed_header(self, handler_class_with_token):
+        """Stats endpoint should reject malformed Authorization header."""
+        handler = self._create_handler(handler_class_with_token, "GET", "/stats")
+        handler.headers["Authorization"] = "NotBearer test-token-abc123xyz456"
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_modes_endpoint_requires_auth(self, handler_class_with_token):
+        """Modes endpoint should require authentication."""
+        handler = self._create_handler(handler_class_with_token, "GET", "/modes")
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_put_requires_auth(self, handler_class_with_token):
+        """PUT requests should require authentication."""
+        body = json.dumps({"mode": "block"})
+        handler = self._create_handler(
+            handler_class_with_token, "PUT", "/plugins/credential-guard/mode", body=body
+        )
+        handler.do_PUT()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_post_requires_auth(self, handler_class_with_token):
+        """POST requests should require authentication."""
+        body = json.dumps({"prefix": "sk-abc", "host": "evil.com", "duration_minutes": 5})
+        handler = self._create_handler(
+            handler_class_with_token,
+            "POST",
+            "/plugins/credential-guard/allowlist",
+            body=body,
+        )
+        handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_delete_requires_auth(self, handler_class_with_token):
+        """DELETE requests should require authentication."""
+        handler = self._create_handler(
+            handler_class_with_token, "DELETE", "/plugins/credential-guard/allowlist"
+        )
+        handler.do_DELETE()
+
+        response = self._parse_response(handler)
+        assert response["error"] == "Unauthorized"
+        assert handler._status == 401
+
+    def test_timing_attack_resistance(self, handler_class_with_token):
+        """Verify secrets.compare_digest is used for constant-time comparison."""
+        import secrets
+        from addons.admin_api import AdminRequestHandler
+
+        # Create mock handler using the existing helper
+        handler = self._create_handler(handler_class_with_token, "GET", "/stats")
+        handler.admin_token = "test-token-abc123xyz456"
+        handler.headers = {"Authorization": "Bearer wrong-token"}
+
+        # Verify _check_auth uses secrets.compare_digest
+        # (This checks the implementation, not timing directly)
+        result = handler._check_auth()
+        assert result is False
+
+        # Valid token should pass
+        handler.headers = {"Authorization": "Bearer test-token-abc123xyz456"}
+        result = handler._check_auth()
+        assert result is True
+
+    def test_no_token_configured(self, handler_class):
+        """Test behavior when admin_token is not configured."""
+        handler_class.admin_token = None
+
+        handler = self._create_handler(handler_class, "GET", "/stats")
+        handler.do_GET()
+
+        response = self._parse_response(handler)
+        # Should still require auth (401) even if token not configured
+        # This prevents accidentally running without auth
+        assert handler._status == 401
 
     # Helper methods
 

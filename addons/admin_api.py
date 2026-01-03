@@ -14,12 +14,18 @@ Usage:
 
 import json
 import logging
+import secrets
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
 
 from mitmproxy import ctx
+
+try:
+    from .rate_limiter import InMemoryGCRA, RateLimitConfig
+except ImportError:
+    from rate_limiter import InMemoryGCRA, RateLimitConfig
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -30,6 +36,15 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     # Reference to addon instances (set by AdminAPI)
     credential_guard = None
     addons_with_stats: dict = {}  # name -> addon instance
+    admin_token = None  # Bearer token for authentication (set by AdminAPI)
+
+    # Rate limiting for approval endpoints (protects against token brute-forcing)
+    # Uses GCRA algorithm from rate_limiter.py - allows burst, smooth limiting
+    _approval_limiter = InMemoryGCRA()  # Per-IP rate limiting, no persistence needed
+    _approval_limit_config = RateLimitConfig(
+        requests_per_second=2.0,  # 2 req/sec sustained rate
+        burst_capacity=10,        # Allow burst of 10 for legitimate batch approvals
+    )
 
     # Addons that support mode switching: name -> option_name
     # All options now use consistent "block" semantics: True=block, False=warn
@@ -44,6 +59,70 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """Override to use mitmproxy logging."""
         log.debug(f"Admin API: {format % args}")
+
+    def _check_auth(self) -> bool:
+        """Verify bearer token authentication.
+
+        Returns:
+            True if authenticated, False otherwise
+        """
+        if not self.admin_token:
+            log.error("Admin API token not configured!")
+            return False
+
+        # Check Authorization header
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return False
+
+        # Extract and compare token (timing-attack resistant)
+        provided_token = auth_header[7:]  # Strip "Bearer "
+        return secrets.compare_digest(provided_token, self.admin_token)
+
+    def _require_auth(self) -> bool:
+        """Check auth and send 401 if unauthorized.
+
+        Returns:
+            True if should continue processing, False if unauthorized
+        """
+        if self._check_auth():
+            return True
+
+        self._send_json({
+            "error": "Unauthorized",
+            "message": "Missing or invalid Bearer token",
+            "hint": "Add header: Authorization: Bearer <token>"
+        }, 401)
+        return False
+
+    def _get_client_ip(self) -> str:
+        """Get client IP for rate limiting."""
+        # Check X-Forwarded-For if behind proxy
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return self.client_address[0]
+
+    def _check_approval_rate_limit(self) -> bool:
+        """Check rate limit for approval endpoints.
+
+        Returns:
+            True if request is allowed, False if rate limited (429 sent)
+        """
+        client_ip = self._get_client_ip()
+        result = self._approval_limiter.check(client_ip, self._approval_limit_config)
+
+        if not result.allowed:
+            retry_after = int(result.wait_ms / 1000) + 1
+            log.warning(f"Rate limited approval request from {client_ip} (wait {result.wait_ms:.0f}ms)")
+            self._send_json({
+                "error": "Too Many Requests",
+                "message": "Rate limit exceeded for approval endpoints",
+                "retry_after_seconds": retry_after
+            }, 429)
+            return False
+
+        return True
 
     def _send_json(self, data: dict, status: int = 200):
         """Send JSON response."""
@@ -129,10 +208,16 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        # Health endpoint exempt from auth (for monitoring)
         if path == "/health":
             self._send_json({"status": "healthy", "proxy": "safeyolo"})
+            return
 
-        elif path == "/stats":
+        # All other endpoints require auth
+        if not self._require_auth():
+            return
+
+        if path == "/stats":
             stats = {"proxy": "safeyolo"}
             for name, addon in self.addons_with_stats.items():
                 try:
@@ -234,12 +319,18 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
+        # All POST endpoints require auth
+        if not self._require_auth():
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # Phase 4.3: Approval/deny endpoints
+        # Phase 4.3: Approval/deny endpoints (rate limited to prevent token brute-forcing)
         if path.startswith("/admin/approve/"):
             # POST /admin/approve/{token}
+            if not self._check_approval_rate_limit():
+                return
             if not self.credential_guard:
                 self._send_json({"error": "credential-guard not loaded"}, 404)
                 return
@@ -268,6 +359,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         elif path.startswith("/admin/deny/"):
             # POST /admin/deny/{token}
+            if not self._check_approval_rate_limit():
+                return
             if not self.credential_guard:
                 self._send_json({"error": "credential-guard not loaded"}, 404)
                 return
@@ -339,6 +432,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         """Handle PUT requests."""
+        # All PUT endpoints require auth
+        if not self._require_auth():
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -382,6 +479,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         """Handle DELETE requests."""
+        # All DELETE endpoints require auth
+        if not self._require_auth():
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -419,6 +520,12 @@ class AdminAPI:
             default=9090,
             help="Port for admin API server",
         )
+        loader.add_option(
+            name="admin_api_token",
+            typespec=str,
+            default="",
+            help="Bearer token for admin API authentication",
+        )
 
         # Start server after a delay (let other addons load first for discovery)
         def delayed_start():
@@ -446,6 +553,16 @@ class AdminAPI:
     def _start_server(self):
         """Start the admin HTTP server."""
         port = ctx.options.admin_port
+        token = ctx.options.admin_api_token
+
+        # Set token on handler class
+        AdminRequestHandler.admin_token = token
+
+        if token:
+            log.info(f"Admin API: Authentication enabled (token: {token[:8]}...)")
+        else:
+            log.warning("Admin API: UNAUTHENTICATED - set admin_api_token option to enable auth")
+
         log.info(f"Admin API starting on port {port}...")
 
         # Find other addons to wire up

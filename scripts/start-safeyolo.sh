@@ -44,6 +44,19 @@ else
     echo "Using existing CA certificate"
 fi
 
+# Install CA cert to system trust store for Python/pip SSL verification
+if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
+    if [ ! -f /usr/local/share/ca-certificates/mitmproxy.crt ]; then
+        echo "Installing CA certificate to system trust store..."
+        cp "${CERT_DIR}/mitmproxy-ca-cert.pem" /usr/local/share/ca-certificates/mitmproxy.crt
+        if ! update-ca-certificates --fresh; then
+            echo "ERROR: CA certificate installation failed"
+            echo "  pip/curl may fail with SSL errors when going through proxy"
+            # Non-fatal - proxy will still work for non-SSL or --insecure requests
+        fi
+    fi
+fi
+
 # Build addon chain - order matters!
 # Infrastructure addons first (policy, discovery):
 #   1. policy - Unified policy engine (other addons check this)
@@ -234,6 +247,32 @@ if [ ! -f "$NTFY_TOPIC_FILE" ] && [ -z "${NTFY_TOPIC}" ]; then
     GENERATED_TOPIC=$(cat "$NTFY_TOPIC_FILE")
     echo "Topic: ${GENERATED_TOPIC}"
     echo "Subscribe: https://ntfy.sh/${GENERATED_TOPIC}"
+fi
+
+# Generate admin API token if not provided
+ADMIN_TOKEN_FILE="/app/data/admin_token"
+if [ ! -f "$ADMIN_TOKEN_FILE" ] && [ -z "${ADMIN_API_TOKEN}" ]; then
+    echo ""
+    echo "Generating admin API token..."
+    mkdir -p /app/data
+    python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$ADMIN_TOKEN_FILE"
+    chmod 600 "$ADMIN_TOKEN_FILE"
+    GENERATED_TOKEN=$(cat "$ADMIN_TOKEN_FILE")
+    echo "=== Admin API Token (save this): ==="
+    echo "${GENERATED_TOKEN}"
+    echo "===================================="
+fi
+
+# Load token for mitmproxy options
+if [ -f "$ADMIN_TOKEN_FILE" ]; then
+    ADMIN_TOKEN=$(cat "$ADMIN_TOKEN_FILE")
+elif [ -n "${ADMIN_API_TOKEN}" ]; then
+    ADMIN_TOKEN="${ADMIN_API_TOKEN}"
+fi
+
+# Add to mitmproxy options if token exists
+if [ -n "${ADMIN_TOKEN}" ]; then
+    MITM_OPTS="${MITM_OPTS} --set admin_api_token=${ADMIN_TOKEN}"
 fi
 
 # Start shell_mux container agent if configured (for CC command execution)
