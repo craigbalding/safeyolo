@@ -475,6 +475,36 @@ class TestPathMatching:
         assert path_matches_pattern("/v1/chat/completions", "/*") is True
         assert path_matches_pattern("/", "/*") is True
 
+    def test_path_double_slash_normalized(self):
+        """Test double slashes are collapsed."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1//chat/completions", "/v1/*") is True
+        assert path_matches_pattern("//v1/chat", "/v1/*") is True
+        assert path_matches_pattern("/v1/chat//completions", "/v1/chat/completions") is True
+
+    def test_path_trailing_slash_normalized(self):
+        """Test trailing slashes are stripped."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1/chat/", "/v1/chat") is True
+        assert path_matches_pattern("/v1/chat", "/v1/chat/") is True
+        assert path_matches_pattern("/", "/") is True  # root preserved
+
+    def test_path_url_decoded(self):
+        """Test percent-encoded chars are decoded."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1%2Fchat", "/v1/chat") is True
+        assert path_matches_pattern("/v1/chat%20room", "/v1/*") is True
+
+    def test_path_traversal_resolved(self):
+        """Test ../ and ./ are resolved."""
+        from addons.credential_guard import path_matches_pattern
+
+        assert path_matches_pattern("/v1/../v2/chat", "/v2/*") is True
+        assert path_matches_pattern("/v1/./chat", "/v1/chat") is True
+
 
 class TestDefaultPolicy:
     """Tests for DEFAULT_POLICY behavior (Phase 1.3)."""

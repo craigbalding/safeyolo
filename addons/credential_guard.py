@@ -27,7 +27,10 @@ import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import re
 from urllib.parse import urlparse
+
+from yarl import URL
 
 from mitmproxy import ctx, http
 
@@ -94,6 +97,28 @@ def hmac_fingerprint(credential: str, secret: bytes) -> str:
     return h.hexdigest()[:16]  # First 16 chars (64 bits)
 
 
+def normalize_path(path: str) -> str:
+    """Normalize a URL path for consistent matching.
+
+    Uses yarl (RFC 3986 compliant) for:
+    - Decoding percent-encoded characters (%2F -> /)
+    - Resolving . and .. segments
+    - Stripping query string and fragment
+
+    Then post-processes to:
+    - Collapse double slashes (// -> /)
+    - Strip trailing slash (except root /)
+    """
+    # yarl handles: URL decoding, ../, ./, query string, fragment
+    normalized = URL("http://x" + path).path
+
+    # yarl doesn't collapse // or strip trailing /
+    normalized = re.sub(r"/+", "/", normalized)
+
+    # Strip trailing slash (except root)
+    return normalized.rstrip("/") or "/"
+
+
 def path_matches_pattern(path: str, pattern: str) -> bool:
     """Check if a path matches a wildcard pattern.
 
@@ -103,35 +128,29 @@ def path_matches_pattern(path: str, pattern: str) -> bool:
     - Prefix wildcard: */completions
     - Full wildcard: /*
 
-    Args:
-        path: The request path (without query string)
-        pattern: The pattern to match against
-
-    Returns:
-        True if path matches pattern
+    Paths and patterns are normalized before matching (double slashes collapsed,
+    URL-decoded, trailing slashes stripped).
     """
-    # Strip query string from path
-    path = path.split("?")[0]
+    # Normalize the incoming path
+    path = normalize_path(path)
 
-    # Exact match
-    if pattern == path:
-        return True
-
-    # Full wildcard
+    # Full wildcard matches everything
     if pattern == "/*":
         return True
 
     # Suffix wildcard: /v1/*
     if pattern.endswith("/*"):
-        prefix = pattern[:-2]  # Remove /*
+        prefix = normalize_path(pattern[:-2])
         return path.startswith(prefix)
 
     # Prefix wildcard: */completions
     if pattern.startswith("*/"):
-        suffix = pattern[1:]  # Remove *
+        suffix = normalize_path(pattern[1:])
         return path.endswith(suffix)
 
-    return False
+    # Exact match - normalize pattern too
+    pattern = normalize_path(pattern)
+    return pattern == path
 
 
 def matches_host_pattern(host: str, pattern: str) -> bool:
