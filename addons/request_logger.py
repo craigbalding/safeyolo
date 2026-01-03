@@ -4,21 +4,167 @@ request_logger.py - Native mitmproxy addon for structured logging
 Logs all requests/responses to JSONL for monitoring and debugging.
 Captures metadata from other addons (e.g., blocked_by, credential_prefix).
 
+Supports a quiet_hosts.yaml config to suppress logging for chatty hosts.
+
 Usage:
     mitmdump -s addons/request_logger.py --set safeyolo_log_path=/app/logs/safeyolo.jsonl
 """
 
+import fnmatch
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
+import yaml
 from mitmproxy import ctx, http
 
-log = logging.getLogger("safeyolo.logger")
+try:
+    from .utils import write_audit_event
+except ImportError:
+    from utils import write_audit_event
+
+log = logging.getLogger("safeyolo.request-logger")
+
+
+class QuietHostsConfig:
+    """Manages quiet hosts configuration with hot reload."""
+
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
+        self._lock = threading.Lock()
+        self._hosts: set[str] = set()  # Exact host matches
+        self._host_patterns: list[str] = []  # Wildcard patterns like *.example.com
+        self._paths: dict[str, list[str]] = {}  # host -> [path patterns]
+        self._mtime: float = 0
+        self._watcher_thread: Optional[threading.Thread] = None
+        self._watcher_stop = threading.Event()
+
+    def load(self) -> bool:
+        """Load config from file."""
+        if not self.config_path.exists():
+            log.debug(f"Quiet hosts config not found: {self.config_path}")
+            return False
+
+        try:
+            content = self.config_path.read_text()
+            config = yaml.safe_load(content) or {}
+
+            hosts = set()
+            host_patterns = []
+            paths = {}
+
+            # Parse hosts list
+            for host in config.get("hosts", []):
+                if "*" in host:
+                    host_patterns.append(host.lower())
+                else:
+                    hosts.add(host.lower())
+
+            # Parse paths dict (host -> [path patterns])
+            for host, path_list in config.get("paths", {}).items():
+                if isinstance(path_list, list):
+                    paths[host.lower()] = path_list
+
+            with self._lock:
+                self._hosts = hosts
+                self._host_patterns = host_patterns
+                self._paths = paths
+                self._mtime = self.config_path.stat().st_mtime
+
+            total = len(hosts) + len(host_patterns) + sum(len(p) for p in paths.values())
+            write_audit_event(
+                "config_reload",
+                addon="request-logger",
+                config="quiet_hosts",
+                rules=total,
+                path=str(self.config_path),
+            )
+            return True
+
+        except yaml.YAMLError as e:
+            write_audit_event(
+                "config_error",
+                addon="request-logger",
+                config="quiet_hosts",
+                error=f"Invalid YAML: {e}",
+                path=str(self.config_path),
+            )
+            return False
+        except Exception as e:
+            write_audit_event(
+                "config_error",
+                addon="request-logger",
+                config="quiet_hosts",
+                error=f"{type(e).__name__}: {e}",
+                path=str(self.config_path),
+            )
+            return False
+
+    def _check_reload(self):
+        """Check if config file changed and reload if needed."""
+        if not self.config_path.exists():
+            return
+
+        try:
+            mtime = self.config_path.stat().st_mtime
+            if mtime > self._mtime:
+                self.load()  # load() writes its own audit event
+        except Exception:
+            pass
+
+    def start_watcher(self):
+        """Start background file watcher thread."""
+        if self._watcher_thread and self._watcher_thread.is_alive():
+            return
+
+        def watch_loop():
+            while not self._watcher_stop.wait(timeout=5.0):
+                self._check_reload()
+
+        self._watcher_stop.clear()
+        self._watcher_thread = threading.Thread(target=watch_loop, daemon=True)
+        self._watcher_thread.start()
+        log.debug("Started quiet hosts config watcher")
+
+    def stop_watcher(self):
+        """Stop the file watcher thread."""
+        self._watcher_stop.set()
+        if self._watcher_thread:
+            self._watcher_thread.join(timeout=2.0)
+
+    def should_quiet(self, host: str, path: str) -> bool:
+        """Check if host/path should be suppressed from logging.
+
+        Args:
+            host: Request host (e.g., 'statsig.anthropic.com')
+            path: Request path (e.g., '/v1/rgstr')
+
+        Returns:
+            True if this request should not be logged
+        """
+        host = host.lower()
+
+        with self._lock:
+            # Check exact host match
+            if host in self._hosts:
+                return True
+
+            # Check host wildcard patterns
+            for pattern in self._host_patterns:
+                if fnmatch.fnmatch(host, pattern):
+                    return True
+
+            # Check host:path patterns
+            if host in self._paths:
+                for path_pattern in self._paths[host]:
+                    if fnmatch.fnmatch(path, path_pattern):
+                        return True
+
+        return False
 
 
 class RequestLogger:
@@ -29,13 +175,17 @@ class RequestLogger:
     - All requests with method, host, path, size
     - All responses with status, size, duration
     - Blocks with plugin, reason, credential info
+
+    Supports quiet_hosts.yaml to suppress logging for chatty hosts.
     """
 
     name = "request-logger"
 
     def __init__(self):
         self.log_path: Optional[Path] = None
+        self.quiet_hosts: Optional[QuietHostsConfig] = None
         self.requests_total = 0
+        self.requests_quieted = 0
         self.responses_total = 0
         self.blocks_total = 0
 
@@ -46,6 +196,12 @@ class RequestLogger:
             typespec=str,
             default="/app/logs/safeyolo.jsonl",
             help="Path for JSONL request log",
+        )
+        loader.add_option(
+            name="safeyolo_quiet_hosts",
+            typespec=str,
+            default="/app/config/quiet_hosts.yaml",
+            help="Path for quiet hosts config (suppress logging for chatty hosts)",
         )
 
     def configure(self, updates):
@@ -58,6 +214,12 @@ class RequestLogger:
                 log.info(f"Request logger writing to {self.log_path}")
             except Exception as e:
                 log.error(f"Failed to create log directory: {type(e).__name__}: {e}")
+
+        if "safeyolo_quiet_hosts" in updates:
+            config_path = Path(ctx.options.safeyolo_quiet_hosts)
+            self.quiet_hosts = QuietHostsConfig(config_path)
+            self.quiet_hosts.load()
+            self.quiet_hosts.start_watcher()
 
     def _write_entry(self, entry: dict):
         """Write entry to JSONL log."""
@@ -80,14 +242,22 @@ class RequestLogger:
         flow.metadata["start_time"] = time.time()
 
         parsed = urlparse(flow.request.pretty_url)
+        host = parsed.netloc
+        path = parsed.path
+
+        # Check if this host/path should be quieted
+        if self.quiet_hosts and self.quiet_hosts.should_quiet(host, path):
+            self.requests_quieted += 1
+            flow.metadata["quieted"] = True
+            return
 
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": "request",
             "id": request_id,
             "method": flow.request.method,
-            "host": parsed.netloc,
-            "path": parsed.path,
+            "host": host,
+            "path": path,
             "size": len(flow.request.content or b""),
             "client": flow.client_conn.peername[0] if flow.client_conn.peername else None,
         }
@@ -96,9 +266,13 @@ class RequestLogger:
 
     def response(self, flow: http.HTTPFlow):
         """Log response (or block)."""
+        # Skip if request was quieted (unless it was blocked - always log blocks)
+        blocked_by = flow.metadata.get("blocked_by")
+        if flow.metadata.get("quieted") and not blocked_by:
+            return
+
         request_id = flow.metadata.get("request_id")
         start_time = flow.metadata.get("start_time")
-        blocked_by = flow.metadata.get("blocked_by")
 
         if blocked_by:
             self.blocks_total += 1
@@ -135,6 +309,7 @@ class RequestLogger:
         """Get logger statistics."""
         return {
             "requests_total": self.requests_total,
+            "requests_quieted": self.requests_quieted,
             "responses_total": self.responses_total,
             "blocks_total": self.blocks_total,
             "log_path": str(self.log_path) if self.log_path else None,

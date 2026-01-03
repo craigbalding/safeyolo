@@ -652,8 +652,11 @@ def determine_decision_type(
 
         context contains additional info needed for response
     """
-    # Unknown credentials always require approval
+    # Unknown credentials: check policy first (HMAC-based approvals), then require approval
     if rule_name == "unknown_secret":
+        # Check if this credential+host+path is already approved via HMAC
+        if check_policy_approval(credential, host, path, policy, hmac_secret):
+            return ("allow", {})
         return ("greylist_approval", {
             "reason": "unknown_credential_type"
         })
@@ -963,7 +966,7 @@ DEFAULT_POLICY = {
         {
             "pattern": r"sk-ant-.*",
             "hosts": ["api.anthropic.com"],
-            "paths": ["/v1/*"],
+            "paths": ["/v1/*", "/api/event_logging/*"],
             "description": "Anthropic API keys"
         },
         {
@@ -1652,6 +1655,44 @@ class CredentialGuard:
 
             return True
 
+    def _is_hmac_approved(self, credential: str, host: str, path: str, project_id: Optional[str] = None) -> bool:
+        """Fast-path check if credential is approved via HMAC in policy.
+
+        This skips regex pattern matching and only checks HMAC-based approvals,
+        making it efficient for pre-approved credentials.
+
+        Args:
+            credential: The credential value to check
+            host: Destination host
+            path: Request path
+            project_id: Project identifier for policy lookup
+
+        Returns:
+            True if approved via HMAC match in policy
+        """
+        fingerprint = hmac_fingerprint(credential, self.hmac_secret)
+        policy = self._merge_policies(project_id)
+
+        for rule in policy.get("approved", []):
+            # Only check HMAC-based rules (skip pattern-based)
+            token_hmac = rule.get("token_hmac", "")
+            if not token_hmac or token_hmac != fingerprint:
+                continue
+
+            # Check host
+            allowed_hosts = rule.get("hosts", [])
+            if not any(matches_host_pattern(host, h) for h in allowed_hosts):
+                continue
+
+            # Check path
+            allowed_paths = rule.get("paths", [])
+            if not any(path_matches_pattern(path, p) for p in allowed_paths):
+                continue
+
+            return True
+
+        return False
+
     def get_temp_allowlist(self) -> list[dict]:
         """Get current allowlist entries (for admin API)."""
         now = time.time()
@@ -1938,15 +1979,43 @@ class CredentialGuard:
         # Get project ID from service discovery (Phase 6)
         project_id = self._get_project_id(flow)
 
-        # Check headers using smart 2-tier analysis (Phase 2)
+        # Fast path: check if any auth header values are pre-approved via HMAC
+        # This skips expensive regex/entropy detection for already-approved credentials
+        standard_auth_headers = self.config.get("standard_auth_headers", [
+            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+        ])
+        path = flow.request.path
+
+        for header_name, header_value in flow.request.headers.items():
+            header_lower = header_name.lower()
+            if header_lower not in standard_auth_headers:
+                continue
+
+            # Extract token from Bearer auth
+            credential = header_value
+            if header_lower == "authorization" and header_value.lower().startswith("bearer "):
+                credential = header_value[7:].strip()
+
+            # Check temp allowlist first (fastest)
+            if self._is_temp_allowed(credential, host):
+                fingerprint = hmac_fingerprint(credential, self.hmac_secret)
+                log.info(f"Fast path: allowed via temp allowlist hmac:{fingerprint} -> {host}")
+                flow.metadata["credguard_allowlisted"] = True
+                return
+
+            # Check HMAC-based policy approvals
+            if self._is_hmac_approved(credential, host, path, project_id):
+                fingerprint = hmac_fingerprint(credential, self.hmac_secret)
+                log.info(f"Fast path: allowed via HMAC policy hmac:{fingerprint} -> {host}{path}")
+                flow.metadata["credguard_policy_approved"] = True
+                return
+
+        # Slow path: full detection with regex patterns and entropy heuristics
         entropy_config = self.config.get("entropy", {
             "min_length": 20,
             "min_charset_diversity": 0.5,
             "min_shannon_entropy": 3.5
         })
-        standard_auth_headers = self.config.get("standard_auth_headers", [
-            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
-        ])
         detection_level = self.config.get("detection_level", "standard")
 
         detections = analyze_headers(

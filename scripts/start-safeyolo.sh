@@ -116,33 +116,69 @@ fi
 
 # ==============================================================================
 # Blocking mode configuration
-# By default, all security addons are WARN-ONLY (log but don't block).
-# Set SAFEYOLO_BLOCK=true to enable blocking for all security addons.
-# Or set individual addon flags for fine-grained control.
+# Each addon has its own blocking default. SAFEYOLO_BLOCK=true overrides all to block.
+# Individual addon flags (e.g., credguard_block) can be set for fine-grained control.
 #
 # NOTE: Runtime mode changes via admin API are in-memory only.
 # On restart/reload, SafeYolo returns to these startup defaults.
-# For persistent blocking, set SAFEYOLO_BLOCK=true here or in docker-compose.yml.
 # ==============================================================================
 echo ""
-if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
-    echo "Security mode: BLOCKING (all addons will block on detection)"
-    MITM_OPTS="${MITM_OPTS} --set credguard_block=true"
+echo "Security addon blocking modes:"
 
-    # Only set options for addons that are actually loaded
-    if [ -f "/app/addons/prompt_injection.py" ]; then
+# credential-guard: defaults to BLOCK
+CREDGUARD_BLOCK="${CREDGUARD_BLOCK:-true}"
+if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
+    CREDGUARD_BLOCK="true"
+fi
+if [ "${CREDGUARD_BLOCK}" = "true" ]; then
+    echo "  credential-guard: BLOCK"
+    MITM_OPTS="${MITM_OPTS} --set credguard_block=true"
+else
+    echo "  credential-guard: WARN-ONLY"
+    MITM_OPTS="${MITM_OPTS} --set credguard_block=false"
+fi
+
+# prompt-injection: defaults to WARN-ONLY
+if [ -f "/app/addons/prompt_injection.py" ]; then
+    INJECTION_BLOCK="${INJECTION_BLOCK:-false}"
+    if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
+        INJECTION_BLOCK="true"
+    fi
+    if [ "${INJECTION_BLOCK}" = "true" ]; then
+        echo "  prompt-injection: BLOCK"
         MITM_OPTS="${MITM_OPTS} --set injection_block=true"
+    else
+        echo "  prompt-injection: WARN-ONLY"
     fi
-    if [ -f "/app/addons/yara_scanner.py" ]; then
+fi
+
+# yara-scanner: defaults to WARN-ONLY
+if [ -f "/app/addons/yara_scanner.py" ]; then
+    YARA_BLOCK="${YARA_BLOCK:-false}"
+    if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
+        YARA_BLOCK="true"
+    fi
+    if [ "${YARA_BLOCK}" = "true" ]; then
+        echo "  yara-scanner: BLOCK"
         MITM_OPTS="${MITM_OPTS} --set yara_block_on_match=true"
+    else
+        echo "  yara-scanner: WARN-ONLY"
     fi
-    if [ -f "/app/addons/pattern_scanner.py" ]; then
+fi
+
+# pattern-scanner: defaults to WARN-ONLY
+if [ -f "/app/addons/pattern_scanner.py" ]; then
+    PATTERN_BLOCK="${PATTERN_BLOCK:-false}"
+    if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
+        PATTERN_BLOCK="true"
+    fi
+    if [ "${PATTERN_BLOCK}" = "true" ]; then
+        echo "  pattern-scanner: BLOCK"
         MITM_OPTS="${MITM_OPTS} --set pattern_block_input=true"
         MITM_OPTS="${MITM_OPTS} --set pattern_block_output=true"
+    else
+        echo "  pattern-scanner: WARN-ONLY"
     fi
-else
-    echo "Security mode: WARN-ONLY (log detections, don't block)"
-    echo "  Set SAFEYOLO_BLOCK=true to enable blocking"
 fi
 echo ""
 

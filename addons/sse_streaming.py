@@ -105,7 +105,7 @@ class SSEStreaming:
         if should_stream:
             flow.response.stream = True
             self._record_stream(host, stream_reason)
-            ctx.log.info(f"SSE streaming enabled: {host} ({stream_reason})")
+            log.info(f"SSE streaming enabled: {host} ({stream_reason})")
 
     def _record_stream(self, domain: str, content_type: str) -> None:
         """Record streaming stats."""
