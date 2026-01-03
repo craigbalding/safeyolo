@@ -495,3 +495,70 @@ class TestCircuitBreakerStatePersistence:
 
         # Cleanup
         cb2.done()
+
+
+class TestRequestIdPropagation:
+    """Tests for request_id propagation in circuit breaker logging."""
+
+    def test_log_event_includes_request_id(self, circuit_breaker, make_flow_with_request_id, tmp_path):
+        """Verify _log_event includes request_id from flow metadata."""
+        from unittest.mock import patch
+        import json
+
+        log_path = tmp_path / "test.jsonl"
+
+        # Force circuit open
+        circuit_breaker.force_open("test.com")
+
+        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
+            flow = make_flow_with_request_id(
+                request_id="req-circuit123",
+                url="http://test.com/api"
+            )
+
+            circuit_breaker.request(flow)
+
+            # Verify circuit event was logged with request_id
+            if log_path.exists():
+                lines = log_path.read_text().strip().split("\n")
+                for line in lines:
+                    entry = json.loads(line)
+                    if entry.get("event") == "security.circuit":
+                        assert entry.get("request_id") == "req-circuit123"
+                        break
+
+    def test_metadata_preserved_on_circuit_block(self, circuit_breaker, make_flow_with_request_id):
+        """Verify request_id is preserved when request is blocked by open circuit."""
+        circuit_breaker.force_open("blocked.com")
+
+        flow = make_flow_with_request_id(
+            request_id="req-circuitblock789",
+            url="http://blocked.com/api"
+        )
+
+        circuit_breaker.request(flow)
+
+        # Request ID should still be in metadata after processing
+        assert flow.metadata.get("request_id") == "req-circuitblock789"
+        assert flow.response is not None
+        assert flow.response.status_code == 503
+        assert flow.metadata.get("blocked_by") == "circuit-breaker"
+
+    def test_response_handler_uses_request_id(self, circuit_breaker, make_flow_with_request_id, make_response, tmp_path):
+        """Verify response handler logs with request_id on failure."""
+        from unittest.mock import patch
+        import json
+
+        log_path = tmp_path / "test.jsonl"
+
+        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
+            flow = make_flow_with_request_id(
+                request_id="req-respfail123",
+                url="http://failing.com/api"
+            )
+            flow.response = make_response(status_code=500)
+
+            circuit_breaker.response(flow)
+
+            # Request ID should still be in metadata
+            assert flow.metadata.get("request_id") == "req-respfail123"

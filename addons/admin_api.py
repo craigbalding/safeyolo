@@ -24,8 +24,10 @@ from mitmproxy import ctx
 
 try:
     from .rate_limiter import InMemoryGCRA, RateLimitConfig
+    from .utils import write_event
 except ImportError:
     from rate_limiter import InMemoryGCRA, RateLimitConfig
+    from utils import write_event
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -88,6 +90,13 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if self._check_auth():
             return True
 
+        client_ip = self._get_client_ip()
+        write_event("admin.auth_failure",
+            addon="admin-api",
+            client_ip=client_ip,
+            path=self.path,
+            reason="invalid_or_missing_token"
+        )
         self._send_json({
             "error": "Unauthorized",
             "message": "Missing or invalid Bearer token",
@@ -344,13 +353,26 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 return
 
             success = self.credential_guard.approve_pending(token)
+            client_ip = self._get_client_ip()
             if success:
+                write_event("admin.approve",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    token=token[:16],
+                    status="approved"
+                )
                 self._send_json({
                     "status": "approved",
                     "token": token[:8] + "...",
                     "message": "Request approved and added to temp allowlist"
                 })
             else:
+                write_event("admin.approve",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    token=token[:16],
+                    status="not_found"
+                )
                 self._send_json({
                     "status": "not_found",
                     "token": token[:8] + "...",
@@ -374,13 +396,26 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 return
 
             success = self.credential_guard.deny_pending(token)
+            client_ip = self._get_client_ip()
             if success:
+                write_event("admin.deny",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    token=token[:16],
+                    status="denied"
+                )
                 self._send_json({
                     "status": "denied",
                     "token": token[:8] + "...",
                     "message": "Request denied and removed from pending"
                 })
             else:
+                write_event("admin.deny",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    token=token[:16],
+                    status="not_found"
+                )
                 self._send_json({
                     "status": "not_found",
                     "token": token[:8] + "...",
@@ -451,7 +486,16 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "mode must be 'warn' or 'block'"}, 400)
                 return
 
+            old_modes = self._get_all_modes()
             results = self._set_all_modes(mode)
+            client_ip = self._get_client_ip()
+            write_event("admin.mode_change",
+                addon="admin-api",
+                client_ip=client_ip,
+                target_addon="all",
+                old_modes=old_modes,
+                new_mode=mode
+            )
             self._send_json({"status": "updated", "mode": mode, "results": results})
 
         elif path.startswith("/plugins/") and path.endswith("/mode"):
@@ -468,10 +512,21 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "mode must be 'warn' or 'block'"}, 400)
                 return
 
+            old_mode = self._get_addon_mode(addon_name)
+            old_mode_value = old_mode.get("mode") if old_mode else None
+
             result = self._set_addon_mode(addon_name, mode)
             if result is None:
                 self._send_json({"error": f"addon '{addon_name}' not found or doesn't support mode switching"}, 404)
             else:
+                client_ip = self._get_client_ip()
+                write_event("admin.mode_change",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    target_addon=addon_name,
+                    old_mode=old_mode_value,
+                    new_mode=mode
+                )
                 self._send_json(result)
 
         else:

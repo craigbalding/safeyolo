@@ -122,3 +122,20 @@ def circuit_breaker():
 
     addon = CircuitBreaker()
     return addon
+
+
+@pytest.fixture
+def make_flow_with_request_id(make_flow):
+    """Factory for creating test flows with request_id pre-set.
+
+    Simulates what request_id.py addon does in production.
+    """
+    import time
+
+    def _make_flow(request_id: str = "req-test123abc", **kwargs):
+        flow = make_flow(**kwargs)
+        flow.metadata["request_id"] = request_id
+        flow.metadata["start_time"] = time.time()
+        return flow
+
+    return _make_flow

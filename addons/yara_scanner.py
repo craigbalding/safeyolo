@@ -22,9 +22,9 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_jsonl
+    from .utils import make_block_response, write_event
 except ImportError:
-    from utils import make_block_response, write_jsonl
+    from utils import make_block_response, write_event
 
 log = logging.getLogger("safeyolo.yara-scanner")
 
@@ -306,9 +306,21 @@ class YARAScanner:
             log.error(f"YARA compilation error: {type(e).__name__}: {e}")
             self.rules = None
 
-    def _log_match(self, **data):
-        """Write match to JSONL log."""
-        write_jsonl(self.log_path, "yara_match", log, **data)
+    def _log_match(self, flow: http.HTTPFlow, decision: str, **data):
+        """Write YARA match to JSONL audit log.
+
+        Args:
+            flow: HTTP flow for request_id correlation
+            decision: "block" or "warn"
+            **data: Match details (rules, host, direction, etc.)
+        """
+        write_event(
+            "security.yara",
+            request_id=flow.metadata.get("request_id"),
+            addon=self.name,
+            decision=decision,
+            **data
+        )
 
     def _scan_data(self, data: bytes) -> list[YARAMatch]:
         """Scan data with YARA rules."""
@@ -379,22 +391,24 @@ class YARAScanner:
         blocking = [m for m in matches if m.should_block]
         rule_names = [m.rule_name for m in matches]
 
-        self._log_match(
-            location="request",
+        flow.metadata["yara_matched"] = rule_names
+
+        match_fields = dict(
+            direction="request",
             rules=rule_names,
             host=flow.request.host,
-            request_path=flow.request.path,
+            path=flow.request.path,
         )
-
-        flow.metadata["yara_matched"] = rule_names
 
         if blocking and ctx.options.yara_block_on_match:
             self.blocks_total += 1
             flow.metadata["blocked_by"] = self.name
             log.warning(f"BLOCKED: YARA matched {rule_names} -> {flow.request.host}{flow.request.path}")
+            self._log_match(flow, "block", **match_fields)
             flow.response = self._create_block_response(blocking, "request")
         else:
             log.warning(f"WARN: YARA matched {rule_names} -> {flow.request.host}{flow.request.path}")
+            self._log_match(flow, "warn", **match_fields)
 
     def response(self, flow: http.HTTPFlow):
         """Scan response body."""
@@ -411,19 +425,20 @@ class YARAScanner:
         blocking = [m for m in matches if m.should_block]
         rule_names = [m.rule_name for m in matches]
 
-        self._log_match(
-            location="response",
+        flow.metadata["yara_matched_response"] = rule_names
+
+        match_fields = dict(
+            direction="response",
             rules=rule_names,
             host=flow.request.host,
-            request_path=flow.request.path,
+            path=flow.request.path,
         )
-
-        flow.metadata["yara_matched_response"] = rule_names
 
         if blocking and ctx.options.yara_block_on_match:
             self.blocks_total += 1
             flow.metadata["blocked_by"] = self.name
             log.warning(f"BLOCKED: YARA matched {rule_names} <- {flow.request.host}{flow.request.path}")
+            self._log_match(flow, "block", **match_fields)
             # Replace response with error
             flow.response = make_block_response(
                 500,
@@ -432,6 +447,7 @@ class YARAScanner:
             )
         else:
             log.warning(f"WARN: YARA matched {rule_names} <- {flow.request.host}{flow.request.path}")
+            self._log_match(flow, "warn", **match_fields)
 
     def get_stats(self) -> dict:
         """Get scanner statistics."""

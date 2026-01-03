@@ -58,21 +58,23 @@ if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
 fi
 
 # Build addon chain - order matters!
-# Infrastructure addons first (policy, discovery):
-#   1. policy - Unified policy engine (other addons check this)
-#   2. service_discovery - Docker container discovery
+# Request ID first (enables event correlation across all addons):
+#   1. request_id - Assigns unique ID to every request
+# Infrastructure addons (policy, streaming):
+#   2. sse_streaming - SSE/streaming support
+#   3. policy - Unified policy engine (other addons check this)
 # Traffic management:
-#   3. rate_limiter - Per-domain rate limiting (prevents IP blacklisting)
-#   4. circuit_breaker - Fail-fast for unhealthy upstreams
+#   4. rate_limiter - Per-domain rate limiting (prevents IP blacklisting)
+#   5. circuit_breaker - Fail-fast for unhealthy upstreams
 # Security addons (can block requests):
-#   5. credential_guard - API key protection
-#   6. yara_scanner - YARA-based threat detection (extended build only)
-#   7. pattern_scanner - Fast regex scanning
-#   8. prompt_injection - ML-based injection detection (extended build only)
+#   6. credential_guard - API key protection
+#   7. yara_scanner - YARA-based threat detection (extended build only)
+#   8. pattern_scanner - Fast regex scanning
+#   9. prompt_injection - ML-based injection detection (extended build only)
 # Observability addons (observe but don't block):
-#   9. request_logger - JSONL structured logging
-#   10. metrics - Per-domain statistics
-#   11. admin_api - Control plane REST API
+#   10. request_logger - JSONL structured logging
+#   11. metrics - Per-domain statistics
+#   12. admin_api - Control plane REST API
 
 ADDON_ARGS=""
 
@@ -90,6 +92,7 @@ load_addon() {
 }
 
 echo "Loading addons:"
+load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
 load_addon "/app/addons/policy.py"
 #load_addon "/app/addons/service_discovery.py"
@@ -306,7 +309,7 @@ fi
 echo "Configuring rate limiter to block mode..."
 ADMIN_READY=false
 for i in $(seq 1 30); do
-    if curl -s -o /dev/null -w '%{http_code}' http://localhost:9090/stats 2>/dev/null | grep -q 200; then
+    if curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/health 2>/dev/null | grep -q 200; then
         ADMIN_READY=true
         break
     fi
@@ -322,10 +325,11 @@ fi
 # Enable blocking for rate limiter and verify
 curl -s -X PUT http://localhost:9090/plugins/rate-limiter/mode \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
     -d '{"mode":"block"}' > /dev/null 2>&1
 
 # Verify it took effect via GET /plugins/rate-limiter/mode
-MODE=$(curl -s http://localhost:9090/plugins/rate-limiter/mode 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('mode','unknown'))" 2>/dev/null)
+MODE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/plugins/rate-limiter/mode 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('mode','unknown'))" 2>/dev/null)
 
 if [ "$MODE" != "block" ]; then
     echo "ERROR: Failed to set rate limiter to block mode (got: $MODE) - failing closed"

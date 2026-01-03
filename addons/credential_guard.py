@@ -44,9 +44,9 @@ except ImportError:
     homoglyph_confusables = None
 
 try:
-    from .utils import write_jsonl
+    from .utils import write_event
 except ImportError:
-    from utils import write_jsonl
+    from utils import write_event
 
 log = logging.getLogger("safeyolo.credential-guard")
 
@@ -1745,9 +1745,21 @@ class CredentialGuard:
             self.rules = list(DEFAULT_RULES)
             log.info(f"Using {len(self.rules)} default credential rules")
 
-    def _log_violation(self, **data):
-        """Write violation to JSONL log."""
-        write_jsonl(self.log_path, "credential_violation", log, **data)
+    def _log_decision(self, flow: http.HTTPFlow, decision: str, **data):
+        """Write credential decision to JSONL audit log.
+
+        Args:
+            flow: The HTTP flow (for request_id correlation)
+            decision: "allow", "block", or "warn"
+            **data: Additional fields (rule, host, location, fingerprint, etc.)
+        """
+        write_event(
+            "security.credential",
+            request_id=flow.metadata.get("request_id"),
+            addon=self.name,
+            decision=decision,
+            **data
+        )
 
     def _should_block(self) -> bool:
         """Check if blocking is enabled."""
@@ -2190,19 +2202,17 @@ class CredentialGuard:
                 # In policy - allow
                 log.info(f"Allowed by policy: {rule_name} -> {host}{flow.request.path}")
                 flow.metadata["credguard_policy_approved"] = True
+                self._log_decision(flow, "allow",
+                    rule=rule_name,
+                    host=host,
+                    location=f"header:{header_name}",
+                    credential_fingerprint=f"hmac:{fingerprint}",
+                    reason="policy_approved"
+                )
                 continue
 
             # VIOLATION DETECTED (greylist_mismatch or greylist_approval)
             self._record_violation(rule_name, host, f"header:{header_name}")
-            self._log_violation(
-                rule=rule_name,
-                host=host,
-                location=f"header:{header_name}",
-                credential_fingerprint=f"hmac:{fingerprint}",
-                confidence=confidence,
-                tier=tier,
-                decision_type=decision_type,
-            )
 
             flow.metadata["blocked_by"] = self.name
             flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
@@ -2211,11 +2221,23 @@ class CredentialGuard:
             flow.metadata["detection_confidence"] = confidence
             flow.metadata["decision_type"] = decision_type
 
+            # Common log fields for violations
+            violation_fields = dict(
+                rule=rule_name,
+                host=host,
+                location=f"header:{header_name}",
+                credential_fingerprint=f"hmac:{fingerprint}",
+                confidence=confidence,
+                tier=tier,
+            )
+
             # Create appropriate 428 response
             if decision_type == "greylist_mismatch":
                 # Type 1: Destination mismatch - agent should self-correct
-                log.warning(f"BLOCKED (mismatch): {rule_name} -> {host} (expected: {decision_context.get('expected_hosts')})")
                 if self._should_block():
+                    log.warning(f"BLOCKED (mismatch): {rule_name} -> {host} (expected: {decision_context.get('expected_hosts')})")
+                    self._log_decision(flow, "block", reason="destination_mismatch",
+                        expected_hosts=decision_context.get("expected_hosts"), **violation_fields)
                     flow.response = create_destination_mismatch_response(
                         credential_type=rule_name,
                         destination_host=host,
@@ -2226,14 +2248,16 @@ class CredentialGuard:
                     )
                     return
                 else:
-                    log.warning(f"WARN (mismatch): Would block but in warn mode")
+                    log.warning(f"WARN (mismatch): {rule_name} -> {host} (expected: {decision_context.get('expected_hosts')})")
+                    self._log_decision(flow, "warn", reason="destination_mismatch",
+                        expected_hosts=decision_context.get("expected_hosts"), **violation_fields)
                     continue
 
             elif decision_type == "greylist_approval":
                 # Type 2: Requires approval - agent should wait
                 reason = decision_context.get("reason", "unknown")
-                log.warning(f"BLOCKED (approval required): {rule_name} -> {host} (reason: {reason})")
                 if self._should_block():
+                    log.warning(f"BLOCKED (approval required): {rule_name} -> {host} (reason: {reason})")
                     # Phase 4: Generate approval token and create pending approval
                     approval_token = self.create_pending_approval(
                         credential=matched,
@@ -2245,6 +2269,8 @@ class CredentialGuard:
                         tier=tier,
                         project_id=project_id
                     )
+                    self._log_decision(flow, "block", reason=reason,
+                        approval_token=approval_token[:16], **violation_fields)
                     # Phase 4.2: Send notification
                     if self.approval_backend and self.approval_backend.is_enabled():
                         self.approval_backend.send_approval_request(
@@ -2266,7 +2292,8 @@ class CredentialGuard:
                     )
                     return
                 else:
-                    log.warning(f"WARN (approval): Would block but in warn mode")
+                    log.warning(f"WARN (approval required): {rule_name} -> {host} (reason: {reason})")
+                    self._log_decision(flow, "warn", reason=reason, **violation_fields)
                     continue
 
         # Check URL (opt-in)
@@ -2303,27 +2330,39 @@ class CredentialGuard:
                 if decision_type == "allow":
                     log.info(f"Allowed by policy: {rule.name} in URL -> {host}{flow.request.path}")
                     flow.metadata["credguard_policy_approved"] = True
+                    self._log_decision(flow, "allow",
+                        rule=rule.name,
+                        host=host,
+                        location="url",
+                        credential_fingerprint=f"hmac:{fingerprint}",
+                        reason="policy_approved"
+                    )
                     continue
 
                 # VIOLATION DETECTED
                 self._record_violation(rule.name, host, "url")
-                self._log_violation(
-                    rule=rule.name,
-                    host=host,
-                    location="url",
-                    credential_fingerprint=f"hmac:{fingerprint}",
-                    decision_type=decision_type,
-                )
 
                 flow.metadata["blocked_by"] = self.name
                 flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
                 flow.metadata["blocked_host"] = host
                 flow.metadata["decision_type"] = decision_type
 
+                # Common log fields for URL violations
+                violation_fields = dict(
+                    rule=rule.name,
+                    host=host,
+                    location="url",
+                    credential_fingerprint=f"hmac:{fingerprint}",
+                    confidence="high",
+                    tier=1,
+                )
+
                 # Create appropriate 428 response
                 if decision_type == "greylist_mismatch":
-                    log.warning(f"BLOCKED (mismatch): {rule.name} in URL -> {host}")
                     if self._should_block():
+                        log.warning(f"BLOCKED (mismatch): {rule.name} in URL -> {host}")
+                        self._log_decision(flow, "block", reason="destination_mismatch",
+                            expected_hosts=decision_context.get("expected_hosts"), **violation_fields)
                         flow.response = create_destination_mismatch_response(
                             credential_type=rule.name,
                             destination_host=host,
@@ -2333,10 +2372,15 @@ class CredentialGuard:
                             path=flow.request.path
                         )
                         return
+                    else:
+                        log.warning(f"WARN (mismatch): {rule.name} in URL -> {host}")
+                        self._log_decision(flow, "warn", reason="destination_mismatch",
+                            expected_hosts=decision_context.get("expected_hosts"), **violation_fields)
+                        continue
                 elif decision_type == "greylist_approval":
                     reason = decision_context.get("reason", "unknown")
-                    log.warning(f"BLOCKED (approval required): {rule.name} in URL -> {host}")
                     if self._should_block():
+                        log.warning(f"BLOCKED (approval required): {rule.name} in URL -> {host}")
                         approval_token = self.create_pending_approval(
                             credential=matched,
                             credential_type=rule.name,
@@ -2347,6 +2391,8 @@ class CredentialGuard:
                             tier=1,
                             project_id=project_id
                         )
+                        self._log_decision(flow, "block", reason=reason,
+                            approval_token=approval_token[:16], **violation_fields)
                         if self.approval_backend and self.approval_backend.is_enabled():
                             self.approval_backend.send_approval_request(
                                 token=approval_token,
@@ -2366,6 +2412,10 @@ class CredentialGuard:
                             approval_token=approval_token
                         )
                         return
+                    else:
+                        log.warning(f"WARN (approval required): {rule.name} in URL -> {host}")
+                        self._log_decision(flow, "warn", reason=reason, **violation_fields)
+                        continue
 
         # Check body (opt-in)
         if ctx.options.credguard_scan_bodies:
@@ -2405,27 +2455,39 @@ class CredentialGuard:
                         if decision_type == "allow":
                             log.info(f"Allowed by policy: {rule.name} in body -> {host}{flow.request.path}")
                             flow.metadata["credguard_policy_approved"] = True
+                            self._log_decision(flow, "allow",
+                                rule=rule.name,
+                                host=host,
+                                location="body",
+                                credential_fingerprint=f"hmac:{fingerprint}",
+                                reason="policy_approved"
+                            )
                             continue
 
                         # VIOLATION DETECTED
                         self._record_violation(rule.name, host, "body")
-                        self._log_violation(
-                            rule=rule.name,
-                            host=host,
-                            location="body",
-                            credential_fingerprint=f"hmac:{fingerprint}",
-                            decision_type=decision_type,
-                        )
 
                         flow.metadata["blocked_by"] = self.name
                         flow.metadata["credential_fingerprint"] = f"hmac:{fingerprint}"
                         flow.metadata["blocked_host"] = host
                         flow.metadata["decision_type"] = decision_type
 
+                        # Common log fields for body violations
+                        violation_fields = dict(
+                            rule=rule.name,
+                            host=host,
+                            location="body",
+                            credential_fingerprint=f"hmac:{fingerprint}",
+                            confidence="high",
+                            tier=1,
+                        )
+
                         # Create appropriate 428 response
                         if decision_type == "greylist_mismatch":
-                            log.warning(f"BLOCKED (mismatch): {rule.name} in body -> {host}")
                             if self._should_block():
+                                log.warning(f"BLOCKED (mismatch): {rule.name} in body -> {host}")
+                                self._log_decision(flow, "block", reason="destination_mismatch",
+                                    expected_hosts=decision_context.get("expected_hosts"), **violation_fields)
                                 flow.response = create_destination_mismatch_response(
                                     credential_type=rule.name,
                                     destination_host=host,
@@ -2435,10 +2497,15 @@ class CredentialGuard:
                                     path=flow.request.path
                                 )
                                 return
+                            else:
+                                log.warning(f"WARN (mismatch): {rule.name} in body -> {host}")
+                                self._log_decision(flow, "warn", reason="destination_mismatch",
+                                    expected_hosts=decision_context.get("expected_hosts"), **violation_fields)
+                                continue
                         elif decision_type == "greylist_approval":
                             reason = decision_context.get("reason", "unknown")
-                            log.warning(f"BLOCKED (approval required): {rule.name} in body -> {host}")
                             if self._should_block():
+                                log.warning(f"BLOCKED (approval required): {rule.name} in body -> {host}")
                                 approval_token = self.create_pending_approval(
                                     credential=matched,
                                     credential_type=rule.name,
@@ -2449,6 +2516,8 @@ class CredentialGuard:
                                     tier=1,
                                     project_id=project_id
                                 )
+                                self._log_decision(flow, "block", reason=reason,
+                                    approval_token=approval_token[:16], **violation_fields)
                                 if self.approval_backend and self.approval_backend.is_enabled():
                                     self.approval_backend.send_approval_request(
                                         token=approval_token,
@@ -2468,6 +2537,10 @@ class CredentialGuard:
                                     approval_token=approval_token
                                 )
                                 return
+                            else:
+                                log.warning(f"WARN (approval required): {rule.name} in body -> {host}")
+                                self._log_decision(flow, "warn", reason=reason, **violation_fields)
+                                continue
 
         # Passed all checks
         flow.metadata["credguard_passed"] = True

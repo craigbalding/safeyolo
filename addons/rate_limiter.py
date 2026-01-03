@@ -34,9 +34,9 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_jsonl
+    from .utils import make_block_response, write_event
 except ImportError:
-    from utils import make_block_response, write_jsonl
+    from utils import make_block_response, write_event
 
 log = logging.getLogger("safeyolo.rate-limiter")
 
@@ -443,9 +443,23 @@ class RateLimiter:
             log.error(f"Failed to reload rate limit config: {type(e).__name__}: {e}")
             return False
 
-    def _log_limited(self, domain: str, wait_ms: float):
-        """Log rate limit event."""
-        write_jsonl(self.log_path, "rate_limited", log, domain=domain, wait_ms=round(wait_ms, 1))
+    def _log_limited(self, flow: http.HTTPFlow, decision: str, domain: str, wait_ms: float):
+        """Log rate limit decision.
+
+        Args:
+            flow: HTTP flow for request_id correlation
+            decision: "block" or "warn"
+            domain: The rate-limited domain
+            wait_ms: Time until next allowed request
+        """
+        write_event(
+            "security.ratelimit",
+            request_id=flow.metadata.get("request_id"),
+            addon=self.name,
+            decision=decision,
+            domain=domain,
+            wait_ms=round(wait_ms, 1)
+        )
 
     def _should_block(self) -> bool:
         """Check if blocking is enabled."""
@@ -474,8 +488,6 @@ class RateLimiter:
             flow.metadata["ratelimit_remaining"] = result.remaining
         else:
             self.limited_total += 1
-            self._log_limited(domain, result.wait_ms)
-
             client = flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
 
             if self._should_block():
@@ -483,6 +495,7 @@ class RateLimiter:
                     f"BLOCKED: {domain}{flow.request.path} from {client} "
                     f"(wait {result.wait_ms:.0f}ms, limit: {config.requests_per_second} rps)"
                 )
+                self._log_limited(flow, "block", domain, result.wait_ms)
                 # Block with 429 and Retry-After header
                 retry_after = int(result.wait_ms / 1000) + 1
                 flow.metadata["blocked_by"] = self.name
@@ -507,6 +520,7 @@ class RateLimiter:
                     f"WARN: {domain}{flow.request.path} from {client} "
                     f"(wait {result.wait_ms:.0f}ms, limit: {config.requests_per_second} rps)"
                 )
+                self._log_limited(flow, "warn", domain, result.wait_ms)
 
     def get_stats(self) -> dict:
         """Get rate limiter statistics."""

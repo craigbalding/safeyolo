@@ -43,10 +43,10 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_jsonl
+    from .utils import make_block_response, write_event
     from .policy import get_policy_engine
 except ImportError:
-    from utils import make_block_response, write_jsonl
+    from utils import make_block_response, write_event
     from policy import get_policy_engine
 
 log = logging.getLogger("safeyolo.prompt-injection")
@@ -378,8 +378,8 @@ class PromptInjectionDetector:
                     f"-> {flow.request.host}{flow.request.path}"
                 )
 
-                self._log_detection(
-                    type="async_detection",
+                self._log_detection(flow, "warn",
+                    detection_type="async",
                     primary_model=primary.model,
                     primary_classification=primary.classification.value,
                     primary_score=primary.injection_score,
@@ -388,16 +388,28 @@ class PromptInjectionDetector:
                     secondary_confidence=secondary.confidence,
                     secondary_latency_ms=secondary.latency_ms,
                     host=flow.request.host,
-                    request_path=flow.request.path,
+                    path=flow.request.path,
                     text_preview=text_preview,
                 )
 
         except Exception as e:
             log.error(f"Async verification failed: {type(e).__name__}: {e}")
 
-    def _log_detection(self, **data):
-        """Write detection to JSONL log."""
-        write_jsonl(self.log_path, "injection_detection", log, **data)
+    def _log_detection(self, flow: http.HTTPFlow, decision: str, **data):
+        """Write injection detection to JSONL audit log.
+
+        Args:
+            flow: The HTTP flow (for request_id correlation)
+            decision: "block" or "warn"
+            **data: Detection details (classification, confidence, model, etc.)
+        """
+        write_event(
+            "security.injection",
+            request_id=flow.metadata.get("request_id"),
+            addon=self.name,
+            decision=decision,
+            **data
+        )
 
     def _extract_text(self, flow: http.HTTPFlow) -> Optional[str]:
         """Extract text to scan from request.
@@ -549,21 +561,22 @@ class PromptInjectionDetector:
             # Truncate text for logging
             text_preview = text[:500] + "..." if len(text) > 500 else text
 
-            self._log_detection(
-                type="detection",
+            flow.metadata["injection_detected"] = True
+            flow.metadata["injection_classification"] = primary.classification.value
+            flow.metadata["injection_confidence"] = primary.confidence
+
+            # Common log fields
+            detection_fields = dict(
+                detection_type="sync",
                 classification=primary.classification.value,
                 confidence=primary.confidence,
                 injection_score=primary.injection_score,
                 model=primary.model,
                 latency_ms=primary.latency_ms,
                 host=flow.request.host,
-                request_path=flow.request.path,
+                path=flow.request.path,
                 text_preview=text_preview,
             )
-
-            flow.metadata["injection_detected"] = True
-            flow.metadata["injection_classification"] = primary.classification.value
-            flow.metadata["injection_confidence"] = primary.confidence
 
             if ctx.options.injection_block:
                 self.blocks_total += 1
@@ -572,6 +585,7 @@ class PromptInjectionDetector:
                     f"BLOCKED: Injection ({primary.confidence:.0%}, {primary.latency_ms:.0f}ms) "
                     f"-> {flow.request.host}{flow.request.path}"
                 )
+                self._log_detection(flow, "block", **detection_fields)
                 flow.response = self._create_block_response(primary)
                 return
             else:
@@ -579,6 +593,7 @@ class PromptInjectionDetector:
                     f"DETECTED: Injection ({primary.confidence:.0%}, {primary.latency_ms:.0f}ms) "
                     f"-> {flow.request.host}{flow.request.path}"
                 )
+                self._log_detection(flow, "warn", **detection_fields)
 
         # If PIGuard said SAFE and async verify is enabled, run phi3.5 in background
         elif (primary.classification == Classification.SAFE and

@@ -237,10 +237,8 @@ class RequestLogger:
         """Log incoming request."""
         self.requests_total += 1
 
-        # Generate request ID
-        request_id = f"req-{int(time.time() * 1000) % 1000000}"
-        flow.metadata["request_id"] = request_id
-        flow.metadata["start_time"] = time.time()
+        # request_id set by request_id.py addon (runs first in chain)
+        request_id = flow.metadata.get("request_id")
 
         parsed = urlparse(flow.request.pretty_url)
         host = parsed.netloc
@@ -254,8 +252,8 @@ class RequestLogger:
 
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "event": "request",
-            "id": request_id,
+            "event": "traffic.request",
+            "request_id": request_id,
             "method": flow.request.method,
             "host": host,
             "path": path,
@@ -277,10 +275,8 @@ class RequestLogger:
 
         if blocked_by:
             self.blocks_total += 1
-            event_type = "block"
         else:
             self.responses_total += 1
-            event_type = "response"
 
         duration_ms = None
         if start_time:
@@ -290,9 +286,10 @@ class RequestLogger:
 
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "event": event_type,
-            "id": request_id,
+            "event": "traffic.response",
+            "request_id": request_id,
             "host": parsed.netloc,
+            "path": parsed.path,
             "status": flow.response.status_code if flow.response else None,
             "size": len(flow.response.content or b"") if flow.response else 0,
             "ms": duration_ms,
@@ -301,8 +298,10 @@ class RequestLogger:
         # Add block details if applicable
         if blocked_by:
             entry["blocked_by"] = blocked_by
-            entry["credential_prefix"] = flow.metadata.get("credential_prefix")
-            entry["path"] = parsed.path
+            # Include credential fingerprint from credguard if available
+            fingerprint = flow.metadata.get("credential_fingerprint")
+            if fingerprint:
+                entry["credential_fingerprint"] = fingerprint
 
         self._write_entry(entry)
 

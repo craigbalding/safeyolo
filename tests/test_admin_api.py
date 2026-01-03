@@ -264,6 +264,7 @@ class TestAdminRequestHandler:
                 self.rfile = BytesIO(body.encode() if body else b"")
                 self.wfile = BytesIO()
                 self._status = 200
+                self.client_address = ("127.0.0.1", 12345)
 
             def send_response(self, code):
                 self._status = code
@@ -451,6 +452,7 @@ class TestAdminAPIAuthentication:
                 self.rfile = BytesIO(body.encode() if body else b"")
                 self.wfile = BytesIO()
                 self._status = 200
+                self.client_address = ("127.0.0.1", 12345)
 
             def send_response(self, code):
                 self._status = code

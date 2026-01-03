@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from addons.credential_guard import ApprovalNotifier
@@ -39,16 +41,18 @@ def test_notifier_pushcut_only():
 
 def test_notifier_ntfy_only():
     """ntfy-only config (Android users)."""
-    config = {
-        "ntfy_enabled": True,
-        "callback_topic": "test-topic",
-    }
-    notifier = ApprovalNotifier(config)
+    # Patch _get_pushcut_url to prevent reading from persistent file
+    with patch.object(ApprovalNotifier, "_get_pushcut_url", return_value=None):
+        config = {
+            "ntfy_enabled": True,
+            "callback_topic": "test-topic",
+        }
+        notifier = ApprovalNotifier(config)
 
-    assert notifier.is_enabled()
-    assert notifier.ntfy_enabled
-    assert not notifier.pushcut_url
-    print("ntfy-only config")
+        assert notifier.is_enabled()
+        assert notifier.ntfy_enabled
+        assert not notifier.pushcut_url
+        print("ntfy-only config")
 
 
 def test_notifier_both():
@@ -68,13 +72,15 @@ def test_notifier_both():
 
 def test_notifier_disabled():
     """No channels enabled."""
-    config = {
-        "callback_topic": "test-topic",
-    }
-    notifier = ApprovalNotifier(config)
+    # Patch _get_pushcut_url to prevent reading from persistent file
+    with patch.object(ApprovalNotifier, "_get_pushcut_url", return_value=None):
+        config = {
+            "callback_topic": "test-topic",
+        }
+        notifier = ApprovalNotifier(config)
 
-    assert not notifier.is_enabled()
-    print("No channels enabled")
+        assert not notifier.is_enabled()
+        print("No channels enabled")
 
 
 def test_topic_from_env():
@@ -86,8 +92,16 @@ def test_topic_from_env():
     print("Topic from env")
 
 
+@pytest.mark.skipif(
+    not os.environ.get("NTFY_INTEGRATION_TEST"),
+    reason="Set NTFY_INTEGRATION_TEST=1 to run real ntfy integration tests"
+)
 def test_send_ntfy(topic=None):
-    """Integration test - send to real ntfy."""
+    """Integration test - send to real ntfy.
+
+    This test requires network access and valid SSL certificates.
+    Set NTFY_INTEGRATION_TEST=1 to enable.
+    """
     topic = topic or os.environ.get("NTFY_TOPIC") or generate_secure_topic()
     print(f"\nSending to ntfy topic: {topic}")
 

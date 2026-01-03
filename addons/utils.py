@@ -2,6 +2,26 @@
 utils.py - Shared utilities for SafeYolo addons
 
 Functional helpers to reduce duplication across addons.
+
+Event Taxonomy:
+    traffic.request      - Incoming request
+    traffic.response     - Response (normal or blocked)
+
+    security.credential  - Credential detection decision
+    security.injection   - Injection detection decision
+    security.yara        - YARA match decision
+    security.pattern     - Pattern match decision
+    security.ratelimit   - Rate limit decision
+    security.circuit     - Circuit breaker decision
+
+    ops.startup          - Addon startup
+    ops.config_reload    - Config file changed
+    ops.config_error     - Config load failed
+
+    admin.approve        - Credential approved
+    admin.deny           - Credential denied
+    admin.mode_change    - Mode toggled
+    admin.auth_failure   - Failed auth attempt
 """
 
 import json
@@ -16,6 +36,55 @@ from mitmproxy import http
 
 # Default audit log path - can be overridden via environment
 AUDIT_LOG_PATH = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
+
+# Valid event prefixes for taxonomy validation
+VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.")
+
+# Module-level logger for write_event errors
+_log = logging.getLogger("safeyolo.utils")
+
+
+def write_event(event: str, **data) -> None:
+    """
+    Write an event to the central JSONL audit log.
+
+    Primary logging function for all SafeYolo events. Writes to AUDIT_LOG_PATH.
+
+    Args:
+        event: Event type using taxonomy (e.g., "security.credential", "admin.approve")
+               Must start with: traffic., security., ops., or admin.
+        **data: Event-specific fields. Common fields:
+            - request_id: Correlation ID from flow.metadata
+            - addon: Name of the addon emitting the event
+            - decision: For security events - "allow", "block", or "warn"
+
+    Example:
+        write_event("security.credential",
+            request_id="req-abc123",
+            addon="credential-guard",
+            decision="block",
+            rule="openai",
+            host="httpbin.org",
+            reason="destination_mismatch"
+        )
+    """
+    # Validate event taxonomy (warn but don't fail)
+    if not event.startswith(VALID_EVENT_PREFIXES):
+        _log.warning(f"Event '{event}' doesn't match taxonomy (expected: traffic.*, security.*, ops.*, admin.*)")
+
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **data,
+    }
+    try:
+        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUDIT_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        # Fallback to stderr if log write fails
+        print(f"[safeyolo] Event log write failed: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr)
 
 
 def write_jsonl(
@@ -55,33 +124,23 @@ def write_audit_event(event: str, **data) -> None:
     """
     Write an operational/audit event to the central JSONL log.
 
-    Use this for events that should be in the audit trail:
-    - Config reloads
-    - State changes (circuit open/close)
-    - Admin actions (approve/deny)
-    - Startup/shutdown events
+    DEPRECATED: Use write_event() with taxonomy prefix instead.
+    This function is kept for backward compatibility but auto-prefixes
+    events with "ops." if they don't already have a taxonomy prefix.
 
     Args:
-        event: Event type (e.g., "config_reload", "circuit_open", "approval")
+        event: Event type (e.g., "config_reload" -> "ops.config_reload")
         **data: Additional fields (addon, config, error, etc.)
 
     Example:
         write_audit_event("config_reload", addon="request-logger", config="quiet_hosts", rules=2)
-        write_audit_event("config_error", addon="rate-limiter", error="Invalid YAML")
+        # Writes: {"event": "ops.config_reload", ...}
     """
-    entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "event": event,
-        **data,
-    }
-    try:
-        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_LOG_PATH, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception as e:
-        # Fallback to stderr if log write fails
-        print(f"[safeyolo] Audit log write failed: {type(e).__name__}: {e}", file=sys.stderr)
-        print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr)
+    # Auto-prefix with ops. if no taxonomy prefix
+    if not event.startswith(VALID_EVENT_PREFIXES):
+        event = f"ops.{event}"
+
+    write_event(event, **data)
 
 
 def make_block_response(
