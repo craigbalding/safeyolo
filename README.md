@@ -4,28 +4,61 @@
 
 SafeYolo is a security proxy that prevents credential leakage, dampens runaway loops, and provides audit logs for agent HTTP calls. When your AI assistant hallucinates an endpoint, SafeYolo catches the credential before it leaks.
 
-## Quick Start
+## Deployment Modes
+
+| Mode | Enforcement | Use case |
+|------|-------------|----------|
+| **Secure Mode** (recommended) | Enforced - bypass attempts fail | Production use with autonomous agents |
+| Quick Mode | Best-effort - agents can bypass | Fast demo, smoke testing |
+
+**Why Secure Mode?** Many autonomous coding agents will retry failed calls by changing network configuration - unsetting proxy variables or opening direct sockets. Secure Mode avoids "policy by suggestion" by removing direct internet routing entirely. The only way out is through the proxy.
+
+## Quick Start: Secure Mode (Recommended)
+
+Run your coding agent in a container on a no-internet Docker network where SafeYolo is the only egress path:
+
+```bash
+# Clone and start SafeYolo
+git clone https://github.com/yourorg/safeyolo.git
+cd safeyolo
+docker compose up -d
+
+# Copy the ready-to-run template for your agent
+cp -r contrib/claude-code-chokepoint ~/my-agent
+
+# Run your agent inside (bypass attempts fail, not leak)
+cd ~/my-agent
+docker compose run --rm claude
+```
+
+The template handles everything: network isolation, CA certificate mounting, and proxy configuration. See [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/) for details.
+
+## Quick Start: Quick Mode (Demo Only)
+
+For a fast smoke test on your host machine. **Not enforceable** - autonomous agents can bypass by going direct.
 
 ```bash
 # Install CLI
 pipx install safeyolo
 
-# Initialize (interactive wizard)
+# Initialize and start
 safeyolo init
-
-# Start proxy
 safeyolo start
 
 # Install CA certificate (required for HTTPS inspection)
 safeyolo cert install
 
-# Verify everything works
+# Verify setup
 safeyolo check
+
+# Point your agent at the proxy
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
 ```
 
-> **For strongest guarantees**, run your agent in Docker chokepoint mode where bypass attempts fail rather than leak. See [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/).
+> **Warning:** Quick Mode is useful for testing SafeYolo, but provides no enforcement against agents that ignore proxy settings.
 
-For contributors building locally instead of pulling the image:
+For contributors building locally:
 
 ```bash
 docker build -t safeyolo:latest .
@@ -104,9 +137,9 @@ apk add --no-cache ca-certificates && update-ca-certificates
 
 Some applications use certificate pinning and will refuse connections even with the CA installed. For these apps, either exclude them from proxying or use TLS passthrough. See [docs/TLS_CERTIFICATE.md](docs/TLS_CERTIFICATE.md) for configuration options.
 
-## Configuring Your Agent
+## Configuring Your Agent (Quick Mode)
 
-Set these environment variables for your AI agent:
+For Quick Mode, set these environment variables for your AI agent:
 
 ```bash
 # Standard proxy configuration
@@ -115,7 +148,7 @@ export HTTPS_PROXY=http://localhost:8080
 export NO_PROXY=localhost,127.0.0.1
 ```
 
-**Agent running in Docker?**
+**Agent running in Docker?** Use Secure Mode instead (see Quick Start above). If you must use Quick Mode with Docker:
 
 ```bash
 # macOS / Windows (Docker Desktop)
@@ -148,12 +181,12 @@ SafeYolo is an explicit HTTP(S) forward proxy.
 
 **Enforcement depends on deployment mode:**
 
-| Deployment | If client ignores proxy settings... | Practical meaning |
-|------------|-------------------------------------|-------------------|
-| Host proxy (default) | Traffic goes direct (not inspected) | SafeYolo is "best effort" unless you also enforce egress via firewall/VPN/container |
-| Docker chokepoint | Traffic fails (no route to internet) | Proxy is the only way out; bypass attempts don't leak, they break |
+| Mode | If agent ignores proxy settings... | Result |
+|------|-------------------------------------|--------|
+| **Secure Mode** (recommended) | Traffic fails (no route to internet) | Bypass attempts break, not leak |
+| Quick Mode | Traffic goes direct (not inspected) | Best-effort only; agents can bypass |
 
-See [docs/DOCKER_CHOKEPOINT.md](docs/DOCKER_CHOKEPOINT.md) for the locked-down container setup, or use the ready-to-run [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/) example.
+See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for the full setup, or use the ready-to-run [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/) template.
 
 ## What It Does
 
@@ -332,11 +365,12 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 - Credentials sent to wrong hosts
 - Runaway API loops
 - Typosquats and homograph attacks (e.g., Cyrillic 'а' in `аpi.openai.com`)
+- Proxy bypass attempts (Secure Mode only - they fail instead of leak)
 
 **SafeYolo does NOT:**
 - Detect prompt injection
 - Replace application-layer auth
-- Prevent non-proxied egress unless deployed in Docker chokepoint mode or egress is enforced at OS/network level
+- Prevent non-proxied egress in Quick Mode (agents can bypass by going direct)
 
 ## Architecture
 
