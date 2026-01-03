@@ -23,10 +23,8 @@ from urllib.parse import urlparse, parse_qs
 from mitmproxy import ctx
 
 try:
-    from .rate_limiter import InMemoryGCRA, RateLimitConfig
     from .utils import write_event
 except ImportError:
-    from rate_limiter import InMemoryGCRA, RateLimitConfig
     from utils import write_event
 
 log = logging.getLogger("safeyolo.admin")
@@ -40,13 +38,6 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     addons_with_stats: dict = {}  # name -> addon instance
     admin_token = None  # Bearer token for authentication (set by AdminAPI)
 
-    # Rate limiting for approval endpoints (protects against token brute-forcing)
-    # Uses GCRA algorithm from rate_limiter.py - allows burst, smooth limiting
-    _approval_limiter = InMemoryGCRA()  # Per-IP rate limiting, no persistence needed
-    _approval_limit_config = RateLimitConfig(
-        requests_per_second=2.0,  # 2 req/sec sustained rate
-        burst_capacity=10,        # Allow burst of 10 for legitimate batch approvals
-    )
 
     # Addons that support mode switching: name -> option_name
     # All options now use consistent "block" semantics: True=block, False=warn
@@ -105,33 +96,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         return False
 
     def _get_client_ip(self) -> str:
-        """Get client IP for rate limiting."""
+        """Get client IP for logging."""
         # Check X-Forwarded-For if behind proxy
         forwarded = self.headers.get("X-Forwarded-For", "")
         if forwarded:
             return forwarded.split(",")[0].strip()
         return self.client_address[0]
-
-    def _check_approval_rate_limit(self) -> bool:
-        """Check rate limit for approval endpoints.
-
-        Returns:
-            True if request is allowed, False if rate limited (429 sent)
-        """
-        client_ip = self._get_client_ip()
-        result = self._approval_limiter.check(client_ip, self._approval_limit_config)
-
-        if not result.allowed:
-            retry_after = int(result.wait_ms / 1000) + 1
-            log.warning(f"Rate limited approval request from {client_ip} (wait {result.wait_ms:.0f}ms)")
-            self._send_json({
-                "error": "Too Many Requests",
-                "message": "Rate limit exceeded for approval endpoints",
-                "retry_after_seconds": retry_after
-            }, 429)
-            return False
-
-        return True
 
     def _send_json(self, data: dict, status: int = 200):
         """Send JSON response."""
@@ -283,17 +253,6 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             entries = self.credential_guard.get_temp_allowlist()
             self._send_json({"allowlist": entries})
 
-        elif path == "/admin/approvals/pending":
-            # Phase 4.3: List pending approval requests
-            if not self.credential_guard:
-                self._send_json({"error": "credential-guard not loaded"}, 404)
-                return
-            if not hasattr(self.credential_guard, 'get_pending_approvals'):
-                self._send_json({"error": "approval workflow not available"}, 501)
-                return
-            pending = self.credential_guard.get_pending_approvals()
-            self._send_json({"pending_approvals": pending, "count": len(pending)})
-
         elif path == "/modes":
             # Get current mode for all switchable addons
             modes = self._get_all_modes()
@@ -323,6 +282,18 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             policy = self.credential_guard.policy_store.get_policy(project_id)
             self._send_json({"project": project_id, "policy": policy})
 
+        elif path == "/admin/policies":
+            # GET /admin/policies - List all policies
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'policy_store') or not self.credential_guard.policy_store:
+                self._send_json({"error": "policy store not available"}, 501)
+                return
+            ps = self.credential_guard.policy_store
+            policies = list(ps._policies.keys()) if hasattr(ps, '_policies') else []
+            self._send_json({"policies": policies, "policy_dir": str(ps.policy_dir)})
+
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -335,94 +306,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # Phase 4.3: Approval/deny endpoints (rate limited to prevent token brute-forcing)
-        if path.startswith("/admin/approve/"):
-            # POST /admin/approve/{token}
-            if not self._check_approval_rate_limit():
-                return
-            if not self.credential_guard:
-                self._send_json({"error": "credential-guard not loaded"}, 404)
-                return
-            if not hasattr(self.credential_guard, 'approve_pending'):
-                self._send_json({"error": "approval workflow not available"}, 501)
-                return
-
-            token = path[15:]  # strip "/admin/approve/"
-            if not token:
-                self._send_json({"error": "missing token"}, 400)
-                return
-
-            success = self.credential_guard.approve_pending(token)
-            client_ip = self._get_client_ip()
-            if success:
-                write_event("admin.approve",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    token=token[:16],
-                    status="approved"
-                )
-                self._send_json({
-                    "status": "approved",
-                    "token": token[:8] + "...",
-                    "message": "Request approved and added to temp allowlist"
-                })
-            else:
-                write_event("admin.approve",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    token=token[:16],
-                    status="not_found"
-                )
-                self._send_json({
-                    "status": "not_found",
-                    "token": token[:8] + "...",
-                    "error": "Token not found or already processed"
-                }, 404)
-
-        elif path.startswith("/admin/deny/"):
-            # POST /admin/deny/{token}
-            if not self._check_approval_rate_limit():
-                return
-            if not self.credential_guard:
-                self._send_json({"error": "credential-guard not loaded"}, 404)
-                return
-            if not hasattr(self.credential_guard, 'deny_pending'):
-                self._send_json({"error": "approval workflow not available"}, 501)
-                return
-
-            token = path[12:]  # strip "/admin/deny/"
-            if not token:
-                self._send_json({"error": "missing token"}, 400)
-                return
-
-            success = self.credential_guard.deny_pending(token)
-            client_ip = self._get_client_ip()
-            if success:
-                write_event("admin.deny",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    token=token[:16],
-                    status="denied"
-                )
-                self._send_json({
-                    "status": "denied",
-                    "token": token[:8] + "...",
-                    "message": "Request denied and removed from pending"
-                })
-            else:
-                write_event("admin.deny",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    token=token[:16],
-                    status="not_found"
-                )
-                self._send_json({
-                    "status": "not_found",
-                    "token": token[:8] + "...",
-                    "error": "Token not found or already processed"
-                }, 404)
-
-        elif path == "/plugins/credential-guard/allowlist":
+        if path == "/plugins/credential-guard/allowlist":
             if not self.credential_guard:
                 self._send_json({"error": "credential-guard not loaded"}, 404)
                 return
@@ -461,6 +345,108 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"valid": True})
             except yaml.YAMLError as e:
                 self._send_json({"valid": False, "error": str(e)}, 400)
+
+        elif path.startswith("/admin/policy/") and path.endswith("/approve"):
+            # POST /admin/policy/{project}/approve - Add approval rule to policy
+            # Path: /admin/policy/{project}/approve
+            project_id = path[14:-8]  # strip "/admin/policy/" and "/approve"
+            if not project_id:
+                self._send_json({"error": "missing project_id"}, 400)
+                return
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'policy_store') or not self.credential_guard.policy_store:
+                self._send_json({"error": "policy store not available"}, 501)
+                return
+
+            data = self._read_json()
+            if not data:
+                self._send_json({"error": "missing request body"}, 400)
+                return
+
+            # Required fields
+            token_hmac = data.get("token_hmac")
+            hosts = data.get("hosts", [])
+            paths = data.get("paths", ["/**"])
+            name = data.get("name", "")
+
+            if not token_hmac:
+                self._send_json({"error": "missing 'token_hmac' field"}, 400)
+                return
+            if not hosts:
+                self._send_json({"error": "missing 'hosts' field"}, 400)
+                return
+
+            ps = self.credential_guard.policy_store
+            policy_path = ps.policy_dir / f"{project_id}.yaml"
+
+            try:
+                import yaml
+                import tempfile
+                import shutil
+                from datetime import datetime
+
+                # Load existing policy
+                policy = ps.get_policy(project_id) or {}
+                approved = policy.get("approved", [])
+
+                # Check for duplicate
+                for rule in approved:
+                    if rule.get("token_hmac") == token_hmac:
+                        if set(rule.get("hosts", [])) == set(hosts):
+                            self._send_json({
+                                "status": "exists",
+                                "message": "Approval rule already exists"
+                            })
+                            return
+
+                # Add new rule
+                new_rule = {
+                    "token_hmac": token_hmac,
+                    "hosts": hosts,
+                    "paths": paths,
+                    "added": datetime.now().isoformat(),
+                }
+                if name:
+                    new_rule["name"] = name
+
+                approved.append(new_rule)
+                policy["approved"] = approved
+
+                # Atomic write
+                content = yaml.safe_dump(policy, default_flow_style=False, allow_unicode=True)
+                ps.policy_dir.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.yaml', dir=ps.policy_dir, delete=False
+                ) as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+                shutil.move(tmp_path, policy_path)
+
+                # Log
+                client_ip = self._get_client_ip()
+                write_event("admin.approval_added",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    project_id=project_id,
+                    token_hmac=token_hmac[:16],
+                    hosts=hosts
+                )
+                log.info(f"Approval added to '{project_id}': hmac:{token_hmac[:16]} -> {hosts}")
+
+                self._send_json({
+                    "status": "added",
+                    "project": project_id,
+                    "token_hmac": token_hmac[:16] + "...",
+                    "hosts": hosts,
+                    "approved_count": len(approved),
+                    "message": "Approval added. File watcher will reload within 1s."
+                })
+
+            except Exception as e:
+                log.error(f"Failed to add approval: {type(e).__name__}: {e}")
+                self._send_json({"error": f"Failed to add approval: {type(e).__name__}: {e}"}, 500)
 
         else:
             self._send_json({"error": "not found"}, 404)
@@ -528,6 +514,74 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                     new_mode=mode
                 )
                 self._send_json(result)
+
+        elif path.startswith("/admin/policy/"):
+            # PUT /admin/policy/{project} - Write/update project policy
+            project_id = path[14:]  # strip "/admin/policy/"
+            if not project_id:
+                self._send_json({"error": "missing project_id"}, 400)
+                return
+            if not self.credential_guard:
+                self._send_json({"error": "credential-guard not loaded"}, 404)
+                return
+            if not hasattr(self.credential_guard, 'policy_store') or not self.credential_guard.policy_store:
+                self._send_json({"error": "policy store not available"}, 501)
+                return
+
+            data = self._read_json()
+            if not data:
+                self._send_json({"error": "missing request body"}, 400)
+                return
+
+            policy = data.get("policy")
+            if policy is None:
+                self._send_json({"error": "missing 'policy' field in request body"}, 400)
+                return
+
+            # Write policy to file (atomic write)
+            ps = self.credential_guard.policy_store
+            policy_path = ps.policy_dir / f"{project_id}.yaml"
+
+            try:
+                import yaml
+                import tempfile
+                import shutil
+
+                # Validate YAML can be serialized
+                content = yaml.safe_dump(policy, default_flow_style=False, allow_unicode=True)
+
+                # Atomic write: write to temp file, then rename
+                ps.policy_dir.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.yaml', dir=ps.policy_dir, delete=False
+                ) as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+
+                shutil.move(tmp_path, policy_path)
+
+                # Log the write
+                client_ip = self._get_client_ip()
+                write_event("admin.policy_write",
+                    addon="admin-api",
+                    client_ip=client_ip,
+                    project_id=project_id,
+                    approved_count=len(policy.get("approved", []))
+                )
+                log.info(f"Policy '{project_id}' written: {len(policy.get('approved', []))} approved rules")
+
+                self._send_json({
+                    "status": "written",
+                    "project": project_id,
+                    "approved_count": len(policy.get("approved", [])),
+                    "message": "Policy written. File watcher will reload within 1s."
+                })
+
+            except yaml.YAMLError as e:
+                self._send_json({"error": f"Invalid policy YAML: {e}"}, 400)
+            except Exception as e:
+                log.error(f"Failed to write policy: {type(e).__name__}: {e}")
+                self._send_json({"error": f"Failed to write policy: {type(e).__name__}: {e}"}, 500)
 
         else:
             self._send_json({"error": "not found"}, 404)

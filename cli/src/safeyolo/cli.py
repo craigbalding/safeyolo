@@ -7,6 +7,7 @@ from . import __version__
 from .commands.init import init
 from .commands.lifecycle import start, status, stop
 from .commands.logs import logs
+from .commands.watch import watch
 
 console = Console()
 
@@ -48,6 +49,7 @@ app.command()(start)
 app.command()(stop)
 app.command()(status)
 app.command()(logs)
+app.command()(watch)
 
 
 # Convenience aliases

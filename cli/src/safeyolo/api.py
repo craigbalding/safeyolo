@@ -113,21 +113,36 @@ class AdminAPI:
         """Set mode for all addons."""
         return self._request("PUT", "/modes", json={"mode": mode})
 
-    def pending_approvals(self) -> list[dict[str, Any]]:
-        """List pending approval requests."""
-        return self._request("GET", "/admin/approvals/pending")
-
-    def approve(self, token: str) -> dict[str, Any]:
-        """Approve a pending credential request."""
-        return self._request("POST", f"/admin/approve/{token}")
-
-    def deny(self, token: str) -> dict[str, Any]:
-        """Deny a pending credential request."""
-        return self._request("POST", f"/admin/deny/{token}")
-
     def get_policy(self, project: str = "default") -> dict[str, Any]:
         """Get policy for a project."""
         return self._request("GET", f"/admin/policy/{project}")
+
+    def list_policies(self) -> dict[str, Any]:
+        """List all policies."""
+        return self._request("GET", "/admin/policies")
+
+    def set_policy(self, project: str, policy: dict[str, Any]) -> dict[str, Any]:
+        """Write/update policy for a project."""
+        return self._request("PUT", f"/admin/policy/{project}", json={"policy": policy})
+
+    def add_approval(
+        self,
+        project: str,
+        token_hmac: str,
+        hosts: list[str],
+        paths: list[str] | None = None,
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Add an approval rule to a project policy."""
+        payload = {
+            "token_hmac": token_hmac,
+            "hosts": hosts,
+        }
+        if paths:
+            payload["paths"] = paths
+        if name:
+            payload["name"] = name
+        return self._request("POST", f"/admin/policy/{project}/approve", json=payload)
 
     def get_allowlist(self) -> list[dict[str, Any]]:
         """Get temp allowlist entries."""
