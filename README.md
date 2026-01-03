@@ -223,17 +223,16 @@ safeyolo/
 │   └── ...
 ├── cli/                 # safeyolo CLI package
 ├── config/              # Default configurations
+├── contrib/             # Example integrations (notifications, etc.)
 ├── tests/               # Test suite
 └── docs/                # Additional documentation
 ```
 
 ## Contributing
 
-See [docs/DEVELOPERS.md](docs/DEVELOPERS.md) for:
-- Architecture overview
-- Building integrations (JSONL events, Admin API, custom addons)
-- CLI development
-- Testing
+See [docs/DEVELOPERS.md](docs/DEVELOPERS.md) for architecture and integration guides.
+
+Example integrations live in [contrib/](contrib/) - use these as templates for your own.
 
 ## License
 

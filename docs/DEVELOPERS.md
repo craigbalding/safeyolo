@@ -339,8 +339,17 @@ safeyolo test -H "Authorization: Bearer sk-fake123..." https://httpbin.org/get
 - Documentation
 - Test coverage
 
-## Integration Ideas
+## Example Integrations
 
+The `contrib/` directory contains example integrations you can use as templates:
+
+| Integration | Description |
+|-------------|-------------|
+| `contrib/notifiers/` | Push notifications via ntfy.sh, Pushcut |
+
+See [contrib/README.md](../contrib/README.md) for the integration pattern and how to build your own.
+
+**Ideas for new integrations:**
 - **Slack/Discord bot** - Post blocked credentials to a channel
 - **Dashboard** - Real-time visualization of proxy traffic
 - **Metrics exporter** - Push to Prometheus/Grafana
