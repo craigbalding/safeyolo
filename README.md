@@ -268,6 +268,9 @@ curl -X POST http://localhost:9090/admin/approve/{token}
 # Deny instead
 curl -X POST http://localhost:9090/admin/deny/{token}
 
+# Clear all pending approvals (restart mitmproxy - in-memory state resets)
+docker compose restart safeyolo
+
 # Approvals persist to per-project YAML files - view them on host
 # Project detected from source container's Docker compose project label
 cat data/policies/default.yaml    # Default project (host requests)
