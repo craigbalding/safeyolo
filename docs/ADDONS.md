@@ -2,7 +2,7 @@
 
 **[← Back to README](../README.md)** | **[Quick Start](../README.md#quick-start-30-seconds)** | **[Architecture](../README.md#architecture)**
 
-This document provides detailed documentation for all 11 SafeYolo addons.
+This document provides detailed documentation for all 12 SafeYolo addons.
 
 **For a quick overview**, see the [addon table in the main README](../README.md#addons).
 
@@ -10,7 +10,7 @@ This document provides detailed documentation for all 11 SafeYolo addons.
 
 SafeYolo addons are split across build targets to keep the default image lightweight:
 
-- **Base (~200MB)** - 9 core addons, recommended for most users
+- **Base (~200MB)** - 10 core addons, recommended for most users
 - **Extended (~700MB)** - Adds 2 optional addons with ML/YARA dependencies
 
 To use extended addons, edit docker-compose.yml and change `target: base` to `target: extended`.
@@ -20,19 +20,47 @@ To use extended addons, edit docker-compose.yml and change `target: base` to `ta
 ## Table of Contents
 
 **Base build (included by default):**
-1. [policy.py](#policypy) - Unified policy engine
-2. [service_discovery.py](#service_discoverypy) - Docker container auto-discovery
-3. [rate_limiter.py](#rate_limiterpy) - Per-domain rate limiting (GCRA)
-4. [circuit_breaker.py](#circuit_breakerpy) - Fail-fast for unhealthy upstreams
-5. [credential_guard.py](#credential_guardpy) - Block API keys to wrong hosts (v2: smart detection + approval workflow)
-6. [pattern_scanner.py](#pattern_scannerpy) - Fast regex for secrets/jailbreaks
-7. [request_logger.py](#request_loggerpy) - JSONL structured logging
-8. [metrics.py](#metricspy) - Per-domain stats (Prometheus/JSON)
-9. [admin_api.py](#admin_apipy) - REST API on :9090
+1. [request_id.py](#request_idpy) - Request ID assignment for event correlation
+2. [policy.py](#policypy) - Unified policy engine
+3. [service_discovery.py](#service_discoverypy) - Docker container auto-discovery
+4. [rate_limiter.py](#rate_limiterpy) - Per-domain rate limiting (GCRA)
+5. [circuit_breaker.py](#circuit_breakerpy) - Fail-fast for unhealthy upstreams
+6. [credential_guard.py](#credential_guardpy) - Block API keys to wrong hosts (v2: smart detection + approval workflow)
+7. [pattern_scanner.py](#pattern_scannerpy) - Fast regex for secrets/jailbreaks
+8. [request_logger.py](#request_loggerpy) - JSONL structured logging
+9. [metrics.py](#metricspy) - Per-domain stats (Prometheus/JSON)
+10. [admin_api.py](#admin_apipy) - REST API on :9090
 
 **Extended build (optional):**
-10. [yara_scanner.py](#yara_scannerpy) - YARA rules for threats/credentials
-11. [prompt_injection.py](#prompt_injectionpy) - ML classifier (DeBERTa + Ollama)
+11. [yara_scanner.py](#yara_scannerpy) - YARA rules for threats/credentials
+12. [prompt_injection.py](#prompt_injectionpy) - ML classifier (DeBERTa + Ollama)
+
+---
+
+## request_id.py
+
+Assigns a unique request ID to every incoming request for event correlation across all addons.
+
+**Use case:** You want to correlate all log events for a single request - the initial traffic.request, any security decisions (security.credential, security.ratelimit), and the final traffic.response.
+
+**How it works:**
+- Runs **first** in the addon chain (before all other addons)
+- Generates a unique `request_id` like `req-abc123def456` (12 hex chars)
+- Stores it in `flow.metadata["request_id"]`
+- Also sets `flow.metadata["start_time"]` for latency calculation
+
+**All downstream addons** include `request_id` in their log events, enabling easy correlation:
+```bash
+# Find all events for a specific request
+grep "req-abc123def456" logs/safeyolo.jsonl | jq
+```
+
+**Example flow:**
+```
+req-abc123def456: traffic.request  -> api.example.com
+req-abc123def456: security.credential -> decision: block
+req-abc123def456: traffic.response -> status: 428
+```
 
 ---
 
@@ -441,19 +469,57 @@ If Ollama catches something DeBERTa missed, logs a false negative for model impr
 
 ## request_logger.py
 
-JSONL structured logging for all requests.
+JSONL structured logging for all requests with unified event taxonomy.
 
-**Use case:** Audit trail, debugging, alerting on blocked requests.
+**Use case:** Audit trail, debugging, alerting on blocked requests, event correlation across addons.
+
+**Event Taxonomy:**
+
+All events use a consistent naming scheme for easy filtering:
+
+| Prefix | Description | Examples |
+|--------|-------------|----------|
+| `traffic.*` | Request/response lifecycle | `traffic.request`, `traffic.response` |
+| `security.*` | Security addon decisions | `security.credential`, `security.ratelimit`, `security.circuit`, `security.yara`, `security.pattern`, `security.injection` |
+| `admin.*` | Admin API actions | `admin.approve`, `admin.deny`, `admin.auth_failure`, `admin.mode_change` |
+| `ops.*` | Operational events | `ops.startup`, `ops.config_reload`, `ops.config_error` |
 
 **Output format:**
 ```json
-{"ts": "2025-12-06T10:30:00Z", "method": "POST", "host": "api.openai.com", "path": "/v1/chat/completions", "status": 200, "latency_ms": 150}
-{"ts": "2025-12-06T10:30:01Z", "method": "POST", "host": "evil.com", "blocked_by": "credential-guard", "block_reason": "openai key to unauthorized host"}
+{"ts": "2025-12-06T10:30:00Z", "event": "traffic.request", "request_id": "req-abc123", "method": "POST", "host": "api.openai.com", "path": "/v1/chat/completions"}
+{"ts": "2025-12-06T10:30:00Z", "event": "security.credential", "request_id": "req-abc123", "decision": "block", "rule": "openai", "host": "evil.com", "reason": "destination_mismatch"}
+{"ts": "2025-12-06T10:30:00Z", "event": "traffic.response", "request_id": "req-abc123", "status": 428, "blocked_by": "credential-guard", "latency_ms": 5}
+```
+
+**Key fields:**
+- `request_id` - Correlates all events for a single request
+- `decision` - Security decisions: `allow`, `block`, or `warn`
+- `blocked_by` - Which addon blocked the request (if any)
+
+**Filtering examples:**
+```bash
+# All security events
+jq 'select(.event | startswith("security."))' logs/safeyolo.jsonl
+
+# All blocks
+jq 'select(.decision == "block")' logs/safeyolo.jsonl
+
+# Correlate events for one request
+grep "req-abc123" logs/safeyolo.jsonl | jq
+
+# Admin actions only
+jq 'select(.event | startswith("admin."))' logs/safeyolo.jsonl
 ```
 
 **Options:**
 ```bash
 --set safeyolo_log_path=/app/logs/safeyolo.jsonl
+```
+
+**Live monitoring:**
+```bash
+# With colored output and periodic summaries
+docker logs -f safeyolo 2>&1 | python scripts/logtail.py
 ```
 
 Logs are tailed to Docker stdout, so `docker logs -f safeyolo` shows them in real-time.
@@ -483,7 +549,13 @@ curl http://localhost:9090/metrics  # Prometheus format
 
 ## admin_api.py
 
-REST API on port 9090 for runtime control.
+REST API on port 9090 for runtime control. All admin actions are audit logged with the `admin.*` event taxonomy.
+
+**Audit Events:**
+- `admin.auth_failure` - Failed authentication attempts (with client IP)
+- `admin.approve` - Credential approval (with token prefix, client IP)
+- `admin.deny` - Credential denial (with token prefix, client IP)
+- `admin.mode_change` - Addon mode changes (warn/block)
 
 **Endpoints:**
 | Endpoint | Method | Description |
