@@ -1687,7 +1687,10 @@ class CredentialGuard:
         tier: int = 1,
         project_id: str = "default"
     ) -> str:
-        """Create a pending approval request.
+        """Create a pending approval request, or return existing if duplicate.
+
+        Deduplicates by fingerprint+host to avoid flooding pending queue
+        when clients retry after 428 responses.
 
         Args:
             credential: The detected credential (will be fingerprinted)
@@ -1702,10 +1705,18 @@ class CredentialGuard:
         Returns:
             Approval token (capability token)
         """
-        token = self._generate_approval_token()
         fingerprint = hmac_fingerprint(credential, self.hmac_secret)
 
         with self._pending_lock:
+            # Check for existing pending approval with same fingerprint+host
+            for existing_token, data in self.pending_approvals.items():
+                if (data["credential_fingerprint"] == fingerprint and
+                    data["host"].lower() == host.lower()):
+                    log.debug(f"Reusing existing approval: token={existing_token[:8]}... hmac:{fingerprint} -> {host}")
+                    return existing_token
+
+            # Create new pending approval
+            token = self._generate_approval_token()
             self.pending_approvals[token] = {
                 "credential_fingerprint": fingerprint,
                 "credential_type": credential_type,

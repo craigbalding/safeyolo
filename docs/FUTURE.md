@@ -95,3 +95,4 @@ credential_guard:
 - [ ] Document hot-reload capability
 
 **Current Status (2026-01)**: Not implemented. Env vars read at startup only. Container restart required for changes.
+- [ ] Fix duplicate log lines in ntfy_approval_listener.py (prints + writes, but shell also redirects)
