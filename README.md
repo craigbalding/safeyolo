@@ -13,9 +13,6 @@ pipx install safeyolo
 # Initialize (interactive wizard)
 safeyolo init
 
-# Build the container image
-docker build -t safeyolo:latest .
-
 # Start proxy
 safeyolo start
 
@@ -24,6 +21,12 @@ safeyolo cert install
 
 # Verify everything works
 safeyolo check
+```
+
+For contributors building locally instead of pulling the image:
+
+```bash
+docker build -t safeyolo:latest .
 ```
 
 ## TLS Certificate Setup
@@ -51,11 +54,15 @@ The `cert install` command auto-detects your OS and runs the appropriate command
 **Agent in Docker?** Mount the CA cert and update the trust store:
 
 ```bash
-# In your docker run or compose:
--v ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt
-
-# Then in the container:
+# Debian/Ubuntu-based container:
+-v ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt:ro
+# Then inside the container:
 update-ca-certificates
+
+# Alpine-based container:
+-v ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt:ro
+# Then inside the container:
+apk add --no-cache ca-certificates && update-ca-certificates
 ```
 
 ## Configuring Your Agent
@@ -88,11 +95,32 @@ Then start watching for approval requests:
 safeyolo watch
 ```
 
+## Traffic Interception
+
+SafeYolo is an explicit HTTP(S) forward proxy.
+
+**Listening ports:**
+- Proxy: `http://localhost:8080` (HTTP proxy; HTTPS via CONNECT)
+- Admin API: `http://localhost:9090` (local admin)
+
+**What SafeYolo can inspect:**
+- HTTP: full headers, URLs, and bodies (if enabled)
+- HTTPS: full headers, URLs, and bodies only if the client trusts the SafeYolo CA (MITM: terminate, inspect, re-encrypt)
+
+**Enforcement depends on deployment mode:**
+
+| Deployment | If client ignores proxy settings... | Practical meaning |
+|------------|-------------------------------------|-------------------|
+| Host proxy (default) | Traffic goes direct (not inspected) | SafeYolo is "best effort" unless you also enforce egress via firewall/VPN/container |
+| Docker chokepoint | Traffic fails (no route to internet) | Proxy is the only way out; bypass attempts don't leak, they break |
+
+See [docs/DOCKER_CHOKEPOINT.md](docs/DOCKER_CHOKEPOINT.md) for the locked-down container setup.
+
 ## What It Does
 
-**Credential routing** - API keys only reach authorized hosts. An OpenAI key to `api.openai.com.attacker.io` (exfil attempt) gets blocked with a helpful error message.
+**Credential routing** - API keys only reach authorized hosts. An OpenAI key to `api.openai.com.attacker.io` (exfil attempt) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
 
-**Smart detection** - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.) plus entropy analysis catches unknown secrets.
+**Smart detection** - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.) plus entropy analysis may catch unknown secrets.
 
 **Human-in-the-loop** - Unknown credentials trigger approval prompts. Approve once, and it's remembered.
 
@@ -263,12 +291,12 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 - Hallucinated endpoints (`api.openai.com.attacker.io` instead of `api.openai.com`)
 - Credentials sent to wrong hosts
 - Runaway API loops
-- Typosquats and homograph attacks (е.g., Cyrillic 'а' in `аpi.openai.com`)
+- Typosquats and homograph attacks (e.g., Cyrillic 'а' in `аpi.openai.com`)
 
 **SafeYolo does NOT:**
 - Detect prompt injection
 - Replace application-layer auth
-- Stop attacks that bypass the proxy
+- Prevent non-proxied egress unless deployed in Docker chokepoint mode or egress is enforced at OS/network level
 
 ## Architecture
 
