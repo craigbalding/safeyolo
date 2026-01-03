@@ -24,22 +24,23 @@ console = Console()
 def check() -> None:
     """Verify SafeYolo setup is working correctly.
 
-    Checks configuration files, Docker, container status, and API connectivity.
+    Checks configuration, Docker, container, API, and HTTPS inspection.
 
     Examples:
 
         safeyolo check
     """
     all_ok = True
+    proxy_running = False
 
     console.print("\n[bold]SafeYolo Health Check[/bold]\n")
 
     # 1. Check config directory
     config_dir = find_config_dir()
     if config_dir:
-        console.print(f"  [green]OK[/green]  Config directory: {config_dir}")
+        console.print(f"  [green]✓[/green]  Config directory: {config_dir}")
     else:
-        console.print(f"  [red]FAIL[/red]  Config directory not found")
+        console.print(f"  [red]✗[/red]  Config directory not found")
         console.print(f"        Run: [bold]safeyolo init[/bold]")
         all_ok = False
 
@@ -47,31 +48,31 @@ def check() -> None:
     if config_dir:
         config_path = get_config_path()
         if config_path.exists():
-            console.print(f"  [green]OK[/green]  Config file: {config_path.name}")
+            console.print(f"  [green]✓[/green]  Config file: {config_path.name}")
         else:
-            console.print(f"  [red]FAIL[/red]  Config file missing")
+            console.print(f"  [red]✗[/red]  Config file missing")
             all_ok = False
 
     # 3. Check rules file
     if config_dir:
         rules_path = get_rules_path()
         if rules_path.exists():
-            console.print(f"  [green]OK[/green]  Rules file: {rules_path.name}")
+            console.print(f"  [green]✓[/green]  Rules file: {rules_path.name}")
         else:
-            console.print(f"  [yellow]WARN[/yellow]  Rules file missing (using defaults)")
+            console.print(f"  [dim]–[/dim]  Rules file missing (using defaults)")
 
     # 4. Check admin token
     token = get_admin_token()
     if token:
-        console.print(f"  [green]OK[/green]  Admin token configured")
+        console.print(f"  [green]✓[/green]  Admin token configured")
     else:
-        console.print(f"  [yellow]WARN[/yellow]  Admin token not set")
+        console.print(f"  [dim]–[/dim]  Admin token not set")
 
     # 5. Check Docker
     if check_docker():
-        console.print(f"  [green]OK[/green]  Docker available")
+        console.print(f"  [green]✓[/green]  Docker available")
     else:
-        console.print(f"  [red]FAIL[/red]  Docker not available")
+        console.print(f"  [red]✗[/red]  Docker not available")
         all_ok = False
 
     # 6. Check container status
@@ -79,42 +80,101 @@ def check() -> None:
     if status:
         state = status.get("State", {})
         if state.get("Running"):
-            console.print(f"  [green]OK[/green]  Container running")
+            console.print(f"  [green]✓[/green]  Container running")
+            proxy_running = True
         else:
-            console.print(f"  [yellow]WARN[/yellow]  Container not running")
+            console.print(f"  [yellow]![/yellow]  Container not running")
             console.print(f"        Run: [bold]safeyolo start[/bold]")
     else:
-        console.print(f"  [dim]--[/dim]  Container not created yet")
+        console.print(f"  [dim]–[/dim]  Container not created yet")
 
     # 7. Check API connectivity
-    if status and status.get("State", {}).get("Running"):
+    if proxy_running:
         try:
             api = get_api()
             health = api.health()
             if health.get("status") == "healthy":
-                console.print(f"  [green]OK[/green]  Admin API responding")
+                console.print(f"  [green]✓[/green]  Admin API responding")
             else:
-                console.print(f"  [yellow]WARN[/yellow]  Admin API unhealthy: {health}")
+                console.print(f"  [yellow]![/yellow]  Admin API unhealthy: {health}")
         except APIError as e:
-            console.print(f"  [red]FAIL[/red]  Admin API error: {e}")
+            console.print(f"  [red]✗[/red]  Admin API error: {e}")
             all_ok = False
         except Exception as e:
-            console.print(f"  [red]FAIL[/red]  Admin API unreachable: {e}")
+            console.print(f"  [red]✗[/red]  Admin API unreachable: {e}")
             all_ok = False
 
-    # 8. Check certs directory
+    # 8. Check CA certificate
+    ca_cert_exists = False
     if config_dir:
         certs_dir = get_certs_dir()
         ca_cert = certs_dir / "mitmproxy-ca-cert.pem"
         if ca_cert.exists():
-            console.print(f"  [green]OK[/green]  CA certificate available")
+            console.print(f"  [green]✓[/green]  CA certificate exists")
+            ca_cert_exists = True
         else:
-            console.print(f"  [dim]--[/dim]  CA certificate (generated on first run)")
+            console.print(f"  [dim]–[/dim]  CA certificate (generated on first run)")
+
+    # 9. Check proxy reachability
+    if proxy_running:
+        config = load_config()
+        proxy_port = config.get("proxy", {}).get("port", 8080)
+        proxy_url = f"http://localhost:{proxy_port}"
+
+        try:
+            # Simple HTTP request through proxy to verify it's working
+            resp = httpx.get(
+                "http://httpbin.org/get",
+                proxy=proxy_url,
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                console.print(f"  [green]✓[/green]  Proxy reachable (HTTP)")
+            else:
+                console.print(f"  [yellow]![/yellow]  Proxy returned {resp.status_code}")
+        except Exception as e:
+            console.print(f"  [red]✗[/red]  Proxy unreachable: {type(e).__name__}")
+            all_ok = False
+
+    # 10. Check HTTPS inspection
+    if proxy_running and ca_cert_exists:
+        config = load_config()
+        proxy_port = config.get("proxy", {}).get("port", 8080)
+        proxy_url = f"http://localhost:{proxy_port}"
+
+        try:
+            # HTTPS request through proxy - will fail if CA not trusted
+            resp = httpx.get(
+                "https://httpbin.org/get",
+                proxy=proxy_url,
+                timeout=10.0,
+                # Don't verify - we want to check if proxy works, not system trust
+                verify=False,
+            )
+            if resp.status_code == 200:
+                console.print(f"  [green]✓[/green]  HTTPS inspection working")
+            else:
+                console.print(f"  [yellow]![/yellow]  HTTPS returned {resp.status_code}")
+        except httpx.ConnectError as e:
+            console.print(f"  [red]✗[/red]  HTTPS inspection failed")
+            console.print(f"        The proxy can intercept HTTPS but your system may")
+            console.print(f"        not trust the CA certificate yet.")
+            console.print(f"        Run: [bold]safeyolo cert install[/bold]")
+            all_ok = False
+        except Exception as e:
+            console.print(f"  [red]✗[/red]  HTTPS test failed: {type(e).__name__}")
+            all_ok = False
 
     # Summary
     console.print()
     if all_ok:
         console.print("[green]All checks passed![/green]")
+        if proxy_running:
+            console.print("\nSafeYolo is ready. Configure your agent:")
+            config = load_config()
+            proxy_port = config.get("proxy", {}).get("port", 8080)
+            console.print(f"  export HTTP_PROXY=http://localhost:{proxy_port}")
+            console.print(f"  export HTTPS_PROXY=http://localhost:{proxy_port}")
     else:
         console.print("[yellow]Some issues found. See above for details.[/yellow]")
         raise typer.Exit(1)

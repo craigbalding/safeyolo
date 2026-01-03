@@ -13,18 +13,84 @@ pipx install safeyolo
 # Initialize (interactive wizard)
 safeyolo init
 
+# Build the container image
+docker build -t safeyolo:latest .
+
 # Start proxy
 safeyolo start
 
-# Watch for approval requests
+# Install CA certificate (required for HTTPS inspection)
+safeyolo cert install
+
+# Verify everything works
+safeyolo check
+```
+
+## TLS Certificate Setup
+
+SafeYolo inspects HTTPS traffic to detect credentials in headers. This requires your system to trust SafeYolo's CA certificate.
+
+```bash
+# Install CA cert into system trust store (macOS/Linux)
+safeyolo cert install
+
+# Verify HTTPS inspection is working
+safeyolo check
+```
+
+The `cert install` command auto-detects your OS and runs the appropriate commands (requires sudo). Use `--dry-run` to see what it would do first.
+
+`safeyolo check` verifies the full chain:
+- ✓ Config and Docker available
+- ✓ Container running
+- ✓ Admin API responding
+- ✓ CA certificate exists
+- ✓ Proxy reachable (HTTP)
+- ✓ HTTPS inspection working
+
+**Agent in Docker?** Mount the CA cert and update the trust store:
+
+```bash
+# In your docker run or compose:
+-v ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt
+
+# Then in the container:
+update-ca-certificates
+```
+
+## Configuring Your Agent
+
+Set these environment variables for your AI agent:
+
+```bash
+# Standard proxy configuration
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
+export NO_PROXY=localhost,127.0.0.1
+```
+
+**Agent running in Docker?**
+
+```bash
+# macOS / Windows (Docker Desktop)
+export HTTP_PROXY=http://host.docker.internal:8080
+export HTTPS_PROXY=http://host.docker.internal:8080
+
+# Linux (add host alias)
+docker run --add-host=host.docker.internal:host-gateway ...
+export HTTP_PROXY=http://host.docker.internal:8080
+export HTTPS_PROXY=http://host.docker.internal:8080
+```
+
+Then start watching for approval requests:
+
+```bash
 safeyolo watch
 ```
 
-Configure your AI agent to use the proxy at `http://localhost:8080`.
-
 ## What It Does
 
-**Credential routing** - API keys only reach authorized hosts. An OpenAI key to `api.openal.com` (typo) gets blocked with a helpful error message.
+**Credential routing** - API keys only reach authorized hosts. An OpenAI key to `api.openai.com.attacker.io` (exfil attempt) gets blocked with a helpful error message.
 
 **Smart detection** - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.) plus entropy analysis catches unknown secrets.
 
@@ -34,6 +100,11 @@ Configure your AI agent to use the proxy at `http://localhost:8080`.
 
 **Audit trail** - Every request logged to JSONL with decision reasons and request correlation.
 
+**What gets logged:**
+- Method, host, path, status code, decision, rule ID, request ID
+- Credential fingerprints (HMAC hash, never raw secrets)
+- Body logging off by default (opt-in for debugging)
+
 ## CLI Commands
 
 | Command | Description |
@@ -42,9 +113,11 @@ Configure your AI agent to use the proxy at `http://localhost:8080`.
 | `safeyolo start` | Start the proxy container |
 | `safeyolo stop` | Stop the proxy |
 | `safeyolo status` | Show health and stats |
+| `safeyolo cert install` | Install CA cert for HTTPS inspection |
+| `safeyolo cert show` | Show CA cert location and status |
+| `safeyolo check` | Verify setup, proxy, and HTTPS working |
 | `safeyolo watch` | Monitor and approve credentials |
 | `safeyolo logs -f` | Follow logs in real-time |
-| `safeyolo check` | Verify setup is working |
 | `safeyolo mode` | View/change addon modes |
 | `safeyolo test` | Test request through proxy |
 
@@ -99,6 +172,8 @@ When SafeYolo blocks a credential:
 3. You approve or deny interactively
 4. Approved credentials are saved to policy file
 5. Subsequent requests pass through
+
+*Why 428?* SafeYolo uses HTTP 428 (Precondition Required) to signal "needs approval" rather than permanent denial. This lets agents retry after approval, and distinguishes SafeYolo blocks from upstream 403s.
 
 ```bash
 $ safeyolo watch
@@ -185,10 +260,10 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 ## Threat Model
 
 **SafeYolo catches:**
-- Hallucinated endpoints (`api.openal.com` instead of `api.openai.com`)
+- Hallucinated endpoints (`api.openai.com.attacker.io` instead of `api.openai.com`)
 - Credentials sent to wrong hosts
 - Runaway API loops
-- Typosquats and homograph attacks
+- Typosquats and homograph attacks (е.g., Cyrillic 'а' in `аpi.openai.com`)
 
 **SafeYolo does NOT:**
 - Detect prompt injection
