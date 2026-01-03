@@ -6,6 +6,7 @@ Example integrations. Copy and adapt for your own use.
 
 | Directory | Description |
 |-----------|-------------|
+| `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
 
 ## The Integration Pattern
