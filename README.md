@@ -129,32 +129,25 @@ SafeYolo runs in **block mode by default** for credential guard and rate limitin
 - **Rate limits are generous** - 10 req/sec default, 50 req/sec for LLM APIs (600+ requests/min)
 - **Easy to disable for development** - `--set credguard_block=false --set ratelimit_block=false`
 
-Other security addons (pattern_scanner in base, prompt_injection and yara_scanner in extended) default to warn-only mode.
+Other security addon (pattern_scanner) defaults to warn-only mode.
 
 ## Choosing Your Image
 
-SafeYolo has three build targets:
+SafeYolo has two build targets:
 
 **Base (default, ~200MB)** - Core addons only, recommended for most users
 ```bash
 docker compose up -d  # Uses base target
 ```
-Includes: credential_guard, rate_limiter, circuit_breaker, pattern_scanner (regex), policy, metrics, admin_api
-
-**Extended (~700MB)** - Adds ML + YARA for advanced detection
-```bash
-# Edit docker-compose.yml: change target to 'extended'
-docker compose up -d
-```
-Adds: prompt_injection (experimental ML classifier), yara_scanner (enterprise pattern matching)
+Includes: credential_guard, rate_limiter, circuit_breaker, pattern_scanner (regex), policy, metrics, admin_api, request_id, service_discovery, request_logger
 
 **Dev** - Development and testing environment
 ```bash
 docker build --target dev -t safeyolo:dev .
 ```
-Includes all extended addons plus pytest, ipython, and tools for model export/testing. For contributors only.
+Includes all base addons plus pytest, ipython. For contributors only.
 
-**Why separate?** Most teams just need credential protection and rate limiting. ML models add ~500MB for experimental prompt injection detection that generates many false positives. Only use if you're prepared to tune it for your workload.
+**Experimental addons:** ML-based prompt injection detection and YARA scanning are available on the `experimental` branch for users who need advanced detection. These add ~500MB and require tuning for your workload.
 
 ## Key Features
 
@@ -405,14 +398,14 @@ docker exec safeyolo cat /app/logs/mitmproxy.log
 
 ## Architecture
 
-SafeYolo runs mitmproxy with a chain of native addons (10 in base, 12 in extended):
+SafeYolo runs mitmproxy with a chain of 10 native addons:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                           SafeYolo                              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  Request flow (10 base addons + 2 extended):                    │
+│  Request flow (10 addons):                                      │
 │                                                                 │
 │  ┌──────────────────┐                                           │
 │  │   request_id     │ -> Assigns unique request_id for tracing  │
@@ -440,15 +433,7 @@ SafeYolo runs mitmproxy with a chain of native addons (10 in base, 12 in extende
 │           │              HTTP header detection by default       │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
-│  │  yara_scanner    │ -> YARA rules [extended build only]       │
-│  └────────┬─────────┘    Warn mode by default                   │
-│           ▼                                                     │
-│  ┌──────────────────┐                                           │
 │  │ pattern_scanner  │ -> Fast regex for secrets/jailbreaks      │
-│  └────────┬─────────┘    Warn mode by default                   │
-│           ▼                                                     │
-│  ┌──────────────────┐                                           │
-│  │prompt_injection  │ -> ML classifier [extended build only]    │
 │  └────────┬─────────┘    Warn mode by default                   │
 │           ▼                                                     │
 │  ┌──────────────────┐                                           │
@@ -473,26 +458,26 @@ Each addon is a standalone Python file using mitmproxy's addon API. No framework
 
 ## Addons
 
-SafeYolo includes 12 addons for security, reliability, and observability: 10 in the base build (~200MB), plus 2 optional addons in the extended build (~700MB). Each addon is a standalone Python file using mitmproxy's addon API.
+SafeYolo includes 10 addons for security, reliability, and observability. Each addon is a standalone Python file using mitmproxy's addon API.
 
 **For detailed documentation**, see [docs/ADDONS.md](docs/ADDONS.md).
 
-| Addon | Build | Description | Config File | Default Mode |
-|-------|-------|-------------|-------------|--------------|
-| **request_id.py** | Base | Assigns unique request_id to every request for event correlation across addons | Options only | Always active |
-| **policy.py** | Base | Unified policy engine - controls which addons run on which domains/clients | `config/policy.yaml` | Always active |
-| **service_discovery.py** | Base | Auto-discovers Docker containers on internal network for routing decisions | Options only | Always active |
-| **rate_limiter.py** | Base | Per-domain rate limiting using GCRA - prevents IP blacklisting from runaway loops | `config/rate_limits.json` | **Block** (10 rps default, 50 for LLM APIs) |
-| **circuit_breaker.py** | Base | Fail-fast for unhealthy upstreams - stops hammering services that are down | Options only | Always active (blocks when open) |
-| **credential_guard.py** | Base | **Core security** - blocks API keys to unauthorized hosts with smart 2-tier detection, HMAC fingerprinting, and human-in-the-loop approval via Ntfy | `config/credential_guard.yaml` | **Block** (428 greylist responses) |
-| **pattern_scanner.py** | Base | Fast regex scanning - lightweight detection of common secrets and jailbreak phrases | Built-in patterns | Warn only |
-| **request_logger.py** | Base | JSONL structured logging for all requests - audit trail and debugging | Options only | Always active |
-| **metrics.py** | Base | Per-domain statistics in JSON and Prometheus formats - monitoring and alerting | Options only | Always active |
-| **admin_api.py** | Base | REST API on port 9090 - runtime control, mode switching, stats, allowlist management, approval endpoints | Options only | Always active |
-| **yara_scanner.py** | Extended | Enterprise pattern matching - scans for credentials, jailbreaks, PII using YARA rules | `config/yara_rules/` | Warn only |
-| **prompt_injection.py** | Extended | **Experimental** - ML classifier for prompt injection detection (high false positive rate, needs tuning) | Options only | Warn only |
+| Addon | Description | Config File | Default Mode |
+|-------|-------------|-------------|--------------|
+| **request_id.py** | Assigns unique request_id to every request for event correlation across addons | Options only | Always active |
+| **policy.py** | Unified policy engine - controls which addons run on which domains/clients | `config/policy.yaml` | Always active |
+| **service_discovery.py** | Auto-discovers Docker containers on internal network for routing decisions | Options only | Always active |
+| **rate_limiter.py** | Per-domain rate limiting using GCRA - prevents IP blacklisting from runaway loops | `config/rate_limits.json` | **Block** (10 rps default, 50 for LLM APIs) |
+| **circuit_breaker.py** | Fail-fast for unhealthy upstreams - stops hammering services that are down | Options only | Always active (blocks when open) |
+| **credential_guard.py** | **Core security** - blocks API keys to unauthorized hosts with smart 2-tier detection, HMAC fingerprinting, and human-in-the-loop approval via Ntfy | `config/credential_guard.yaml` | **Block** (428 greylist responses) |
+| **pattern_scanner.py** | Fast regex scanning - lightweight detection of common secrets and jailbreak phrases | Built-in patterns | Warn only |
+| **request_logger.py** | JSONL structured logging for all requests - audit trail and debugging | Options only | Always active |
+| **metrics.py** | Per-domain statistics in JSON and Prometheus formats - monitoring and alerting | Options only | Always active |
+| **admin_api.py** | REST API on port 9090 - runtime control, mode switching, stats, allowlist management, approval endpoints | Options only | Always active |
 
-**See [docs/ADDONS.md](docs/ADDONS.md) for complete reference** - configuration options, use cases, response formats, and examples for all addons (10 base + 2 extended).
+**See [docs/ADDONS.md](docs/ADDONS.md) for complete reference** - configuration options, use cases, response formats, and examples.
+
+**Experimental addons** (available on `experimental` branch): yara_scanner (YARA pattern matching), prompt_injection (ML classifier).
 
 ---
 
@@ -835,16 +820,16 @@ If you need blocking mode to persist across restarts, set `SAFEYOLO_BLOCK=true` 
 
 ```bash
 # Install deps
-pip install mitmproxy httpx yara-python pyyaml aiodocker
+pip install mitmproxy httpx pyyaml aiodocker tenacity confusable-homoglyphs
 
 # Run with addons
 mitmproxy -p 8080 \
+  -s addons/request_id.py \
   -s addons/policy.py \
   -s addons/service_discovery.py \
   -s addons/rate_limiter.py \
   -s addons/circuit_breaker.py \
   -s addons/credential_guard.py \
-  -s addons/yara_scanner.py \
   -s addons/pattern_scanner.py \
   -s addons/request_logger.py \
   -s addons/metrics.py \
@@ -929,7 +914,7 @@ See mitmproxy docs: https://docs.mitmproxy.org/stable/addons-overview/
 
 ```
 safeyolo/
-├── addons/                    # Native mitmproxy addons (12 total)
+├── addons/                    # Native mitmproxy addons (10 total)
 │   ├── utils.py               # Shared utilities (logging, responses, write_event)
 │   ├── request_id.py          # Request ID assignment (runs first)
 │   ├── sse_streaming.py       # SSE/streaming response handler
@@ -938,9 +923,7 @@ safeyolo/
 │   ├── rate_limiter.py        # Per-domain rate limiting (GCRA)
 │   ├── circuit_breaker.py     # Fail-fast for unhealthy upstreams
 │   ├── credential_guard.py    # API key protection
-│   ├── yara_scanner.py        # YARA threat detection (extended)
 │   ├── pattern_scanner.py     # Regex scanning for secrets/jailbreaks
-│   ├── prompt_injection.py    # ML classification (extended, experimental)
 │   ├── request_logger.py      # JSONL structured logging
 │   ├── metrics.py             # Per-domain statistics
 │   └── admin_api.py           # REST API on :9090 (with audit logging)
@@ -949,36 +932,24 @@ safeyolo/
 │   ├── credential_guard.yaml  # Credential Guard v2 config
 │   ├── credential_rules.json  # Credential patterns + allowed hosts
 │   ├── safe_headers.yaml      # Headers to skip in entropy analysis
-│   ├── rate_limits.json       # Per-domain rate limits
-│   └── yara_rules/            # YARA rules (extended build)
-│       ├── default.yar        # Default threat detection rules
-│       └── README.md          # YARA rule documentation
+│   └── rate_limits.json       # Per-domain rate limits
 ├── scripts/
 │   ├── start-safeyolo.sh      # Docker entrypoint
 │   ├── ntfy_approval_listener.py  # Mobile approval handler (subscribes to ntfy)
-│   ├── test_build.sh          # Build target testing (base/extended/dev)
 │   ├── logtail.py             # Live log viewer with summaries
-│   ├── export_piguard_onnx.py # Export PIGuard model to ONNX
-│   └── test_*.py              # Classifier evaluation scripts
-├── models/
-│   └── piguard-onnx/          # PIGuard ONNX model files
-│       ├── config.json        # Model configuration
-│       ├── modeling_piguard.py # Custom model code
-│       ├── tokenizer_config.json
-│       └── special_tokens_map.json
+│   └── test_build.sh          # Build target testing
 ├── data/                      # Runtime-generated secrets (gitignored)
 │   ├── ntfy_topic             # Auto-generated Ntfy topic
 │   ├── hmac_secret            # Auto-generated HMAC key
 │   └── policies/              # Persistent approval policies
 │       └── {project}.yaml     # Per-project approved credentials
-├── tests/                     # Pytest test suite (345+ tests)
+├── tests/                     # Pytest test suite
 │   ├── conftest.py            # Fixtures and setup
 │   ├── test_credential_guard.py
 │   ├── test_rate_limiter.py
 │   ├── test_circuit_breaker.py
 │   ├── test_pattern_scanner.py
 │   ├── test_policy.py
-│   ├── test_prompt_injection.py
 │   ├── test_admin_api.py
 │   ├── test_integration.py
 │   ├── test_ntfy_integration.py
@@ -986,13 +957,11 @@ safeyolo/
 │   └── test_utils_logging.py  # Logging utilities and taxonomy tests
 ├── docs/
 │   ├── ADDONS.md              # Complete addon reference
-│   ├── FUTURE.md              # Ideas under consideration
-│   └── prompt-injection-classifier-evaluation.md
+│   └── FUTURE.md              # Ideas under consideration
 ├── requirements/              # Python dependencies by build target
 │   ├── base.txt               # Core deps (mitmproxy, httpx, tenacity)
-│   ├── extended.txt           # + ML/YARA (onnxruntime, yara-python)
-│   └── dev.txt                # + testing (pytest, torch)
-├── Dockerfile                 # Multi-stage: base/extended/dev
+│   └── dev.txt                # + testing (pytest)
+├── Dockerfile                 # Multi-stage: base/dev
 ├── docker-compose.yml
 ├── LICENSE                    # MIT License
 └── README.md

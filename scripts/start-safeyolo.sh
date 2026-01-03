@@ -68,13 +68,11 @@ fi
 #   5. circuit_breaker - Fail-fast for unhealthy upstreams
 # Security addons (can block requests):
 #   6. credential_guard - API key protection
-#   7. yara_scanner - YARA-based threat detection (extended build only)
-#   8. pattern_scanner - Fast regex scanning
-#   9. prompt_injection - ML-based injection detection (extended build only)
+#   7. pattern_scanner - Fast regex scanning
 # Observability addons (observe but don't block):
-#   10. request_logger - JSONL structured logging
-#   11. metrics - Per-domain statistics
-#   12. admin_api - Control plane REST API
+#   8. request_logger - JSONL structured logging
+#   9. metrics - Per-domain statistics
+#   10. admin_api - Control plane REST API
 
 ADDON_ARGS=""
 
@@ -99,8 +97,6 @@ load_addon "/app/addons/policy.py"
 load_addon "/app/addons/rate_limiter.py"
 load_addon "/app/addons/circuit_breaker.py"
 load_addon "/app/addons/credential_guard.py"
-load_addon "/app/addons/yara_scanner.py"      # Extended build only
-load_addon "/app/addons/prompt_injection.py"  # Extended build only
 #load_addon "/app/addons/pattern_scanner.py"
 load_addon "/app/addons/request_logger.py"
 load_addon "/app/addons/metrics.py"
@@ -122,13 +118,6 @@ MITM_OPTS="${MITM_OPTS} --set admin_port=${ADMIN_PORT}"
 # Stream large responses to prevent OOM on media downloads (podcasts, etc.)
 # Security addons operate on request bodies and LLM API responses, not large media files
 MITM_OPTS="${MITM_OPTS} --set stream_large_bodies=10m"
-
-# Ollama for async prompt injection verification (phi3.5 catches subtle attacks PIGuard misses)
-# NOTE: injection_ollama_url is set by the addon reading OLLAMA_URL env var directly
-# Cannot use --set for options defined by script addons (they load after options are parsed)
-if [ -n "${OLLAMA_URL}" ]; then
-    echo "Ollama async verification: ${OLLAMA_URL}"
-fi
 
 # ==============================================================================
 # Blocking mode configuration
@@ -154,34 +143,6 @@ else
     MITM_OPTS="${MITM_OPTS} --set credguard_block=false"
 fi
 
-# prompt-injection: defaults to WARN-ONLY
-if [ -f "/app/addons/prompt_injection.py" ]; then
-    INJECTION_BLOCK="${INJECTION_BLOCK:-false}"
-    if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
-        INJECTION_BLOCK="true"
-    fi
-    if [ "${INJECTION_BLOCK}" = "true" ]; then
-        echo "  prompt-injection: BLOCK"
-        MITM_OPTS="${MITM_OPTS} --set injection_block=true"
-    else
-        echo "  prompt-injection: WARN-ONLY"
-    fi
-fi
-
-# yara-scanner: defaults to WARN-ONLY
-if [ -f "/app/addons/yara_scanner.py" ]; then
-    YARA_BLOCK="${YARA_BLOCK:-false}"
-    if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
-        YARA_BLOCK="true"
-    fi
-    if [ "${YARA_BLOCK}" = "true" ]; then
-        echo "  yara-scanner: BLOCK"
-        MITM_OPTS="${MITM_OPTS} --set yara_block_on_match=true"
-    else
-        echo "  yara-scanner: WARN-ONLY"
-    fi
-fi
-
 # pattern-scanner: defaults to WARN-ONLY
 if [ -f "/app/addons/pattern_scanner.py" ]; then
     PATTERN_BLOCK="${PATTERN_BLOCK:-false}"
@@ -203,23 +164,6 @@ if [ -f "${CONFIG_DIR}/credential_rules.json" ]; then
     MITM_OPTS="${MITM_OPTS} --set credguard_rules=${CONFIG_DIR}/credential_rules.json"
     echo "Using credential rules from ${CONFIG_DIR}/credential_rules.json"
 fi
-
-# Add YARA rules if custom file exists
-if [ -f "${CONFIG_DIR}/custom.yar" ]; then
-    MITM_OPTS="${MITM_OPTS} --set yara_rules=${CONFIG_DIR}/custom.yar"
-    echo "Using custom YARA rules from ${CONFIG_DIR}/custom.yar"
-fi
-
-# Add prompt injection classifier URLs if set
-if [ -n "${DEBERTA_URL}" ]; then
-    MITM_OPTS="${MITM_OPTS} --set injection_deberta_url=${DEBERTA_URL}"
-    echo "DeBERTa classifier: ${DEBERTA_URL}"
-fi
-
-# NOTE: injection_ollama_url read from OLLAMA_URL env var by addon directly
-#if [ -n "${OLLAMA_URL}" ]; then
-#    echo "Ollama classifier: ${OLLAMA_URL}"
-#fi
 
 # Add rate limit config if file exists
 if [ -f "${CONFIG_DIR}/rate_limits.json" ]; then

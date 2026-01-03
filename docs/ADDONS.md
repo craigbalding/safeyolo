@@ -2,24 +2,14 @@
 
 **[← Back to README](../README.md)** | **[Quick Start](../README.md#quick-start-30-seconds)** | **[Architecture](../README.md#architecture)**
 
-This document provides detailed documentation for all 12 SafeYolo addons.
+This document provides detailed documentation for all 10 SafeYolo addons.
 
 **For a quick overview**, see the [addon table in the main README](../README.md#addons).
-
-## Build Targets
-
-SafeYolo addons are split across build targets to keep the default image lightweight:
-
-- **Base (~200MB)** - 10 core addons, recommended for most users
-- **Extended (~700MB)** - Adds 2 optional addons with ML/YARA dependencies
-
-To use extended addons, edit docker-compose.yml and change `target: base` to `target: extended`.
 
 ---
 
 ## Table of Contents
 
-**Base build (included by default):**
 1. [request_id.py](#request_idpy) - Request ID assignment for event correlation
 2. [policy.py](#policypy) - Unified policy engine
 3. [service_discovery.py](#service_discoverypy) - Docker container auto-discovery
@@ -31,9 +21,7 @@ To use extended addons, edit docker-compose.yml and change `target: base` to `ta
 9. [metrics.py](#metricspy) - Per-domain stats (Prometheus/JSON)
 10. [admin_api.py](#admin_apipy) - REST API on :9090
 
-**Extended build (optional):**
-11. [yara_scanner.py](#yara_scannerpy) - YARA rules for threats/credentials
-12. [prompt_injection.py](#prompt_injectionpy) - ML classifier (DeBERTa + Ollama)
+**Experimental addons** (available on `experimental` branch): yara_scanner.py, prompt_injection.py
 
 ---
 
@@ -389,39 +377,6 @@ For approval-required responses:
 
 ---
 
-## yara_scanner.py
-
-Enterprise-grade pattern matching using YARA rules.
-
-**Use case:** Scan requests and responses for credentials, jailbreak patterns, PII, or custom threats specific to your organization.
-
-**Built-in rules detect:**
-- **Credentials**: AWS keys, GitHub tokens, private keys, JWTs
-- **Jailbreaks**: "Ignore instructions", DAN mode, developer mode
-- **PII**: SSN, credit cards
-- **Injection markers**: `[INST]`, `<<SYS>>`, `<|im_start|>`
-
-**Load custom rules:**
-```bash
---set yara_rules=/path/to/custom.yar
-```
-
-**Example custom rule:**
-```yara
-rule Company_Internal_Token {
-    meta:
-        description = "Internal API token"
-        severity = 5
-        category = "credential"
-    strings:
-        $token = /MYCO-[A-Z0-9]{32}/ ascii
-    condition:
-        $token
-}
-```
-
----
-
 ## pattern_scanner.py
 
 Fast regex scanning (lighter than YARA, runs on everything).
@@ -445,28 +400,6 @@ Fast regex scanning (lighter than YARA, runs on everything).
 
 ---
 
-## prompt_injection.py
-
-Dual ML classifier for prompt injection - an 80% solution, not a silver bullet.
-
-**Use case:** Detect when user input is trying to hijack an LLM's behavior. Catches obvious jailbreaks and injection patterns. Sophisticated attacks will get through.
-
-**Dual classifier approach:**
-1. **DeBERTa** (~15ms) - ONNX model, runs inline for immediate blocking
-2. **Ollama/phi3.5** (~200ms) - Runs async as second opinion
-
-If Ollama catches something DeBERTa missed, logs a false negative for model improvement.
-
-**Options:**
-```bash
---set injection_deberta_url=http://localhost:8081   # ONNX classifier
---set injection_ollama_url=http://localhost:11434   # Ollama API
---set injection_confidence_threshold=0.5            # Block threshold
---set injection_async_verify=true                   # Run Ollama as backup
-```
-
----
-
 ## request_logger.py
 
 JSONL structured logging for all requests with unified event taxonomy.
@@ -480,7 +413,7 @@ All events use a consistent naming scheme for easy filtering:
 | Prefix | Description | Examples |
 |--------|-------------|----------|
 | `traffic.*` | Request/response lifecycle | `traffic.request`, `traffic.response` |
-| `security.*` | Security addon decisions | `security.credential`, `security.ratelimit`, `security.circuit`, `security.yara`, `security.pattern`, `security.injection` |
+| `security.*` | Security addon decisions | `security.credential`, `security.ratelimit`, `security.circuit`, `security.pattern` |
 | `admin.*` | Admin API actions | `admin.approve`, `admin.deny`, `admin.auth_failure`, `admin.mode_change` |
 | `ops.*` | Operational events | `ops.startup`, `ops.config_reload`, `ops.config_error` |
 
@@ -535,7 +468,7 @@ Per-domain statistics in JSON and Prometheus formats.
 **Tracks:**
 - Request counts, success rates
 - Latency (avg, max) per domain
-- Block counts by source (credential, yara, pattern, injection)
+- Block counts by source (credential, pattern, rate limit, circuit)
 - Upstream errors (429s, 5xx, timeouts)
 - Problem domain identification
 
@@ -620,8 +553,6 @@ Core protections (credential-guard, rate-limiter) default to **block mode**. Oth
 | credential-guard | `credguard_block` | **block** |
 | rate-limiter | `ratelimit_block` | **block** |
 | pattern-scanner | `pattern_block_input` | warn |
-| yara-scanner | `yara_block_on_match` | warn |
-| prompt-injection | `injection_block` | warn |
 
 ```bash
 # Get current modes for all addons
@@ -637,8 +568,8 @@ curl -X PUT http://localhost:9090/plugins/rate-limiter/mode \
   -H "Content-Type: application/json" \
   -d '{"mode": "warn"}'
 
-# Enable blocking for a warn-only addon (e.g., prompt injection)
-curl -X PUT http://localhost:9090/plugins/prompt-injection/mode \
+# Enable blocking for a warn-only addon (e.g., pattern scanner)
+curl -X PUT http://localhost:9090/plugins/pattern-scanner/mode \
   -H "Content-Type: application/json" \
   -d '{"mode": "block"}'
 

@@ -1,27 +1,26 @@
 # SafeYolo - Security Proxy for AI Coding Agents
 #
 # Build targets:
-#   base     - Core addons only (~200MB) - RECOMMENDED for most users
-#   extended - Adds ML + YARA scanning (~700MB) - Optional features
-#   dev      - Development/testing environment
+#   base - Core addons only (~200MB) - Default
+#   dev  - Development/testing environment
 #
 # Examples:
-#   docker build -t safeyolo .                           # Base (default)
-#   docker build --target extended -t safeyolo:full .    # With ML/YARA
-#   docker build --target dev -t safeyolo:dev .          # Development
+#   docker build -t safeyolo .                    # Base (default)
+#   docker build --target dev -t safeyolo:dev .   # Development
 #
-# Core addons (base):
+# Core addons:
+#   - request_id: Unique request ID for event correlation
 #   - credential_guard: Block API keys to wrong hosts
 #   - rate_limiter: Per-domain rate limiting (GCRA)
 #   - circuit_breaker: Fail-fast for unhealthy upstreams
-#   - pattern_scanner: Fast regex for secrets/jailbreaks (no YARA)
+#   - pattern_scanner: Fast regex for secrets/jailbreaks
 #   - policy: Per-domain/client addon configuration
 #   - service_discovery: Docker container auto-discovery
 #   - request_logger: JSONL structured logging
 #   - metrics: Per-domain statistics
 #   - admin_api: REST API for runtime control
 #
-# Extended addons (optional):
+# Extended/experimental addons available on 'experimental' branch:
 #   - yara_scanner: Enterprise YARA pattern matching
 #   - prompt_injection: ML-based injection detection (DeBERTa)
 
@@ -49,9 +48,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /app
 
-# Copy core addons (excludes prompt_injection and yara_scanner if not needed)
+# Copy core addons
 COPY addons/__init__.py /app/addons/
 COPY addons/utils.py /app/addons/
+COPY addons/request_id.py /app/addons/
 COPY addons/credential_guard.py /app/addons/
 COPY addons/rate_limiter.py /app/addons/
 COPY addons/circuit_breaker.py /app/addons/
@@ -87,43 +87,9 @@ ENV CONFIG_DIR=/app/config
 CMD ["/app/scripts/start-safeyolo.sh"]
 
 # ==============================================================================
-# Extended stage - Adds ML + YARA (~700MB)
-# ==============================================================================
-FROM base AS extended
-
-# Install build dependencies for YARA
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libyara-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install ML + YARA dependencies
-COPY requirements/extended.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-
-# Download DeBERTa ONNX model at build time (~400MB cached in image)
-RUN python -c "from transformers import AutoTokenizer; \
-    AutoTokenizer.from_pretrained('protectai/deberta-v3-base-prompt-injection-v2')" \
-    && python -c "from huggingface_hub import hf_hub_download; \
-    hf_hub_download('protectai/deberta-v3-base-injection-onnx', 'model.onnx')"
-
-# Copy extended addons
-COPY addons/yara_scanner.py /app/addons/
-COPY addons/prompt_injection.py /app/addons/
-
-# Copy YARA rules
-COPY config/yara_rules/ /app/config/yara_rules/
-
-# Copy PIGuard ONNX model (exported via scripts/export_piguard_onnx_v2.py)
-COPY models/piguard-onnx/ /app/models/piguard-onnx/
-
-# Clean up build dependencies (keep libyara runtime)
-RUN apt-get purge -y gcc && apt-get autoremove -y
-
-# ==============================================================================
 # Dev stage - Development and testing
 # ==============================================================================
-FROM extended AS dev
+FROM base AS dev
 
 # Reinstall build deps for development
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -132,13 +98,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install dev/test dependencies
 COPY requirements/dev.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt \
-    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
-# Download PIGuard model for testing (ungated, designed to reduce over-defense)
-RUN python -c "from transformers import AutoTokenizer, AutoModelForSequenceClassification; \
-    AutoTokenizer.from_pretrained('leolee99/PIGuard'); \
-    AutoModelForSequenceClassification.from_pretrained('leolee99/PIGuard', trust_remote_code=True)"
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app
