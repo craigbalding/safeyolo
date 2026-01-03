@@ -58,7 +58,9 @@ if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
 fi
 
 # Build addon chain - order matters!
-# Request ID first (enables event correlation across all addons):
+# Admin shield MUST be first (blocks proxy access to admin API):
+#   0. admin_shield - Prevents agents from reaching admin API through proxy
+# Request ID (enables event correlation across all addons):
 #   1. request_id - Assigns unique ID to every request
 # Infrastructure addons (policy, streaming):
 #   2. sse_streaming - SSE/streaming support
@@ -90,6 +92,7 @@ load_addon() {
 }
 
 echo "Loading addons:"
+load_addon "/app/addons/admin_shield.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
 load_addon "/app/addons/policy.py"
