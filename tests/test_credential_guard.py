@@ -531,3 +531,264 @@ class TestHomoglyphDetection:
 
         result = detect_homoglyph_attack("api.openai.com")
         assert result is None
+
+
+class TestBlockingMode:
+    """Tests for blocking vs warn-only mode."""
+
+    def test_warn_mode_logs_but_does_not_block(self, make_flow):
+        """Test that warn mode (block=False) logs violation but doesn't block."""
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+
+        guard = CredentialGuard()
+        guard.rules = list(DEFAULT_RULES)
+        guard.hmac_secret = b"test-secret"
+        guard.config = {}
+        guard.safe_headers_config = {}
+
+        # Mock _should_block to return False (warn-only mode)
+        guard._should_block = lambda: False
+
+        flow = make_flow(
+            method="POST",
+            url="https://evil.com/steal",
+            headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno"},
+        )
+
+        guard.request(flow)
+
+        # Should NOT block (no response set)
+        assert flow.response is None
+        # But should still record the violation
+        assert guard.violations_total == 1
+
+    def test_blocking_mode_blocks(self, make_flow):
+        """Test that blocking mode (block=True) actually blocks."""
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+
+        guard = CredentialGuard()
+        guard.rules = list(DEFAULT_RULES)
+        guard.hmac_secret = b"test-secret"
+        guard.config = {}
+        guard.safe_headers_config = {}
+
+        # Mock _should_block to return True (blocking mode)
+        guard._should_block = lambda: True
+
+        flow = make_flow(
+            method="POST",
+            url="https://evil.com/steal",
+            headers={"Authorization": "Bearer sk-proj-abc123xyz456def789ghijkghijklmno"},
+        )
+
+        guard.request(flow)
+
+        # Should block
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+
+
+class TestDetectionLevels:
+    """Test material differences between paranoid, standard, and patterns-only modes."""
+
+    def test_paranoid_catches_unknown_entropy_in_any_header(self):
+        """Paranoid: Catches unknown high-entropy values in ANY non-safe header."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        detections = analyze_headers(
+            headers=headers,
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="paranoid"
+        )
+
+        # Paranoid mode should catch this (entropy heuristic on all headers)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "unknown_secret"
+        assert detections[0]["tier"] == 2
+
+    def test_standard_ignores_unknown_entropy_in_nonsuspicious_header(self):
+        """Standard: Does NOT catch unknown high-entropy in non-suspicious named headers."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        detections = analyze_headers(
+            headers=headers,
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="standard"
+        )
+
+        # Standard mode should NOT catch this (no suspicious name, no known pattern)
+        assert len(detections) == 0
+
+    def test_standard_catches_known_pattern_in_auth_header(self):
+        """Standard: Catches known patterns in standard auth headers."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        # Key must be long enough to match the pattern (20+ chars after prefix)
+        headers = {"Authorization": f"Bearer sk-proj-{'a' * 80}"}
+        detections = analyze_headers(
+            headers=headers,
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="standard"
+        )
+
+        # Standard mode SHOULD catch this (known pattern in auth header)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "openai"
+        assert detections[0]["tier"] == 1
+
+    def test_standard_ignores_pattern_in_non_auth_header(self):
+        """Standard: Does NOT scan non-auth headers (only paranoid does)."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Random-Header": "sk-proj-abc123xyz456def789ghijk"}
+        detections = analyze_headers(
+            headers=headers,
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="standard"
+        )
+
+        # Standard mode only scans auth headers, not arbitrary headers
+        assert len(detections) == 0
+
+    def test_paranoid_catches_pattern_in_any_header(self):
+        """Paranoid: Catches high-entropy in ANY header (not just auth)."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        detections = analyze_headers(
+            headers=headers,
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="paranoid"
+        )
+
+        # Paranoid catches entropy in any header
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "unknown_secret"
+
+    def test_patterns_only_ignores_unknown_entropy(self):
+        """Patterns-only: Does NOT catch unknown high-entropy values."""
+        from addons.credential_guard import analyze_headers, DEFAULT_RULES
+
+        headers = {"X-Custom-Token": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
+        detections = analyze_headers(
+            headers=headers,
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="patterns-only"
+        )
+
+        # Patterns-only should NOT catch this (no entropy heuristics)
+        assert len(detections) == 0
+
+
+class TestSafeHeaders:
+    """Test safe header detection."""
+
+    def test_pattern_match(self):
+        """Pattern-based header matches are detected."""
+        from addons.credential_guard import is_safe_header
+
+        config = {"safe_patterns": ["request-id", "trace", "correlation"]}
+        assert is_safe_header("x-request-id", config) is True
+        assert is_safe_header("x-correlation-id", config) is True
+        assert is_safe_header("x-cloud-trace-context", config) is True
+        assert is_safe_header("x-api-key", config) is False
+
+    def test_case_insensitive(self):
+        """Header matching is case-insensitive."""
+        from addons.credential_guard import is_safe_header
+
+        config = {"safe_patterns": ["request-id"]}
+        assert is_safe_header("X-REQUEST-ID", config) is True
+        assert is_safe_header("x-request-id", config) is True
+
+
+class TestExtractToken:
+    """Test token extraction from Authorization headers."""
+
+    def test_bearer_scheme(self):
+        """Extract token from 'Bearer <token>' format."""
+        from addons.credential_guard import extract_bearer_token
+
+        token = extract_bearer_token("Bearer sk-proj-abc123")
+        assert token == "sk-proj-abc123"
+
+    def test_no_scheme(self):
+        """Token without scheme is returned as-is."""
+        from addons.credential_guard import extract_bearer_token
+
+        token = extract_bearer_token("sk-proj-abc123")
+        assert token == "sk-proj-abc123"
+
+    def test_empty_value(self):
+        """Empty value returns empty string."""
+        from addons.credential_guard import extract_bearer_token
+
+        assert extract_bearer_token("") == ""
+
+
+class TestTempAllowlistExpiry:
+    """Tests for temp allowlist expiry behavior."""
+
+    def test_temp_allowlist_expires(self, credential_guard, make_flow):
+        """Test that expired allowlist entries don't work."""
+        import time
+
+        key = "sk-proj-abc123xyz456def789ghijkghijklmno"
+
+        # Add with very short TTL (0 seconds = immediate expiry)
+        credential_guard.add_temp_allowlist(key, "evil.com", ttl=0)
+
+        # Wait for expiry
+        time.sleep(0.1)
+
+        flow = make_flow(
+            method="POST",
+            url="https://evil.com/api",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+
+        credential_guard.request(flow)
+
+        # Should be blocked (allowlist expired)
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+
+
+class TestHMACSecurityCritical:
+    """Security-critical tests for HMAC fingerprinting."""
+
+    def test_violation_log_never_contains_raw_credential(self, credential_guard, make_flow):
+        """Ensure metadata never contains raw credentials."""
+        flow = make_flow(
+            method="POST",
+            url="https://evil.com/api",
+            headers={"Authorization": "Bearer sk-proj-secretkey123abcdefghij"},
+        )
+
+        credential_guard.request(flow)
+
+        # Check metadata - should have fingerprint, not raw credential
+        fingerprint = flow.metadata.get("credential_fingerprint", "")
+        assert fingerprint.startswith("hmac:")
+        assert "secretkey123" not in fingerprint
+        assert "sk-proj-secretkey123abcdefghij" not in str(flow.metadata)
