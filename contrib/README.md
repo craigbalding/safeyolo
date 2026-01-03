@@ -6,17 +6,25 @@ Community integrations and examples. These are not part of the core SafeYolo pac
 
 | Directory | Description |
 |-----------|-------------|
-| `notifiers/` | Push notifications via ntfy.sh, Pushcut |
+| `notifiers/` | Push notifications with one-tap approval via ntfy.sh, Pushcut |
 
 ## Using Contrib Integrations
 
 Contrib scripts are standalone - copy what you need and adapt to your setup.
 
 ```bash
-# Example: Run the notifier alongside SafeYolo
+# Example: Run the notifier with approval buttons
 export NTFY_TOPIC=https://ntfy.sh/my-safeyolo-alerts
+export SAFEYOLO_ADMIN_TOKEN=$(cat ./safeyolo/data/admin_token)
+
+# Terminal 1: Send notifications with [Approve] [Deny] buttons
 python contrib/notifiers/notify.py
+
+# Terminal 2: Handle button callbacks -> admin API
+python contrib/notifiers/listener.py
 ```
+
+See [notifiers/README.md](notifiers/README.md) for full setup instructions.
 
 ## Building Your Own Integration
 
