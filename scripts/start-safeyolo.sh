@@ -183,19 +183,6 @@ echo "Attach to TUI: docker exec -it safeyolo tmux attach"
 # Ensure log file exists for tail
 touch "${LOG_DIR}/safeyolo.jsonl"
 
-# Ensure ntfy topic exists before mitmproxy starts
-# credential_guard will use this file; listener starts after admin API ready
-NTFY_TOPIC_FILE="/app/data/ntfy_topic"
-if [ ! -f "$NTFY_TOPIC_FILE" ] && [ -z "${NTFY_TOPIC}" ]; then
-    echo ""
-    echo "Generating ntfy topic..."
-    mkdir -p /app/data
-    python3 -c "import secrets; print(f'safeyolo-{secrets.token_urlsafe(32)}')" > "$NTFY_TOPIC_FILE"
-    GENERATED_TOPIC=$(cat "$NTFY_TOPIC_FILE")
-    echo "Topic: ${GENERATED_TOPIC}"
-    echo "Subscribe: https://ntfy.sh/${GENERATED_TOPIC}"
-fi
-
 # Generate admin API token if not provided
 ADMIN_TOKEN_FILE="/app/data/admin_token"
 if [ ! -f "$ADMIN_TOKEN_FILE" ] && [ -z "${ADMIN_API_TOKEN}" ]; then
@@ -282,22 +269,6 @@ if [ "$MODE" != "block" ]; then
 fi
 
 echo "Rate limiter confirmed in block mode"
-
-# Start ntfy approval listener (topic was generated before mitmproxy started)
-NTFY_TOPIC_FILE="/app/data/ntfy_topic"
-if [ -f "$NTFY_TOPIC_FILE" ] || [ -n "${NTFY_TOPIC}" ]; then
-    echo ""
-    echo "Starting ntfy approval listener..."
-    python3 /app/scripts/ntfy_approval_listener.py \
-        --admin-url "http://localhost:${ADMIN_PORT}" \
-        >> "${LOG_DIR}/approval_listener.log" 2>&1 &
-    LISTENER_PID=$!
-    echo "Approval listener PID: ${LISTENER_PID}"
-else
-    echo ""
-    echo "Ntfy approval listener disabled (no topic configured)"
-    echo "  Set NTFY_TOPIC env var or create data/ntfy_topic to enable"
-fi
 
 # Tail JSONL logs to stdout (for docker logs -f)
 echo "SafeYolo ready - tailing JSONL logs to stdout"
