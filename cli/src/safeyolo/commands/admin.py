@@ -1,5 +1,6 @@
 """Administrative commands for SafeYolo."""
 
+import httpx
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -300,3 +301,117 @@ def policies(
         except APIError as e:
             console.print(f"[red]API Error:[/red] {e}")
             raise typer.Exit(1)
+
+
+def test(
+    url: str = typer.Argument(
+        "https://api.anthropic.com/v1/messages",
+        help="URL to test through the proxy",
+    ),
+    method: str = typer.Option(
+        "GET",
+        "--method", "-X",
+        help="HTTP method to use",
+    ),
+    header: list[str] = typer.Option(
+        [],
+        "--header", "-H",
+        help="Add header (can be repeated)",
+    ),
+    show_headers: bool = typer.Option(
+        False,
+        "--headers", "-i",
+        help="Show response headers",
+    ),
+) -> None:
+    """Test a request through the SafeYolo proxy.
+
+    Makes an HTTP request through the proxy to verify connectivity and
+    see how SafeYolo handles it. Useful for testing credential detection.
+
+    Examples:
+
+        safeyolo test                                    # Test default URL
+        safeyolo test https://api.openai.com/v1/models  # Test OpenAI
+        safeyolo test https://httpbin.org/get           # Test plain HTTP
+        safeyolo test -H "Authorization: Bearer sk-test..." https://api.openai.com/v1/models
+    """
+    # Get proxy config
+    config = load_config()
+    proxy_port = config.get("proxy", {}).get("port", 8080)
+    proxy_url = f"http://localhost:{proxy_port}"
+
+    console.print(f"[bold]Testing request through proxy[/bold]\n")
+    console.print(f"  Proxy: {proxy_url}")
+    console.print(f"  URL: {url}")
+    console.print(f"  Method: {method}")
+
+    # Parse headers
+    headers = {}
+    for h in header:
+        if ":" in h:
+            key, value = h.split(":", 1)
+            headers[key.strip()] = value.strip()
+
+    if headers:
+        console.print(f"  Headers: {len(headers)}")
+    console.print()
+
+    # Make request through proxy
+    try:
+        with httpx.Client(proxy=proxy_url, timeout=30.0, verify=False) as client:
+            response = client.request(method, url, headers=headers)
+
+        # Show result
+        status_style = "green" if response.status_code < 400 else "red"
+        console.print(f"[{status_style}]{response.status_code} {response.reason_phrase}[/{status_style}]")
+
+        # Check for SafeYolo block
+        blocked_by = response.headers.get("X-Blocked-By")
+        if blocked_by:
+            console.print(f"\n[yellow]Blocked by:[/yellow] {blocked_by}")
+
+            # Try to parse JSON body for details
+            try:
+                body = response.json()
+                if "error" in body:
+                    console.print(f"[yellow]Error:[/yellow] {body.get('error')}")
+                if "type" in body:
+                    console.print(f"[yellow]Type:[/yellow] {body.get('type')}")
+                if "credential_type" in body:
+                    console.print(f"[yellow]Credential:[/yellow] {body.get('credential_type')}")
+                if "reflection" in body:
+                    console.print(f"\n[dim]{body.get('reflection')}[/dim]")
+            except Exception:
+                pass
+
+        # Show headers if requested
+        if show_headers:
+            console.print("\n[bold]Response Headers:[/bold]")
+            for key, value in response.headers.items():
+                console.print(f"  {key}: {value}")
+
+        # Show body preview for small responses
+        if not blocked_by and response.status_code < 400:
+            content_type = response.headers.get("content-type", "")
+            if "json" in content_type:
+                try:
+                    body = response.json()
+                    preview = str(body)[:200]
+                    if len(str(body)) > 200:
+                        preview += "..."
+                    console.print(f"\n[dim]{preview}[/dim]")
+                except Exception:
+                    pass
+
+    except httpx.ProxyError as e:
+        console.print(f"[red]Proxy error:[/red] {e}")
+        console.print("\nIs SafeYolo running? Try: [bold]safeyolo start[/bold]")
+        raise typer.Exit(1)
+    except httpx.ConnectError as e:
+        console.print(f"[red]Connection error:[/red] {e}")
+        console.print("\nIs SafeYolo running? Try: [bold]safeyolo start[/bold]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {type(e).__name__}: {e}")
+        raise typer.Exit(1)
