@@ -1,0 +1,18 @@
+# Development and testing dependencies
+# Used by: Dockerfile dev stage, local testing
+
+-r extended.txt
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# Interactive development
+ipython>=8.0.0
+
+# ONNX model export/optimization
+onnxscript>=0.1.0
+optimum[onnxruntime]>=1.14.0
+
+# PyTorch CPU (for model export, not inference)
+# Install separately: pip install torch --index-url https://download.pytorch.org/whl/cpu

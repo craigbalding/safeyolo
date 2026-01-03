@@ -39,7 +39,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config:/app/config
-      # Dev: mount source for live editing (rw for hot-fixes, config auto-reloads)
+      # Dev mounts for live editing - remove for production use
       - ./addons:/app/addons
       - ./scripts:/app/scripts
       - ./models:/app/models

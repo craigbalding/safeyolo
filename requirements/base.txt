@@ -1,0 +1,8 @@
+# Core dependencies for SafeYolo base build
+# Used by: Dockerfile base stage, local development
+
+mitmproxy>=10.0.0
+httpx>=0.25.0
+tenacity>=8.2.0
+pyyaml>=6.0
+aiodocker>=0.21.0

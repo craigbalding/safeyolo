@@ -1265,9 +1265,13 @@ class NtfyApprovalBackend:
         reason: str,
         confidence: str,
         tier: int,
-        admin_url: str = "http://localhost:8765"
     ) -> bool:
         """Send approval request notification.
+
+        Buttons POST back to the same ntfy topic with messages like
+        "approve:{token}" or "deny:{token}". A local listener
+        (ntfy_approval_listener.py) subscribes to the topic and
+        calls the admin API.
 
         Args:
             token: Approval token (capability token)
@@ -1277,7 +1281,6 @@ class NtfyApprovalBackend:
             reason: Why approval is needed
             confidence: Detection confidence
             tier: Detection tier (1 or 2)
-            admin_url: Base URL for admin API
 
         Returns:
             True if notification sent successfully
@@ -1307,23 +1310,25 @@ Confidence: {confidence} (tier {tier})
 This destination is not in the approved policy.
 """
 
-        # Build action buttons for approval/deny
-        approve_url = f"{admin_url}/admin/approve/{token}"
-        deny_url = f"{admin_url}/admin/deny/{token}"
+        # Build action buttons that POST back to ntfy topic
+        # A local listener picks these up and calls the admin API
+        callback_url = f"{self.server}/{self.topic}"
 
-        # Ntfy actions format
+        # Ntfy actions format - POST message body back to same topic
         actions = [
             {
                 "action": "http",
                 "label": "Approve",
-                "url": approve_url,
-                "method": "POST"
+                "url": callback_url,
+                "method": "POST",
+                "body": f"approve:{token}"
             },
             {
                 "action": "http",
                 "label": "Deny",
-                "url": deny_url,
+                "url": callback_url,
                 "method": "POST",
+                "body": f"deny:{token}",
                 "clear": True
             }
         ]

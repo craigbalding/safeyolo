@@ -63,10 +63,9 @@ def test_ntfy_notification():
     print("✅ Backend initialized")
 
     # Send test notification
-    print("\n📤 Sending test approval notification...")
+    print("\n Sending test approval notification...")
 
     test_token = "test-token-abc123xyz456"
-    admin_url = "http://localhost:9090"  # Default admin API port
 
     success = backend.send_approval_request(
         token=test_token,
@@ -76,17 +75,15 @@ def test_ntfy_notification():
         reason="not_in_policy",
         confidence="high",
         tier=1,
-        admin_url=admin_url
     )
 
     assert success, "Failed to send notification"
-    print("✅ Notification sent successfully!")
-    print(f"\n📱 Check your Ntfy app or: https://ntfy.sh/{topic}")
-    print("\n🔘 The notification should have two buttons:")
-    print(f"   • Approve → POST {admin_url}/admin/approve/{test_token}")
-    print(f"   • Deny    → POST {admin_url}/admin/deny/{test_token}")
-    print("\n💡 Note: Since this is a test, the token won't exist in the approval store.")
-    print("   Clicking buttons will return 404, which is expected.")
+    print("Notification sent successfully!")
+    print(f"\nCheck your Ntfy app or: https://ntfy.sh/{topic}")
+    print("\nThe notification should have two buttons:")
+    print(f"   Approve -> POSTs 'approve:{test_token}' to ntfy topic")
+    print(f"   Deny    -> POSTs 'deny:{test_token}' to ntfy topic")
+    print("\nRun scripts/ntfy_approval_listener.py to process button clicks.")
 
 
 def test_unknown_credential_notification():
@@ -102,10 +99,9 @@ def test_unknown_credential_notification():
 
     backend = NtfyApprovalBackend(config)
 
-    print("\n📤 Sending unknown credential notification...")
+    print("\nSending unknown credential notification...")
 
     test_token = "test-unknown-def789"
-    admin_url = "http://localhost:9090"
 
     success = backend.send_approval_request(
         token=test_token,
@@ -115,11 +111,10 @@ def test_unknown_credential_notification():
         reason="unknown_credential_type",
         confidence="medium",
         tier=2,
-        admin_url=admin_url
     )
 
     assert success, "Failed to send notification"
-    print("✅ Unknown credential notification sent!")
+    print("Unknown credential notification sent!")
 
 
 def show_usage():
@@ -127,15 +122,15 @@ def show_usage():
     topic = os.environ.get("NTFY_TOPIC", "your-topic-here")
 
     print("\n" + "="*60)
-    print("📖 HOW TO MONITOR NOTIFICATIONS")
+    print("HOW TO USE NTFY APPROVALS")
     print("="*60)
-    print("\n1️⃣  Subscribe in browser:")
+    print("\n1. Start the approval listener (runs locally):")
+    print("   python3 scripts/ntfy_approval_listener.py")
+    print("\n2. Subscribe in browser:")
     print(f"   https://ntfy.sh/{topic}")
-    print("\n2️⃣  Subscribe via curl (JSON stream):")
+    print("\n3. Subscribe via curl (JSON stream):")
     print(f"   curl -s 'https://ntfy.sh/{topic}/json'")
-    print("\n3️⃣  Subscribe via curl (SSE stream):")
-    print(f"   curl -s 'https://ntfy.sh/{topic}/sse'")
-    print("\n4️⃣  Ntfy mobile app:")
+    print("\n4. Ntfy mobile app:")
     print("   - Download: https://ntfy.sh/docs/subscribe/phone/")
     print(f"   - Subscribe to topic: {topic}")
     print("\n" + "="*60)
@@ -169,11 +164,11 @@ if __name__ == "__main__":
         # Show monitoring info
         show_usage()
 
-        print("\n✅ All tests passed!")
-        print("\n🎯 Next steps:")
-        print("   1. Check your Ntfy notifications")
-        print("   2. Verify action buttons are present")
-        print("   3. Note the button URLs (admin API endpoints)")
+        print("\nAll tests passed!")
+        print("\nNext steps:")
+        print("   1. Start the listener: python3 scripts/ntfy_approval_listener.py")
+        print("   2. Check your Ntfy app for notifications")
+        print("   3. Tap Approve/Deny - listener will call the admin API")
         sys.exit(0)
 
     except AssertionError as e:

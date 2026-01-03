@@ -44,11 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install core Python dependencies (no ML, no YARA)
-RUN pip install --no-cache-dir \
-    mitmproxy \
-    httpx \
-    pyyaml \
-    aiodocker
+COPY requirements/base.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /app
 
@@ -69,9 +66,9 @@ COPY addons/sse_streaming.py /app/addons/
 # Copy configuration
 COPY config/ /app/config/
 
-# Copy startup script
-COPY scripts/start-safeyolo.sh /app/start-safeyolo.sh
-RUN chmod +x /app/start-safeyolo.sh
+# Copy scripts (dev: mount -v $(pwd):/app overrides these)
+COPY scripts/ /app/scripts/
+RUN chmod +x /app/scripts/*.sh
 
 # Create directories
 RUN mkdir -p /app/logs /certs
@@ -87,7 +84,7 @@ ENV LOG_DIR=/app/logs
 ENV CONFIG_DIR=/app/config
 
 # Start SafeYolo
-CMD ["/app/start-safeyolo.sh"]
+CMD ["/app/scripts/start-safeyolo.sh"]
 
 # ==============================================================================
 # Extended stage - Adds ML + YARA (~700MB)
@@ -101,12 +98,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ML + YARA dependencies
-RUN pip install --no-cache-dir \
-    yara-python \
-    onnxruntime \
-    transformers \
-    huggingface_hub \
-    numpy
+COPY requirements/extended.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Download DeBERTa ONNX model at build time (~400MB cached in image)
 RUN python -c "from transformers import AutoTokenizer; \
@@ -138,12 +131,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dev/test dependencies
-RUN pip install --no-cache-dir \
-    pytest \
-    pytest-asyncio \
-    ipython \
-    onnxscript \
-    "optimum[onnxruntime]" \
+COPY requirements/dev.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Download PIGuard model for testing (ungated, designed to reduce over-defense)

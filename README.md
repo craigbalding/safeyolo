@@ -278,7 +278,28 @@ cat data/policies/webapp.yaml     # Requests from 'webapp' compose project
 #     paths: [/api/*]
 ```
 
-Subscribe to approval notifications: Set `NTFY_TOPIC` env var or check `data/ntfy_topic` for the auto-generated topic, then visit `https://ntfy.sh/{topic}`.
+**Mobile Approvals Setup** (for solo devs):
+
+1. **Start the approval listener** on the same host as safeyolo:
+   ```bash
+   python3 scripts/ntfy_approval_listener.py
+   # Or with custom admin URL:
+   python3 scripts/ntfy_approval_listener.py --admin-url http://localhost:9090
+   ```
+
+2. **Subscribe to notifications** - get the topic from `data/ntfy_topic` or set `NTFY_TOPIC` env var:
+   ```bash
+   # Install ntfy app on your phone: https://ntfy.sh/docs/subscribe/phone/
+   # Subscribe to your topic (visible in data/ntfy_topic)
+   ```
+
+3. **Approve from your phone** - when a credential needs approval:
+   - You get a push notification with Approve/Deny buttons
+   - Tapping a button posts back to ntfy
+   - The listener picks it up and calls the local admin API
+   - Request proceeds (or is denied) automatically
+
+The listener runs with exponential backoff and reconnects automatically. Logs go to `logs/approval_listener.log`.
 
 ### If mitmproxy crashes
 
@@ -625,6 +646,7 @@ safeyolo/
 │       └── README.md          # YARA rule documentation
 ├── scripts/
 │   ├── start-safeyolo.sh      # Docker entrypoint
+│   ├── ntfy_approval_listener.py  # Mobile approval handler (subscribes to ntfy)
 │   ├── test_build.sh          # Build target testing (base/extended/dev)
 │   ├── logtail.py             # Live log viewer with summaries
 │   ├── export_piguard_onnx.py # Export PIGuard model to ONNX
@@ -655,6 +677,10 @@ safeyolo/
 │   ├── ADDONS.md              # Complete addon reference
 │   ├── FUTURE.md              # Ideas under consideration
 │   └── prompt-injection-classifier-evaluation.md
+├── requirements/              # Python dependencies by build target
+│   ├── base.txt               # Core deps (mitmproxy, httpx, tenacity)
+│   ├── extended.txt           # + ML/YARA (onnxruntime, yara-python)
+│   └── dev.txt                # + testing (pytest, torch)
 ├── Dockerfile                 # Multi-stage: base/extended/dev
 ├── docker-compose.yml
 ├── LICENSE                    # MIT License
