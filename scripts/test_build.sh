@@ -4,7 +4,6 @@
 #
 # Usage:
 #   ./scripts/test_build.sh base
-#   ./scripts/test_build.sh extended
 #   ./scripts/test_build.sh dev
 
 set -e
@@ -189,29 +188,7 @@ echo "Test 3: Checking addon loading..."
 if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "Loading addons"; then
     echo "  Loaded addons:"
     docker logs ${CONTAINER_NAME} 2>&1 | grep -A 15 "Loading addons" | grep "  - " | head -12
-    echo ""
-
-    # Verify extended addons if testing extended build
-    if [ "$TARGET" = "extended" ]; then
-        if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "prompt_injection.py (skipped"; then
-            echo "  FAIL: prompt_injection should be loaded in extended build"
-            exit 1
-        fi
-        if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "yara_scanner.py (skipped"; then
-            echo "  FAIL: yara_scanner should be loaded in extended build"
-            exit 1
-        fi
-        echo "  ✓ PASS: Extended addons loaded"
-    fi
-
-    # Verify extended addons are skipped in base build
-    if [ "$TARGET" = "base" ]; then
-        if ! docker logs ${CONTAINER_NAME} 2>&1 | grep -q "prompt_injection.py (skipped"; then
-            echo "  FAIL: prompt_injection should be skipped in base build"
-            exit 1
-        fi
-        echo "  ✓ PASS: Extended addons correctly skipped"
-    fi
+    echo "  ✓ PASS: Addons loaded"
 else
     echo "  FAIL: Could not find addon loading log"
     docker logs ${CONTAINER_NAME}
