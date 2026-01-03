@@ -114,7 +114,7 @@ SafeYolo is an explicit HTTP(S) forward proxy.
 | Host proxy (default) | Traffic goes direct (not inspected) | SafeYolo is "best effort" unless you also enforce egress via firewall/VPN/container |
 | Docker chokepoint | Traffic fails (no route to internet) | Proxy is the only way out; bypass attempts don't leak, they break |
 
-See [docs/DOCKER_CHOKEPOINT.md](docs/DOCKER_CHOKEPOINT.md) for the locked-down container setup.
+See [docs/DOCKER_CHOKEPOINT.md](docs/DOCKER_CHOKEPOINT.md) for the locked-down container setup, or use the ready-to-run [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/) example.
 
 ## What It Does
 

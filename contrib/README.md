@@ -6,6 +6,7 @@ Example integrations. Copy and adapt for your own use.
 
 | Directory | Description |
 |-----------|-------------|
+| `claude-code-chokepoint/` | **Recommended**: Claude Code in enforced chokepoint mode |
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
 

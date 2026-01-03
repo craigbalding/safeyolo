@@ -1,0 +1,92 @@
+# Claude Code Chokepoint Mode
+#
+# Self-contained example: SafeYolo + Claude Code on isolated network.
+# Traffic either goes through SafeYolo or fails - bypass is impossible.
+#
+# Usage:
+#   docker compose up -d safeyolo   # Start proxy first
+#   docker compose run --rm claude  # Interactive Claude Code session
+#
+# Verify chokepoint:
+#   docker compose run --rm claude sh -c 'curl --noproxy "*" -I https://example.com'
+#   # Expected: fails (no route)
+
+services:
+  safeyolo:
+    image: safeyolo:latest
+    # Or build from source:
+    # build: { context: ../.. }
+    container_name: safeyolo-chokepoint
+    restart: unless-stopped
+    networks:
+      chokepoint-internal:
+        # Static IP for predictable proxy address
+        ipv4_address: 172.31.0.10
+      default:
+        # Internet access (only safeyolo has this)
+    ports:
+      - "127.0.0.1:8888:8080"   # Proxy (localhost only)
+      - "127.0.0.1:9090:9090"   # Admin API (localhost only)
+    volumes:
+      - certs:/certs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - PROXY_PORT=8080
+      - ADMIN_PORT=9090
+
+  claude:
+    image: node:22-slim
+    depends_on:
+      - safeyolo
+    stdin_open: true
+    tty: true
+    networks:
+      - chokepoint-internal
+      # Note: NO connection to 'default' network = no direct internet
+    volumes:
+      # Your project directory
+      - ${PROJECT_DIR:-.}:/workspace
+      # SafeYolo CA cert for HTTPS inspection
+      - certs:/certs:ro
+    working_dir: /workspace
+    environment:
+      # Route all traffic through SafeYolo
+      - HTTP_PROXY=http://172.31.0.10:8080
+      - HTTPS_PROXY=http://172.31.0.10:8080
+      - http_proxy=http://172.31.0.10:8080
+      - https_proxy=http://172.31.0.10:8080
+      - NO_PROXY=localhost,127.0.0.1
+      # Trust SafeYolo CA (node:22-slim is Debian-based)
+      - NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem
+      - SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem
+      - REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem
+      # Your Anthropic key
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # Install Claude Code if not present
+        if ! command -v claude &> /dev/null; then
+          echo "Installing Claude Code..."
+          npm install -g @anthropic-ai/claude-code
+        fi
+        # Install git (required by Claude Code)
+        apt-get update && apt-get install -y git curl > /dev/null 2>&1
+        echo "Ready. Run 'claude' to start."
+        exec bash
+
+networks:
+  chokepoint-internal:
+    driver: bridge
+    internal: true  # <-- This is the key: no default gateway
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+
+  default:
+    driver: bridge
+    # Normal network with internet (only safeyolo uses this)
+
+volumes:
+  certs: {}
