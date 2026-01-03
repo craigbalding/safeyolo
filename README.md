@@ -4,193 +4,59 @@
 
 SafeYolo is a security proxy that prevents credential leakage, dampens runaway loops, and provides audit logs for agent HTTP calls. When your AI assistant hallucinates an endpoint, SafeYolo catches the credential before it leaks.
 
+## Quick Start
+
+```bash
+# Install CLI
+pipx install safeyolo
+
+# Start proxy (auto-configures on first run)
+safeyolo start
+
+# Set up CA trust and proxy for your shell
+eval $(safeyolo cert env)
+
+# Run your agent
+claude
+```
+
+That's it. SafeYolo is now inspecting all HTTPS traffic from your shell session.
+
 ## Deployment Modes
 
 | Mode | Enforcement | Use case |
 |------|-------------|----------|
-| **Secure Mode** (recommended) | Enforced - bypass attempts fail | Production use with autonomous agents |
-| Quick Mode | Best-effort - agents can bypass | Fast demo, smoke testing |
+| **Quick Mode** (default) | Per-process - agents can bypass | Fast setup, interactive use |
+| **Secure Mode** | Enforced - bypass attempts fail | Production use with autonomous agents |
 
-**Why Secure Mode?** Many autonomous coding agents will retry failed calls by changing network configuration - unsetting proxy variables or opening direct sockets. Secure Mode avoids "policy by suggestion" by removing direct internet routing entirely. The only way out is through the proxy.
+### Quick Mode (Default)
 
-## Quick Start: Secure Mode (Recommended)
-
-Run your coding agent in a container on a no-internet Docker network where SafeYolo is the only egress path:
+Quick Mode uses per-process environment variables to route traffic through SafeYolo. It's the fastest way to get started:
 
 ```bash
-# Install CLI
-pipx install safeyolo
-
-# Initialize with network isolation
-safeyolo init --secure
 safeyolo start
-
-# Add an agent template (e.g., Claude Code)
-safeyolo agent add claude-code
-
-# Configure and run
-cd safeyolo/agents/claude-code
-cp .env.example .env
-# Edit .env with your ANTHROPIC_API_KEY
-docker compose run --rm claude
+eval $(safeyolo cert env)
+# Your agent now goes through SafeYolo
 ```
 
-The CLI handles everything: network isolation, CA certificate mounting, and proxy configuration. Run `safeyolo agent list` to see available templates.
+**Limitation:** Autonomous agents could bypass by unsetting proxy variables or opening direct sockets.
 
-## Quick Start: Quick Mode (Demo Only)
+### Secure Mode (Enforced)
 
-For a fast smoke test on your host machine. **Not enforceable** - autonomous agents can bypass by going direct.
+For autonomous agents that might try to bypass the proxy, Secure Mode runs your agent in a container with no direct internet access:
 
 ```bash
-# Install CLI
-pipx install safeyolo
+# Generate agent container template
+safeyolo secure setup
 
-# Initialize and start
-safeyolo init
-safeyolo start
-
-# Install CA certificate (required for HTTPS inspection)
-safeyolo cert install
-
-# Verify setup
-safeyolo check
-
-# Point your agent at the proxy
-export HTTP_PROXY=http://localhost:8080
-export HTTPS_PROXY=http://localhost:8080
+# Run agent in isolated container
+cd claude-code
+docker compose run --rm claudecode
 ```
 
-> **Warning:** Quick Mode is useful for testing SafeYolo, but provides no enforcement against agents that ignore proxy settings.
+The agent container connects to an internal Docker network where SafeYolo is the only route to the internet. Bypass attempts fail rather than leak.
 
-For contributors building locally:
-
-```bash
-docker build -t safeyolo:latest .
-```
-
-## TLS Certificate Setup
-
-SafeYolo inspects HTTPS traffic to detect credentials in headers. This requires your system to trust SafeYolo's CA certificate.
-
-```bash
-# Install CA cert into system trust store (macOS/Linux)
-safeyolo cert install
-
-# Verify HTTPS inspection is working
-safeyolo check
-
-# When you're done with SafeYolo, remove the CA
-safeyolo cert uninstall
-```
-
-The `cert install` command auto-detects your OS and runs the appropriate commands (requires sudo). Use `--dry-run` to see what it would do first.
-
-### Why does SafeYolo need a CA certificate?
-
-SafeYolo uses TLS interception (MITM) to inspect HTTPS requests for credentials. On first run it generates a **local, unique Certificate Authority**. When you trust that CA, SafeYolo can create certificates for each site on-the-fly and your client will accept them, enabling inspection.
-
-This is the same approach used by mitmproxy, Fiddler, Charles Proxy, and other interception proxies.
-
-### Security implications
-
-Installing a custom root CA expands what your machine will trust. Anyone who obtains the CA's private key could potentially impersonate HTTPS sites to your client.
-
-**Best practices:**
-- Only install the CA on a **development machine**, not production
-- Keep the CA private key secure (stored in `~/.safeyolo/certs/`)
-- **Never share or commit the CA private key**
-- Remove the CA when you stop using SafeYolo: `safeyolo cert uninstall`
-
-### Reversibility
-
-You can remove the SafeYolo CA at any time:
-
-```bash
-safeyolo cert uninstall
-```
-
-This removes the certificate from your system trust store. The command supports `--dry-run` to preview changes.
-
-### Verifying the setup
-
-`safeyolo check` verifies the full chain:
-- ✓ Config and Docker available
-- ✓ Container running
-- ✓ Admin API responding
-- ✓ CA certificate exists
-- ✓ Proxy reachable (HTTP)
-- ✓ HTTPS inspection working
-
-Use `safeyolo cert show` to see certificate details including its fingerprint.
-
-**Agent in Docker?** Mount the CA cert and update the trust store:
-
-```bash
-# Debian/Ubuntu-based container:
--v ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt:ro
-# Then inside the container:
-update-ca-certificates
-
-# Alpine-based container:
--v ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt:ro
-# Then inside the container:
-apk add --no-cache ca-certificates && update-ca-certificates
-```
-
-### Certificate pinning
-
-Some applications use certificate pinning and will refuse connections even with the CA installed. For these apps, either exclude them from proxying or use TLS passthrough. See [docs/TLS_CERTIFICATE.md](docs/TLS_CERTIFICATE.md) for configuration options.
-
-## Configuring Your Agent (Quick Mode)
-
-For Quick Mode, set these environment variables for your AI agent:
-
-```bash
-# Standard proxy configuration
-export HTTP_PROXY=http://localhost:8080
-export HTTPS_PROXY=http://localhost:8080
-export NO_PROXY=localhost,127.0.0.1
-```
-
-**Agent running in Docker?** Use Secure Mode instead (see Quick Start above). If you must use Quick Mode with Docker:
-
-```bash
-# macOS / Windows (Docker Desktop)
-export HTTP_PROXY=http://host.docker.internal:8080
-export HTTPS_PROXY=http://host.docker.internal:8080
-
-# Linux (add host alias)
-docker run --add-host=host.docker.internal:host-gateway ...
-export HTTP_PROXY=http://host.docker.internal:8080
-export HTTPS_PROXY=http://host.docker.internal:8080
-```
-
-Then start watching for approval requests:
-
-```bash
-safeyolo watch
-```
-
-## Traffic Interception
-
-SafeYolo is an explicit HTTP(S) forward proxy.
-
-**Listening ports:**
-- Proxy: `http://localhost:8080` (HTTP proxy; HTTPS via CONNECT)
-- Admin API: `http://localhost:9090` (local admin)
-
-**What SafeYolo can inspect:**
-- HTTP: full headers, URLs, and bodies (if enabled)
-- HTTPS: full headers, URLs, and bodies only if the client trusts the SafeYolo CA (MITM: terminate, inspect, re-encrypt)
-
-**Enforcement depends on deployment mode:**
-
-| Mode | If agent ignores proxy settings... | Result |
-|------|-------------------------------------|--------|
-| **Secure Mode** (recommended) | Traffic fails (no route to internet) | Bypass attempts break, not leak |
-| Quick Mode | Traffic goes direct (not inspected) | Best-effort only; agents can bypass |
-
-See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for details, or use `safeyolo agent add` to generate an agent template.
+See `safeyolo secure list` for available agent templates.
 
 ## What It Does
 
@@ -204,26 +70,18 @@ See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for details, or use `safeyolo age
 
 **Audit trail** - Every request logged to JSONL with decision reasons and request correlation.
 
-**What gets logged:**
-- Method, host, path, status code, decision, rule ID, request ID
-- Credential fingerprints (HMAC hash, never raw secrets)
-- Body logging off by default (opt-in for debugging)
-
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo init` | Setup wizard (`--secure` for network isolation) |
-| `safeyolo start` | Start the proxy container |
+| `safeyolo start` | Start the proxy container (auto-configures on first run) |
 | `safeyolo stop` | Stop the proxy |
 | `safeyolo status` | Show health and stats |
-| `safeyolo agent add <template>` | Add an agent container configuration |
-| `safeyolo agent list` | List available agent templates |
-| `safeyolo agent run <name>` | Run an agent container |
-| `safeyolo agent remove <name>` | Remove an agent configuration |
-| `safeyolo cert install` | Install CA cert for HTTPS inspection |
-| `safeyolo cert uninstall` | Remove CA cert from system trust store |
+| `safeyolo cert env` | Print CA trust and proxy environment variables |
 | `safeyolo cert show` | Show CA cert location and fingerprint |
+| `safeyolo secure setup` | Generate agent container template (Secure Mode) |
+| `safeyolo secure list` | List available agent templates |
+| `safeyolo init` | Setup wizard (for customization) |
 | `safeyolo check` | Verify setup, proxy, and HTTPS working |
 | `safeyolo watch` | Monitor and approve credentials |
 | `safeyolo logs -f` | Follow logs in real-time |
@@ -237,10 +95,10 @@ See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for details, or use `safeyolo age
 │                      Your Machine                           │
 │                                                             │
 │  ┌────────────────┐       ┌───────────────────────────────┐ │
-│  │  safeyolo CLI  │       │  ./safeyolo/                  │ │
+│  │  safeyolo CLI  │       │  ~/.safeyolo/                 │ │
 │  │                │       │    config.yaml                │ │
-│  │  init, start,  │◄─────►│    rules.json                 │ │
-│  │  watch, logs   │       │    policies/                  │ │
+│  │  start, watch, │◄─────►│    rules.json                 │ │
+│  │  cert env      │       │    policies/                  │ │
 │  └───────┬────────┘       │    logs/safeyolo.jsonl        │ │
 │          │                └───────────────────────────────┘ │
 │          │                                                  │
@@ -251,23 +109,21 @@ See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for details, or use `safeyolo age
 │  │                                                       │  │
 │  │  mitmproxy + addons:                                  │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
-│  │  │ credential_guard.py (~750 lines)                 │ │  │
+│  │  │ credential_guard.py                              │ │  │
 │  │  │ - Detect credentials (patterns + entropy)        │ │  │
 │  │  │ - Validate destinations (allowed hosts)          │ │  │
-│  │  │ - Emit events to JSONL (CLI picks them up)       │ │  │
 │  │  │ - Return 428 for blocks (agent gets feedback)    │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
 │  │                                                       │  │
 │  │  + rate_limiter, circuit_breaker, pattern_scanner,    │  │
 │  │    request_logger, metrics, admin_api                 │  │
-│  │                                                       │  │
 │  └────────────────────────┬──────────────────────────────┘  │
 │                           │                                 │
 │                           │ :8080 (proxy)                   │
 │                           ▼                                 │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │  AI Coding Agent (Claude Code, etc.)                  │  │
-│  │  HTTP_PROXY=http://localhost:8080                     │  │
+│  │  via eval $(safeyolo cert env)                        │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -282,12 +138,10 @@ When SafeYolo blocks a credential:
 4. Approved credentials are saved to policy file
 5. Subsequent requests pass through
 
-*Why 428?* SafeYolo uses HTTP 428 (Precondition Required) to signal "needs approval" rather than permanent denial. This lets agents retry after approval, and distinguishes SafeYolo blocks from upstream 403s.
-
 ```bash
 $ safeyolo watch
 
-Watching: ./safeyolo/logs/safeyolo.jsonl
+Watching: ~/.safeyolo/logs/safeyolo.jsonl
 
 ╭─ Credential Blocked 14:32:15 ─────────────────────────────╮
 │ Credential   anthropic                                    │
@@ -303,19 +157,16 @@ Approved - a1b2c3d4... -> api.example.com
 
 ## Configuration
 
-Configuration lives in `./safeyolo/` (project) or `~/.safeyolo/` (global).
+Configuration lives in `~/.safeyolo/` (auto-created on first `safeyolo start`).
 
 ```
-safeyolo/
+~/.safeyolo/
 ├── config.yaml          # Proxy settings
 ├── rules.json           # Credential patterns & allowed hosts
 ├── policies/            # Approved credentials (auto-managed)
+├── certs/               # CA certificate for HTTPS inspection
 ├── logs/                # Audit logs (safeyolo.jsonl)
-├── data/                # Admin token, HMAC secret
-└── agents/              # Agent container configs (Secure Mode)
-    └── claude-code/     # Example: Claude Code agent
-        ├── docker-compose.yml
-        └── .env
+└── data/                # Admin token, HMAC secret
 ```
 
 ### rules.json
@@ -354,17 +205,6 @@ safeyolo mode credential-guard warn
 safeyolo mode credential-guard block
 ```
 
-## Testing
-
-Test that requests go through the proxy:
-
-```bash
-# Test with a fake credential
-safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1/models
-
-# Should show: 428 (blocked - destination mismatch or requires approval)
-```
-
 ## Requirements
 
 - Python 3.10+
@@ -376,7 +216,7 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 - Hallucinated endpoints (`api.openai.com.attacker.io` instead of `api.openai.com`)
 - Credentials sent to wrong hosts
 - Runaway API loops
-- Typosquats and homograph attacks (e.g., Cyrillic 'а' in `аpi.openai.com`)
+- Typosquats and homograph attacks (e.g., Cyrillic 'a' in `аpi.openai.com`)
 - Proxy bypass attempts (Secure Mode only - they fail instead of leak)
 
 **SafeYolo does NOT:**
@@ -404,7 +244,7 @@ SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS
 ```
 safeyolo/
 ├── addons/              # mitmproxy addons
-│   ├── credential_guard.py   # Core security (~750 lines)
+│   ├── credential_guard.py   # Core security
 │   ├── rate_limiter.py
 │   ├── circuit_breaker.py
 │   ├── pattern_scanner.py
@@ -412,7 +252,7 @@ safeyolo/
 │   └── ...
 ├── cli/                 # safeyolo CLI package
 ├── config/              # Default configurations
-├── contrib/             # Example integrations (notifications, etc.)
+├── contrib/             # Example integrations
 ├── tests/               # Test suite
 └── docs/                # Additional documentation
 ```
@@ -420,8 +260,6 @@ safeyolo/
 ## Contributing
 
 See [docs/DEVELOPERS.md](docs/DEVELOPERS.md) for architecture and integration guides.
-
-Example integrations live in [contrib/](contrib/) - use these as templates for your own.
 
 ## License
 

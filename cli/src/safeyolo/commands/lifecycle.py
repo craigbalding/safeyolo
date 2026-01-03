@@ -1,12 +1,23 @@
 """Container lifecycle commands: start, stop, status."""
 
+import json
+import secrets
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from ..api import APIError, get_api
-from ..config import find_config_dir, get_admin_token, load_config
+from ..config import (
+    DEFAULT_CONFIG,
+    GLOBAL_DIR_NAME,
+    find_config_dir,
+    get_admin_token,
+    load_config,
+    save_config,
+)
 from ..docker import (
     DockerError,
     check_docker,
@@ -15,9 +26,69 @@ from ..docker import (
     start as docker_start,
     stop as docker_stop,
     wait_for_healthy,
+    write_compose_file,
 )
 
 console = Console()
+
+# Default rules for common API providers
+DEFAULT_RULES = {
+    "credentials": [
+        {
+            "name": "openai",
+            "pattern": "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}",
+            "allowed_hosts": ["api.openai.com"],
+        },
+        {
+            "name": "openai_project",
+            "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
+            "allowed_hosts": ["api.openai.com"],
+        },
+        {
+            "name": "anthropic",
+            "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
+            "allowed_hosts": ["api.anthropic.com"],
+        },
+        {
+            "name": "github",
+            "pattern": "gh[ps]_[a-zA-Z0-9]{36}",
+            "allowed_hosts": ["api.github.com", "github.com"],
+        },
+    ],
+    "entropy_detection": {
+        "enabled": True,
+        "min_length": 20,
+        "min_charset_diversity": 0.5,
+        "min_shannon_entropy": 3.5,
+    },
+}
+
+
+def _bootstrap_config(config_dir: Path) -> None:
+    """Bootstrap config directory with sensible defaults."""
+    # Create directories
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "logs").mkdir(exist_ok=True)
+    (config_dir / "certs").mkdir(exist_ok=True)
+    (config_dir / "policies").mkdir(exist_ok=True)
+    (config_dir / "data").mkdir(exist_ok=True)
+
+    # Generate admin token
+    token = secrets.token_urlsafe(32)
+    token_path = config_dir / "data" / "admin_token"
+    token_path.write_text(token)
+    token_path.chmod(0o600)
+
+    # Write config.yaml
+    config = DEFAULT_CONFIG.copy()
+    save_config(config)
+
+    # Write rules.json
+    rules_path = config_dir / "rules.json"
+    rules_path.write_text(json.dumps(DEFAULT_RULES, indent=2))
+
+    # Write docker-compose.yml
+    write_compose_file(secure=False)
 
 
 def start(
@@ -33,20 +104,21 @@ def start(
     ),
 ) -> None:
     """Start SafeYolo proxy container."""
+    first_run = False
 
-    # Check config exists
-    config_dir = find_config_dir()
-    if not config_dir:
-        console.print(
-            "[red]No SafeYolo configuration found.[/red]\n"
-            "Run [bold]safeyolo init[/bold] first."
-        )
-        raise typer.Exit(1)
-
-    # Check Docker
+    # Check Docker first
     if not check_docker():
         console.print("[red]Docker is not available.[/red]")
         raise typer.Exit(1)
+
+    # Check config exists, bootstrap if needed
+    config_dir = find_config_dir()
+    if not config_dir:
+        first_run = True
+        config_dir = Path.home() / GLOBAL_DIR_NAME
+        console.print("[bold]First run setup...[/bold]")
+        _bootstrap_config(config_dir)
+        console.print(f"  Created {config_dir}")
 
     # Check if already running
     if is_running():
@@ -55,7 +127,6 @@ def start(
 
     config = load_config()
     proxy_port = config["proxy"]["port"]
-    admin_port = config["proxy"]["admin_port"]
 
     console.print("[bold]Starting SafeYolo...[/bold]")
 
@@ -73,18 +144,28 @@ def start(
             console.print("[yellow]timeout (may still be starting)[/yellow]")
 
     # Show connection info
-    console.print(
-        Panel(
-            f"[green]SafeYolo is running[/green]\n\n"
-            f"Proxy:     http://localhost:{proxy_port}\n"
-            f"Admin API: http://localhost:{admin_port}\n\n"
-            f"Configure your agent:\n"
-            f"  export HTTP_PROXY=http://localhost:{proxy_port}\n"
-            f"  export HTTPS_PROXY=http://localhost:{proxy_port}\n\n"
-            f"View logs: [bold]safeyolo logs[/bold]",
-            title="Started",
+    if first_run:
+        console.print(
+            Panel(
+                f"[green]SafeYolo is running![/green]\n\n"
+                f"Proxy: http://localhost:{proxy_port}\n\n"
+                f"Next:\n"
+                f"  eval $(safeyolo cert env)   [dim]# CA trust + proxy vars[/dim]\n"
+                f"  claude                      [dim]# Run your agent[/dim]\n\n"
+                f"For enforced protection (autonomous agents):\n"
+                f"  [bold]safeyolo secure setup[/bold]",
+                title="Ready",
+            )
         )
-    )
+    else:
+        console.print(
+            Panel(
+                f"[green]SafeYolo is running[/green]\n\n"
+                f"Proxy: http://localhost:{proxy_port}\n\n"
+                f"  eval $(safeyolo cert env)   [dim]# CA trust + proxy vars[/dim]",
+                title="Started",
+            )
+        )
 
 
 def stop() -> None:

@@ -1,6 +1,6 @@
 # TLS Certificate Management
 
-This document explains how SafeYolo's TLS interception works, the security implications, and how to handle edge cases like certificate pinning.
+This document explains how SafeYolo's TLS interception works and how to configure CA trust.
 
 ## How TLS Interception Works
 
@@ -19,123 +19,79 @@ On first run, SafeYolo generates a **unique, local CA** stored in `~/.safeyolo/c
 
 ```
 ~/.safeyolo/certs/
-├── mitmproxy-ca-cert.pem    # Public certificate (install this)
+├── mitmproxy-ca-cert.pem    # Public certificate
 ├── mitmproxy-ca-cert.cer    # Same cert in DER format
 ├── mitmproxy-ca.pem         # Private key (NEVER share this)
 └── mitmproxy-ca.p12         # PKCS12 bundle
 ```
 
-This CA is unique to your installation. Unlike commercial root CAs, it cannot be used by anyone else to intercept your traffic - unless they obtain your private key.
+This CA is unique to your installation. Only someone with access to the private key could abuse it.
 
-## Installing the CA
+## Per-Process CA Trust (Recommended)
 
-```bash
-# Interactive installation with auto-detection
-safeyolo cert install
-
-# See what would happen without making changes
-safeyolo cert install --dry-run
-
-# View certificate details
-safeyolo cert show
-```
-
-### Manual installation
-
-**macOS:**
-```bash
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain \
-  ~/.safeyolo/certs/mitmproxy-ca-cert.pem
-```
-
-**Linux (Debian/Ubuntu):**
-```bash
-sudo cp ~/.safeyolo/certs/mitmproxy-ca-cert.pem \
-  /usr/local/share/ca-certificates/safeyolo.crt
-sudo update-ca-certificates
-```
-
-**Linux (RHEL/CentOS/Fedora):**
-```bash
-sudo cp ~/.safeyolo/certs/mitmproxy-ca-cert.pem \
-  /etc/pki/ca-trust/source/anchors/safeyolo.crt
-sudo update-ca-trust
-```
-
-**Windows:**
-```powershell
-certutil -addstore -f ROOT $HOME\.safeyolo\certs\mitmproxy-ca-cert.pem
-```
-
-## Removing the CA
-
-When you're done using SafeYolo, remove the CA from your trust store:
+SafeYolo uses per-process environment variables for CA trust. This avoids modifying your system trust store:
 
 ```bash
-safeyolo cert uninstall
+eval $(safeyolo cert env)
 ```
 
-Or manually:
+This sets:
 
-**macOS:**
 ```bash
-sudo security delete-certificate -c mitmproxy /Library/Keychains/System.keychain
+# CA trust (per-process, not system-wide)
+export NODE_EXTRA_CA_CERTS=~/.safeyolo/certs/mitmproxy-ca-cert.pem
+export REQUESTS_CA_BUNDLE=~/.safeyolo/certs/mitmproxy-ca-cert.pem
+export SSL_CERT_FILE=~/.safeyolo/certs/mitmproxy-ca-cert.pem
+export GIT_SSL_CAINFO=~/.safeyolo/certs/mitmproxy-ca-cert.pem
+
+# Proxy settings
+export HTTP_PROXY=http://localhost:8080
+export HTTPS_PROXY=http://localhost:8080
 ```
 
-**Linux:**
-```bash
-sudo rm /usr/local/share/ca-certificates/safeyolo.crt  # Debian
-sudo rm /etc/pki/ca-trust/source/anchors/safeyolo.crt  # RHEL
-sudo update-ca-certificates  # or update-ca-trust
+These environment variables configure:
+- **Node.js** - via `NODE_EXTRA_CA_CERTS`
+- **Python requests/httpx** - via `REQUESTS_CA_BUNDLE`
+- **OpenSSL/curl** - via `SSL_CERT_FILE`
+- **Git** - via `GIT_SSL_CAINFO`
+
+### Benefits of per-process trust
+
+1. **No sudo required** - No system-wide changes
+2. **Scoped** - Only affects your current shell session
+3. **Reversible** - Close the terminal and trust is gone
+4. **Safe** - Can't accidentally leave CA installed
+
+## Docker Containers (Secure Mode)
+
+For Secure Mode, SafeYolo automatically mounts the CA certificate into agent containers and sets the environment variables. The docker-compose templates handle this:
+
+```yaml
+volumes:
+  - safeyolo-certs:/certs:ro
+environment:
+  - NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem
+  - SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem
+  - REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem
 ```
 
-**Windows:**
-Open `certmgr.msc` > Trusted Root Certification Authorities > Certificates > find "mitmproxy" > Delete
-
-## Security Considerations
-
-### What you're trusting
-
-Installing a root CA means your system will trust any certificate signed by that CA. For SafeYolo:
-
-- The CA is **locally generated** and unique to your machine
-- Only someone with access to `~/.safeyolo/certs/mitmproxy-ca.pem` could abuse it
-- SafeYolo only runs locally - it's not exposed to the network
-
-### Best practices
-
-1. **Only install on development machines** - Never on production or shared systems
-2. **Keep the private key secure** - Don't commit it, don't share it
-3. **Remove when not using SafeYolo** - Reduce your trust surface
-4. **Use chokepoint mode for untrusted code** - Prevents bypass attempts
-
-### Comparison to other proxies
-
-This is the standard approach used by:
-- mitmproxy (SafeYolo is built on this)
-- Fiddler (uses "DO_NOT_TRUST_FiddlerRoot" as a reminder)
-- Charles Proxy
-- OWASP ZAP
-
-For deeper technical details, see mitmproxy's excellent documentation:
-https://docs.mitmproxy.org/stable/concepts-certificates/
+Use `safeyolo secure setup` to generate properly configured templates.
 
 ## Certificate Pinning
 
-Some applications embed expected certificate fingerprints ("pinning") and will refuse connections even when your system trusts the SafeYolo CA.
+Some applications embed expected certificate fingerprints ("pinning") and will refuse connections even with the CA configured.
 
 ### Symptoms
 
 - SSL errors only for specific apps/domains
-- "Certificate verification failed" even after installing CA
+- "Certificate verification failed" even with CA env vars set
 - Apps work without proxy but fail through SafeYolo
 
 ### Solutions
 
-**Option 1: Exclude the domain (recommended for non-essential hosts)**
+**Option 1: TLS passthrough (recommended)**
 
-Add to your config:
+Add to your config to skip inspection for pinned domains:
 
 ```yaml
 # In ~/.safeyolo/config.yaml
@@ -144,69 +100,62 @@ tls_passthrough:
   - another-pinned-domain.com
 ```
 
-Traffic to these domains passes through encrypted without inspection.
+Traffic passes through encrypted without inspection. SafeYolo still logs the connection.
 
-**Option 2: Disable pinning in the app (if you control it)**
+**Option 2: Disable pinning in the app**
 
-For development, many apps have flags to disable pinning:
+For development, some apps have flags to disable pinning:
 - `NODE_TLS_REJECT_UNAUTHORIZED=0` (Node.js - use carefully)
 - `--ignore-certificate-errors` (Chrome/Electron)
 - App-specific debug flags
 
-**Option 3: Accept limited visibility**
+## Security Considerations
 
-If you can't disable pinning and the host isn't essential to inspect, use passthrough. SafeYolo will still log that a connection was made, just not its contents.
+### What you're trusting
 
-### Common pinned applications
+The SafeYolo CA is:
+- **Locally generated** and unique to your machine
+- **Private** - only someone with access to `~/.safeyolo/certs/mitmproxy-ca.pem` could abuse it
+- **Scoped** - per-process env vars don't affect other applications
 
-- Some mobile apps (when testing via proxy)
-- Electron apps with embedded pinning
-- Corporate security tools
-- Some Google services
+### Best practices
 
-## Docker Containers
-
-Containers need the CA installed separately from the host:
-
-```yaml
-# docker-compose.yml
-services:
-  myapp:
-    volumes:
-      - ~/.safeyolo/certs/mitmproxy-ca-cert.pem:/usr/local/share/ca-certificates/safeyolo.crt:ro
-    # For Debian-based images, run update-ca-certificates in entrypoint
-```
-
-For images that need explicit cert paths:
-```bash
-curl --cacert /usr/local/share/ca-certificates/safeyolo.crt https://example.com
-```
-
-Or set the environment variable:
-```bash
-export SSL_CERT_FILE=/usr/local/share/ca-certificates/safeyolo.crt
-export REQUESTS_CA_BUNDLE=/usr/local/share/ca-certificates/safeyolo.crt
-```
+1. **Keep the private key secure** - Don't commit it, don't share it
+2. **Use Secure Mode for autonomous agents** - Prevents bypass attempts
+3. **Use per-process trust** - Avoid system-wide CA installation
 
 ## Troubleshooting
 
 ### "Certificate not trusted" errors
 
-1. Verify CA is installed: `safeyolo check`
-2. Check the app uses system trust store (not bundled certs)
-3. Try the specific app's cert configuration
-
-### CA installed but HTTPS still fails
-
-1. Some apps need restart after CA changes
-2. Check for certificate pinning (see above)
-3. Verify proxy is actually being used: `curl -v --proxy http://localhost:8080 https://httpbin.org/ip`
+1. Verify env vars are set: `echo $SSL_CERT_FILE`
+2. Re-run: `eval $(safeyolo cert env)`
+3. Check if app uses bundled certs instead of system/env certs
 
 ### Different behavior in different apps
 
-Each app may handle certificates differently:
-- System apps usually use OS trust store
-- Python: uses `certifi` or system certs depending on config
-- Node.js: uses system certs by default
-- Go: uses system certs
-- Java: uses its own keystore (needs separate import)
+Each app handles certificates differently:
+- **Python requests** - Uses `REQUESTS_CA_BUNDLE` or `certifi`
+- **Node.js** - Uses `NODE_EXTRA_CA_CERTS`
+- **Go** - Uses `SSL_CERT_FILE` or system certs
+- **Java** - Uses its own keystore (may need separate configuration)
+- **curl** - Uses `SSL_CERT_FILE` or `--cacert` flag
+
+### Viewing certificate details
+
+```bash
+safeyolo cert show
+```
+
+Shows certificate location, fingerprint, and file size.
+
+## Reference
+
+This is the same approach used by:
+- mitmproxy (SafeYolo is built on this)
+- Fiddler
+- Charles Proxy
+- OWASP ZAP
+
+For deeper technical details, see mitmproxy's documentation:
+https://docs.mitmproxy.org/stable/concepts-certificates/

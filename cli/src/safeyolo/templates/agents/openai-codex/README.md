@@ -4,10 +4,9 @@ This agent runs OpenAI Codex CLI with network isolation. All traffic goes throug
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` and add your OpenAI API key
-2. Ensure SafeYolo is running: `safeyolo status`
-3. Run: `docker compose run --rm codex`
-4. Inside the container, run: `codex --sandbox danger-full-access`
+1. Ensure SafeYolo is running: `safeyolo status`
+2. Run: `docker compose run --rm codex`
+3. Codex will prompt for authentication on first run (OAuth or API key)
 
 ## Why `--sandbox danger-full-access`?
 
@@ -46,5 +45,5 @@ docker volume ls | grep safeyolo-certs
 ```
 
 **Authentication issues**
-Codex supports API key auth via `OPENAI_API_KEY`. If using ChatGPT account auth,
-you may need to configure port forwarding for the OAuth callback on port 1455.
+Codex supports API key auth via `OPENAI_API_KEY` environment variable or OAuth.
+For OAuth, port forwarding may be needed for the callback on port 1455.

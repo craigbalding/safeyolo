@@ -61,17 +61,17 @@ def find_config_dir() -> Path | None:
 def get_config_dir(create: bool = False) -> Path:
     """Get the config directory, optionally creating it.
 
-    Prefers project-specific directory if it exists, otherwise global.
+    Prefers existing directory (project or global), defaults to global for new.
     """
     existing = find_config_dir()
     if existing:
         return existing
 
-    # Default to project-specific for new configs
-    project_dir = Path.cwd() / PROJECT_DIR_NAME
+    # Default to global (~/.safeyolo/) for new configs
+    global_dir = Path.home() / GLOBAL_DIR_NAME
     if create:
-        project_dir.mkdir(parents=True, exist_ok=True)
-    return project_dir
+        global_dir.mkdir(parents=True, exist_ok=True)
+    return global_dir
 
 
 def get_config_path() -> Path:

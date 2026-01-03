@@ -1,15 +1,11 @@
 """Certificate management commands."""
 
-import platform
-import subprocess
-import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
 
-from ..config import find_config_dir, get_certs_dir
+from ..config import find_config_dir, get_certs_dir, load_config
 
 console = Console()
 
@@ -26,292 +22,44 @@ def get_ca_cert_path() -> Path | None:
     return None
 
 
-def install(
-    cert_path: Path = typer.Argument(
-        None,
-        help="Path to CA certificate (default: auto-detect from config)",
-    ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run", "-n",
-        help="Show commands without executing",
-    ),
-) -> None:
-    """Install SafeYolo CA certificate into system trust store.
+def env() -> None:
+    """Print environment variables for CA trust and proxy.
 
-    This is required for HTTPS inspection to work. The certificate
-    is generated automatically when SafeYolo first starts.
+    These variables configure per-process CA trust and proxy settings.
+    No system-wide trust store modification required.
 
-    Examples:
+    Usage:
 
-        safeyolo cert install           # Auto-detect and install
-        safeyolo cert install -n        # Show what would be done
-        safeyolo cert install /path/to/cert.pem  # Install specific cert
+        eval $(safeyolo cert env)
+
+    Or copy specific exports for your runtime:
+
+        safeyolo cert env
     """
-    # Find the certificate
-    if cert_path:
-        ca_cert = cert_path
-        if not ca_cert.exists():
-            console.print(f"[red]Certificate not found:[/red] {ca_cert}")
-            raise typer.Exit(1)
-    else:
-        config_dir = find_config_dir()
-        if not config_dir:
-            console.print(
-                "[red]No SafeYolo configuration found.[/red]\n"
-                "Run [bold]safeyolo init[/bold] and [bold]safeyolo start[/bold] first.\n"
-                "The CA certificate is generated on first proxy start."
-            )
-            raise typer.Exit(1)
-
-        ca_cert = get_ca_cert_path()
-        if not ca_cert:
-            console.print(
-                "[red]CA certificate not found.[/red]\n\n"
-                "The certificate is generated when SafeYolo starts.\n"
-                "Run [bold]safeyolo start[/bold] first, then retry."
-            )
-            raise typer.Exit(1)
-
-    console.print(f"[bold]Installing CA certificate[/bold]\n")
-    console.print(f"  Certificate: {ca_cert}")
-
-    system = platform.system()
-
-    if system == "Darwin":
-        _install_macos(ca_cert, dry_run)
-    elif system == "Linux":
-        _install_linux(ca_cert, dry_run)
-    elif system == "Windows":
-        _install_windows(ca_cert, dry_run)
-    else:
-        console.print(f"[red]Unsupported OS:[/red] {system}")
-        console.print("\nManually add the certificate to your system trust store:")
-        console.print(f"  {ca_cert}")
+    config_dir = find_config_dir()
+    if not config_dir:
+        console.print("[red]No SafeYolo configuration found.[/red]")
+        console.print("Run [bold]safeyolo start[/bold] first.")
         raise typer.Exit(1)
 
-
-def _install_macos(ca_cert: Path, dry_run: bool) -> None:
-    """Install certificate on macOS."""
-    cmd = [
-        "sudo", "security", "add-trusted-cert",
-        "-d",  # Add to admin cert store
-        "-r", "trustRoot",  # Trust as root CA
-        "-k", "/Library/Keychains/System.keychain",
-        str(ca_cert),
-    ]
-
-    console.print(f"  OS: macOS\n")
-    console.print(f"[dim]Command: {' '.join(cmd)}[/dim]\n")
-
-    if dry_run:
-        console.print("[yellow]Dry run - no changes made[/yellow]")
-        return
-
-    console.print("This requires administrator privileges (sudo).\n")
-
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        console.print("[green]Certificate installed successfully![/green]")
-        console.print("\nVerify with: [bold]safeyolo check[/bold]")
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Installation failed:[/red] {e.stderr or e}")
-        console.print("\nYou can try manually:")
-        console.print(f"  {' '.join(cmd)}")
+    ca_cert = get_ca_cert_path()
+    if not ca_cert:
+        console.print("[red]CA certificate not found.[/red]")
+        console.print("The certificate is generated when SafeYolo starts.")
+        console.print("Run [bold]safeyolo start[/bold] first.")
         raise typer.Exit(1)
 
+    config = load_config()
+    proxy_port = config.get("proxy", {}).get("port", 8080)
 
-def _install_linux(ca_cert: Path, dry_run: bool) -> None:
-    """Install certificate on Linux."""
-    # Detect distro
-    dest_dir = Path("/usr/local/share/ca-certificates")
-    update_cmd = "update-ca-certificates"
-
-    # Check for RHEL/CentOS/Fedora
-    if Path("/etc/pki/ca-trust").exists():
-        dest_dir = Path("/etc/pki/ca-trust/source/anchors")
-        update_cmd = "update-ca-trust"
-
-    dest_path = dest_dir / "safeyolo.crt"
-
-    console.print(f"  OS: Linux")
-    console.print(f"  Destination: {dest_path}\n")
-
-    copy_cmd = ["sudo", "cp", str(ca_cert), str(dest_path)]
-    update_cmd_full = ["sudo", update_cmd]
-
-    console.print(f"[dim]Commands:[/dim]")
-    console.print(f"[dim]  {' '.join(copy_cmd)}[/dim]")
-    console.print(f"[dim]  {' '.join(update_cmd_full)}[/dim]\n")
-
-    if dry_run:
-        console.print("[yellow]Dry run - no changes made[/yellow]")
-        return
-
-    console.print("This requires administrator privileges (sudo).\n")
-
-    try:
-        # Copy cert
-        subprocess.run(copy_cmd, check=True, capture_output=True, text=True)
-        # Update trust store
-        subprocess.run(update_cmd_full, check=True, capture_output=True, text=True)
-
-        console.print("[green]Certificate installed successfully![/green]")
-        console.print("\nVerify with: [bold]safeyolo check[/bold]")
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Installation failed:[/red] {e.stderr or e}")
-        console.print("\nYou can try manually:")
-        console.print(f"  {' '.join(copy_cmd)}")
-        console.print(f"  {' '.join(update_cmd_full)}")
-        raise typer.Exit(1)
-
-
-def _install_windows(ca_cert: Path, dry_run: bool) -> None:
-    """Install certificate on Windows."""
-    cmd = [
-        "certutil", "-addstore", "-f", "ROOT", str(ca_cert)
-    ]
-
-    console.print(f"  OS: Windows\n")
-    console.print(f"[dim]Command: {' '.join(cmd)}[/dim]\n")
-
-    if dry_run:
-        console.print("[yellow]Dry run - no changes made[/yellow]")
-        return
-
-    console.print("This requires administrator privileges.\n")
-    console.print("[yellow]Run this in an Administrator command prompt:[/yellow]")
-    console.print(f"  {' '.join(cmd)}")
-
-    # Don't auto-run on Windows - too risky without proper UAC handling
-    raise typer.Exit(0)
-
-
-def uninstall(
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run", "-n",
-        help="Show commands without executing",
-    ),
-) -> None:
-    """Remove SafeYolo CA certificate from system trust store.
-
-    Run this when you're done using SafeYolo to remove the trusted CA.
-    This is recommended security hygiene - don't leave unnecessary
-    root CAs installed.
-
-    Examples:
-
-        safeyolo cert uninstall        # Remove from system trust store
-        safeyolo cert uninstall -n     # Show what would be done
-    """
-    console.print("[bold]Removing SafeYolo CA certificate[/bold]\n")
-
-    system = platform.system()
-
-    if system == "Darwin":
-        _uninstall_macos(dry_run)
-    elif system == "Linux":
-        _uninstall_linux(dry_run)
-    elif system == "Windows":
-        _uninstall_windows(dry_run)
-    else:
-        console.print(f"[red]Unsupported OS:[/red] {system}")
-        console.print("\nManually remove the certificate from your system trust store.")
-        raise typer.Exit(1)
-
-
-def _uninstall_macos(dry_run: bool) -> None:
-    """Remove certificate from macOS trust store."""
-    # Find the cert by name in the keychain
-    cmd = [
-        "sudo", "security", "delete-certificate",
-        "-c", "mitmproxy",  # Match by common name
-        "/Library/Keychains/System.keychain",
-    ]
-
-    console.print("  OS: macOS\n")
-    console.print(f"[dim]Command: {' '.join(cmd)}[/dim]\n")
-
-    if dry_run:
-        console.print("[yellow]Dry run - no changes made[/yellow]")
-        return
-
-    console.print("This requires administrator privileges (sudo).\n")
-
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        console.print("[green]Certificate removed successfully![/green]")
-    except subprocess.CalledProcessError as e:
-        if "could not be found" in (e.stderr or "").lower():
-            console.print("[yellow]Certificate not found in trust store (already removed?)[/yellow]")
-        else:
-            console.print(f"[red]Removal failed:[/red] {e.stderr or e}")
-            console.print("\nYou can try manually:")
-            console.print("  Open Keychain Access > System > Certificates")
-            console.print("  Find 'mitmproxy' and delete it")
-            raise typer.Exit(1)
-
-
-def _uninstall_linux(dry_run: bool) -> None:
-    """Remove certificate from Linux trust store."""
-    # Check both Debian and RHEL paths
-    debian_path = Path("/usr/local/share/ca-certificates/safeyolo.crt")
-    rhel_path = Path("/etc/pki/ca-trust/source/anchors/safeyolo.crt")
-
-    if rhel_path.exists():
-        cert_path = rhel_path
-        update_cmd = "update-ca-trust"
-    else:
-        cert_path = debian_path
-        update_cmd = "update-ca-certificates"
-
-    console.print("  OS: Linux")
-    console.print(f"  Certificate: {cert_path}\n")
-
-    rm_cmd = ["sudo", "rm", "-f", str(cert_path)]
-    update_cmd_full = ["sudo", update_cmd]
-
-    console.print("[dim]Commands:[/dim]")
-    console.print(f"[dim]  {' '.join(rm_cmd)}[/dim]")
-    console.print(f"[dim]  {' '.join(update_cmd_full)}[/dim]\n")
-
-    if dry_run:
-        console.print("[yellow]Dry run - no changes made[/yellow]")
-        return
-
-    if not cert_path.exists():
-        console.print("[yellow]Certificate not found (already removed?)[/yellow]")
-        return
-
-    console.print("This requires administrator privileges (sudo).\n")
-
-    try:
-        subprocess.run(rm_cmd, check=True, capture_output=True, text=True)
-        subprocess.run(update_cmd_full, check=True, capture_output=True, text=True)
-        console.print("[green]Certificate removed successfully![/green]")
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]Removal failed:[/red] {e.stderr or e}")
-        raise typer.Exit(1)
-
-
-def _uninstall_windows(dry_run: bool) -> None:
-    """Remove certificate from Windows trust store."""
-    # Windows needs cert serial or thumbprint - show manual instructions
-    console.print("  OS: Windows\n")
-
-    if dry_run:
-        console.print("[yellow]Dry run - showing manual steps[/yellow]\n")
-
-    console.print("To remove the SafeYolo CA certificate:")
-    console.print("")
-    console.print("  1. Open 'certmgr.msc' (Certificate Manager)")
-    console.print("  2. Navigate to: Trusted Root Certification Authorities > Certificates")
-    console.print("  3. Find 'mitmproxy' in the list")
-    console.print("  4. Right-click > Delete")
-    console.print("")
-    console.print("Or run in Administrator PowerShell:")
-    console.print('  Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -like "*mitmproxy*" } | Remove-Item')
+    # Output exports for eval
+    print(f"# SafeYolo CA trust (per-process, not system-wide)")
+    print(f"export NODE_EXTRA_CA_CERTS={ca_cert}")
+    print(f"export REQUESTS_CA_BUNDLE={ca_cert}")
+    print(f"export SSL_CERT_FILE={ca_cert}")
+    print(f"export GIT_SSL_CAINFO={ca_cert}")
+    print(f"export HTTP_PROXY=http://localhost:{proxy_port}")
+    print(f"export HTTPS_PROXY=http://localhost:{proxy_port}")
 
 
 def show() -> None:
@@ -324,7 +72,7 @@ def show() -> None:
     config_dir = find_config_dir()
     if not config_dir:
         console.print("[yellow]No SafeYolo configuration found.[/yellow]")
-        console.print("Run [bold]safeyolo init[/bold] first.")
+        console.print("Run [bold]safeyolo start[/bold] first.")
         raise typer.Exit(1)
 
     ca_cert = get_ca_cert_path()
@@ -346,7 +94,7 @@ def show() -> None:
         except Exception:
             pass
 
-        console.print(f"\nTo install: [bold]safeyolo cert install[/bold]")
+        console.print(f"\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
     else:
         console.print(f"  CA certificate:   [yellow]Not generated yet[/yellow]")
         console.print(f"\nThe certificate is created when SafeYolo first starts.")
@@ -360,6 +108,5 @@ cert_app = typer.Typer(
     no_args_is_help=True,
 )
 
-cert_app.command()(install)
-cert_app.command()(uninstall)
+cert_app.command()(env)
 cert_app.command()(show)

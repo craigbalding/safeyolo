@@ -107,10 +107,12 @@ class TestSaveConfig:
     def test_creates_parent_dirs(self, tmp_path, monkeypatch):
         """Creates parent directories if needed."""
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         config = {"version": 1}
         save_config(config)
 
-        assert (tmp_path / "safeyolo" / "config.yaml").exists()
+        # Default is now ~/.safeyolo/
+        assert (tmp_path / ".safeyolo" / "config.yaml").exists()
 
 
 class TestDeepMerge:
@@ -187,6 +189,8 @@ class TestGetConfigPath:
     def test_get_config_dir_creates(self, tmp_path, monkeypatch):
         """get_config_dir creates directory when create=True."""
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         config_dir = get_config_dir(create=True)
         assert config_dir.exists()
-        assert config_dir.name == "safeyolo"
+        # Default is now ~/.safeyolo/
+        assert config_dir.name == ".safeyolo"

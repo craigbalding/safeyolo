@@ -6,20 +6,35 @@ This guide explains how to deploy SafeYolo in **Secure Mode** where bypass is im
 
 Many autonomous coding agents will retry failed calls by changing network configuration - unsetting proxy variables, opening direct sockets, or using hardcoded IPs. Secure Mode avoids "policy by suggestion" by removing direct internet routing entirely.
 
-**Quick Mode** (host proxy) is fine for demos, but provides no enforcement against agents that bypass proxy settings.
+**Quick Mode** (per-process env vars) is fine for interactive use, but provides no enforcement against agents that bypass proxy settings.
+
+## Quick Start
+
+```bash
+# Ensure SafeYolo is running
+safeyolo start
+
+# Generate agent container template
+safeyolo secure setup
+
+# Run agent in isolated container
+cd claude-code
+docker compose run --rm claudecode
+```
+
+The generated template handles network isolation, CA certificate mounting, and proxy configuration automatically.
 
 ## How It Works
 
-SafeYolo creates two Docker networks:
+SafeYolo creates a Docker network marked `internal: true`:
 
-1. **safeyolo-internal** (`172.30.0.0/24`) - marked `internal: true`
+1. **safeyolo-internal** (`172.31.0.0/24`)
    - No default gateway to internet
-   - All agent containers live here
+   - Agent containers live here
    - Direct connections get "no route to host"
 
-2. **default** - normal bridge with internet access
-   - Only SafeYolo container connects here
-   - SafeYolo bridges traffic from internal to internet
+2. **SafeYolo container** bridges between the internal network and internet
+   - Only path to the internet is through SafeYolo at `172.31.0.10:8080`
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -35,7 +50,7 @@ SafeYolo creates two Docker networks:
 │                           ▼                                 │
 │                  ┌────────────────┐                         │
 │                  │   SafeYolo     │                         │
-│                  │  172.30.0.10   │                         │
+│                  │  172.31.0.10   │                         │
 │                  │    :8080       │                         │
 │                  └────────┬───────┘                         │
 │                           │                                 │
@@ -47,81 +62,40 @@ SafeYolo creates two Docker networks:
                     └───────────────┘
 ```
 
-## Quick Start
-
-Use the ready-to-run template in `contrib/`:
+## Available Templates
 
 ```bash
-# Start SafeYolo
-cd safeyolo
-docker compose up -d
-
-# Copy template and run your agent
-cp -r contrib/claude-code-chokepoint ~/my-agent
-cd ~/my-agent
-docker compose run --rm claude
+safeyolo secure list
 ```
 
-The template handles network isolation, CA mounting, and proxy configuration.
+| Template | Description |
+|----------|-------------|
+| `claude-code` | Claude Code with Node.js, git, python3 |
+| `openai-codex` | OpenAI Codex CLI with similar tooling |
 
-## Manual Setup
+## Generated Files
 
-### 1. Start SafeYolo First
+`safeyolo secure setup` creates:
 
-```bash
-cd safeyolo
-docker compose up -d
+```
+./claude-code/
+├── docker-compose.yml    # Network isolation + proxy config
+└── README.md             # Usage instructions
 ```
 
-This creates the `safeyolo-internal` network.
-
-### 2. Configure Agent Containers
-
-In your agent's `docker-compose.yml`:
-
-```yaml
-services:
-  agent:
-    # ... your config ...
-    networks:
-      - safeyolo-internal
-    environment:
-      - HTTP_PROXY=http://172.30.0.10:8080
-      - HTTPS_PROXY=http://172.30.0.10:8080
-      - NO_PROXY=localhost,127.0.0.1,172.30.0.0/24
-
-networks:
-  safeyolo-internal:
-    external: true
-```
-
-### 3. Mount CA Certificate
-
-For HTTPS inspection, containers must trust SafeYolo's CA:
-
-```yaml
-services:
-  agent:
-    volumes:
-      - safeyolo-certs:/certs:ro
-    # In your entrypoint or Dockerfile:
-    # cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/safeyolo.crt
-    # update-ca-certificates
-
-volumes:
-  safeyolo-certs:
-    external: true
-```
+The compose file includes:
+- Internal network attachment
+- Proxy environment variables
+- CA certificate volume mount
+- Common dev tools (git, curl, python3, jq)
 
 ## Verification
 
-Test that bypass is impossible:
+Test that bypass is impossible from inside the agent container:
 
 ```bash
-# From inside the agent container:
-
 # This works (goes through proxy):
-curl -x http://172.30.0.10:8080 https://httpbin.org/ip
+curl https://httpbin.org/ip
 
 # This fails (no route):
 curl --noproxy '*' https://httpbin.org/ip
@@ -147,22 +121,31 @@ curl --noproxy '*' https://httpbin.org/ip
 - Credential protection must be enforced, not optional
 
 **Quick Mode is acceptable when:**
-- You control all code running on the machine
+- You control all code running in your shell
 - Best-effort logging is sufficient
-- You have other egress controls (firewall, VPN)
 - Just testing SafeYolo functionality
+
+## Authentication
+
+Agents handle their own authentication. When you run the container:
+
+- **Claude Code** - Prompts for API key or OAuth on first run
+- **OpenAI Codex** - Prompts for API key or ChatGPT OAuth on first run
+
+No `.env` file or pre-configuration required.
 
 ## Troubleshooting
 
 **"No route to host" for legitimate requests:**
-- Verify `HTTP_PROXY` is set correctly
+- Verify `HTTP_PROXY` is set in the container
 - Check SafeYolo container is running: `docker ps | grep safeyolo`
-- Verify network connectivity: `ping 172.30.0.10`
+- Verify network connectivity: `ping 172.31.0.10`
 
 **SSL errors:**
-- CA cert not installed - see mount instructions above
-- Some tools need explicit cert path: `--cacert /certs/mitmproxy-ca-cert.pem`
+- CA cert should be auto-mounted at `/certs/`
+- Verify volume exists: `docker volume ls | grep safeyolo-certs`
+- Check env vars: `echo $SSL_CERT_FILE`
 
 **Container can't resolve DNS:**
-- Internal network has no DNS by default
-- Either use IP addresses or configure DNS to resolve through proxy
+- DNS resolution happens through the proxy
+- Verify SafeYolo is running and healthy: `safeyolo status`

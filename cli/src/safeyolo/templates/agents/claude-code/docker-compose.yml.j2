@@ -28,8 +28,6 @@ services:
       - NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem
       - SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem
       - REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem
-      # API key (from .env file)
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |

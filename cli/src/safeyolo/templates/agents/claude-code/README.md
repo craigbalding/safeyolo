@@ -4,10 +4,9 @@ This agent runs Claude Code with network isolation. All traffic goes through Saf
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` and add your Anthropic API key
-2. Ensure SafeYolo is running: `safeyolo status`
-3. Run: `docker compose run --rm claude`
-4. Inside the container, run: `claude --dangerously-skip-permissions`
+1. Ensure SafeYolo is running: `safeyolo status`
+2. Run: `docker compose run --rm claude`
+3. Claude Code will prompt for your API key on first run (OAuth or API key)
 
 ## Why `--dangerously-skip-permissions`?
 

@@ -8,6 +8,7 @@ from .commands.admin import check, mode, policies, test
 from .commands.agent import agent_app
 from .commands.cert import cert_app
 from .commands.init import init
+from .commands.secure import secure_app
 from .commands.lifecycle import start, status, stop
 from .commands.logs import logs
 from .commands.watch import watch
@@ -61,6 +62,7 @@ app.command()(test)
 # Register subcommand groups
 app.add_typer(cert_app, name="cert")
 app.add_typer(agent_app, name="agent")
+app.add_typer(secure_app, name="secure")
 
 
 # Convenience aliases

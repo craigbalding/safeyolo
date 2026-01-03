@@ -258,13 +258,15 @@ class TestCheckCommand:
 class TestStartCommand:
     """Tests for start command."""
 
-    def test_no_config_fails(self, cli_runner, tmp_path, monkeypatch):
-        """Fails when no config directory."""
+    def test_auto_bootstraps_on_first_run(self, cli_runner, tmp_path, monkeypatch, mock_docker_available):
+        """Auto-creates config on first run."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("HOME", str(tmp_path))
 
-        result = cli_runner.invoke(app, ["start"])
-        assert result.exit_code == 1
+        result = cli_runner.invoke(app, ["start", "--no-wait"])
+        # Should bootstrap and attempt to start (may fail on docker but config should exist)
+        config_dir = tmp_path / ".safeyolo"
+        assert config_dir.exists() or "First run" in result.output or "Starting" in result.output
 
     def test_starts_with_docker(self, cli_runner, tmp_config_dir, mock_docker_available):
         """Starts container with Docker."""
