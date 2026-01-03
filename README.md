@@ -2,7 +2,7 @@
 
 **Guardrails for AI coding agents.**
 
-SafeYolo is a security proxy that prevents credential leakage, dampens runaway loops, and provides audit logs for agent HTTP calls. When your AI assistant hallucinates an endpoint or gets prompt-injected, SafeYolo catches it.
+SafeYolo is a security proxy that prevents credential leakage, dampens runaway loops, and provides audit logs for agent HTTP calls. When your AI assistant hallucinates an endpoint, SafeYolo catches the credential before it leaks.
 
 ## Quick Start
 
@@ -186,12 +186,12 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 
 **SafeYolo catches:**
 - Hallucinated endpoints (`api.openal.com` instead of `api.openai.com`)
-- Credential exfil via prompt injection
+- Credentials sent to wrong hosts
 - Runaway API loops
 - Typosquats and homograph attacks
 
 **SafeYolo does NOT:**
-- Detect prompt injection reliably (experimental)
+- Detect prompt injection
 - Replace application-layer auth
 - Stop attacks that bypass the proxy
 
