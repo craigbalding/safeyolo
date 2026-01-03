@@ -197,7 +197,7 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 
 ## Architecture
 
-SafeYolo runs mitmproxy with a chain of addons:
+SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS.md) for full reference.
 
 | Addon | Purpose | Default |
 |-------|---------|---------|
@@ -226,6 +226,14 @@ safeyolo/
 ├── tests/               # Test suite
 └── docs/                # Additional documentation
 ```
+
+## Contributing
+
+See [docs/DEVELOPERS.md](docs/DEVELOPERS.md) for:
+- Architecture overview
+- Building integrations (JSONL events, Admin API, custom addons)
+- CLI development
+- Testing
 
 ## License
 
