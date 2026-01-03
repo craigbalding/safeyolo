@@ -291,3 +291,207 @@ class TestStats:
         assert "checks_total" in stats
         assert "opens_total" in stats
         assert "domains" in stats
+
+
+class TestCircuitBreakerStatePersistence:
+    """Tests for circuit breaker state file persistence across restarts."""
+
+    def test_saves_state_to_file(self, tmp_path):
+        """Verify circuit states are saved to file."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "circuit_breaker_state.json"
+        state = InMemoryCircuitState(state_file=state_file)
+
+        # Create some circuit states
+        state.set("api.example.com", {"state": "open", "failure_count": 5})
+        state.set("api.openai.com", {"state": "closed", "failure_count": 0})
+
+        # Stop background thread to avoid race condition with manual save
+        state.stop_snapshots()
+
+        # Verify file exists and contains states (final save on stop)
+        assert state_file.exists()
+
+        import json
+        with open(state_file) as f:
+            data = json.load(f)
+
+        assert "states" in data
+        assert "saved_at" in data
+        assert "api.example.com" in data["states"]
+        assert "api.openai.com" in data["states"]
+        assert data["states"]["api.example.com"]["state"] == "open"
+
+    def test_loads_state_on_startup(self, tmp_path):
+        """Verify circuit states are restored from file."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "circuit_breaker_state.json"
+
+        # First instance - create state
+        state1 = InMemoryCircuitState(state_file=state_file)
+        state1.set("test.com", {"state": "open", "failure_count": 3, "opened_at": 1234567890.0})
+        state1._save_state()
+        state1.stop_snapshots()
+
+        # Second instance - should load state
+        state2 = InMemoryCircuitState(state_file=state_file)
+
+        loaded_data = state2.get("test.com")
+        assert loaded_data["state"] == "open"
+        assert loaded_data["failure_count"] == 3
+
+    def test_atomic_write_cleanup(self, tmp_path):
+        """Verify temp files are cleaned up after atomic writes."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "circuit_breaker_state.json"
+        state = InMemoryCircuitState(state_file=state_file)
+
+        # Trigger multiple saves
+        for i in range(5):
+            state._save_state()
+
+        # No temp files should exist
+        temp_files = list(tmp_path.glob("*.tmp"))
+        assert len(temp_files) == 0
+
+    def test_snapshot_thread_starts_and_stops(self, tmp_path):
+        """Verify snapshot thread lifecycle."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "circuit_breaker_state.json"
+        state = InMemoryCircuitState(state_file=state_file)
+
+        assert state._snapshot_thread is not None
+        assert state._snapshot_thread.is_alive()
+
+        # Stop snapshots
+        state.stop_snapshots()
+
+        # Thread should be stopped and set to None
+        assert state._snapshot_thread is None
+
+        # Final state should be saved
+        assert state_file.exists()
+
+    def test_graceful_shutdown_saves_final_state(self, tmp_path):
+        """Verify final state is saved on shutdown."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "circuit_breaker_state.json"
+
+        state = InMemoryCircuitState(state_file=state_file)
+        state.set("final.com", {"state": "half_open", "success_count": 1})
+
+        # Stop snapshots (simulates shutdown)
+        state.stop_snapshots()
+
+        # Verify state was saved
+        import json
+        with open(state_file) as f:
+            data = json.load(f)
+
+        assert "final.com" in data["states"]
+
+    def test_handles_missing_state_file_gracefully(self, tmp_path):
+        """Verify state starts empty if file doesn't exist."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "nonexistent.json"
+        state = InMemoryCircuitState(state_file=state_file)
+
+        # Should start with empty states
+        assert len(state.all_domains()) == 0
+
+    def test_handles_corrupted_state_file_gracefully(self, tmp_path):
+        """Verify state handles corrupted file gracefully."""
+        from addons.circuit_breaker import InMemoryCircuitState
+
+        state_file = tmp_path / "corrupted.json"
+        state_file.write_text("not valid json {{{")
+
+        state = InMemoryCircuitState(state_file=state_file)
+
+        # Should start with empty states despite corrupt file
+        assert len(state.all_domains()) == 0
+
+    def test_circuit_breaker_addon_cleanup_on_done(self, tmp_path):
+        """Verify CircuitBreaker addon calls stop_snapshots on done()."""
+        from addons.circuit_breaker import CircuitBreaker, InMemoryCircuitState
+
+        circuit_breaker = CircuitBreaker()
+
+        # Create state with file
+        state_file = tmp_path / "state.json"
+        circuit_breaker._state = InMemoryCircuitState(state_file=state_file)
+
+        assert circuit_breaker._state._snapshot_thread is not None
+
+        # Call done() (simulates mitmproxy shutdown)
+        circuit_breaker.done()
+
+        # Thread should be stopped and set to None
+        assert circuit_breaker._state._snapshot_thread is None
+
+    def test_concurrent_access_thread_safety(self, tmp_path):
+        """Verify concurrent access to state is thread-safe."""
+        from addons.circuit_breaker import InMemoryCircuitState
+        import threading
+
+        state_file = tmp_path / "concurrent.json"
+        state_obj = InMemoryCircuitState(state_file=state_file)
+
+        # Spawn multiple threads making concurrent updates
+        def worker(domain_id):
+            for i in range(10):
+                state_obj.set(f"domain-{domain_id}.com", {"state": "open", "failure_count": i})
+
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        # Verify all domains were tracked
+        assert len(state_obj.all_domains()) == 5
+
+        # Cleanup
+        state_obj.stop_snapshots()
+
+    def test_state_persists_across_restart_integration(self, tmp_path):
+        """Integration test: State persists through simulated restart."""
+        from addons.circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
+
+        state_file = tmp_path / "persist_test.json"
+
+        # First instance - open a circuit
+        cb1 = CircuitBreaker()
+        cb1.failure_threshold = 2
+        cb1._state = InMemoryCircuitState(state_file=state_file)
+
+        cb1.record_failure("api.example.com", "error 1")
+        cb1.record_failure("api.example.com", "error 2")
+
+        status1 = cb1.get_status("api.example.com")
+        assert status1.state == CircuitState.OPEN
+
+        # Save and cleanup
+        cb1._state._save_state()
+        cb1.done()
+
+        # Second instance - should restore open circuit
+        cb2 = CircuitBreaker()
+        cb2.failure_threshold = 2
+        cb2._state = InMemoryCircuitState(state_file=state_file)
+
+        status2 = cb2.get_status("api.example.com")
+        assert status2.state == CircuitState.OPEN
+        assert status2.failure_count == 2
+
+        # Cleanup
+        cb2.done()

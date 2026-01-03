@@ -20,6 +20,7 @@ Based on: https://martinfowler.com/bliki/CircuitBreaker.html
 import json
 import logging
 import random
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -65,22 +66,97 @@ class CircuitStatus:
 
 
 class InMemoryCircuitState:
-    """In-memory state storage for circuit breaker."""
+    """In-memory state storage with optional file-backed persistence.
 
-    def __init__(self):
+    Periodically snapshots circuit states to JSON file for restart recovery.
+    """
+
+    def __init__(self, state_file: Optional[Path] = None):
         self._states: dict[str, dict] = {}
+        self._state_file = state_file
+        self._snapshot_thread: Optional[threading.Thread] = None
+        self._snapshot_stop = threading.Event()
+        self._lock = threading.RLock()
+
+        if self._state_file and self._state_file.exists():
+            self._load_state()
+
+        if self._state_file:
+            self._start_snapshots()
+
+    def _load_state(self):
+        """Load circuit states from state file on startup."""
+        try:
+            with open(self._state_file) as f:
+                data = json.load(f)
+
+            with self._lock:
+                self._states = data.get("states", {})
+
+            log.info(f"Loaded {len(self._states)} circuit breaker states from {self._state_file}")
+        except Exception as e:
+            log.error(f"Failed to load circuit breaker state: {type(e).__name__}: {e}")
+            self._states = {}
+
+    def _save_state(self):
+        """Save circuit states to state file (atomic write)."""
+        if not self._state_file:
+            return
+
+        try:
+            tmp_file = self._state_file.with_suffix('.tmp')
+
+            with self._lock:
+                data = {
+                    "states": self._states.copy(),
+                    "saved_at": time.time()
+                }
+
+            with open(tmp_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            tmp_file.rename(self._state_file)
+        except Exception as e:
+            log.error(f"Failed to save circuit breaker state: {type(e).__name__}: {e}")
+
+    def _start_snapshots(self):
+        """Start background thread to snapshot state every 10 seconds."""
+        def snapshot_loop():
+            while not self._snapshot_stop.is_set():
+                self._save_state()
+                self._snapshot_stop.wait(timeout=10.0)
+
+        self._snapshot_thread = threading.Thread(target=snapshot_loop, daemon=True, name="circuit-breaker-snapshot")
+        self._snapshot_thread.start()
+        log.info("Started circuit breaker state snapshots (10s interval)")
+
+    def stop_snapshots(self):
+        """Stop snapshot thread and save final state."""
+        if self._snapshot_thread:
+            self._snapshot_stop.set()
+            self._snapshot_thread.join(timeout=2.0)
+            if self._snapshot_thread.is_alive():
+                log.warning("Circuit breaker snapshot thread didn't stop within timeout")
+            self._save_state()
+            self._snapshot_thread = None
+            self._snapshot_stop.clear()
+            log.info("Stopped circuit breaker state snapshots")
 
     def get(self, domain: str) -> dict:
-        return self._states.get(domain, {})
+        with self._lock:
+            return self._states.get(domain, {})
 
     def set(self, domain: str, data: dict):
-        self._states[domain] = data
+        with self._lock:
+            self._states[domain] = data
 
     def delete(self, domain: str):
-        self._states.pop(domain, None)
+        with self._lock:
+            self._states.pop(domain, None)
 
     def all_domains(self) -> list[str]:
-        return list(self._states.keys())
+        with self._lock:
+            return list(self._states.keys())
 
 
 class CircuitBreaker:
@@ -154,6 +230,12 @@ class CircuitBreaker:
             default=None,
             help="Path for JSONL circuit events log",
         )
+        loader.add_option(
+            name="circuit_state_file",
+            typespec=Optional[str],
+            default="/app/data/circuit_breaker_state.json",
+            help="Path to circuit breaker state file for persistence",
+        )
 
     def configure(self, updates):
         """Handle option changes."""
@@ -174,6 +256,15 @@ class CircuitBreaker:
         if "circuit_log_path" in updates:
             path = ctx.options.circuit_log_path
             self.log_path = Path(path) if path else None
+
+        if "circuit_state_file" in updates or not hasattr(self, '_state'):
+            state_path = ctx.options.circuit_state_file
+            self._state = InMemoryCircuitState(
+                state_file=Path(state_path) if state_path else None
+            )
+
+            if state_path:
+                log.info(f"Circuit breaker state persistence enabled: {state_path}")
 
     def _load_config(self, config_path: str):
         """Load per-domain config from JSON."""
@@ -496,6 +587,12 @@ class CircuitBreaker:
             "recoveries_total": self.recoveries_total,
             "domains": domain_status,
         }
+
+    def done(self):
+        """Cleanup on shutdown."""
+        if hasattr(self, '_state') and self._state:
+            self._state.stop_snapshots()
+            log.info("Circuit breaker shutdown complete")
 
 
 # mitmproxy addon instance

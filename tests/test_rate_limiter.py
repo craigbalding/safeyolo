@@ -380,3 +380,191 @@ class TestRateLimiterHotReload:
             assert rate_limiter._default_config.requests_per_second == 99.0
         finally:
             rate_limiter._stop_watcher()
+
+
+class TestRateLimiterStatePersistence:
+    """Tests for rate limiter state file persistence across restarts."""
+
+    def test_saves_state_to_file(self, tmp_path):
+        """Verify TATs are saved to file."""
+        from addons.rate_limiter import InMemoryGCRA, RateLimitConfig
+
+        state_file = tmp_path / "rate_limiter_state.json"
+        gcra = InMemoryGCRA(state_file=state_file)
+        config = RateLimitConfig(requests_per_second=10.0, burst_capacity=5)
+
+        # Generate some TATs
+        gcra.check("api.example.com", config)
+        gcra.check("api.openai.com", config)
+
+        # Stop background thread to avoid race condition with manual save
+        gcra.stop_snapshots()
+
+        # Verify file exists and contains TATs (final save on stop)
+        assert state_file.exists()
+
+        import json
+        with open(state_file) as f:
+            data = json.load(f)
+
+        assert "tats" in data
+        assert "saved_at" in data
+        assert "api.example.com" in data["tats"]
+        assert "api.openai.com" in data["tats"]
+
+    def test_loads_state_on_startup(self, tmp_path):
+        """Verify TATs are restored from file."""
+        from addons.rate_limiter import InMemoryGCRA, RateLimitConfig
+
+        state_file = tmp_path / "rate_limiter_state.json"
+        config = RateLimitConfig(requests_per_second=10.0, burst_capacity=5)
+
+        # First instance - create state
+        gcra1 = InMemoryGCRA(state_file=state_file)
+        gcra1.check("test.com", config)
+        gcra1.check("test.com", config)
+        gcra1._save_state()
+        gcra1.stop_snapshots()
+
+        # Second instance - should load state
+        gcra2 = InMemoryGCRA(state_file=state_file)
+
+        assert "test.com" in gcra2._tats
+        assert gcra2._tats["test.com"] > 0
+
+        # Cleanup
+        gcra2.stop_snapshots()
+
+    def test_atomic_write_cleanup(self, tmp_path):
+        """Verify temp files are cleaned up after atomic writes."""
+        from addons.rate_limiter import InMemoryGCRA
+
+        state_file = tmp_path / "rate_limiter_state.json"
+        gcra = InMemoryGCRA(state_file=state_file)
+
+        # Trigger multiple saves
+        for i in range(5):
+            gcra._save_state()
+
+        # No temp files should exist
+        temp_files = list(tmp_path.glob("*.tmp"))
+        assert len(temp_files) == 0
+
+        # Cleanup
+        gcra.stop_snapshots()
+
+    def test_snapshot_thread_starts_and_stops(self, tmp_path):
+        """Verify snapshot thread lifecycle."""
+        from addons.rate_limiter import InMemoryGCRA
+
+        state_file = tmp_path / "rate_limiter_state.json"
+        gcra = InMemoryGCRA(state_file=state_file)
+
+        assert gcra._snapshot_thread is not None
+        assert gcra._snapshot_thread.is_alive()
+
+        # Stop snapshots
+        gcra.stop_snapshots()
+
+        # Thread should be stopped and set to None
+        assert gcra._snapshot_thread is None
+
+        # Final state should be saved
+        assert state_file.exists()
+
+    def test_graceful_shutdown_saves_final_state(self, tmp_path):
+        """Verify final state is saved on shutdown."""
+        from addons.rate_limiter import InMemoryGCRA, RateLimitConfig
+
+        state_file = tmp_path / "rate_limiter_state.json"
+        config = RateLimitConfig(requests_per_second=10.0, burst_capacity=5)
+
+        gcra = InMemoryGCRA(state_file=state_file)
+        gcra.check("final.com", config)
+
+        # Stop snapshots (simulates shutdown)
+        gcra.stop_snapshots()
+
+        # Verify state was saved
+        import json
+        with open(state_file) as f:
+            data = json.load(f)
+
+        assert "final.com" in data["tats"]
+
+    def test_handles_missing_state_file_gracefully(self, tmp_path):
+        """Verify GCRA starts with empty state if file doesn't exist."""
+        from addons.rate_limiter import InMemoryGCRA
+
+        state_file = tmp_path / "nonexistent.json"
+        gcra = InMemoryGCRA(state_file=state_file)
+
+        # Should start with empty TATs
+        assert len(gcra._tats) == 0
+
+        # Cleanup
+        gcra.stop_snapshots()
+
+    def test_handles_corrupted_state_file_gracefully(self, tmp_path):
+        """Verify GCRA handles corrupted state file gracefully."""
+        from addons.rate_limiter import InMemoryGCRA
+
+        state_file = tmp_path / "corrupted.json"
+        state_file.write_text("not valid json {{{")
+
+        gcra = InMemoryGCRA(state_file=state_file)
+
+        # Should start with empty TATs despite corrupt file
+        assert len(gcra._tats) == 0
+
+        # Cleanup
+        gcra.stop_snapshots()
+
+    def test_rate_limiter_addon_cleanup_on_done(self, tmp_path):
+        """Verify RateLimiter addon calls stop_snapshots on done()."""
+        from addons.rate_limiter import RateLimiter
+
+        rate_limiter = RateLimiter()
+        rate_limiter.config_path = tmp_path / "rates.json"
+
+        # Create GCRA with state file
+        state_file = tmp_path / "state.json"
+        from addons.rate_limiter import InMemoryGCRA
+        rate_limiter._gcra = InMemoryGCRA(state_file=state_file)
+
+        assert rate_limiter._gcra._snapshot_thread is not None
+
+        # Call done() (simulates mitmproxy shutdown)
+        rate_limiter.done()
+
+        # Thread should be stopped and set to None
+        assert rate_limiter._gcra._snapshot_thread is None
+
+    def test_concurrent_access_thread_safety(self, tmp_path):
+        """Verify concurrent access to state is thread-safe."""
+        from addons.rate_limiter import InMemoryGCRA, RateLimitConfig
+        import threading
+
+        state_file = tmp_path / "concurrent.json"
+        gcra = InMemoryGCRA(state_file=state_file)
+        config = RateLimitConfig(requests_per_second=100.0, burst_capacity=10)
+
+        # Spawn multiple threads making concurrent requests
+        def worker(domain_id):
+            for i in range(10):
+                gcra.check(f"domain-{domain_id}.com", config)
+
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        # Verify all domains were tracked
+        assert len(gcra._tats) == 5
+
+        # Cleanup
+        gcra.stop_snapshots()

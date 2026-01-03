@@ -126,3 +126,42 @@ credential_guard:
 **Current Status (2026-01)**: Not implemented. Use "Dismiss" workflow instead - pending approval stays for 24h and prevents duplicate notifications.
 
 - [ ] Fix duplicate log lines in ntfy_approval_listener.py (prints + writes, but shell also redirects)
+
+## State File Unbounded Growth
+
+**Problem**: Rate limiter and circuit breaker state files grow forever as new domains are tracked. For long-running proxies with many unique domains, state files could grow unbounded.
+
+**Current behavior**:
+- `rate_limiter_state.json`: Stores TAT (Theoretical Arrival Time) per domain
+- `circuit_breaker_state.json`: Stores circuit state per domain
+- No TTL or max entries limit
+- Old/stale domains never removed
+
+**Goal**: Prevent unbounded state file growth while preserving state for active domains.
+
+**Proposed solutions**:
+
+1. **TTL-based cleanup**: Remove entries older than N days (e.g., 7 days since last access)
+2. **Max entries limit**: LRU eviction when state exceeds threshold (e.g., 10,000 domains)
+3. **Periodic cleanup task**: Run cleanup on snapshot thread (every 10 minutes)
+
+**Proposed schema** (state file with metadata):
+```json
+{
+  "tats": {
+    "api.openai.com": {"value": 1704307200000, "last_access": 1704307200},
+    "api.anthropic.com": {"value": 1704307100000, "last_access": 1704307100}
+  },
+  "saved_at": 1704307200,
+  "version": 2
+}
+```
+
+**Work required**:
+- [ ] Add `last_access` timestamp to state entries
+- [ ] Implement TTL-based cleanup (configurable, default 7 days)
+- [ ] Optional: Add max entries limit with LRU eviction
+- [ ] Add cleanup stats to admin API (`stale_entries_removed`)
+- [ ] Migrate existing state files (version 1 → 2)
+
+**Current Status (2026-01)**: Not implemented. State files grow unbounded. Low priority for small deployments, but could be problematic for high-traffic proxies with many unique domains.

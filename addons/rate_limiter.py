@@ -63,49 +63,63 @@ class RateLimitResult:
 
 class InMemoryGCRA:
     """
-    In-memory GCRA (Generic Cell Rate Algorithm) rate limiter.
+    In-memory GCRA (Generic Cell Rate Algorithm) rate limiter with optional file-backed persistence.
 
     GCRA uses "virtual scheduling" - it tracks a TAT (Theoretical Arrival Time)
     representing when the next request should ideally arrive. This creates
     smooth rate limiting without the "thundering herd" problem of fixed windows.
 
+    Periodically snapshots TAT state to JSON file for restart recovery.
     For single-instance proxy deployments. Use Redis-backed version for
     multi-instance.
     """
 
-    def __init__(self):
+    def __init__(self, state_file: Optional[Path] = None):
         self._tats: dict[str, float] = {}  # domain -> TAT in ms
+        self._state_file = state_file
+        self._snapshot_thread: Optional[threading.Thread] = None
+        self._snapshot_stop = threading.Event()
+        self._lock = threading.RLock()  # Protect concurrent access
+
+        # Load state on startup
+        if self._state_file and self._state_file.exists():
+            self._load_state()
+
+        # Start snapshot thread
+        if self._state_file:
+            self._start_snapshots()
 
     def check(self, domain: str, config: RateLimitConfig, cost: int = 1) -> RateLimitResult:
         """Check if request is allowed, update state if so."""
-        now_ms = time.time() * 1000
-        tat = self._tats.get(domain, now_ms)
+        with self._lock:
+            now_ms = time.time() * 1000
+            tat = self._tats.get(domain, now_ms)
 
-        burst_offset = config.emission_interval_ms * config.burst_capacity
-        allow_at = tat - burst_offset
+            burst_offset = config.emission_interval_ms * config.burst_capacity
+            allow_at = tat - burst_offset
 
-        if now_ms < allow_at:
-            # Rate limited
-            wait_ms = allow_at - now_ms
+            if now_ms < allow_at:
+                # Rate limited
+                wait_ms = allow_at - now_ms
+                return RateLimitResult(
+                    allowed=False,
+                    wait_ms=wait_ms,
+                    remaining=0,
+                )
+
+            # Allowed - update TAT
+            new_tat = max(tat, now_ms) + (config.emission_interval_ms * cost)
+            self._tats[domain] = new_tat
+
+            # Calculate remaining burst
+            remaining = int((now_ms - (new_tat - burst_offset)) / config.emission_interval_ms)
+            remaining = max(0, min(config.burst_capacity, remaining))
+
             return RateLimitResult(
-                allowed=False,
-                wait_ms=wait_ms,
-                remaining=0,
+                allowed=True,
+                wait_ms=0,
+                remaining=remaining,
             )
-
-        # Allowed - update TAT
-        new_tat = max(tat, now_ms) + (config.emission_interval_ms * cost)
-        self._tats[domain] = new_tat
-
-        # Calculate remaining burst
-        remaining = int((now_ms - (new_tat - burst_offset)) / config.emission_interval_ms)
-        remaining = max(0, min(config.burst_capacity, remaining))
-
-        return RateLimitResult(
-            allowed=True,
-            wait_ms=0,
-            remaining=remaining,
-        )
 
     def reset(self, domain: str) -> None:
         """Reset rate limit for a domain."""
@@ -114,6 +128,65 @@ class InMemoryGCRA:
     def get_status(self) -> dict[str, float]:
         """Get current TAT values for all domains."""
         return dict(self._tats)
+
+    def _load_state(self):
+        """Load TATs from state file on startup."""
+        try:
+            with open(self._state_file) as f:
+                data = json.load(f)
+
+            raw_tats = data.get("tats", {})
+            self._tats = {domain: float(tat) for domain, tat in raw_tats.items()}
+
+            log.info(f"Loaded {len(self._tats)} rate limiter TATs from {self._state_file}")
+        except Exception as e:
+            log.error(f"Failed to load rate limiter state: {type(e).__name__}: {e}")
+            self._tats = {}
+
+    def _save_state(self):
+        """Save TATs to state file (atomic write)."""
+        if not self._state_file:
+            return
+
+        try:
+            tmp_file = self._state_file.with_suffix('.tmp')
+
+            with self._lock:
+                data = {
+                    "tats": self._tats.copy(),
+                    "saved_at": time.time()
+                }
+
+            with open(tmp_file, 'w') as f:
+                json.dump(data, f, indent=2)
+
+            # Atomic rename
+            tmp_file.rename(self._state_file)
+        except Exception as e:
+            log.error(f"Failed to save rate limiter state: {type(e).__name__}: {e}")
+
+    def _start_snapshots(self):
+        """Start background thread to snapshot state every 10 seconds."""
+        def snapshot_loop():
+            while not self._snapshot_stop.is_set():
+                self._save_state()
+                self._snapshot_stop.wait(timeout=10.0)
+
+        self._snapshot_thread = threading.Thread(target=snapshot_loop, daemon=True, name="rate-limiter-snapshot")
+        self._snapshot_thread.start()
+        log.info("Started rate limiter state snapshots (10s interval)")
+
+    def stop_snapshots(self):
+        """Stop snapshot thread and save final state."""
+        if self._snapshot_thread:
+            self._snapshot_stop.set()
+            self._snapshot_thread.join(timeout=2.0)
+            if self._snapshot_thread.is_alive():
+                log.warning("Rate limiter snapshot thread didn't stop within timeout")
+            self._save_state()  # Final snapshot
+            self._snapshot_thread = None
+            self._snapshot_stop.clear()
+            log.info("Stopped rate limiter state snapshots")
 
 
 class RateLimiter:
@@ -193,10 +266,31 @@ class RateLimiter:
             default=True,
             help="Watch config file for changes (hot reload)",
         )
+        loader.add_option(
+            name="ratelimit_state_file",
+            typespec=Optional[str],
+            default="/app/data/rate_limiter_state.json",
+            help="Path to rate limiter state file for persistence",
+        )
 
     def configure(self, updates):
         """Handle option changes."""
-        if "ratelimit_config" in updates:
+        # Initialize GCRA with state file if config or state file updated
+        if "ratelimit_config" in updates or "ratelimit_state_file" in updates:
+            # Stop existing GCRA snapshots if any
+            if hasattr(self, '_gcra') and self._gcra:
+                self._gcra.stop_snapshots()
+
+            # Initialize new GCRA with state file
+            state_path = ctx.options.ratelimit_state_file
+            self._gcra = InMemoryGCRA(
+                state_file=Path(state_path) if state_path else None
+            )
+
+            if state_path:
+                log.info(f"Rate limiter state persistence enabled: {state_path}")
+
+            # Load config if exists
             config_path = ctx.options.ratelimit_config
             if config_path and Path(config_path).exists():
                 self.config_path = Path(config_path)
@@ -458,6 +552,12 @@ class RateLimiter:
             }
 
         return status
+
+    def done(self):
+        """Cleanup on shutdown."""
+        if hasattr(self, '_gcra') and self._gcra:
+            self._gcra.stop_snapshots()
+            log.info("Rate limiter shutdown complete")
 
 
 # mitmproxy addon instance
