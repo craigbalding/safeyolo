@@ -204,15 +204,24 @@ def init(
         "--providers", "-p",
         help="Comma-separated providers (openai,anthropic,github,google,aws)",
     ),
+    secure: bool = typer.Option(
+        False,
+        "--secure", "-s",
+        help="Enable Secure Mode with network isolation (recommended)",
+    ),
 ) -> None:
     """Initialize SafeYolo configuration.
 
     Creates configuration files for the SafeYolo security proxy. By default,
     runs an interactive wizard to select API providers.
 
+    Use --secure to enable Secure Mode, which creates a Docker network that
+    forces all agent traffic through SafeYolo (bypass attempts fail).
+
     Examples:
 
-        safeyolo init                    # Interactive setup
+        safeyolo init                    # Interactive setup (Quick Mode)
+        safeyolo init --secure           # Secure Mode with network isolation
         safeyolo init --no-interactive   # Use defaults
         safeyolo init -p openai,anthropic  # Specify providers
     """
@@ -275,6 +284,7 @@ def init(
 
     # Write config.yaml
     config = DEFAULT_CONFIG.copy()
+    config["secure"] = secure
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 
@@ -284,20 +294,35 @@ def init(
     console.print(f"  [green]Created[/green] {rules_path}")
 
     # Write docker-compose.yml
-    compose_path = write_compose_file()
+    compose_path = write_compose_file(secure=secure)
     console.print(f"  [green]Created[/green] {compose_path}")
 
     # Summary
     provider_names = [API_PROVIDERS.get(p, {}).get("name", p) for p in selected_providers]
-    console.print(
-        Panel(
-            f"[green]SafeYolo initialized![/green]\n\n"
-            f"Protected providers: {', '.join(provider_names)}\n"
-            f"Configuration: {config_dir}\n\n"
+    mode_label = "[bold green]Secure Mode[/bold green]" if secure else "Quick Mode"
+
+    if secure:
+        next_steps = (
+            f"Next steps:\n"
+            f"  1. Run: [bold]safeyolo start[/bold]\n"
+            f"  2. Run: [bold]safeyolo agent add claude-code[/bold]\n"
+            f"  3. Run your agent from [bold]./safeyolo/agents/claude-code/[/bold]"
+        )
+    else:
+        next_steps = (
             f"Next steps:\n"
             f"  1. Run: [bold]safeyolo start[/bold]\n"
             f"  2. Configure your agent to use proxy at localhost:8080\n"
-            f"  3. Run: [bold]safeyolo watch[/bold] to handle approvals",
+            f"  3. Run: [bold]safeyolo watch[/bold] to handle approvals"
+        )
+
+    console.print(
+        Panel(
+            f"[green]SafeYolo initialized![/green]\n\n"
+            f"Mode: {mode_label}\n"
+            f"Protected providers: {', '.join(provider_names)}\n"
+            f"Configuration: {config_dir}\n\n"
+            f"{next_steps}",
             title="Success",
         )
     )

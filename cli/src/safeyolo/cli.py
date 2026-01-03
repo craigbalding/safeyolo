@@ -5,6 +5,7 @@ from rich.console import Console
 
 from . import __version__
 from .commands.admin import check, mode, policies, test
+from .commands.agent import agent_app
 from .commands.cert import cert_app
 from .commands.init import init
 from .commands.lifecycle import start, status, stop
@@ -59,6 +60,7 @@ app.command()(test)
 
 # Register subcommand groups
 app.add_typer(cert_app, name="cert")
+app.add_typer(agent_app, name="agent")
 
 
 # Convenience aliases

@@ -31,6 +31,7 @@ dependencies = [
     "httpx>=0.25.0",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "jinja2>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +51,17 @@ Issues = "https://github.com/craigbalding/safeyolo/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/safeyolo"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build]
+include = [
+    "src/safeyolo/**/*.py",
+    "src/safeyolo/templates/**/*.j2",
+    "src/safeyolo/templates/**/*.md",
+    "src/safeyolo/templates/**/.env.example",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

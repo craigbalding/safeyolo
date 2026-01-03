@@ -18,20 +18,24 @@ SafeYolo is a security proxy that prevents credential leakage, dampens runaway l
 Run your coding agent in a container on a no-internet Docker network where SafeYolo is the only egress path:
 
 ```bash
-# Clone and start SafeYolo
-git clone https://github.com/yourorg/safeyolo.git
-cd safeyolo
-docker compose up -d
+# Install CLI
+pipx install safeyolo
 
-# Copy the ready-to-run template for your agent
-cp -r contrib/claude-code-chokepoint ~/my-agent
+# Initialize with network isolation
+safeyolo init --secure
+safeyolo start
 
-# Run your agent inside (bypass attempts fail, not leak)
-cd ~/my-agent
+# Add an agent template (e.g., Claude Code)
+safeyolo agent add claude-code
+
+# Configure and run
+cd safeyolo/agents/claude-code
+cp .env.example .env
+# Edit .env with your ANTHROPIC_API_KEY
 docker compose run --rm claude
 ```
 
-The template handles everything: network isolation, CA certificate mounting, and proxy configuration. See [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/) for details.
+The CLI handles everything: network isolation, CA certificate mounting, and proxy configuration. Run `safeyolo agent list` to see available templates.
 
 ## Quick Start: Quick Mode (Demo Only)
 
@@ -186,7 +190,7 @@ SafeYolo is an explicit HTTP(S) forward proxy.
 | **Secure Mode** (recommended) | Traffic fails (no route to internet) | Bypass attempts break, not leak |
 | Quick Mode | Traffic goes direct (not inspected) | Best-effort only; agents can bypass |
 
-See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for the full setup, or use the ready-to-run [contrib/claude-code-chokepoint/](contrib/claude-code-chokepoint/) template.
+See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for details, or use `safeyolo agent add` to generate an agent template.
 
 ## What It Does
 
@@ -209,10 +213,14 @@ See [docs/SECURE_MODE.md](docs/SECURE_MODE.md) for the full setup, or use the re
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo init` | Interactive setup wizard |
+| `safeyolo init` | Setup wizard (`--secure` for network isolation) |
 | `safeyolo start` | Start the proxy container |
 | `safeyolo stop` | Stop the proxy |
 | `safeyolo status` | Show health and stats |
+| `safeyolo agent add <template>` | Add an agent container configuration |
+| `safeyolo agent list` | List available agent templates |
+| `safeyolo agent run <name>` | Run an agent container |
+| `safeyolo agent remove <name>` | Remove an agent configuration |
 | `safeyolo cert install` | Install CA cert for HTTPS inspection |
 | `safeyolo cert uninstall` | Remove CA cert from system trust store |
 | `safeyolo cert show` | Show CA cert location and fingerprint |
@@ -303,7 +311,11 @@ safeyolo/
 ├── rules.json           # Credential patterns & allowed hosts
 ├── policies/            # Approved credentials (auto-managed)
 ├── logs/                # Audit logs (safeyolo.jsonl)
-└── data/                # Admin token, HMAC secret
+├── data/                # Admin token, HMAC secret
+└── agents/              # Agent container configs (Secure Mode)
+    └── claude-code/     # Example: Claude Code agent
+        ├── docker-compose.yml
+        └── .env
 ```
 
 ### rules.json

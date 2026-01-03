@@ -9,9 +9,16 @@ import yaml
 PROJECT_DIR_NAME = "safeyolo"
 GLOBAL_DIR_NAME = ".safeyolo"
 
+# Secure mode network constants
+INTERNAL_NETWORK_NAME = "safeyolo-internal"
+SAFEYOLO_INTERNAL_IP = "172.31.0.10"
+INTERNAL_SUBNET = "172.31.0.0/24"
+CERTS_VOLUME_NAME = "safeyolo-certs"
+
 # Default config values
 DEFAULT_CONFIG = {
     "version": 1,
+    "secure": False,  # Secure mode with network isolation
     "proxy": {
         "port": 8080,
         "admin_port": 9090,
@@ -95,6 +102,11 @@ def get_policies_dir() -> Path:
 def get_data_dir() -> Path:
     """Get path to data directory."""
     return get_config_dir() / "data"
+
+
+def get_agents_dir() -> Path:
+    """Get path to agents directory."""
+    return get_config_dir() / "agents"
 
 
 def get_admin_token_path() -> Path:
