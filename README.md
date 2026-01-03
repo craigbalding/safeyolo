@@ -18,14 +18,23 @@ git clone https://github.com/craigbalding/safeyolo
 cd safeyolo
 docker compose up -d
 
+# Verify it's running
+curl http://localhost:9090/health
+# Expected: {"status": "healthy", "proxy": "safeyolo"}
+
 # Test it blocks credential leakage (fake key to httpbin.org)
 curl -k -x http://localhost:8888 \
   -H "Authorization: Bearer sk-test1234567890abcdefghijklmnopqrstuvwxyz123456" \
   https://httpbin.org/get
 # → 428 Precondition Required (credential detected, wrong destination)
 
-# Check what happened
-curl http://localhost:9090/stats | jq
+# Check what happened (requires auth token)
+export ADMIN_TOKEN=$(docker exec safeyolo cat /app/data/admin_token)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/stats | jq
+
+# Verify the block was logged
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/stats | jq '.["credential-guard"].violations_total'
+# Expected: 1 (or higher if you ran the test multiple times)
 ```
 
 Your fake OpenAI key was blocked from reaching httpbin.org.
@@ -41,6 +50,73 @@ docker logs -f safeyolo 2>&1 | python scripts/logtail.py
 - Adjust rate limits in `config/rate_limits.json` if needed
 - Point your coding agent at `http://localhost:8888` as its proxy
 - [See detailed setup for Claude Code](#use-case-claude-code-sidecar)
+
+### How do I know it's working?
+
+**Quick validation checklist:**
+
+- [ ] Health endpoint returns 200: `curl http://localhost:9090/health`
+- [ ] Fake credential blocked: Returns 428 status code
+- [ ] Block logged in stats: `violations_total` increases
+- [ ] Logs are being written: `tail logs/safeyolo.jsonl`
+
+**What you should see:**
+
+```bash
+# 1. Health check
+$ curl http://localhost:9090/health
+{"status": "healthy", "proxy": "safeyolo"}
+
+# 2. Stats show the credential guard is active
+$ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/stats | jq '.["credential-guard"]'
+{
+  "violations_total": 1,
+  "violations_by_type": {
+    "openai": 1
+  },
+  "rules_count": 5,
+  ...
+}
+
+# 3. JSONL logs contain the block event
+$ tail logs/safeyolo.jsonl | jq 'select(.blocked_by != null)'
+{
+  "timestamp": "2026-01-03T...",
+  "blocked_by": "credential-guard",
+  "host": "httpbin.org",
+  ...
+}
+```
+
+### Admin API Authentication
+
+**All admin API endpoints require authentication** (except `/health`).
+
+**Get your token:**
+```bash
+# From container
+docker exec safeyolo cat /app/data/admin_token
+
+# Or from host (if data/ is mounted)
+cat data/admin_token
+```
+
+**Usage:**
+```bash
+# Set token as environment variable
+export ADMIN_TOKEN=$(docker exec safeyolo cat /app/data/admin_token)
+
+# Use in all API requests
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/stats | jq
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/admin/approvals/pending
+```
+
+**Security notes:**
+- Token is generated on first startup
+- Token persists in `/app/data/admin_token` (survives restarts)
+- Token is shown once during first startup (save it!)
+- Rotate token: Delete `data/admin_token` and restart
+- `/health` endpoint exempt (for monitoring tools)
 
 ---
 
@@ -177,8 +253,9 @@ docker compose up -d
 curl -k -x http://localhost:8888 https://httpbin.org/ip
 
 # Check admin API
+export ADMIN_TOKEN=$(docker exec safeyolo cat /app/data/admin_token)
 curl http://localhost:9090/health
-curl http://localhost:9090/stats
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/stats
 
 # Attach to mitmproxy TUI
 docker exec -it safeyolo tmux attach
@@ -198,7 +275,8 @@ curl -k -x http://localhost:8888 \
 tail -1 logs/safeyolo.jsonl | jq .
 
 # To disable blocking for development:
-curl -X PUT http://localhost:9090/plugins/credential-guard/mode \
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -X PUT http://localhost:9090/plugins/credential-guard/mode \
   -H "Content-Type: application/json" \
   -d '{"mode": "warn"}'
 
@@ -260,13 +338,13 @@ curl -k -x http://localhost:8888 \
 # → 428 Precondition Required (requires approval)
 
 # Check pending approvals
-curl http://localhost:9090/admin/approvals/pending | jq
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/admin/approvals/pending | jq
 
 # Approve via admin API (or click button in Ntfy notification)
-curl -X POST http://localhost:9090/admin/approve/{token}
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -X POST http://localhost:9090/admin/approve/{token}
 
 # Deny instead
-curl -X POST http://localhost:9090/admin/deny/{token}
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -X POST http://localhost:9090/admin/deny/{token}
 
 # Clear all pending approvals (restart mitmproxy - in-memory state resets)
 docker compose restart safeyolo
@@ -466,6 +544,26 @@ volumes:
     external: true
 ```
 
+**Validate the setup:**
+
+1. Verify network connectivity:
+```bash
+docker run --rm --network safeyolo-internal alpine ping -c 1 172.30.0.10
+# Expected: 1 packets transmitted, 1 received
+```
+
+2. Verify certificate mount:
+```bash
+docker exec claude-code ls -l /certs/mitmproxy-ca-cert.pem
+# Expected: -rw-r--r-- ... mitmproxy-ca-cert.pem
+```
+
+3. Test proxy from container:
+```bash
+docker exec claude-code curl -x http://172.30.0.10:8080 http://httpbin.org/ip
+# Expected: JSON response with your IP address
+```
+
 ### Setup Option 2: Claude Code on Host Machine
 
 **If you run Claude Code directly on your host**, set proxy environment variables:
@@ -485,6 +583,196 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 ```
 
 **Then start Claude Code** - all traffic now routes through SafeYolo.
+
+**Validate the setup:**
+
+1. Verify CA cert installed:
+```bash
+# Linux:
+ls -l /usr/local/share/ca-certificates/mitmproxy.crt
+
+# macOS:
+security find-certificate -c mitmproxy -a | grep "CN=mitmproxy"
+```
+
+2. Test proxy works:
+```bash
+curl http://httpbin.org/ip
+# Expected: JSON response (request went through proxy at localhost:8888)
+```
+
+3. Verify HTTPS interception:
+```bash
+curl https://httpbin.org/ip
+# Expected: Should succeed without -k flag (CA cert trusted)
+```
+
+---
+
+## Troubleshooting
+
+Quick solutions to common problems. For detailed addon configuration, see [docs/ADDONS.md](docs/ADDONS.md).
+
+### SafeYolo blocks legitimate requests
+
+**Symptoms:** 428 responses for valid API calls
+
+**Diagnosis:**
+```bash
+# Check which addon blocked it
+export ADMIN_TOKEN=$(docker exec safeyolo cat /app/data/admin_token)
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/stats | jq '.["credential-guard"]'
+
+# Review recent blocks
+tail -20 logs/safeyolo.jsonl | jq 'select(.blocked_by != null)'
+```
+
+**Solutions:**
+
+1. **For development**: Switch all addons to warn-only mode:
+   ```bash
+   curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -X PUT http://localhost:9090/modes \
+     -H "Content-Type: application/json" \
+     -d '{"mode":"warn"}'
+   ```
+
+2. **For production**: Approve the credential (writes to policy file):
+   ```bash
+   # List pending approvals
+   curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/admin/approvals/pending | jq
+
+   # Approve by token
+   curl -H "Authorization: Bearer $ADMIN_TOKEN" -X POST http://localhost:9090/admin/approve/{token}
+   ```
+
+3. **Permanent allowlist**: Add to `config/credential_rules.json` allowed_hosts
+
+---
+
+### Admin API returns connection refused
+
+**Symptoms:** `curl http://localhost:9090/health` fails
+
+**Diagnosis:**
+```bash
+# Check if admin API started
+docker logs safeyolo 2>&1 | grep -i "admin api"
+
+# Check if port is listening
+docker exec safeyolo netstat -tlnp | grep 9090
+```
+
+**Common causes:**
+- Admin API failed to start → Check logs for Python traceback
+- Port not exposed in docker-compose.yml → Add `- "9090:9090"` to ports section
+- Firewall blocking localhost:9090 → Check firewall rules
+
+---
+
+### Proxy works with curl -k but not from application
+
+**Symptoms:** `curl -k -x http://localhost:8888` succeeds, but application fails with SSL errors
+
+**Diagnosis:**
+```bash
+# Verify certificate is accessible
+docker exec claude-code ls -l /certs/mitmproxy-ca-cert.pem
+
+# Test HTTPS without -k flag (requires CA cert trust)
+docker exec claude-code curl https://httpbin.org/ip
+```
+
+**Common causes:**
+- CA cert not installed/trusted → Follow [Setup Option 1](#setup-option-1-claude-code-in-a-container-recommended) cert installation
+- Application doesn't respect `SSL_CERT_FILE` env var → Check app docs for cert config
+- Certificate path mismatch → Verify volume mount path matches env var
+
+**Solution for containers:**
+```yaml
+environment:
+  - SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem
+  - REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem
+  - NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem
+volumes:
+  - safeyolo-certs:/certs:ro
+```
+
+---
+
+### State behavior after restart
+
+**What persists across restarts:**
+- ✅ Approved credentials → `/app/data/policies/{project}.yaml`
+- ✅ Block/warn mode (if set via `SAFEYOLO_BLOCK=true` env var)
+- ✅ Rate limiter state → `/app/data/rate_limiter_state.json` (new in this update)
+- ✅ Circuit breaker state → `/app/data/circuit_breaker_state.json` (new in this update)
+- ✅ HMAC secret, Ntfy topic, admin token
+
+**What is reset on restart:**
+- ❌ Pending approvals (not yet approved) → Retry the request to regenerate
+- ❌ Temp allowlist entries → Use permanent policy approvals instead
+- ❌ Runtime mode changes via admin API → Set `SAFEYOLO_BLOCK=true` in docker-compose.yml
+
+**To make mode changes persistent:**
+```yaml
+# docker-compose.yml
+services:
+  safeyolo:
+    environment:
+      - SAFEYOLO_BLOCK=true  # Block mode persists across restarts
+```
+
+---
+
+### Logs growing too large
+
+**Current status:** No automatic log rotation implemented
+
+**Manual rotation:**
+```bash
+# Rotate logs manually
+docker exec safeyolo mv /app/logs/safeyolo.jsonl /app/logs/safeyolo-$(date +%Y%m%d).jsonl
+
+# Restart to create new log file
+docker compose restart safeyolo
+```
+
+**External logrotate (recommended):**
+```
+# /etc/logrotate.d/safeyolo
+/path/to/safeyolo/logs/*.jsonl {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    postrotate
+        docker compose -f /path/to/safeyolo/docker-compose.yml restart safeyolo > /dev/null
+    endscript
+}
+```
+
+---
+
+### Container won't start
+
+**Symptoms:** `docker compose up -d` fails or container exits immediately
+
+**Diagnosis:**
+```bash
+# Check container logs
+docker logs safeyolo
+
+# Check mitmproxy startup log
+docker exec safeyolo cat /app/logs/mitmproxy.log 2>/dev/null || echo "Container not running"
+```
+
+**Common causes:**
+- Port 8888 or 9090 already in use → Change ports in docker-compose.yml
+- Addon syntax error → Check logs for Python traceback
+- Missing config files → Verify `config/*.json` files exist
+- Permissions error → Check data/ directory is writable
 
 ---
 
