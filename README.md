@@ -283,12 +283,7 @@ cat data/policies/webapp.yaml     # Requests from 'webapp' compose project
 
 **Mobile Approvals Setup** (for solo devs):
 
-1. **Start the approval listener** on the same host as safeyolo:
-   ```bash
-   python3 scripts/ntfy_approval_listener.py
-   ```
-
-2. **Configure notifications** - choose your platform:
+1. **Configure notifications** - choose your platform:
 
    **iOS (Pushcut - recommended):**
    ```bash
@@ -304,13 +299,13 @@ cat data/policies/webapp.yaml     # Requests from 'webapp' compose project
    # Subscribe to topic in data/ntfy_topic
    ```
 
-3. **Approve from your phone** - when a credential needs approval:
+2. **Approve from your phone** - when a credential needs approval:
    - Push notification with Approve/Deny buttons
    - Button tap posts to ntfy topic
-   - Listener calls admin API
+   - Approval listener (auto-started) calls admin API
    - Request proceeds (or is denied)
 
-The listener runs with exponential backoff. Logs at `logs/approval_listener.log`.
+The approval listener starts automatically with SafeYolo. Logs at `logs/approval_listener.log`.
 
 ### If mitmproxy crashes
 
