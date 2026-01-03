@@ -9,6 +9,8 @@ Usage:
     export NTFY_CALLBACK_TOPIC=my-callback-topic
     export SAFEYOLO_ADMIN_TOKEN=your-token
     python contrib/notifiers/listener.py
+
+Requires: pip install httpx tenacity
 """
 
 import json
@@ -18,6 +20,7 @@ import sys
 import time
 
 import httpx
+from tenacity import retry, wait_exponential, retry_if_exception_type
 
 # Configuration from environment
 CALLBACK_TOPIC = os.getenv("NTFY_CALLBACK_TOPIC", "")
@@ -115,6 +118,20 @@ def listen():
                             log(f"Denied (no action taken)")
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=5, max=300),
+    retry=retry_if_exception_type((httpx.HTTPError, httpx.StreamError, ConnectionError, OSError)),
+    before_sleep=lambda retry_state: log(f"Reconnecting in {retry_state.next_action.sleep}s..."),
+)
+def listen_forever():
+    """Listen with automatic reconnection on failure."""
+    try:
+        listen()
+    except Exception as e:
+        log(f"Connection error: {type(e).__name__}: {e}")
+        raise
+
+
 def main():
     if not CALLBACK_TOPIC:
         print("Set NTFY_CALLBACK_TOPIC environment variable")
@@ -133,20 +150,7 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
 
     log(f"Starting listener for topic: {CALLBACK_TOPIC}")
-
-    # Reconnect with exponential backoff
-    backoff = 5
-    max_backoff = 300  # 5 minutes
-
-    while True:
-        try:
-            listen()
-            backoff = 5  # Reset on successful connection
-        except Exception as e:
-            log(f"Connection error: {type(e).__name__}: {e}")
-            log(f"Reconnecting in {backoff}s...")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff)
+    listen_forever()
 
 
 if __name__ == "__main__":
