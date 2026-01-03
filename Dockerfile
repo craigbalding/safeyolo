@@ -96,9 +96,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dev/test dependencies
-COPY requirements/dev.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Install dev/test dependencies (need both files since dev.txt references base.txt)
+COPY requirements/base.txt requirements/dev.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/dev.txt
 
 # Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app
