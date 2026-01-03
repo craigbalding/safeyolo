@@ -35,6 +35,14 @@ from yarl import URL
 
 from mitmproxy import ctx, http
 
+# Optional: homoglyph detection for mixed-script attacks
+try:
+    from confusable_homoglyphs import confusables as homoglyph_confusables
+    HOMOGLYPH_DETECTION_ENABLED = True
+except ImportError:
+    HOMOGLYPH_DETECTION_ENABLED = False
+    homoglyph_confusables = None
+
 try:
     from .utils import write_jsonl
 except ImportError:
@@ -125,6 +133,71 @@ def normalize_path(path: str) -> str:
 
     # Strip trailing slash (except root)
     return normalized.rstrip("/") or "/"
+
+
+def detect_homoglyph_attack(text: str) -> Optional[dict]:
+    """Detect mixed-script homoglyph attacks in text (host or path).
+
+    Uses confusable-homoglyphs library to detect when text mixes scripts
+    in a suspicious way (e.g., Cyrillic 'а' mixed with Latin letters).
+
+    Returns:
+        None if safe, or dict with detection details:
+        {
+            "dangerous": True,
+            "confusables": [{"char": "а", "script": "CYRILLIC", "looks_like": "a"}],
+            "message": "Human-readable warning"
+        }
+    """
+    if not HOMOGLYPH_DETECTION_ENABLED:
+        return None
+
+    # Check for mixed-script danger
+    if not homoglyph_confusables.is_dangerous(text):
+        return None
+
+    # Get all characters with their scripts using greedy mode
+    all_chars = homoglyph_confusables.is_confusable(text, greedy=True)
+    if not all_chars:
+        return None
+
+    # Filter to only suspicious scripts (not LATIN or COMMON)
+    # These are the characters that make it "dangerous"
+    suspicious_scripts = {"CYRILLIC", "GREEK", "ARMENIAN", "HEBREW", "ARABIC"}
+    confusables = []
+
+    for item in all_chars:
+        char = item["character"]
+        script = item["alias"]
+        if script in suspicious_scripts:
+            # Find the Latin lookalike
+            homoglyphs = item.get("homoglyphs", [])
+            latin_lookalike = next(
+                (h["c"] for h in homoglyphs if "LATIN" in h.get("n", "")),
+                "?"
+            )
+            confusables.append({
+                "char": char,
+                "script": script,
+                "looks_like": latin_lookalike
+            })
+
+    if not confusables:
+        # No suspicious scripts found - might be a false positive
+        return None
+
+    # Format message for human reviewer
+    char_details = ", ".join(
+        f"'{c['char']}' ({c['script']} looks like '{c['looks_like']}')"
+        for c in confusables
+    )
+    message = f"HOMOGLYPH ALERT: Mixed scripts detected. Suspicious chars: {char_details}"
+
+    return {
+        "dangerous": True,
+        "confusables": confusables,
+        "message": message
+    }
 
 
 def path_matches_pattern(path: str, pattern: str) -> bool:
@@ -679,6 +752,16 @@ def determine_decision_type(
 
         context contains additional info needed for response
     """
+    # Check for homoglyph attacks in host or path (mixed-script spoofing)
+    homoglyph_warning = detect_homoglyph_attack(host) or detect_homoglyph_attack(path)
+    if homoglyph_warning:
+        log.warning(f"Homoglyph attack detected: {homoglyph_warning['message']}")
+        # Use the full warning as the reason so it appears in notifications
+        return ("greylist_approval", {
+            "reason": homoglyph_warning["message"],
+            "confusables": homoglyph_warning["confusables"]
+        })
+
     # Unknown credentials: check policy first (HMAC-based approvals), then require approval
     if rule_name == "unknown_secret":
         # Check if this credential+host+path is already approved via HMAC
@@ -1313,6 +1396,10 @@ class ApprovalNotifier:
         if reason == "unknown_credential_type":
             title = "Unknown Credential Detected"
             text = f"Unrecognized credential -> {host}{path}\nConfidence: {confidence} (tier {tier})"
+        elif reason.startswith("HOMOGLYPH"):
+            # Homoglyph attack - the reason already contains the full warning
+            title = "⚠️ HOMOGLYPH ATTACK DETECTED"
+            text = f"{credential_type} -> {host}{path}\n{reason}"
         else:
             title = f"{credential_type.title()} Needs Approval"
             text = f"{credential_type} -> {host}{path}\nReason: {reason}"

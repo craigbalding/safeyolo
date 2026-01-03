@@ -516,6 +516,27 @@ class TestPathMatching:
         # Fullwidth solidus -> regular slash
         assert path_matches_pattern("/v1／chat", "/v1/chat") is True
 
+    def test_homoglyph_detection(self):
+        """Test mixed-script homoglyph attack detection."""
+        from addons.credential_guard import detect_homoglyph_attack, HOMOGLYPH_DETECTION_ENABLED
+
+        if not HOMOGLYPH_DETECTION_ENABLED:
+            pytest.skip("confusable-homoglyphs not installed")
+
+        # Safe: pure Latin
+        assert detect_homoglyph_attack("api.openai.com") is None
+        assert detect_homoglyph_attack("/v1/chat/completions") is None
+
+        # Dangerous: Cyrillic mixed with Latin
+        result = detect_homoglyph_attack("аpi.openai.com")  # Cyrillic а
+        assert result is not None
+        assert result["dangerous"] is True
+        assert "CYRILLIC" in result["message"]
+
+        result = detect_homoglyph_attack("/v1/сhat")  # Cyrillic с
+        assert result is not None
+        assert result["dangerous"] is True
+
 
 class TestDefaultPolicy:
     """Tests for DEFAULT_POLICY behavior (Phase 1.3)."""
