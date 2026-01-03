@@ -146,37 +146,41 @@ Core security addon. Ensures credentials only reach authorized hosts.
 
 **Default: Block mode**
 
-**~750 lines** - designed for easy security audit.
+**~760 lines** - designed for easy security audit.
 
 ### What It Does
 
-1. **Detects credentials** in HTTP headers using:
-   - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.)
-   - Entropy heuristics for unknown secrets (length, charset diversity, Shannon entropy)
+1. **Detects credentials** in HTTP headers
+2. **Validates destinations** against allowed hosts
+3. **Decides**: allow, warn, or block
+4. **Emits events** to JSONL for external processing
 
-2. **Validates destinations** against allowed hosts per credential type
+### Detection
 
-3. **Decides**: allow, block, or require approval
+**Standard auth headers** scanned by default:
+- `Authorization`, `X-API-Key`, `API-Key`, `X-Auth-Token`, `APIKey`
 
-4. **Emits events** to JSONL for external processing (CLI picks these up)
+**Tier 1 - Pattern matching (high confidence):**
+- Matches known credential patterns (OpenAI, Anthropic, GitHub)
+- Checks destination against allowed hosts for that credential type
 
-### Detection Tiers
+**Tier 2 - Entropy heuristics (medium confidence):**
+- For auth headers that don't match known patterns
+- Triggered when: length ≥20, charset diversity ≥0.5, Shannon entropy ≥3.5
+- Results in "unknown_secret" requiring approval
 
-**Tier 1 (high confidence):** Standard auth headers (`Authorization`, `X-API-Key`)
-- Pattern matching against known credential types
-- Destination validation against allowed hosts
-
-**Tier 2 (medium confidence):** All other headers
-- Entropy heuristics: length ≥20, charset diversity ≥0.5, Shannon entropy ≥3.5
-- Requires approval for unknown destinations
+**Detection levels** (via `config/credential_guard.yaml`):
+- `patterns-only` - Only Tier 1 pattern matching
+- `standard` (default) - Tier 1 + Tier 2 on auth headers
+- `paranoid` - Tier 1 + Tier 2 on all headers
 
 ### Decisions
 
-| Decision | Meaning | Response |
-|----------|---------|----------|
-| allow | Credential approved for this destination | Pass through |
-| block (destination_mismatch) | Known credential, wrong host | 428 |
-| block (requires_approval) | Unknown credential or destination | 428 |
+| Internal Decision | Log Decision | Response |
+|-------------------|--------------|----------|
+| allow | allow | Pass through |
+| greylist_mismatch | block/warn | 428 - known credential, wrong host |
+| greylist_approval | block/warn | 428 - unknown credential needs approval |
 
 ### Configuration
 
@@ -198,16 +202,34 @@ Core security addon. Ensures credentials only reach authorized hosts.
 }
 ```
 
+**Entropy settings:** `config/credential_guard.yaml`
+```yaml
+detection_level: standard  # patterns-only | standard | paranoid
+
+entropy:
+  min_length: 20
+  min_charset_diversity: 0.5
+  min_shannon_entropy: 3.5
+
+standard_auth_headers:
+  - authorization
+  - x-api-key
+  - api-key
+  - x-auth-token
+  - apikey
+```
+
 **Safe headers** (skipped in entropy analysis): `config/safe_headers.yaml`
 ```yaml
 safe_patterns:
   - "x-request-id"
   - "x-trace-id"
+  - "x-correlation-id"
 ```
 
 ### Response Format
 
-**428 Precondition Required:**
+**Destination mismatch (428):**
 ```json
 {
   "error": "Credential routing error",
@@ -215,25 +237,40 @@ safe_patterns:
   "credential_type": "openai",
   "destination": "httpbin.org",
   "expected_hosts": ["api.openai.com"],
+  "credential_fingerprint": "hmac:a1b2c3d4",
   "action": "self_correct",
-  "reflection": "You sent an API credential to the wrong destination."
+  "reflection": "You sent a openai credential to httpbin.org, but it should go to ['api.openai.com']. Please verify the URL."
+}
+```
+
+**Requires approval (428):**
+```json
+{
+  "error": "Credential requires approval",
+  "type": "requires_approval",
+  "credential_type": "unknown_secret",
+  "destination": "api.example.com",
+  "credential_fingerprint": "hmac:a1b2c3d4",
+  "reason": "unknown_credential",
+  "action": "wait_for_approval",
+  "reflection": "This credential requires human approval before use."
 }
 ```
 
 ### Approval Workflow
 
-Credential guard does NOT handle approvals directly. It emits events to JSONL, and the CLI handles the workflow:
+Credential guard emits events to JSONL. The CLI handles the interactive workflow:
 
-1. Credential blocked → event written to `logs/safeyolo.jsonl`
+1. Credential blocked → `security.credential` event with `decision: block`
 2. `safeyolo watch` displays the event
-3. User approves → CLI calls admin API
+3. User approves → CLI calls `POST /admin/policy/{project}/approve`
 4. Admin API writes to policy file
 5. PolicyStore file watcher reloads (within 1s)
-6. Subsequent requests pass through
+6. Subsequent requests with same fingerprint+host pass through
 
 ### Policy Files
 
-Approvals are stored in `data/policies/{project}.yaml`:
+Approvals stored in `data/policies/{project}.yaml`:
 ```yaml
 approved:
   - token_hmac: "a1b2c3d4..."
@@ -242,15 +279,34 @@ approved:
     added: "2025-01-03T14:30:00Z"
 ```
 
-**HMAC fingerprinting:** Credentials are never stored raw. HMAC-SHA256 fingerprints are used for matching.
+**Project isolation:** Requests are mapped to projects via Docker service discovery (container → `com.docker.compose.project` label). Host requests use "default" project.
+
+**HMAC fingerprinting:** Credentials are never stored raw. First 16 chars of HMAC-SHA256 used for matching.
+
+### Temp Allowlist
+
+For immediate one-off approvals (not persisted across restarts):
+
+```bash
+# Via admin API
+curl -X POST http://localhost:9090/plugins/credential-guard/allowlist \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"credential_prefix": "sk-abc", "host": "api.example.com", "ttl_seconds": 300}'
+```
 
 ### Options
 
 ```bash
---set credguard_block=true          # Block mode (default)
---set credguard_scan_urls=false     # Scan URL query params
---set credguard_scan_bodies=false   # Scan request bodies
+--set credguard_block=true          # Block mode (default: true)
+--set credguard_rules=/path/to.json # Rules file path
+--set credguard_scan_urls=false     # Scan URL query params (default: false)
+--set credguard_scan_bodies=false   # Scan request bodies (default: false)
+--set credguard_log_path=/path.jsonl # Separate log file (optional)
 ```
+
+### Additional Features
+
+**Homoglyph detection:** Detects mixed-script attacks like `api.оpenai.com` (Cyrillic 'о'). Requires `confusable-homoglyphs` package.
 
 ---
 
