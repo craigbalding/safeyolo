@@ -505,6 +505,17 @@ class TestPathMatching:
         assert path_matches_pattern("/v1/../v2/chat", "/v2/*") is True
         assert path_matches_pattern("/v1/./chat", "/v1/chat") is True
 
+    def test_path_unicode_normalized(self):
+        """Test NFKC Unicode normalization prevents homograph attacks."""
+        from addons.credential_guard import path_matches_pattern
+
+        # Fullwidth characters -> ASCII
+        assert path_matches_pattern("/ｖ１/chat", "/v1/*") is True
+        assert path_matches_pattern("/v1/ｃｈａｔ", "/v1/chat") is True
+
+        # Fullwidth solidus -> regular slash
+        assert path_matches_pattern("/v1／chat", "/v1/chat") is True
+
 
 class TestDefaultPolicy:
     """Tests for DEFAULT_POLICY behavior (Phase 1.3)."""

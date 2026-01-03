@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 import re
+import unicodedata
 from urllib.parse import urlparse
 
 from yarl import URL
@@ -100,15 +101,22 @@ def hmac_fingerprint(credential: str, secret: bytes) -> str:
 def normalize_path(path: str) -> str:
     """Normalize a URL path for consistent matching.
 
-    Uses yarl (RFC 3986 compliant) for:
+    Applies NFKC Unicode normalization first to prevent homograph attacks
+    (e.g., fullwidth '/ｖ１/chat' -> '/v1/chat').
+
+    Then uses yarl (RFC 3986 compliant) for:
     - Decoding percent-encoded characters (%2F -> /)
     - Resolving . and .. segments
     - Stripping query string and fragment
 
-    Then post-processes to:
+    Finally post-processes to:
     - Collapse double slashes (// -> /)
     - Strip trailing slash (except root /)
     """
+    # NFKC normalization: fullwidth -> ASCII, compatibility chars normalized
+    # Must happen BEFORE URL parsing to catch encoded homoglyphs
+    path = unicodedata.normalize("NFKC", path)
+
     # yarl handles: URL decoding, ../, ./, query string, fragment
     normalized = URL("http://x" + path).path
 
