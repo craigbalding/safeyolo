@@ -125,8 +125,8 @@ safeyolo watch
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Your Machine                            │
-│                                                              │
+│                      Your Machine                           │
+│                                                             │
 │  ┌────────────────┐       ┌───────────────────────────────┐ │
 │  │  safeyolo CLI  │       │  ./safeyolo/                  │ │
 │  │                │       │    config.yaml                │ │
@@ -134,13 +134,13 @@ safeyolo watch
 │  │  watch, logs   │       │    policies/                  │ │
 │  └───────┬────────┘       │    logs/safeyolo.jsonl        │ │
 │          │                └───────────────────────────────┘ │
-│          │                                                   │
-│          │ Manages container, tails logs                     │
-│          ▼                                                   │
+│          │                                                  │
+│          │ Manages container, tails logs                    │
+│          ▼                                                  │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │              SafeYolo Container                        │  │
-│  │                                                        │  │
-│  │  mitmproxy + addons:                                   │  │
+│  │              SafeYolo Container                       │  │
+│  │                                                       │  │
+│  │  mitmproxy + addons:                                  │  │
 │  │  ┌──────────────────────────────────────────────────┐ │  │
 │  │  │ credential_guard.py (~750 lines)                 │ │  │
 │  │  │ - Detect credentials (patterns + entropy)        │ │  │
@@ -148,18 +148,18 @@ safeyolo watch
 │  │  │ - Emit events to JSONL (CLI picks them up)       │ │  │
 │  │  │ - Return 428 for blocks (agent gets feedback)    │ │  │
 │  │  └──────────────────────────────────────────────────┘ │  │
-│  │                                                        │  │
+│  │                                                       │  │
 │  │  + rate_limiter, circuit_breaker, pattern_scanner,    │  │
 │  │    request_logger, metrics, admin_api                 │  │
-│  │                                                        │  │
-│  └────────────────────────┬───────────────────────────────┘  │
-│                           │                                   │
-│                           │ :8080 (proxy)                     │
-│                           ▼                                   │
-│  ┌───────────────────────────────────────────────────────┐   │
-│  │  AI Coding Agent (Claude Code, etc.)                  │   │
-│  │  HTTP_PROXY=http://localhost:8080                     │   │
-│  └───────────────────────────────────────────────────────┘   │
+│  │                                                       │  │
+│  └────────────────────────┬──────────────────────────────┘  │
+│                           │                                 │
+│                           │ :8080 (proxy)                   │
+│                           ▼                                 │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  AI Coding Agent (Claude Code, etc.)                  │  │
+│  │  HTTP_PROXY=http://localhost:8080                     │  │
+│  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 

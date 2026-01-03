@@ -13,6 +13,8 @@ Usage:
 
 import json
 import os
+import signal
+import sys
 import time
 
 import httpx
@@ -22,6 +24,15 @@ CALLBACK_TOPIC = os.getenv("NTFY_CALLBACK_TOPIC", "")
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh")
 ADMIN_URL = os.getenv("SAFEYOLO_ADMIN_URL", "http://localhost:9090")
 ADMIN_TOKEN = os.getenv("SAFEYOLO_ADMIN_TOKEN", "")
+
+# Limits
+MAX_BUFFER = 1024 * 1024  # 1MB - prevent memory issues from malformed stream
+
+
+def log(msg: str):
+    """Print with timestamp."""
+    ts = time.strftime("%H:%M:%S")
+    print(f"{ts} {msg}", flush=True)
 
 
 def parse_message(msg: str):
@@ -45,28 +56,39 @@ def parse_message(msg: str):
 def call_admin_api(fingerprint: str, host: str, project: str):
     """Add approval via admin API."""
     url = f"{ADMIN_URL}/admin/policy/{project}/approve"
-    resp = httpx.post(
-        url,
-        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
-        json={"token_hmac": fingerprint, "hosts": [host], "paths": ["/**"]},
-        timeout=10.0,
-    )
-    if resp.status_code == 200:
-        print(f"Approved: {fingerprint[:16]}... -> {host}")
-    else:
-        print(f"Failed: {resp.status_code} - {resp.text[:100]}")
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+            json={"token_hmac": fingerprint, "hosts": [host], "paths": ["/**"]},
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            log(f"Approved: {fingerprint[:16]}... -> {host}")
+        else:
+            log(f"API error: {resp.status_code} - {resp.text[:100]}")
+    except Exception as e:
+        log(f"API call failed: {type(e).__name__}: {e}")
 
 
 def listen():
     """Subscribe to ntfy and process messages."""
     url = f"{NTFY_SERVER}/{CALLBACK_TOPIC}/json"
-    print(f"Listening: {url}")
+    log(f"Connecting: {url}")
 
     with httpx.Client(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
         with client.stream("GET", url) as resp:
+            log(f"Connected (status {resp.status_code})")
             buffer = b""
+
             for chunk in resp.iter_raw():
                 buffer += chunk
+
+                # Prevent unbounded memory growth
+                if len(buffer) > MAX_BUFFER:
+                    log("Buffer overflow, resetting")
+                    buffer = b""
+                    continue
 
                 while b"\n" in buffer:
                     line, buffer = buffer.split(b"\n", 1)
@@ -86,30 +108,45 @@ def listen():
                     parsed = parse_message(msg)
 
                     if parsed:
-                        print(f"Received: {parsed['action']} {parsed['fingerprint'][:16]}...")
+                        log(f"Received: {parsed['action']} {parsed['fingerprint'][:16]}...")
                         if parsed["action"] == "approve":
                             call_admin_api(parsed["fingerprint"], parsed["host"], parsed["project"])
                         else:
-                            print(f"Denied: {parsed['fingerprint'][:16]}...")
+                            log(f"Denied (no action taken)")
 
 
 def main():
     if not CALLBACK_TOPIC:
         print("Set NTFY_CALLBACK_TOPIC environment variable")
-        return
+        sys.exit(1)
 
     if not ADMIN_TOKEN:
         print("Set SAFEYOLO_ADMIN_TOKEN environment variable")
-        return
+        sys.exit(1)
 
-    # Reconnect on failure
+    # Graceful shutdown
+    def shutdown(signum, frame):
+        log("Shutting down")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    log(f"Starting listener for topic: {CALLBACK_TOPIC}")
+
+    # Reconnect with exponential backoff
+    backoff = 5
+    max_backoff = 300  # 5 minutes
+
     while True:
         try:
             listen()
+            backoff = 5  # Reset on successful connection
         except Exception as e:
-            print(f"Connection error: {type(e).__name__}: {e}")
-            print("Reconnecting in 5s...")
-            time.sleep(5)
+            log(f"Connection error: {type(e).__name__}: {e}")
+            log(f"Reconnecting in {backoff}s...")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
 
 
 if __name__ == "__main__":
