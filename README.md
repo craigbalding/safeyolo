@@ -48,7 +48,7 @@ eval $(safeyolo cert env)
 # Your agent now goes through SafeYolo
 ```
 
-**Limitation:** Autonomous agents could bypass by unsetting proxy variables or opening direct sockets.
+**Limitation:** Agents can and will bypass the proxy once blocked - just as an eager intern might - by unsetting proxy variables or opening direct sockets. This is expected and not the intended deployment mode (use Secure Mode for that). Quick Mode is for evaluating SafeYolo UX, not for security research or properly constraining agents.
 
 ### Secure Mode (Enforced)
 
