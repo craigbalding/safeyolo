@@ -296,9 +296,8 @@ safeyolo mode credential-guard block
 SafeYolo is designed to reduce accidental outbound risk from helpful-but-sloppy (and sometimes persistent) agentic automation, not to defend against a determined adversary running arbitrary code.
 
 **SafeYolo catches:**
-- Hallucinated endpoints (`api.openai.com.attacker.io` instead of `api.openai.com`)
-- Credentials sent to unexpected / wrong hosts
-- Runaway API loops
+- Hallucinated endpoints (wrong host due to lost context: my-app.podhost.example → other-app.podhost.example)
+- Runaway agent loops that hammer 3rd party services
 - Lookalike domains and Unicode confusables (e.g., Cyrillic 'a' in `аpi.openai.com`)
 - Proxy bypass attempts (Sandbox Mode only - they fail rather than leak)
 
