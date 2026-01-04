@@ -5,12 +5,13 @@
 # All traffic is routed through SafeYolo proxy at {{ safeyolo_ip }}.
 
 services:
-  claude:
+  claudecode:
     image: node:22-slim
     stdin_open: true
     tty: true
     networks:
-      - {{ network_name }}
+      {{ network_name }}:
+        ipv4_address: {{ agent_ip }}
     volumes:
       # Your project directory
       - {{ project_dir }}:/workspace

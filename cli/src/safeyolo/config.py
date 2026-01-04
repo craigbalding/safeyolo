@@ -15,6 +15,51 @@ SAFEYOLO_INTERNAL_IP = "172.31.0.10"
 INTERNAL_SUBNET = "172.31.0.0/24"
 CERTS_VOLUME_NAME = "safeyolo-certs"
 
+# Agent IP allocation (starting from .20 to leave room for infrastructure)
+AGENT_IP_START = 20
+AGENT_IP_MAP = {
+    "claude-code": "172.31.0.20",
+    "openai-codex": "172.31.0.21",
+}
+
+
+def get_agent_ip(agent_name: str) -> str:
+    """Get static IP for an agent. Allocates new IPs for unknown agents."""
+    if agent_name in AGENT_IP_MAP:
+        return AGENT_IP_MAP[agent_name]
+    # For unknown agents, hash the name to get a consistent IP
+    offset = AGENT_IP_START + (hash(agent_name) % 200) + len(AGENT_IP_MAP)
+    return f"172.31.0.{offset}"
+
+
+def get_services_path() -> Path:
+    """Get path to services.yaml (in data dir, mounted to container)."""
+    return get_data_dir() / "services.yaml"
+
+
+def register_agent_service(agent_name: str, ip: str) -> None:
+    """Register an agent in services.yaml."""
+    services_path = get_services_path()
+    services_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load existing or create new
+    if services_path.exists():
+        with open(services_path) as f:
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+
+    if "services" not in config:
+        config["services"] = {}
+
+    config["services"][agent_name] = {
+        "ip": ip,
+        "project": agent_name,
+    }
+
+    with open(services_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+
 # Default config values
 DEFAULT_CONFIG = {
     "version": 1,
@@ -174,3 +219,5 @@ def ensure_directories() -> None:
     (config_dir / "certs").mkdir(exist_ok=True)
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
+
+

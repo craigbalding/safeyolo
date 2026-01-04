@@ -628,15 +628,15 @@ class CredentialGuard:
 
     def _get_project_id(self, flow: http.HTTPFlow) -> str:
         """Get project ID from service discovery."""
+        client_ip = flow.client_conn.peername[0] if flow.client_conn.peername else None
+        if not client_ip:
+            return "default"
+
         try:
             from .service_discovery import get_service_discovery
             sd = get_service_discovery()
             if sd:
-                client_ip = flow.client_conn.peername[0] if flow.client_conn.peername else None
-                if client_ip:
-                    service = sd.get_service_by_ip(client_ip)
-                    if service:
-                        return service.labels.get("com.docker.compose.project", service.container_name)
+                return sd.get_project_for_ip(client_ip)
         except Exception:
             pass
         return "default"

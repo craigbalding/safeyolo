@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..config import find_config_dir, get_agents_dir, load_config
+from ..config import find_config_dir, get_agent_ip, get_agents_dir, load_config, register_agent_service
 from ..docker import is_running, start as docker_start, wait_for_healthy
 from ..templates import TemplateError, get_available_templates, render_template
 
@@ -86,14 +86,20 @@ def add(
         console.print(f"[red]Template error:[/red] {err}")
         raise typer.Exit(1)
 
+    # Register agent in services.yaml for service discovery
+    agent_ip = get_agent_ip(template)
+    register_agent_service(template, agent_ip)
+
     # Show created files
     for filepath in files:
         console.print(f"  [green]Created[/green] {filepath}")
+    console.print(f"  [green]Registered[/green] {template} -> {agent_ip}")
 
     console.print(
         Panel(
             f"[green]Agent '{template}' added![/green]\n\n"
-            f"Directory: {agent_dir}\n\n"
+            f"Directory: {agent_dir}\n"
+            f"Static IP: {agent_ip}\n\n"
             f"Next steps:\n"
             f"  1. Copy [bold].env.example[/bold] to [bold].env[/bold]\n"
             f"  2. Add your API key to [bold].env[/bold]\n"

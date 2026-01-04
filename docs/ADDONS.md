@@ -69,19 +69,21 @@ domains:
 
 ## service_discovery.py
 
-Auto-discovers Docker containers on the internal network.
+Maps client IPs to projects for per-project credential policy isolation.
 
-**Use case:** Map requests to projects for per-project policy isolation.
+**Use case:** Different agents get different credential approval policies.
 
 **How it works:**
-- Queries Docker API for containers on `safeyolo-internal` network
-- Maps client IP to container to `com.docker.compose.project` label
-- Credential guard uses this to write project-specific policies
+- Reads `services.yaml` (static configuration, no Docker socket access)
+- CLI manages services.yaml when adding agents (`safeyolo agent add`)
+- Pro teams provide their own services.yaml with IP ranges
+- No Docker socket mount required
+
+**Setup:** See [SERVICE_DISCOVERY.md](SERVICE_DISCOVERY.md) for configuration.
 
 **Options:**
 ```bash
 --set discovery_network=safeyolo-internal
---set discovery_refresh_interval=30
 ```
 
 ---

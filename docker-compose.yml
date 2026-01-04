@@ -15,14 +15,14 @@ services:
   # SafeYolo Gateway (mitmproxy with native addons)
   # - Single chokepoint for ALL outbound internet traffic
   # - Native mitmproxy addons: credential_guard, request_logger, admin_api
-  # - Docker socket for service discovery (future)
+  # - Service discovery via sudoers (no socket mount needed)
   # ============================================================
   safeyolo:
     build:
       context: .
-      target: base  # Lightweight core addons (~200MB)
+      # target: base  # Lightweight core addons (~200MB)
       # target: extended  # Uncomment for ML + YARA (~700MB)
-      # target: dev       # Development with pytest
+      target: dev       # Development with pytest
     container_name: safeyolo
     restart: unless-stopped
     networks:
@@ -34,7 +34,6 @@ services:
       - "127.0.0.1:8888:8080"   # Proxy port (localhost only)
       - "127.0.0.1:9090:9090"   # Admin API (localhost only)
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - safeyolo-certs:/certs
       - ./data:/app/data
       - ./logs:/app/logs

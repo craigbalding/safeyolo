@@ -1,0 +1,23 @@
+# SafeYolo Static Service Registry
+#
+# Optional configuration for pro teams who don't use Docker discovery,
+# or as an override for specific IP ranges.
+#
+# Static rules are checked BEFORE Docker discovery.
+# Copy to ~/.safeyolo/services.yaml to enable.
+
+services:
+  # Example: Map an IP range to a project
+  backend-services:
+    ip_range: "10.0.1.0/24"
+    project: backend-team
+
+  # Example: Another team's subnet
+  ml-cluster:
+    ip_range: "10.0.2.0/24"
+    project: ml-team
+
+  # Example: Specific host
+  staging-api:
+    ip_range: "192.168.1.100/32"
+    project: staging
