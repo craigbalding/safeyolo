@@ -7,6 +7,7 @@
 services:
   claudecode:
     image: node:22-slim
+    user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"
     stdin_open: true
     tty: true
     networks:
@@ -17,8 +18,18 @@ services:
       - {{ project_dir }}:/workspace
       # SafeYolo CA cert for HTTPS inspection
       - {{ certs_volume }}:/certs:ro
+{% if has_claude_dir %}
+      # Claude Code config from host (personal prefs, session history)
+      - ${HOME}/.claude:/home/agent/.claude
+{% endif %}
+{% if has_claude_json %}
+      # Onboarding state (skips first-run setup wizard)
+      - ${HOME}/.claude.json:/home/agent/.claude.json
+{% endif %}
     working_dir: /workspace
     environment:
+      # Non-root user home directory
+      - HOME=/home/agent
       # Route all traffic through SafeYolo
       - HTTP_PROXY=http://{{ safeyolo_ip }}:8080
       - HTTPS_PROXY=http://{{ safeyolo_ip }}:8080
@@ -34,16 +45,29 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
+        # Create HOME for arbitrary UID (container runs as host user)
+        mkdir -p "$HOME" && chmod 700 "$HOME" || true
+
+        # npm global installs to HOME (not root-owned /usr/local)
+        npm config set prefix "$HOME/.npm-global"
+        export PATH="$HOME/.npm-global/bin:$PATH"
+
         # Install Claude Code if not present
         if ! command -v claude &> /dev/null; then
           echo "Installing Claude Code..."
           npm install -g @anthropic-ai/claude-code 2>/dev/null
         fi
-        # Install common dev tools
-        if ! command -v git &> /dev/null; then
+
+        # Record installed version for audit trail
+        CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
+        echo "SAFEYOLO_AGENT_VERSION agent=claude-code version=$CLAUDE_VERSION"
+
+        # Install common dev tools (requires root - skip if non-root)
+        if [ "$(id -u)" = "0" ] && ! command -v git &> /dev/null; then
           echo "Installing dev tools..."
           apt-get update && apt-get install -y git curl python3 python3-pip jq > /dev/null 2>&1
         fi
+
         echo ""
         echo "Ready. Run 'claude --dangerously-skip-permissions' to start."
         echo "(SafeYolo provides network isolation, so Claude's permission prompts are bypassed)"

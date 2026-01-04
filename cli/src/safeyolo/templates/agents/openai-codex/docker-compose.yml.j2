@@ -7,6 +7,7 @@
 services:
   openaicodex:
     image: node:22-slim
+    user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"
     stdin_open: true
     tty: true
     networks:
@@ -17,8 +18,16 @@ services:
       - {{ project_dir }}:/workspace
       # SafeYolo CA cert for HTTPS inspection
       - {{ certs_volume }}:/certs:ro
+{% if has_codex_dir %}
+      # Codex config from host (config.toml, AGENTS.md, sessions)
+      - ${HOME}/.codex:/home/agent/.codex
+{% endif %}
     working_dir: /workspace
     environment:
+      # Non-root user home directory
+      - HOME=/home/agent
+      # Codex config location (matches mounted path)
+      - CODEX_HOME=/home/agent/.codex
       # Route all traffic through SafeYolo
       - HTTP_PROXY=http://{{ safeyolo_ip }}:8080
       - HTTPS_PROXY=http://{{ safeyolo_ip }}:8080
@@ -34,16 +43,29 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
+        # Create HOME for arbitrary UID (container runs as host user)
+        mkdir -p "$HOME" && chmod 700 "$HOME" || true
+
+        # npm global installs to HOME (not root-owned /usr/local)
+        npm config set prefix "$HOME/.npm-global"
+        export PATH="$HOME/.npm-global/bin:$PATH"
+
         # Install Codex CLI if not present
         if ! command -v codex &> /dev/null; then
           echo "Installing OpenAI Codex CLI..."
           npm install -g @openai/codex 2>/dev/null
         fi
-        # Install common dev tools
-        if ! command -v git &> /dev/null; then
+
+        # Record installed version for audit trail
+        CODEX_VERSION=$(codex --version 2>/dev/null || echo "unknown")
+        echo "SAFEYOLO_AGENT_VERSION agent=openai-codex version=$CODEX_VERSION"
+
+        # Install common dev tools (requires root - skip if non-root)
+        if [ "$(id -u)" = "0" ] && ! command -v git &> /dev/null; then
           echo "Installing dev tools..."
           apt-get update && apt-get install -y git curl python3 python3-pip jq > /dev/null 2>&1
         fi
+
         echo ""
         echo "Ready. Run 'codex --sandbox danger-full-access' to start."
         echo "(SafeYolo provides network isolation, so Codex sandbox is disabled)"

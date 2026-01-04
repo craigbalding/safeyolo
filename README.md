@@ -88,7 +88,11 @@ safeyolo agent run claude-code  # Each agent gets isolated policy
 
 See `safeyolo agent list` for available templates.
 
-## What It Does
+**Authentication:** If you've already logged in on your host (via `claude` or `codex`), your credentials are mounted into the container automatically. Otherwise, you can choose how to authenticate following the agent providers first-run screen.
+
+## What SafeYolo Does
+
+Implements a policy layer to control agent network egress.  Features include:
 
 **Credential routing** - API keys only reach authorized hosts. An OpenAI key to `api.openai.com.attacker.io` (exfil attempt) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
 

@@ -1,5 +1,7 @@
 """Template management for agent configurations."""
 
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -10,6 +12,24 @@ from ..config import (
     SAFEYOLO_INTERNAL_IP,
     get_agent_ip,
 )
+
+
+@dataclass
+class HostConfigStatus:
+    """Status of host config file/directory detection."""
+    claude_dir: bool = False      # ~/.claude exists
+    claude_json: bool = False     # ~/.claude.json exists
+    codex_dir: bool = False       # ~/.codex exists
+
+
+def detect_host_config() -> HostConfigStatus:
+    """Detect which agent config files exist on the host."""
+    home = Path.home()
+    return HostConfigStatus(
+        claude_dir=(home / ".claude").is_dir(),
+        claude_json=(home / ".claude.json").is_file(),
+        codex_dir=(home / ".codex").is_dir(),
+    )
 
 
 class TemplateError(Exception):
@@ -40,6 +60,7 @@ def render_template(
     template_name: str,
     output_dir: Path,
     project_dir: str,
+    host_config: HostConfigStatus | None = None,
 ) -> list[Path]:
     """Render a template to the output directory.
 
@@ -47,6 +68,7 @@ def render_template(
         template_name: Name of template (e.g., 'claude-code')
         output_dir: Directory to write rendered files
         project_dir: Project directory to mount in agent container
+        host_config: Detected host config status (auto-detected if None)
 
     Returns:
         List of created file paths
@@ -63,6 +85,10 @@ def render_template(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Detect host config if not provided
+    if host_config is None:
+        host_config = detect_host_config()
+
     # Template variables
     agent_ip = get_agent_ip(template_name)
     variables = {
@@ -71,14 +97,23 @@ def render_template(
         "certs_volume": CERTS_VOLUME_NAME,
         "project_dir": project_dir,
         "agent_ip": agent_ip,
+        # Host config detection results
+        "has_claude_dir": host_config.claude_dir,
+        "has_claude_json": host_config.claude_json,
+        "has_codex_dir": host_config.codex_dir,
     }
+
+    # Generate .env file with host UID/GID for non-root execution
+    env_content = f"SAFEYOLO_UID={os.getuid()}\nSAFEYOLO_GID={os.getgid()}\n"
+    env_path = output_dir / ".env"
+    env_path.write_text(env_content)
 
     env = Environment(
         loader=FileSystemLoader(str(template_dir)),
         keep_trailing_newline=True,
     )
 
-    created_files = []
+    created_files = [env_path]
 
     for file_path in template_dir.iterdir():
         if file_path.name.startswith("_"):

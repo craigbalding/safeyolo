@@ -11,9 +11,38 @@ from rich.table import Table
 
 from ..config import find_config_dir, get_agent_ip, get_agents_dir, load_config, register_agent_service
 from ..docker import is_running, start as docker_start, wait_for_healthy
-from ..templates import TemplateError, get_available_templates, render_template
+from ..templates import TemplateError, HostConfigStatus, detect_host_config, get_available_templates, render_template
 
 console = Console()
+
+
+def _print_host_config_status(template: str, host_config: HostConfigStatus) -> None:
+    """Print detected host config status for the given template."""
+    home = Path.home()
+
+    console.print("\n[bold]Host config detection:[/bold]")
+
+    if template == "claude-code":
+        # Claude Code uses ~/.claude and ~/.claude.json
+        if host_config.claude_dir:
+            console.print(f"  [green]Found[/green] {home / '.claude'} (will mount)")
+        else:
+            console.print(f"  [yellow]Not found[/yellow] {home / '.claude'} (skipping mount)")
+
+        if host_config.claude_json:
+            console.print(f"  [green]Found[/green] {home / '.claude.json'} (will mount)")
+        else:
+            console.print(f"  [yellow]Not found[/yellow] {home / '.claude.json'} (skipping mount)")
+
+    elif template == "openai-codex":
+        # Codex uses ~/.codex
+        if host_config.codex_dir:
+            console.print(f"  [green]Found[/green] {home / '.codex'} (will mount)")
+        else:
+            console.print(f"  [yellow]Not found[/yellow] {home / '.codex'} (skipping mount)")
+
+    console.print()
+
 
 agent_app = typer.Typer(
     name="agent",
@@ -75,12 +104,17 @@ def add(
     # Determine project directory
     project_dir = project if project else str(Path.cwd())
 
+    # Detect host agent config files
+    host_config = detect_host_config()
+    _print_host_config_status(template, host_config)
+
     # Render template
     try:
         files = render_template(
             template_name=template,
             output_dir=agent_dir,
             project_dir=project_dir,
+            host_config=host_config,
         )
     except TemplateError as err:
         console.print(f"[red]Template error:[/red] {err}")
@@ -101,9 +135,8 @@ def add(
             f"Directory: {agent_dir}\n"
             f"Static IP: {agent_ip}\n\n"
             f"Next steps:\n"
-            f"  1. Copy [bold].env.example[/bold] to [bold].env[/bold]\n"
-            f"  2. Add your API key to [bold].env[/bold]\n"
-            f"  3. Run: [bold]safeyolo agent run {template}[/bold]",
+            f"  1. Add your API key to [bold]{agent_dir}/.env[/bold]\n"
+            f"  2. Run: [bold]safeyolo agent run {template}[/bold]",
             title="Success",
         )
     )
@@ -180,14 +213,19 @@ def run(
         console.print(f"Run [bold]safeyolo agent add {name}[/bold] first.")
         raise typer.Exit(1)
 
-    # Check .env file exists
+    # Check .env file has API key (not just UID/GID)
     env_file = agent_dir / ".env"
     if not env_file.exists():
         console.print(
             f"[yellow]Warning: No .env file found.[/yellow]\n"
-            f"Copy [bold]{agent_dir}/.env.example[/bold] to [bold].env[/bold] "
-            f"and add your API key.\n"
+            f"Run [bold]safeyolo agent add {name}[/bold] to regenerate.\n"
         )
+    else:
+        env_content = env_file.read_text()
+        if "API_KEY" not in env_content and "ANTHROPIC" not in env_content and "OPENAI" not in env_content:
+            console.print(
+                f"[yellow]Reminder: Add your API key to {env_file}[/yellow]\n"
+            )
 
     # Check SafeYolo is running
     if not is_running():
