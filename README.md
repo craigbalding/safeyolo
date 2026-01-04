@@ -5,10 +5,10 @@ Because your agent is helpful, fast… and occasionally over-enthusiastic on the
 
 SafeYolo is an **egress control plane** for AI coding agents: it sits between your agent and the internet, enforcing **per-agent policies** and producing an **audit trail** of outbound HTTP(S) calls.
 
-It’s built for the uncomfortable reality that agents can be *resourceful*: if a tool hallucinates an endpoint, follows a prompt-injection breadcrumb, or simply “tries something,” SafeYolo helps keep that enthusiasm **on-policy**.
+It’s built for the uncomfortable reality that agents can be too *resourceful* sometimes: if an agent hallucinates an API endpoint and leaks your key, or simply “tries something” that would harm your IP reputation (or overwhelm someone elses service), SafeYolo helps keep that enthusiasm **on-policy**.
 
 ### What you get
-- **Controlled egress (allowlist-first):** keys and sensitive requests only reach approved hosts.
+- **Controlled egress:** place limits on where your agent can wander and ensure your API keys in HTTP requests only reach approved hosts.
 - **Evidence by default:** JSONL logs with decisions + correlation (useful for reviews, audits, and “what happened?” moments).
 - **Two ways to run it:** a fast “try it” mode, and an enforced mode where bypass attempts fail.
 
@@ -65,7 +65,11 @@ eval $(safeyolo cert env)
 
 ### Sandbox Mode (Enforced)
 
-For autonomous agents that might try to bypass the proxy, Sandbox Mode runs your agent in a container with no direct internet access:
+In **Sandbox Mode**, SafeYolo runs your coding agent in an **unprivileged container** with **no direct internet access**. The only outbound path is through the **SafeYolo proxy container**, where outbound HTTP(S) traffic is **inspected, controlled, and logged**.
+
+This materially reduces host + network risk while keeping the workflow smooth — you get guardrails and evidence without turning every request into a permission-prompt-fest.
+
+Install SafeYolo on your laptop — or run it on a home server / VPS for an always-on “agent box” you can connect to remotely:
 
 ```bash
 # Generate agent container template
