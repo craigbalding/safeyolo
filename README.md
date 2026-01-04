@@ -5,7 +5,7 @@ Because your agent is helpful, fast… and occasionally over-enthusiastic on the
 
 SafeYolo is an **egress control plane** for AI coding agents: it sits between your agent and the internet, enforcing **per-agent policies** and producing an **audit trail** of outbound HTTP(S) calls.
 
-It’s built for the uncomfortable reality that agents can be too *resourceful* sometimes: if an agent hallucinates an API endpoint and leaks your key, or simply “tries something” that would harm your IP reputation (or overwhelm someone elses service), SafeYolo helps keep that enthusiasm **on-policy**.
+It’s built for the uncomfortable reality that agents can be too *resourceful* sometimes: if an agent hallucinates an API endpoint and leaks your key, or simply “tries something” that would harm your IP reputation (or overwhelm someone else's service), SafeYolo helps keep that enthusiasm **on-policy**.
 
 ### What you get
 - **Controlled egress:** place limits on where your agent can wander and ensure your API keys in HTTP requests only reach approved hosts.
@@ -41,7 +41,7 @@ claude
 
 That's it. SafeYolo is now inspecting all HTTPS traffic from your shell session.
 
-## Who It's For
+## Profiles
 
 | Profile | Setup | Typical use |
 |---------|-------|-------------|
@@ -55,7 +55,7 @@ Both profiles support single or multiple agents with per-agent policies.
 | Mode | Enforcement | Use case |
 |------|-------------|----------|
 | **Try Mode** (default) | Per-process - agents can bypass | Fast proxy setup; bypassable |
-| **Sandbox Mode** | Enforced - bypass attempts fail | Container network isolation; bypass attempts fail |
+| **Sandbox Mode** | Enforced - bypass attempts fail | Container network isolation; proxy is the only egress path |
 
 ### Try Mode (Default)
 
@@ -67,7 +67,7 @@ eval $(safeyolo cert env)
 # Your agent now goes through SafeYolo
 ```
 
-**Limitation:** In **Try Mode** agents can and will bypass the proxy once blocked - just as an eager intern might - by unsetting proxy variables or opening direct sockets. This is expected and not the intended deployment mode (use Sandbox Mode for that). Try Mode is for evaluating SafeYolo UX, not for security research or properly constraining agents.
+**Limitation:** In **Try Mode** agents may bypass the proxy in response to getting blocked - just as an eager intern might - by unsetting proxy variables or opening direct sockets. This is expected and not the intended deployment mode (use Sandbox Mode for that). Try Mode is for evaluating SafeYolo UX, not for security research or properly constraining agents.
 
 ### Sandbox Mode (Enforced)
 
@@ -98,7 +98,7 @@ safeyolo agent run claude-code  # Each agent gets isolated policy
 
 See `safeyolo agent list` for available templates.
 
-**Authentication:** If you've already logged in on your host (via `claude` or `codex`), your credentials are mounted into the container automatically. Otherwise, you can choose how to authenticate following the agent providers first-run screen.
+**Authentication:** If you've already logged into your coding agent from your host (via `claude` or `codex`), your credentials are mounted into the container automatically. Otherwise, when the containerized agent starts up, you can choose how to authenticate following the agent providers first-run screen.
 
 ## What SafeYolo Does
 
