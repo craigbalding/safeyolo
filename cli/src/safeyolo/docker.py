@@ -132,6 +132,8 @@ services:
     compose += """    environment:
       - SAFEYOLO_BLOCK=true
     restart: unless-stopped
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s
@@ -197,6 +199,8 @@ services:
     compose += f"""    environment:
       - SAFEYOLO_BLOCK=true
     restart: unless-stopped
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s
