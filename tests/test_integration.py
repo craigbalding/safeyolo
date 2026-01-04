@@ -23,22 +23,45 @@ class TestAddonChainMetadata:
         assert flow.metadata.get("blocked_by") == "credential-guard"
         assert flow.metadata.get("credential_fingerprint") is not None
 
-    def test_rate_limiter_sets_blocked_by(self, rate_limiter, make_flow):
+    def test_rate_limiter_sets_blocked_by(self, rate_limiter, make_flow, tmp_path):
         """Test that rate_limiter sets blocked_by metadata."""
-        rate_limiter._default_config.requests_per_second = 100.0
-        rate_limiter._default_config.burst_capacity = 1  # burst=1 means 2 allowed
+        from addons.policy_engine import init_policy_engine
+        import addons.policy_engine as pe
 
-        # Exhaust limit (2 requests)
-        flow1 = make_flow(url="http://test.com/api")
-        rate_limiter.request(flow1)
-        flow2 = make_flow(url="http://test.com/api")
-        rate_limiter.request(flow2)
+        # Save and restore engine
+        old_engine = pe._policy_engine
 
-        # Get blocked on 3rd
-        flow3 = make_flow(url="http://test.com/api")
-        rate_limiter.request(flow3)
+        # Create baseline with low budget for test.com
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "test.com/*"
+    effect: budget
+    budget: 2
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
 
-        assert flow3.metadata.get("blocked_by") == "rate-limiter"
+        try:
+            # Exhaust budget (2 requests allowed)
+            flow1 = make_flow(url="http://test.com/api")
+            rate_limiter.request(flow1)
+            flow2 = make_flow(url="http://test.com/api")
+            rate_limiter.request(flow2)
+
+            # Get blocked on 3rd
+            flow3 = make_flow(url="http://test.com/api")
+            rate_limiter.request(flow3)
+
+            assert flow3.metadata.get("blocked_by") == "rate-limiter"
+        finally:
+            pe._policy_engine = old_engine
 
     def test_circuit_breaker_sets_blocked_by(self, circuit_breaker, make_flow):
         """Test that circuit_breaker sets blocked_by metadata."""
@@ -65,29 +88,51 @@ class TestAddonChainMetadata:
 class TestAddonChainOrder:
     """Tests for addon execution order semantics."""
 
-    def test_first_blocker_wins(self, credential_guard, rate_limiter, make_flow):
+    def test_first_blocker_wins(self, credential_guard, rate_limiter, make_flow, tmp_path):
         """Test that first addon to block sets response."""
-        # Set up rate limiter to block (burst=1 means 2 allowed)
-        rate_limiter._default_config.requests_per_second = 100.0
-        rate_limiter._default_config.burst_capacity = 1
+        from addons.policy_engine import init_policy_engine
+        import addons.policy_engine as pe
 
-        # Exhaust rate limit (2 requests)
-        flow1 = make_flow(url="http://evil.com/api")
-        rate_limiter.request(flow1)
-        flow2 = make_flow(url="http://evil.com/api")
-        rate_limiter.request(flow2)
+        # Save and restore engine
+        old_engine = pe._policy_engine
 
-        # Create flow that would be blocked by both addons
-        flow = make_flow(
-            method="POST",
-            url="https://evil.com/api",
-            headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
-        )
+        # Create baseline with low budget for evil.com
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "evil.com/*"
+    effect: budget
+    budget: 2
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
 
-        # If rate_limiter runs first (as in production chain)
-        rate_limiter.request(flow)
-        assert flow.response is not None
-        assert flow.metadata.get("blocked_by") == "rate-limiter"
+        try:
+            # Exhaust rate limit (2 requests allowed)
+            flow1 = make_flow(url="http://evil.com/api")
+            rate_limiter.request(flow1)
+            flow2 = make_flow(url="http://evil.com/api")
+            rate_limiter.request(flow2)
+
+            # Create flow that would be blocked by both addons
+            flow = make_flow(
+                method="POST",
+                url="https://evil.com/api",
+                headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
+            )
+
+            # If rate_limiter runs first (as in production chain)
+            rate_limiter.request(flow)
+            assert flow.response is not None
+            assert flow.metadata.get("blocked_by") == "rate-limiter"
+        finally:
+            pe._policy_engine = old_engine
 
 
 class TestRealisticScenarios:
@@ -199,31 +244,55 @@ class TestEdgeCases:
 class TestBlockingMode:
     """Tests for blocking vs warn-only mode across security addons."""
 
-    def test_credential_guard_warn_mode_passes_request(self, make_flow):
+    def test_credential_guard_warn_mode_passes_request(self, make_flow, tmp_path):
         """Test credential_guard in warn mode allows request through."""
         from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from addons.policy_engine import init_policy_engine
         from mitmproxy.test import taddons
+        import addons.policy_engine as pe
 
-        guard = CredentialGuard()
-        guard.rules = list(DEFAULT_RULES)
-        guard.hmac_secret = b"test-secret"
-        guard.config = {}
-        guard.safe_headers_config = {}
+        # Save and restore engine
+        old_engine = pe._policy_engine
 
-        with taddons.context(guard) as tctx:
-            tctx.options.credguard_block = False  # Warn-only mode
+        # Create minimal baseline for test
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
 
-            flow = make_flow(
-                method="POST",
-                url="https://evil.com/api",
-                headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
-            )
+        try:
+            guard = CredentialGuard()
+            guard.rules = list(DEFAULT_RULES)
+            guard.hmac_secret = b"test-secret"
+            guard.config = {}
+            guard.safe_headers_config = {}
 
-            guard.request(flow)
+            with taddons.context(guard) as tctx:
+                tctx.options.credguard_block = False  # Warn-only mode
 
-            # Warn-only: no response set, request continues
-            assert flow.response is None
-            assert guard.violations_total == 1
+                flow = make_flow(
+                    method="POST",
+                    url="https://evil.com/api",
+                    headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
+                )
+
+                guard.request(flow)
+
+                # Warn-only: no response set, request continues
+                assert flow.response is None
+                assert guard.violations_total == 1
+        finally:
+            pe._policy_engine = old_engine
 
     def test_default_is_block_mode(self):
         """Test that default behavior is block mode."""
