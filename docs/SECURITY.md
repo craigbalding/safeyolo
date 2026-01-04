@@ -62,10 +62,10 @@ SafeYolo is security software. This document outlines our security principles an
 An intern might email the wrong client, cc the wrong list, or paste credentials into a public Slack channel. Not malicious, just moving fast without the experience to know what can go wrong. AI agents have the same failure mode: hallucinating an endpoint, confusing `api.openai.com` with `api.openai.com.example.io`, or helpfully sending your GitHub token to a diagnostics endpoint.
 
 **In practice:**
-- Secure Mode enforces network isolation because agents will find creative ways around process-level controls - not to bypass you, but because they're problem-solving
+- Sandbox Mode enforces network isolation because agents will find creative ways around process-level controls - not to bypass you, but because they're problem-solving
 - HTTP 428 responses are machine-readable so agents can self-correct ("oh, wrong endpoint") without human intervention for obvious mistakes
 - Humans approve policy changes because "are you sure?" only works if someone experienced is asking
-- Quick Mode bypass is documented, not hidden - know your intern's access level
+- Try Mode bypass is documented, not hidden - know your intern's access level
 
 ### 7. Audit Everything
 
@@ -107,7 +107,7 @@ We're explicit about what SafeYolo does NOT protect against:
 
 | Limitation | Status | Notes |
 |------------|--------|-------|
-| **Quick Mode bypass** | By design | Agents can unset proxy vars or open direct sockets. Use Secure Mode for autonomous agents. |
+| **Try Mode bypass** | By design | Agents can unset proxy vars or open direct sockets. Use Sandbox Mode for autonomous agents. |
 | **Credentials in URL query params** | Off by default | Enable with `--set credguard_scan_urls=true`. Performance tradeoff. |
 | **Credentials in request bodies** | Off by default | Enable with `--set credguard_scan_bodies=true`. Performance and false-positive tradeoff. |
 | **Credentials in URL path segments** | Not implemented | `/api/sk-proj-abc123/resource` - rare pattern, not currently scanned. |

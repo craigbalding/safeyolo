@@ -1,4 +1,4 @@
-# Claude Code (Secure Mode)
+# Claude Code (Sandbox Mode)
 
 This agent runs Claude Code with network isolation. All traffic goes through SafeYolo.
 

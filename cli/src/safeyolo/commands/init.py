@@ -207,7 +207,7 @@ def init(
     secure: bool = typer.Option(
         False,
         "--secure", "-s",
-        help="Enable Secure Mode with network isolation (recommended)",
+        help="Enable Sandbox Mode with network isolation (recommended)",
     ),
 ) -> None:
     """Initialize SafeYolo configuration.
@@ -215,13 +215,13 @@ def init(
     Creates configuration files for the SafeYolo security proxy. By default,
     runs an interactive wizard to select API providers.
 
-    Use --secure to enable Secure Mode, which creates a Docker network that
+    Use --secure to enable Sandbox Mode, which creates a Docker network that
     forces all agent traffic through SafeYolo (bypass attempts fail).
 
     Examples:
 
-        safeyolo init                    # Interactive setup (Quick Mode)
-        safeyolo init --secure           # Secure Mode with network isolation
+        safeyolo init                    # Interactive setup (Try Mode)
+        safeyolo init --secure           # Sandbox Mode with network isolation
         safeyolo init --no-interactive   # Use defaults
         safeyolo init -p openai,anthropic  # Specify providers
     """
@@ -299,7 +299,7 @@ def init(
 
     # Summary
     provider_names = [API_PROVIDERS.get(p, {}).get("name", p) for p in selected_providers]
-    mode_label = "[bold green]Secure Mode[/bold green]" if secure else "Quick Mode"
+    mode_label = "[bold green]Sandbox Mode[/bold green]" if secure else "Try Mode"
 
     if secure:
         next_steps = (

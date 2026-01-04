@@ -48,12 +48,12 @@ Both profiles support single or multiple agents with per-agent policies.
 
 | Mode | Enforcement | Use case |
 |------|-------------|----------|
-| **Quick Mode** (default) | Per-process - agents can bypass | Trying out SafeYolo |
-| **Secure Mode** | Enforced - bypass attempts fail | Daily driver for constraining agent reach |
+| **Try Mode** (default) | Per-process - agents can bypass | Fast proxy setup; bypassable |
+| **Sandbox Mode** | Enforced - bypass attempts fail | Container network isolation; bypass attempts fail |
 
-### Quick Mode (Default)
+### Try Mode (Default)
 
-Quick Mode uses per-process environment variables to route traffic through SafeYolo. It's the fastest way to try things out:
+Try Mode uses per-process environment variables to route traffic through SafeYolo. It's the fastest way to try things out:
 
 ```bash
 safeyolo start
@@ -61,11 +61,11 @@ eval $(safeyolo cert env)
 # Your agent now goes through SafeYolo
 ```
 
-**Limitation:** In **Quick Mode** agents can and will bypass the proxy once blocked - just as an eager intern might - by unsetting proxy variables or opening direct sockets. This is expected and not the intended deployment mode (use Secure Mode for that). Quick Mode is for evaluating SafeYolo UX, not for security research or properly constraining agents.
+**Limitation:** In **Try Mode** agents can and will bypass the proxy once blocked - just as an eager intern might - by unsetting proxy variables or opening direct sockets. This is expected and not the intended deployment mode (use Sandbox Mode for that). Try Mode is for evaluating SafeYolo UX, not for security research or properly constraining agents.
 
-### Secure Mode (Enforced)
+### Sandbox Mode (Enforced)
 
-For autonomous agents that might try to bypass the proxy, Secure Mode runs your agent in a container with no direct internet access:
+For autonomous agents that might try to bypass the proxy, Sandbox Mode runs your agent in a container with no direct internet access:
 
 ```bash
 # Generate agent container template
@@ -288,12 +288,12 @@ safeyolo mode credential-guard block
 - Credentials sent to wrong hosts
 - Runaway API loops
 - Typosquats and homograph attacks (e.g., Cyrillic 'a' in `аpi.openai.com`)
-- Proxy bypass attempts (Secure Mode only - they fail instead of leak)
+- Proxy bypass attempts (Sandbox Mode only - they fail instead of leak)
 
 **SafeYolo does NOT:**
 - Detect prompt injection
 - Replace application-layer auth
-- Prevent non-proxied egress in Quick Mode (agents can bypass by going direct)
+- Prevent non-proxied egress in Try Mode (agents can bypass by going direct)
 
 ## Architecture
 

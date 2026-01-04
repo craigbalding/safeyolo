@@ -46,7 +46,7 @@ def _print_host_config_status(template: str, host_config: HostConfigStatus) -> N
 
 agent_app = typer.Typer(
     name="agent",
-    help="Manage AI agent containers for Secure Mode.",
+    help="Manage AI agent containers for Sandbox Mode.",
     no_args_is_help=True,
 )
 
@@ -89,7 +89,7 @@ def add(
     config = load_config()
     if not config.get("secure"):
         console.print(
-            "[yellow]Warning: SafeYolo is not in Secure Mode.[/yellow]\n"
+            "[yellow]Warning: SafeYolo is not in Sandbox Mode.[/yellow]\n"
             "Agent containers may be able to bypass the proxy.\n"
             "Run [bold]safeyolo init --secure[/bold] to enable network isolation.\n"
         )

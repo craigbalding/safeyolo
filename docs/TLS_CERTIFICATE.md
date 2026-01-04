@@ -62,9 +62,9 @@ These environment variables configure:
 3. **Reversible** - Close the terminal and trust is gone
 4. **Safe** - Can't accidentally leave CA installed
 
-## Docker Containers (Secure Mode)
+## Docker Containers (Sandbox Mode)
 
-For Secure Mode, SafeYolo automatically mounts the CA certificate into agent containers and sets the environment variables. The docker-compose templates handle this:
+For Sandbox Mode, SafeYolo automatically mounts the CA certificate into agent containers and sets the environment variables. The docker-compose templates handle this:
 
 ```yaml
 volumes:
@@ -121,7 +121,7 @@ The SafeYolo CA is:
 ### Best practices
 
 1. **Keep the private key secure** - Don't commit it, don't share it
-2. **Use Secure Mode for autonomous agents** - Prevents bypass attempts
+2. **Use Sandbox Mode for autonomous agents** - Prevents bypass attempts
 3. **Use per-process trust** - Avoid system-wide CA installation
 
 ## Troubleshooting

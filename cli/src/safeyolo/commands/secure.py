@@ -1,4 +1,4 @@
-"""Secure Mode commands."""
+"""Sandbox Mode commands."""
 
 from pathlib import Path
 
@@ -15,7 +15,7 @@ console = Console()
 
 secure_app = typer.Typer(
     name="secure",
-    help="Secure Mode - run agents in isolated containers.",
+    help="Sandbox Mode - run agents in isolated containers.",
     no_args_is_help=True,
 )
 
@@ -38,7 +38,7 @@ def setup(
         help="Overwrite existing files",
     ),
 ) -> None:
-    """Generate an agent container template for Secure Mode.
+    """Generate an agent container template for Sandbox Mode.
 
     Creates a docker-compose.yml configured to route all traffic through
     SafeYolo. The agent runs in an isolated container with no direct

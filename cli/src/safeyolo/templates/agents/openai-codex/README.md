@@ -1,4 +1,4 @@
-# OpenAI Codex (Secure Mode)
+# OpenAI Codex (Sandbox Mode)
 
 This agent runs OpenAI Codex CLI with network isolation. All traffic goes through SafeYolo.
 

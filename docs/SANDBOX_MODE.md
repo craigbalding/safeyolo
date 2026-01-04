@@ -1,12 +1,12 @@
-# Secure Mode
+# Sandbox Mode
 
-This guide explains how to deploy SafeYolo in **Secure Mode** where bypass is impossible - traffic either goes through the proxy or fails.
+This guide explains how to deploy SafeYolo in **Sandbox Mode** where bypass is impossible - traffic either goes through the proxy or fails.
 
-## Why Secure Mode?
+## Why Sandbox Mode?
 
-Many autonomous coding agents will retry failed calls by changing network configuration - unsetting proxy variables, opening direct sockets, or using hardcoded IPs. Secure Mode avoids "policy by suggestion" by removing direct internet routing entirely.
+Many autonomous coding agents will retry failed calls by changing network configuration - unsetting proxy variables, opening direct sockets, or using hardcoded IPs. Sandbox Mode avoids "policy by suggestion" by removing direct internet routing entirely.
 
-**Quick Mode** (per-process env vars) is fine for interactive use, but provides no enforcement against agents that bypass proxy settings.
+**Try Mode** (per-process env vars) is fine for interactive use, but provides no enforcement against agents that bypass proxy settings.
 
 ## Quick Start
 
@@ -114,13 +114,13 @@ curl --noproxy '*' https://httpbin.org/ip
 
 ## When to Use Each Mode
 
-**Use Secure Mode when:**
+**Use Sandbox Mode when:**
 - Running autonomous AI agents
 - Running untrusted or AI-generated code
 - You need audit logs of all egress
 - Credential protection must be enforced, not optional
 
-**Quick Mode is acceptable when:**
+**Try Mode is acceptable when:**
 - You control all code running in your shell
 - Best-effort logging is sufficient
 - Just testing SafeYolo functionality
