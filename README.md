@@ -22,6 +22,15 @@ claude
 
 That's it. SafeYolo is now inspecting all HTTPS traffic from your shell session.
 
+## Who It's For
+
+| Profile | Setup | Typical use |
+|---------|-------|-------------|
+| **Managed** | CLI handles everything | Solo devs, quick experimentation |
+| **Integrated** | Bring your own config | Teams with existing Docker/K8s infrastructure |
+
+Both profiles support single or multiple agents with per-agent policies.
+
 ## Deployment Modes
 
 | Mode | Enforcement | Use case |
@@ -56,7 +65,15 @@ docker compose run --rm claudecode
 
 The agent container connects to an internal Docker network where SafeYolo is the only route to the internet. Bypass attempts fail rather than leak.
 
-See `safeyolo secure list` for available agent templates.
+**Multi-agent:** Run multiple agents with separate policies:
+
+```bash
+safeyolo agent add claude-code
+safeyolo agent add openai-codex
+safeyolo agent run claude-code  # Each agent gets isolated policy
+```
+
+See `safeyolo agent list` for available templates.
 
 ## What It Does
 
@@ -70,6 +87,8 @@ See `safeyolo secure list` for available agent templates.
 
 **Audit trail** - Every request logged to JSONL with decision reasons and request correlation.
 
+For security principles, threat model, and vulnerability reporting, see [SECURITY.md](docs/SECURITY.md).
+
 ## CLI Commands
 
 | Command | Description |
@@ -79,8 +98,10 @@ See `safeyolo secure list` for available agent templates.
 | `safeyolo status` | Show health and stats |
 | `safeyolo cert env` | Print CA trust and proxy environment variables |
 | `safeyolo cert show` | Show CA cert location and fingerprint |
-| `safeyolo secure setup` | Generate agent container template (Secure Mode) |
-| `safeyolo secure list` | List available agent templates |
+| `safeyolo agent add <name>` | Add agent container (multi-agent setup) |
+| `safeyolo agent run <name>` | Run agent in isolated container |
+| `safeyolo agent list` | List available agent templates |
+| `safeyolo setup check` | Verify Docker access and prerequisites |
 | `safeyolo init` | Setup wizard (for customization) |
 | `safeyolo check` | Verify setup, proxy, and HTTPS working |
 | `safeyolo watch` | Monitor and approve credentials |
@@ -91,40 +112,35 @@ See `safeyolo secure list` for available agent templates.
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
+                    ┌─────────────────────┐
+                    │      Internet       │
+                    │  api.openai.com     │
+                    │  api.anthropic.com  │
+                    │  github.com         │
+                    └──────────▲──────────┘
+                               │
+┌──────────────────────────────┼──────────────────────────────┐
 │                      Your Machine                           │
-│                                                             │
-│  ┌────────────────┐       ┌───────────────────────────────┐ │
-│  │  safeyolo CLI  │       │  ~/.safeyolo/                 │ │
-│  │                │       │    config.yaml                │ │
-│  │  start, watch, │◄─────►│    rules.json                 │ │
-│  │  cert env      │       │    policies/                  │ │
-│  └───────┬────────┘       │    logs/safeyolo.jsonl        │ │
-│          │                └───────────────────────────────┘ │
-│          │                                                  │
-│          │ Manages container, tails logs                    │
-│          ▼                                                  │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │              SafeYolo Container                       │  │
-│  │                                                       │  │
-│  │  mitmproxy + addons:                                  │  │
-│  │  ┌──────────────────────────────────────────────────┐ │  │
-│  │  │ credential_guard.py                              │ │  │
-│  │  │ - Detect credentials (patterns + entropy)        │ │  │
-│  │  │ - Validate destinations (allowed hosts)          │ │  │
-│  │  │ - Return 428 for blocks (agent gets feedback)    │ │  │
-│  │  └──────────────────────────────────────────────────┘ │  │
-│  │                                                       │  │
-│  │  + rate_limiter, circuit_breaker, pattern_scanner,    │  │
-│  │    request_logger, metrics, admin_api                 │  │
-│  └────────────────────────┬──────────────────────────────┘  │
-│                           │                                 │
-│                           │ :8080 (proxy)                   │
-│                           ▼                                 │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  AI Coding Agent (Claude Code, etc.)                  │  │
-│  │  via eval $(safeyolo cert env)                        │  │
-│  └───────────────────────────────────────────────────────┘  │
+│                              │                              │
+│  ┌────────────────┐  ┌───────┴───────────────────────────┐  │
+│  │  safeyolo CLI  │  │      SafeYolo Container (:8080)   │  │
+│  │                │  │                                   │  │
+│  │  start, watch, │  │  credential_guard - wrong dest?   │  │
+│  │  cert env      │  │  rate_limiter     - too fast?     │  │
+│  │                │  │  pattern_scanner  - secrets?      │  │
+│  └───────┬────────┘  │  request_logger   - audit trail   │  │
+│          │           └───────────────────▲───────────────┘  │
+│          │ manages                       │                  │
+│          ▼                               │ all traffic      │
+│  ┌───────────────────────────────────────┼───────────────┐  │
+│  │  ~/.safeyolo/                         │               │  │
+│  │    config.yaml    ┌───────────────────┴────────────┐  │  │
+│  │    rules.json     │                                │  │  │
+│  │    policies/      │  ┌──────────┐  ┌──────────┐    │  │  │
+│  │    logs/          │  │  Claude  │  │  Codex   │ ...│  │  │
+│  │                   │  └──────────┘  └──────────┘    │  │  │
+│  │                   │         Agent Containers       │  │  │
+│  └───────────────────┴────────────────────────────────┴──┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
