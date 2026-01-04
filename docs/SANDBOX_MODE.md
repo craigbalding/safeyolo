@@ -15,7 +15,7 @@ Many autonomous coding agents will retry failed calls by changing network config
 safeyolo start
 
 # Generate agent container template
-safeyolo secure setup
+safeyolo sandbox setup
 
 # Run agent in isolated container
 cd claude-code
@@ -65,7 +65,7 @@ SafeYolo creates a Docker network marked `internal: true`:
 ## Available Templates
 
 ```bash
-safeyolo secure list
+safeyolo sandbox list
 ```
 
 | Template | Description |
@@ -75,7 +75,7 @@ safeyolo secure list
 
 ## Generated Files
 
-`safeyolo secure setup` creates:
+`safeyolo sandbox setup` creates:
 
 ```
 ./claude-code/

@@ -69,7 +69,7 @@ For autonomous agents that might try to bypass the proxy, Sandbox Mode runs your
 
 ```bash
 # Generate agent container template
-safeyolo secure setup
+safeyolo sandbox setup
 
 # Run agent in isolated container
 cd claude-code

@@ -13,14 +13,14 @@ from ..templates import TemplateError, get_available_templates, render_template
 
 console = Console()
 
-secure_app = typer.Typer(
-    name="secure",
+sandbox_app = typer.Typer(
+    name="sandbox",
     help="Sandbox Mode - run agents in isolated containers.",
     no_args_is_help=True,
 )
 
 
-@secure_app.command()
+@sandbox_app.command()
 def setup(
     template: str = typer.Option(
         "claude-code",
@@ -46,9 +46,9 @@ def setup(
 
     Examples:
 
-        safeyolo secure setup                    # Uses claude-code template
-        safeyolo secure setup -t openai-codex   # Uses Codex template
-        safeyolo secure setup -o ~/my-agent     # Custom output directory
+        safeyolo sandbox setup                    # Uses claude-code template
+        safeyolo sandbox setup -t openai-codex   # Uses Codex template
+        safeyolo sandbox setup -o ~/my-agent     # Custom output directory
     """
     # Determine output directory
     if output:
@@ -99,7 +99,7 @@ def setup(
     )
 
 
-@secure_app.command(name="list")
+@sandbox_app.command(name="list")
 def list_templates() -> None:
     """List available agent templates."""
     templates = get_available_templates()
@@ -116,4 +116,4 @@ def list_templates() -> None:
         table.add_row(name, description)
 
     console.print(table)
-    console.print("\nUse: [bold]safeyolo secure setup -t <name>[/bold]")
+    console.print("\nUse: [bold]safeyolo sandbox setup -t <name>[/bold]")

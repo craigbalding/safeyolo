@@ -82,16 +82,16 @@ def add(
     if not config_dir:
         console.print(
             "[red]No SafeYolo configuration found.[/red]\n"
-            "Run [bold]safeyolo init --secure[/bold] first."
+            "Run [bold]safeyolo init --sandbox[/bold] first."
         )
         raise typer.Exit(1)
 
     config = load_config()
-    if not config.get("secure"):
+    if not config.get("sandbox"):
         console.print(
             "[yellow]Warning: SafeYolo is not in Sandbox Mode.[/yellow]\n"
             "Agent containers may be able to bypass the proxy.\n"
-            "Run [bold]safeyolo init --secure[/bold] to enable network isolation.\n"
+            "Run [bold]safeyolo init --sandbox[/bold] to enable network isolation.\n"
         )
 
     # Create agent directory

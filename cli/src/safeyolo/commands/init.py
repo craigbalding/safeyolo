@@ -204,9 +204,9 @@ def init(
         "--providers", "-p",
         help="Comma-separated providers (openai,anthropic,github,google,aws)",
     ),
-    secure: bool = typer.Option(
+    sandbox: bool = typer.Option(
         False,
-        "--secure", "-s",
+        "--sandbox", "-s",
         help="Enable Sandbox Mode with network isolation (recommended)",
     ),
 ) -> None:
@@ -215,13 +215,13 @@ def init(
     Creates configuration files for the SafeYolo security proxy. By default,
     runs an interactive wizard to select API providers.
 
-    Use --secure to enable Sandbox Mode, which creates a Docker network that
+    Use --sandbox to enable Sandbox Mode, which creates a Docker network that
     forces all agent traffic through SafeYolo (bypass attempts fail).
 
     Examples:
 
         safeyolo init                    # Interactive setup (Try Mode)
-        safeyolo init --secure           # Sandbox Mode with network isolation
+        safeyolo init --sandbox          # Sandbox Mode with network isolation
         safeyolo init --no-interactive   # Use defaults
         safeyolo init -p openai,anthropic  # Specify providers
     """
@@ -284,7 +284,7 @@ def init(
 
     # Write config.yaml
     config = DEFAULT_CONFIG.copy()
-    config["secure"] = secure
+    config["sandbox"] = sandbox
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 
@@ -294,14 +294,14 @@ def init(
     console.print(f"  [green]Created[/green] {rules_path}")
 
     # Write docker-compose.yml
-    compose_path = write_compose_file(secure=secure)
+    compose_path = write_compose_file(sandbox=sandbox)
     console.print(f"  [green]Created[/green] {compose_path}")
 
     # Summary
     provider_names = [API_PROVIDERS.get(p, {}).get("name", p) for p in selected_providers]
-    mode_label = "[bold green]Sandbox Mode[/bold green]" if secure else "Try Mode"
+    mode_label = "[bold green]Sandbox Mode[/bold green]" if sandbox else "Try Mode"
 
-    if secure:
+    if sandbox:
         next_steps = (
             f"Next steps:\n"
             f"  1. Run: [bold]safeyolo start[/bold]\n"

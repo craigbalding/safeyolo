@@ -63,7 +63,7 @@ def register_agent_service(agent_name: str, ip: str) -> None:
 # Default config values
 DEFAULT_CONFIG = {
     "version": 1,
-    "secure": False,  # Secure mode with network isolation
+    "sandbox": False,  # Sandbox mode with network isolation
     "proxy": {
         "port": 8080,
         "admin_port": 9090,

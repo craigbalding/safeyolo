@@ -153,7 +153,7 @@ def start(
                 f"  eval $(safeyolo cert env)   [dim]# CA trust + proxy vars[/dim]\n"
                 f"  claude                      [dim]# Run your agent[/dim]\n\n"
                 f"For enforced protection (autonomous agents):\n"
-                f"  [bold]safeyolo secure setup[/bold]",
+                f"  [bold]safeyolo sandbox setup[/bold]",
                 title="Ready",
             )
         )

@@ -75,7 +75,7 @@ environment:
   - REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem
 ```
 
-Use `safeyolo secure setup` to generate properly configured templates.
+Use `safeyolo sandbox setup` to generate properly configured templates.
 
 ## Certificate Pinning
 

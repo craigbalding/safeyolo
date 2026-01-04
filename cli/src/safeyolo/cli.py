@@ -10,7 +10,7 @@ from .commands.cert import cert_app
 from .commands.init import init
 from .commands.lifecycle import start, status, stop
 from .commands.logs import logs
-from .commands.secure import secure_app
+from .commands.sandbox import sandbox_app
 from .commands.setup import setup_app
 from .commands.watch import watch
 
@@ -63,7 +63,7 @@ app.command()(test)
 # Register subcommand groups
 app.add_typer(agent_app, name="agent")
 app.add_typer(cert_app, name="cert")
-app.add_typer(secure_app, name="secure")
+app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(setup_app, name="setup")
 
 
