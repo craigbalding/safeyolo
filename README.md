@@ -1,8 +1,21 @@
 # SafeYolo
 
-**Guardrails for AI coding agents.**
+**Policy-based cyber hygiene for autonomous coding agents.**  
+Because your agent is helpful, fast… and occasionally over-enthusiastic on the internet.
 
-SafeYolo is a security proxy that prevents credential leakage, dampens runaway loops, and provides audit logs for agent HTTP calls. When your AI assistant hallucinates an endpoint, SafeYolo catches the credential before it leaks.
+SafeYolo is an **egress control plane** for AI coding agents: it sits between your agent and the internet, enforcing **per-agent policies** and producing an **audit trail** of outbound HTTP(S) calls.
+
+It’s built for the uncomfortable reality that agents can be *resourceful*: if a tool hallucinates an endpoint, follows a prompt-injection breadcrumb, or simply “tries something,” SafeYolo helps keep that enthusiasm **on-policy**.
+
+### What you get
+- **Controlled egress (allowlist-first):** keys and sensitive requests only reach approved hosts.
+- **Evidence by default:** JSONL logs with decisions + correlation (useful for reviews, audits, and “what happened?” moments).
+- **Two ways to run it:** a fast “try it” mode, and an enforced mode where bypass attempts fail.
+
+### Who SafeYolo is for
+- **Builders using agentic tools** who want **simple egress control** without slowing down shipping.
+- **Security pros and platform engineers** who want a **low-friction, defensible sandbox** to try agents safely.
+- **Teams heading into security reviews** (ISO 27001 / SOC 2 / enterprise procurement) who need **policy + enforcement + evidence** for agent governance.
 
 ## Quick Start
 
