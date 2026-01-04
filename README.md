@@ -17,7 +17,13 @@ It’s built for the uncomfortable reality that agents can be too *resourceful* 
 - **Security pros and platform engineers** who want a **low-friction, defensible sandbox** to try agents safely.
 - **Teams heading into security reviews** (ISO 27001 / SOC 2 / enterprise procurement) who need **policy + enforcement + evidence** for agent governance.
 
-## Quick Start
+## Status
+
+SafeYolo is **pre-v1** and currently undergoing breaking changes. The CLI and container image are **not published yet**, so the Quick Start commands below won’t work today.
+
+If you want to follow along (or be an early tester), star the repo and watch releases — v1 is the first “stable install” milestone.
+
+## Quick Start (v1 preview)
 
 ```bash
 # Install CLI
