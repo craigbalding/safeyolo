@@ -10,6 +10,10 @@
 # Verify chokepoint:
 #   docker compose run --rm claude sh -c 'curl --noproxy "*" -I https://example.com'
 #   # Expected: fails (no route)
+#
+# Network configuration (override in .env if needed):
+#   SAFEYOLO_IP=172.31.0.10
+#   INTERNAL_SUBNET=172.31.0.0/24
 
 services:
   safeyolo:
@@ -21,7 +25,7 @@ services:
     networks:
       chokepoint-internal:
         # Static IP for predictable proxy address
-        ipv4_address: 172.31.0.10
+        ipv4_address: ${SAFEYOLO_IP:-172.31.0.10}
       default:
         # Internet access (only safeyolo has this)
     ports:
@@ -52,10 +56,10 @@ services:
     working_dir: /workspace
     environment:
       # Route all traffic through SafeYolo
-      - HTTP_PROXY=http://172.31.0.10:8080
-      - HTTPS_PROXY=http://172.31.0.10:8080
-      - http_proxy=http://172.31.0.10:8080
-      - https_proxy=http://172.31.0.10:8080
+      - HTTP_PROXY=http://${SAFEYOLO_IP:-172.31.0.10}:8080
+      - HTTPS_PROXY=http://${SAFEYOLO_IP:-172.31.0.10}:8080
+      - http_proxy=http://${SAFEYOLO_IP:-172.31.0.10}:8080
+      - https_proxy=http://${SAFEYOLO_IP:-172.31.0.10}:8080
       - NO_PROXY=localhost,127.0.0.1
       # Trust SafeYolo CA (node:22-slim is Debian-based)
       - NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem
@@ -82,7 +86,7 @@ networks:
     internal: true  # <-- This is the key: no default gateway
     ipam:
       config:
-        - subnet: 172.31.0.0/24
+        - subnet: ${INTERNAL_SUBNET:-172.31.0.0/24}
 
   default:
     driver: bridge

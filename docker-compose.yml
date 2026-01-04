@@ -1,10 +1,20 @@
-# SafeYolo - Core Infrastructure
+# SafeYolo - Development Infrastructure
+#
+# FOR DEVELOPMENT ONLY. Uses 172.30.x subnet (different from CLI's 172.31.x).
+# For production, use the CLI: safeyolo init --secure
 #
 # Owns the internal network that all project containers join.
 # Provides: mitmproxy gateway, CC dev sidecar, service discovery
 #
 # Start first: docker compose up -d
 # Projects then join the safeyolo-internal network
+#
+# Network configuration (override in .env if needed):
+#   SAFEYOLO_IP=172.30.0.10
+#   INTERNAL_SUBNET=172.30.0.0/24
+#
+# For shell_mux integration (Claude Code command execution):
+#   See docker-compose.override.yml.example
 #
 # Networks:
 #   - safeyolo-internal: All containers (projects + CC) live here, no direct internet
@@ -27,7 +37,7 @@ services:
     restart: unless-stopped
     networks:
       safeyolo-internal:
-        ipv4_address: 172.30.0.10
+        ipv4_address: ${SAFEYOLO_IP:-172.30.0.10}
       default:
         # Internet access
     ports:
@@ -43,8 +53,6 @@ services:
       - ./scripts:/app/scripts
       - ./models:/app/models
       - ./tests:/app/tests
-      # Shell mux agent for claude-dev command execution (read-only)
-      - ../claude-dev/lib/container_agent.py:/opt/shell_mux/container_agent.py:ro
       # Runtime env (dynamically updatable)
       - ./.env:/app/.env
     command: ["/app/scripts/start-safeyolo.sh"]
@@ -53,15 +61,6 @@ services:
     environment:
       - PROXY_PORT=8080
       - ADMIN_PORT=9090
-      # OLLAMA_URL loaded from .env (dynamically updatable)
-      # Shell mux agent config
-      - CONTAINER_NAME=safeyolo
-      - MUX_HOST=172.30.0.20
-      - MUX_PORT=9000
-      - WORKDIR=/app
-      - PROXY_HOST=localhost
-      - PROXY_PORT=8080
-      - IDLE_TIMEOUT_MINUTES=30
 
 networks:
   # Internal network - all project containers join this
@@ -72,7 +71,7 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: ${INTERNAL_SUBNET:-172.30.0.0/24}
 
   # Default network - only SafeYolo uses this for internet
   default:
