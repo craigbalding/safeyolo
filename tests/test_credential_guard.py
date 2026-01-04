@@ -357,38 +357,6 @@ class TestCheckPolicyApproval:
         assert not check_policy_approval(credential, "api.example.com", "/v2/test", policy, secret)
 
 
-class TestPolicyStore:
-    """Tests for PolicyStore."""
-
-    def test_loads_yaml_policies(self):
-        from addons.credential_guard import PolicyStore
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            policy_dir = Path(tmpdir)
-            (policy_dir / "default.yaml").write_text("""
-approved:
-  - token_hmac: abc123
-    hosts: ["api.example.com"]
-    paths: ["/**"]
-""")
-
-            store = PolicyStore(policy_dir)
-            store.load_all()
-
-            policy = store.get_policy("default")
-            assert len(policy.get("approved", [])) == 1
-
-    def test_returns_empty_for_missing_project(self):
-        from addons.credential_guard import PolicyStore
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = PolicyStore(Path(tmpdir))
-            store.load_all()
-
-            policy = store.get_policy("nonexistent")
-            assert policy == {}
-
-
 class TestResponseBuilders:
     """Tests for response building."""
 
@@ -536,7 +504,7 @@ class TestHomoglyphDetection:
 class TestBlockingMode:
     """Tests for blocking vs warn-only mode."""
 
-    def test_warn_mode_logs_but_does_not_block(self, make_flow):
+    def test_warn_mode_logs_but_does_not_block(self, make_flow, policy_engine_initialized):
         """Test that warn mode (block=False) logs violation but doesn't block."""
         from addons.credential_guard import CredentialGuard, DEFAULT_RULES
 
@@ -562,7 +530,7 @@ class TestBlockingMode:
         # But should still record the violation
         assert guard.violations_total == 1
 
-    def test_blocking_mode_blocks(self, make_flow):
+    def test_blocking_mode_blocks(self, make_flow, policy_engine_initialized):
         """Test that blocking mode (block=True) actually blocks."""
         from addons.credential_guard import CredentialGuard, DEFAULT_RULES
 

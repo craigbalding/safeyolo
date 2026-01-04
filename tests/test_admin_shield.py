@@ -29,6 +29,7 @@ class TestAdminShield:
         flow.request.port = 9090
         flow.client_conn.peername = ("172.30.0.100", 54321)
         flow.metadata = {}
+        flow.response = None  # Not blocked initially
         return flow
 
     def test_blocks_admin_port(self, shield, mock_flow):
@@ -55,7 +56,7 @@ class TestAdminShield:
             shield.request(mock_flow)
 
             # Should NOT have set a response
-            assert mock_flow.response is None or not hasattr(mock_flow, 'response')
+            assert mock_flow.response is None
 
     def test_blocks_extra_ports(self, shield, mock_flow):
         """Test that extra configured ports are also blocked."""

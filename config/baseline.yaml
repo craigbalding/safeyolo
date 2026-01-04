@@ -1,0 +1,379 @@
+# SafeYolo Baseline Policy
+#
+# Always-active default protections. Task policies extend this, cannot weaken it.
+# Uses IAM-style action/resource/effect vocabulary.
+#
+# Policy schema (destination-first for credential:use):
+#   - resource = destination pattern (the endpoint being protected)
+#   - condition.credential = what credentials can access it (type or HMAC)
+#
+# Policy layering:
+#   Layer 0: Invariants (hardcoded in code)
+#   Layer 1: Baseline (this file - always active)
+#   Layer 2: Task policy (optional, extends baseline)
+
+metadata:
+  version: "1.0"
+  description: "SafeYolo baseline policy - default protections"
+
+# =============================================================================
+# PERMISSIONS
+# =============================================================================
+# Each permission defines: action, resource, effect, and optional conditions.
+#
+# For credential:use:
+#   - resource = destination pattern (e.g., "api.openai.com/*")
+#   - condition.credential = allowed credential types/HMACs
+#
+# For network:request:
+#   - resource = destination pattern
+#   - effect = budget means rate limiting (requests per minute)
+
+permissions:
+  # ---------------------------------------------------------------------------
+  # Credential Permissions - Destination-first (what can access each endpoint)
+  # ---------------------------------------------------------------------------
+
+  # OpenAI endpoints accept OpenAI credentials
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["openai:*"]
+
+  # Anthropic endpoints accept Anthropic credentials
+  - action: credential:use
+    resource: "api.anthropic.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["anthropic:*"]
+
+  # GitHub endpoints accept GitHub credentials
+  - action: credential:use
+    resource: "api.github.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["github:*"]
+
+  - action: credential:use
+    resource: "github.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["github:*"]
+
+  # Unknown destinations require approval
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Network Request Budgets (Rate Limiting)
+  # ---------------------------------------------------------------------------
+  # Budget = requests per minute. GCRA algorithm for smooth limiting.
+
+  # High-volume LLM APIs
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: budget
+    budget: 3000  # 50 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "api.anthropic.com/*"
+    effect: budget
+    budget: 3000  # 50 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "openrouter.ai/*"
+    effect: budget
+    budget: 3000  # 50 rps
+    tier: explicit
+
+  # Apify / MCP
+  - action: network:request
+    resource: "api.apify.com/*"
+    effect: budget
+    budget: 1800  # 30 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "mcp.apify.com/*"
+    effect: budget
+    budget: 1800  # 30 rps
+    tier: explicit
+
+  # Telegram
+  - action: network:request
+    resource: "api.telegram.org/*"
+    effect: budget
+    budget: 1800  # 30 rps
+    tier: explicit
+
+  # Telemetry (high volume)
+  - action: network:request
+    resource: "statsig.anthropic.com/*"
+    effect: budget
+    budget: 12000  # 200 rps
+    tier: explicit
+
+  # Sentry
+  - action: network:request
+    resource: "*.sentry.io/*"
+    effect: budget
+    budget: 1200  # 20 rps
+    tier: explicit
+
+  # GitHub API (conservative)
+  - action: network:request
+    resource: "api.github.com/*"
+    effect: budget
+    budget: 300  # 5 rps
+    tier: explicit
+
+  # Google APIs
+  - action: network:request
+    resource: "*.googleapis.com/*"
+    effect: budget
+    budget: 120  # 2 rps
+    tier: explicit
+
+  # Package registries
+  - action: network:request
+    resource: "pypi.org/*"
+    effect: budget
+    budget: 180  # 3 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "registry.npmjs.org/*"
+    effect: budget
+    budget: 180  # 3 rps
+    tier: explicit
+
+  # Media sites (conservative)
+  - action: network:request
+    resource: "*.youtube.com/*"
+    effect: budget
+    budget: 12  # 0.2 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "*.googlevideo.com/*"
+    effect: budget
+    budget: 30  # 0.5 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "*.soundcloud.com/*"
+    effect: budget
+    budget: 30  # 0.5 rps
+    tier: explicit
+
+  # Podcast hosts (conservative)
+  - action: network:request
+    resource: "*.podbean.com/*"
+    effect: budget
+    budget: 60  # 1 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "*.libsyn.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.buzzsprout.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.anchor.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.spreaker.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.simplecast.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.transistor.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.captivate.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.megaphone.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.omnycontent.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.acast.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  # Ntfy notifications
+  - action: network:request
+    resource: "slim-horse.pikapod.net/*"
+    effect: budget
+    budget: 600  # 10 rps
+    tier: explicit
+
+  # Default rate limit for all other domains
+  - action: network:request
+    resource: "*"
+    effect: budget
+    budget: 600  # 10 rps default
+    tier: explicit
+
+# =============================================================================
+# GLOBAL BUDGETS
+# =============================================================================
+# Aggregate caps across all permissions
+
+budgets:
+  network:request: 12000  # Total requests per minute across all domains
+
+# =============================================================================
+# REQUIRED ADDONS
+# =============================================================================
+# These addons cannot be disabled by task policies
+
+required:
+  - credential_guard
+  - rate_limiter
+  - circuit_breaker
+
+# =============================================================================
+# ADDON CONFIGURATION
+# =============================================================================
+
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: standard  # patterns-only | standard | paranoid
+
+  rate_limiter:
+    enabled: true
+
+  circuit_breaker:
+    enabled: true
+
+  pattern_scanner:
+    enabled: true
+
+  yara_scanner:
+    enabled: true
+
+  prompt_injection:
+    enabled: false  # Requires classifier service
+
+  sse_streaming:
+    enabled: false  # Enabled per-domain below
+
+# =============================================================================
+# DOMAIN OVERRIDES
+# =============================================================================
+
+domains:
+  # SSE/streaming endpoints
+  "ntfy.sh":
+    addons:
+      sse_streaming:
+        enabled: true
+        stream_json: true
+
+  "mcp.apify.com":
+    addons:
+      sse_streaming:
+        enabled: true
+
+  # LLM APIs - enable injection detection if available
+  "api.openai.com":
+    addons:
+      prompt_injection:
+        enabled: true
+        mode: dual
+
+  "api.anthropic.com":
+    addons:
+      prompt_injection:
+        enabled: true
+        mode: dual
+
+  # Internal services - trust more
+  "*.internal":
+    bypass:
+      - yara_scanner
+      - pattern_scanner
+      - prompt_injection
+
+  # Telemetry - not LLM traffic
+  "statsig.anthropic.com":
+    bypass:
+      - prompt_injection
+
+  "*.datadoghq.com":
+    bypass:
+      - prompt_injection
+
+  "*.segment.io":
+    bypass:
+      - prompt_injection
+
+  # Package registries - skip heavy scanning
+  "pypi.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+  "registry.npmjs.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+# =============================================================================
+# CLIENT OVERRIDES
+# =============================================================================
+
+clients:
+  # Admin clients bypass pattern scanning
+  "admin-*":
+    bypass:
+      - pattern_scanner
+
+  # Test clients bypass rate limiting (for integration tests)
+  "test-*":
+    addons:
+      rate_limiter:
+        enabled: false

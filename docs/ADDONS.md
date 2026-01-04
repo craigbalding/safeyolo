@@ -7,9 +7,9 @@ Complete documentation for SafeYolo's mitmproxy addons.
 | Addon | Purpose | Default Mode |
 |-------|---------|--------------|
 | request_id | Request ID for event correlation | Always on |
-| policy | Per-domain addon configuration | Always on |
+| policy_engine | Unified policy evaluation and budgets | Always on |
 | service_discovery | Docker container discovery | Always on |
-| rate_limiter | Per-domain rate limiting | **Block** |
+| rate_limiter | Per-domain rate limiting (via PolicyEngine) | **Block** |
 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | credential_guard | Block credentials to wrong hosts | **Block** |
 | pattern_scanner | Regex scanning for secrets | Warn |
@@ -41,29 +41,89 @@ grep "req-abc123def456" logs/safeyolo.jsonl | jq
 
 ---
 
-## policy.py
+## policy_engine.py
 
-Per-domain addon configuration. Controls which addons run where.
+Unified policy engine using IAM-style vocabulary with **destination-first** credential routing. Handles credential authorization, rate limiting (budgets), and per-domain addon configuration.
 
-**Configuration:** `config/policy.yaml`
+**Configuration:** `config/baseline.yaml`
+
 ```yaml
-defaults:
-  addons:
-    rate_limiter: { enabled: true }
-    credential_guard: { enabled: true }
+metadata:
+  version: "1.0"
+  description: "SafeYolo baseline policy"
+
+permissions:
+  # Destination-first credential routing
+  # Resource = destination pattern, condition.credential = what can access it
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    condition:
+      credential: ["openai:*"]  # Type-based: any OpenAI key
+
+  - action: credential:use
+    resource: "api.anthropic.com/*"
+    effect: allow
+    condition:
+      credential: ["anthropic:*"]
+
+  # HMAC-based approval for specific credential
+  - action: credential:use
+    resource: "api.custom.com/*"
+    effect: allow
+    condition:
+      credential: ["hmac:a1b2c3d4"]  # Specific credential fingerprint
+
+  # Unknown destinations require approval
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+
+  # Rate limits (requests per minute)
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: budget
+    budget: 3000  # 50 rps
+
+budgets:
+  network:request: 12000  # Global cap
+
+required:
+  - credential_guard
+  - rate_limiter
+
+addons:
+  credential_guard: {enabled: true, detection_level: standard}
+  rate_limiter: {enabled: true}
 
 domains:
   "*.internal":
-    bypass: [pattern_scanner]
-
-  "pypi.org":
-    bypass: [credential_guard]
+    bypass: [pattern_scanner, yara_scanner]
 ```
 
+**Credential condition formats:**
+- `openai:*` - type-based matching (any credential of that type)
+- `hmac:a1b2c3d4` - HMAC-based matching (specific credential fingerprint)
+
+**Policy effects:**
+- `allow` - permit immediately
+- `deny` - block immediately
+- `prompt` - trigger human approval workflow
+- `budget` - allow up to N requests/minute, then deny
+
 **Features:**
-- Hot reload on file change
-- Wildcard domain patterns
-- Bypass lists per domain
+- Pydantic schema validation
+- Hot reload via file watching
+- GCRA-based budget tracking (smooth rate limiting)
+- Per-domain and per-client overrides
+- Thread-safe with RLock
+
+**How credential routing works (destination-first):**
+1. Credential detected in request (pattern matching → type, HMAC fingerprint)
+2. PolicyEngine finds permission matching destination (`resource` pattern)
+3. Checks if credential matches `condition.credential` (type or HMAC)
+4. If match found with `effect: allow` → permit
+5. If no match → fall through to catch-all (typically `effect: prompt`)
 
 ---
 
@@ -90,21 +150,34 @@ Maps client IPs to projects for per-project credential policy isolation.
 
 ## rate_limiter.py
 
-Per-domain rate limiting using GCRA algorithm.
+Per-domain rate limiting via PolicyEngine's GCRA-based budget tracking.
 
 **Default: Block mode**
 
 **Use case:** Prevent IP blacklisting when an LLM loops on API calls.
 
-**Configuration:** `config/rate_limits.json`
-```json
-{
-  "default": {"rps": 10, "burst": 30},
-  "domains": {
-    "api.openai.com": {"rps": 50, "burst": 100},
-    "api.anthropic.com": {"rps": 50, "burst": 100}
-  }
-}
+**Configuration:** Rate limits are defined in `baseline.yaml` as permissions with `effect: budget`:
+
+```yaml
+permissions:
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: budget
+    budget: 3000  # requests per minute (50 rps)
+
+  - action: network:request
+    resource: "api.anthropic.com/*"
+    effect: budget
+    budget: 3000
+
+  # Default for all other domains
+  - action: network:request
+    resource: "*"
+    effect: budget
+    budget: 600  # 10 rps
+
+budgets:
+  network:request: 12000  # Global cap across all domains
 ```
 
 **Response when limited (429):**
@@ -112,9 +185,17 @@ Per-domain rate limiting using GCRA algorithm.
 {
   "error": "Rate limited by proxy",
   "domain": "api.openai.com",
-  "retry_after_seconds": 2
+  "reason": "budget_exceeded",
+  "message": "Too many requests to api.openai.com. Please slow down."
 }
 ```
+
+**How it works:**
+1. Request comes in for domain
+2. RateLimiter calls `PolicyEngine.evaluate_request()`
+3. PolicyEngine finds matching `network:request` permission
+4. GCRA budget tracker checks if budget allows request
+5. If budget exhausted, returns 429 with Retry-After header
 
 ---
 
@@ -265,25 +346,43 @@ Credential guard emits events to JSONL. The CLI handles the interactive workflow
 
 1. Credential blocked → `security.credential` event with `decision: block`
 2. `safeyolo watch` displays the event
-3. User approves → CLI calls `POST /admin/policy/{project}/approve`
-4. Admin API writes to policy file
-5. PolicyStore file watcher reloads (within 1s)
-6. Subsequent requests with same fingerprint+host pass through
+3. User approves → CLI calls `POST /admin/policy/baseline/approve`
+4. Admin API adds permission to baseline policy (destination-first)
+5. PolicyEngine hot reloads (within 1s)
+6. Subsequent requests with matching credential to that destination pass through
 
-### Policy Files
+### Policy-Based Approvals (Destination-First)
 
-Approvals stored in `data/policies/{project}.yaml`:
+Approvals are stored as permissions in `baseline.yaml` using destination-first schema:
+
 ```yaml
-approved:
-  - token_hmac: "a1b2c3d4..."
-    hosts: ["api.example.com"]
-    paths: ["/**"]
-    added: "2025-01-03T14:30:00Z"
+permissions:
+  # Type-based: allow any custom-api credential to api.example.com
+  - action: credential:use
+    resource: "api.example.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["custom-api:*"]
+
+  # HMAC-based: allow specific credential to api.example.com
+  - action: credential:use
+    resource: "api.example.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["hmac:a1b2c3d4"]
 ```
 
-**Project isolation:** Requests are mapped to projects via Docker service discovery (container → `com.docker.compose.project` label). Host requests use "default" project.
+**Credential condition formats:**
+- Type-based (`openai:*`, `anthropic:*`, `custom:*`) - matches any credential of that type
+- HMAC-based (`hmac:a1b2c3d4`) - matches specific credential by fingerprint
 
-**HMAC fingerprinting:** Credentials are never stored raw. First 16 chars of HMAC-SHA256 used for matching.
+**When to use each:**
+- **Type-based:** When key rotation is expected (new keys auto-approved)
+- **HMAC-based:** When you want to approve only a specific credential (more secure for unknown types)
+
+**HMAC fingerprinting:** Credentials are never logged raw. First 16 chars of HMAC-SHA256 used for logging, policy matching, and temp allowlist.
 
 ### Temp Allowlist
 
@@ -410,10 +509,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | GET | `/modes` | Current addon modes |
 | PUT | `/modes` | Set all addon modes |
 | PUT | `/plugins/{addon}/mode` | Set specific addon mode |
-| GET | `/admin/policies` | List policy files |
-| GET | `/admin/policy/{project}` | Get project policy |
-| PUT | `/admin/policy/{project}` | Write project policy |
-| POST | `/admin/policy/{project}/approve` | Add approval rule |
+| GET | `/admin/policy/baseline` | Read baseline policy |
+| PUT | `/admin/policy/baseline` | Update baseline policy |
+| POST | `/admin/policy/baseline/approve` | Add credential permission |
+| GET | `/admin/policy/task/{id}` | Read task policy |
+| PUT | `/admin/policy/task/{id}` | Create/update task policy |
+| GET | `/admin/budgets` | Current budget usage |
+| POST | `/admin/budgets/reset` | Reset budget counters |
 | GET | `/plugins/credential-guard/allowlist` | List temp allowlist |
 | POST | `/plugins/credential-guard/allowlist` | Add temp allowlist entry |
 | DELETE | `/plugins/credential-guard/allowlist` | Clear temp allowlist |
@@ -437,18 +539,45 @@ curl -X PUT http://localhost:9090/modes \
   -d '{"mode": "block"}'
 ```
 
-### Adding Approvals
+### Adding Approvals (Destination-First)
 
 ```bash
-# Add approval rule (used by CLI)
-curl -X POST http://localhost:9090/admin/policy/default/approve \
+# Type-based approval: allow any custom-api credential to api.example.com
+curl -X POST http://localhost:9090/admin/policy/baseline/approve \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "token_hmac": "a1b2c3d4...",
-    "hosts": ["api.example.com"],
-    "paths": ["/**"]
+    "destination": "api.example.com",
+    "credential": "custom-api:*",
+    "tier": "explicit"
   }'
+
+# HMAC-based approval: allow specific credential to api.example.com
+curl -X POST http://localhost:9090/admin/policy/baseline/approve \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destination": "api.example.com",
+    "credential": "hmac:a1b2c3d4",
+    "tier": "explicit"
+  }'
+```
+
+### Budget Management
+
+```bash
+# View current budget usage
+curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/admin/budgets
+
+# Reset all budget counters
+curl -X POST http://localhost:9090/admin/budgets/reset \
+  -H "Authorization: Bearer $TOKEN"
+
+# Reset specific resource budget
+curl -X POST http://localhost:9090/admin/budgets/reset \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"resource": "api.openai.com"}'
 ```
 
 ### Temp Allowlist

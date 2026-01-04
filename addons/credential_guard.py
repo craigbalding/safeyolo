@@ -46,6 +46,11 @@ try:
 except ImportError:
     from utils import write_event
 
+try:
+    from .policy_engine import get_policy_engine, PolicyDecision
+except ImportError:
+    from policy_engine import get_policy_engine, PolicyDecision
+
 log = logging.getLogger("safeyolo.credential-guard")
 
 
@@ -246,6 +251,30 @@ DEFAULT_RULES = [
 ]
 
 
+def detect_credential_type(value: str, rules: list[CredentialRule] = None) -> Optional[str]:
+    """
+    Detect credential type from value using pattern matching.
+
+    This maps raw credential values to human-readable types for policy evaluation.
+    HMAC fingerprinting is still used for logging (never log raw credentials).
+
+    Args:
+        value: The credential value to analyze
+        rules: Optional list of rules (defaults to DEFAULT_RULES)
+
+    Returns:
+        Credential type name (e.g., "openai", "anthropic") or None if unknown
+    """
+    if rules is None:
+        rules = DEFAULT_RULES
+
+    for rule in rules:
+        if rule.matches(value):
+            return rule.name
+
+    return None
+
+
 # =============================================================================
 # Header Analysis
 # =============================================================================
@@ -389,6 +418,79 @@ def determine_decision(
     return "greylist_approval", {"reason": "unknown_credential"}
 
 
+def determine_decision_with_policy_engine(
+    credential: str,
+    rule_name: str,
+    host: str,
+    path: str,
+    rules: list[CredentialRule],
+    hmac_secret: bytes,
+) -> tuple[str, dict]:
+    """
+    Determine credential decision using PolicyEngine.
+
+    Uses the unified policy system for credential authorization.
+    Supports both type-based matching (e.g., "openai:*") and HMAC-based
+    matching (e.g., "hmac:a1b2c3d4") in policy conditions.
+
+    Args:
+        credential: Raw credential value
+        rule_name: Detected rule name (from pattern matching)
+        host: Target host
+        path: Request path
+        rules: Credential rules (for expected hosts in error messages)
+        hmac_secret: HMAC secret for fingerprinting
+
+    Returns:
+        (decision_type, context) where decision_type is:
+        - "allow": credential approved for destination
+        - "greylist_mismatch": known credential, wrong destination
+        - "greylist_approval": unknown credential, needs approval
+    """
+    policy_engine = get_policy_engine()
+
+    if policy_engine is None:
+        raise RuntimeError("PolicyEngine not initialized. Call init_policy_engine() first.")
+
+    # Detect credential type
+    credential_type = detect_credential_type(credential, rules)
+    if credential_type is None:
+        credential_type = "unknown"
+
+    # Calculate HMAC fingerprint for policy matching
+    fingerprint = hmac_fingerprint(credential, hmac_secret)
+
+    # Evaluate with PolicyEngine (destination-first matching)
+    decision = policy_engine.evaluate_credential(
+        credential_type=credential_type,
+        destination=host,
+        path=path,
+        credential_hmac=fingerprint,
+    )
+
+    # Map PolicyEngine decision to response format
+    if decision.effect == "allow":
+        return "allow", {}
+    elif decision.effect == "deny":
+        # Find expected hosts from rules for error message
+        expected_hosts = []
+        for rule in rules:
+            if rule.name == credential_type:
+                expected_hosts = rule.allowed_hosts
+                break
+        return "greylist_mismatch", {
+            "expected_hosts": expected_hosts,
+            "suggested_url": "",
+        }
+    elif decision.effect == "prompt":
+        return "greylist_approval", {"reason": "requires_approval"}
+    elif decision.effect == "budget_exceeded":
+        return "greylist_approval", {"reason": "budget_exceeded"}
+    else:
+        # Unknown effect - default to require approval
+        return "greylist_approval", {"reason": decision.reason or "unknown"}
+
+
 # =============================================================================
 # Response Builders
 # =============================================================================
@@ -447,76 +549,6 @@ def create_approval_response(
     return make_block_response(428, body, "credential-guard")
 
 
-# =============================================================================
-# Policy Store (Read-Only)
-# =============================================================================
-
-class PolicyStore:
-    """Read-only policy store with file watching."""
-
-    def __init__(self, policy_dir: Path):
-        self.policy_dir = policy_dir
-        self._lock = threading.RLock()
-        self._policies: dict[str, dict] = {}
-        self._mtimes: dict[str, float] = {}
-        self._watcher_thread = None
-        self._stop_event = threading.Event()
-
-    def load_all(self) -> None:
-        """Load all policy files."""
-        if not self.policy_dir.exists():
-            return
-
-        for path in self.policy_dir.glob("*.yaml"):
-            if not path.name.startswith("."):
-                self._reload(path.stem)
-
-        log.info(f"Loaded {len(self._policies)} policies from {self.policy_dir}")
-
-    def get_policy(self, project_id: str) -> dict:
-        """Get policy for project (empty dict if none)."""
-        with self._lock:
-            return self._policies.get(project_id, {})
-
-    def start_watcher(self) -> None:
-        """Start background file watcher."""
-        if self._watcher_thread:
-            return
-
-        def watch():
-            while not self._stop_event.is_set():
-                self._check_changes()
-                self._stop_event.wait(1.0)
-
-        self._watcher_thread = threading.Thread(target=watch, daemon=True)
-        self._watcher_thread.start()
-
-    def _check_changes(self) -> None:
-        """Check for file changes."""
-        if not self.policy_dir.exists():
-            return
-
-        for path in self.policy_dir.glob("*.yaml"):
-            if path.name.startswith("."):
-                continue
-            try:
-                mtime = path.stat().st_mtime
-                if mtime > self._mtimes.get(path.stem, 0):
-                    self._reload(path.stem)
-            except FileNotFoundError:
-                pass
-
-    def _reload(self, project_id: str) -> None:
-        """Reload a policy file."""
-        path = self.policy_dir / f"{project_id}.yaml"
-        try:
-            policy = yaml.safe_load(path.read_text()) or {}
-            with self._lock:
-                self._policies[project_id] = policy
-                self._mtimes[project_id] = path.stat().st_mtime
-            log.info(f"Loaded policy '{project_id}': {len(policy.get('approved', []))} rules")
-        except Exception as e:
-            log.error(f"Failed to load {path}: {type(e).__name__}: {e}")
 
 
 # =============================================================================
@@ -533,7 +565,6 @@ class CredentialGuard:
         self.config: dict = {}
         self.safe_headers_config: dict = {}
         self.hmac_secret: bytes = b""
-        self.policy_store: Optional[PolicyStore] = None
 
         # Temp allowlist for immediate approvals (token -> expiry)
         self.temp_allowlist: dict[tuple[str, str], float] = {}
@@ -565,12 +596,6 @@ class CredentialGuard:
         self.config = load_yaml_config(config_dir / "credential_guard.yaml")
         self.safe_headers_config = load_yaml_config(config_dir / "safe_headers.yaml")
         self.hmac_secret = load_hmac_secret(Path("/app/data/hmac_secret"))
-
-        policy_dir = Path(self.config.get("policy", {}).get("policy_dir", "/app/data/policies"))
-        policy_dir.mkdir(parents=True, exist_ok=True)
-        self.policy_store = PolicyStore(policy_dir)
-        self.policy_store.load_all()
-        self.policy_store.start_watcher()
 
     def _load_rules(self):
         """Load credential rules."""
@@ -641,12 +666,6 @@ class CredentialGuard:
             pass
         return "default"
 
-    def _get_policy(self, project_id: str) -> dict:
-        """Get merged policy for project."""
-        if not self.policy_store:
-            return {}
-        return self.policy_store.get_policy(project_id)
-
     def _record_violation(self, rule: str, host: str):
         """Record violation for stats."""
         self.violations_total += 1
@@ -695,11 +714,14 @@ class CredentialGuard:
                 log.debug(f"Allowed via temp allowlist: hmac:{fp} -> {host}")
                 continue
 
-            # Get decision
-            merged_policy = self._get_policy(project_id)
-            decision, context = determine_decision(
-                credential, rule_name, host, path,
-                self.rules, merged_policy, self.hmac_secret
+            # Get decision using PolicyEngine
+            decision, context = determine_decision_with_policy_engine(
+                credential=credential,
+                rule_name=rule_name,
+                host=host,
+                path=path,
+                rules=self.rules,
+                hmac_secret=self.hmac_secret,
             )
 
             # Log decision

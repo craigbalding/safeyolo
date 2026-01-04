@@ -77,7 +77,52 @@ def taddons_ctx():
 
 
 @pytest.fixture
-def credential_guard():
+def policy_engine_initialized(tmp_path):
+    """Initialize PolicyEngine with test baseline for credential_guard tests."""
+    from addons.policy_engine import init_policy_engine, _policy_engine
+    import addons.policy_engine as pe
+
+    # Save existing engine
+    old_engine = pe._policy_engine
+
+    # Create test baseline
+    baseline = tmp_path / "baseline.yaml"
+    baseline.write_text("""
+metadata:
+  version: "1.0"
+  description: "Test baseline"
+
+permissions:
+  # OpenAI credentials to OpenAI endpoints
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["openai:*"]
+
+  # Unknown destinations require approval
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+    tier: explicit
+
+budgets: {}
+required: []
+addons:
+  credential_guard:
+    enabled: true
+""")
+
+    engine = init_policy_engine(baseline_path=baseline)
+    yield engine
+
+    # Restore
+    pe._policy_engine = old_engine
+
+
+@pytest.fixture
+def credential_guard(policy_engine_initialized):
     """Create a fresh CredentialGuard instance with proper mitmproxy context."""
     from addons.credential_guard import CredentialGuard, DEFAULT_RULES
     from mitmproxy.test import taddons

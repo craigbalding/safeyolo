@@ -4,6 +4,7 @@ __pycache__/
 data/
 logs/
 .claude/
+CLAUDE.md
 *.egg-info/
 .pytest_cache/
 

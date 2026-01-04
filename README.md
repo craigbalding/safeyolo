@@ -191,33 +191,71 @@ Configuration lives in `~/.safeyolo/` (auto-created on first `safeyolo start`).
 ```
 ~/.safeyolo/
 ├── config.yaml          # Proxy settings
-├── rules.json           # Credential patterns & allowed hosts
-├── policies/            # Approved credentials (auto-managed)
+├── baseline.yaml        # Policy: credentials, rate limits, addon config
 ├── certs/               # CA certificate for HTTPS inspection
 ├── logs/                # Audit logs (safeyolo.jsonl)
 └── data/                # Admin token, HMAC secret
 ```
 
-### rules.json
+### baseline.yaml
 
-Define credential patterns and their allowed destinations:
+Unified policy using IAM-style vocabulary with **destination-first** credential routing:
 
-```json
-{
-  "credentials": [
-    {
-      "name": "openai",
-      "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
-      "allowed_hosts": ["api.openai.com"]
-    },
-    {
-      "name": "anthropic",
-      "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
-      "allowed_hosts": ["api.anthropic.com"]
-    }
-  ]
-}
+```yaml
+permissions:
+  # Destination-first: what credentials can access each endpoint
+  - action: credential:use
+    resource: "api.openai.com/*"      # destination pattern
+    effect: allow
+    condition:
+      credential: ["openai:*"]        # credential types allowed
+
+  - action: credential:use
+    resource: "api.anthropic.com/*"
+    effect: allow
+    condition:
+      credential: ["anthropic:*"]
+
+  # HMAC-based approval for specific unknown credentials
+  - action: credential:use
+    resource: "api.custom.com/*"
+    effect: allow
+    condition:
+      credential: ["hmac:a1b2c3d4"]   # specific credential fingerprint
+
+  # Unknown destinations require approval
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+
+  # Rate limits (requests per minute)
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: budget
+    budget: 3000  # 50 rps
+
+required:
+  - credential_guard
+  - rate_limiter
+
+addons:
+  credential_guard: {enabled: true}
+  rate_limiter: {enabled: true}
+
+domains:
+  "*.internal":
+    bypass: [pattern_scanner]
 ```
+
+**Credential condition formats:**
+- `openai:*` - type-based (any OpenAI key)
+- `hmac:a1b2c3d4` - HMAC-based (specific credential fingerprint)
+
+**Policy effects:**
+- `allow` - permit immediately
+- `deny` - block immediately
+- `prompt` - trigger human approval
+- `budget` - allow up to N requests/minute, then deny
 
 ## Addon Modes
 
@@ -260,7 +298,8 @@ SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS
 | Addon | Purpose | Default |
 |-------|---------|---------|
 | request_id | Assigns unique ID for correlation | Always on |
-| rate_limiter | Per-domain rate limiting | Block |
+| policy_engine | Unified policy evaluation and budgets | Always on |
+| rate_limiter | Per-domain rate limiting (via PolicyEngine) | Block |
 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | credential_guard | Block credentials to wrong hosts | Block |
 | pattern_scanner | Regex scanning for secrets | Warn |
@@ -273,14 +312,16 @@ SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS
 ```
 safeyolo/
 ├── addons/              # mitmproxy addons
-│   ├── credential_guard.py   # Core security
-│   ├── rate_limiter.py
+│   ├── policy_engine.py      # Unified policy evaluation
+│   ├── credential_guard.py   # Credential routing
+│   ├── rate_limiter.py       # Rate limiting (via PolicyEngine)
 │   ├── circuit_breaker.py
 │   ├── pattern_scanner.py
 │   ├── admin_api.py
 │   └── ...
 ├── cli/                 # safeyolo CLI package
 ├── config/              # Default configurations
+│   └── baseline.yaml         # Default policy
 ├── contrib/             # Example integrations
 ├── tests/               # Test suite
 └── docs/                # Additional documentation

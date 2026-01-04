@@ -18,7 +18,7 @@ SafeYolo is security software. This document outlines our security principles an
 **Principle:** When uncertain, block. False positives are recoverable; credential leaks are not.
 
 **In practice:**
-- Unknown credentials trigger approval workflow, not silent passthrough. (`addons/credential_guard.py:_decide()`)
+- Unknown credentials trigger approval workflow, not silent passthrough. PolicyEngine evaluates `effect: prompt` permissions.
 - Destination mismatches return HTTP 428 with actionable feedback, not silent drops.
 - Circuit breaker fails fast on unhealthy upstreams. (`addons/circuit_breaker.py`)
 
@@ -27,11 +27,25 @@ SafeYolo is security software. This document outlines our security principles an
 **Principle:** Credentials should not appear in logs, policies, or anywhere on disk.
 
 **In practice:**
-- Credentials are fingerprinted via HMAC-SHA256. Only the fingerprint is stored/logged. (`addons/credential_guard.py:_fingerprint()`)
-- Policy files contain `token_hmac`, never raw tokens. (`~/.safeyolo/policies/`)
+- Credentials are fingerprinted via HMAC-SHA256. Only the fingerprint is stored/logged. (`addons/credential_guard.py:hmac_fingerprint()`)
+- Policy files use human-readable credential types (`openai`, `anthropic`), never raw tokens. (`~/.safeyolo/baseline.yaml`)
 - Log entries include fingerprint for correlation, never the credential itself.
 
-### 4. Defense in Depth
+### 4. Destination-First Policy
+
+**Principle:** Define what credentials can access each endpoint, not what endpoints each credential can access.
+
+**Why destination-first:**
+- **IAM-aligned:** Resource = thing being protected (endpoint). Condition = what can access it.
+- **Prevents format collision:** Different services may use same credential format. Destination-first ensures approving `api.service-a.com` for unknown credentials doesn't accidentally allow access to `api.service-b.com`.
+- **Flexible approval:** Supports both type-based (`openai:*` - good for key rotation) and HMAC-based (`hmac:a1b2c3d4` - specific credential only).
+
+**In practice:**
+- Policy resource = destination pattern (`api.openai.com/*`)
+- Policy condition.credential = what can access it (`["openai:*"]` or `["hmac:abc123"]`)
+- Unknown credentials can be approved per-destination with HMAC precision
+
+### 5. Defense in Depth
 
 **Principle:** Multiple independent checks. Don't rely on a single layer.
 
@@ -41,7 +55,7 @@ SafeYolo is security software. This document outlines our security principles an
 - Homoglyph detection flags mixed-script domain attacks (`api.οpenai.com` with Cyrillic 'ο')
 - Rate limiting prevents runaway loops independent of credential checks
 
-### 5. The Eager Intern Problem
+### 6. The Eager Intern Problem
 
 **Principle:** Agents aren't malicious - they're like an inexperienced but energetic intern. Confident, fast, helpful, and occasionally wrong in ways that matter.
 
@@ -53,7 +67,7 @@ An intern might email the wrong client, cc the wrong list, or paste credentials 
 - Humans approve policy changes because "are you sure?" only works if someone experienced is asking
 - Quick Mode bypass is documented, not hidden - know your intern's access level
 
-### 6. Audit Everything
+### 7. Audit Everything
 
 **Principle:** Every decision should be traceable. When something goes wrong, you need to know what happened.
 
@@ -129,9 +143,13 @@ We welcome security research on SafeYolo.
 
 | Area | File | Notes |
 |------|------|-------|
+| Policy engine | `addons/policy_engine.py` | Unified IAM-style policy evaluation |
+| Destination-first matching | `addons/policy_engine.py:evaluate_credential()` | Resource=destination, condition.credential=what can access |
 | Credential detection | `addons/credential_guard.py` | Pattern matching, entropy analysis |
-| HMAC fingerprinting | `addons/credential_guard.py:_fingerprint()` | Never stores raw credentials |
-| Policy enforcement | `addons/credential_guard.py:_check_policy()` | Per-project isolation |
+| Credential type mapping | `addons/credential_guard.py:detect_credential_type()` | Maps patterns to types |
+| HMAC fingerprinting | `addons/credential_guard.py:hmac_fingerprint()` | Never stores raw credentials |
+| Condition matching | `addons/policy_engine.py:Condition.matches()` | Type-based and HMAC-based credential matching |
+| Budget tracking | `addons/policy_engine.py:GCRABudgetTracker` | Rate limiting via GCRA |
 | Service discovery | `addons/service_discovery.py` | Static config, no Docker socket |
 | Admin API auth | `addons/admin_api.py` | Bearer token validation |
 | Request logging | `addons/request_logger.py` | JSONL audit trail |
