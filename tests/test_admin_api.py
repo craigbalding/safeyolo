@@ -30,14 +30,6 @@ class TestAdminRequestHandler:
 
         return AdminRequestHandler
 
-    @pytest.fixture
-    def mock_credential_guard(self):
-        """Create mock credential guard addon."""
-        mock = MagicMock()
-        mock.get_temp_allowlist.return_value = []
-        mock.temp_allowlist = {}
-        return mock
-
     def test_health_endpoint(self, handler_class):
         """Test GET /health returns healthy status."""
         from io import BytesIO
@@ -71,82 +63,6 @@ class TestAdminRequestHandler:
         response = self._parse_response(handler)
         assert "test-addon" in response
         assert response["test-addon"]["scans"] == 100
-
-    def test_allowlist_get_empty(self, handler_class, mock_credential_guard):
-        """Test GET /plugins/credential-guard/allowlist when empty."""
-        handler_class.credential_guard = mock_credential_guard
-
-        handler = self._create_handler(
-            handler_class, "GET", "/plugins/credential-guard/allowlist"
-        )
-        handler.do_GET()
-
-        response = self._parse_response(handler)
-        assert response["allowlist"] == []
-
-    def test_allowlist_get_no_guard(self, handler_class):
-        """Test GET /plugins/credential-guard/allowlist without guard loaded."""
-        handler_class.credential_guard = None
-
-        handler = self._create_handler(
-            handler_class, "GET", "/plugins/credential-guard/allowlist"
-        )
-        handler.do_GET()
-
-        response = self._parse_response(handler)
-        status = self._get_status(handler)
-        assert status == 404
-        assert "error" in response
-
-    def test_allowlist_post(self, handler_class, mock_credential_guard):
-        """Test POST /plugins/credential-guard/allowlist adds entry."""
-        handler_class.credential_guard = mock_credential_guard
-
-        body = json.dumps({"prefix": "sk-abc", "host": "evil.com", "duration_minutes": 5})
-        handler = self._create_handler(
-            handler_class,
-            "POST",
-            "/plugins/credential-guard/allowlist",
-            body=body,
-        )
-        handler.do_POST()
-
-        response = self._parse_response(handler)
-        assert response["status"] == "added"
-        mock_credential_guard.add_temp_allowlist.assert_called_once_with(
-            "sk-abc", "evil.com", 300
-        )
-
-    def test_allowlist_post_missing_fields(self, handler_class, mock_credential_guard):
-        """Test POST allowlist with missing required fields."""
-        handler_class.credential_guard = mock_credential_guard
-
-        body = json.dumps({"prefix": "sk-abc"})  # Missing host
-        handler = self._create_handler(
-            handler_class,
-            "POST",
-            "/plugins/credential-guard/allowlist",
-            body=body,
-        )
-        handler.do_POST()
-
-        response = self._parse_response(handler)
-        status = self._get_status(handler)
-        assert status == 400
-        assert "error" in response
-
-    def test_allowlist_delete(self, handler_class, mock_credential_guard):
-        """Test DELETE /plugins/credential-guard/allowlist clears entries."""
-        handler_class.credential_guard = mock_credential_guard
-        mock_credential_guard.temp_allowlist = {"key": "value"}
-
-        handler = self._create_handler(
-            handler_class, "DELETE", "/plugins/credential-guard/allowlist"
-        )
-        handler.do_DELETE()
-
-        response = self._parse_response(handler)
-        assert response["status"] == "cleared"
 
     def test_modes_get(self, handler_class):
         """Test GET /modes returns addon modes."""

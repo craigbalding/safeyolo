@@ -2,7 +2,7 @@
 admin_api.py - HTTP API addon for runtime control
 
 Provides REST endpoints for:
-- Temporary allowlist management (credential guard)
+- Policy management (baseline and task policies)
 - Stats from all addons
 - Health checks
 
@@ -248,13 +248,6 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 debug_info["traceback"] = traceback.format_exc()
             self._send_json(debug_info)
 
-        elif path == "/plugins/credential-guard/allowlist":
-            if not self.credential_guard:
-                self._send_json({"error": "credential-guard not loaded"}, 404)
-                return
-            entries = self.credential_guard.get_temp_allowlist()
-            self._send_json({"allowlist": entries})
-
         elif path == "/modes":
             # Get current mode for all switchable addons
             modes = self._get_all_modes()
@@ -324,33 +317,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/plugins/credential-guard/allowlist":
-            if not self.credential_guard:
-                self._send_json({"error": "credential-guard not loaded"}, 404)
-                return
-
-            data = self._read_json()
-            if not data:
-                self._send_json({"error": "missing request body"}, 400)
-                return
-
-            prefix = data.get("prefix")
-            host = data.get("host")
-            duration = data.get("duration_minutes", 5)
-
-            if not prefix or not host:
-                self._send_json({"error": "missing prefix or host"}, 400)
-                return
-
-            self.credential_guard.add_temp_allowlist(prefix, host, duration * 60)
-            self._send_json({
-                "status": "added",
-                "prefix": prefix,
-                "host": host,
-                "duration_minutes": duration,
-            })
-
-        elif path == "/admin/policy/validate":
+        if path == "/admin/policy/validate":
             # POST /admin/policy/validate - Validate YAML content
             data = self._read_json()
             if not data or "content" not in data:
@@ -612,20 +579,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if not self._require_auth():
             return
 
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        if path == "/plugins/credential-guard/allowlist":
-            if not self.credential_guard:
-                self._send_json({"error": "credential-guard not loaded"}, 404)
-                return
-
-            # Clear all entries
-            self.credential_guard.temp_allowlist.clear()
-            self._send_json({"status": "cleared"})
-
-        else:
-            self._send_json({"error": "not found"}, 404)
+        self._send_json({"error": "not found"}, 404)
 
 
 class AdminAPI:

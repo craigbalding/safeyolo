@@ -14,7 +14,7 @@
 #   - rate_limiter: Per-domain rate limiting (GCRA)
 #   - circuit_breaker: Fail-fast for unhealthy upstreams
 #   - pattern_scanner: Fast regex for secrets/jailbreaks
-#   - policy: Per-domain/client addon configuration
+#   - policy_engine: Per-domain/client addon configuration
 #   - service_discovery: Docker container auto-discovery
 #   - request_logger: JSONL structured logging
 #   - metrics: Per-domain statistics
@@ -56,7 +56,7 @@ COPY addons/credential_guard.py /app/addons/
 COPY addons/rate_limiter.py /app/addons/
 COPY addons/circuit_breaker.py /app/addons/
 COPY addons/pattern_scanner.py /app/addons/
-COPY addons/policy.py /app/addons/
+COPY addons/policy_engine.py /app/addons/
 COPY addons/service_discovery.py /app/addons/
 COPY addons/request_logger.py /app/addons/
 COPY addons/metrics.py /app/addons/

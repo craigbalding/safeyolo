@@ -23,7 +23,6 @@ import math
 import os
 import re
 import secrets
-import threading
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -566,10 +565,6 @@ class CredentialGuard:
         self.safe_headers_config: dict = {}
         self.hmac_secret: bytes = b""
 
-        # Temp allowlist for immediate approvals (token -> expiry)
-        self.temp_allowlist: dict[tuple[str, str], float] = {}
-        self._allowlist_lock = threading.Lock()
-
         # Stats
         self.violations_total = 0
         self.violations_by_type: dict[str, int] = {}
@@ -622,34 +617,6 @@ class CredentialGuard:
 
     def _should_block(self) -> bool:
         return ctx.options.credguard_block
-
-    def _is_temp_allowed(self, credential: str, host: str) -> bool:
-        """Check temp allowlist."""
-        fp = hmac_fingerprint(credential, self.hmac_secret)
-        key = (fp, host.lower())
-        with self._allowlist_lock:
-            expiry = self.temp_allowlist.get(key)
-            if expiry and time.time() < expiry:
-                return True
-            if expiry:
-                del self.temp_allowlist[key]
-        return False
-
-    def add_temp_allowlist(self, credential: str, host: str, ttl: int = 300):
-        """Add temp allowlist entry (called by admin API)."""
-        fp = hmac_fingerprint(credential, self.hmac_secret)
-        with self._allowlist_lock:
-            self.temp_allowlist[(fp, host.lower())] = time.time() + ttl
-        log.info(f"Temp allowlist: hmac:{fp} -> {host} for {ttl}s")
-
-    def get_temp_allowlist(self) -> list[dict]:
-        """Get temp allowlist entries (for admin API)."""
-        now = time.time()
-        with self._allowlist_lock:
-            return [
-                {"fingerprint": f"hmac:{k[0]}", "host": k[1], "expires_in": int(v - now)}
-                for k, v in self.temp_allowlist.items() if v > now
-            ]
 
     def _get_project_id(self, flow: http.HTTPFlow) -> str:
         """Get project ID from service discovery."""
@@ -708,11 +675,6 @@ class CredentialGuard:
             confidence = det["confidence"]
             tier = det["tier"]
             fp = hmac_fingerprint(credential, self.hmac_secret)
-
-            # Check temp allowlist
-            if self._is_temp_allowed(credential, host):
-                log.debug(f"Allowed via temp allowlist: hmac:{fp} -> {host}")
-                continue
 
             # Get decision using PolicyEngine
             decision, context = determine_decision_with_policy_engine(
@@ -777,7 +739,6 @@ class CredentialGuard:
             "violations_total": self.violations_total,
             "violations_by_type": self.violations_by_type,
             "rules_count": len(self.rules),
-            "temp_allowlist_count": len(self.temp_allowlist),
         }
 
 

