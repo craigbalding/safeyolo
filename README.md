@@ -102,9 +102,9 @@ See `safeyolo agent list` for available templates.
 
 ## What SafeYolo Does
 
-Implements a policy layer to control agent network egress.  Features include:
+Implements a policy layer to control agent network egress.  SafeYolo doesn’t try to detect why a request happened — it constrains what can happen next.  Features include:
 
-**Credential routing** - API keys only reach authorized hosts. An OpenAI key to `api.openai.com.attacker.io` (exfil attempt) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
+**Credential routing** - help prevent credentials being sent to unexpected destinations. An OpenAI key to `api.openai.com.attacker.io` (e.g., from a bad link, agent mistake, or untrusted content) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
 
 **Smart detection** - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.) plus entropy analysis may catch unknown secrets.
 
@@ -293,16 +293,18 @@ safeyolo mode credential-guard block
 
 ## Threat Model
 
+SafeYolo is designed to reduce accidental outbound risk from helpful-but-sloppy (and sometimes persistent) agentic automation, not to defend against a determined adversary running arbitrary code.
+
 **SafeYolo catches:**
 - Hallucinated endpoints (`api.openai.com.attacker.io` instead of `api.openai.com`)
-- Credentials sent to wrong hosts
+- Credentials sent to unexpected / wrong hosts
 - Runaway API loops
-- Typosquats and homograph attacks (e.g., Cyrillic 'a' in `аpi.openai.com`)
-- Proxy bypass attempts (Sandbox Mode only - they fail instead of leak)
+- Lookalike domains and Unicode confusables (e.g., Cyrillic 'a' in `аpi.openai.com`)
+- Proxy bypass attempts (Sandbox Mode only - they fail rather than leak)
 
 **SafeYolo does NOT:**
-- Detect prompt injection
-- Replace application-layer auth
+- Detect or "solve" prompt injection
+- Replace application-layer authentication / authorization
 - Prevent non-proxied egress in Try Mode (agents can bypass by going direct)
 
 ## Architecture
