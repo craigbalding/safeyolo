@@ -51,6 +51,7 @@ WORKDIR /app
 # Copy core addons
 COPY addons/__init__.py /app/addons/
 COPY addons/utils.py /app/addons/
+COPY addons/admin_shield.py /app/addons/
 COPY addons/request_id.py /app/addons/
 COPY addons/credential_guard.py /app/addons/
 COPY addons/rate_limiter.py /app/addons/
