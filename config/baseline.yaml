@@ -279,6 +279,9 @@ required:
 # =============================================================================
 
 addons:
+  access_control:
+    enabled: true
+
   credential_guard:
     enabled: true
     detection_level: standard  # patterns-only | standard | paranoid

@@ -409,6 +409,7 @@ class TestAdminAPIAddon:
         from addons.admin_api import AdminRequestHandler
 
         expected = {
+            "access-control",
             "credential-guard",
             "rate-limiter",
             "pattern-scanner",

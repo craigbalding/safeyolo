@@ -314,6 +314,7 @@ SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS
 |-------|---------|---------|
 | request_id | Assigns unique ID for correlation | Always on |
 | policy_engine | Unified policy evaluation and budgets | Always on |
+| access_control | Allow/deny rules for network access | Block |
 | rate_limiter | Per-domain rate limiting (via PolicyEngine) | Block |
 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | credential_guard | Block credentials to wrong hosts | Block |
@@ -328,6 +329,7 @@ SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS
 safeyolo/
 ├── addons/              # mitmproxy addons
 │   ├── policy_engine.py      # Unified policy evaluation
+│   ├── access_control.py     # Network allow/deny rules
 │   ├── credential_guard.py   # Credential routing
 │   ├── rate_limiter.py       # Rate limiting (via PolicyEngine)
 │   ├── circuit_breaker.py

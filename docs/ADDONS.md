@@ -9,6 +9,7 @@ Complete documentation for SafeYolo's mitmproxy addons.
 | request_id | Request ID for event correlation | Always on |
 | policy_engine | Unified policy evaluation and budgets | Always on |
 | service_discovery | Docker container discovery | Always on |
+| access_control | Network allow/deny rules | **Block** |
 | rate_limiter | Per-domain rate limiting (via PolicyEngine) | **Block** |
 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | credential_guard | Block credentials to wrong hosts | **Block** |
@@ -18,7 +19,7 @@ Complete documentation for SafeYolo's mitmproxy addons.
 | admin_api | REST API on :9090 | Always on |
 
 **Default behavior:**
-- `credential_guard` and `rate_limiter` block by default (core protections)
+- `access_control`, `credential_guard`, and `rate_limiter` block by default (core protections)
 - `pattern_scanner` warns by default (higher false positive rate)
 - Other addons are always active with no mode toggle
 
@@ -196,6 +197,70 @@ budgets:
 3. PolicyEngine finds matching `network:request` permission
 4. GCRA budget tracker checks if budget allows request
 5. If budget exhausted, returns 429 with Retry-After header
+
+---
+
+## access_control.py
+
+Network access control for client internet reach limits.
+
+**Default: Block mode**
+
+**Use case:** Restrict which domains coding agents can access (allowlist/denylist).
+
+**Configuration:** Access rules are defined in `baseline.yaml` as permissions with `effect: allow` or `effect: deny`:
+
+```yaml
+permissions:
+  # Allowlist mode: allow specific, deny rest
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: allow
+    tier: explicit
+
+  - action: network:request
+    resource: "api.anthropic.com/*"
+    effect: allow
+    tier: explicit
+
+  - action: network:request
+    resource: "*"
+    effect: deny  # Catch-all deny
+    tier: explicit
+
+  # Or denylist mode: deny specific domains
+  - action: network:request
+    resource: "malware.com/*"
+    effect: deny
+    tier: explicit
+```
+
+**Response when denied (403):**
+```json
+{
+  "error": "Access denied by proxy",
+  "domain": "blocked.com",
+  "reason": "Access denied to blocked.com",
+  "message": "Network access to blocked.com is not permitted."
+}
+```
+
+**How it works:**
+1. Request comes in for domain
+2. AccessControl calls `PolicyEngine.evaluate_request()`
+3. PolicyEngine finds matching `network:request` permission
+4. If `effect: deny`, returns 403 Forbidden
+5. If `effect: allow` or `effect: budget`, passes through to rate_limiter
+
+**Addon chain order:** Load `access_control` before `rate_limiter`:
+- AccessControl blocks denied requests (403)
+- RateLimiter enforces budgets on allowed requests (429)
+
+**Options:**
+```bash
+--set access_control_enabled=true   # Enable access control (default: true)
+--set access_control_block=true     # Block mode (default: true, false = warn only)
+```
 
 ---
 
