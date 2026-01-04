@@ -26,7 +26,7 @@ That's it. SafeYolo is now inspecting all HTTPS traffic from your shell session.
 
 | Profile | Setup | Typical use |
 |---------|-------|-------------|
-| **Managed** | CLI handles everything | Solo devs, quick experimentation |
+| **Managed** (default) | CLI handles everything | Most users |
 | **Integrated** | Bring your own config | Teams with existing Docker/K8s infrastructure |
 
 Both profiles support single or multiple agents with per-agent policies.
@@ -35,12 +35,12 @@ Both profiles support single or multiple agents with per-agent policies.
 
 | Mode | Enforcement | Use case |
 |------|-------------|----------|
-| **Quick Mode** (default) | Per-process - agents can bypass | Fast setup, interactive use |
-| **Secure Mode** | Enforced - bypass attempts fail | Production use with autonomous agents |
+| **Quick Mode** (default) | Per-process - agents can bypass | Trying out SafeYolo |
+| **Secure Mode** | Enforced - bypass attempts fail | Daily driver for constraining agent reach |
 
 ### Quick Mode (Default)
 
-Quick Mode uses per-process environment variables to route traffic through SafeYolo. It's the fastest way to get started:
+Quick Mode uses per-process environment variables to route traffic through SafeYolo. It's the fastest way to try things out:
 
 ```bash
 safeyolo start
