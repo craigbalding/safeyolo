@@ -7,6 +7,8 @@ logs/
 CLAUDE.md
 *.egg-info/
 .pytest_cache/
+.coverage
+.hypothesis/
 
 # Host-specific config (each host has its own)
 docker-compose.override.yml
