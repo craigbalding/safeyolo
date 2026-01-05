@@ -27,8 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --require-hashes -r requirements/base.txt
-          pip install cyclonedx-bom==5.1.1 \
-            --hash=sha256:a2be2578c540298c3c3707db5dbc56ac93b3f2f2c13076b9e7d89a8c58160b08
+          pip install cyclonedx-bom==5.1.1 --hash=sha256:a2be2578c540298c3c3707db5dbc56ac93b3f2f2c13076b9e7d89a8c58160b08
 
       - name: Generate SBOM (CycloneDX)
         run: |
