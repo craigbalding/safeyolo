@@ -75,6 +75,7 @@ class TestLoadConfig:
     def test_returns_defaults_if_missing(self, tmp_path, monkeypatch):
         """Returns DEFAULT_CONFIG if no config file."""
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
         config = load_config()
         assert config == DEFAULT_CONFIG
 
@@ -173,6 +174,7 @@ class TestGetAdminToken:
         """Returns None if no token configured."""
         monkeypatch.delenv("SAFEYOLO_ADMIN_TOKEN", raising=False)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
 
         result = get_admin_token()
         assert result is None

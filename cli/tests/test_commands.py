@@ -215,7 +215,7 @@ class TestCertShowCommand:
 
         result = cli_runner.invoke(app, ["cert", "show"])
         assert result.exit_code == 1
-        assert "not found" in result.output.lower() or "init" in result.output.lower()
+        assert "not found" in result.output.lower() or "start" in result.output.lower()
 
     def test_shows_cert_not_generated(self, cli_runner, tmp_config_dir):
         """Shows message when cert not yet generated."""
@@ -244,7 +244,7 @@ class TestCheckCommand:
 
         result = cli_runner.invoke(app, ["check"])
         assert result.exit_code == 1
-        assert "not found" in result.output.lower() or "init" in result.output.lower()
+        assert "not found" in result.output.lower() or "start" in result.output.lower()
 
     def test_reports_config_found(self, cli_runner, tmp_config_dir, mock_docker_running, mock_httpx):
         """Reports when config is found."""
