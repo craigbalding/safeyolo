@@ -19,7 +19,6 @@ import hashlib
 import hmac
 import json
 import logging
-import math
 import os
 import re
 import secrets
@@ -34,10 +33,16 @@ from yarl import URL
 
 try:
     from .base import SecurityAddon
-    from .utils import write_event, make_block_response, load_config_file, get_client_ip
+    from .utils import (
+        write_event, make_block_response, load_config_file, get_client_ip,
+        calculate_shannon_entropy, looks_like_secret,
+    )
 except ImportError:
     from base import SecurityAddon
-    from utils import write_event, make_block_response, load_config_file, get_client_ip
+    from utils import (
+        write_event, make_block_response, load_config_file, get_client_ip,
+        calculate_shannon_entropy, looks_like_secret,
+    )
 
 try:
     from .policy_engine import get_policy_engine, PolicyDecision
@@ -118,37 +123,8 @@ def path_matches_pattern(path: str, pattern: str) -> bool:
 
 
 # =============================================================================
-# Detection: Entropy & Pattern Analysis
+# Header Analysis Utilities
 # =============================================================================
-
-def calculate_shannon_entropy(s: str) -> float:
-    """Calculate Shannon entropy of a string."""
-    if not s:
-        return 0.0
-    freq = {}
-    for c in s:
-        freq[c] = freq.get(c, 0) + 1
-    length = len(s)
-    return -sum((count / length) * math.log2(count / length) for count in freq.values())
-
-
-def looks_like_secret(value: str, entropy_config: dict) -> bool:
-    """Check if value looks like a secret based on entropy heuristics."""
-    min_length = entropy_config.get("min_length", 20)
-    min_diversity = entropy_config.get("min_charset_diversity", 0.5)
-    min_entropy = entropy_config.get("min_shannon_entropy", 3.5)
-
-    if len(value) < min_length:
-        return False
-
-    unique_chars = len(set(value))
-    diversity = unique_chars / len(value)
-    if diversity < min_diversity:
-        return False
-
-    entropy = calculate_shannon_entropy(value)
-    return entropy >= min_entropy
-
 
 def is_safe_header(header_name: str, safe_config: dict) -> bool:
     """Check if header is known-safe (trace IDs, etc.)."""

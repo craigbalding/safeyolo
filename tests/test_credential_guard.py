@@ -113,27 +113,27 @@ class TestPathMatching:
 
 
 class TestShannonEntropy:
-    """Tests for entropy calculation."""
+    """Tests for entropy calculation (imported from utils)."""
 
     def test_empty_string(self):
-        from addons.credential_guard import calculate_shannon_entropy
+        from addons.utils import calculate_shannon_entropy
 
         assert calculate_shannon_entropy("") == 0.0
 
     def test_single_char(self):
-        from addons.credential_guard import calculate_shannon_entropy
+        from addons.utils import calculate_shannon_entropy
 
         assert calculate_shannon_entropy("a") == 0.0
         assert calculate_shannon_entropy("aaaa") == 0.0
 
     def test_two_chars_equal(self):
-        from addons.credential_guard import calculate_shannon_entropy
+        from addons.utils import calculate_shannon_entropy
 
         entropy = calculate_shannon_entropy("ab")
         assert abs(entropy - 1.0) < 0.01
 
     def test_high_entropy_string(self):
-        from addons.credential_guard import calculate_shannon_entropy
+        from addons.utils import calculate_shannon_entropy
 
         # Random-looking string should have high entropy
         entropy = calculate_shannon_entropy("sk-proj-abc123XYZ789def456GHI")
@@ -141,23 +141,23 @@ class TestShannonEntropy:
 
 
 class TestLooksLikeSecret:
-    """Tests for entropy-based secret detection."""
+    """Tests for entropy-based secret detection (imported from utils)."""
 
     def test_short_string_rejected(self):
-        from addons.credential_guard import looks_like_secret
+        from addons.utils import looks_like_secret
 
         config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         assert not looks_like_secret("short", config)
 
     def test_low_diversity_rejected(self):
-        from addons.credential_guard import looks_like_secret
+        from addons.utils import looks_like_secret
 
         config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         # Long but repetitive
         assert not looks_like_secret("aaaaaaaaaaaaaaaaaaaaaaaaa", config)
 
     def test_high_entropy_accepted(self):
-        from addons.credential_guard import looks_like_secret
+        from addons.utils import looks_like_secret
 
         config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         # Random-looking API key

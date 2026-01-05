@@ -26,6 +26,7 @@ Event Taxonomy:
 
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -292,3 +293,63 @@ class BackgroundWorker:
                 _log.warning(f"{self._name} didn't stop within {timeout}s")
             self._thread = None
         _log.debug(f"Stopped background worker: {self._name}")
+
+
+# =============================================================================
+# Secret Detection Utilities
+# =============================================================================
+
+def calculate_shannon_entropy(s: str) -> float:
+    """Calculate Shannon entropy of a string.
+
+    Higher entropy suggests more randomness (potential secret).
+    Typical thresholds: <3.0 low, 3.0-4.0 medium, >4.0 high.
+
+    Args:
+        s: Input string
+
+    Returns:
+        Shannon entropy in bits per character
+    """
+    if not s:
+        return 0.0
+    freq: dict[str, int] = {}
+    for c in s:
+        freq[c] = freq.get(c, 0) + 1
+    length = len(s)
+    return -sum((count / length) * math.log2(count / length) for count in freq.values())
+
+
+def looks_like_secret(value: str, entropy_config: Optional[dict] = None) -> bool:
+    """Check if value looks like a secret based on entropy heuristics.
+
+    Uses length, character diversity, and Shannon entropy to detect
+    potential secrets without pattern matching.
+
+    Args:
+        value: String to analyze
+        entropy_config: Optional config dict with keys:
+            - min_length: Minimum string length (default: 20)
+            - min_charset_diversity: Unique chars / length ratio (default: 0.5)
+            - min_shannon_entropy: Minimum entropy bits (default: 3.5)
+
+    Returns:
+        True if value appears to be a high-entropy secret
+    """
+    if entropy_config is None:
+        entropy_config = {}
+
+    min_length = entropy_config.get("min_length", 20)
+    min_diversity = entropy_config.get("min_charset_diversity", 0.5)
+    min_entropy = entropy_config.get("min_shannon_entropy", 3.5)
+
+    if len(value) < min_length:
+        return False
+
+    unique_chars = len(set(value))
+    diversity = unique_chars / len(value)
+    if diversity < min_diversity:
+        return False
+
+    entropy = calculate_shannon_entropy(value)
+    return entropy >= min_entropy
