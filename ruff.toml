@@ -21,7 +21,8 @@ ignore = [
     "B008",   # function call in default argument (common in Typer/FastAPI)
     "B904",   # raise from err - noisy for CLI exit patterns
     "B905",   # zip without strict (Python 3.10+)
-    "UP045",  # Optional[X] -> X | None - mitmproxy loader.add_option requires Optional
+    "UP007",  # Optional[X] -> X | None - mitmproxy loader.add_option requires Optional
+    "UP045",  # Optional[X] -> X | None - same rule, different code in some ruff versions
 ]
 
 [lint.per-file-ignores]
