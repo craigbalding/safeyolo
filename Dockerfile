@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install core Python dependencies (no ML, no YARA)
 COPY requirements/base.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
 
 WORKDIR /app
 
@@ -108,7 +108,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install dev/test dependencies (need both files since dev.txt references base.txt)
 COPY requirements/base.txt requirements/dev.txt /tmp/
-RUN pip install --no-cache-dir -r /tmp/dev.txt
+RUN pip install --no-cache-dir --require-hashes -r /tmp/dev.txt
 
 # Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app
