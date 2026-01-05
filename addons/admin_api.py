@@ -362,6 +362,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return self._handle_get_policy_task(task_id)
 
         self._send_json({"error": "not found"}, 404)
+        return None
 
     # =========================================================================
     # POST Handlers
@@ -478,6 +479,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return static_handlers[path]()
 
         self._send_json({"error": "not found"}, 404)
+        return None
 
     # =========================================================================
     # PUT Handlers
@@ -649,14 +651,16 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return self._handle_put_policy_task(task_id)
 
         self._send_json({"error": "not found"}, 404)
+        return None
 
     def do_DELETE(self):
         """Handle DELETE requests."""
         # All DELETE endpoints require auth
         if not self._require_auth():
-            return
+            return None
 
         self._send_json({"error": "not found"}, 404)
+        return None
 
 
 class AdminAPI:
