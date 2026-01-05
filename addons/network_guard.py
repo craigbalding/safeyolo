@@ -69,8 +69,8 @@ def detect_homoglyph_attack(text: str) -> Optional[dict]:
         result = confusables.is_dangerous(text)
         if result:
             return {"dangerous": True, "domain": text, "message": f"Mixed scripts detected in '{text}'"}
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"Homoglyph detection failed for '{text}': {type(e).__name__}: {e}")
     return None
 
 
