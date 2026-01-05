@@ -87,7 +87,8 @@ def _compile_rules() -> list[PatternRule]:
                 category="secret",
             ))
         except re.error as e:
-            log.warning(f"Invalid pattern {rule_id}: {e}")
+            # rule_id is a pattern identifier (e.g. "aws_key"), not an actual secret
+            log.warning(f"Invalid pattern {rule_id}: {e}")  # nosec: not sensitive
 
     for pattern_str, rule_id, desc, severity in BUILTIN_JAILBREAK_PATTERNS:
         try:
