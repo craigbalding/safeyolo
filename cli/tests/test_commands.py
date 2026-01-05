@@ -231,7 +231,8 @@ class TestCertShowCommand:
 
         result = cli_runner.invoke(app, ["cert", "show"])
         assert result.exit_code == 0
-        assert "mitmproxy-ca-cert.pem" in result.output
+        # Check for cert filename - Rich may wrap long paths across lines
+        assert "ca-cert.pem" in result.output
 
 
 class TestCheckCommand:
