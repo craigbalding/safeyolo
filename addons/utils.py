@@ -28,9 +28,10 @@ import json
 import logging
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import yaml
 from mitmproxy import http
@@ -224,3 +225,70 @@ def get_option_safe(name: str, default: Any = True) -> Any:
         return getattr(ctx.options, name)
     except AttributeError:
         return default
+
+
+# =============================================================================
+# Background Task Utilities
+# =============================================================================
+
+class BackgroundWorker:
+    """Periodic background task runner.
+
+    Runs a function at regular intervals in a daemon thread.
+    Handles errors gracefully and supports clean shutdown.
+
+    Example:
+        def save_state():
+            with open("state.json", "w") as f:
+                json.dump(current_state, f)
+
+        worker = BackgroundWorker(save_state, interval_sec=10.0, name="state-saver")
+        worker.start()
+        # ... later ...
+        worker.stop()
+    """
+
+    def __init__(self, work_fn: Callable[[], None], interval_sec: float, name: str):
+        """Initialize background worker.
+
+        Args:
+            work_fn: Function to call periodically (no arguments)
+            interval_sec: Seconds between calls
+            name: Thread name for debugging
+        """
+        self._work_fn = work_fn
+        self._interval = interval_sec
+        self._name = name
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        """Start the background worker thread."""
+        if self._thread and self._thread.is_alive():
+            return
+
+        def loop():
+            while not self._stop.wait(timeout=self._interval):
+                try:
+                    self._work_fn()
+                except Exception as e:
+                    _log.error(f"{self._name} error: {type(e).__name__}: {e}")
+
+        self._stop.clear()
+        self._thread = threading.Thread(target=loop, daemon=True, name=self._name)
+        self._thread.start()
+        _log.debug(f"Started background worker: {self._name}")
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop the background worker thread.
+
+        Args:
+            timeout: Seconds to wait for thread to finish
+        """
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                _log.warning(f"{self._name} didn't stop within {timeout}s")
+            self._thread = None
+        _log.debug(f"Stopped background worker: {self._name}")

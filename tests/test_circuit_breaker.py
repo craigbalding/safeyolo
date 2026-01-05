@@ -357,21 +357,20 @@ class TestCircuitBreakerStatePersistence:
         temp_files = list(tmp_path.glob("*.tmp"))
         assert len(temp_files) == 0
 
-    def test_snapshot_thread_starts_and_stops(self, tmp_path):
-        """Verify snapshot thread lifecycle."""
+    def test_snapshot_worker_starts_and_stops(self, tmp_path):
+        """Verify snapshot worker lifecycle."""
         from addons.circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "circuit_breaker_state.json"
         state = InMemoryCircuitState(state_file=state_file)
 
-        assert state._snapshot_thread is not None
-        assert state._snapshot_thread.is_alive()
+        assert state._worker is not None
 
         # Stop snapshots
         state.stop_snapshots()
 
-        # Thread should be stopped and set to None
-        assert state._snapshot_thread is None
+        # Worker should be stopped and set to None
+        assert state._worker is None
 
         # Final state should be saved
         assert state_file.exists()
@@ -427,13 +426,13 @@ class TestCircuitBreakerStatePersistence:
         state_file = tmp_path / "state.json"
         circuit_breaker._state = InMemoryCircuitState(state_file=state_file)
 
-        assert circuit_breaker._state._snapshot_thread is not None
+        assert circuit_breaker._state._worker is not None
 
         # Call done() (simulates mitmproxy shutdown)
         circuit_breaker.done()
 
-        # Thread should be stopped and set to None
-        assert circuit_breaker._state._snapshot_thread is None
+        # Worker should be stopped and set to None
+        assert circuit_breaker._state._worker is None
 
     def test_concurrent_access_thread_safety(self, tmp_path):
         """Verify concurrent access to state is thread-safe."""

@@ -24,9 +24,9 @@ import yaml
 from mitmproxy import ctx, http
 
 try:
-    from .utils import write_audit_event
+    from .utils import write_audit_event, BackgroundWorker
 except ImportError:
-    from utils import write_audit_event
+    from utils import write_audit_event, BackgroundWorker
 
 log = logging.getLogger("safeyolo.request-logger")
 
@@ -41,8 +41,7 @@ class QuietHostsConfig:
         self._host_patterns: list[str] = []  # Wildcard patterns like *.example.com
         self._paths: dict[str, list[str]] = {}  # host -> [path patterns]
         self._mtime: float = 0
-        self._watcher_thread: Optional[threading.Thread] = None
-        self._watcher_stop = threading.Event()
+        self._worker: Optional[BackgroundWorker] = None
 
     def load(self) -> bool:
         """Load config from file."""
@@ -118,24 +117,23 @@ class QuietHostsConfig:
             pass
 
     def start_watcher(self):
-        """Start background file watcher thread."""
-        if self._watcher_thread and self._watcher_thread.is_alive():
+        """Start background file watcher."""
+        if self._worker:
             return
 
-        def watch_loop():
-            while not self._watcher_stop.wait(timeout=5.0):
-                self._check_reload()
-
-        self._watcher_stop.clear()
-        self._watcher_thread = threading.Thread(target=watch_loop, daemon=True)
-        self._watcher_thread.start()
+        self._worker = BackgroundWorker(
+            self._check_reload,
+            interval_sec=5.0,
+            name="quiet-hosts-watcher"
+        )
+        self._worker.start()
         log.debug("Started quiet hosts config watcher")
 
     def stop_watcher(self):
-        """Stop the file watcher thread."""
-        self._watcher_stop.set()
-        if self._watcher_thread:
-            self._watcher_thread.join(timeout=2.0)
+        """Stop the file watcher."""
+        if self._worker:
+            self._worker.stop()
+            self._worker = None
 
     def should_quiet(self, host: str, path: str) -> bool:
         """Check if host/path should be suppressed from logging.

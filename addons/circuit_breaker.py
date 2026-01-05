@@ -30,9 +30,9 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe
+    from .utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe, BackgroundWorker
 except ImportError:
-    from utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe
+    from utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe, BackgroundWorker
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -74,9 +74,8 @@ class InMemoryCircuitState:
     def __init__(self, state_file: Optional[Path] = None):
         self._states: dict[str, dict] = {}
         self._state_file = state_file
-        self._snapshot_thread: Optional[threading.Thread] = None
-        self._snapshot_stop = threading.Event()
         self._lock = threading.RLock()
+        self._worker: Optional[BackgroundWorker] = None
 
         if self._state_file and self._state_file.exists():
             self._load_state()
@@ -114,26 +113,21 @@ class InMemoryCircuitState:
             log.error(f"Failed to save circuit breaker state: {type(e).__name__}: {e}")
 
     def _start_snapshots(self):
-        """Start background thread to snapshot state every 10 seconds."""
-        def snapshot_loop():
-            while not self._snapshot_stop.is_set():
-                self._save_state()
-                self._snapshot_stop.wait(timeout=10.0)
-
-        self._snapshot_thread = threading.Thread(target=snapshot_loop, daemon=True, name="circuit-breaker-snapshot")
-        self._snapshot_thread.start()
+        """Start background worker to snapshot state every 10 seconds."""
+        self._worker = BackgroundWorker(
+            self._save_state,
+            interval_sec=10.0,
+            name="circuit-breaker-snapshot"
+        )
+        self._worker.start()
         log.info("Started circuit breaker state snapshots (10s interval)")
 
     def stop_snapshots(self):
-        """Stop snapshot thread and save final state."""
-        if self._snapshot_thread:
-            self._snapshot_stop.set()
-            self._snapshot_thread.join(timeout=2.0)
-            if self._snapshot_thread.is_alive():
-                log.warning("Circuit breaker snapshot thread didn't stop within timeout")
+        """Stop snapshot worker and save final state."""
+        if self._worker:
+            self._worker.stop()
             self._save_state()
-            self._snapshot_thread = None
-            self._snapshot_stop.clear()
+            self._worker = None
             log.info("Stopped circuit breaker state snapshots")
 
     def get(self, domain: str) -> dict:
