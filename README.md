@@ -48,9 +48,8 @@ If you want to follow along (or be an early tester), star the repo and watch rel
 ## Quick Start (v1 preview)
 
 ```bash
-# Install CLI (pick one)
-pipx install safeyolo          # classic
-uv tool install safeyolo       # faster, modern
+# Install CLI
+pipx install safeyolo
 
 # Start proxy (auto-configures on first run)
 safeyolo start
@@ -132,7 +131,9 @@ See `safeyolo agent list` for available templates.
 
 Implements a policy layer to control agent network egress.  SafeYolo doesn’t try to detect why a request happened — it constrains what can happen next.  Features include:
 
-**Credential routing** - help prevent credentials being sent to unexpected destinations. An OpenAI key to `api.openai.com.attacker.io` (e.g., from a bad link, agent mistake, or untrusted content) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
+**Access control** - Allow/deny rules for network access. Restrict which domains agents can reach (allowlist or denylist mode).
+
+**Credential routing** - Help prevent credentials being sent to unexpected destinations. An OpenAI key to `api.openai.com.attacker.io` (e.g., from a bad link, agent mistake, or untrusted content) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
 
 **Smart detection** - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.) plus entropy analysis may catch unknown secrets.
 
@@ -180,10 +181,10 @@ For security principles, threat model, and vulnerability reporting, see [SECURIT
 │  ┌────────────────┐  ┌───────┴───────────────────────────┐  │
 │  │  safeyolo CLI  │  │      SafeYolo Container (:8080)   │  │
 │  │                │  │                                   │  │
-│  │  start, watch, │  │  credential_guard - wrong dest?   │  │
+│  │  start, watch, │  │  access_control   - deny list?    │  │
 │  │  cert env      │  │  rate_limiter     - too fast?     │  │
-│  │                │  │  pattern_scanner  - secrets?      │  │
-│  └───────┬────────┘  │  request_logger   - audit trail   │  │
+│  │                │  │  credential_guard - wrong dest?   │  │
+│  └───────┬────────┘  │  pattern_scanner  - secrets?      │  │
 │          │           └───────────────────▲───────────────┘  │
 │          │ manages                       │                  │
 │          ▼                               │ all traffic      │
@@ -336,33 +337,43 @@ SafeYolo is designed to reduce accidental outbound risk from helpful-but-sloppy 
 
 ## Architecture
 
-SafeYolo runs mitmproxy with a chain of addons. See [docs/ADDONS.md](docs/ADDONS.md) for full reference.
+SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons are loaded in strict sequence. See [docs/ADDONS.md](docs/ADDONS.md) for full reference.
 
-| Addon | Purpose | Default |
-|-------|---------|---------|
-| request_id | Assigns unique ID for correlation | Always on |
-| policy_engine | Unified policy evaluation and budgets | Always on |
-| access_control | Allow/deny rules for network access | Block |
-| rate_limiter | Per-domain rate limiting (via PolicyEngine) | Block |
-| circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
-| credential_guard | Block credentials to wrong hosts | Block |
-| pattern_scanner | Regex scanning for secrets | Warn |
-| request_logger | JSONL audit logging | Always on |
-| metrics | Per-domain statistics | Always on |
-| admin_api | REST API on :9090 | Always on |
+| Layer | Addon | Purpose | Default |
+|-------|-------|---------|---------|
+| 0 | admin_shield | Block proxy access to admin API | Always on |
+| 0 | request_id | Assigns unique ID for correlation | Always on |
+| 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
+| 0 | policy_engine | Unified policy evaluation and budgets | Always on |
+| 1 | access_control | Allow/deny rules for network access | Block |
+| 1 | rate_limiter | Per-domain rate limiting (via PolicyEngine) | Block |
+| 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
+| 2 | credential_guard | Block credentials to wrong hosts | Block |
+| 2 | pattern_scanner | Regex scanning for secrets | Warn |
+| 3 | request_logger | JSONL audit logging | Always on |
+| 3 | metrics | Per-domain statistics | Always on |
+| 3 | admin_api | REST API on :9090 | Always on |
+
+**Layer 0 (Infrastructure):** Request IDs, policy engine, streaming support.
+**Layer 1 (Access Control):** Deny decisions run before budget checks.
+**Layer 2 (Security Inspection):** Credential routing and content scanning.
+**Layer 3 (Observability):** Logging, metrics, admin API.
 
 ## Files
 
 ```
 safeyolo/
 ├── addons/              # mitmproxy addons
+│   ├── base.py               # SecurityAddon base class
+│   ├── utils.py              # Shared utilities
 │   ├── policy_engine.py      # Unified policy evaluation
+│   ├── budget_tracker.py     # GCRA-based rate limiting
 │   ├── access_control.py     # Network allow/deny rules
 │   ├── credential_guard.py   # Credential routing
 │   ├── rate_limiter.py       # Rate limiting (via PolicyEngine)
-│   ├── circuit_breaker.py
-│   ├── pattern_scanner.py
-│   ├── admin_api.py
+│   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
+│   ├── pattern_scanner.py    # Regex scanning for secrets
+│   ├── admin_api.py          # REST API on :9090
 │   └── ...
 ├── cli/                 # safeyolo CLI package
 ├── config/              # Default configurations
