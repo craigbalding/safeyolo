@@ -32,7 +32,7 @@ jobs:
 
       - name: Generate SBOM (CycloneDX)
         run: |
-          cyclonedx-py environment -o sbom.json --format json
+          cyclonedx-py environment -o sbom.json --output-format json
 
       - name: Upload SBOM to release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
