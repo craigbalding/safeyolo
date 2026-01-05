@@ -7,8 +7,8 @@ and ensure robustness against malformed/malicious input.
 
 import re
 
-from hypothesis import HealthCheck, given, settings, strategies as st
-
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 # Strategies for generating test data
 text_strategy = st.text(min_size=0, max_size=10000)
