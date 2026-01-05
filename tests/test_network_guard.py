@@ -206,7 +206,6 @@ class TestNetworkGuardIntegration:
 
     def test_deny_with_real_policy(self):
         """Test deny effect works with real policy engine."""
-        from addons.network_guard import NetworkGuard
         from addons.policy_engine import PolicyEngine, Permission, UnifiedPolicy
 
         # Create policy with deny rule

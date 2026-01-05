@@ -4,7 +4,6 @@ Integration tests for SafeYolo addon chain.
 Tests that addons work together correctly via flow.metadata sharing.
 """
 
-import pytest
 
 
 class TestAddonChainMetadata:

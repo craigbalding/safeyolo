@@ -4,7 +4,6 @@ Tests for circuit_breaker.py addon.
 Tests circuit state transitions, failure detection, and recovery.
 """
 
-import pytest
 import time
 
 
@@ -104,7 +103,7 @@ class TestCircuitBreakerBlocking:
 
     def test_allows_requests_when_closed(self, circuit_breaker, make_flow):
         """Test that closed circuit allows requests."""
-        flow = make_flow(url="http://test.com/api")
+        _ = make_flow(url="http://test.com/api")  # Fixture invoked for setup
 
         allowed, status = circuit_breaker.should_allow_request("test.com")
         assert allowed is True
@@ -546,7 +545,6 @@ class TestRequestIdPropagation:
     def test_response_handler_uses_request_id(self, circuit_breaker, make_flow_with_request_id, make_response, tmp_path):
         """Verify response handler logs with request_id on failure."""
         from unittest.mock import patch
-        import json
 
         log_path = tmp_path / "test.jsonl"
 

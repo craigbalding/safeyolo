@@ -5,9 +5,6 @@ Tests credential detection, host authorization, and blocking behavior.
 """
 
 import json
-import pytest
-import tempfile
-from pathlib import Path
 
 
 class TestCredentialRule:

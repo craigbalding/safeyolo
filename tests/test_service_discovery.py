@@ -4,10 +4,9 @@ Tests for service_discovery.py - IP to project mapping.
 Tests static service registry for project isolation.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 
 class TestServiceEntry:

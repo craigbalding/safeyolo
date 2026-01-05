@@ -5,10 +5,9 @@ Tests logging functionality and quiet hosts configuration.
 """
 
 import json
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 
 class TestQuietHostsConfig:

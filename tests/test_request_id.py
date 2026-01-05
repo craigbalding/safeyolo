@@ -88,10 +88,9 @@ class TestRequestIdIntegration:
         """Request ID is available when credential_guard runs."""
         from addons.request_id import RequestIdGenerator
         from addons.credential_guard import CredentialGuard
-        from mitmproxy.test import taddons
 
         rid = RequestIdGenerator()
-        cg = CredentialGuard()
+        _ = CredentialGuard()  # Verify it can be instantiated
 
         flow = tflow.tflow()
         flow.request.headers["Authorization"] = "Bearer sk-test123"
@@ -112,7 +111,7 @@ class TestRequestIdIntegration:
         from addons.network_guard import NetworkGuard
 
         rid = RequestIdGenerator()
-        ng = NetworkGuard()
+        _ = NetworkGuard()  # Verify it can be instantiated
 
         flow = tflow.tflow()
         rid.request(flow)

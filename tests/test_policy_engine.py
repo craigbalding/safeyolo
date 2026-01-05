@@ -5,8 +5,6 @@ Tests destination-first credential evaluation, budget tracking, and permission m
 """
 
 import pytest
-from pathlib import Path
-from typing import Any
 
 
 class TestPatternMatching:

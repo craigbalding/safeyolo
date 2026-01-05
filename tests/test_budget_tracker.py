@@ -4,13 +4,9 @@ Tests for budget_tracker.py - GCRA-based budget tracking.
 Tests rate limiting algorithm, state persistence, and thread safety.
 """
 
-import json
-import pytest
 import tempfile
 import threading
-import time
 from pathlib import Path
-from unittest.mock import Mock, patch
 
 
 class TestGCRABasics:

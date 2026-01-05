@@ -4,7 +4,6 @@ Tests for sse_streaming.py - SSE/streaming response support.
 Tests content-type detection and streaming enablement.
 """
 
-import pytest
 from unittest.mock import Mock, patch
 
 

@@ -5,11 +5,10 @@ Tests YAML/JSON loading, file watching, and thread-safe policy access.
 """
 
 import json
-import pytest
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 
 class TestSpecificityScore:
@@ -275,7 +274,8 @@ permissions:
             path = Path(tmpdir) / "baseline.yaml"
             path.write_text("permissions: []")
 
-            loader = PolicyLoader(baseline_path=path, on_reload=callback)
+            # Loader created to trigger callback
+            _ = PolicyLoader(baseline_path=path, on_reload=callback)
 
             # Callback should have been called on initial load
             assert callback.called

@@ -4,7 +4,6 @@ Tests for metrics.py - Per-domain statistics collection.
 Tests request/response tracking and metrics output.
 """
 
-import pytest
 import time
 from unittest.mock import Mock
 

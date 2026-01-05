@@ -7,9 +7,6 @@ Uses threading to run the admin server during tests.
 
 import json
 import pytest
-import threading
-import time
-from http.server import HTTPServer
 from unittest.mock import MagicMock, patch
 
 
@@ -32,7 +29,6 @@ class TestAdminRequestHandler:
 
     def test_health_endpoint(self, handler_class):
         """Test GET /health returns healthy status."""
-        from io import BytesIO
 
         # Create mock request
         handler = self._create_handler(handler_class, "GET", "/health")
@@ -324,8 +320,6 @@ class TestAdminAPIAuthentication:
 
     def test_timing_attack_resistance(self, handler_class_with_token):
         """Verify secrets.compare_digest is used for constant-time comparison."""
-        import secrets
-        from addons.admin_api import AdminRequestHandler
 
         # Create mock handler using the existing helper
         handler = self._create_handler(handler_class_with_token, "GET", "/stats")
@@ -349,7 +343,8 @@ class TestAdminAPIAuthentication:
         handler = self._create_handler(handler_class, "GET", "/stats")
         handler.do_GET()
 
-        response = self._parse_response(handler)
+        # Response parsed but only status checked
+        _ = self._parse_response(handler)
         # Should still require auth (401) even if token not configured
         # This prevents accidentally running without auth
         assert handler._status == 401

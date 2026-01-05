@@ -4,8 +4,6 @@ Tests for base.py - SecurityAddon base class.
 Tests base addon functionality including stats, options, and decision logging.
 """
 
-import pytest
-from dataclasses import dataclass
 from unittest.mock import Mock, patch
 
 

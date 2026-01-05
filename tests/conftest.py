@@ -79,7 +79,7 @@ def taddons_ctx():
 @pytest.fixture
 def policy_engine_initialized(tmp_path):
     """Initialize PolicyEngine with test baseline for credential_guard tests."""
-    from addons.policy_engine import init_policy_engine, _policy_engine
+    from addons.policy_engine import init_policy_engine
     import addons.policy_engine as pe
 
     # Save existing engine
