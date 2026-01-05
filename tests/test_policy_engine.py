@@ -137,12 +137,12 @@ budgets:
 
 required:
   - credential_guard
-  - rate_limiter
+  - network_guard
 
 addons:
   credential_guard:
     enabled: true
-  rate_limiter:
+  network_guard:
     enabled: true
 """)
 
@@ -373,13 +373,13 @@ addons:
     enabled: true
   pattern_scanner:
     enabled: false
-  rate_limiter:
+  network_guard:
     enabled: true
 
 domains:
   "*.internal":
     bypass:
-      - rate_limiter
+      - network_guard
       - pattern_scanner
 """)
 
@@ -393,5 +393,5 @@ domains:
 
     def test_addon_bypassed_for_domain(self, engine):
         """Test addon bypass for specific domain."""
-        assert not engine.is_addon_enabled("rate_limiter", domain="db.internal")
+        assert not engine.is_addon_enabled("network_guard", domain="db.internal")
         assert engine.is_addon_enabled("credential_guard", domain="db.internal")  # required

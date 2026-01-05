@@ -44,9 +44,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     # Addons that support mode switching: name -> option_name
     # All options now use consistent "block" semantics: True=block, False=warn
     MODE_SWITCHABLE = {
-        "access-control": "access_control_block",
+        "network-guard": "network_guard_block",
         "credential-guard": "credguard_block",
-        "rate-limiter": "ratelimit_block",
         "pattern-scanner": "pattern_block_input",
         "yara-scanner": "yara_block_on_match",
         "prompt-injection": "injection_block",

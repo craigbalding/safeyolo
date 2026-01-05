@@ -12,8 +12,7 @@ Addons are loaded in this order (order matters for security):
 | 0 | request_id | Request ID for event correlation | Always on |
 | 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
 | 0 | policy_engine | Unified policy evaluation and budgets | Always on |
-| 1 | access_control | Network allow/deny rules | **Block** |
-| 1 | rate_limiter | Per-domain rate limiting (via PolicyEngine) | **Block** |
+| 1 | network_guard | Access control + rate limiting + homoglyph detection | **Block** |
 | 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | 2 | credential_guard | Block credentials to wrong hosts | **Block** |
 | 2 | pattern_scanner | Regex scanning for secrets | Warn |
@@ -23,12 +22,12 @@ Addons are loaded in this order (order matters for security):
 
 **Layers:**
 - **Layer 0 (Infrastructure):** Must run first - request IDs, policy engine, streaming
-- **Layer 1 (Access Control):** Deny decisions before budget checks
+- **Layer 1 (Network Policy):** Access control, rate limiting, circuit breakers
 - **Layer 2 (Security Inspection):** Credential routing, content scanning
 - **Layer 3 (Observability):** Logging, metrics, admin API
 
 **Default behavior:**
-- `access_control`, `credential_guard`, and `rate_limiter` block by default (core protections)
+- `network_guard` and `credential_guard` block by default (core protections)
 - `pattern_scanner` warns by default (higher false positive rate)
 - Other addons are always active with no mode toggle
 
@@ -105,11 +104,11 @@ budgets:
 
 required:
   - credential_guard
-  - rate_limiter
+  - network_guard
 
 addons:
   credential_guard: {enabled: true, detection_level: standard}
-  rate_limiter: {enabled: true}
+  network_guard: {enabled: true}
 
 domains:
   "*.internal":
@@ -163,27 +162,39 @@ Maps client IPs to projects for per-project credential policy isolation.
 
 ---
 
-## rate_limiter.py
+## network_guard.py
 
-Per-domain rate limiting via PolicyEngine's GCRA-based budget tracking.
+Unified network policy addon combining access control, rate limiting, and homoglyph detection in a single evaluation.
 
 **Default: Block mode**
 
-**Use case:** Prevent IP blacklisting when an LLM loops on API calls.
+**Use cases:**
+- Restrict which domains coding agents can access (allowlist/denylist)
+- Prevent IP blacklisting when an LLM loops on API calls
+- Detect and block domain lookalike attacks (homoglyphs)
 
-**Configuration:** Rate limits are defined in `baseline.yaml` as permissions with `effect: budget`:
+**Key design:** Single `PolicyEngine.evaluate_request()` call per request prevents double budget consumption.
+
+**Configuration:** Network policies are defined in `baseline.yaml` as permissions:
 
 ```yaml
 permissions:
+  # Access control: allow/deny
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: allow
+    tier: explicit
+
+  - action: network:request
+    resource: "malware.com/*"
+    effect: deny
+    tier: explicit
+
+  # Rate limiting: budget (requests per minute)
   - action: network:request
     resource: "api.openai.com/*"
     effect: budget
-    budget: 3000  # requests per minute (50 rps)
-
-  - action: network:request
-    resource: "api.anthropic.com/*"
-    effect: budget
-    budget: 3000
+    budget: 3000  # 50 rps
 
   # Default for all other domains
   - action: network:request
@@ -193,60 +204,6 @@ permissions:
 
 budgets:
   network:request: 12000  # Global cap across all domains
-```
-
-**Response when limited (429):**
-```json
-{
-  "error": "Rate limited by proxy",
-  "domain": "api.openai.com",
-  "reason": "budget_exceeded",
-  "message": "Too many requests to api.openai.com. Please slow down."
-}
-```
-
-**How it works:**
-1. Request comes in for domain
-2. RateLimiter calls `PolicyEngine.evaluate_request()`
-3. PolicyEngine finds matching `network:request` permission
-4. GCRA budget tracker checks if budget allows request
-5. If budget exhausted, returns 429 with Retry-After header
-
----
-
-## access_control.py
-
-Network access control for client internet reach limits.
-
-**Default: Block mode**
-
-**Use case:** Restrict which domains coding agents can access (allowlist/denylist).
-
-**Configuration:** Access rules are defined in `baseline.yaml` as permissions with `effect: allow` or `effect: deny`:
-
-```yaml
-permissions:
-  # Allowlist mode: allow specific, deny rest
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: allow
-    tier: explicit
-
-  - action: network:request
-    resource: "api.anthropic.com/*"
-    effect: allow
-    tier: explicit
-
-  - action: network:request
-    resource: "*"
-    effect: deny  # Catch-all deny
-    tier: explicit
-
-  # Or denylist mode: deny specific domains
-  - action: network:request
-    resource: "malware.com/*"
-    effect: deny
-    tier: explicit
 ```
 
 **Response when denied (403):**
@@ -259,27 +216,36 @@ permissions:
 }
 ```
 
+**Response when rate limited (429):**
+```json
+{
+  "error": "Rate limited by proxy",
+  "domain": "api.openai.com",
+  "reason": "budget_exceeded",
+  "message": "Too many requests to api.openai.com. Please slow down."
+}
+```
+
 **How it works:**
 1. Request comes in for domain
-2. AccessControl calls `PolicyEngine.evaluate_request()`
-3. PolicyEngine finds matching `network:request` permission
-4. If `effect: deny`, returns 403 Forbidden
-5. If `effect: allow` or `effect: budget`, passes through to rate_limiter
-
-**Addon chain order:** Load `access_control` before `rate_limiter`:
-- AccessControl blocks denied requests (403)
-- RateLimiter enforces budgets on allowed requests (429)
+2. NetworkGuard checks for homoglyph attacks (mixed Unicode scripts)
+3. NetworkGuard calls `PolicyEngine.evaluate_request()` (single call)
+4. PolicyEngine evaluates `network:request` permissions
+5. Results:
+   - `effect: deny` → returns 403 Forbidden
+   - `effect: budget_exceeded` → returns 429 with Retry-After header
+   - `effect: allow` or `effect: budget` (within budget) → pass through
 
 **Options:**
 ```bash
---set access_control_enabled=true   # Enable access control (default: true)
---set access_control_block=true     # Block mode (default: true, false = warn only)
---set access_control_homoglyph=true # Enable homoglyph detection (default: true)
+--set network_guard_enabled=true   # Enable network guard (default: true)
+--set network_guard_block=true     # Block mode (default: true, false = warn only)
+--set network_guard_homoglyph=true # Enable homoglyph detection (default: true)
 ```
 
 ### Homoglyph Detection
 
-Detects mixed-script domain attacks like `api.оpenai.com` (Cyrillic 'о' instead of Latin 'o'). When enabled, requests to domains with mixed Unicode scripts are blocked before any credential checking.
+Detects mixed-script domain attacks like `api.оpenai.com` (Cyrillic 'о' instead of Latin 'o'). When enabled, requests to domains with mixed Unicode scripts are blocked before any policy evaluation.
 
 **Response when blocked (403):**
 ```json
@@ -503,7 +469,7 @@ curl -X POST http://localhost:9090/plugins/credential-guard/allowlist \
 
 ### Related Features
 
-**Homoglyph detection:** Mixed-script attacks like `api.оpenai.com` (Cyrillic 'о') are detected by `access_control.py`, not credential_guard. See access_control section below.
+**Homoglyph detection:** Mixed-script attacks like `api.оpenai.com` (Cyrillic 'о') are detected by `network_guard.py`, not credential_guard. See network_guard section above.
 
 ---
 

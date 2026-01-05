@@ -23,8 +23,8 @@ class TestAddonChainMetadata:
         assert flow.metadata.get("blocked_by") == "credential-guard"
         assert flow.metadata.get("credential_fingerprint") is not None
 
-    def test_rate_limiter_sets_blocked_by(self, rate_limiter, make_flow, tmp_path):
-        """Test that rate_limiter sets blocked_by metadata."""
+    def test_network_guard_sets_blocked_by(self, network_guard, make_flow, tmp_path):
+        """Test that network_guard sets blocked_by metadata when rate limited."""
         from addons.policy_engine import init_policy_engine
         import addons.policy_engine as pe
 
@@ -51,15 +51,15 @@ domains: {}
         try:
             # Exhaust budget (2 requests allowed)
             flow1 = make_flow(url="http://test.com/api")
-            rate_limiter.request(flow1)
+            network_guard.request(flow1)
             flow2 = make_flow(url="http://test.com/api")
-            rate_limiter.request(flow2)
+            network_guard.request(flow2)
 
             # Get blocked on 3rd
             flow3 = make_flow(url="http://test.com/api")
-            rate_limiter.request(flow3)
+            network_guard.request(flow3)
 
-            assert flow3.metadata.get("blocked_by") == "rate-limiter"
+            assert flow3.metadata.get("blocked_by") == "network-guard"
         finally:
             pe._policy_engine = old_engine
 
@@ -88,7 +88,7 @@ domains: {}
 class TestAddonChainOrder:
     """Tests for addon execution order semantics."""
 
-    def test_first_blocker_wins(self, credential_guard, rate_limiter, make_flow, tmp_path):
+    def test_first_blocker_wins(self, credential_guard, network_guard, make_flow, tmp_path):
         """Test that first addon to block sets response."""
         from addons.policy_engine import init_policy_engine
         import addons.policy_engine as pe
@@ -116,9 +116,9 @@ domains: {}
         try:
             # Exhaust rate limit (2 requests allowed)
             flow1 = make_flow(url="http://evil.com/api")
-            rate_limiter.request(flow1)
+            network_guard.request(flow1)
             flow2 = make_flow(url="http://evil.com/api")
-            rate_limiter.request(flow2)
+            network_guard.request(flow2)
 
             # Create flow that would be blocked by both addons
             flow = make_flow(
@@ -127,10 +127,10 @@ domains: {}
                 headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
             )
 
-            # If rate_limiter runs first (as in production chain)
-            rate_limiter.request(flow)
+            # If network_guard runs first (as in production chain)
+            network_guard.request(flow)
             assert flow.response is not None
-            assert flow.metadata.get("blocked_by") == "rate-limiter"
+            assert flow.metadata.get("blocked_by") == "network-guard"
         finally:
             pe._policy_engine = old_engine
 
@@ -138,7 +138,7 @@ domains: {}
 class TestRealisticScenarios:
     """Tests for realistic usage scenarios."""
 
-    def test_openai_request_through_chain(self, credential_guard, rate_limiter, circuit_breaker, make_flow, make_response):
+    def test_openai_request_through_chain(self, credential_guard, network_guard, circuit_breaker, make_flow, make_response):
         """Test a realistic OpenAI API request through the chain."""
         flow = make_flow(
             method="POST",
@@ -150,8 +150,8 @@ class TestRealisticScenarios:
         )
 
         # Run through addons (in production order)
-        rate_limiter.request(flow)
-        assert flow.response is None, "Should pass rate limiter"
+        network_guard.request(flow)
+        assert flow.response is None, "Should pass network guard"
 
         circuit_breaker.request(flow)
         assert flow.response is None, "Should pass circuit breaker"
@@ -231,14 +231,14 @@ class TestEdgeCases:
         credential_guard.request(flow)
         assert flow.response is None
 
-    def test_missing_host(self, rate_limiter, make_flow):
+    def test_missing_host(self, network_guard, make_flow):
         """Test handling when host cannot be determined."""
         flow = make_flow(url="http://example.com/")
         # Mangle the host
         flow.request.host = ""
 
         # Should not crash
-        rate_limiter.request(flow)
+        network_guard.request(flow)
 
 
 class TestBlockingMode:

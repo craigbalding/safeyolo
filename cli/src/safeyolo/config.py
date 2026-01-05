@@ -72,7 +72,7 @@ DEFAULT_CONFIG = {
     },
     "modes": {
         "credential_guard": "block",
-        "rate_limiter": "block",
+        "network_guard": "block",
         "pattern_scanner": "warn",
     },
     "notifications": {

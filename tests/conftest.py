@@ -149,12 +149,12 @@ def credential_guard(policy_engine_initialized):
 
 
 @pytest.fixture
-def rate_limiter():
-    """Create a fresh RateLimiter instance with blocking enabled."""
-    from addons.rate_limiter import RateLimiter
+def network_guard():
+    """Create a fresh NetworkGuard instance with blocking enabled."""
+    from addons.network_guard import NetworkGuard
 
-    addon = RateLimiter()
-    # Default to blocking mode for tests (production default is warn-only)
+    addon = NetworkGuard()
+    # Default to blocking mode for tests
     addon.should_block = lambda: True
     return addon
 

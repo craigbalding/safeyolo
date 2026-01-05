@@ -10,11 +10,11 @@
 #
 # Core addons:
 #   - request_id: Unique request ID for event correlation
+#   - policy_engine: Per-domain/client addon configuration
+#   - network_guard: Access control + rate limiting (deny/budget)
 #   - credential_guard: Block API keys to wrong hosts
-#   - rate_limiter: Per-domain rate limiting (GCRA)
 #   - circuit_breaker: Fail-fast for unhealthy upstreams
 #   - pattern_scanner: Fast regex for secrets/jailbreaks
-#   - policy_engine: Per-domain/client addon configuration
 #   - service_discovery: Docker container auto-discovery
 #   - request_logger: JSONL structured logging
 #   - metrics: Per-domain statistics
@@ -60,9 +60,8 @@ COPY addons/admin_shield.py /app/addons/
 COPY addons/request_id.py /app/addons/
 COPY addons/sse_streaming.py /app/addons/
 COPY addons/policy_engine.py /app/addons/
-# Layer 1: Access Control
-COPY addons/access_control.py /app/addons/
-COPY addons/rate_limiter.py /app/addons/
+# Layer 1: Network Policy
+COPY addons/network_guard.py /app/addons/
 COPY addons/circuit_breaker.py /app/addons/
 # Layer 2: Security Inspection
 COPY addons/credential_guard.py /app/addons/

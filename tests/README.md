@@ -6,7 +6,7 @@ Unit and integration tests for native mitmproxy addons.
 
 - `conftest.py` - Pytest fixtures using `mitmproxy.test.tflow`
 - `test_credential_guard.py` - Credential detection, host authorization, blocking, allowlist
-- `test_rate_limiter.py` - GCRA algorithm, per-domain limits, 429 responses
+- `test_network_guard.py` - Access control + rate limiting, deny/budget effects, homoglyph detection
 - `test_circuit_breaker.py` - State transitions, failure detection, recovery
 - `test_admin_api.py` - REST endpoints, mode switching, stats, allowlist API
 - `test_pattern_scanner.py` - Regex patterns, secret detection, jailbreak detection
@@ -44,7 +44,7 @@ pytest tests/ -v
 | Addon | Tests | Coverage |
 |-------|-------|----------|
 | credential_guard | 16 | Pattern matching, host auth, blocking, allowlist, temp allowlist, stats |
-| rate_limiter | 21 | GCRA algorithm, config, hot reload, blocking, 429 response, wildcard domains |
+| network_guard | 15 | Access control, rate limiting, deny/budget effects, homoglyph detection, warn mode |
 | circuit_breaker | 18 | State machine, blocking, exponential backoff, manual control, recovery |
 | admin_api | 17 | REST endpoints, mode switching, stats aggregation, allowlist management |
 | pattern_scanner | 32 | Regex patterns, secret detection, jailbreak detection, redaction |

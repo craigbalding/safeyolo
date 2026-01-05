@@ -271,7 +271,7 @@ budgets:
 
 required:
   - credential_guard
-  - rate_limiter
+  - network_guard
   - circuit_breaker
 
 # =============================================================================
@@ -279,15 +279,12 @@ required:
 # =============================================================================
 
 addons:
-  access_control:
+  network_guard:
     enabled: true
 
   credential_guard:
     enabled: true
     detection_level: standard  # patterns-only | standard | paranoid
-
-  rate_limiter:
-    enabled: true
 
   circuit_breaker:
     enabled: true
@@ -378,5 +375,5 @@ clients:
   # Test clients bypass rate limiting (for integration tests)
   "test-*":
     addons:
-      rate_limiter:
+      network_guard:
         enabled: false

@@ -181,10 +181,10 @@ For security principles, threat model, and vulnerability reporting, see [SECURIT
 │  ┌────────────────┐  ┌───────┴───────────────────────────┐  │
 │  │  safeyolo CLI  │  │      SafeYolo Container (:8080)   │  │
 │  │                │  │                                   │  │
-│  │  start, watch, │  │  access_control   - deny list?    │  │
-│  │  cert env      │  │  rate_limiter     - too fast?     │  │
-│  │                │  │  credential_guard - wrong dest?   │  │
-│  └───────┬────────┘  │  pattern_scanner  - secrets?      │  │
+│  │  start, watch, │  │  network_guard    - deny/limit?   │  │
+│  │  cert env      │  │  credential_guard - wrong dest?   │  │
+│  │                │  │  pattern_scanner  - secrets?      │  │
+│  └───────┬────────┘  │  circuit_breaker  - unhealthy?    │  │
 │          │           └───────────────────▲───────────────┘  │
 │          │ manages                       │                  │
 │          ▼                               │ all traffic      │
@@ -279,11 +279,11 @@ permissions:
 
 required:
   - credential_guard
-  - rate_limiter
+  - network_guard
 
 addons:
   credential_guard: {enabled: true}
-  rate_limiter: {enabled: true}
+  network_guard: {enabled: true}
 
 domains:
   "*.internal":
@@ -345,8 +345,7 @@ SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons a
 | 0 | request_id | Assigns unique ID for correlation | Always on |
 | 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
 | 0 | policy_engine | Unified policy evaluation and budgets | Always on |
-| 1 | access_control | Allow/deny rules for network access | Block |
-| 1 | rate_limiter | Per-domain rate limiting (via PolicyEngine) | Block |
+| 1 | network_guard | Access control + rate limiting | Block |
 | 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | 2 | credential_guard | Block credentials to wrong hosts | Block |
 | 2 | pattern_scanner | Regex scanning for secrets | Warn |
@@ -355,7 +354,7 @@ SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons a
 | 3 | admin_api | REST API on :9090 | Always on |
 
 **Layer 0 (Infrastructure):** Request IDs, policy engine, streaming support.
-**Layer 1 (Access Control):** Deny decisions run before budget checks.
+**Layer 1 (Network Policy):** Access control, rate limiting, circuit breakers.
 **Layer 2 (Security Inspection):** Credential routing and content scanning.
 **Layer 3 (Observability):** Logging, metrics, admin API.
 
@@ -369,9 +368,8 @@ safeyolo/
 │   ├── policy_engine.py      # Policy evaluation logic
 │   ├── policy_loader.py      # Policy file loading and hot reload
 │   ├── budget_tracker.py     # GCRA-based rate limiting state
-│   ├── access_control.py     # Network allow/deny + homoglyph detection
+│   ├── network_guard.py      # Access control + rate limiting + homoglyph
 │   ├── credential_guard.py   # Credential routing protection
-│   ├── rate_limiter.py       # Rate limiting (via PolicyEngine)
 │   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
 │   ├── pattern_scanner.py    # Regex scanning for secrets
 │   ├── admin_api.py          # REST API on :9090

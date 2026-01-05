@@ -68,7 +68,7 @@ class TestAdminRequestHandler:
         """Test GET /modes returns addon modes."""
         with patch("addons.admin_api.ctx") as mock_ctx:
             mock_ctx.options.credguard_block = False
-            mock_ctx.options.ratelimit_block = True
+            mock_ctx.options.network_guard_block = True
             mock_ctx.options.pattern_block_input = False
             mock_ctx.options.yara_block_on_match = False
             mock_ctx.options.injection_block = False
@@ -79,7 +79,7 @@ class TestAdminRequestHandler:
             response = self._parse_response(handler)
             assert "modes" in response
             assert response["modes"]["credential-guard"] == "warn"
-            assert response["modes"]["rate-limiter"] == "block"
+            assert response["modes"]["network-guard"] == "block"
 
     def test_plugin_mode_get(self, handler_class):
         """Test GET /plugins/{name}/mode returns single addon mode."""
@@ -409,9 +409,8 @@ class TestAdminAPIAddon:
         from addons.admin_api import AdminRequestHandler
 
         expected = {
-            "access-control",
+            "network-guard",
             "credential-guard",
-            "rate-limiter",
             "pattern-scanner",
             "yara-scanner",
             "prompt-injection",

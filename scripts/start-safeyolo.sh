@@ -65,19 +65,18 @@ fi
 #   2. sse_streaming  - SSE/streaming support for LLM responses
 #   3. policy_engine  - Unified policy evaluation (other addons query this)
 #
-# Layer 1: Access Control (deny decisions before budget tracking)
-#   4. access_control - Allow/deny per baseline policy (blocks before rate limiting)
-#   5. rate_limiter   - Per-domain rate limiting (GCRA budgets from PolicyEngine)
-#   6. circuit_breaker - Fail-fast for unhealthy upstreams
+# Layer 1: Network Policy (single evaluation for access + rate limiting)
+#   4. network_guard  - Access control + rate limiting (deny→403, budget→429)
+#   5. circuit_breaker - Fail-fast for unhealthy upstreams
 #
 # Layer 2: Security Inspection (credential and content scanning)
-#   7. credential_guard - API key protection and routing
-#   8. pattern_scanner  - Fast regex for secrets/jailbreaks
+#   6. credential_guard - API key protection and routing
+#   7. pattern_scanner  - Fast regex for secrets/jailbreaks
 #
 # Layer 3: Observability (observe but don't block)
-#   9. request_logger - JSONL structured logging
-#  10. metrics        - Per-domain statistics
-#  11. admin_api      - Control plane REST API
+#   8. request_logger - JSONL structured logging
+#   9. metrics        - Per-domain statistics
+#  10. admin_api      - Control plane REST API
 
 ADDON_ARGS=""
 
@@ -100,9 +99,8 @@ load_addon "/app/addons/admin_shield.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
 load_addon "/app/addons/policy_engine.py"
-# Layer 1: Access Control
-load_addon "/app/addons/access_control.py"
-load_addon "/app/addons/rate_limiter.py"
+# Layer 1: Network Policy
+load_addon "/app/addons/network_guard.py"
 load_addon "/app/addons/circuit_breaker.py"
 # Layer 2: Security Inspection
 load_addon "/app/addons/credential_guard.py"
@@ -140,17 +138,17 @@ MITM_OPTS="${MITM_OPTS} --set stream_large_bodies=10m"
 echo ""
 echo "Security addon blocking modes:"
 
-# access-control: defaults to BLOCK
-ACCESS_CONTROL_BLOCK="${ACCESS_CONTROL_BLOCK:-true}"
+# network-guard: defaults to BLOCK (combines access control + rate limiting)
+NETWORK_GUARD_BLOCK="${NETWORK_GUARD_BLOCK:-true}"
 if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
-    ACCESS_CONTROL_BLOCK="true"
+    NETWORK_GUARD_BLOCK="true"
 fi
-if [ "${ACCESS_CONTROL_BLOCK}" = "true" ]; then
-    echo "  access-control: BLOCK"
-    MITM_OPTS="${MITM_OPTS} --set access_control_block=true"
+if [ "${NETWORK_GUARD_BLOCK}" = "true" ]; then
+    echo "  network-guard: BLOCK"
+    MITM_OPTS="${MITM_OPTS} --set network_guard_block=true"
 else
-    echo "  access-control: WARN-ONLY"
-    MITM_OPTS="${MITM_OPTS} --set access_control_block=false"
+    echo "  network-guard: WARN-ONLY"
+    MITM_OPTS="${MITM_OPTS} --set network_guard_block=false"
 fi
 
 # credential-guard: defaults to BLOCK
@@ -259,8 +257,8 @@ if ! tmux has-session -t proxy 2>/dev/null; then
     exit 1
 fi
 
-# Configure rate limiter to block mode (fail closed if this fails)
-echo "Configuring rate limiter to block mode..."
+# Configure network guard to block mode (fail closed if this fails)
+echo "Configuring network guard to block mode..."
 ADMIN_READY=false
 for i in $(seq 1 30); do
     if curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/health 2>/dev/null | grep -q 200; then
@@ -276,22 +274,22 @@ if [ "$ADMIN_READY" != "true" ]; then
     exit 1
 fi
 
-# Enable blocking for rate limiter and verify
-curl -s -X PUT http://localhost:9090/plugins/rate-limiter/mode \
+# Enable blocking for network guard and verify
+curl -s -X PUT http://localhost:9090/plugins/network-guard/mode \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -d '{"mode":"block"}' > /dev/null 2>&1
 
-# Verify it took effect via GET /plugins/rate-limiter/mode
-MODE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/plugins/rate-limiter/mode 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('mode','unknown'))" 2>/dev/null)
+# Verify it took effect via GET /plugins/network-guard/mode
+MODE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/plugins/network-guard/mode 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('mode','unknown'))" 2>/dev/null)
 
 if [ "$MODE" != "block" ]; then
-    echo "ERROR: Failed to set rate limiter to block mode (got: $MODE) - failing closed"
+    echo "ERROR: Failed to set network guard to block mode (got: $MODE) - failing closed"
     tmux kill-session -t proxy 2>/dev/null
     exit 1
 fi
 
-echo "Rate limiter confirmed in block mode"
+echo "Network guard confirmed in block mode"
 
 # Tail JSONL logs to stdout (for docker logs -f)
 echo "SafeYolo ready - tailing JSONL logs to stdout"

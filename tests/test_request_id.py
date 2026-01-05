@@ -106,16 +106,16 @@ class TestRequestIdIntegration:
         request_id = flow.metadata["request_id"]
         assert request_id.startswith("req-")
 
-    def test_request_id_available_for_rate_limiter(self):
-        """Request ID is available when rate_limiter runs."""
+    def test_request_id_available_for_network_guard(self):
+        """Request ID is available when network_guard runs."""
         from addons.request_id import RequestIdGenerator
-        from addons.rate_limiter import RateLimiter
+        from addons.network_guard import NetworkGuard
 
         rid = RequestIdGenerator()
-        rl = RateLimiter()
+        ng = NetworkGuard()
 
         flow = tflow.tflow()
         rid.request(flow)
 
         assert "request_id" in flow.metadata
-        # Rate limiter can now log with request_id correlation
+        # Network guard can now log with request_id correlation
