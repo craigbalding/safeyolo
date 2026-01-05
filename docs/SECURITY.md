@@ -166,24 +166,26 @@ We welcome security research on SafeYolo.
 
 Addons use standalone imports (e.g., `from utils import ...`) matching mitmproxy's `-s` execution model.
 
-| Area | File | Notes |
-|------|------|-------|
-| Policy engine | `addons/policy_engine.py` | Unified IAM-style policy evaluation |
-| Destination-first matching | `addons/policy_engine.py:329` | `evaluate_credential()` - resource=destination, condition.credential=what can access |
-| Credential detection | `addons/credential_guard.py` | Pattern matching, entropy analysis |
-| Credential type mapping | `addons/credential_guard.py:104` | `detect_credential_type()` - maps patterns to types |
-| HMAC fingerprinting | `addons/utils.py:405` | `hmac_fingerprint()` - never stores raw credentials |
-| Atomic secret write | `addons/utils.py:369` | `load_hmac_secret()` - O_CREAT\|O_EXCL with 0o600 |
-| Shannon entropy | `addons/utils.py:309` | `calculate_shannon_entropy()` - high-entropy secret detection |
-| Condition matching | `addons/policy_engine.py:55` | `Condition` class with `matches()` - type-based and HMAC-based credential matching |
-| Budget tracking | `addons/budget_tracker.py:34` | `GCRABudgetTracker` - rate limiting via GCRA |
-| Homoglyph detection | `addons/network_guard.py:55` | `detect_homoglyph_attack()` - mixed-script domain spoofing |
-| Circuit breaker | `addons/circuit_breaker.py` | Fail-fast for unhealthy upstreams |
-| Service discovery | `addons/service_discovery.py` | Static config, no Docker socket |
-| Admin API auth | `addons/admin_api.py:71` | `_check_auth()` - bearer token with `secrets.compare_digest()` |
-| Base addon class | `addons/base.py:48` | `SecurityAddon` - stats, blocking, decision logging |
-| Request ID | `addons/request_id.py` | UUID correlation for audit trail |
-| Request logging | `addons/request_logger.py` | JSONL audit trail with `blocked_by` field |
-| Network isolation | `cli/src/safeyolo/templates/` | Docker compose templates for agent containers |
-| Non-root execution | `docker-compose.yml` | Host UID/GID mapping |
-| Startup verification | `scripts/start-safeyolo.sh` | Block mode verification |
+<!-- Base URL for code links: https://github.com/craigbalding/safeyolo/blob/master -->
+
+| Area | Location | Notes |
+|------|----------|-------|
+| Policy engine | [`policy_engine.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_engine.py) | Unified IAM-style policy evaluation |
+| Destination-first matching | [`policy_engine.py#L329`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_engine.py#L329) | `evaluate_credential()` - resource=destination, condition.credential=what can access |
+| Credential detection | [`credential_guard.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/credential_guard.py) | Pattern matching, entropy analysis |
+| Credential type mapping | [`credential_guard.py#L104`](https://github.com/craigbalding/safeyolo/blob/master/addons/credential_guard.py#L104) | `detect_credential_type()` - maps patterns to types |
+| HMAC fingerprinting | [`utils.py#L405`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py#L405) | `hmac_fingerprint()` - never stores raw credentials |
+| Atomic secret write | [`utils.py#L369`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py#L369) | `load_hmac_secret()` - O_CREAT\|O_EXCL with 0o600 |
+| Shannon entropy | [`utils.py#L309`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py#L309) | `calculate_shannon_entropy()` - high-entropy secret detection |
+| Condition matching | [`policy_engine.py#L55`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_engine.py#L55) | `Condition` class with `matches()` - type-based and HMAC-based credential matching |
+| Budget tracking | [`budget_tracker.py#L34`](https://github.com/craigbalding/safeyolo/blob/master/addons/budget_tracker.py#L34) | `GCRABudgetTracker` - rate limiting via GCRA |
+| Homoglyph detection | [`network_guard.py#L55`](https://github.com/craigbalding/safeyolo/blob/master/addons/network_guard.py#L55) | `detect_homoglyph_attack()` - mixed-script domain spoofing |
+| Circuit breaker | [`circuit_breaker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/circuit_breaker.py) | Fail-fast for unhealthy upstreams |
+| Service discovery | [`service_discovery.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/service_discovery.py) | Static config, no Docker socket |
+| Admin API auth | [`admin_api.py#L71`](https://github.com/craigbalding/safeyolo/blob/master/addons/admin_api.py#L71) | `_check_auth()` - bearer token with `secrets.compare_digest()` |
+| Base addon class | [`base.py#L48`](https://github.com/craigbalding/safeyolo/blob/master/addons/base.py#L48) | `SecurityAddon` - stats, blocking, decision logging |
+| Request ID | [`request_id.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_id.py) | UUID correlation for audit trail |
+| Request logging | [`request_logger.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_logger.py) | JSONL audit trail with `blocked_by` field |
+| Network isolation | [`cli/templates/`](https://github.com/craigbalding/safeyolo/tree/master/cli/src/safeyolo/templates) | Docker compose templates for agent containers |
+| Non-root execution | [`docker-compose.yml`](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) | Host UID/GID mapping |
+| Startup verification | [`start-safeyolo.sh`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh) | Block mode verification |
