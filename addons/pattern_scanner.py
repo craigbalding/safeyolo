@@ -22,8 +22,10 @@ from mitmproxy import ctx, http
 
 try:
     from .base import SecurityAddon
+    from .utils import make_block_response
 except ImportError:
     from base import SecurityAddon
+    from utils import make_block_response
 
 log = logging.getLogger("safeyolo.pattern-scanner")
 
@@ -164,7 +166,6 @@ class PatternScanner(SecurityAddon):
 
     def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
         """Override base block() - pattern scanner has custom stats."""
-        from .utils import make_block_response
         self.blocks_total += 1
         flow.metadata["blocked_by"] = self.name
         flow.response = make_block_response(status, body, self.name, extra_headers)

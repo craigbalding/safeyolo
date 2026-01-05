@@ -31,10 +31,10 @@ from mitmproxy import ctx, http
 
 try:
     from .base import SecurityAddon
-    from .utils import atomic_write_json, BackgroundWorker
+    from .utils import atomic_write_json, BackgroundWorker, make_block_response
 except ImportError:
     from base import SecurityAddon
-    from utils import atomic_write_json, BackgroundWorker
+    from utils import atomic_write_json, BackgroundWorker, make_block_response
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -300,7 +300,6 @@ class CircuitBreaker(SecurityAddon):
 
     def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
         """Override base block() - circuit breaker has its own stats."""
-        from .utils import make_block_response
         flow.metadata["blocked_by"] = self.name
         flow.response = make_block_response(status, body, self.name, extra_headers)
 
