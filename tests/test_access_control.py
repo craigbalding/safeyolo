@@ -45,7 +45,7 @@ class TestAccessControl:
         )
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.get_option_safe", return_value=True):
+            with patch("addons.base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should have blocked
@@ -77,7 +77,7 @@ class TestAccessControl:
         )
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.get_option_safe", return_value=True):
+            with patch("addons.base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should NOT have blocked
@@ -107,7 +107,7 @@ class TestAccessControl:
         )
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.get_option_safe", return_value=True):
+            with patch("addons.base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should NOT have blocked - budget effect is for rate_limiter
@@ -143,7 +143,7 @@ class TestAccessControl:
             return default
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.get_option_safe", side_effect=option_side_effect):
+            with patch("addons.base.get_option_safe", side_effect=option_side_effect):
                 addon.request(flow)
 
         # Should NOT have blocked in warn mode
@@ -165,7 +165,7 @@ class TestAccessControl:
         mock_engine = MagicMock()
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.get_option_safe", return_value=False):
+            with patch("addons.base.get_option_safe", return_value=False):
                 addon.request(flow)
 
         # Should not have called policy engine
@@ -184,7 +184,7 @@ class TestAccessControl:
         flow.response = None
 
         with patch("addons.access_control.get_policy_engine", return_value=None):
-            with patch("addons.access_control.get_option_safe", return_value=True):
+            with patch("addons.base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # No engine = no blocking
