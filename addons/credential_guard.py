@@ -41,9 +41,9 @@ except ImportError:
     homoglyph_confusables = None
 
 try:
-    from .utils import write_event
+    from .utils import write_event, make_block_response
 except ImportError:
-    from utils import write_event
+    from utils import write_event, make_block_response
 
 try:
     from .policy_engine import get_policy_engine, PolicyDecision
@@ -357,66 +357,6 @@ def analyze_headers(
 # Decision Engine
 # =============================================================================
 
-def check_policy_approval(credential: str, host: str, path: str, policy: dict, hmac_secret: bytes) -> bool:
-    """Check if credential is approved in policy."""
-    fingerprint = hmac_fingerprint(credential, hmac_secret)
-
-    for rule in policy.get("approved", []):
-        # Check HMAC match
-        if rule.get("token_hmac") != fingerprint:
-            continue
-
-        # Check host
-        if not any(matches_host_pattern(host, h) for h in rule.get("hosts", [])):
-            continue
-
-        # Check path
-        if not any(path_matches_pattern(path, p) for p in rule.get("paths", [])):
-            continue
-
-        return True
-
-    return False
-
-
-def determine_decision(
-    credential: str,
-    rule_name: str,
-    host: str,
-    path: str,
-    rules: list[CredentialRule],
-    policy: dict,
-    hmac_secret: bytes
-) -> tuple[str, dict]:
-    """Determine what to do with a detected credential.
-
-    Returns:
-        (decision_type, context) where decision_type is:
-        - "allow": credential approved for destination
-        - "greylist_mismatch": known credential, wrong destination
-        - "greylist_approval": unknown credential, needs approval
-    """
-    # Check policy first
-    if check_policy_approval(credential, host, path, policy, hmac_secret):
-        return "allow", {}
-
-    # Check if known rule
-    for rule in rules:
-        if rule.name == rule_name:
-            # Known credential type - check if going to allowed host
-            if any(matches_host_pattern(host, h) for h in rule.allowed_hosts):
-                return "allow", {}
-            else:
-                # Wrong destination
-                return "greylist_mismatch", {
-                    "expected_hosts": rule.allowed_hosts,
-                    "suggested_url": rule.suggested_url,
-                }
-
-    # Unknown credential - needs approval
-    return "greylist_approval", {"reason": "unknown_credential"}
-
-
 def determine_decision_with_policy_engine(
     credential: str,
     rule_name: str,
@@ -493,15 +433,6 @@ def determine_decision_with_policy_engine(
 # =============================================================================
 # Response Builders
 # =============================================================================
-
-def make_block_response(status: int, body: dict, addon_name: str) -> http.Response:
-    """Create a JSON block response."""
-    return http.Response.make(
-        status,
-        json.dumps(body, indent=2).encode(),
-        {"Content-Type": "application/json", "X-Blocked-By": addon_name}
-    )
-
 
 def create_mismatch_response(
     credential_type: str,

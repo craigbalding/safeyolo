@@ -87,39 +87,6 @@ def write_event(event: str, **data) -> None:
         print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr)
 
 
-def write_jsonl(
-    path: Optional[Path],
-    event: str,
-    logger: logging.Logger,
-    **data,
-) -> None:
-    """
-    Write a JSONL log entry.
-
-    No-op if path is None. Handles directory creation and errors gracefully.
-
-    Args:
-        path: Path to JSONL file, or None to skip
-        event: Event type (e.g., "credential_violation", "rate_limited")
-        logger: Logger instance for error reporting
-        **data: Additional fields to include in the log entry
-    """
-    if not path:
-        return
-
-    entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "event": event,
-        **data,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception as e:
-        logger.error(f"Log write failed: {type(e).__name__}: {e}")
-
-
 def write_audit_event(event: str, **data) -> None:
     """
     Write an operational/audit event to the central JSONL log.
