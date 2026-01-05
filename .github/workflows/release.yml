@@ -28,7 +28,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements/base.txt
-          pip install cyclonedx-bom
+          pip install cyclonedx-bom==5.1.1
 
       - name: Generate SBOM (CycloneDX)
         run: |

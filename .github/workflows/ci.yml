@@ -76,5 +76,5 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          pip install ruff
+          pip install ruff==0.8.6
           ruff check addons/ cli/src/ tests/
