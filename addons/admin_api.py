@@ -338,7 +338,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         # All other endpoints require auth
         if not self._require_auth():
-            return
+            return None
 
         # Static route dispatch
         static_handlers = {
@@ -463,7 +463,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests."""
         if not self._require_auth():
-            return
+            return None
 
         parsed = urlparse(self.path)
         path = parsed.path
@@ -627,7 +627,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         """Handle PUT requests."""
         if not self._require_auth():
-            return
+            return None
 
         parsed = urlparse(self.path)
         path = parsed.path
