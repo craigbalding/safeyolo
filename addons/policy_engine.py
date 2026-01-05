@@ -43,8 +43,10 @@ except ImportError:
 
 try:
     from .utils import write_event
+    from .budget_tracker import GCRABudgetTracker, BudgetState
 except ImportError:
     from utils import write_event
+    from budget_tracker import GCRABudgetTracker, BudgetState
 
 log = logging.getLogger("safeyolo.policy-engine")
 
@@ -180,13 +182,6 @@ class PolicyDecision:
     budget_remaining: Optional[int] = None
 
 
-@dataclass
-class BudgetState:
-    """GCRA-based budget tracking for a resource."""
-    tat: float = 0.0  # Theoretical Arrival Time in milliseconds
-    last_check: float = 0.0
-
-
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -220,177 +215,6 @@ def _specificity_score(pattern: str) -> int:
     if pattern == "*":
         score = 0
     return score
-
-
-# =============================================================================
-# GCRA Budget Tracker
-# =============================================================================
-
-class GCRABudgetTracker:
-    """
-    GCRA-based budget tracking with per-minute windows.
-
-    Uses "virtual scheduling" - tracks TAT (Theoretical Arrival Time)
-    for smooth rate limiting without thundering herd problems.
-    """
-
-    def __init__(self, state_file: Optional[Path] = None):
-        self._budgets: dict[str, BudgetState] = {}  # key -> state
-        self._state_file = state_file
-        self._lock = threading.RLock()
-        self._snapshot_thread: Optional[threading.Thread] = None
-        self._snapshot_stop = threading.Event()
-
-        if self._state_file and self._state_file.exists():
-            self._load_state()
-
-        if self._state_file:
-            self._start_snapshots()
-
-    def check_and_consume(
-        self,
-        key: str,
-        budget_per_minute: int,
-        cost: int = 1,
-    ) -> tuple[bool, int]:
-        """
-        Check if budget allows request and consume if so.
-
-        Args:
-            key: Budget key (e.g., "network:request:api.openai.com")
-            budget_per_minute: Max requests per minute
-            cost: Cost of this request (default 1)
-
-        Returns:
-            (allowed, remaining) tuple
-        """
-        with self._lock:
-            now_ms = time.time() * 1000
-            state = self._budgets.get(key)
-
-            if state is None:
-                state = BudgetState(tat=now_ms, last_check=now_ms)
-                self._budgets[key] = state
-
-            # GCRA calculation
-            emission_interval_ms = 60000.0 / budget_per_minute  # ms between requests
-            burst_capacity = max(1, budget_per_minute // 10)  # 10% burst
-            burst_offset = emission_interval_ms * burst_capacity
-            allow_at = state.tat - burst_offset
-
-            if now_ms < allow_at:
-                # Budget exceeded
-                remaining = 0
-                return False, remaining
-
-            # Allowed - update TAT
-            new_tat = max(state.tat, now_ms) + (emission_interval_ms * cost)
-            state.tat = new_tat
-            state.last_check = now_ms
-
-            # Calculate remaining
-            remaining = int((now_ms - (new_tat - burst_offset)) / emission_interval_ms)
-            remaining = max(0, min(burst_capacity, remaining))
-
-            return True, remaining
-
-    def get_remaining(self, key: str, budget_per_minute: int) -> int:
-        """Get remaining budget without consuming."""
-        with self._lock:
-            now_ms = time.time() * 1000
-            state = self._budgets.get(key)
-
-            if state is None:
-                return budget_per_minute // 10  # Full burst capacity
-
-            emission_interval_ms = 60000.0 / budget_per_minute
-            burst_capacity = max(1, budget_per_minute // 10)
-            burst_offset = emission_interval_ms * burst_capacity
-
-            remaining = int((now_ms - (state.tat - burst_offset)) / emission_interval_ms)
-            return max(0, min(burst_capacity, remaining))
-
-    def reset(self, key: str) -> None:
-        """Reset budget for a key."""
-        with self._lock:
-            self._budgets.pop(key, None)
-
-    def reset_all(self) -> None:
-        """Reset all budgets."""
-        with self._lock:
-            self._budgets.clear()
-
-    def get_stats(self) -> dict[str, Any]:
-        """Get budget tracking statistics."""
-        with self._lock:
-            return {
-                "tracked_keys": len(self._budgets),
-                "keys": list(self._budgets.keys()),
-            }
-
-    def _load_state(self) -> None:
-        """Load state from file."""
-        try:
-            with open(self._state_file) as f:
-                data = json.load(f)
-
-            for key, state_data in data.get("budgets", {}).items():
-                self._budgets[key] = BudgetState(
-                    tat=state_data.get("tat", 0.0),
-                    last_check=state_data.get("last_check", 0.0),
-                )
-
-            log.info(f"Loaded {len(self._budgets)} budget states from {self._state_file}")
-        except Exception as e:
-            log.error(f"Failed to load budget state: {type(e).__name__}: {e}")
-            self._budgets = {}
-
-    def _save_state(self) -> None:
-        """Save state to file (atomic write)."""
-        if not self._state_file:
-            return
-
-        try:
-            tmp_file = self._state_file.with_suffix(".tmp")
-
-            with self._lock:
-                data = {
-                    "budgets": {
-                        key: {"tat": state.tat, "last_check": state.last_check}
-                        for key, state in self._budgets.items()
-                    },
-                    "saved_at": time.time(),
-                }
-
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp_file, "w") as f:
-                json.dump(data, f, indent=2)
-
-            tmp_file.rename(self._state_file)
-        except Exception as e:
-            log.error(f"Failed to save budget state: {type(e).__name__}: {e}")
-
-    def _start_snapshots(self) -> None:
-        """Start background snapshot thread."""
-        def snapshot_loop():
-            while not self._snapshot_stop.is_set():
-                self._save_state()
-                self._snapshot_stop.wait(timeout=10.0)
-
-        self._snapshot_thread = threading.Thread(
-            target=snapshot_loop, daemon=True, name="policy-budget-snapshot"
-        )
-        self._snapshot_thread.start()
-        log.info("Started policy budget state snapshots (10s interval)")
-
-    def stop(self) -> None:
-        """Stop snapshot thread and save final state."""
-        if self._snapshot_thread:
-            self._snapshot_stop.set()
-            self._snapshot_thread.join(timeout=2.0)
-            self._save_state()
-            self._snapshot_thread = None
-            self._snapshot_stop.clear()
 
 
 # =============================================================================
