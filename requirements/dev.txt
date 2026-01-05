@@ -10,7 +10,7 @@ hypothesis>=6.0.0
 
 # Linting / pre-commit
 pre-commit>=3.0.0
-ruff>=0.8.0
+ruff>=0.9.4
 
 # Interactive development
 ipython>=8.0.0

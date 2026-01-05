@@ -6,7 +6,7 @@ repos:
   # Ruff - linting and import sorting (same as CI)
   # Keep version in sync with ci.yml and requirements/dev.txt
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+    rev: v0.9.4
     hooks:
       - id: ruff
         args: [--fix]
