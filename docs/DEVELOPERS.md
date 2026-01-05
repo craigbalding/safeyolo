@@ -280,6 +280,26 @@ addons = [MyAddon()]
 - Implement `get_stats()` for admin API integration
 - Check `flow.metadata.get("policy")` for per-domain config
 
+## Development Setup
+
+**Install dev dependencies and pre-commit hooks:**
+```bash
+# Install dev dependencies
+pip install -r requirements/dev.txt
+
+# Install pre-commit hooks (runs linting before each commit)
+pre-commit install
+
+# Run hooks manually on all files
+pre-commit run --all-files
+```
+
+Pre-commit runs the same checks as CI:
+- **ruff** - linting and import sorting
+- **py_compile** - Python syntax validation
+- **check-yaml/json/toml** - config file validation
+- **detect-private-key** - prevent accidental key commits
+
 ## CLI Development
 
 The CLI is a standard Python package using Typer.
