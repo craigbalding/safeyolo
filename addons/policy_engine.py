@@ -5,7 +5,7 @@ Provides layered policy evaluation with:
 - Baseline policy (always active)
 - Task policy (optional, extends baseline)
 - Budget tracking with GCRA algorithm
-- Hot reload via file watching
+- Hot reload via file watching (delegated to PolicyLoader)
 
 Policy schema uses IAM-style action/resource/effect vocabulary.
 
@@ -23,30 +23,22 @@ Usage:
 import fnmatch
 import json
 import logging
-import signal
 import threading
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-
-try:
-    import yaml
-    YAML_AVAILABLE = True
-except ImportError:
-    YAML_AVAILABLE = False
-    yaml = None
+import yaml
+from pydantic import BaseModel, Field, model_validator
 
 try:
     from .utils import write_event, matches_host_pattern, matches_resource_pattern
-    from .budget_tracker import GCRABudgetTracker, BudgetState
+    from .budget_tracker import GCRABudgetTracker
+    from .policy_loader import PolicyLoader
 except ImportError:
     from utils import write_event, matches_host_pattern, matches_resource_pattern
-    from budget_tracker import GCRABudgetTracker, BudgetState
+    from budget_tracker import GCRABudgetTracker
+    from policy_loader import PolicyLoader
 
 log = logging.getLogger("safeyolo.policy-engine")
 
@@ -229,6 +221,8 @@ class PolicyEngine:
     - Layer 0: Invariants (hardcoded in code)
     - Layer 1: Baseline (always active)
     - Layer 2: Task policy (optional, extends baseline)
+
+    File loading and watching is delegated to PolicyLoader.
     """
 
     def __init__(
@@ -236,189 +230,56 @@ class PolicyEngine:
         baseline_path: Optional[Path] = None,
         budget_state_path: Optional[Path] = None,
     ):
-        self._baseline_path = baseline_path
-        self._baseline: UnifiedPolicy = UnifiedPolicy()
-        self._task_policy: Optional[UnifiedPolicy] = None
-        self._task_policy_path: Optional[Path] = None
-
         # Budget tracking
         self._budget_tracker = GCRABudgetTracker(budget_state_path)
 
-        # Thread safety
-        self._lock = threading.RLock()
-        self._last_baseline_mtime: float = 0
-        self._last_task_mtime: float = 0
+        # Policy loader handles file loading, watching, SIGHUP
+        self._loader = PolicyLoader(baseline_path)
+        if baseline_path:
+            self._loader.start_watcher()
 
-        # File watcher
-        self._watcher_thread: Optional[threading.Thread] = None
-        self._watcher_stop = threading.Event()
+        # Thread safety for engine-specific state
+        self._lock = threading.RLock()
 
         # Stats
         self._evaluations = 0
-        self._cache_hits = 0
 
-        # Load baseline
-        if baseline_path:
-            self._load_baseline()
-            self._start_watcher()
+    # -------------------------------------------------------------------------
+    # Policy Access (delegated to loader)
+    # -------------------------------------------------------------------------
 
-        # SIGHUP handler
-        self._setup_signal_handler()
+    @property
+    def baseline_path(self) -> Optional[Path]:
+        """Get baseline policy path."""
+        return self._loader.baseline_path
 
-    def _setup_signal_handler(self) -> None:
-        """Setup SIGHUP handler for hot reload."""
-        try:
-            signal.signal(signal.SIGHUP, self._handle_sighup)
-        except (ValueError, OSError):
-            pass  # Not main thread or not supported
+    def get_baseline(self) -> Optional[UnifiedPolicy]:
+        """Get current baseline policy."""
+        baseline = self._loader.baseline
+        if not baseline.permissions:
+            return None
+        return baseline
 
-    def _handle_sighup(self, signum, frame) -> None:
-        """Handle SIGHUP signal."""
-        log.info("Received SIGHUP, reloading policies...")
-        self._load_baseline()
-        if self._task_policy_path:
-            self._load_task_policy(self._task_policy_path)
+    def get_task_policy(self, task_id: Optional[str] = None) -> Optional[UnifiedPolicy]:
+        """Get current task policy (if any).
 
-    def _load_baseline(self) -> bool:
-        """Load baseline policy from file."""
-        if not self._baseline_path or not self._baseline_path.exists():
-            log.warning(f"Baseline policy not found: {self._baseline_path}")
-            return False
-
-        try:
-            content = self._baseline_path.read_text()
-            if self._baseline_path.suffix in (".yaml", ".yml"):
-                if not YAML_AVAILABLE:
-                    log.error("PyYAML not installed, cannot load YAML policy")
-                    return False
-                raw = yaml.safe_load(content) or {}
-            else:
-                raw = json.loads(content)
-
-            with self._lock:
-                self._baseline = UnifiedPolicy.model_validate(raw)
-                self._last_baseline_mtime = self._baseline_path.stat().st_mtime
-
-            # Sort permissions by specificity (most specific first)
-            self._baseline.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
-
-            log.info(
-                f"Loaded baseline policy: {len(self._baseline.permissions)} permissions, "
-                f"{len(self._baseline.required)} required addons"
-            )
-            write_event(
-                "ops.policy_reload",
-                addon="policy-engine",
-                policy_type="baseline",
-                permissions_count=len(self._baseline.permissions),
-            )
-            return True
-
-        except Exception as e:
-            log.error(f"Failed to load baseline policy: {type(e).__name__}: {e}")
-            write_event(
-                "ops.policy_error",
-                addon="policy-engine",
-                policy_type="baseline",
-                error=str(e),
-            )
-            return False
+        Args:
+            task_id: If provided, only return if task_id matches
+        """
+        task = self._loader.task_policy
+        if task is None:
+            return None
+        if task_id and task.metadata.task_id != task_id:
+            return None
+        return task
 
     def load_task_policy(self, path: Path) -> bool:
         """Load task policy (extends baseline)."""
-        return self._load_task_policy(path)
-
-    def _load_task_policy(self, path: Path) -> bool:
-        """Internal task policy loader."""
-        if not path.exists():
-            log.warning(f"Task policy not found: {path}")
-            return False
-
-        try:
-            content = path.read_text()
-            if path.suffix in (".yaml", ".yml"):
-                if not YAML_AVAILABLE:
-                    log.error("PyYAML not installed")
-                    return False
-                raw = yaml.safe_load(content) or {}
-            else:
-                raw = json.loads(content)
-
-            with self._lock:
-                self._task_policy = UnifiedPolicy.model_validate(raw)
-                self._task_policy_path = path
-                self._last_task_mtime = path.stat().st_mtime
-
-            # Sort permissions
-            self._task_policy.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
-
-            log.info(
-                f"Loaded task policy: {len(self._task_policy.permissions)} permissions"
-            )
-            write_event(
-                "ops.policy_reload",
-                addon="policy-engine",
-                policy_type="task",
-                task_id=self._task_policy.metadata.task_id,
-                permissions_count=len(self._task_policy.permissions),
-            )
-            return True
-
-        except Exception as e:
-            log.error(f"Failed to load task policy: {type(e).__name__}: {e}")
-            return False
+        return self._loader.load_task_policy(path)
 
     def clear_task_policy(self) -> None:
         """Clear active task policy."""
-        with self._lock:
-            self._task_policy = None
-            self._task_policy_path = None
-            log.info("Cleared task policy")
-
-    def _start_watcher(self) -> None:
-        """Start background file watcher."""
-        if self._watcher_thread is not None:
-            return
-
-        def watch_loop():
-            while not self._watcher_stop.is_set():
-                try:
-                    # Check baseline
-                    if self._baseline_path and self._baseline_path.exists():
-                        mtime = self._baseline_path.stat().st_mtime
-                        if mtime > self._last_baseline_mtime:
-                            log.info("Baseline policy changed, reloading...")
-                            self._load_baseline()
-
-                    # Check task policy
-                    if self._task_policy_path and self._task_policy_path.exists():
-                        mtime = self._task_policy_path.stat().st_mtime
-                        if mtime > self._last_task_mtime:
-                            log.info("Task policy changed, reloading...")
-                            self._load_task_policy(self._task_policy_path)
-
-                except Exception as e:
-                    log.warning(f"Policy watcher error: {type(e).__name__}: {e}")
-
-                self._watcher_stop.wait(timeout=2.0)
-
-        self._watcher_thread = threading.Thread(
-            target=watch_loop, daemon=True, name="policy-watcher"
-        )
-        self._watcher_thread.start()
-        log.info("Started policy file watcher")
-
-    def _stop_watcher(self) -> None:
-        """Stop file watcher."""
-        if self._watcher_thread:
-            self._watcher_stop.set()
-            self._watcher_thread.join(timeout=2.0)
-            self._watcher_thread = None
-            self._watcher_stop.clear()
+        self._loader.clear_task_policy()
 
     # -------------------------------------------------------------------------
     # Permission Evaluation
@@ -426,12 +287,12 @@ class PolicyEngine:
 
     def _get_merged_permissions(self) -> list[Permission]:
         """Get merged permissions from baseline + task policy."""
-        with self._lock:
-            permissions = list(self._baseline.permissions)
-            if self._task_policy:
-                # Task permissions come first (higher priority)
-                permissions = list(self._task_policy.permissions) + permissions
-            return permissions
+        permissions = list(self._loader.baseline.permissions)
+        task = self._loader.task_policy
+        if task:
+            # Task permissions come first (higher priority)
+            permissions = list(task.permissions) + permissions
+        return permissions
 
     def _find_matching_permission(
         self,
@@ -586,7 +447,7 @@ class PolicyEngine:
                     return PolicyDecision(
                         effect="budget_exceeded",
                         permission=permission,
-                        reason=f"Global network budget exceeded",
+                        reason="Global network budget exceeded",
                         budget_remaining=0,
                     )
 
@@ -611,14 +472,16 @@ class PolicyEngine:
 
     def _get_global_budget(self, action: str) -> Optional[int]:
         """Get global budget cap for an action."""
-        with self._lock:
-            budget = self._baseline.budgets.get(action)
-            if self._task_policy and action in self._task_policy.budgets:
-                # Task policy can increase but not decrease global budget
-                task_budget = self._task_policy.budgets[action]
-                if budget is None or task_budget > budget:
-                    budget = task_budget
-            return budget
+        baseline = self._loader.baseline
+        task = self._loader.task_policy
+
+        budget = baseline.budgets.get(action)
+        if task and action in task.budgets:
+            # Task policy can increase but not decrease global budget
+            task_budget = task.budgets[action]
+            if budget is None or task_budget > budget:
+                budget = task_budget
+        return budget
 
     def consume_budget(self, action: str, resource: str, cost: int = 1) -> tuple[bool, int]:
         """
@@ -666,32 +529,34 @@ class PolicyEngine:
         Returns:
             True if addon should process this request
         """
-        with self._lock:
-            # Check domain bypasses
-            if domain:
-                for pattern, override in self._baseline.domains.items():
+        baseline = self._loader.baseline
+        task = self._loader.task_policy
+
+        # Check domain bypasses
+        if domain:
+            for pattern, override in baseline.domains.items():
+                if matches_host_pattern(domain, pattern):
+                    if addon_name in override.bypass:
+                        return False
+            if task:
+                for pattern, override in task.domains.items():
                     if matches_host_pattern(domain, pattern):
                         if addon_name in override.bypass:
                             return False
-                if self._task_policy:
-                    for pattern, override in self._task_policy.domains.items():
-                        if matches_host_pattern(domain, pattern):
-                            if addon_name in override.bypass:
-                                return False
 
-            # Check client bypasses
-            if client_id:
-                for pattern, override in self._baseline.clients.items():
-                    if _matches_pattern(client_id, pattern):
-                        if addon_name in override.bypass:
-                            # Check if required - cannot bypass required addons
-                            if addon_name in self._baseline.required:
-                                return True
-                            return False
+        # Check client bypasses
+        if client_id:
+            for pattern, override in baseline.clients.items():
+                if _matches_pattern(client_id, pattern):
+                    if addon_name in override.bypass:
+                        # Check if required - cannot bypass required addons
+                        if addon_name in baseline.required:
+                            return True
+                        return False
 
-            # Check addon config
-            config = self._get_addon_config(addon_name, domain)
-            return config.enabled
+        # Check addon config
+        config = self._get_addon_config(addon_name, domain)
+        return config.enabled
 
     def _get_addon_config(
         self,
@@ -699,36 +564,38 @@ class PolicyEngine:
         domain: Optional[str] = None,
     ) -> AddonConfig:
         """Get merged addon configuration."""
-        with self._lock:
-            # Start with baseline
-            config = self._baseline.addons.get(addon_name, AddonConfig())
+        baseline = self._loader.baseline
+        task = self._loader.task_policy
 
-            # Merge domain-specific config
-            if domain:
-                for pattern, override in self._baseline.domains.items():
-                    if matches_host_pattern(domain, pattern):
-                        if addon_name in override.addons:
-                            domain_config = override.addons[addon_name]
-                            config = AddonConfig(
-                                enabled=domain_config.enabled,
-                                settings={**config.settings, **domain_config.settings},
-                            )
+        # Start with baseline
+        config = baseline.addons.get(addon_name, AddonConfig())
 
-            # Merge task policy
-            if self._task_policy:
-                if addon_name in self._task_policy.addons:
-                    task_config = self._task_policy.addons[addon_name]
-                    # Task cannot disable required addons
-                    if addon_name in self._baseline.required:
-                        enabled = True
-                    else:
-                        enabled = task_config.enabled
-                    config = AddonConfig(
-                        enabled=enabled,
-                        settings={**config.settings, **task_config.settings},
-                    )
+        # Merge domain-specific config
+        if domain:
+            for pattern, override in baseline.domains.items():
+                if matches_host_pattern(domain, pattern):
+                    if addon_name in override.addons:
+                        domain_config = override.addons[addon_name]
+                        config = AddonConfig(
+                            enabled=domain_config.enabled,
+                            settings={**config.settings, **domain_config.settings},
+                        )
 
-            return config
+        # Merge task policy
+        if task:
+            if addon_name in task.addons:
+                task_config = task.addons[addon_name]
+                # Task cannot disable required addons
+                if addon_name in baseline.required:
+                    enabled = True
+                else:
+                    enabled = task_config.enabled
+                config = AddonConfig(
+                    enabled=enabled,
+                    settings={**config.settings, **task_config.settings},
+                )
+
+        return config
 
     def get_addon_settings(
         self,
@@ -740,79 +607,56 @@ class PolicyEngine:
         return config.settings
 
     # -------------------------------------------------------------------------
-    # Policy Access
+    # Stats & Budget Access
     # -------------------------------------------------------------------------
-
-    @property
-    def baseline_path(self) -> Optional[Path]:
-        """Get baseline policy path."""
-        return self._baseline_path
-
-    def get_baseline(self) -> Optional[UnifiedPolicy]:
-        """Get current baseline policy."""
-        with self._lock:
-            if not self._baseline.permissions:
-                return None
-            return self._baseline
-
-    def get_task_policy(self, task_id: Optional[str] = None) -> Optional[UnifiedPolicy]:
-        """Get current task policy (if any).
-
-        Args:
-            task_id: If provided, only return if task_id matches
-        """
-        with self._lock:
-            if self._task_policy is None:
-                return None
-            if task_id and self._task_policy.metadata.task_id != task_id:
-                return None
-            return self._task_policy
 
     def get_stats(self) -> dict[str, Any]:
         """Get policy engine statistics."""
-        with self._lock:
-            return {
-                "baseline_path": str(self._baseline_path) if self._baseline_path else None,
-                "task_policy_path": str(self._task_policy_path) if self._task_policy_path else None,
-                "baseline_permissions": len(self._baseline.permissions),
-                "task_permissions": len(self._task_policy.permissions) if self._task_policy else 0,
-                "required_addons": self._baseline.required,
-                "evaluations": self._evaluations,
-                "budget_stats": self._budget_tracker.get_stats(),
-            }
+        baseline = self._loader.baseline
+        task = self._loader.task_policy
+
+        return {
+            "baseline_path": str(self._loader.baseline_path) if self._loader.baseline_path else None,
+            "task_policy_path": str(self._loader.task_policy_path) if self._loader.task_policy_path else None,
+            "baseline_permissions": len(baseline.permissions),
+            "task_permissions": len(task.permissions) if task else 0,
+            "required_addons": baseline.required,
+            "evaluations": self._evaluations,
+            "budget_stats": self._budget_tracker.get_stats(),
+        }
 
     def get_budget_stats(self) -> dict[str, Any]:
         """Get current budget usage statistics."""
-        with self._lock:
-            stats = self._budget_tracker.get_stats()
-            budget_usage = {}
+        baseline = self._loader.baseline
+        stats = self._budget_tracker.get_stats()
+        budget_usage = {}
 
-            # Calculate remaining for each tracked key
-            for key in stats.get("keys", []):
-                # Parse key to extract action and resource
-                parts = key.split(":", 2)
-                if len(parts) >= 2:
-                    action = f"{parts[0]}:{parts[1]}"
-                    resource = parts[2] if len(parts) > 2 else "*"
+        # Calculate remaining for each tracked key
+        for key in stats.get("keys", []):
+            # Parse key to extract action and resource
+            parts = key.split(":", 2)
+            if len(parts) >= 2:
+                action = f"{parts[0]}:{parts[1]}"
+                resource = parts[2] if len(parts) > 2 else "*"
 
-                    # Find matching permission to get budget limit
-                    permission = self._find_matching_permission(action, f"{resource}/*", {})
-                    if permission is None:
-                        permission = self._find_matching_permission(action, "*", {})
+                # Find matching permission to get budget limit
+                permission = self._find_matching_permission(action, f"{resource}/*", {})
+                if permission is None:
+                    permission = self._find_matching_permission(action, "*", {})
 
-                    if permission and permission.budget:
-                        remaining = self._budget_tracker.get_remaining(key, permission.budget)
-                        budget_usage[key] = {
-                            "budget_per_minute": permission.budget,
-                            "remaining": remaining,
-                            "resource": resource,
-                        }
+                if permission and permission.budget:
+                    remaining = self._budget_tracker.get_remaining(key, permission.budget)
+                    budget_usage[key] = {
+                        "budget_per_minute": permission.budget,
+                        "remaining": remaining,
+                        "resource": resource,
+                    }
 
-            return {
-                "tracked_keys": stats.get("tracked_keys", 0),
-                "budgets": budget_usage,
-                "global_budgets": self._baseline.budgets,
-            }
+        return {
+            "tracked_keys": stats.get("tracked_keys", 0),
+            "budgets": budget_usage,
+            "global_budgets": baseline.budgets,
+        }
 
     def reset_budgets(self, resource: Optional[str] = None) -> dict[str, Any]:
         """Reset budget counters.
@@ -859,42 +703,40 @@ class PolicyEngine:
 
         credentials = [credential] if isinstance(credential, str) else credential
 
-        with self._lock:
-            # Create new permission (destination-first)
-            condition = Condition(credential=credentials)
-            new_permission = Permission(
-                action="credential:use",
-                resource=f"{destination}/*",
-                effect="allow",
-                tier=tier,
-                condition=condition,
-            )
+        # Create new permission (destination-first)
+        condition = Condition(credential=credentials)
+        new_permission = Permission(
+            action="credential:use",
+            resource=f"{destination}/*",
+            effect="allow",
+            tier=tier,
+            condition=condition,
+        )
 
-            # Add to baseline (at beginning for higher priority)
-            self._baseline.permissions.insert(0, new_permission)
+        # Add to baseline (at beginning for higher priority)
+        baseline = self._loader.baseline
+        baseline.permissions.insert(0, new_permission)
 
-            # Re-sort by specificity
-            self._baseline.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+        # Re-sort and update
+        self._loader.set_baseline(baseline)
 
-            # Save to file if path exists
-            if self._baseline_path:
-                self._save_baseline()
+        # Save to file if path exists
+        if self._loader.baseline_path:
+            self._save_baseline()
 
-            log.info(f"Added credential approval: {destination} accepts {credentials}")
-            write_event(
-                "admin.credential_approval_added",
-                addon="policy-engine",
-                destination=destination,
-                credential=credentials,
-                tier=tier,
-            )
+        log.info(f"Added credential approval: {destination} accepts {credentials}")
+        write_event(
+            "admin.credential_approval_added",
+            addon="policy-engine",
+            destination=destination,
+            credential=credentials,
+            tier=tier,
+        )
 
-            return {
-                "status": "added",
-                "permission_count": len(self._baseline.permissions),
-            }
+        return {
+            "status": "added",
+            "permission_count": len(baseline.permissions),
+        }
 
     def update_baseline(self, policy_data: dict[str, Any]) -> dict[str, Any]:
         """Update baseline policy from dict.
@@ -910,30 +752,24 @@ class PolicyEngine:
         except Exception as e:
             raise ValueError(f"Invalid policy data: {e}")
 
-        with self._lock:
-            self._baseline = new_policy
+        self._loader.set_baseline(new_policy)
 
-            # Sort permissions by specificity
-            self._baseline.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+        # Save to file if path exists
+        if self._loader.baseline_path:
+            self._save_baseline()
 
-            # Save to file if path exists
-            if self._baseline_path:
-                self._save_baseline()
+        log.info(f"Updated baseline policy: {len(new_policy.permissions)} permissions")
+        write_event(
+            "ops.policy_update",
+            addon="policy-engine",
+            policy_type="baseline",
+            permissions_count=len(new_policy.permissions),
+        )
 
-            log.info(f"Updated baseline policy: {len(self._baseline.permissions)} permissions")
-            write_event(
-                "ops.policy_update",
-                addon="policy-engine",
-                policy_type="baseline",
-                permissions_count=len(self._baseline.permissions),
-            )
-
-            return {
-                "status": "updated",
-                "permission_count": len(self._baseline.permissions),
-            }
+        return {
+            "status": "updated",
+            "permission_count": len(new_policy.permissions),
+        }
 
     def set_task_policy(
         self,
@@ -957,54 +793,49 @@ class PolicyEngine:
         # Set task_id in metadata
         new_policy.metadata.task_id = task_id
 
-        with self._lock:
-            self._task_policy = new_policy
+        self._loader.set_task_policy(new_policy)
 
-            # Sort permissions by specificity
-            self._task_policy.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+        log.info(f"Set task policy '{task_id}': {len(new_policy.permissions)} permissions")
+        write_event(
+            "ops.policy_update",
+            addon="policy-engine",
+            policy_type="task",
+            task_id=task_id,
+            permissions_count=len(new_policy.permissions),
+        )
 
-            log.info(f"Set task policy '{task_id}': {len(self._task_policy.permissions)} permissions")
-            write_event(
-                "ops.policy_update",
-                addon="policy-engine",
-                policy_type="task",
-                task_id=task_id,
-                permissions_count=len(self._task_policy.permissions),
-            )
-
-            return {
-                "status": "updated",
-                "task_id": task_id,
-                "permission_count": len(self._task_policy.permissions),
-            }
+        return {
+            "status": "updated",
+            "task_id": task_id,
+            "permission_count": len(new_policy.permissions),
+        }
 
     def _save_baseline(self) -> None:
         """Save baseline policy to file (atomic write)."""
-        if not self._baseline_path:
+        baseline_path = self._loader.baseline_path
+        if not baseline_path:
             return
 
         try:
             import tempfile
             import shutil
 
+            baseline = self._loader.baseline
             content = yaml.safe_dump(
-                self._baseline.model_dump(exclude_none=True),
+                baseline.model_dump(exclude_none=True),
                 default_flow_style=False,
                 allow_unicode=True,
             )
 
-            self._baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.yaml', dir=self._baseline_path.parent, delete=False
+                mode='w', suffix='.yaml', dir=baseline_path.parent, delete=False
             ) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
 
-            shutil.move(tmp_path, self._baseline_path)
-            self._last_baseline_mtime = self._baseline_path.stat().st_mtime
-            log.info(f"Saved baseline policy to {self._baseline_path}")
+            shutil.move(tmp_path, baseline_path)
+            log.info(f"Saved baseline policy to {baseline_path}")
 
         except Exception as e:
             log.error(f"Failed to save baseline: {type(e).__name__}: {e}")
@@ -1016,7 +847,7 @@ class PolicyEngine:
 
     def done(self) -> None:
         """Cleanup on shutdown."""
-        self._stop_watcher()
+        self._loader.stop_watcher()
         self._budget_tracker.stop()
 
 

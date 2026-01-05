@@ -220,7 +220,7 @@ class TestAccessControlIntegration:
         )
 
         engine = PolicyEngine()
-        engine._baseline = policy
+        engine._loader.set_baseline(policy)
 
         addon = AccessControl()
 
@@ -262,7 +262,7 @@ class TestAccessControlIntegration:
         )
 
         engine = PolicyEngine()
-        engine._baseline = policy
+        engine._loader.set_baseline(policy)
 
         # Allowed domains
         assert engine.evaluate_request("api.openai.com", "/v1/chat", "POST").effect == "allow"
