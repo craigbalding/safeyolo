@@ -578,6 +578,9 @@ mitmproxy-rs==0.12.8 \
     --hash=sha256:b0ead519f5a4ab019e7912544c0642f28f8336036ef1480e42a772a8cc947550 \
     --hash=sha256:c5b0799808a4de0ee60e8f350043820ad56eea738ce3ce25d5c6faaa245b6c9a
     # via mitmproxy
+mitmproxy-linux==0.12.8 ; sys_platform == "linux" \
+    --hash=sha256:fbcb25316e95d0b2b5ced4e0cc3d90fdb1b7169300a005cc79339894d665363a
+    # via mitmproxy-rs
 msgpack==1.1.2 \
     --hash=sha256:0051fffef5a37ca2cd16978ae4f0aef92f164df86823871b5162812bebecd8e2 \
     --hash=sha256:04fb995247a6e83830b62f0b07bf36540c213f6eac8e851166d8d86d83cbd014 \
