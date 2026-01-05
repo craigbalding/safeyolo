@@ -274,7 +274,7 @@ if [ -f /opt/shell_mux/container_agent.py ] && [ -n "${CONTAINER_NAME}" ]; then
 fi
 
 # Build the mitmproxy command and save it for reload script
-MITMPROXY_CMD="mitmproxy -v -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"
+MITMPROXY_CMD="mitmproxy -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"
 echo "${MITMPROXY_CMD}" > /tmp/mitmproxy-cmd.sh
 chmod +x /tmp/mitmproxy-cmd.sh
 
