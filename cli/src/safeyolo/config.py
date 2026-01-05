@@ -13,8 +13,9 @@ GLOBAL_DIR_NAME = ".safeyolo"
 INTERNAL_NETWORK_NAME = "safeyolo-internal"
 SAFEYOLO_INTERNAL_IP = "172.31.0.10"
 INTERNAL_SUBNET = "172.31.0.0/24"
-# Public CA cert volume (agents mount this read-only, no private key access)
-CA_VOLUME_NAME = "safeyolo-ca"
+# Cert volumes (split for security: private key separate from public CA)
+PRIVATE_CERTS_VOLUME_NAME = "safeyolo-certs-private"  # Private key material (600 perms)
+CA_VOLUME_NAME = "safeyolo-ca"  # Public CA cert only (agents mount read-only)
 
 # Agent IP allocation (starting from .20 to leave room for infrastructure)
 AGENT_IP_START = 20
