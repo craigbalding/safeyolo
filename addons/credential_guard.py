@@ -33,13 +33,6 @@ from mitmproxy import ctx, http
 from yarl import URL
 
 try:
-    from confusable_homoglyphs import confusables as homoglyph_confusables
-    HOMOGLYPH_ENABLED = True
-except ImportError:
-    HOMOGLYPH_ENABLED = False
-    homoglyph_confusables = None
-
-try:
     from .base import SecurityAddon
     from .utils import write_event, make_block_response, load_config_file, get_client_ip
 except ImportError:
@@ -122,20 +115,6 @@ def path_matches_pattern(path: str, pattern: str) -> bool:
         return path.startswith(prefix + "/") or path == prefix
 
     return path == pattern
-
-
-def detect_homoglyph_attack(text: str) -> Optional[dict]:
-    """Detect mixed-script homoglyph attacks."""
-    if not HOMOGLYPH_ENABLED or not homoglyph_confusables:
-        return None
-
-    try:
-        result = homoglyph_confusables.is_dangerous(text)
-        if result:
-            return {"dangerous": True, "message": f"Mixed scripts detected in '{text}'"}
-    except Exception:
-        pass
-    return None
 
 
 # =============================================================================

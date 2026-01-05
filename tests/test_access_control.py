@@ -187,9 +187,10 @@ class TestAccessControl:
             with patch("addons.base.get_option_safe", return_value=True):
                 addon.request(flow)
 
-        # No engine = no blocking
+        # No engine = no blocking, but request was still checked
         assert flow.response is None
-        assert addon.stats.checks == 0
+        assert addon.stats.checks == 1
+        assert addon.stats.allowed == 1
 
 
 class TestAccessControlIntegration:
@@ -270,3 +271,59 @@ class TestAccessControlIntegration:
         # Denied domains (everything else)
         assert engine.evaluate_request("google.com", "/", "GET").effect == "deny"
         assert engine.evaluate_request("hacker.com", "/pwn", "GET").effect == "deny"
+
+
+class TestHomoglyphDetection:
+    """Tests for homoglyph attack detection in access control."""
+
+    def test_detects_cyrillic_in_domain(self):
+        """Test detection of Cyrillic characters in domain names."""
+        from addons.access_control import detect_homoglyph_attack, HOMOGLYPH_ENABLED
+
+        if not HOMOGLYPH_ENABLED:
+            pytest.skip("confusable-homoglyphs not installed")
+
+        # Cyrillic 'а' (U+0430) instead of Latin 'a'
+        result = detect_homoglyph_attack("аpi.openai.com")
+        assert result is not None
+        assert result["dangerous"]
+
+    def test_allows_normal_ascii_domain(self):
+        """Test that normal ASCII domains pass."""
+        from addons.access_control import detect_homoglyph_attack, HOMOGLYPH_ENABLED
+
+        if not HOMOGLYPH_ENABLED:
+            pytest.skip("confusable-homoglyphs not installed")
+
+        result = detect_homoglyph_attack("api.openai.com")
+        assert result is None
+
+    def test_blocks_homoglyph_domain_in_request(self):
+        """Test that homoglyph domains are blocked in requests."""
+        from addons.access_control import AccessControl, HOMOGLYPH_ENABLED
+
+        if not HOMOGLYPH_ENABLED:
+            pytest.skip("confusable-homoglyphs not installed")
+
+        addon = AccessControl()
+
+        # Create mock flow with Cyrillic 'а' (U+0430) in domain
+        flow = MagicMock()
+        flow.request.host = "аpi.openai.com"  # Cyrillic 'а'
+        flow.request.path = "/v1/chat"
+        flow.request.method = "GET"
+        flow.metadata = {}
+        flow.response = None
+        flow.client_conn.peername = ("127.0.0.1", 12345)
+
+        # Mock should_block to return True
+        addon.should_block = lambda: True
+        addon._check_homoglyph = lambda: True
+
+        with patch("addons.base.get_option_safe", return_value=True):
+            addon.request(flow)
+
+        # Should be blocked
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+        assert b"homoglyph" in flow.response.content.lower()

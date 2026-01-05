@@ -349,30 +349,6 @@ class TestCredentialGuardIntegration:
         assert credential_guard.violations_total == initial_count + 1
 
 
-class TestHomoglyphDetection:
-    """Tests for homoglyph attack detection."""
-
-    def test_detects_cyrillic_in_domain(self):
-        from addons.credential_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
-
-        if not HOMOGLYPH_ENABLED:
-            pytest.skip("confusable-homoglyphs not installed")
-
-        # Cyrillic 'а' (U+0430) instead of Latin 'a'
-        result = detect_homoglyph_attack("аpi.openai.com")
-        assert result is not None
-        assert result["dangerous"]
-
-    def test_allows_normal_ascii_domain(self):
-        from addons.credential_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
-
-        if not HOMOGLYPH_ENABLED:
-            pytest.skip("confusable-homoglyphs not installed")
-
-        result = detect_homoglyph_attack("api.openai.com")
-        assert result is None
-
-
 class TestBlockingMode:
     """Tests for blocking vs warn-only mode."""
 
