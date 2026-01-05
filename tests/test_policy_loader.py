@@ -384,10 +384,9 @@ class TestPolicyLoaderErrorPaths:
         import os
         from addons.policy_loader import PolicyLoader
 
-        # Skip if running as root (root can read any file)
-        if os.geteuid() == 0:
-            import pytest
-            pytest.skip("Root can read any file, skipping permission test")
+        # This test requires non-root execution. If it fails, the container
+        # is running as root which is a security concern.
+        assert os.geteuid() != 0, "Container running as root - security risk"
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
