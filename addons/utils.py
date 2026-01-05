@@ -386,11 +386,18 @@ def load_hmac_secret(secret_path: Path, env_var: str = "CREDGUARD_HMAC_SECRET") 
     if secret_path.exists():
         return secret_path.read_bytes().strip()
 
-    # Generate new secret
+    # Generate new secret with atomic write (permissions set before content)
     secret = secrets.token_hex(32).encode()
     secret_path.parent.mkdir(parents=True, exist_ok=True)
-    secret_path.write_bytes(secret)
-    secret_path.chmod(0o600)
+
+    # Use O_CREAT|O_EXCL to fail if exists, O_WRONLY for write, mode 0o600
+    # This sets permissions atomically before any content is written
+    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, secret)
+    finally:
+        os.close(fd)
+
     _log.info(f"Generated new HMAC secret at {secret_path}")
     return secret
 
