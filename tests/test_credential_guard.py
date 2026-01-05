@@ -50,16 +50,16 @@ class TestCredentialRule:
 
 
 class TestHostMatching:
-    """Tests for host pattern matching."""
+    """Tests for host pattern matching (imported from utils)."""
 
     def test_exact_match(self):
-        from addons.credential_guard import matches_host_pattern
+        from addons.utils import matches_host_pattern
 
         assert matches_host_pattern("api.openai.com", "api.openai.com")
         assert not matches_host_pattern("api.openai.com", "openai.com")
 
     def test_wildcard_match(self):
-        from addons.credential_guard import matches_host_pattern
+        from addons.utils import matches_host_pattern
 
         assert matches_host_pattern("api.example.com", "*.example.com")
         assert matches_host_pattern("sub.api.example.com", "*.example.com")
@@ -67,49 +67,49 @@ class TestHostMatching:
         assert not matches_host_pattern("example.org", "*.example.com")
 
     def test_case_insensitive(self):
-        from addons.credential_guard import matches_host_pattern
+        from addons.utils import matches_host_pattern
 
         assert matches_host_pattern("API.OpenAI.com", "api.openai.com")
         assert matches_host_pattern("api.openai.com", "API.OPENAI.COM")
 
 
 class TestPathMatching:
-    """Tests for path pattern matching."""
+    """Tests for path/resource pattern matching (imported from utils)."""
 
     def test_path_wildcard_suffix(self):
-        from addons.credential_guard import path_matches_pattern
+        from addons.utils import matches_resource_pattern
 
-        assert path_matches_pattern("/v1/chat", "/v1/*")
-        assert path_matches_pattern("/v1/chat/completions", "/v1/*")
-        assert not path_matches_pattern("/v2/chat", "/v1/*")
+        assert matches_resource_pattern("/v1/chat", "/v1/*")
+        assert matches_resource_pattern("/v1/chat/completions", "/v1/*")
+        assert not matches_resource_pattern("/v2/chat", "/v1/*")
 
     def test_path_double_wildcard(self):
-        from addons.credential_guard import path_matches_pattern
+        from addons.utils import matches_resource_pattern
 
-        assert path_matches_pattern("/api/v1/anything", "/api/**")
-        assert path_matches_pattern("/api", "/api/**")
-        assert not path_matches_pattern("/other/path", "/api/**")
+        assert matches_resource_pattern("/api/v1/anything", "/api/**")
+        assert matches_resource_pattern("/api", "/api/**")
+        assert not matches_resource_pattern("/other/path", "/api/**")
 
     def test_path_exact_match(self):
-        from addons.credential_guard import path_matches_pattern
+        from addons.utils import matches_resource_pattern
 
-        assert path_matches_pattern("/v1/models", "/v1/models")
-        assert not path_matches_pattern("/v1/models/extra", "/v1/models")
+        assert matches_resource_pattern("/v1/models", "/v1/models")
+        assert not matches_resource_pattern("/v1/models/extra", "/v1/models")
 
     def test_path_full_wildcard(self):
-        from addons.credential_guard import path_matches_pattern
+        from addons.utils import matches_resource_pattern
 
-        assert path_matches_pattern("/any/path", "/**")
-        assert path_matches_pattern("/", "/**")
-        assert path_matches_pattern("/any/path", "/*")
+        assert matches_resource_pattern("/any/path", "/**")
+        assert matches_resource_pattern("/", "/**")
+        assert matches_resource_pattern("/any/path", "/*")
 
     def test_path_normalization(self):
-        from addons.credential_guard import path_matches_pattern
+        from addons.utils import matches_resource_pattern
 
         # Double slash normalized
-        assert path_matches_pattern("//v1//models", "/v1/models")
+        assert matches_resource_pattern("//v1//models", "/v1/models")
         # Trailing slash normalized
-        assert path_matches_pattern("/v1/models/", "/v1/models")
+        assert matches_resource_pattern("/v1/models/", "/v1/models")
 
 
 class TestShannonEntropy:

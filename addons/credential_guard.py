@@ -18,14 +18,12 @@ Usage:
 import json
 import logging
 import re
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import yaml
 from mitmproxy import ctx, http
-from yarl import URL
 
 try:
     from .base import SecurityAddon
@@ -33,6 +31,7 @@ try:
         write_event, make_block_response, load_config_file, get_client_ip,
         calculate_shannon_entropy, looks_like_secret,
         load_hmac_secret, hmac_fingerprint,
+        normalize_path, matches_host_pattern, matches_resource_pattern,
     )
 except ImportError:
     from base import SecurityAddon
@@ -40,6 +39,7 @@ except ImportError:
         write_event, make_block_response, load_config_file, get_client_ip,
         calculate_shannon_entropy, looks_like_secret,
         load_hmac_secret, hmac_fingerprint,
+        normalize_path, matches_host_pattern, matches_resource_pattern,
     )
 
 try:
@@ -48,53 +48,6 @@ except ImportError:
     from policy_engine import get_policy_engine, PolicyDecision
 
 log = logging.getLogger("safeyolo.credential-guard")
-
-
-# =============================================================================
-# Path Matching Utilities
-# =============================================================================
-
-def normalize_path(path: str) -> str:
-    """Normalize URL path for consistent matching."""
-    path = unicodedata.normalize("NFKC", path)
-    normalized = URL("http://x" + path).path
-    normalized = re.sub(r"/+", "/", normalized)
-    return normalized.rstrip("/") or "/"
-
-
-# =============================================================================
-# Validation: Host & Path Matching
-# =============================================================================
-
-def matches_host_pattern(host: str, pattern: str) -> bool:
-    """Check if host matches pattern (supports wildcards)."""
-    host = host.lower()
-    pattern = pattern.lower()
-
-    if pattern.startswith("*."):
-        suffix = pattern[1:]
-        return host.endswith(suffix) or host == pattern[2:]
-
-    return host == pattern
-
-
-def path_matches_pattern(path: str, pattern: str) -> bool:
-    """Check if path matches pattern (supports * and **)."""
-    path = normalize_path(path)
-    pattern = normalize_path(pattern)
-
-    if pattern == "/*" or pattern == "/**":
-        return True
-
-    if "**" in pattern:
-        prefix = pattern.split("**")[0].rstrip("/")
-        return path.startswith(prefix) or path == prefix.rstrip("/")
-
-    if pattern.endswith("/*"):
-        prefix = pattern[:-2]
-        return path.startswith(prefix + "/") or path == prefix
-
-    return path == pattern
 
 
 # =============================================================================

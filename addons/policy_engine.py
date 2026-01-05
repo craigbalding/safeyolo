@@ -42,10 +42,10 @@ except ImportError:
     yaml = None
 
 try:
-    from .utils import write_event
+    from .utils import write_event, matches_host_pattern, matches_resource_pattern
     from .budget_tracker import GCRABudgetTracker, BudgetState
 except ImportError:
-    from utils import write_event
+    from utils import write_event, matches_host_pattern, matches_resource_pattern
     from budget_tracker import GCRABudgetTracker, BudgetState
 
 log = logging.getLogger("safeyolo.policy-engine")
@@ -446,7 +446,7 @@ class PolicyEngine:
             if perm.action != action:
                 continue
 
-            if not _matches_pattern(resource, perm.resource):
+            if not matches_resource_pattern(resource, perm.resource):
                 continue
 
             # Check tier - inferred permissions are inactive unless promoted
@@ -670,12 +670,12 @@ class PolicyEngine:
             # Check domain bypasses
             if domain:
                 for pattern, override in self._baseline.domains.items():
-                    if _matches_pattern(domain, pattern):
+                    if matches_host_pattern(domain, pattern):
                         if addon_name in override.bypass:
                             return False
                 if self._task_policy:
                     for pattern, override in self._task_policy.domains.items():
-                        if _matches_pattern(domain, pattern):
+                        if matches_host_pattern(domain, pattern):
                             if addon_name in override.bypass:
                                 return False
 
@@ -706,7 +706,7 @@ class PolicyEngine:
             # Merge domain-specific config
             if domain:
                 for pattern, override in self._baseline.domains.items():
-                    if _matches_pattern(domain, pattern):
+                    if matches_host_pattern(domain, pattern):
                         if addon_name in override.addons:
                             domain_config = override.addons[addon_name]
                             config = AddonConfig(
