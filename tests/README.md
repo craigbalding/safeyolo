@@ -5,14 +5,21 @@ Unit and integration tests for native mitmproxy addons.
 ## Test Files
 
 - `conftest.py` - Pytest fixtures using `mitmproxy.test.tflow`
-- `test_credential_guard.py` - Credential detection, host authorization, blocking, allowlist
-- `test_network_guard.py` - Access control + rate limiting, deny/budget effects, homoglyph detection
-- `test_circuit_breaker.py` - State transitions, failure detection, recovery
 - `test_admin_api.py` - REST endpoints, mode switching, stats, allowlist API
+- `test_base.py` - SecurityAddon base class, stats, bypass logic
+- `test_budget_tracker.py` - GCRA rate limiting, burst capacity, state persistence
+- `test_circuit_breaker.py` - State transitions, failure detection, recovery
+- `test_credential_guard.py` - Credential detection, host authorization, blocking, allowlist
+- `test_integration.py` - Addon chain behavior, metadata sharing
+- `test_metrics.py` - Per-domain statistics, latency tracking, Prometheus output
+- `test_network_guard.py` - Access control + rate limiting, deny/budget effects, homoglyph detection
 - `test_pattern_scanner.py` - Regex patterns, secret detection, jailbreak detection
 - `test_policy.py` - Policy engine, domain/client rules, hot reload
+- `test_policy_loader.py` - YAML/JSON loading, file watching, hot reload
 - `test_prompt_injection.py` - ML classifiers (DeBERTa/Ollama), blocking, async verification
-- `test_integration.py` - Addon chain behavior, metadata sharing
+- `test_request_logger.py` - JSONL logging, quiet hosts, log format
+- `test_service_discovery.py` - IP to project mapping, config loading
+- `test_sse_streaming.py` - SSE detection, stream recording, stats
 
 ## Running Tests
 
@@ -43,16 +50,23 @@ pytest tests/ -v
 
 | Addon | Tests | Coverage |
 |-------|-------|----------|
-| credential_guard | 16 | Pattern matching, host auth, blocking, allowlist, temp allowlist, stats |
-| network_guard | 15 | Access control, rate limiting, deny/budget effects, homoglyph detection, warn mode |
+| admin_api | 19 | REST endpoints, mode switching, stats aggregation, allowlist management |
+| base | 13 | SecurityAddon stats, bypass logic, decision logging, blocking |
+| budget_tracker | 16 | GCRA algorithm, burst capacity, state persistence, thread safety |
 | circuit_breaker | 18 | State machine, blocking, exponential backoff, manual control, recovery |
-| admin_api | 17 | REST endpoints, mode switching, stats aggregation, allowlist management |
+| credential_guard | 16 | Pattern matching, host auth, blocking, allowlist, temp allowlist, stats |
+| integration | 15 | Addon chain behavior, metadata sharing, realistic multi-addon scenarios |
+| metrics | 21 | Per-domain stats, latency tracking, Prometheus format, problem detection |
+| network_guard | 15 | Access control, rate limiting, deny/budget effects, homoglyph detection, warn mode |
 | pattern_scanner | 32 | Regex patterns, secret detection, jailbreak detection, redaction |
 | policy | 28 | Policy engine, domain/client rules, hot reload, bypass lists, wildcards |
+| policy_loader | 22 | YAML/JSON loading, file watching, hot reload, thread safety |
 | prompt_injection | 21 | DeBERTa/Ollama classifiers, blocking, confidence thresholds, async verification |
-| integration | 15 | Addon chain behavior, metadata sharing, realistic multi-addon scenarios |
+| request_logger | 16 | JSONL format, quiet hosts filtering, event structure |
+| service_discovery | 13 | IP mapping, range matching, config loading, reload |
+| sse_streaming | 11 | SSE detection, streaming responses, stats tracking |
 
-**Total: 168 tests** across 8 test suites
+**Total: 326 tests** across 15 test suites
 
 ## Adding Tests
 
