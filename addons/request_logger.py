@@ -23,10 +23,7 @@ from urllib.parse import urlparse
 import yaml
 from mitmproxy import ctx, http
 
-try:
-    from .utils import write_audit_event, BackgroundWorker
-except ImportError:
-    from utils import write_audit_event, BackgroundWorker
+from utils import write_audit_event, BackgroundWorker
 
 log = logging.getLogger("safeyolo.request-logger")
 

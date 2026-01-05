@@ -19,10 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-try:
-    from .utils import atomic_write_json, BackgroundWorker
-except ImportError:
-    from utils import atomic_write_json, BackgroundWorker
+from utils import atomic_write_json, BackgroundWorker
 
 log = logging.getLogger("safeyolo.budget-tracker")
 

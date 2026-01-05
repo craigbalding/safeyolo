@@ -20,12 +20,8 @@ from typing import Optional
 
 from mitmproxy import ctx, http
 
-try:
-    from .base import SecurityAddon
-    from .utils import make_block_response
-except ImportError:
-    from base import SecurityAddon
-    from utils import make_block_response
+from base import SecurityAddon
+from utils import make_block_response
 
 log = logging.getLogger("safeyolo.pattern-scanner")
 

@@ -9,13 +9,13 @@ class TestNetworkGuard:
 
     def test_name(self):
         """Test addon has correct name."""
-        from addons.network_guard import NetworkGuard
+        from network_guard import NetworkGuard
         addon = NetworkGuard()
         assert addon.name == "network-guard"
 
     def test_get_stats_initial(self):
         """Test initial stats are zeroed."""
-        from addons.network_guard import NetworkGuard
+        from network_guard import NetworkGuard
         addon = NetworkGuard()
         stats = addon.get_stats()
         assert stats["checks"] == 0
@@ -25,8 +25,8 @@ class TestNetworkGuard:
 
     def test_blocks_denied_request(self):
         """Test addon blocks requests with effect=deny."""
-        from addons.network_guard import NetworkGuard
-        from addons.policy_engine import PolicyDecision
+        from network_guard import NetworkGuard
+        from policy_engine import PolicyDecision
 
         addon = NetworkGuard()
 
@@ -45,8 +45,8 @@ class TestNetworkGuard:
             reason="Access denied to evil.com"
         )
 
-        with patch("addons.network_guard.get_policy_engine", return_value=mock_engine):
-            with patch("addons.base.get_option_safe", return_value=True):
+        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+            with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should have blocked with 403
@@ -58,8 +58,8 @@ class TestNetworkGuard:
 
     def test_blocks_rate_limited_request(self):
         """Test addon blocks requests with effect=budget_exceeded."""
-        from addons.network_guard import NetworkGuard
-        from addons.policy_engine import PolicyDecision
+        from network_guard import NetworkGuard
+        from policy_engine import PolicyDecision
 
         addon = NetworkGuard()
 
@@ -77,8 +77,8 @@ class TestNetworkGuard:
             reason="Rate limit exceeded for api.openai.com"
         )
 
-        with patch("addons.network_guard.get_policy_engine", return_value=mock_engine):
-            with patch("addons.base.get_option_safe", return_value=True):
+        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+            with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should have blocked with 429
@@ -90,8 +90,8 @@ class TestNetworkGuard:
 
     def test_allows_non_denied_request(self):
         """Test addon allows requests without effect=deny or budget_exceeded."""
-        from addons.network_guard import NetworkGuard
-        from addons.policy_engine import PolicyDecision
+        from network_guard import NetworkGuard
+        from policy_engine import PolicyDecision
 
         addon = NetworkGuard()
 
@@ -110,8 +110,8 @@ class TestNetworkGuard:
             budget_remaining=2999
         )
 
-        with patch("addons.network_guard.get_policy_engine", return_value=mock_engine):
-            with patch("addons.base.get_option_safe", return_value=True):
+        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+            with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should NOT have blocked
@@ -123,8 +123,8 @@ class TestNetworkGuard:
 
     def test_warn_mode_does_not_block(self):
         """Test warn mode logs but doesn't block."""
-        from addons.network_guard import NetworkGuard
-        from addons.policy_engine import PolicyDecision
+        from network_guard import NetworkGuard
+        from policy_engine import PolicyDecision
 
         addon = NetworkGuard()
 
@@ -149,8 +149,8 @@ class TestNetworkGuard:
                 return False  # Warn mode
             return default
 
-        with patch("addons.network_guard.get_policy_engine", return_value=mock_engine):
-            with patch("addons.base.get_option_safe", side_effect=option_side_effect):
+        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+            with patch("base.get_option_safe", side_effect=option_side_effect):
                 addon.request(flow)
 
         # Should NOT have blocked in warn mode
@@ -160,7 +160,7 @@ class TestNetworkGuard:
 
     def test_disabled_does_not_check(self):
         """Test disabled addon doesn't check anything."""
-        from addons.network_guard import NetworkGuard
+        from network_guard import NetworkGuard
 
         addon = NetworkGuard()
 
@@ -170,8 +170,8 @@ class TestNetworkGuard:
 
         mock_engine = MagicMock()
 
-        with patch("addons.network_guard.get_policy_engine", return_value=mock_engine):
-            with patch("addons.base.get_option_safe", return_value=False):
+        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+            with patch("base.get_option_safe", return_value=False):
                 addon.request(flow)
 
         # Should not have called policy engine
@@ -180,7 +180,7 @@ class TestNetworkGuard:
 
     def test_no_engine_allows(self):
         """Test requests pass through if no policy engine."""
-        from addons.network_guard import NetworkGuard
+        from network_guard import NetworkGuard
 
         addon = NetworkGuard()
 
@@ -191,8 +191,8 @@ class TestNetworkGuard:
         flow.metadata = {}
         flow.response = None
 
-        with patch("addons.network_guard.get_policy_engine", return_value=None):
-            with patch("addons.base.get_option_safe", return_value=True):
+        with patch("network_guard.get_policy_engine", return_value=None):
+            with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # No engine = no blocking
@@ -206,7 +206,7 @@ class TestNetworkGuardIntegration:
 
     def test_deny_with_real_policy(self):
         """Test deny effect works with real policy engine."""
-        from addons.policy_engine import PolicyEngine, Permission, UnifiedPolicy
+        from policy_engine import PolicyEngine, Permission, UnifiedPolicy
 
         # Create policy with deny rule
         policy = UnifiedPolicy(
@@ -239,7 +239,7 @@ class TestNetworkGuardIntegration:
 
     def test_allowlist_mode(self):
         """Test allowlist mode: allow specific, deny rest."""
-        from addons.policy_engine import PolicyEngine, Permission, UnifiedPolicy
+        from policy_engine import PolicyEngine, Permission, UnifiedPolicy
 
         policy = UnifiedPolicy(
             permissions=[
@@ -279,7 +279,7 @@ class TestNetworkGuardIntegration:
 
     def test_budget_with_real_policy(self):
         """Test budget/rate limiting with real policy engine."""
-        from addons.policy_engine import PolicyEngine, Permission, UnifiedPolicy
+        from policy_engine import PolicyEngine, Permission, UnifiedPolicy
 
         policy = UnifiedPolicy(
             permissions=[
@@ -310,8 +310,8 @@ class TestNetworkGuardIntegration:
 
     def test_single_evaluation_per_request(self):
         """Test that NetworkGuard only calls evaluate_request once per request."""
-        from addons.network_guard import NetworkGuard
-        from addons.policy_engine import PolicyDecision
+        from network_guard import NetworkGuard
+        from policy_engine import PolicyDecision
 
         addon = NetworkGuard()
 
@@ -328,8 +328,8 @@ class TestNetworkGuardIntegration:
             budget_remaining=100
         )
 
-        with patch("addons.network_guard.get_policy_engine", return_value=mock_engine):
-            with patch("addons.base.get_option_safe", return_value=True):
+        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+            with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should have called evaluate_request exactly once
@@ -341,7 +341,7 @@ class TestHomoglyphDetection:
 
     def test_detects_cyrillic_in_domain(self):
         """Test detection of Cyrillic characters in domain names."""
-        from addons.network_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
+        from network_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
 
         if not HOMOGLYPH_ENABLED:
             pytest.skip("confusable-homoglyphs not installed")
@@ -353,7 +353,7 @@ class TestHomoglyphDetection:
 
     def test_allows_normal_ascii_domain(self):
         """Test that normal ASCII domains pass."""
-        from addons.network_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
+        from network_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
 
         if not HOMOGLYPH_ENABLED:
             pytest.skip("confusable-homoglyphs not installed")
@@ -363,7 +363,7 @@ class TestHomoglyphDetection:
 
     def test_blocks_homoglyph_domain_in_request(self):
         """Test that homoglyph domains are blocked in requests."""
-        from addons.network_guard import NetworkGuard, HOMOGLYPH_ENABLED
+        from network_guard import NetworkGuard, HOMOGLYPH_ENABLED
 
         if not HOMOGLYPH_ENABLED:
             pytest.skip("confusable-homoglyphs not installed")
@@ -383,7 +383,7 @@ class TestHomoglyphDetection:
         addon.should_block = lambda: True
         addon._check_homoglyph = lambda: True
 
-        with patch("addons.base.get_option_safe", return_value=True):
+        with patch("base.get_option_safe", return_value=True):
             addon.request(flow)
 
         # Should be blocked

@@ -12,7 +12,7 @@ class TestCircuitStates:
 
     def test_starts_closed(self, circuit_breaker):
         """Test that circuits start in closed state."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         status = circuit_breaker.get_status("test.com")
         assert status.state == CircuitState.CLOSED
@@ -20,7 +20,7 @@ class TestCircuitStates:
 
     def test_opens_after_threshold(self, circuit_breaker):
         """Test that circuit opens after failure threshold."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         circuit_breaker.failure_threshold = 3
 
@@ -38,7 +38,7 @@ class TestCircuitStates:
 
     def test_half_open_after_timeout(self, circuit_breaker):
         """Test that circuit transitions to half-open after timeout."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         circuit_breaker.failure_threshold = 1
         circuit_breaker.timeout_seconds = 0.1  # 100ms for testing
@@ -57,7 +57,7 @@ class TestCircuitStates:
 
     def test_closes_after_success_threshold(self, circuit_breaker):
         """Test that circuit closes after success threshold in half-open."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         circuit_breaker.failure_threshold = 1
         circuit_breaker.success_threshold = 2
@@ -78,7 +78,7 @@ class TestCircuitStates:
 
     def test_reopens_on_failure_in_half_open(self, circuit_breaker):
         """Test that circuit reopens on failure during half-open."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         circuit_breaker.failure_threshold = 1
         circuit_breaker.timeout_seconds = 0.05
@@ -110,7 +110,7 @@ class TestCircuitBreakerBlocking:
 
     def test_blocks_requests_when_open(self, circuit_breaker, make_flow):
         """Test that open circuit blocks requests."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         # Force open
         circuit_breaker.force_open("test.com")
@@ -233,7 +233,7 @@ class TestManualControl:
 
     def test_reset_closes_circuit(self, circuit_breaker):
         """Test that reset closes an open circuit."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         circuit_breaker.force_open("test.com")
         status = circuit_breaker.get_status("test.com")
@@ -247,7 +247,7 @@ class TestManualControl:
 
     def test_force_open_works(self, circuit_breaker):
         """Test that force_open immediately opens circuit."""
-        from addons.circuit_breaker import CircuitState
+        from circuit_breaker import CircuitState
 
         circuit_breaker.force_open("healthy.com")
 
@@ -297,7 +297,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_saves_state_to_file(self, tmp_path):
         """Verify circuit states are saved to file."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "circuit_breaker_state.json"
         state = InMemoryCircuitState(state_file=state_file)
@@ -324,7 +324,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_loads_state_on_startup(self, tmp_path):
         """Verify circuit states are restored from file."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "circuit_breaker_state.json"
 
@@ -343,7 +343,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_atomic_write_cleanup(self, tmp_path):
         """Verify temp files are cleaned up after atomic writes."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "circuit_breaker_state.json"
         state = InMemoryCircuitState(state_file=state_file)
@@ -358,7 +358,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_snapshot_worker_starts_and_stops(self, tmp_path):
         """Verify snapshot worker lifecycle."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "circuit_breaker_state.json"
         state = InMemoryCircuitState(state_file=state_file)
@@ -376,7 +376,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_graceful_shutdown_saves_final_state(self, tmp_path):
         """Verify final state is saved on shutdown."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "circuit_breaker_state.json"
 
@@ -395,7 +395,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_handles_missing_state_file_gracefully(self, tmp_path):
         """Verify state starts empty if file doesn't exist."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "nonexistent.json"
         state = InMemoryCircuitState(state_file=state_file)
@@ -405,7 +405,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_handles_corrupted_state_file_gracefully(self, tmp_path):
         """Verify state handles corrupted file gracefully."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "corrupted.json"
         state_file.write_text("not valid json {{{")
@@ -417,7 +417,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_circuit_breaker_addon_cleanup_on_done(self, tmp_path):
         """Verify CircuitBreaker addon calls stop_snapshots on done()."""
-        from addons.circuit_breaker import CircuitBreaker, InMemoryCircuitState
+        from circuit_breaker import CircuitBreaker, InMemoryCircuitState
 
         circuit_breaker = CircuitBreaker()
 
@@ -435,7 +435,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_concurrent_access_thread_safety(self, tmp_path):
         """Verify concurrent access to state is thread-safe."""
-        from addons.circuit_breaker import InMemoryCircuitState
+        from circuit_breaker import InMemoryCircuitState
         import threading
 
         state_file = tmp_path / "concurrent.json"
@@ -463,7 +463,7 @@ class TestCircuitBreakerStatePersistence:
 
     def test_state_persists_across_restart_integration(self, tmp_path):
         """Integration test: State persists through simulated restart."""
-        from addons.circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
+        from circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
 
         state_file = tmp_path / "persist_test.json"
 
@@ -508,7 +508,7 @@ class TestRequestIdPropagation:
         # Force circuit open
         circuit_breaker.force_open("test.com")
 
-        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
+        with patch("utils.AUDIT_LOG_PATH", log_path):
             flow = make_flow_with_request_id(
                 request_id="req-circuit123",
                 url="http://test.com/api"
@@ -548,7 +548,7 @@ class TestRequestIdPropagation:
 
         log_path = tmp_path / "test.jsonl"
 
-        with patch("addons.utils.AUDIT_LOG_PATH", log_path):
+        with patch("utils.AUDIT_LOG_PATH", log_path):
             flow = make_flow_with_request_id(
                 request_id="req-respfail123",
                 url="http://failing.com/api"

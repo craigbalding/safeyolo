@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .policy_engine import UnifiedPolicy
+    from policy_engine import UnifiedPolicy
 
 try:
     import yaml
@@ -32,10 +32,7 @@ except ImportError:
     YAML_AVAILABLE = False
     yaml = None
 
-try:
-    from .utils import write_event
-except ImportError:
-    from utils import write_event
+from utils import write_event
 
 log = logging.getLogger("safeyolo.policy-loader")
 
@@ -73,10 +70,7 @@ class PolicyLoader:
             on_reload: Optional callback when policies are reloaded
         """
         # Import here to avoid circular imports
-        try:
-            from .policy_engine import UnifiedPolicy
-        except ImportError:
-            from policy_engine import UnifiedPolicy
+        from policy_engine import UnifiedPolicy
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path

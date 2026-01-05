@@ -29,12 +29,8 @@ from typing import Optional
 
 from mitmproxy import ctx, http
 
-try:
-    from .base import SecurityAddon
-    from .utils import atomic_write_json, BackgroundWorker, make_block_response
-except ImportError:
-    from base import SecurityAddon
-    from utils import atomic_write_json, BackgroundWorker, make_block_response
+from base import SecurityAddon
+from utils import atomic_write_json, BackgroundWorker, make_block_response
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 

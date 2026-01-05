@@ -13,7 +13,7 @@ class TestDomainStats:
 
     def test_default_values_zero(self):
         """Test all stats start at zero."""
-        from addons.metrics import DomainStats
+        from metrics import DomainStats
 
         stats = DomainStats()
         assert stats.requests == 0
@@ -24,35 +24,35 @@ class TestDomainStats:
 
     def test_success_rate_no_requests(self):
         """Test success rate is 1.0 when no requests."""
-        from addons.metrics import DomainStats
+        from metrics import DomainStats
 
         stats = DomainStats()
         assert stats.success_rate == 1.0
 
     def test_success_rate_calculation(self):
         """Test success rate calculation."""
-        from addons.metrics import DomainStats
+        from metrics import DomainStats
 
         stats = DomainStats(requests=100, successes=90)
         assert stats.success_rate == 0.9
 
     def test_avg_latency_no_data(self):
         """Test avg latency is 0 when no data."""
-        from addons.metrics import DomainStats
+        from metrics import DomainStats
 
         stats = DomainStats()
         assert stats.avg_latency_ms == 0
 
     def test_avg_latency_calculation(self):
         """Test avg latency calculation."""
-        from addons.metrics import DomainStats
+        from metrics import DomainStats
 
         stats = DomainStats(latency_sum_ms=1000, latency_count=10)
         assert stats.avg_latency_ms == 100
 
     def test_to_dict_structure(self):
         """Test to_dict returns correct structure."""
-        from addons.metrics import DomainStats
+        from metrics import DomainStats
 
         stats = DomainStats(
             requests=50,
@@ -82,14 +82,14 @@ class TestMetricsCollector:
 
     def test_addon_name(self):
         """Test addon has correct name."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
         assert collector.name == "metrics"
 
     def test_initial_counters_zero(self):
         """Test counters start at zero."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
         assert collector.requests_total == 0
@@ -103,7 +103,7 @@ class TestMetricsCollectorRequest:
 
     def test_request_increments_total(self):
         """Test request increments total counter."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -119,7 +119,7 @@ class TestMetricsCollectorRequest:
 
     def test_request_tracks_per_domain(self):
         """Test requests are tracked per domain."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -135,7 +135,7 @@ class TestMetricsCollectorRequest:
 
     def test_request_sets_start_time(self):
         """Test request sets metrics start time in metadata."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -154,7 +154,7 @@ class TestMetricsCollectorResponse:
 
     def test_success_response_increments_success(self):
         """Test successful response increments success counter."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -169,7 +169,7 @@ class TestMetricsCollectorResponse:
 
     def test_blocked_response_increments_blocked(self):
         """Test blocked response increments blocked counter."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -185,7 +185,7 @@ class TestMetricsCollectorResponse:
 
     def test_tracks_different_block_sources(self):
         """Test different block sources are tracked separately."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -210,7 +210,7 @@ class TestMetricsCollectorResponse:
 
     def test_tracks_upstream_429s(self):
         """Test upstream 429 responses are tracked."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -226,7 +226,7 @@ class TestMetricsCollectorResponse:
 
     def test_tracks_upstream_5xx(self):
         """Test upstream 5xx responses are tracked."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -242,7 +242,7 @@ class TestMetricsCollectorResponse:
 
     def test_tracks_latency(self):
         """Test latency is tracked for successful requests."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -267,7 +267,7 @@ class TestMetricsCollectorOutput:
 
     def test_get_json_structure(self):
         """Test get_json returns correct structure."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
         collector.requests_total = 100
@@ -291,7 +291,7 @@ class TestMetricsCollectorOutput:
 
     def test_get_json_identifies_problem_domains(self):
         """Test get_json identifies problem domains."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
 
@@ -309,7 +309,7 @@ class TestMetricsCollectorOutput:
 
     def test_get_prometheus_format(self):
         """Test get_prometheus returns valid format."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
         collector.requests_total = 100
@@ -330,7 +330,7 @@ class TestMetricsCollectorOutput:
 
     def test_get_stats_for_admin_api(self):
         """Test get_stats returns simple dict for admin API."""
-        from addons.metrics import MetricsCollector
+        from metrics import MetricsCollector
 
         collector = MetricsCollector()
         collector.requests_total = 50

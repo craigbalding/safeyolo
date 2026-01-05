@@ -12,7 +12,12 @@ import pytest
 import sys
 from pathlib import Path
 
-# Add project root to path so we can import addons as a package
+# Add addons directory to path for standalone imports
+# This matches how mitmproxy loads addons via -s flag
+addons_dir = Path(__file__).parent.parent / "addons"
+sys.path.insert(0, str(addons_dir))
+
+# Also add project root for any remaining package imports during transition
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -79,8 +84,8 @@ def taddons_ctx():
 @pytest.fixture
 def policy_engine_initialized(tmp_path):
     """Initialize PolicyEngine with test baseline for credential_guard tests."""
-    from addons.policy_engine import init_policy_engine
-    import addons.policy_engine as pe
+    from policy_engine import init_policy_engine
+    import policy_engine as pe
 
     # Save existing engine
     old_engine = pe._policy_engine
@@ -124,7 +129,7 @@ addons:
 @pytest.fixture
 def credential_guard(policy_engine_initialized):
     """Create a fresh CredentialGuard instance with proper mitmproxy context."""
-    from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+    from credential_guard import CredentialGuard, DEFAULT_RULES
     from mitmproxy.test import taddons
 
     addon = CredentialGuard()
@@ -151,7 +156,7 @@ def credential_guard(policy_engine_initialized):
 @pytest.fixture
 def network_guard():
     """Create a fresh NetworkGuard instance with blocking enabled."""
-    from addons.network_guard import NetworkGuard
+    from network_guard import NetworkGuard
 
     addon = NetworkGuard()
     # Default to blocking mode for tests
@@ -162,7 +167,7 @@ def network_guard():
 @pytest.fixture
 def circuit_breaker():
     """Create a fresh CircuitBreaker instance."""
-    from addons.circuit_breaker import CircuitBreaker
+    from circuit_breaker import CircuitBreaker
 
     addon = CircuitBreaker()
     return addon

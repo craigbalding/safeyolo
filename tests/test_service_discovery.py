@@ -14,7 +14,7 @@ class TestServiceEntry:
 
     def test_creates_entry_with_ip(self):
         """Test creating entry with exact IP."""
-        from addons.service_discovery import ServiceEntry
+        from service_discovery import ServiceEntry
 
         entry = ServiceEntry(name="my-service", project="my-project", ip="10.0.0.5")
         assert entry.name == "my-service"
@@ -24,7 +24,7 @@ class TestServiceEntry:
 
     def test_creates_entry_with_range(self):
         """Test creating entry with IP range."""
-        from addons.service_discovery import ServiceEntry
+        from service_discovery import ServiceEntry
 
         entry = ServiceEntry(
             name="services", project="multi-project", ip_range="10.0.0.0/24"
@@ -40,14 +40,14 @@ class TestServiceDiscovery:
 
     def test_addon_name(self):
         """Test addon has correct name."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
         assert discovery.name == "service-discovery"
 
     def test_default_project_when_no_config(self):
         """Test returns 'default' project when no config."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
         project = discovery.get_project_for_ip("192.168.1.100")
@@ -59,7 +59,7 @@ class TestServiceDiscoveryLoading:
 
     def test_loads_exact_ip_mapping(self):
         """Test loading exact IP mappings from config."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "services.yaml"
@@ -86,7 +86,7 @@ services:
 
     def test_loads_ip_range_mapping(self):
         """Test loading IP range mappings from config."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "services.yaml"
@@ -112,7 +112,7 @@ services:
 
     def test_exact_ip_takes_precedence(self):
         """Test exact IP match takes precedence over range."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "services.yaml"
@@ -138,7 +138,7 @@ services:
 
     def test_handles_missing_config(self):
         """Test graceful handling of missing config file."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
 
@@ -150,7 +150,7 @@ services:
 
     def test_handles_invalid_ip_range(self):
         """Test handling of invalid IP range in config."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "services.yaml"
@@ -175,7 +175,7 @@ services:
 
     def test_handles_invalid_client_ip(self):
         """Test handling of invalid client IP."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
         # Should not raise, just return default
@@ -188,7 +188,7 @@ class TestServiceDiscoveryStats:
 
     def test_get_stats_returns_dict(self):
         """Test get_stats returns proper structure."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "services.yaml"
@@ -222,7 +222,7 @@ class TestServiceDiscoveryReload:
 
     def test_reload_clears_and_reloads(self):
         """Test reload clears existing data and reloads."""
-        from addons.service_discovery import ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "services.yaml"
@@ -262,7 +262,7 @@ class TestGetServiceDiscovery:
 
     def test_get_service_discovery_returns_instance(self):
         """Test get_service_discovery returns the global instance."""
-        from addons.service_discovery import get_service_discovery, _discovery
+        from service_discovery import get_service_discovery, _discovery
 
         result = get_service_discovery()
         assert result is _discovery

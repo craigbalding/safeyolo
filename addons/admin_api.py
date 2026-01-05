@@ -22,12 +22,8 @@ from urllib.parse import urlparse
 
 from mitmproxy import ctx
 
-try:
-    from .utils import write_event
-    from .policy_engine import get_policy_engine
-except ImportError:
-    from utils import write_event
-    from policy_engine import get_policy_engine
+from utils import write_event
+from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.admin")
 

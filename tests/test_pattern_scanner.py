@@ -14,7 +14,7 @@ class TestSecretPatterns:
     @pytest.fixture
     def scanner(self):
         """Create scanner with rules loaded."""
-        from addons.pattern_scanner import PatternScanner
+        from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.configure({})  # Trigger rule loading
@@ -108,7 +108,7 @@ class TestJailbreakPatterns:
     @pytest.fixture
     def scanner(self):
         """Create scanner with rules loaded."""
-        from addons.pattern_scanner import PatternScanner
+        from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.configure({})
@@ -198,7 +198,7 @@ class TestPatternRule:
 
     def test_should_block_high_severity(self):
         """Test should_block returns True for severity >= 4."""
-        from addons.pattern_scanner import PatternRule
+        from pattern_scanner import PatternRule
         import re
 
         rule = PatternRule(
@@ -213,7 +213,7 @@ class TestPatternRule:
 
     def test_should_block_low_severity(self):
         """Test should_block returns False for severity < 4."""
-        from addons.pattern_scanner import PatternRule
+        from pattern_scanner import PatternRule
         import re
 
         rule = PatternRule(
@@ -233,7 +233,7 @@ class TestRequestScanning:
     @pytest.fixture
     def scanner(self):
         """Create scanner with rules loaded."""
-        from addons.pattern_scanner import PatternScanner
+        from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.configure({})
@@ -248,7 +248,7 @@ class TestRequestScanning:
             headers={"Content-Type": "application/json"},
         )
 
-        with patch("addons.pattern_scanner.ctx") as mock_ctx:
+        with patch("pattern_scanner.ctx") as mock_ctx:
             mock_ctx.options.pattern_block_input = False
 
             scanner.request(flow)
@@ -264,7 +264,7 @@ class TestRequestScanning:
             headers={"Content-Type": "application/json"},
         )
 
-        with patch("addons.pattern_scanner.ctx") as mock_ctx:
+        with patch("pattern_scanner.ctx") as mock_ctx:
             mock_ctx.options.pattern_block_input = True
 
             scanner.request(flow)
@@ -282,7 +282,7 @@ class TestRequestScanning:
             headers={"Content-Type": "application/json"},
         )
 
-        with patch("addons.pattern_scanner.ctx") as mock_ctx:
+        with patch("pattern_scanner.ctx") as mock_ctx:
             mock_ctx.options.pattern_block_input = False
 
             scanner.request(flow)
@@ -299,7 +299,7 @@ class TestResponseScanning:
     @pytest.fixture
     def scanner(self):
         """Create scanner with rules loaded."""
-        from addons.pattern_scanner import PatternScanner
+        from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.configure({})
@@ -313,7 +313,7 @@ class TestResponseScanning:
             content='Your API key is sk-abcdefghij1234567890abcdefghij1234567890abcdefgh',
         )
 
-        with patch("addons.pattern_scanner.ctx") as mock_ctx:
+        with patch("pattern_scanner.ctx") as mock_ctx:
             mock_ctx.options.pattern_block_output = False
             mock_ctx.options.pattern_redact_secrets = False
 
@@ -330,7 +330,7 @@ class TestResponseScanning:
             content=f'Your API key is {secret}',
         )
 
-        with patch("addons.pattern_scanner.ctx") as mock_ctx:
+        with patch("pattern_scanner.ctx") as mock_ctx:
             mock_ctx.options.pattern_block_output = False
             mock_ctx.options.pattern_redact_secrets = True
 
@@ -346,7 +346,7 @@ class TestStats:
 
     def test_stats_tracking(self):
         """Test that stats are tracked correctly."""
-        from addons.pattern_scanner import PatternScanner
+        from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.configure({})
@@ -361,7 +361,7 @@ class TestStats:
 
     def test_get_stats(self):
         """Test get_stats returns expected structure."""
-        from addons.pattern_scanner import PatternScanner
+        from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.configure({})
@@ -380,7 +380,7 @@ class TestBuiltinPatterns:
 
     def test_all_patterns_compile(self):
         """Test that all built-in patterns compile without error."""
-        from addons.pattern_scanner import _compile_rules
+        from pattern_scanner import _compile_rules
 
         rules = _compile_rules()
 
@@ -391,7 +391,7 @@ class TestBuiltinPatterns:
 
     def test_secret_patterns_target_output(self):
         """Test that secret patterns target output."""
-        from addons.pattern_scanner import _compile_rules
+        from pattern_scanner import _compile_rules
 
         rules = _compile_rules()
         secret_rules = [r for r in rules if r.category == "secret"]
@@ -401,7 +401,7 @@ class TestBuiltinPatterns:
 
     def test_jailbreak_patterns_target_input(self):
         """Test that jailbreak patterns target input."""
-        from addons.pattern_scanner import _compile_rules
+        from pattern_scanner import _compile_rules
 
         rules = _compile_rules()
         jailbreak_rules = [r for r in rules if r.category == "jailbreak"]

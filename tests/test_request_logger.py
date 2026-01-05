@@ -15,7 +15,7 @@ class TestQuietHostsConfig:
 
     def test_loads_empty_config(self):
         """Test loading empty config file."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "quiet_hosts.yaml"
@@ -28,7 +28,7 @@ class TestQuietHostsConfig:
 
     def test_loads_hosts_list(self):
         """Test loading hosts list from config."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "quiet_hosts.yaml"
@@ -47,7 +47,7 @@ hosts:
 
     def test_loads_wildcard_patterns(self):
         """Test loading wildcard host patterns."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "quiet_hosts.yaml"
@@ -67,7 +67,7 @@ hosts:
 
     def test_loads_path_patterns(self):
         """Test loading host:path patterns."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "quiet_hosts.yaml"
@@ -88,7 +88,7 @@ paths:
 
     def test_handles_missing_file(self):
         """Test handling of missing config file."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         config = QuietHostsConfig(Path("/nonexistent/path.yaml"))
         result = config.load()
@@ -97,7 +97,7 @@ paths:
 
     def test_handles_invalid_yaml(self):
         """Test handling of invalid YAML."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "quiet_hosts.yaml"
@@ -110,7 +110,7 @@ paths:
 
     def test_case_insensitive_matching(self):
         """Test host matching is case insensitive."""
-        from addons.request_logger import QuietHostsConfig
+        from request_logger import QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "quiet_hosts.yaml"
@@ -129,14 +129,14 @@ class TestRequestLogger:
 
     def test_addon_name(self):
         """Test addon has correct name."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         addon = RequestLogger()
         assert addon.name == "request-logger"
 
     def test_initial_stats_zero(self):
         """Test stats start at zero."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         addon = RequestLogger()
         assert addon.requests_total == 0
@@ -150,7 +150,7 @@ class TestRequestLoggerLogging:
 
     def test_logs_request_to_file(self):
         """Test request is logged to JSONL file."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
@@ -181,7 +181,7 @@ class TestRequestLoggerLogging:
 
     def test_logs_response_to_file(self):
         """Test response is logged to JSONL file."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
         import time
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -210,7 +210,7 @@ class TestRequestLoggerLogging:
 
     def test_logs_block_with_details(self):
         """Test blocked requests include block details."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
@@ -243,7 +243,7 @@ class TestRequestLoggerQuiet:
 
     def test_quiets_matching_hosts(self):
         """Test matching hosts are not logged."""
-        from addons.request_logger import RequestLogger, QuietHostsConfig
+        from request_logger import RequestLogger, QuietHostsConfig
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
@@ -271,7 +271,7 @@ class TestRequestLoggerQuiet:
 
     def test_skips_quieted_response_logging(self):
         """Test quieted requests don't log responses."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
@@ -292,7 +292,7 @@ class TestRequestLoggerQuiet:
 
     def test_logs_blocks_even_when_quieted(self):
         """Test blocked requests are logged even if host is quieted."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
@@ -324,7 +324,7 @@ class TestRequestLoggerStats:
 
     def test_get_stats_returns_dict(self):
         """Test get_stats returns proper structure."""
-        from addons.request_logger import RequestLogger
+        from request_logger import RequestLogger
 
         addon = RequestLogger()
         addon.log_path = Path("/app/logs/test.jsonl")

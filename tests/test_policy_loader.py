@@ -16,19 +16,19 @@ class TestSpecificityScore:
 
     def test_wildcard_only_scores_zero(self):
         """Test that '*' pattern scores 0."""
-        from addons.policy_loader import _specificity_score
+        from policy_loader import _specificity_score
 
         assert _specificity_score("*") == 0
 
     def test_longer_patterns_score_higher(self):
         """Test longer patterns score higher."""
-        from addons.policy_loader import _specificity_score
+        from policy_loader import _specificity_score
 
         assert _specificity_score("api.example.com") > _specificity_score("api.com")
 
     def test_wildcards_reduce_score(self):
         """Test wildcards reduce score."""
-        from addons.policy_loader import _specificity_score
+        from policy_loader import _specificity_score
 
         assert _specificity_score("api.example.com") > _specificity_score("*.example.com")
         assert _specificity_score("*.example.com") > _specificity_score("*.*")
@@ -39,7 +39,7 @@ class TestPolicyLoaderBasics:
 
     def test_creates_empty_baseline(self):
         """Test loader creates empty baseline when no path given."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         loader = PolicyLoader()
         assert loader.baseline is not None
@@ -47,7 +47,7 @@ class TestPolicyLoaderBasics:
 
     def test_baseline_path_property(self):
         """Test baseline_path property returns correct value."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -62,7 +62,7 @@ class TestPolicyLoaderFileLoading:
 
     def test_loads_yaml_policy(self):
         """Test loading YAML policy file."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -78,7 +78,7 @@ permissions:
 
     def test_loads_json_policy(self):
         """Test loading JSON policy file."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.json"
@@ -93,7 +93,7 @@ permissions:
 
     def test_handles_missing_file(self):
         """Test handling of missing policy file."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         loader = PolicyLoader(baseline_path=Path("/nonexistent/policy.yaml"))
         # Should create empty policy, not fail
@@ -101,7 +101,7 @@ permissions:
 
     def test_handles_invalid_yaml(self):
         """Test handling of invalid YAML."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -113,7 +113,7 @@ permissions:
 
     def test_handles_invalid_policy_structure(self):
         """Test handling of invalid policy structure."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -132,7 +132,7 @@ class TestPolicyLoaderTaskPolicy:
 
     def test_loads_task_policy(self):
         """Test loading task policy."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "baseline.yaml"
@@ -155,7 +155,7 @@ permissions:
 
     def test_clear_task_policy(self):
         """Test clearing task policy."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "baseline.yaml"
@@ -177,7 +177,7 @@ class TestPolicyLoaderSpecificity:
 
     def test_sorts_permissions_by_specificity(self):
         """Test permissions are sorted by specificity (most specific first)."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -207,8 +207,8 @@ class TestPolicyLoaderDirectSet:
 
     def test_set_baseline_directly(self):
         """Test setting baseline policy directly."""
-        from addons.policy_loader import PolicyLoader
-        from addons.policy_engine import UnifiedPolicy, Permission
+        from policy_loader import PolicyLoader
+        from policy_engine import UnifiedPolicy, Permission
 
         loader = PolicyLoader()
 
@@ -221,8 +221,8 @@ class TestPolicyLoaderDirectSet:
 
     def test_set_task_policy_directly(self):
         """Test setting task policy directly."""
-        from addons.policy_loader import PolicyLoader
-        from addons.policy_engine import UnifiedPolicy, Permission
+        from policy_loader import PolicyLoader
+        from policy_engine import UnifiedPolicy, Permission
 
         loader = PolicyLoader()
 
@@ -240,7 +240,7 @@ class TestPolicyLoaderReload:
 
     def test_reload_reloads_all(self):
         """Test reload() reloads all policies."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "baseline.yaml"
@@ -266,7 +266,7 @@ permissions:
 
     def test_on_reload_callback_called(self):
         """Test on_reload callback is called."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         callback = Mock()
 
@@ -286,7 +286,7 @@ class TestPolicyLoaderWatcher:
 
     def test_start_stop_watcher(self):
         """Test starting and stopping file watcher."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -304,7 +304,7 @@ class TestPolicyLoaderWatcher:
 
     def test_watcher_detects_changes(self):
         """Test watcher detects file changes."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -339,7 +339,7 @@ class TestPolicyLoaderProperties:
 
     def test_baseline_property_thread_safe(self):
         """Test baseline property is thread-safe."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -353,14 +353,14 @@ class TestPolicyLoaderProperties:
 
     def test_task_policy_property_initially_none(self):
         """Test task_policy is None initially."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         loader = PolicyLoader()
         assert loader.task_policy is None
 
     def test_task_policy_path_property(self):
         """Test task_policy_path property."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "baseline.yaml"
@@ -382,7 +382,7 @@ class TestPolicyLoaderErrorPaths:
     def test_handles_permission_denied(self):
         """Test handling of unreadable policy file."""
         import os
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         # This test requires non-root execution. If it fails, the container
         # is running as root which is a security concern.
@@ -409,7 +409,7 @@ permissions:
 
     def test_handles_directory_as_policy_file(self):
         """Test handling when policy path is a directory."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_dir = Path(tmpdir) / "not_a_file"
@@ -421,7 +421,7 @@ permissions:
 
     def test_handles_binary_file_as_policy(self):
         """Test handling of binary file as policy."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -435,7 +435,7 @@ permissions:
     def test_handles_symlink_loop(self):
         """Test handling of symlink loop."""
         import os
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             link1 = Path(tmpdir) / "link1.yaml"
@@ -451,7 +451,7 @@ permissions:
 
     def test_reload_handles_file_deleted(self):
         """Test reload when policy file is deleted."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"
@@ -477,7 +477,7 @@ permissions:
 
     def test_watcher_handles_disappearing_file(self):
         """Test watcher handles file disappearing gracefully."""
-        from addons.policy_loader import PolicyLoader
+        from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.yaml"

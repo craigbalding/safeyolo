@@ -30,14 +30,9 @@ from typing import Any, Literal, Optional
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
-try:
-    from .utils import write_event, matches_host_pattern, matches_resource_pattern
-    from .budget_tracker import GCRABudgetTracker
-    from .policy_loader import PolicyLoader
-except ImportError:
-    from utils import write_event, matches_host_pattern, matches_resource_pattern
-    from budget_tracker import GCRABudgetTracker
-    from policy_loader import PolicyLoader
+from utils import write_event, matches_host_pattern, matches_resource_pattern
+from budget_tracker import GCRABudgetTracker
+from policy_loader import PolicyLoader
 
 log = logging.getLogger("safeyolo.policy-engine")
 

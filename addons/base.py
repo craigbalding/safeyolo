@@ -8,7 +8,7 @@ Provides common functionality for addons that make security decisions:
 - Block response generation
 
 Usage:
-    from .base import SecurityAddon
+    from base import SecurityAddon
 
     class MyAddon(SecurityAddon):
         name = "my-addon"
@@ -32,12 +32,8 @@ from typing import Any, Optional
 
 from mitmproxy import http
 
-try:
-    from .utils import make_block_response, write_event, get_option_safe
-    from .policy_engine import get_policy_engine
-except ImportError:
-    from utils import make_block_response, write_event, get_option_safe
-    from policy_engine import get_policy_engine
+from utils import make_block_response, write_event, get_option_safe
+from policy_engine import get_policy_engine
 
 
 @dataclass

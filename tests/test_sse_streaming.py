@@ -12,7 +12,7 @@ class TestSSEContentTypes:
 
     def test_sse_content_types_defined(self):
         """Test SSE content types are properly defined."""
-        from addons.sse_streaming import SSE_CONTENT_TYPES
+        from sse_streaming import SSE_CONTENT_TYPES
 
         assert "text/event-stream" in SSE_CONTENT_TYPES
         assert "application/x-ndjson" in SSE_CONTENT_TYPES
@@ -23,14 +23,14 @@ class TestSSEStreamingAddon:
 
     def test_addon_name(self):
         """Test addon has correct name."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
         assert addon.name == "sse_streaming"
 
     def test_initial_stats_zero(self):
         """Test stats start at zero."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
         assert addon.streams_enabled == 0
@@ -43,7 +43,7 @@ class TestSSEStreamingDetection:
 
     def test_detects_event_stream_content_type(self):
         """Test detection of text/event-stream content type."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
@@ -53,7 +53,7 @@ class TestSSEStreamingDetection:
         flow.metadata.get.return_value = None
 
         # Mock ctx.options
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
             addon.responseheaders(flow)
 
@@ -64,7 +64,7 @@ class TestSSEStreamingDetection:
 
     def test_detects_ndjson_content_type(self):
         """Test detection of application/x-ndjson content type."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
@@ -73,7 +73,7 @@ class TestSSEStreamingDetection:
         flow.request.host = "streaming.example.com"
         flow.metadata.get.return_value = None
 
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
             addon.responseheaders(flow)
 
@@ -82,7 +82,7 @@ class TestSSEStreamingDetection:
 
     def test_ignores_non_streaming_content(self):
         """Test non-streaming content types are ignored."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
@@ -91,7 +91,7 @@ class TestSSEStreamingDetection:
         flow.request.host = "api.example.com"
         flow.metadata.get.return_value = None
 
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
             addon.responseheaders(flow)
 
@@ -101,14 +101,14 @@ class TestSSEStreamingDetection:
 
     def test_disabled_when_option_false(self):
         """Test streaming disabled when option is False."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
         flow = Mock()
         flow.response.headers.get.return_value = "text/event-stream"
 
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = False
             addon.responseheaders(flow)
 
@@ -121,7 +121,7 @@ class TestSSEStreamingWithPolicy:
 
     def test_respects_policy_disabled(self):
         """Test addon respects policy disabling it."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
@@ -133,7 +133,7 @@ class TestSSEStreamingWithPolicy:
         flow.request.host = "api.example.com"
         flow.metadata.get.return_value = policy
 
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
             addon.responseheaders(flow)
 
@@ -142,7 +142,7 @@ class TestSSEStreamingWithPolicy:
 
     def test_streams_json_when_policy_enabled(self):
         """Test JSON streaming when policy enables stream_json."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
@@ -155,7 +155,7 @@ class TestSSEStreamingWithPolicy:
         flow.request.host = "ntfy.example.com"
         flow.metadata.get.return_value = policy
 
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
             addon.responseheaders(flow)
 
@@ -169,14 +169,14 @@ class TestSSEStreamingStats:
 
     def test_get_stats_returns_dict(self):
         """Test get_stats returns proper structure."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
         addon.streams_enabled = 5
         addon.streams_by_domain = {"api.example.com": 3, "other.com": 2}
         addon.streams_by_content_type = {"text/event-stream": 5}
 
-        with patch('addons.sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
             stats = addon.get_stats()
 
@@ -187,7 +187,7 @@ class TestSSEStreamingStats:
 
     def test_record_stream_increments_counters(self):
         """Test _record_stream updates all counters."""
-        from addons.sse_streaming import SSEStreaming
+        from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 

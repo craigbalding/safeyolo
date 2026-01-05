@@ -14,7 +14,7 @@ class TestGCRABasics:
 
     def test_allows_initial_request(self):
         """Test first request is always allowed."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
         allowed, remaining = tracker.check_and_consume("test-key", 100)
@@ -24,7 +24,7 @@ class TestGCRABasics:
 
     def test_allows_requests_within_budget(self):
         """Test requests within budget are allowed."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -35,7 +35,7 @@ class TestGCRABasics:
 
     def test_blocks_when_budget_exceeded(self):
         """Test requests are blocked when budget exceeded."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -55,7 +55,7 @@ class TestGCRABasics:
 
     def test_different_keys_independent(self):
         """Test different keys have independent budgets."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -75,7 +75,7 @@ class TestGCRARemaining:
 
     def test_get_remaining_without_consuming(self):
         """Test get_remaining doesn't consume budget."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
         budget = 100
@@ -89,7 +89,7 @@ class TestGCRARemaining:
 
     def test_get_remaining_for_new_key(self):
         """Test get_remaining for new key returns full burst capacity."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
         budget = 100
@@ -104,7 +104,7 @@ class TestGCRAReset:
 
     def test_reset_clears_key(self):
         """Test reset() clears budget for specific key."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -121,7 +121,7 @@ class TestGCRAReset:
 
     def test_reset_only_affects_specified_key(self):
         """Test reset() only affects the specified key."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -138,7 +138,7 @@ class TestGCRAReset:
 
     def test_reset_all_clears_everything(self):
         """Test reset_all() clears all budgets."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -158,7 +158,7 @@ class TestGCRAStats:
 
     def test_stats_tracks_keys(self):
         """Test get_stats() returns tracked key info."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -176,7 +176,7 @@ class TestGCRAPersistence:
 
     def test_save_and_load_state(self):
         """Test state is saved and loaded correctly."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "budget_state.json"
@@ -202,7 +202,7 @@ class TestGCRAPersistence:
 
     def test_handles_missing_state_file(self):
         """Test tracker handles missing state file gracefully."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "nonexistent.json"
@@ -216,7 +216,7 @@ class TestGCRAPersistence:
 
     def test_handles_corrupted_state_file(self):
         """Test tracker handles corrupted state file gracefully."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "corrupted.json"
@@ -235,7 +235,7 @@ class TestGCRAThreadSafety:
 
     def test_concurrent_access(self):
         """Test concurrent access from multiple threads."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
         results = []
@@ -266,7 +266,7 @@ class TestGCRAThreadSafety:
 
     def test_concurrent_reset(self):
         """Test concurrent reset operations don't cause errors."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
         errors = []
@@ -301,7 +301,7 @@ class TestGCRACostParameter:
 
     def test_higher_cost_consumes_more_budget(self):
         """Test that higher cost consumes more budget."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         tracker = GCRABudgetTracker()
 
@@ -320,7 +320,7 @@ class TestBudgetTrackerErrorPaths:
     def test_handles_readonly_state_directory(self):
         """Test graceful handling of unwritable state dir."""
         import os
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_dir = Path(tmpdir) / "readonly"
@@ -349,7 +349,7 @@ class TestBudgetTrackerErrorPaths:
 
     def test_handles_empty_state_file(self):
         """Test recovery from empty state file."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "empty.json"
@@ -364,7 +364,7 @@ class TestBudgetTrackerErrorPaths:
 
     def test_handles_partial_json_state(self):
         """Test recovery from partial/truncated JSON state file."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "partial.json"
@@ -379,7 +379,7 @@ class TestBudgetTrackerErrorPaths:
 
     def test_handles_wrong_type_state(self):
         """Test recovery from wrong type in state file."""
-        from addons.budget_tracker import GCRABudgetTracker
+        from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "wrong_type.json"

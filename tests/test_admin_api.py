@@ -18,7 +18,7 @@ class TestAdminRequestHandler:
     @pytest.fixture
     def handler_class(self):
         """Get handler class with mocked dependencies."""
-        from addons.admin_api import AdminRequestHandler
+        from admin_api import AdminRequestHandler
 
         # Reset class-level state
         AdminRequestHandler.credential_guard = None
@@ -62,7 +62,7 @@ class TestAdminRequestHandler:
 
     def test_modes_get(self, handler_class):
         """Test GET /modes returns addon modes."""
-        with patch("addons.admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx") as mock_ctx:
             mock_ctx.options.credguard_block = False
             mock_ctx.options.network_guard_block = True
             mock_ctx.options.pattern_block_input = False
@@ -79,7 +79,7 @@ class TestAdminRequestHandler:
 
     def test_plugin_mode_get(self, handler_class):
         """Test GET /plugins/{name}/mode returns single addon mode."""
-        with patch("addons.admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx") as mock_ctx:
             mock_ctx.options.credguard_block = True
 
             handler = self._create_handler(
@@ -93,7 +93,7 @@ class TestAdminRequestHandler:
 
     def test_plugin_mode_put(self, handler_class):
         """Test PUT /plugins/{name}/mode sets addon mode."""
-        with patch("addons.admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx") as mock_ctx:
             mock_ctx.options.credguard_block = False
 
             body = json.dumps({"mode": "block"})
@@ -108,7 +108,7 @@ class TestAdminRequestHandler:
 
     def test_modes_put_all(self, handler_class):
         """Test PUT /modes sets all addon modes at once."""
-        with patch("addons.admin_api.ctx") as mock_ctx:
+        with patch("admin_api.ctx") as mock_ctx:
             # Set initial values
             mock_ctx.options.credguard_block = False
             mock_ctx.options.ratelimit_block = False
@@ -126,7 +126,7 @@ class TestAdminRequestHandler:
 
     def test_invalid_mode_rejected(self, handler_class):
         """Test PUT mode rejects invalid mode values."""
-        with patch("addons.admin_api.ctx"):
+        with patch("admin_api.ctx"):
             body = json.dumps({"mode": "invalid"})
             handler = self._create_handler(
                 handler_class, "PUT", "/plugins/credential-guard/mode", body=body
@@ -208,7 +208,7 @@ class TestAdminAPIAuthentication:
     @pytest.fixture
     def handler_class(self):
         """Get handler class with mocked dependencies."""
-        from addons.admin_api import AdminRequestHandler
+        from admin_api import AdminRequestHandler
 
         # Reset class-level state
         AdminRequestHandler.credential_guard = None
@@ -394,14 +394,14 @@ class TestAdminAPIAddon:
 
     def test_name(self):
         """Test addon has correct name."""
-        from addons.admin_api import AdminAPI
+        from admin_api import AdminAPI
 
         addon = AdminAPI()
         assert addon.name == "admin-api"
 
     def test_mode_switchable_addons(self):
         """Test MODE_SWITCHABLE contains expected addons."""
-        from addons.admin_api import AdminRequestHandler
+        from admin_api import AdminRequestHandler
 
         expected = {
             "network-guard",

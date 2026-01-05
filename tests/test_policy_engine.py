@@ -13,7 +13,7 @@ class TestPatternMatching:
     @pytest.fixture
     def matches_pattern(self):
         """Get the pattern matching function."""
-        from addons.policy_engine import _matches_pattern
+        from policy_engine import _matches_pattern
         return _matches_pattern
 
     def test_exact_match(self, matches_pattern):
@@ -40,7 +40,7 @@ class TestConditionMatching:
     @pytest.fixture
     def make_condition(self):
         """Factory for creating Condition objects."""
-        from addons.policy_engine import Condition
+        from policy_engine import Condition
         return Condition
 
     def test_credential_type_match(self, make_condition):
@@ -83,7 +83,7 @@ class TestPolicyEngine:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with test baseline policy."""
-        from addons.policy_engine import PolicyEngine
+        from policy_engine import PolicyEngine
 
         # Create test baseline.yaml
         baseline = tmp_path / "baseline.yaml"
@@ -202,7 +202,7 @@ class TestAddCredentialApproval:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with minimal baseline."""
-        from addons.policy_engine import PolicyEngine
+        from policy_engine import PolicyEngine
 
         baseline = tmp_path / "baseline.yaml"
         baseline.write_text("""
@@ -290,7 +290,7 @@ class TestBudgetTracking:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with budget config."""
-        from addons.policy_engine import PolicyEngine
+        from policy_engine import PolicyEngine
 
         baseline = tmp_path / "baseline.yaml"
         baseline.write_text("""
@@ -352,7 +352,7 @@ class TestAddonConfiguration:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with addon config."""
-        from addons.policy_engine import PolicyEngine
+        from policy_engine import PolicyEngine
 
         baseline = tmp_path / "baseline.yaml"
         baseline.write_text("""

@@ -45,14 +45,9 @@ except ImportError:
     HOMOGLYPH_ENABLED = False
     confusables = None
 
-try:
-    from .base import SecurityAddon
-    from .utils import get_client_ip
-    from .policy_engine import get_policy_engine
-except ImportError:
-    from base import SecurityAddon
-    from utils import get_client_ip
-    from policy_engine import get_policy_engine
+from base import SecurityAddon
+from utils import get_client_ip
+from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.network-guard")
 

@@ -18,7 +18,7 @@ class TestRequestIdGenerator:
     @pytest.fixture
     def addon(self):
         """Create a fresh RequestIdGenerator instance."""
-        from addons.request_id import RequestIdGenerator
+        from request_id import RequestIdGenerator
         return RequestIdGenerator()
 
     def test_request_id_assigned(self, addon):
@@ -86,8 +86,8 @@ class TestRequestIdIntegration:
 
     def test_request_id_available_for_credential_guard(self):
         """Request ID is available when credential_guard runs."""
-        from addons.request_id import RequestIdGenerator
-        from addons.credential_guard import CredentialGuard
+        from request_id import RequestIdGenerator
+        from credential_guard import CredentialGuard
 
         rid = RequestIdGenerator()
         _ = CredentialGuard()  # Verify it can be instantiated
@@ -107,8 +107,8 @@ class TestRequestIdIntegration:
 
     def test_request_id_available_for_network_guard(self):
         """Request ID is available when network_guard runs."""
-        from addons.request_id import RequestIdGenerator
-        from addons.network_guard import NetworkGuard
+        from request_id import RequestIdGenerator
+        from network_guard import NetworkGuard
 
         rid = RequestIdGenerator()
         _ = NetworkGuard()  # Verify it can be instantiated

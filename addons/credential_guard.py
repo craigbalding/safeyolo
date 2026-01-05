@@ -24,23 +24,12 @@ from typing import Optional
 
 from mitmproxy import ctx, http
 
-try:
-    from .base import SecurityAddon
-    from .utils import (
-        make_block_response, load_config_file, get_client_ip,
-        looks_like_secret, load_hmac_secret, hmac_fingerprint,
-    )
-except ImportError:
-    from base import SecurityAddon
-    from utils import (
-        make_block_response, load_config_file, get_client_ip,
-        looks_like_secret, load_hmac_secret, hmac_fingerprint,
-    )
-
-try:
-    from .policy_engine import get_policy_engine
-except ImportError:
-    from policy_engine import get_policy_engine
+from base import SecurityAddon
+from utils import (
+    make_block_response, load_config_file, get_client_ip,
+    looks_like_secret, load_hmac_secret, hmac_fingerprint,
+)
+from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.credential-guard")
 
@@ -361,7 +350,7 @@ class CredentialGuard(SecurityAddon):
             return "default"
 
         try:
-            from .service_discovery import get_service_discovery
+            from service_discovery import get_service_discovery
             sd = get_service_discovery()
             if sd:
                 return sd.get_project_for_ip(client_ip)

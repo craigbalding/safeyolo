@@ -14,11 +14,11 @@ class TestAdminShield:
     @pytest.fixture
     def shield(self):
         """Create AdminShield instance with mocked ctx."""
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
-            from addons.admin_shield import AdminShield
+            from admin_shield import AdminShield
             return AdminShield()
 
     @pytest.fixture
@@ -34,7 +34,7 @@ class TestAdminShield:
 
     def test_blocks_admin_port(self, shield, mock_flow):
         """Test that requests to admin port are blocked."""
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
@@ -49,7 +49,7 @@ class TestAdminShield:
         """Test that requests to other ports are allowed."""
         mock_flow.request.port = 8080  # Different port
 
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
@@ -62,7 +62,7 @@ class TestAdminShield:
         """Test that extra configured ports are also blocked."""
         mock_flow.request.port = 9091
 
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = "9091, 9092"
 
@@ -76,7 +76,7 @@ class TestAdminShield:
         mock_flow.request.host = "localhost"
         mock_flow.request.port = 9090
 
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
@@ -90,7 +90,7 @@ class TestAdminShield:
         mock_flow.request.host = "127.0.0.1"
         mock_flow.request.port = 9090
 
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
@@ -103,7 +103,7 @@ class TestAdminShield:
         """Test that blocked response is valid JSON."""
         import json
 
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
@@ -123,11 +123,11 @@ class TestGetBlockedPorts:
 
     def test_default_port_only(self):
         """Test with no extra ports configured."""
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = ""
 
-            from addons.admin_shield import AdminShield
+            from admin_shield import AdminShield
             shield = AdminShield()
 
             ports = shield._get_blocked_ports()
@@ -135,11 +135,11 @@ class TestGetBlockedPorts:
 
     def test_with_extra_ports(self):
         """Test with extra ports configured."""
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = "9091,9092"
 
-            from addons.admin_shield import AdminShield
+            from admin_shield import AdminShield
             shield = AdminShield()
 
             ports = shield._get_blocked_ports()
@@ -147,11 +147,11 @@ class TestGetBlockedPorts:
 
     def test_handles_whitespace(self):
         """Test that whitespace in extra ports is handled."""
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = " 9091 , 9092 "
 
-            from addons.admin_shield import AdminShield
+            from admin_shield import AdminShield
             shield = AdminShield()
 
             ports = shield._get_blocked_ports()
@@ -159,11 +159,11 @@ class TestGetBlockedPorts:
 
     def test_ignores_invalid_ports(self):
         """Test that invalid port strings are ignored."""
-        with patch("addons.admin_shield.ctx") as mock_ctx:
+        with patch("admin_shield.ctx") as mock_ctx:
             mock_ctx.options.admin_port = 9090
             mock_ctx.options.shield_extra_ports = "9091,invalid,9092"
 
-            from addons.admin_shield import AdminShield
+            from admin_shield import AdminShield
             shield = AdminShield()
 
             ports = shield._get_blocked_ports()

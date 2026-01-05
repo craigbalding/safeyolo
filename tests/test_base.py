@@ -12,7 +12,7 @@ class TestAddonStats:
 
     def test_default_values(self):
         """Test stats initialize to zero."""
-        from addons.base import AddonStats
+        from base import AddonStats
 
         stats = AddonStats()
         assert stats.checks == 0
@@ -22,7 +22,7 @@ class TestAddonStats:
 
     def test_stats_increment(self):
         """Test stats can be incremented."""
-        from addons.base import AddonStats
+        from base import AddonStats
 
         stats = AddonStats()
         stats.checks += 1
@@ -41,7 +41,7 @@ class TestSecurityAddon:
 
     def test_stats_initialization(self):
         """Test addon initializes with empty stats."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -54,7 +54,7 @@ class TestSecurityAddon:
 
     def test_option_prefix_conversion(self):
         """Test addon name converts to option prefix."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -70,7 +70,7 @@ class TestSecurityAddon:
 
     def test_is_enabled_default_true(self):
         """Test is_enabled defaults to True when option not set."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -81,7 +81,7 @@ class TestSecurityAddon:
 
     def test_should_block_default_true(self):
         """Test should_block defaults to True when option not set."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -96,7 +96,7 @@ class TestSecurityAddonBypass:
 
     def test_bypassed_when_flow_has_response(self):
         """Test addon is bypassed when flow already has a response."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -111,7 +111,7 @@ class TestSecurityAddonBypass:
 
     def test_not_bypassed_when_no_response(self):
         """Test addon is not bypassed when flow has no response."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -124,7 +124,7 @@ class TestSecurityAddonBypass:
         flow.request.host = "example.com"
 
         # Mock get_policy_engine to return None (no engine)
-        with patch('addons.base.get_policy_engine', return_value=None):
+        with patch('base.get_policy_engine', return_value=None):
             assert addon.is_bypassed(flow) is False
 
 
@@ -133,7 +133,7 @@ class TestSecurityAddonBlocking:
 
     def test_block_sets_response(self):
         """Test block() sets flow response correctly."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -153,7 +153,7 @@ class TestSecurityAddonBlocking:
 
     def test_block_with_extra_headers(self):
         """Test block() includes extra headers."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -177,7 +177,7 @@ class TestSecurityAddonWarn:
 
     def test_warn_increments_warned_count(self):
         """Test warn() increments warned counter."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -197,7 +197,7 @@ class TestSecurityAddonStats:
 
     def test_get_stats_returns_dict(self):
         """Test get_stats() returns dict with all fields."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -223,7 +223,7 @@ class TestSecurityAddonLogging:
 
     def test_log_decision_calls_write_event(self):
         """Test log_decision() calls write_event with correct params."""
-        from addons.base import SecurityAddon
+        from base import SecurityAddon
 
         class TestAddon(SecurityAddon):
             name = "test-addon"
@@ -233,7 +233,7 @@ class TestSecurityAddonLogging:
         flow = Mock()
         flow.metadata = {"request_id": "req-123"}
 
-        with patch('addons.base.write_event') as mock_write:
+        with patch('base.write_event') as mock_write:
             addon.log_decision(flow, "block", reason="test", domain="example.com")
 
             mock_write.assert_called_once()
