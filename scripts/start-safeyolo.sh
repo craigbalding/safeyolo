@@ -58,23 +58,26 @@ if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
 fi
 
 # Build addon chain - order matters!
-# Admin shield MUST be first (blocks proxy access to admin API):
-#   0. admin_shield - Prevents agents from reaching admin API through proxy
-# Request ID (enables event correlation across all addons):
-#   1. request_id - Assigns unique ID to every request
-# Infrastructure addons (policy, streaming):
-#   2. sse_streaming - SSE/streaming support
-#   3. policy - Unified policy engine (other addons check this)
-# Traffic management:
-#   4. rate_limiter - Per-domain rate limiting (prevents IP blacklisting)
-#   5. circuit_breaker - Fail-fast for unhealthy upstreams
-# Security addons (can block requests):
-#   6. credential_guard - API key protection
-#   7. pattern_scanner - Fast regex scanning
-# Observability addons (observe but don't block):
-#   8. request_logger - JSONL structured logging
-#   9. metrics - Per-domain statistics
-#   10. admin_api - Control plane REST API
+#
+# Layer 0: Infrastructure (MUST be first)
+#   0. admin_shield   - Block proxy access to admin API (security gate)
+#   1. request_id     - Assign unique ID for event correlation
+#   2. sse_streaming  - SSE/streaming support for LLM responses
+#   3. policy_engine  - Unified policy evaluation (other addons query this)
+#
+# Layer 1: Access Control (deny decisions before budget tracking)
+#   4. access_control - Allow/deny per baseline policy (blocks before rate limiting)
+#   5. rate_limiter   - Per-domain rate limiting (GCRA budgets from PolicyEngine)
+#   6. circuit_breaker - Fail-fast for unhealthy upstreams
+#
+# Layer 2: Security Inspection (credential and content scanning)
+#   7. credential_guard - API key protection and routing
+#   8. pattern_scanner  - Fast regex for secrets/jailbreaks
+#
+# Layer 3: Observability (observe but don't block)
+#   9. request_logger - JSONL structured logging
+#  10. metrics        - Per-domain statistics
+#  11. admin_api      - Control plane REST API
 
 ADDON_ARGS=""
 
@@ -92,15 +95,19 @@ load_addon() {
 }
 
 echo "Loading addons:"
+# Layer 0: Infrastructure
 load_addon "/app/addons/admin_shield.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
-load_addon "/app/addons/policy.py"
-#load_addon "/app/addons/service_discovery.py"
+load_addon "/app/addons/policy_engine.py"
+# Layer 1: Access Control
+load_addon "/app/addons/access_control.py"
 load_addon "/app/addons/rate_limiter.py"
 load_addon "/app/addons/circuit_breaker.py"
+# Layer 2: Security Inspection
 load_addon "/app/addons/credential_guard.py"
-#load_addon "/app/addons/pattern_scanner.py"
+load_addon "/app/addons/pattern_scanner.py"
+# Layer 3: Observability
 load_addon "/app/addons/request_logger.py"
 load_addon "/app/addons/metrics.py"
 load_addon "/app/addons/admin_api.py"
@@ -132,6 +139,19 @@ MITM_OPTS="${MITM_OPTS} --set stream_large_bodies=10m"
 # ==============================================================================
 echo ""
 echo "Security addon blocking modes:"
+
+# access-control: defaults to BLOCK
+ACCESS_CONTROL_BLOCK="${ACCESS_CONTROL_BLOCK:-true}"
+if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
+    ACCESS_CONTROL_BLOCK="true"
+fi
+if [ "${ACCESS_CONTROL_BLOCK}" = "true" ]; then
+    echo "  access-control: BLOCK"
+    MITM_OPTS="${MITM_OPTS} --set access_control_block=true"
+else
+    echo "  access-control: WARN-ONLY"
+    MITM_OPTS="${MITM_OPTS} --set access_control_block=false"
+fi
 
 # credential-guard: defaults to BLOCK
 CREDGUARD_BLOCK="${CREDGUARD_BLOCK:-true}"

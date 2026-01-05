@@ -48,21 +48,30 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 WORKDIR /app
 
-# Copy core addons
+# Copy addon framework
 COPY addons/__init__.py /app/addons/
+COPY addons/base.py /app/addons/
 COPY addons/utils.py /app/addons/
+COPY addons/budget_tracker.py /app/addons/
+# Copy addons in load order (see scripts/start-safeyolo.sh)
+# Layer 0: Infrastructure
 COPY addons/admin_shield.py /app/addons/
 COPY addons/request_id.py /app/addons/
-COPY addons/credential_guard.py /app/addons/
+COPY addons/sse_streaming.py /app/addons/
+COPY addons/policy_engine.py /app/addons/
+# Layer 1: Access Control
+COPY addons/access_control.py /app/addons/
 COPY addons/rate_limiter.py /app/addons/
 COPY addons/circuit_breaker.py /app/addons/
+# Layer 2: Security Inspection
+COPY addons/credential_guard.py /app/addons/
 COPY addons/pattern_scanner.py /app/addons/
-COPY addons/policy_engine.py /app/addons/
-COPY addons/service_discovery.py /app/addons/
+# Layer 3: Observability
 COPY addons/request_logger.py /app/addons/
 COPY addons/metrics.py /app/addons/
 COPY addons/admin_api.py /app/addons/
-COPY addons/sse_streaming.py /app/addons/
+# Optional
+COPY addons/service_discovery.py /app/addons/
 
 # Copy configuration
 COPY config/ /app/config/

@@ -4,19 +4,28 @@ Complete documentation for SafeYolo's mitmproxy addons.
 
 ## Overview
 
-| Addon | Purpose | Default Mode |
-|-------|---------|--------------|
-| request_id | Request ID for event correlation | Always on |
-| policy_engine | Unified policy evaluation and budgets | Always on |
-| service_discovery | Docker container discovery | Always on |
-| access_control | Network allow/deny rules | **Block** |
-| rate_limiter | Per-domain rate limiting (via PolicyEngine) | **Block** |
-| circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
-| credential_guard | Block credentials to wrong hosts | **Block** |
-| pattern_scanner | Regex scanning for secrets | Warn |
-| request_logger | JSONL audit logging | Always on |
-| metrics | Per-domain statistics | Always on |
-| admin_api | REST API on :9090 | Always on |
+Addons are loaded in this order (order matters for security):
+
+| Layer | Addon | Purpose | Default Mode |
+|-------|-------|---------|--------------|
+| 0 | admin_shield | Block proxy access to admin API | Always on |
+| 0 | request_id | Request ID for event correlation | Always on |
+| 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
+| 0 | policy_engine | Unified policy evaluation and budgets | Always on |
+| 1 | access_control | Network allow/deny rules | **Block** |
+| 1 | rate_limiter | Per-domain rate limiting (via PolicyEngine) | **Block** |
+| 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
+| 2 | credential_guard | Block credentials to wrong hosts | **Block** |
+| 2 | pattern_scanner | Regex scanning for secrets | Warn |
+| 3 | request_logger | JSONL audit logging | Always on |
+| 3 | metrics | Per-domain statistics | Always on |
+| 3 | admin_api | REST API on :9090 | Always on |
+
+**Layers:**
+- **Layer 0 (Infrastructure):** Must run first - request IDs, policy engine, streaming
+- **Layer 1 (Access Control):** Deny decisions before budget checks
+- **Layer 2 (Security Inspection):** Credential routing, content scanning
+- **Layer 3 (Observability):** Logging, metrics, admin API
 
 **Default behavior:**
 - `access_control`, `credential_guard`, and `rate_limiter` block by default (core protections)
