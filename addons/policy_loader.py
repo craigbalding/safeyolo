@@ -107,7 +107,7 @@ class PolicyLoader:
         except (ValueError, OSError):
             pass  # Not main thread or not supported
 
-    def _handle_sighup(self, signum, frame) -> None:
+    def _handle_sighup(self, _signum, _frame) -> None:
         """Handle SIGHUP signal."""
         log.info("Received SIGHUP, reloading policies...")
         self._load_baseline()
