@@ -184,6 +184,117 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 results[addon_name] = result.get("status", result.get("error", "unknown"))
         return results
 
+    # =========================================================================
+    # GET Handlers
+    # =========================================================================
+
+    def _handle_get_health(self) -> None:
+        """GET /health - Health check (no auth required)."""
+        self._send_json({"status": "healthy", "proxy": "safeyolo"})
+
+    def _handle_get_stats(self) -> None:
+        """GET /stats - Aggregate stats from all addons."""
+        stats = {"proxy": "safeyolo"}
+        for name, addon in self.addons_with_stats.items():
+            try:
+                stats[name] = addon.get_stats()
+            except Exception as e:
+                stats[name] = {"error": f"{type(e).__name__}: {e}"}
+        self._send_json(stats)
+
+    def _handle_get_debug_addons(self) -> None:
+        """GET /debug/addons - Debug addon discovery."""
+        debug_info = {"discovered": list(self.addons_with_stats.keys())}
+        try:
+            addons_obj = ctx.master.addons
+            debug_info["addons_type"] = type(addons_obj).__name__
+
+            for addon in addons_obj.chain:
+                if type(addon).__name__ == "ScriptLoader":
+                    debug_info["script_loader_dir"] = [x for x in dir(addon) if not x.startswith('_')]
+                    for attr in ['addons', 'scripts', 'script_paths', 'loaded']:
+                        if hasattr(addon, attr):
+                            val = getattr(addon, attr)
+                            if hasattr(val, '__iter__') and not isinstance(val, str):
+                                items = []
+                                for item in val:
+                                    item_info = {"type": type(item).__name__}
+                                    if hasattr(item, 'addons'):
+                                        item_info["addons"] = [
+                                            {"type": type(a).__name__, "name": getattr(a, "name", None), "has_stats": hasattr(a, "get_stats")}
+                                            for a in item.addons
+                                        ]
+                                    if hasattr(item, 'path'):
+                                        item_info["path"] = str(item.path)
+                                    if hasattr(item, 'name'):
+                                        item_info["name"] = item.name
+                                    items.append(item_info)
+                                debug_info[f"scriptloader_{attr}"] = items
+                            else:
+                                debug_info[f"scriptloader_{attr}"] = str(val)[:200]
+                    break
+
+        except Exception as e:
+            import traceback
+            debug_info["error"] = f"{type(e).__name__}: {e}"
+            debug_info["traceback"] = traceback.format_exc()
+        self._send_json(debug_info)
+
+    def _handle_get_modes(self) -> None:
+        """GET /modes - Current mode for all switchable addons."""
+        modes = self._get_all_modes()
+        self._send_json({"modes": modes})
+
+    def _handle_get_plugin_mode(self, addon_name: str) -> None:
+        """GET /plugins/{name}/mode - Mode for a specific addon."""
+        mode_info = self._get_addon_mode(addon_name)
+        if mode_info is None:
+            self._send_json({"error": f"addon '{addon_name}' not found or doesn't support mode switching"}, 404)
+        else:
+            self._send_json(mode_info)
+
+    def _handle_get_policy_baseline(self) -> None:
+        """GET /admin/policy/baseline - Read baseline policy."""
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+        policy = engine.get_baseline()
+        if policy is None:
+            self._send_json({"error": "No baseline policy loaded"}, 404)
+            return
+        self._send_json({
+            "baseline": policy.model_dump(),
+            "path": str(engine.baseline_path) if engine.baseline_path else None
+        })
+
+    def _handle_get_policy_task(self, task_id: str) -> None:
+        """GET /admin/policy/task/{id} - Read task policy."""
+        if not task_id:
+            self._send_json({"error": "missing task_id"}, 400)
+            return
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+        task_policy = engine.get_task_policy(task_id)
+        if task_policy is None:
+            self._send_json({"error": f"Task policy '{task_id}' not found"}, 404)
+            return
+        self._send_json({
+            "task_id": task_id,
+            "policy": task_policy.model_dump()
+        })
+
+    def _handle_get_budgets(self) -> None:
+        """GET /admin/budgets - Current budget usage."""
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+        budget_stats = engine.get_budget_stats()
+        self._send_json(budget_stats)
+
     def do_GET(self):
         """Handle GET requests."""
         parsed = urlparse(self.path)
@@ -191,387 +302,321 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         # Health endpoint exempt from auth (for monitoring)
         if path == "/health":
-            self._send_json({"status": "healthy", "proxy": "safeyolo"})
-            return
+            return self._handle_get_health()
 
         # All other endpoints require auth
         if not self._require_auth():
             return
 
-        if path == "/stats":
-            stats = {"proxy": "safeyolo"}
-            for name, addon in self.addons_with_stats.items():
-                try:
-                    stats[name] = addon.get_stats()
-                except Exception as e:
-                    stats[name] = {"error": f"{type(e).__name__}: {e}"}
-            self._send_json(stats)
+        # Static route dispatch
+        static_handlers = {
+            "/stats": self._handle_get_stats,
+            "/debug/addons": self._handle_get_debug_addons,
+            "/modes": self._handle_get_modes,
+            "/admin/policy/baseline": self._handle_get_policy_baseline,
+            "/admin/budgets": self._handle_get_budgets,
+        }
 
-        elif path == "/debug/addons":
-            # Debug endpoint to inspect addon discovery
-            debug_info = {"discovered": list(self.addons_with_stats.keys())}
-            try:
-                addons_obj = ctx.master.addons
-                debug_info["addons_type"] = type(addons_obj).__name__
+        if path in static_handlers:
+            return static_handlers[path]()
 
-                # Script addons are wrapped - look for ScriptLoader
-                for addon in addons_obj.chain:
-                    if type(addon).__name__ == "ScriptLoader":
-                        debug_info["script_loader_dir"] = [x for x in dir(addon) if not x.startswith('_')]
-                        # Check what attributes exist
-                        for attr in ['addons', 'scripts', 'script_paths', 'loaded']:
-                            if hasattr(addon, attr):
-                                val = getattr(addon, attr)
-                                if hasattr(val, '__iter__') and not isinstance(val, str):
-                                    items = []
-                                    for item in val:
-                                        item_info = {"type": type(item).__name__}
-                                        # Script objects have .addons attribute with actual addon instances
-                                        if hasattr(item, 'addons'):
-                                            item_info["addons"] = [
-                                                {"type": type(a).__name__, "name": getattr(a, "name", None), "has_stats": hasattr(a, "get_stats")}
-                                                for a in item.addons
-                                            ]
-                                        if hasattr(item, 'path'):
-                                            item_info["path"] = str(item.path)
-                                        if hasattr(item, 'name'):
-                                            item_info["name"] = item.name
-                                        items.append(item_info)
-                                    debug_info[f"scriptloader_{attr}"] = items
-                                else:
-                                    debug_info[f"scriptloader_{attr}"] = str(val)[:200]
-                        break
-
-            except Exception as e:
-                import traceback
-                debug_info["error"] = f"{type(e).__name__}: {e}"
-                debug_info["traceback"] = traceback.format_exc()
-            self._send_json(debug_info)
-
-        elif path == "/modes":
-            # Get current mode for all switchable addons
-            modes = self._get_all_modes()
-            self._send_json({"modes": modes})
-
-        elif path.startswith("/plugins/") and path.endswith("/mode"):
-            # GET /plugins/{name}/mode
+        # Parameterized routes
+        if path.startswith("/plugins/") and path.endswith("/mode"):
             addon_name = path[9:-5]  # strip "/plugins/" and "/mode"
-            mode_info = self._get_addon_mode(addon_name)
-            if mode_info is None:
-                self._send_json({"error": f"addon '{addon_name}' not found or doesn't support mode switching"}, 404)
-            else:
-                self._send_json(mode_info)
+            return self._handle_get_plugin_mode(addon_name)
 
-        elif path == "/admin/policy/baseline":
-            # GET /admin/policy/baseline - Read baseline policy
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
-            policy = engine.get_baseline()
-            if policy is None:
-                self._send_json({"error": "No baseline policy loaded"}, 404)
-                return
-            self._send_json({
-                "baseline": policy.model_dump(),
-                "path": str(engine.baseline_path) if engine.baseline_path else None
-            })
-
-        elif path.startswith("/admin/policy/task/"):
-            # GET /admin/policy/task/{id} - Read task policy
+        if path.startswith("/admin/policy/task/"):
             task_id = path[19:]  # strip "/admin/policy/task/"
-            if not task_id:
-                self._send_json({"error": "missing task_id"}, 400)
-                return
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
-            task_policy = engine.get_task_policy(task_id)
-            if task_policy is None:
-                self._send_json({"error": f"Task policy '{task_id}' not found"}, 404)
-                return
+            return self._handle_get_policy_task(task_id)
+
+        self._send_json({"error": "not found"}, 404)
+
+    # =========================================================================
+    # POST Handlers
+    # =========================================================================
+
+    def _handle_post_policy_validate(self) -> None:
+        """POST /admin/policy/validate - Validate YAML content."""
+        data = self._read_json()
+        if not data or "content" not in data:
+            self._send_json({"error": "missing 'content' field"}, 400)
+            return
+
+        try:
+            import yaml
+            yaml.safe_load(data["content"])
+            self._send_json({"valid": True})
+        except yaml.YAMLError as e:
+            self._send_json({"valid": False, "error": str(e)}, 400)
+
+    def _handle_post_baseline_approve(self) -> None:
+        """POST /admin/policy/baseline/approve - Add credential permission."""
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        destination = data.get("destination")
+        credential = data.get("credential")
+        tier = data.get("tier", "explicit")
+
+        if not destination:
+            self._send_json({"error": "missing 'destination' field"}, 400)
+            return
+        if not credential:
+            self._send_json({"error": "missing 'credential' field"}, 400)
+            return
+
+        try:
+            result = engine.add_credential_approval(
+                destination=destination,
+                credential=credential,
+                tier=tier
+            )
+
+            client_ip = self._get_client_ip()
+            write_event("admin.baseline_approval_added",
+                addon="admin-api",
+                client_ip=client_ip,
+                destination=destination,
+                credential=credential,
+                tier=tier
+            )
+            log.info(f"Baseline approval added: {credential} -> {destination}")
+
             self._send_json({
-                "task_id": task_id,
-                "policy": task_policy.model_dump()
+                "status": "added",
+                "destination": destination,
+                "credential": credential,
+                "tier": tier,
+                "permission_count": result.get("permission_count", 1)
             })
 
-        elif path == "/admin/budgets":
-            # GET /admin/budgets - Current budget usage
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
-            budget_stats = engine.get_budget_stats()
-            self._send_json(budget_stats)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+        except Exception as e:
+            log.error(f"Failed to add approval: {type(e).__name__}: {e}")
+            self._send_json({"error": f"Failed to add approval: {type(e).__name__}: {e}"}, 500)
 
-        else:
-            self._send_json({"error": "not found"}, 404)
+    def _handle_post_budgets_reset(self) -> None:
+        """POST /admin/budgets/reset - Reset budget counters."""
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+
+        data = self._read_json() or {}
+        resource = data.get("resource")  # Optional: reset specific resource
+
+        try:
+            result = engine.reset_budgets(resource=resource)
+            client_ip = self._get_client_ip()
+            write_event("admin.budgets_reset",
+                addon="admin-api",
+                client_ip=client_ip,
+                resource=resource
+            )
+            log.info(f"Budget counters reset: {resource or 'all'}")
+            self._send_json(result)
+        except Exception as e:
+            log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
+            self._send_json({"error": f"Failed to reset budgets: {type(e).__name__}: {e}"}, 500)
 
     def do_POST(self):
         """Handle POST requests."""
-        # All POST endpoints require auth
         if not self._require_auth():
             return
 
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/admin/policy/validate":
-            # POST /admin/policy/validate - Validate YAML content
-            data = self._read_json()
-            if not data or "content" not in data:
-                self._send_json({"error": "missing 'content' field"}, 400)
-                return
+        # Static route dispatch
+        static_handlers = {
+            "/admin/policy/validate": self._handle_post_policy_validate,
+            "/admin/policy/baseline/approve": self._handle_post_baseline_approve,
+            "/admin/budgets/reset": self._handle_post_budgets_reset,
+        }
 
-            try:
-                import yaml
-                yaml.safe_load(data["content"])
-                self._send_json({"valid": True})
-            except yaml.YAMLError as e:
-                self._send_json({"valid": False, "error": str(e)}, 400)
+        if path in static_handlers:
+            return static_handlers[path]()
 
-        elif path == "/admin/policy/baseline/approve":
-            # POST /admin/policy/baseline/approve - Add credential permission
-            # Destination-first: specify what credentials can access a destination
-            #
-            # Request format:
-            #   destination: str - destination pattern (e.g., "api.example.com")
-            #   credential: str | list[str] - credential type(s) or HMAC(s)
-            #                (e.g., "openai:*", "hmac:a1b2c3d4", ["openai:*", "anthropic:*"])
-            #   tier: str - "explicit" or "inferred" (default: "explicit")
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
+        self._send_json({"error": "not found"}, 404)
 
-            data = self._read_json()
-            if not data:
-                self._send_json({"error": "missing request body"}, 400)
-                return
+    # =========================================================================
+    # PUT Handlers
+    # =========================================================================
 
-            destination = data.get("destination")
-            credential = data.get("credential")
-            tier = data.get("tier", "explicit")
+    def _handle_put_modes(self) -> None:
+        """PUT /modes - Set mode for all switchable addons."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
 
-            if not destination:
-                self._send_json({"error": "missing 'destination' field"}, 400)
-                return
-            if not credential:
-                self._send_json({"error": "missing 'credential' field"}, 400)
-                return
+        mode = data.get("mode")
+        if mode not in ("warn", "block"):
+            self._send_json({"error": "mode must be 'warn' or 'block'"}, 400)
+            return
 
-            try:
-                result = engine.add_credential_approval(
-                    destination=destination,
-                    credential=credential,
-                    tier=tier
-                )
+        old_modes = self._get_all_modes()
+        results = self._set_all_modes(mode)
+        client_ip = self._get_client_ip()
+        write_event("admin.mode_change",
+            addon="admin-api",
+            client_ip=client_ip,
+            target_addon="all",
+            old_modes=old_modes,
+            new_mode=mode
+        )
+        self._send_json({"status": "updated", "mode": mode, "results": results})
 
-                client_ip = self._get_client_ip()
-                write_event("admin.baseline_approval_added",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    destination=destination,
-                    credential=credential,
-                    tier=tier
-                )
-                log.info(f"Baseline approval added: {credential} -> {destination}")
+    def _handle_put_plugin_mode(self, addon_name: str) -> None:
+        """PUT /plugins/{name}/mode - Set mode for a specific addon."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
 
-                self._send_json({
-                    "status": "added",
-                    "destination": destination,
-                    "credential": credential,
-                    "tier": tier,
-                    "permission_count": result.get("permission_count", 1)
-                })
+        mode = data.get("mode")
+        if mode not in ("warn", "block"):
+            self._send_json({"error": "mode must be 'warn' or 'block'"}, 400)
+            return
 
-            except ValueError as e:
-                self._send_json({"error": str(e)}, 400)
-            except Exception as e:
-                log.error(f"Failed to add approval: {type(e).__name__}: {e}")
-                self._send_json({"error": f"Failed to add approval: {type(e).__name__}: {e}"}, 500)
+        old_mode = self._get_addon_mode(addon_name)
+        old_mode_value = old_mode.get("mode") if old_mode else None
 
-        elif path == "/admin/budgets/reset":
-            # POST /admin/budgets/reset - Reset budget counters
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
-
-            data = self._read_json() or {}
-            resource = data.get("resource")  # Optional: reset specific resource
-
-            try:
-                result = engine.reset_budgets(resource=resource)
-                client_ip = self._get_client_ip()
-                write_event("admin.budgets_reset",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    resource=resource
-                )
-                log.info(f"Budget counters reset: {resource or 'all'}")
-                self._send_json(result)
-            except Exception as e:
-                log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
-                self._send_json({"error": f"Failed to reset budgets: {type(e).__name__}: {e}"}, 500)
-
+        result = self._set_addon_mode(addon_name, mode)
+        if result is None:
+            self._send_json({"error": f"addon '{addon_name}' not found or doesn't support mode switching"}, 404)
         else:
-            self._send_json({"error": "not found"}, 404)
-
-    def do_PUT(self):
-        """Handle PUT requests."""
-        # All PUT endpoints require auth
-        if not self._require_auth():
-            return
-
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        if path == "/modes":
-            # PUT /modes - set mode for all addons at once
-            data = self._read_json()
-            if not data:
-                self._send_json({"error": "missing request body"}, 400)
-                return
-
-            mode = data.get("mode")
-            if mode not in ("warn", "block"):
-                self._send_json({"error": "mode must be 'warn' or 'block'"}, 400)
-                return
-
-            old_modes = self._get_all_modes()
-            results = self._set_all_modes(mode)
             client_ip = self._get_client_ip()
             write_event("admin.mode_change",
                 addon="admin-api",
                 client_ip=client_ip,
-                target_addon="all",
-                old_modes=old_modes,
+                target_addon=addon_name,
+                old_mode=old_mode_value,
                 new_mode=mode
             )
-            self._send_json({"status": "updated", "mode": mode, "results": results})
+            self._send_json(result)
 
-        elif path.startswith("/plugins/") and path.endswith("/mode"):
-            # PUT /plugins/{name}/mode
+    def _handle_put_policy_baseline(self) -> None:
+        """PUT /admin/policy/baseline - Update baseline policy."""
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        policy_data = data.get("policy")
+        if policy_data is None:
+            self._send_json({"error": "missing 'policy' field in request body"}, 400)
+            return
+
+        try:
+            result = engine.update_baseline(policy_data)
+
+            client_ip = self._get_client_ip()
+            write_event("admin.baseline_update",
+                addon="admin-api",
+                client_ip=client_ip,
+                permission_count=result.get("permission_count", 0)
+            )
+            log.info(f"Baseline policy updated: {result.get('permission_count', 0)} permissions")
+
+            self._send_json({
+                "status": "updated",
+                "permission_count": result.get("permission_count", 0),
+                "message": "Baseline policy updated"
+            })
+
+        except ValueError as e:
+            self._send_json({"error": f"Invalid policy: {e}"}, 400)
+        except Exception as e:
+            log.error(f"Failed to update baseline: {type(e).__name__}: {e}")
+            self._send_json({"error": f"Failed to update baseline: {type(e).__name__}: {e}"}, 500)
+
+    def _handle_put_policy_task(self, task_id: str) -> None:
+        """PUT /admin/policy/task/{id} - Create/update task policy."""
+        if not task_id:
+            self._send_json({"error": "missing task_id"}, 400)
+            return
+
+        engine = get_policy_engine()
+        if engine is None:
+            self._send_json({"error": "PolicyEngine not initialized"}, 501)
+            return
+
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        policy_data = data.get("policy")
+        if policy_data is None:
+            self._send_json({"error": "missing 'policy' field in request body"}, 400)
+            return
+
+        try:
+            result = engine.set_task_policy(task_id, policy_data)
+
+            client_ip = self._get_client_ip()
+            write_event("admin.task_policy_update",
+                addon="admin-api",
+                client_ip=client_ip,
+                task_id=task_id,
+                permission_count=result.get("permission_count", 0)
+            )
+            log.info(f"Task policy '{task_id}' updated: {result.get('permission_count', 0)} permissions")
+
+            self._send_json({
+                "status": "updated",
+                "task_id": task_id,
+                "permission_count": result.get("permission_count", 0),
+                "message": "Task policy updated"
+            })
+
+        except ValueError as e:
+            self._send_json({"error": f"Invalid policy: {e}"}, 400)
+        except Exception as e:
+            log.error(f"Failed to update task policy: {type(e).__name__}: {e}")
+            self._send_json({"error": f"Failed to update task policy: {type(e).__name__}: {e}"}, 500)
+
+    def do_PUT(self):
+        """Handle PUT requests."""
+        if not self._require_auth():
+            return
+
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Static route dispatch
+        static_handlers = {
+            "/modes": self._handle_put_modes,
+            "/admin/policy/baseline": self._handle_put_policy_baseline,
+        }
+
+        if path in static_handlers:
+            return static_handlers[path]()
+
+        # Parameterized routes
+        if path.startswith("/plugins/") and path.endswith("/mode"):
             addon_name = path[9:-5]  # strip "/plugins/" and "/mode"
+            return self._handle_put_plugin_mode(addon_name)
 
-            data = self._read_json()
-            if not data:
-                self._send_json({"error": "missing request body"}, 400)
-                return
-
-            mode = data.get("mode")
-            if mode not in ("warn", "block"):
-                self._send_json({"error": "mode must be 'warn' or 'block'"}, 400)
-                return
-
-            old_mode = self._get_addon_mode(addon_name)
-            old_mode_value = old_mode.get("mode") if old_mode else None
-
-            result = self._set_addon_mode(addon_name, mode)
-            if result is None:
-                self._send_json({"error": f"addon '{addon_name}' not found or doesn't support mode switching"}, 404)
-            else:
-                client_ip = self._get_client_ip()
-                write_event("admin.mode_change",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    target_addon=addon_name,
-                    old_mode=old_mode_value,
-                    new_mode=mode
-                )
-                self._send_json(result)
-
-        elif path == "/admin/policy/baseline":
-            # PUT /admin/policy/baseline - Update baseline policy
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
-
-            data = self._read_json()
-            if not data:
-                self._send_json({"error": "missing request body"}, 400)
-                return
-
-            policy_data = data.get("policy")
-            if policy_data is None:
-                self._send_json({"error": "missing 'policy' field in request body"}, 400)
-                return
-
-            try:
-                result = engine.update_baseline(policy_data)
-
-                client_ip = self._get_client_ip()
-                write_event("admin.baseline_update",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    permission_count=result.get("permission_count", 0)
-                )
-                log.info(f"Baseline policy updated: {result.get('permission_count', 0)} permissions")
-
-                self._send_json({
-                    "status": "updated",
-                    "permission_count": result.get("permission_count", 0),
-                    "message": "Baseline policy updated"
-                })
-
-            except ValueError as e:
-                self._send_json({"error": f"Invalid policy: {e}"}, 400)
-            except Exception as e:
-                log.error(f"Failed to update baseline: {type(e).__name__}: {e}")
-                self._send_json({"error": f"Failed to update baseline: {type(e).__name__}: {e}"}, 500)
-
-        elif path.startswith("/admin/policy/task/"):
-            # PUT /admin/policy/task/{id} - Create/update task policy
+        if path.startswith("/admin/policy/task/"):
             task_id = path[19:]  # strip "/admin/policy/task/"
-            if not task_id:
-                self._send_json({"error": "missing task_id"}, 400)
-                return
+            return self._handle_put_policy_task(task_id)
 
-            engine = get_policy_engine()
-            if engine is None:
-                self._send_json({"error": "PolicyEngine not initialized"}, 501)
-                return
-
-            data = self._read_json()
-            if not data:
-                self._send_json({"error": "missing request body"}, 400)
-                return
-
-            policy_data = data.get("policy")
-            if policy_data is None:
-                self._send_json({"error": "missing 'policy' field in request body"}, 400)
-                return
-
-            try:
-                result = engine.set_task_policy(task_id, policy_data)
-
-                client_ip = self._get_client_ip()
-                write_event("admin.task_policy_update",
-                    addon="admin-api",
-                    client_ip=client_ip,
-                    task_id=task_id,
-                    permission_count=result.get("permission_count", 0)
-                )
-                log.info(f"Task policy '{task_id}' updated: {result.get('permission_count', 0)} permissions")
-
-                self._send_json({
-                    "status": "updated",
-                    "task_id": task_id,
-                    "permission_count": result.get("permission_count", 0),
-                    "message": "Task policy updated"
-                })
-
-            except ValueError as e:
-                self._send_json({"error": f"Invalid policy: {e}"}, 400)
-            except Exception as e:
-                log.error(f"Failed to update task policy: {type(e).__name__}: {e}")
-                self._send_json({"error": f"Failed to update task policy: {type(e).__name__}: {e}"}, 500)
-
-        else:
-            self._send_json({"error": "not found"}, 404)
+        self._send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
         """Handle DELETE requests."""
