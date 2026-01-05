@@ -75,7 +75,7 @@ if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
         fi
     else
         echo "Non-root: skipping system CA install (use SSL_CERT_FILE env var instead)"
-        # Export for this process and children (mitmproxy, curl, etc.)
+        # Export for this process and children (mitmproxy, httpx, etc.)
         export SSL_CERT_FILE="${CERT_DIR}/mitmproxy-ca-cert.pem"
         export REQUESTS_CA_BUNDLE="${CERT_DIR}/mitmproxy-ca-cert.pem"
     fi
@@ -285,7 +285,7 @@ fi
 echo "Configuring network guard to block mode..."
 ADMIN_READY=false
 for i in $(seq 1 30); do
-    if curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/health 2>/dev/null | grep -q 200; then
+    if python3 -c "import httpx; exit(0 if httpx.get('http://localhost:9090/health', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}, timeout=2).status_code == 200 else 1)" 2>/dev/null; then
         ADMIN_READY=true
         break
     fi
@@ -299,13 +299,10 @@ if [ "$ADMIN_READY" != "true" ]; then
 fi
 
 # Enable blocking for network guard and verify
-curl -s -X PUT http://localhost:9090/plugins/network-guard/mode \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    -d '{"mode":"block"}' > /dev/null 2>&1
+python3 -c "import httpx; httpx.put('http://localhost:9090/plugins/network-guard/mode', json={'mode':'block'}, headers={'Authorization': 'Bearer $ADMIN_TOKEN'})" 2>/dev/null
 
 # Verify it took effect via GET /plugins/network-guard/mode
-MODE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:9090/plugins/network-guard/mode 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('mode','unknown'))" 2>/dev/null)
+MODE=$(python3 -c "import httpx; r=httpx.get('http://localhost:9090/plugins/network-guard/mode', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}); print(r.json().get('mode','unknown'))" 2>/dev/null)
 
 if [ "$MODE" != "block" ]; then
     echo "ERROR: Failed to set network guard to block mode (got: $MODE) - failing closed"

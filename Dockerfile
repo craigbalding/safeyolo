@@ -30,10 +30,9 @@
 FROM python:3.13-slim AS base
 
 # Install minimal system dependencies
-# - curl: health checks in start script
 # - tmux: runs mitmproxy TUI in background
+# Note: health checks use Python httpx (no curl needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
     tmux \
     && rm -rf /var/lib/apt/lists/*
 
