@@ -29,16 +29,12 @@
 # ==============================================================================
 FROM python:3.13-slim AS base
 
-# Install minimal system dependencies (no docker.io - not used)
+# Install minimal system dependencies
+# - curl: health checks in start script
+# - tmux: runs mitmproxy TUI in background
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tmux \
-    # Network troubleshooting tools
-    procps \
-    net-tools \
-    iproute2 \
-    iputils-ping \
-    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Install core Python dependencies (no ML, no YARA)
