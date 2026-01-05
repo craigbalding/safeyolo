@@ -439,7 +439,7 @@ class PolicyEngine:
             global_budget = self._get_global_budget("network:request")
             if global_budget:
                 global_key = "network:request:__global__"
-                global_allowed, global_remaining = self._budget_tracker.check_and_consume(
+                global_allowed, _ = self._budget_tracker.check_and_consume(
                     global_key, global_budget
                 )
                 if not global_allowed:
