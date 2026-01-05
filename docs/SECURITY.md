@@ -138,6 +138,36 @@ We're explicit about what SafeYolo does NOT protect against:
 | **Non-HTTP exfiltration** | Out of scope (v1) | DNS tunneling, ICMP, etc. Use network-level controls if needed. |
 | **Compromised ~/.safeyolo/** | Out of scope (v1) | If an attacker controls your config directory, all bets are off. |
 
+## Dependency Trust
+
+We evaluate dependencies for security posture. Last reviewed: 2026-01-05.
+
+### Direct Dependencies (requirements/base.txt)
+
+| Package | Trust | Notes |
+|---------|-------|-------|
+| mitmproxy | HIGH | Core dependency. Security-focused project, well-audited. |
+| httpx | HIGH | Encode org. Widely used async HTTP client. |
+| pydantic | HIGH | Pydantic org. Very popular validation library. |
+| pyyaml | HIGH | yaml.org. Industry standard YAML parser. |
+| yarl | HIGH | aio-libs (Andrew Svetlov). URL parsing. |
+| tenacity | HIGH | Julien Danjou. Retry library. |
+| confusable-homoglyphs | MEDIUM | Homoglyph detection. Adopted by new maintainer at [sr.ht](https://sr.ht/~valhalla/confusable_homoglyphs/) in 2024. Latest: 3.3.1. No known CVEs. Already isolated with try/except fallback. |
+
+### Transitive Dependencies (via mitmproxy)
+
+| Package | Trust | Notes |
+|---------|-------|-------|
+| publicsuffix2 | MEDIUM | Last release Dec 2019. No CVEs. Works fine, just won't have new TLDs. |
+| ldap3 | MEDIUM | LDAP library. Used by mitmproxy for NTLM/auth features we don't use. |
+| pyperclip | MEDIUM | Clipboard access. Used by mitmproxy's interactive console. Low risk in container. |
+| kaitaistruct | MEDIUM | Binary protocol parsing. Kaitai Project. |
+| cryptography, tornado, flask, jinja2 | HIGH | Well-maintained. All installed versions are patched against known CVEs. |
+
+### Vulnerability Scanning
+
+All installed package versions verified clean against [OSV.dev](https://osv.dev) database. Many packages (tornado, flask, jinja2, cryptography) had vulnerabilities in older versions - all patched in our pinned versions.
+
 ## For Security Researchers
 
 We welcome security research on SafeYolo.
