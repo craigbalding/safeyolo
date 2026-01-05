@@ -7,7 +7,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from ..config import (
-    CERTS_VOLUME_NAME,
+    CA_VOLUME_NAME,
     INTERNAL_NETWORK_NAME,
     SAFEYOLO_INTERNAL_IP,
     get_agent_ip,
@@ -94,7 +94,7 @@ def render_template(
     variables = {
         "safeyolo_ip": SAFEYOLO_INTERNAL_IP,
         "network_name": INTERNAL_NETWORK_NAME,
-        "certs_volume": CERTS_VOLUME_NAME,
+        "certs_volume": CA_VOLUME_NAME,
         "project_dir": project_dir,
         "agent_ip": agent_ip,
         # Host config detection results

@@ -16,7 +16,7 @@ services:
     volumes:
       # Your project directory
       - {{ project_dir }}:/workspace
-      # SafeYolo CA cert for HTTPS inspection
+      # SafeYolo public CA cert for HTTPS inspection (no private key access)
       - {{ certs_volume }}:/certs:ro
 {% if has_codex_dir %}
       # Codex config from host (config.toml, AGENTS.md, sessions)

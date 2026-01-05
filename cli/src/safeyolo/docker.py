@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .config import (
-    CERTS_VOLUME_NAME,
+    CA_VOLUME_NAME,
     INTERNAL_NETWORK_NAME,
     INTERNAL_SUBNET,
     SAFEYOLO_INTERNAL_IP,
@@ -182,7 +182,8 @@ services:
       - "127.0.0.1:{proxy.get('admin_port', 9090)}:9090"
     volumes:
       - {logs_dir}:/app/logs
-      - {CERTS_VOLUME_NAME}:/certs
+      # TODO: Update for split certs architecture (safeyolo-certs-private + safeyolo-ca)
+      - {CA_VOLUME_NAME}:/certs
       - {policies_dir}:/app/data/policies
       - {data_dir}:/app/data
 """
@@ -217,7 +218,7 @@ networks:
         - subnet: {INTERNAL_SUBNET}
 
 volumes:
-  {CERTS_VOLUME_NAME}: {{}}
+  {CA_VOLUME_NAME}: {{}}
 """
 
     return compose

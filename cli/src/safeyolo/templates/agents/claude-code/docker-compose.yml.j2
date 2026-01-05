@@ -16,7 +16,7 @@ services:
     volumes:
       # Your project directory
       - {{ project_dir }}:/workspace
-      # SafeYolo CA cert for HTTPS inspection
+      # SafeYolo public CA cert for HTTPS inspection (no private key access)
       - {{ certs_volume }}:/certs:ro
 {% if has_claude_dir %}
       # Claude Code config from host (personal prefs, session history)
