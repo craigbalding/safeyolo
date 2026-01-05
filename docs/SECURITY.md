@@ -12,7 +12,7 @@ SafeYolo is security software. This document outlines our security principles an
 - SafeYolo container has no Docker socket access. Service discovery uses static config written by the CLI, not runtime Docker queries. (`addons/service_discovery.py`)
 - Agents run in isolated networks with no direct internet (`internal: true`). Bypass attempts fail rather than leak.
 - Admin API requires bearer token auth for all mutating operations. (`addons/admin_api.py`)
-- Token comparison uses `secrets.compare_digest()` to prevent timing attacks. (`addons/admin_api.py:75`)
+- Token comparison uses `secrets.compare_digest()` to prevent timing attacks. (`addons/admin_api.py:71`)
 - Admin API ports bind to localhost only (`127.0.0.1:9090`), not all interfaces. (`docker-compose.yml`)
 - Container runs as non-root via host UID/GID mapping (`user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"`).
 
@@ -22,9 +22,9 @@ SafeYolo is security software. This document outlines our security principles an
 
 **In practice:**
 - Unknown credentials trigger approval workflow, not silent passthrough. PolicyEngine evaluates `effect: prompt` permissions.
-- Destination mismatches return HTTP 428 with actionable feedback, not silent drops. (`addons/credential_guard.py:253`)
+- Destination mismatches return HTTP 428 with actionable feedback, not silent drops. (`addons/credential_guard.py:242`)
 - Circuit breaker fails fast on unhealthy upstreams. (`addons/circuit_breaker.py`)
-- Policy validation uses Pydantic `model_validate()`. Invalid policies are rejected, not silently ignored. (`addons/policy_loader.py:153`)
+- Policy validation uses Pydantic `model_validate()`. Invalid policies are rejected, not silently ignored. (`addons/policy_loader.py:150`)
 - Startup script verifies network guard is in block mode, exits if verification fails. (`scripts/start-safeyolo.sh:307`)
 - Test suite asserts container does not run as root. (`tests/test_policy_loader.py:389`)
 
@@ -60,10 +60,10 @@ SafeYolo is security software. This document outlines our security principles an
 **In practice:**
 - Tier 1: Pattern matching for known credential formats (OpenAI, Anthropic, GitHub, etc.)
 - Tier 2: Shannon entropy analysis catches unknown high-entropy secrets in auth headers. (`addons/utils.py:309`)
-- Homoglyph detection flags mixed-script domain attacks (`api.οpenai.com` with Cyrillic 'ο'). (`addons/network_guard.py:60`)
+- Homoglyph detection flags mixed-script domain attacks (`api.οpenai.com` with Cyrillic 'ο'). (`addons/network_guard.py:55`)
 - GCRA rate limiting prevents runaway loops independent of credential checks. (`addons/budget_tracker.py`)
-- Thread-safe operations across all stateful addons via Lock/RLock. (`addons/metrics.py:88`, `addons/policy_loader.py:88`)
-- `blocked_by` metadata coordinates between addons in the chain. (`addons/base.py:144`)
+- Thread-safe operations across all stateful addons via Lock/RLock. (`addons/metrics.py:88`, `addons/policy_loader.py:85`)
+- `blocked_by` metadata coordinates between addons in the chain. (`addons/base.py:140`)
 
 ### 6. The Eager Intern Problem
 
@@ -84,7 +84,7 @@ An intern might email the wrong client, cc the wrong list, or paste credentials 
 **In practice:**
 - All requests logged to JSONL with unique request IDs (uuid4 prefix + timestamp). (`addons/request_id.py:30`)
 - Security decisions include reasoning: credential type, destination, expected hosts, decision.
-- `blocked_by` field in logs shows which addon blocked the request. (`addons/request_logger.py:297`)
+- `blocked_by` field in logs shows which addon blocked the request. (`addons/request_logger.py:295`)
 - Logs are structured for grep/jq analysis, not just human reading.
 
 ### 8. Minimal Attack Surface
@@ -164,23 +164,26 @@ We welcome security research on SafeYolo.
 
 ## Code Pointers
 
+Addons use standalone imports (e.g., `from utils import ...`) matching mitmproxy's `-s` execution model.
+
 | Area | File | Notes |
 |------|------|-------|
 | Policy engine | `addons/policy_engine.py` | Unified IAM-style policy evaluation |
-| Destination-first matching | `addons/policy_engine.py:evaluate_credential()` | Resource=destination, condition.credential=what can access |
+| Destination-first matching | `addons/policy_engine.py:329` | `evaluate_credential()` - resource=destination, condition.credential=what can access |
 | Credential detection | `addons/credential_guard.py` | Pattern matching, entropy analysis |
-| Credential type mapping | `addons/credential_guard.py:detect_credential_type()` | Maps patterns to types |
-| HMAC fingerprinting | `addons/utils.py:hmac_fingerprint()` | Never stores raw credentials |
-| Atomic secret write | `addons/utils.py:load_hmac_secret()` | O_CREAT\|O_EXCL with 0o600 |
-| Shannon entropy | `addons/utils.py:calculate_shannon_entropy()` | High-entropy secret detection |
-| Condition matching | `addons/policy_engine.py:Condition.matches()` | Type-based and HMAC-based credential matching |
-| Budget tracking | `addons/budget_tracker.py:GCRABudgetTracker` | Rate limiting via GCRA |
-| Homoglyph detection | `addons/network_guard.py:detect_homoglyph_attack()` | Mixed-script domain spoofing |
+| Credential type mapping | `addons/credential_guard.py:104` | `detect_credential_type()` - maps patterns to types |
+| HMAC fingerprinting | `addons/utils.py:405` | `hmac_fingerprint()` - never stores raw credentials |
+| Atomic secret write | `addons/utils.py:369` | `load_hmac_secret()` - O_CREAT\|O_EXCL with 0o600 |
+| Shannon entropy | `addons/utils.py:309` | `calculate_shannon_entropy()` - high-entropy secret detection |
+| Condition matching | `addons/policy_engine.py:55` | `Condition` class with `matches()` - type-based and HMAC-based credential matching |
+| Budget tracking | `addons/budget_tracker.py:34` | `GCRABudgetTracker` - rate limiting via GCRA |
+| Homoglyph detection | `addons/network_guard.py:55` | `detect_homoglyph_attack()` - mixed-script domain spoofing |
 | Circuit breaker | `addons/circuit_breaker.py` | Fail-fast for unhealthy upstreams |
 | Service discovery | `addons/service_discovery.py` | Static config, no Docker socket |
-| Admin API auth | `addons/admin_api.py:is_authenticated()` | Bearer token with constant-time compare |
+| Admin API auth | `addons/admin_api.py:71` | `_check_auth()` - bearer token with `secrets.compare_digest()` |
+| Base addon class | `addons/base.py:48` | `SecurityAddon` - stats, blocking, decision logging |
 | Request ID | `addons/request_id.py` | UUID correlation for audit trail |
-| Request logging | `addons/request_logger.py` | JSONL audit trail |
-| Network isolation | `cli/src/safeyolo/templates/` | Docker compose templates |
+| Request logging | `addons/request_logger.py` | JSONL audit trail with `blocked_by` field |
+| Network isolation | `cli/src/safeyolo/templates/` | Docker compose templates for agent containers |
 | Non-root execution | `docker-compose.yml` | Host UID/GID mapping |
 | Startup verification | `scripts/start-safeyolo.sh` | Block mode verification |
