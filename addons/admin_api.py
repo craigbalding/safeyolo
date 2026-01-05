@@ -190,7 +190,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_health(self) -> None:
         """GET /health - Health check (no auth required)."""
-        self._send_json({"status": "healthy", "proxy": "safeyolo"})
+        self._send_json({"status": "ok"})
 
     def _handle_get_stats(self) -> None:
         """GET /stats - Aggregate stats from all addons."""
@@ -687,7 +687,7 @@ class AdminAPI:
         AdminRequestHandler.admin_token = token
 
         if token:
-            log.info(f"Admin API: Authentication enabled (token: {token[:8]}...)")
+            log.info("Admin API: Authentication enabled")
         else:
             log.warning("Admin API: UNAUTHENTICATED - set admin_api_token option to enable auth")
 

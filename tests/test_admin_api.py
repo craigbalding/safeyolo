@@ -39,8 +39,8 @@ class TestAdminRequestHandler:
         handler.do_GET()
 
         response = self._parse_response(handler)
-        assert response["status"] == "healthy"
-        assert response["proxy"] == "safeyolo"
+        assert response["status"] == "ok"
+        # Reduced info disclosure: no longer includes proxy name
 
     def test_stats_endpoint_empty(self, handler_class):
         """Test GET /stats with no addons discovered."""
@@ -233,7 +233,7 @@ class TestAdminAPIAuthentication:
         handler.do_GET()
 
         response = self._parse_response(handler)
-        assert response["status"] == "healthy"
+        assert response["status"] == "ok"
         assert handler._status == 200
 
     def test_stats_endpoint_requires_auth(self, handler_class_with_token):
