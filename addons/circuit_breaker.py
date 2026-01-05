@@ -30,9 +30,9 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_event
+    from .utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe
 except ImportError:
-    from utils import make_block_response, write_event
+    from utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -104,18 +104,12 @@ class InMemoryCircuitState:
             return
 
         try:
-            tmp_file = self._state_file.with_suffix('.tmp')
-
             with self._lock:
                 data = {
                     "states": self._states.copy(),
                     "saved_at": time.time()
                 }
-
-            with open(tmp_file, 'w') as f:
-                json.dump(data, f, indent=2)
-
-            tmp_file.rename(self._state_file)
+            atomic_write_json(self._state_file, data)
         except Exception as e:
             log.error(f"Failed to save circuit breaker state: {type(e).__name__}: {e}")
 
@@ -515,11 +509,8 @@ class CircuitBreaker:
 
     def request(self, flow: http.HTTPFlow):
         """Check circuit before request."""
-        try:
-            if not ctx.options.circuit_enabled:
-                return
-        except AttributeError:
-            pass  # ctx.options not available in tests
+        if not get_option_safe("circuit_enabled", True):
+            return
 
         domain = flow.request.host
         allowed, status = self.should_allow_request(domain)
@@ -555,11 +546,8 @@ class CircuitBreaker:
 
     def response(self, flow: http.HTTPFlow):
         """Record success/failure based on response."""
-        try:
-            if not ctx.options.circuit_enabled:
-                return
-        except AttributeError:
-            pass  # ctx.options not available in tests
+        if not get_option_safe("circuit_enabled", True):
+            return
 
         # Skip if any addon blocked it (not an upstream failure)
         if flow.metadata.get("blocked_by"):
@@ -592,14 +580,8 @@ class CircuitBreaker:
                 "time_until_half_open": status.time_until_half_open,
             }
 
-        # Safe access to ctx.options for testing
-        try:
-            enabled = ctx.options.circuit_enabled
-        except AttributeError:
-            enabled = True
-
         return {
-            "enabled": enabled,
+            "enabled": get_option_safe("circuit_enabled", True),
             "failure_threshold": self.failure_threshold,
             "timeout_seconds": self.timeout_seconds,
             "checks_total": self.checks_total,

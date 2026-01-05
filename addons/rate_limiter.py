@@ -23,10 +23,10 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_event
+    from .utils import make_block_response, write_event, get_client_ip, get_option_safe
     from .policy_engine import get_policy_engine
 except ImportError:
-    from utils import make_block_response, write_event
+    from utils import make_block_response, write_event, get_client_ip, get_option_safe
     from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.rate-limiter")
@@ -75,18 +75,12 @@ class RateLimiter:
 
     def _should_block(self) -> bool:
         """Check if blocking is enabled."""
-        try:
-            return ctx.options.ratelimit_block
-        except AttributeError:
-            return True
+        return get_option_safe("ratelimit_block", True)
 
     def request(self, flow: http.HTTPFlow):
         """Check rate limit before request using PolicyEngine."""
-        try:
-            if not ctx.options.ratelimit_enabled:
-                return
-        except AttributeError:
-            pass  # ctx.options not available in tests
+        if not get_option_safe("ratelimit_enabled", True):
+            return
 
         domain = flow.request.host
         path = flow.request.path
@@ -105,7 +99,7 @@ class RateLimiter:
 
         if decision.effect == "budget_exceeded":
             self.limited_total += 1
-            client = flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
+            client = get_client_ip(flow)
 
             if self._should_block():
                 log.warning(
@@ -142,17 +136,12 @@ class RateLimiter:
 
     def get_stats(self) -> dict:
         """Get rate limiter statistics."""
-        try:
-            enabled = ctx.options.ratelimit_enabled
-        except AttributeError:
-            enabled = True
-
         # Get budget stats from PolicyEngine
         engine = get_policy_engine()
         budget_stats = engine.get_budget_stats() if engine else {}
 
         return {
-            "enabled": enabled,
+            "enabled": get_option_safe("ratelimit_enabled", True),
             "checks_total": self.checks_total,
             "allowed_total": self.allowed_total,
             "limited_total": self.limited_total,

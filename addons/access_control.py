@@ -39,10 +39,10 @@ import logging
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_event
+    from .utils import make_block_response, write_event, get_client_ip, get_option_safe
     from .policy_engine import get_policy_engine
 except ImportError:
-    from utils import make_block_response, write_event
+    from utils import make_block_response, write_event, get_client_ip, get_option_safe
     from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.access-control")
@@ -80,10 +80,7 @@ class AccessControl:
 
     def _should_block(self) -> bool:
         """Check if blocking is enabled."""
-        try:
-            return ctx.options.access_control_block
-        except AttributeError:
-            return True
+        return get_option_safe("access_control_block", True)
 
     def _log_decision(self, flow: http.HTTPFlow, decision: str, domain: str, reason: str):
         """Log access control decision."""
@@ -98,11 +95,8 @@ class AccessControl:
 
     def request(self, flow: http.HTTPFlow):
         """Check network access permissions before request."""
-        try:
-            if not ctx.options.access_control_enabled:
-                return
-        except AttributeError:
-            pass
+        if not get_option_safe("access_control_enabled", True):
+            return
 
         domain = flow.request.host
         path = flow.request.path
@@ -119,7 +113,7 @@ class AccessControl:
         # Only act on explicit deny - allow and budget pass through
         if decision.effect == "deny":
             self.denied_total += 1
-            client = flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
+            client = get_client_ip(flow)
             reason = decision.reason or f"Access denied to {domain}"
 
             if self._should_block():
@@ -145,13 +139,8 @@ class AccessControl:
 
     def get_stats(self) -> dict:
         """Get access control statistics."""
-        try:
-            enabled = ctx.options.access_control_enabled
-        except AttributeError:
-            enabled = True
-
         return {
-            "enabled": enabled,
+            "enabled": get_option_safe("access_control_enabled", True),
             "checks_total": self.checks_total,
             "allowed_total": self.allowed_total,
             "denied_total": self.denied_total,

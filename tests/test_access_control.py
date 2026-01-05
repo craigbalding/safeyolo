@@ -45,9 +45,7 @@ class TestAccessControl:
         )
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.ctx") as mock_ctx:
-                mock_ctx.options.access_control_enabled = True
-                mock_ctx.options.access_control_block = True
+            with patch("addons.access_control.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should have blocked
@@ -79,9 +77,7 @@ class TestAccessControl:
         )
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.ctx") as mock_ctx:
-                mock_ctx.options.access_control_enabled = True
-                mock_ctx.options.access_control_block = True
+            with patch("addons.access_control.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should NOT have blocked
@@ -111,9 +107,7 @@ class TestAccessControl:
         )
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.ctx") as mock_ctx:
-                mock_ctx.options.access_control_enabled = True
-                mock_ctx.options.access_control_block = True
+            with patch("addons.access_control.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # Should NOT have blocked - budget effect is for rate_limiter
@@ -141,10 +135,15 @@ class TestAccessControl:
             reason="Access denied"
         )
 
+        def option_side_effect(name, default=True):
+            if name == "access_control_enabled":
+                return True
+            if name == "access_control_block":
+                return False  # Warn mode
+            return default
+
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.ctx") as mock_ctx:
-                mock_ctx.options.access_control_enabled = True
-                mock_ctx.options.access_control_block = False  # Warn mode
+            with patch("addons.access_control.get_option_safe", side_effect=option_side_effect):
                 addon.request(flow)
 
         # Should NOT have blocked in warn mode
@@ -166,8 +165,7 @@ class TestAccessControl:
         mock_engine = MagicMock()
 
         with patch("addons.access_control.get_policy_engine", return_value=mock_engine):
-            with patch("addons.access_control.ctx") as mock_ctx:
-                mock_ctx.options.access_control_enabled = False
+            with patch("addons.access_control.get_option_safe", return_value=False):
                 addon.request(flow)
 
         # Should not have called policy engine
@@ -186,8 +184,7 @@ class TestAccessControl:
         flow.response = None
 
         with patch("addons.access_control.get_policy_engine", return_value=None):
-            with patch("addons.access_control.ctx") as mock_ctx:
-                mock_ctx.options.access_control_enabled = True
+            with patch("addons.access_control.get_option_safe", return_value=True):
                 addon.request(flow)
 
         # No engine = no blocking

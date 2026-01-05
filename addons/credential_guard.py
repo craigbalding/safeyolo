@@ -41,9 +41,9 @@ except ImportError:
     homoglyph_confusables = None
 
 try:
-    from .utils import write_event, make_block_response
+    from .utils import write_event, make_block_response, load_config_file, get_client_ip
 except ImportError:
-    from utils import write_event, make_block_response
+    from utils import write_event, make_block_response, load_config_file, get_client_ip
 
 try:
     from .policy_engine import get_policy_engine, PolicyDecision
@@ -56,18 +56,6 @@ log = logging.getLogger("safeyolo.credential-guard")
 # =============================================================================
 # Configuration & Utilities
 # =============================================================================
-
-def load_yaml_config(path: Path, default=None) -> dict:
-    """Load YAML config file, return default if not found."""
-    if not path.exists():
-        return default or {}
-    try:
-        with open(path) as f:
-            return yaml.safe_load(f) or {}
-    except Exception as e:
-        log.error(f"Failed to load {path}: {type(e).__name__}: {e}")
-        return default or {}
-
 
 def load_hmac_secret(secret_path: Path) -> bytes:
     """Load or generate HMAC secret for credential fingerprinting."""
@@ -519,8 +507,8 @@ class CredentialGuard:
         """Load configuration files."""
         config_dir = Path(__file__).parent.parent / "config"
 
-        self.config = load_yaml_config(config_dir / "credential_guard.yaml")
-        self.safe_headers_config = load_yaml_config(config_dir / "safe_headers.yaml")
+        self.config = load_config_file(config_dir / "credential_guard.yaml")
+        self.safe_headers_config = load_config_file(config_dir / "safe_headers.yaml")
         self.hmac_secret = load_hmac_secret(Path("/app/data/hmac_secret"))
 
     def _load_rules(self):
@@ -551,8 +539,8 @@ class CredentialGuard:
 
     def _get_project_id(self, flow: http.HTTPFlow) -> str:
         """Get project ID from service discovery."""
-        client_ip = flow.client_conn.peername[0] if flow.client_conn.peername else None
-        if not client_ip:
+        client_ip = get_client_ip(flow)
+        if client_ip == "unknown":
             return "default"
 
         try:

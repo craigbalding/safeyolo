@@ -30,8 +30,9 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+import yaml
 from mitmproxy import http
 
 # Default audit log path - can be overridden via environment
@@ -142,3 +143,84 @@ def make_block_response(
         json.dumps(body).encode(),
         headers,
     )
+
+
+# =============================================================================
+# Config & File Utilities
+# =============================================================================
+
+def load_config_file(path: Path, default: Optional[dict] = None) -> dict:
+    """Load YAML or JSON config file.
+
+    Returns default (or {}) if file missing or invalid.
+    Logs errors but doesn't raise.
+
+    Args:
+        path: Path to config file (.yaml, .yml, or .json)
+        default: Default value if file missing/invalid
+
+    Returns:
+        Parsed config dict, or default
+    """
+    if not path.exists():
+        return default if default is not None else {}
+    try:
+        content = path.read_text()
+        if path.suffix in (".yaml", ".yml"):
+            return yaml.safe_load(content) or {}
+        return json.loads(content)
+    except Exception as e:
+        _log.error(f"Failed to load {path}: {type(e).__name__}: {e}")
+        return default if default is not None else {}
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Atomically write JSON via temp file rename.
+
+    Args:
+        path: Target file path
+        data: JSON-serializable data
+    """
+    tmp = path.with_suffix('.tmp')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2)
+    tmp.rename(path)
+
+
+# =============================================================================
+# Flow & Context Utilities
+# =============================================================================
+
+def get_client_ip(flow: http.HTTPFlow) -> str:
+    """Get client IP from flow, or 'unknown'.
+
+    Args:
+        flow: mitmproxy HTTP flow
+
+    Returns:
+        Client IP address string, or 'unknown' if unavailable
+    """
+    if flow.client_conn and flow.client_conn.peername:
+        return flow.client_conn.peername[0]
+    return "unknown"
+
+
+def get_option_safe(name: str, default: Any = True) -> Any:
+    """Get mitmproxy option, return default if unavailable.
+
+    Safely handles cases where ctx.options is not available
+    (e.g., in tests or before mitmproxy initialization).
+
+    Args:
+        name: Option name (e.g., 'ratelimit_enabled')
+        default: Default value if option unavailable
+
+    Returns:
+        Option value, or default
+    """
+    try:
+        from mitmproxy import ctx
+        return getattr(ctx.options, name)
+    except AttributeError:
+        return default
