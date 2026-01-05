@@ -141,13 +141,12 @@ def check() -> None:
         proxy_url = f"http://localhost:{proxy_port}"
 
         try:
-            # HTTPS request through proxy - will fail if CA not trusted
+            # HTTPS request through proxy - verify using safeyolo CA cert
             resp = httpx.get(
                 "https://httpbin.org/get",
                 proxy=proxy_url,
                 timeout=10.0,
-                # Don't verify - we want to check if proxy works, not system trust
-                verify=False,
+                verify=str(ca_cert),
             )
             if resp.status_code == 200:
                 console.print("  [green]✓[/green]  HTTPS inspection working")
@@ -415,9 +414,15 @@ def test(
         console.print(f"  Headers: {len(headers)}")
     console.print()
 
-    # Make request through proxy
+    # Make request through proxy using safeyolo CA cert
+    certs_dir = get_certs_dir()
+    ca_cert = certs_dir / "mitmproxy-ca-cert.pem"
+    if not ca_cert.exists():
+        console.print("[red]CA certificate not found. Start SafeYolo first.[/red]")
+        raise typer.Exit(1)
+
     try:
-        with httpx.Client(proxy=proxy_url, timeout=30.0, verify=False) as client:
+        with httpx.Client(proxy=proxy_url, timeout=30.0, verify=str(ca_cert)) as client:
             response = client.request(method, url, headers=headers)
 
         # Show result

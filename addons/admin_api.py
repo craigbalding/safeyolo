@@ -14,8 +14,10 @@ Usage:
 
 import json
 import logging
+import re
 import secrets
 import threading
+import unicodedata
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
@@ -24,6 +26,42 @@ from policy_engine import get_policy_engine
 from utils import write_event
 
 log = logging.getLogger("safeyolo.admin")
+
+
+# Safe unicode categories for logging (letters, numbers, punctuation, symbols, space)
+_SAFE_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo",  # Letters
+                              "Nd", "Nl", "No",              # Numbers
+                              "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",  # Punctuation
+                              "Sm", "Sc", "Sk", "So",        # Symbols
+                              "Zs"})                         # Space (but not Zl/Zp line seps)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+# Explicit blocklist: ASCII control chars + Unicode line/paragraph separators
+_BLOCKED_CODEPOINTS = frozenset(range(0x20)) | {0x7F, 0x2028, 0x2029}
+
+
+def _is_safe_char(c: str) -> bool:
+    """Check if character is safe for logging."""
+    cp = ord(c)
+    if cp in _BLOCKED_CODEPOINTS:
+        return False
+    return unicodedata.category(c) in _SAFE_CATEGORIES
+
+
+def _sanitize_log(value: str, max_len: int = 200) -> str:
+    """Sanitize user input for safe logging (prevent log injection).
+
+    Uses Unicode category whitelist plus explicit codepoint blocklist.
+    Replaces unsafe chars with '?' to make sanitization visible.
+    """
+    if value is None:
+        return ""
+    # Strip ANSI escapes first
+    text = _ANSI_ESCAPE_RE.sub("?", str(value))
+    # Replace unsafe characters with '?' (makes sanitization visible in logs)
+    sanitized = "".join(c if _is_safe_char(c) else "?" for c in text)
+    # Collapse repeated '?' to single '?'
+    sanitized = re.sub(r"\?+", "?", sanitized)
+    return sanitized[:max_len] + "..." if len(sanitized) > max_len else sanitized
 
 
 class AdminRequestHandler(BaseHTTPRequestHandler):
@@ -148,7 +186,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         try:
             setattr(ctx.options, option_name, option_value)
-            log.info(f"Mode changed: {addon_name} -> {mode} ({option_name}={option_value})")
+            log.info(f"Mode changed: {addon_name} -> {_sanitize_log(mode)} ({option_name}={option_value})")
             return {
                 "addon": addon_name,
                 "mode": mode,
@@ -381,7 +419,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 credential=credential,
                 tier=tier
             )
-            log.info(f"Baseline approval added: {credential} -> {destination}")
+            log.info(f"Baseline approval added: {_sanitize_log(credential)} -> {_sanitize_log(destination)}")  # lgtm[py/log-injection] sanitized
 
             self._send_json({
                 "status": "added",
@@ -415,7 +453,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 client_ip=client_ip,
                 resource=resource
             )
-            log.info(f"Budget counters reset: {resource or 'all'}")
+            log.info(f"Budget counters reset: {_sanitize_log(resource) or 'all'}")
             self._send_json(result)
         except Exception as e:
             log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
