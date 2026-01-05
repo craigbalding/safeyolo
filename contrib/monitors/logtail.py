@@ -84,7 +84,7 @@ def format_ts(ts_str: str) -> str:
             dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             return dt.strftime("%H:%M:%S")
     except (ValueError, TypeError):
-        pass
+        pass  # Fall through to truncated string
     return ts_str[:8] if ts_str else "??:??:??"
 
 
@@ -449,7 +449,7 @@ def run_visual_mode(source: TextIO, interval: float):
 
     layout = make_layout()
 
-    with Live(layout, console=console, refresh_per_second=4, screen=True) as live:
+    with Live(layout, console=console, refresh_per_second=4, screen=True):
         layout["header"].update(
             Panel(
                 Text("SafeYolo Log Monitor", justify="center", style="bold"),
@@ -497,7 +497,7 @@ def run_visual_mode(source: TextIO, interval: float):
                     last_summary_time = now
 
         except KeyboardInterrupt:
-            pass
+            pass  # Clean exit on Ctrl+C
 
 
 def run_text_mode(source: TextIO, interval: float, show_summary: bool):

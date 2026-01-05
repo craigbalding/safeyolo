@@ -1,8 +1,6 @@
 """Tests for CLI commands."""
 
-import json
 import subprocess
-from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.text import Text
@@ -131,7 +129,7 @@ class TestLogsCommand:
         assert result.exit_code == 0
         assert "security.credential" in result.output
         # Should not show traffic events
-        lines = [l for l in result.output.split("\n") if "traffic.request" in l]
+        lines = [line for line in result.output.split("\n") if "traffic.request" in line]
         assert len(lines) == 0
 
     def test_tail_option(self, cli_runner, write_log_file):
@@ -271,7 +269,7 @@ class TestStartCommand:
 
     def test_starts_with_docker(self, cli_runner, tmp_config_dir, mock_docker_available):
         """Starts container with Docker."""
-        result = cli_runner.invoke(app, ["start", "--no-wait"])
+        cli_runner.invoke(app, ["start", "--no-wait"])
         # Check that docker compose was called
         calls = mock_docker_available.call_args_list
         compose_calls = [c for c in calls if "compose" in str(c)]
@@ -283,7 +281,7 @@ class TestStopCommand:
 
     def test_stops_container(self, cli_runner, tmp_config_dir, mock_docker_running):
         """Stops running container."""
-        result = cli_runner.invoke(app, ["stop"])
+        cli_runner.invoke(app, ["stop"])
         # Should attempt docker compose down or docker stop
         calls = mock_docker_running.call_args_list
         stop_calls = [c for c in calls if "stop" in str(c) or "down" in str(c)]

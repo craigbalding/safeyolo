@@ -143,7 +143,7 @@ class ServiceDiscovery:
                 if client_ip in network:
                     return project
         except ValueError:
-            pass
+            pass  # Invalid IP format, fall through to default
 
         return "default"
 
