@@ -66,46 +66,56 @@ class Condition(BaseModel):
     path_prefix: Optional[str] = None
     content_type: Optional[str] = None
 
+    def _matches_credential(self, context: dict[str, Any]) -> bool:
+        """Check if credential condition matches."""
+        if self.credential is None:
+            return True
+
+        ctx_cred = context.get("credential_type", "")
+        ctx_hmac = context.get("credential_hmac", "")
+        credentials = [self.credential] if isinstance(self.credential, str) else self.credential
+
+        for cred_pattern in credentials:
+            if cred_pattern.startswith("hmac:"):
+                if ctx_hmac and cred_pattern == f"hmac:{ctx_hmac}":
+                    return True
+            elif _matches_pattern(f"{ctx_cred}:x", cred_pattern):
+                return True
+        return False
+
+    def _matches_method(self, context: dict[str, Any]) -> bool:
+        """Check if method condition matches."""
+        if self.method is None:
+            return True
+
+        ctx_method = context.get("method", "").upper()
+        methods = [self.method] if isinstance(self.method, str) else self.method
+        return ctx_method in [m.upper() for m in methods]
+
+    def _matches_path_prefix(self, context: dict[str, Any]) -> bool:
+        """Check if path_prefix condition matches."""
+        if self.path_prefix is None:
+            return True
+
+        ctx_path = context.get("path", "")
+        return ctx_path.startswith(self.path_prefix)
+
+    def _matches_content_type(self, context: dict[str, Any]) -> bool:
+        """Check if content_type condition matches."""
+        if self.content_type is None:
+            return True
+
+        ctx_ct = context.get("content_type", "")
+        return self.content_type in ctx_ct
+
     def matches(self, context: dict[str, Any]) -> bool:
         """Check if all specified conditions match the context."""
-        if self.credential is not None:
-            ctx_cred = context.get("credential_type", "")
-            ctx_hmac = context.get("credential_hmac", "")
-            credentials = [self.credential] if isinstance(self.credential, str) else self.credential
-
-            # Check if any credential pattern matches (type or hmac)
-            matched = False
-            for cred_pattern in credentials:
-                if cred_pattern.startswith("hmac:"):
-                    # Exact HMAC match
-                    if ctx_hmac and cred_pattern == f"hmac:{ctx_hmac}":
-                        matched = True
-                        break
-                else:
-                    # Type pattern match (e.g., "openai:*")
-                    if _matches_pattern(f"{ctx_cred}:x", cred_pattern):
-                        matched = True
-                        break
-            if not matched:
-                return False
-
-        if self.method is not None:
-            ctx_method = context.get("method", "").upper()
-            methods = [self.method] if isinstance(self.method, str) else self.method
-            if ctx_method not in [m.upper() for m in methods]:
-                return False
-
-        if self.path_prefix is not None:
-            ctx_path = context.get("path", "")
-            if not ctx_path.startswith(self.path_prefix):
-                return False
-
-        if self.content_type is not None:
-            ctx_ct = context.get("content_type", "")
-            if self.content_type not in ctx_ct:
-                return False
-
-        return True
+        return (
+            self._matches_credential(context) and
+            self._matches_method(context) and
+            self._matches_path_prefix(context) and
+            self._matches_content_type(context)
+        )
 
 
 class Permission(BaseModel):
