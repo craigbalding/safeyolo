@@ -31,10 +31,10 @@ from mitmproxy import ctx, http
 
 try:
     from .base import SecurityAddon
-    from .utils import atomic_write_json, get_client_ip, BackgroundWorker
+    from .utils import atomic_write_json, BackgroundWorker
 except ImportError:
     from base import SecurityAddon
-    from utils import atomic_write_json, get_client_ip, BackgroundWorker
+    from utils import atomic_write_json, BackgroundWorker
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 

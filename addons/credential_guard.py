@@ -22,30 +22,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import yaml
 from mitmproxy import ctx, http
 
 try:
     from .base import SecurityAddon
     from .utils import (
-        write_event, make_block_response, load_config_file, get_client_ip,
-        calculate_shannon_entropy, looks_like_secret,
-        load_hmac_secret, hmac_fingerprint,
-        normalize_path, matches_host_pattern, matches_resource_pattern,
+        make_block_response, load_config_file, get_client_ip,
+        looks_like_secret, load_hmac_secret, hmac_fingerprint,
     )
 except ImportError:
     from base import SecurityAddon
     from utils import (
-        write_event, make_block_response, load_config_file, get_client_ip,
-        calculate_shannon_entropy, looks_like_secret,
-        load_hmac_secret, hmac_fingerprint,
-        normalize_path, matches_host_pattern, matches_resource_pattern,
+        make_block_response, load_config_file, get_client_ip,
+        looks_like_secret, load_hmac_secret, hmac_fingerprint,
     )
 
 try:
-    from .policy_engine import get_policy_engine, PolicyDecision
+    from .policy_engine import get_policy_engine
 except ImportError:
-    from policy_engine import get_policy_engine, PolicyDecision
+    from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.credential-guard")
 
@@ -370,8 +365,8 @@ class CredentialGuard(SecurityAddon):
             sd = get_service_discovery()
             if sd:
                 return sd.get_project_for_ip(client_ip)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"Service discovery lookup failed: {type(e).__name__}: {e}")
         return "default"
 
     def _record_violation(self, rule: str, host: str):

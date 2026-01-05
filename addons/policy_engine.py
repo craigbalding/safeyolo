@@ -21,7 +21,6 @@ Usage:
 """
 
 import fnmatch
-import json
 import logging
 import threading
 from dataclasses import dataclass

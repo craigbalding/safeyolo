@@ -27,7 +27,7 @@ Usage:
                 self.stats.allowed += 1
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from mitmproxy import http

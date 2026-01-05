@@ -113,8 +113,8 @@ class QuietHostsConfig:
             mtime = self.config_path.stat().st_mtime
             if mtime > self._mtime:
                 self.load()  # load() writes its own audit event
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"Config reload check failed: {type(e).__name__}: {e}")
 
     def start_watcher(self):
         """Start background file watcher."""

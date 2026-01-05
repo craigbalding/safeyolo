@@ -18,16 +18,16 @@ import secrets
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 from mitmproxy import ctx
 
 try:
     from .utils import write_event
-    from .policy_engine import get_policy_engine, init_policy_engine
+    from .policy_engine import get_policy_engine
 except ImportError:
     from utils import write_event
-    from policy_engine import get_policy_engine, init_policy_engine
+    from policy_engine import get_policy_engine
 
 log = logging.getLogger("safeyolo.admin")
 

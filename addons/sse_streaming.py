@@ -30,7 +30,6 @@ See: https://github.com/mitmproxy/mitmproxy/issues/4469
 """
 
 import logging
-from typing import Optional
 
 from mitmproxy import ctx, http
 

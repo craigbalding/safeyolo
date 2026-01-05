@@ -13,14 +13,11 @@ Usage:
     mitmdump -s addons/metrics.py
 """
 
-import json
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from dataclasses import dataclass
 
-from mitmproxy import ctx, http
+from mitmproxy import http
 
 log = logging.getLogger("safeyolo.metrics")
 
