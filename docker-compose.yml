@@ -9,6 +9,11 @@
 # Start first: docker compose up -d
 # Projects then join the safeyolo-internal network
 #
+# Non-root execution (recommended):
+#   echo "SAFEYOLO_UID=$(id -u)" >> .env
+#   echo "SAFEYOLO_GID=$(id -g)" >> .env
+#   docker compose up -d
+#
 # Network configuration (override in .env if needed):
 #   SAFEYOLO_IP=172.30.0.10
 #   INTERNAL_SUBNET=172.30.0.0/24
@@ -34,6 +39,8 @@ services:
       # target: extended  # Uncomment for ML + YARA (~700MB)
       target: dev       # Development with pytest
     container_name: safeyolo
+    # Run as host user for correct volume permissions (non-root)
+    user: "${SAFEYOLO_UID:-1000}:${SAFEYOLO_GID:-1000}"
     restart: unless-stopped
     networks:
       safeyolo-internal:
