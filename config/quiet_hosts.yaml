@@ -12,9 +12,3 @@
 #       - /chatty/path/*
 #       - /health
 
-# Telemetry and analytics hosts
-hosts:
-  - statsig.anthropic.com
-paths:
-  api.anthropic.com:
-    - /api/event_logging/batch

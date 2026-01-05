@@ -83,7 +83,8 @@ EXPOSE 8080 8888 9090
 # Environment defaults
 ENV PROXY_PORT=8080
 ENV ADMIN_PORT=9090
-ENV CERT_DIR=/certs
+ENV CERT_DIR=/certs-private
+ENV PUBLIC_CERT_DIR=/certs-public
 ENV LOG_DIR=/app/logs
 ENV CONFIG_DIR=/app/config
 

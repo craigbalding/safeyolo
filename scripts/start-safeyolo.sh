@@ -11,7 +11,8 @@
 
 set -e
 
-CERT_DIR="${CERT_DIR:-/certs}"
+CERT_DIR="${CERT_DIR:-/certs-private}"
+PUBLIC_CERT_DIR="${PUBLIC_CERT_DIR:-/certs-public}"
 LOG_DIR="${LOG_DIR:-/app/logs}"
 CONFIG_DIR="${CONFIG_DIR:-/app/config}"
 PROXY_PORT="${PROXY_PORT:-8080}"
@@ -24,7 +25,7 @@ echo "Cert dir: ${CERT_DIR}"
 echo "Log dir: ${LOG_DIR}"
 
 # Ensure directories exist and are writable
-mkdir -p "${CERT_DIR}" "${LOG_DIR}" 2>/dev/null || true
+mkdir -p "${CERT_DIR}" "${PUBLIC_CERT_DIR}" "${LOG_DIR}" 2>/dev/null || true
 
 # Check write permissions (important for non-root execution)
 if ! touch "${CERT_DIR}/.write-test" 2>/dev/null; then
@@ -43,16 +44,19 @@ if ! touch "${LOG_DIR}/.write-test" 2>/dev/null; then
 fi
 rm -f "${LOG_DIR}/.write-test"
 
-# Generate mitmproxy CA cert if not present
+# Generate mitmproxy CA cert if not present (PRIVATE confdir)
 if [ ! -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
     echo "Generating mitmproxy CA certificate..."
-    # Run mitmproxy briefly to generate certs
+    # Run mitmproxy briefly to generate certs into PRIVATE confdir
     timeout 3 mitmdump --set confdir="${CERT_DIR}" -p 0 2>/dev/null || true
 
     if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
         echo "CA certificate generated successfully"
-        # Make cert readable by other containers
-        chmod 644 "${CERT_DIR}/mitmproxy-ca-cert.pem"
+        # Keep PRIVATE confdir tight (contains private key material)
+        chmod 600 "${CERT_DIR}/mitmproxy-ca-cert.pem" 2>/dev/null || true
+        chmod 600 "${CERT_DIR}/mitmproxy-ca-cert.p12" 2>/dev/null || true
+        chmod 600 "${CERT_DIR}/mitmproxy-ca.pem" 2>/dev/null || true
+        chmod 700 "${CERT_DIR}" 2>/dev/null || true
     else
         echo "ERROR: Failed to generate CA certificate"
         exit 1
@@ -61,8 +65,15 @@ else
     echo "Using existing CA certificate"
 fi
 
+# Export PUBLIC CA cert for other containers (agents mount this read-only)
+if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
+    mkdir -p "${PUBLIC_CERT_DIR}" 2>/dev/null || true
+    cp -f "${CERT_DIR}/mitmproxy-ca-cert.pem" "${PUBLIC_CERT_DIR}/mitmproxy-ca-cert.pem"
+    chmod 644 "${PUBLIC_CERT_DIR}/mitmproxy-ca-cert.pem"
+fi
+
 # Install CA cert to system trust store for Python/pip SSL verification
-# This requires root - skip gracefully for non-root execution
+# (Only relevant inside this container)
 if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
     if [ "$(id -u)" = "0" ]; then
         if [ ! -f /usr/local/share/ca-certificates/mitmproxy.crt ]; then
@@ -75,7 +86,7 @@ if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
         fi
     else
         echo "Non-root: skipping system CA install (use SSL_CERT_FILE env var instead)"
-        # Export for this process and children (mitmproxy, httpx, etc.)
+        # For THIS container’s own clients (httpx/pip etc.)
         export SSL_CERT_FILE="${CERT_DIR}/mitmproxy-ca-cert.pem"
         export REQUESTS_CA_BUNDLE="${CERT_DIR}/mitmproxy-ca-cert.pem"
     fi
@@ -263,7 +274,7 @@ if [ -f /opt/shell_mux/container_agent.py ] && [ -n "${CONTAINER_NAME}" ]; then
 fi
 
 # Build the mitmproxy command and save it for reload script
-MITMPROXY_CMD="mitmproxy -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"
+MITMPROXY_CMD="mitmproxy -v -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"
 echo "${MITMPROXY_CMD}" > /tmp/mitmproxy-cmd.sh
 chmod +x /tmp/mitmproxy-cmd.sh
 

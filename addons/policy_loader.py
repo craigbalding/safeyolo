@@ -73,7 +73,10 @@ class PolicyLoader:
             on_reload: Optional callback when policies are reloaded
         """
         # Import here to avoid circular imports
-        from .policy_engine import UnifiedPolicy
+        try:
+            from .policy_engine import UnifiedPolicy
+        except ImportError:
+            from policy_engine import UnifiedPolicy
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path

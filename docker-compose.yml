@@ -26,6 +26,22 @@
 #   - default: SafeYolo's internet access (the only outbound path)
 
 services:
+  certs-init:
+    image: alpine:3.20
+    user: "0:0"
+    volumes:
+      - type: volume
+        source: safeyolo-certs-private
+        target: /certs-private
+        volume:
+          nocopy: true
+      - type: volume
+        source: safeyolo-ca
+        target: /certs-public
+        volume:
+          nocopy: true
+    command: ["sh","-c","chown ${SAFEYOLO_UID:-1000}:${SAFEYOLO_GID:-1000} /certs-private /certs-public && chmod 700 /certs-private && chmod 755 /certs-public"]
+
   # ============================================================
   # SafeYolo Gateway (mitmproxy with native addons)
   # - Single chokepoint for ALL outbound internet traffic
@@ -33,6 +49,9 @@ services:
   # - Service discovery via sudoers (no socket mount needed)
   # ============================================================
   safeyolo:
+    depends_on:
+      certs-init:
+        condition: service_completed_successfully
     build:
       context: .
       # target: base  # Lightweight core addons (~200MB)
@@ -41,7 +60,7 @@ services:
     container_name: safeyolo
     # Run as host user for correct volume permissions (non-root)
     user: "${SAFEYOLO_UID:-1000}:${SAFEYOLO_GID:-1000}"
-    restart: unless-stopped
+    #restart: unless-stopped
     networks:
       safeyolo-internal:
         ipv4_address: ${SAFEYOLO_IP:-172.30.0.10}
@@ -51,7 +70,17 @@ services:
       - "127.0.0.1:8888:8080"   # Proxy port (localhost only)
       - "127.0.0.1:9090:9090"   # Admin API (localhost only)
     volumes:
-      - safeyolo-certs:/certs
+      - type: volume
+        source: safeyolo-certs-private
+        target: /certs-private
+        volume:
+          nocopy: true
+
+      - type: volume
+        source: safeyolo-ca
+        target: /certs-public
+        volume:
+          nocopy: true
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config:/app/config
@@ -87,6 +116,7 @@ networks:
     driver: bridge
 
 volumes:
-  safeyolo-certs:
-    external: true
-    name: safeyolo-certs
+  safeyolo-certs-private:
+    name: safeyolo-certs-private
+  safeyolo-ca:
+    name: safeyolo-ca
