@@ -24,10 +24,13 @@ Event Taxonomy:
     admin.auth_failure   - Failed auth attempt
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import math
 import os
+import secrets
 import sys
 import threading
 from datetime import datetime, timezone
@@ -353,3 +356,54 @@ def looks_like_secret(value: str, entropy_config: Optional[dict] = None) -> bool
 
     entropy = calculate_shannon_entropy(value)
     return entropy >= min_entropy
+
+
+# =============================================================================
+# HMAC Fingerprinting
+# =============================================================================
+
+def load_hmac_secret(secret_path: Path, env_var: str = "CREDGUARD_HMAC_SECRET") -> bytes:
+    """Load or generate HMAC secret for sensitive data fingerprinting.
+
+    Checks environment variable first, then file, then generates new secret.
+    Generated secrets are saved with 0600 permissions.
+
+    Args:
+        secret_path: Path to secret file
+        env_var: Environment variable name to check first
+
+    Returns:
+        HMAC secret as bytes
+    """
+    env_secret = os.environ.get(env_var)
+    if env_secret:
+        return env_secret.encode()
+
+    if secret_path.exists():
+        return secret_path.read_bytes().strip()
+
+    # Generate new secret
+    secret = secrets.token_hex(32).encode()
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    secret_path.write_bytes(secret)
+    secret_path.chmod(0o600)
+    _log.info(f"Generated new HMAC secret at {secret_path}")
+    return secret
+
+
+def hmac_fingerprint(value: str, secret: bytes, prefix_len: int = 16) -> str:
+    """Generate HMAC fingerprint for sensitive data (never log raw values).
+
+    Creates a truncated HMAC-SHA256 hash for logging and policy matching
+    without exposing the actual sensitive value.
+
+    Args:
+        value: Sensitive string to fingerprint
+        secret: HMAC secret key
+        prefix_len: Length of hex digest to return (default: 16)
+
+    Returns:
+        Truncated hex digest (e.g., "a1b2c3d4e5f67890")
+    """
+    h = hmac.new(secret, value.encode(), hashlib.sha256)
+    return h.hexdigest()[:prefix_len]

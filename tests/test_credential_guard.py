@@ -165,10 +165,10 @@ class TestLooksLikeSecret:
 
 
 class TestHMACFingerprint:
-    """Tests for HMAC fingerprinting."""
+    """Tests for HMAC fingerprinting (imported from utils)."""
 
     def test_deterministic(self):
-        from addons.credential_guard import hmac_fingerprint
+        from addons.utils import hmac_fingerprint
 
         secret = b"test-secret"
         cred = "sk-abc123"
@@ -178,7 +178,7 @@ class TestHMACFingerprint:
         assert fp1 == fp2
 
     def test_different_credentials_different_fingerprints(self):
-        from addons.credential_guard import hmac_fingerprint
+        from addons.utils import hmac_fingerprint
 
         secret = b"test-secret"
         fp1 = hmac_fingerprint("sk-abc123", secret)
@@ -186,7 +186,7 @@ class TestHMACFingerprint:
         assert fp1 != fp2
 
     def test_different_secrets_different_fingerprints(self):
-        from addons.credential_guard import hmac_fingerprint
+        from addons.utils import hmac_fingerprint
 
         cred = "sk-abc123"
         fp1 = hmac_fingerprint(cred, b"secret1")
@@ -194,7 +194,7 @@ class TestHMACFingerprint:
         assert fp1 != fp2
 
     def test_fingerprint_length(self):
-        from addons.credential_guard import hmac_fingerprint
+        from addons.utils import hmac_fingerprint
 
         fp = hmac_fingerprint("test", b"secret")
         assert len(fp) == 16  # First 16 chars of hex digest

@@ -15,13 +15,9 @@ Usage:
     mitmdump -s addons/credential_guard.py --set credguard_block=true
 """
 
-import hashlib
-import hmac
 import json
 import logging
-import os
 import re
-import secrets
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,12 +32,14 @@ try:
     from .utils import (
         write_event, make_block_response, load_config_file, get_client_ip,
         calculate_shannon_entropy, looks_like_secret,
+        load_hmac_secret, hmac_fingerprint,
     )
 except ImportError:
     from base import SecurityAddon
     from utils import (
         write_event, make_block_response, load_config_file, get_client_ip,
         calculate_shannon_entropy, looks_like_secret,
+        load_hmac_secret, hmac_fingerprint,
     )
 
 try:
@@ -53,31 +51,8 @@ log = logging.getLogger("safeyolo.credential-guard")
 
 
 # =============================================================================
-# Configuration & Utilities
+# Path Matching Utilities
 # =============================================================================
-
-def load_hmac_secret(secret_path: Path) -> bytes:
-    """Load or generate HMAC secret for credential fingerprinting."""
-    env_secret = os.environ.get("CREDGUARD_HMAC_SECRET")
-    if env_secret:
-        return env_secret.encode()
-
-    if secret_path.exists():
-        return secret_path.read_bytes().strip()
-
-    secret = secrets.token_hex(32).encode()
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
-    secret_path.write_bytes(secret)
-    secret_path.chmod(0o600)
-    log.info(f"Generated new HMAC secret at {secret_path}")
-    return secret
-
-
-def hmac_fingerprint(credential: str, secret: bytes) -> str:
-    """Generate HMAC fingerprint for a credential (never log raw)."""
-    h = hmac.new(secret, credential.encode(), hashlib.sha256)
-    return h.hexdigest()[:16]
-
 
 def normalize_path(path: str) -> str:
     """Normalize URL path for consistent matching."""
