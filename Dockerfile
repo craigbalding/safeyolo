@@ -29,11 +29,10 @@
 # ==============================================================================
 FROM python:3.13-slim AS base
 
-# Install minimal system dependencies
+# Install minimal system dependencies (no docker.io - not used)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tmux \
-    docker.io \
     # Network troubleshooting tools
     procps \
     net-tools \
@@ -41,6 +40,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iputils-ping \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN groupadd -r safeyolo && useradd -r -g safeyolo safeyolo
 
 # Install core Python dependencies (no ML, no YARA)
 COPY requirements/base.txt /tmp/requirements.txt
@@ -80,8 +82,8 @@ COPY config/ /app/config/
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/*.sh
 
-# Create directories
-RUN mkdir -p /app/logs /certs
+# Create directories with correct ownership
+RUN mkdir -p /app/logs /certs && chown -R safeyolo:safeyolo /app /certs
 
 # Ports
 EXPOSE 8080 8888 9090
@@ -93,6 +95,9 @@ ENV CERT_DIR=/certs
 ENV LOG_DIR=/app/logs
 ENV CONFIG_DIR=/app/config
 
+# Run as non-root user
+USER safeyolo
+
 # Start SafeYolo
 CMD ["/app/scripts/start-safeyolo.sh"]
 
@@ -100,6 +105,9 @@ CMD ["/app/scripts/start-safeyolo.sh"]
 # Dev stage - Development and testing
 # ==============================================================================
 FROM base AS dev
+
+# Switch to root for package installation
+USER root
 
 # Reinstall build deps for development
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -112,6 +120,9 @@ RUN pip install --no-cache-dir -r /tmp/dev.txt
 
 # Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app
+
+# Switch back to non-root user
+USER safeyolo
 
 # Default to bash for interactive use
 CMD ["bash"]
