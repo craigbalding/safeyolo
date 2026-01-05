@@ -12,6 +12,28 @@ It’s built for the uncomfortable reality that agents can be too *resourceful* 
 - **Evidence by default:** JSONL logs with decisions + correlation (useful for reviews, audits, and “what happened?” moments).
 - **Two ways to run it:** a fast “try it” mode, and an enforced mode where bypass attempts fail.
 
+### Trust & Risk
+
+SafeYolo is a local TLS-intercepting proxy (MITM). It can only block leaked credentials if it can see where they're going.
+
+**What SafeYolo guarantees (by design):**
+- **Sandbox Mode reduces risk:** agent runs in unprivileged container with no direct internet; proxy is the only egress path
+- **Try Mode is for evaluation, not enforcement:** agents can bypass by unsetting proxy vars
+- **Evidence by default:** decisions logged locally (JSONL) for review
+
+**What SafeYolo does not claim:**
+- Not a malware sandbox; doesn't defend against determined adversaries
+- Doesn't "solve" prompt injection; constrains outbound behavior only
+
+**Supply-chain:** Don't trust a prebuilt image? Build locally from source.
+
+### How Does It Intercept Claude/Codex Traffic?
+
+- **Try Mode:** SafeYolo prints standard proxy + CA env vars; your agent respects them and routes HTTP(S) through the local proxy.
+- **Sandbox Mode:** Agent runs in Docker network with no direct internet access; SafeYolo proxy is the only route out.
+
+No "routing magic" - just standard proxying with explicit TLS inspection.
+
 ### Who SafeYolo is for
 - **Builders using agentic tools** who want **simple egress control** without slowing down shipping.
 - **Security pros and platform engineers** who want a **low-friction, defensible sandbox** to try agents safely.
@@ -26,18 +48,24 @@ If you want to follow along (or be an early tester), star the repo and watch rel
 ## Quick Start (v1 preview)
 
 ```bash
-# Install CLI
-pipx install safeyolo
+# Install CLI (pick one)
+pipx install safeyolo          # classic
+uv tool install safeyolo       # faster, modern
 
 # Start proxy (auto-configures on first run)
 safeyolo start
 
-# Set up CA trust and proxy for your shell
-eval $(safeyolo cert env)
+# Print what would be set (safe, no changes)
+safeyolo cert env
+
+# If it looks right, apply it
+eval "$(safeyolo cert env)"
 
 # Run your agent
 claude
 ```
+
+`safeyolo cert env` prints standard `HTTP_PROXY`/`HTTPS_PROXY` env vars - inspect them first if you don't like `eval`.
 
 That's it. SafeYolo is now inspecting all HTTPS traffic from your shell session.
 
