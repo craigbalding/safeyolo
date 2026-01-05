@@ -20,7 +20,10 @@ import logging
 import signal
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .policy_engine import UnifiedPolicy
 
 try:
     import yaml
