@@ -28,12 +28,11 @@ Usage:
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from mitmproxy import http
-
-from utils import make_block_response, write_event, get_option_safe
 from policy_engine import get_policy_engine
+from utils import get_option_safe, make_block_response, write_event
 
 
 @dataclass
@@ -126,7 +125,7 @@ class SecurityAddon:
         flow: http.HTTPFlow,
         status: int,
         body: dict,
-        extra_headers: Optional[dict] = None,
+        extra_headers: dict | None = None,
     ) -> None:
         """Block request with standard response.
 

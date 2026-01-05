@@ -320,6 +320,7 @@ class TestBudgetTrackerErrorPaths:
     def test_handles_readonly_state_directory(self):
         """Test graceful handling of unwritable state dir."""
         import os
+
         from budget_tracker import GCRABudgetTracker
 
         with tempfile.TemporaryDirectory() as tmpdir:

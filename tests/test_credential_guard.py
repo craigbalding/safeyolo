@@ -201,7 +201,7 @@ class TestAnalyzeHeaders:
     """Tests for header analysis."""
 
     def test_detects_known_pattern_in_auth_header(self):
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         headers = {"Authorization": "Bearer sk-proj-" + "a" * 80}
         detections = analyze_headers(
@@ -351,7 +351,7 @@ class TestBlockingMode:
 
     def test_warn_mode_logs_but_does_not_block(self, make_flow, policy_engine_initialized):
         """Test that warn mode (block=False) logs violation but doesn't block."""
-        from credential_guard import CredentialGuard, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, CredentialGuard
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)
@@ -377,7 +377,7 @@ class TestBlockingMode:
 
     def test_blocking_mode_blocks(self, make_flow, policy_engine_initialized):
         """Test that blocking mode (block=True) actually blocks."""
-        from credential_guard import CredentialGuard, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, CredentialGuard
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)
@@ -406,7 +406,7 @@ class TestDetectionLevels:
 
     def test_paranoid_catches_unknown_entropy_in_any_header(self):
         """Paranoid: Catches unknown high-entropy values in ANY non-safe header."""
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -425,7 +425,7 @@ class TestDetectionLevels:
 
     def test_standard_ignores_unknown_entropy_in_nonsuspicious_header(self):
         """Standard: Does NOT catch unknown high-entropy in non-suspicious named headers."""
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -442,7 +442,7 @@ class TestDetectionLevels:
 
     def test_standard_catches_known_pattern_in_auth_header(self):
         """Standard: Catches known patterns in standard auth headers."""
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         # Key must be long enough to match the pattern (20+ chars after prefix)
         headers = {"Authorization": f"Bearer sk-proj-{'a' * 80}"}
@@ -462,7 +462,7 @@ class TestDetectionLevels:
 
     def test_standard_ignores_pattern_in_non_auth_header(self):
         """Standard: Does NOT scan non-auth headers (only paranoid does)."""
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         headers = {"X-Random-Header": "sk-proj-abc123xyz456def789ghijk"}
         detections = analyze_headers(
@@ -479,7 +479,7 @@ class TestDetectionLevels:
 
     def test_paranoid_catches_pattern_in_any_header(self):
         """Paranoid: Catches high-entropy in ANY header (not just auth)."""
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -497,7 +497,7 @@ class TestDetectionLevels:
 
     def test_patterns_only_ignores_unknown_entropy(self):
         """Patterns-only: Does NOT catch unknown high-entropy values."""
-        from credential_guard import analyze_headers, DEFAULT_RULES
+        from credential_guard import DEFAULT_RULES, analyze_headers
 
         headers = {"X-Custom-Token": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(

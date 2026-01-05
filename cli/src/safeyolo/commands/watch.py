@@ -1,18 +1,14 @@
 """Watch command - monitor logs and handle approval requests."""
 
 import json
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from ..api import AdminAPI, APIError, get_api
 from ..config import get_logs_dir
@@ -148,7 +144,7 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
                 if status == "added":
                     console.print(f"[green]Approved[/green] - {token_hmac[:8]}... -> {host}")
                 elif status == "exists":
-                    console.print(f"[yellow]Already approved[/yellow]")
+                    console.print("[yellow]Already approved[/yellow]")
                 else:
                     console.print(f"[green]OK[/green] - {result}")
                 return True
@@ -161,7 +157,7 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
             return False
 
         elif response in ("s", "skip", ""):
-            console.print(f"[dim]Skipped[/dim]")
+            console.print("[dim]Skipped[/dim]")
             return False
 
         else:
@@ -172,7 +168,7 @@ def watch(
     follow: bool = typer.Option(True, "--follow/--no-follow", "-f", help="Follow log in real-time"),
     security_only: bool = typer.Option(True, "--security/--all", help="Show only security events"),
     interactive: bool = typer.Option(True, "--interactive/--log-only", "-i", help="Prompt for approvals"),
-    log_file: Optional[str] = typer.Option(None, "--log", "-l", help="Path to log file"),
+    log_file: str | None = typer.Option(None, "--log", "-l", help="Path to log file"),
 ):
     """Watch logs and handle credential approval requests.
 

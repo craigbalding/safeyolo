@@ -10,7 +10,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ADDON_MODULES = [
     "admin_api",
     "admin_shield",
@@ -85,7 +84,7 @@ class TestStandaloneImports:
                 failures.append(f"{module}: {error_line}")
 
         assert not failures, (
-            f"Addons failed standalone import (missing fallback imports?):\n"
+            "Addons failed standalone import (missing fallback imports?):\n"
             + "\n".join(f"  - {f}" for f in failures)
         )
 
@@ -129,7 +128,7 @@ if missing:
                 failures.append(f"{module}: missing {missing}")
 
         assert not failures, (
-            f"Addons missing required names in standalone mode:\n"
+            "Addons missing required names in standalone mode:\n"
             + "\n".join(f"  - {f}" for f in failures)
         )
 

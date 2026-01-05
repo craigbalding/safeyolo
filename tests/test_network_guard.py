@@ -1,7 +1,8 @@
 """Tests for network_guard addon (combined access control + rate limiting)."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestNetworkGuard:
@@ -206,7 +207,7 @@ class TestNetworkGuardIntegration:
 
     def test_deny_with_real_policy(self):
         """Test deny effect works with real policy engine."""
-        from policy_engine import PolicyEngine, Permission, UnifiedPolicy
+        from policy_engine import Permission, PolicyEngine, UnifiedPolicy
 
         # Create policy with deny rule
         policy = UnifiedPolicy(
@@ -239,7 +240,7 @@ class TestNetworkGuardIntegration:
 
     def test_allowlist_mode(self):
         """Test allowlist mode: allow specific, deny rest."""
-        from policy_engine import PolicyEngine, Permission, UnifiedPolicy
+        from policy_engine import Permission, PolicyEngine, UnifiedPolicy
 
         policy = UnifiedPolicy(
             permissions=[
@@ -279,7 +280,7 @@ class TestNetworkGuardIntegration:
 
     def test_budget_with_real_policy(self):
         """Test budget/rate limiting with real policy engine."""
-        from policy_engine import PolicyEngine, Permission, UnifiedPolicy
+        from policy_engine import Permission, PolicyEngine, UnifiedPolicy
 
         policy = UnifiedPolicy(
             permissions=[
@@ -341,7 +342,7 @@ class TestHomoglyphDetection:
 
     def test_detects_cyrillic_in_domain(self):
         """Test detection of Cyrillic characters in domain names."""
-        from network_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
+        from network_guard import HOMOGLYPH_ENABLED, detect_homoglyph_attack
 
         if not HOMOGLYPH_ENABLED:
             pytest.skip("confusable-homoglyphs not installed")
@@ -353,7 +354,7 @@ class TestHomoglyphDetection:
 
     def test_allows_normal_ascii_domain(self):
         """Test that normal ASCII domains pass."""
-        from network_guard import detect_homoglyph_attack, HOMOGLYPH_ENABLED
+        from network_guard import HOMOGLYPH_ENABLED, detect_homoglyph_attack
 
         if not HOMOGLYPH_ENABLED:
             pytest.skip("confusable-homoglyphs not installed")
@@ -363,7 +364,7 @@ class TestHomoglyphDetection:
 
     def test_blocks_homoglyph_domain_in_request(self):
         """Test that homoglyph domains are blocked in requests."""
-        from network_guard import NetworkGuard, HOMOGLYPH_ENABLED
+        from network_guard import HOMOGLYPH_ENABLED, NetworkGuard
 
         if not HOMOGLYPH_ENABLED:
             pytest.skip("confusable-homoglyphs not installed")

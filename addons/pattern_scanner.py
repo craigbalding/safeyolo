@@ -18,9 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from mitmproxy import ctx, http
-
 from base import SecurityAddon
+from mitmproxy import ctx, http
 from utils import make_block_response
 
 log = logging.getLogger("safeyolo.pattern-scanner")
@@ -36,7 +35,7 @@ class PatternRule:
     severity: int  # 1-5
     category: str  # "secret", "jailbreak", "pii"
 
-    def matches(self, text: str) -> Optional[re.Match]:
+    def matches(self, text: str) -> re.Match | None:
         return self.pattern.search(text)
 
     @property
@@ -118,7 +117,7 @@ class PatternScanner(SecurityAddon):
     def __init__(self):
         # Custom stats - don't call super().__init__()
         self.rules: list[PatternRule] = []
-        self.log_path: Optional[Path] = None
+        self.log_path: Path | None = None
         self.scans_total = 0
         self.matches_total = 0
         self.blocks_total = 0
@@ -166,7 +165,7 @@ class PatternScanner(SecurityAddon):
         flow.metadata["blocked_by"] = self.name
         flow.response = make_block_response(status, body, self.name, extra_headers)
 
-    def _scan_text(self, text: str, target: str) -> Optional[PatternRule]:
+    def _scan_text(self, text: str, target: str) -> PatternRule | None:
         """Scan text for matching patterns."""
         self.scans_total += 1
 
@@ -204,14 +203,14 @@ class PatternScanner(SecurityAddon):
 
         flow.metadata["pattern_matched"] = rule.rule_id
 
-        match_fields = dict(
-            direction="request",
-            rule_id=rule.rule_id,
-            rule_name=rule.name,
-            category=rule.category,
-            host=flow.request.host,
-            path=flow.request.path,
-        )
+        match_fields = {
+            "direction": "request",
+            "rule_id": rule.rule_id,
+            "rule_name": rule.name,
+            "category": rule.category,
+            "host": flow.request.host,
+            "path": flow.request.path,
+        }
 
         if rule.should_block and ctx.options.pattern_block_input:
             log.warning(f"BLOCKED: Pattern matched INPUT {rule.rule_id} ({rule.name}) -> {flow.request.host}{flow.request.path}")
@@ -241,14 +240,14 @@ class PatternScanner(SecurityAddon):
 
         flow.metadata["pattern_matched_response"] = rule.rule_id
 
-        match_fields = dict(
-            direction="response",
-            rule_id=rule.rule_id,
-            rule_name=rule.name,
-            category=rule.category,
-            host=flow.request.host,
-            path=flow.request.path,
-        )
+        match_fields = {
+            "direction": "response",
+            "rule_id": rule.rule_id,
+            "rule_name": rule.name,
+            "category": rule.category,
+            "host": flow.request.host,
+            "path": flow.request.path,
+        }
 
         if ctx.options.pattern_redact_secrets and rule.category == "secret":
             redacted = rule.pattern.sub("[REDACTED]", body)

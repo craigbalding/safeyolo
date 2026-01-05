@@ -16,10 +16,8 @@ import time
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 from pathlib import Path
-from typing import Optional
 
 import yaml
-
 from mitmproxy import ctx
 
 log = logging.getLogger("safeyolo.discovery")
@@ -30,8 +28,8 @@ class ServiceEntry:
     """A registered service."""
     name: str
     project: str
-    ip: Optional[str] = None
-    ip_range: Optional[str] = None
+    ip: str | None = None
+    ip_range: str | None = None
 
 
 class ServiceDiscovery:
@@ -50,7 +48,7 @@ class ServiceDiscovery:
         self._ip_to_project: dict[str, str] = {}  # exact IP -> project
         self._ranges: list[tuple] = []  # (ip_network, project)
         self._last_load: float = 0
-        self._config_path: Optional[Path] = None
+        self._config_path: Path | None = None
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -70,7 +68,7 @@ class ServiceDiscovery:
         if self._last_load == 0:
             self._load_config()
 
-    def _find_config(self) -> Optional[Path]:
+    def _find_config(self) -> Path | None:
         """Find services.yaml in standard locations."""
         search_paths = [
             Path("/app/data/services.yaml"),  # Container mount
@@ -172,10 +170,10 @@ class ServiceDiscovery:
         }
 
 
-_discovery: Optional[ServiceDiscovery] = None
+_discovery: ServiceDiscovery | None = None
 
 
-def get_service_discovery() -> Optional[ServiceDiscovery]:
+def get_service_discovery() -> ServiceDiscovery | None:
     """Get the service discovery instance."""
     return _discovery
 

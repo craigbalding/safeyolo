@@ -34,7 +34,6 @@ permissions:
 """
 
 import logging
-from typing import Optional
 
 from mitmproxy import ctx, http
 
@@ -46,13 +45,13 @@ except ImportError:
     confusables = None
 
 from base import SecurityAddon
-from utils import get_client_ip
 from policy_engine import get_policy_engine
+from utils import get_client_ip
 
 log = logging.getLogger("safeyolo.network-guard")
 
 
-def detect_homoglyph_attack(text: str) -> Optional[dict]:
+def detect_homoglyph_attack(text: str) -> dict | None:
     """Detect mixed-script homoglyph attacks in domain names.
 
     Catches spoofing attempts like 'api.οpenai.com' where 'ο' is Cyrillic.

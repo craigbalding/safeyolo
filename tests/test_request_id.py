@@ -86,8 +86,8 @@ class TestRequestIdIntegration:
 
     def test_request_id_available_for_credential_guard(self):
         """Request ID is available when credential_guard runs."""
-        from request_id import RequestIdGenerator
         from credential_guard import CredentialGuard
+        from request_id import RequestIdGenerator
 
         rid = RequestIdGenerator()
         _ = CredentialGuard()  # Verify it can be instantiated
@@ -107,8 +107,8 @@ class TestRequestIdIntegration:
 
     def test_request_id_available_for_network_guard(self):
         """Request ID is available when network_guard runs."""
-        from request_id import RequestIdGenerator
         from network_guard import NetworkGuard
+        from request_id import RequestIdGenerator
 
         rid = RequestIdGenerator()
         _ = NetworkGuard()  # Verify it can be instantiated

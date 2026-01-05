@@ -435,8 +435,9 @@ class TestCircuitBreakerStatePersistence:
 
     def test_concurrent_access_thread_safety(self, tmp_path):
         """Verify concurrent access to state is thread-safe."""
-        from circuit_breaker import InMemoryCircuitState
         import threading
+
+        from circuit_breaker import InMemoryCircuitState
 
         state_file = tmp_path / "concurrent.json"
         state_obj = InMemoryCircuitState(state_file=state_file)
@@ -500,8 +501,8 @@ class TestRequestIdPropagation:
 
     def test_log_event_includes_request_id(self, circuit_breaker, make_flow_with_request_id, tmp_path):
         """Verify _log_event includes request_id from flow metadata."""
-        from unittest.mock import patch
         import json
+        from unittest.mock import patch
 
         log_path = tmp_path / "test.jsonl"
 

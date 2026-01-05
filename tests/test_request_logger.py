@@ -181,8 +181,9 @@ class TestRequestLoggerLogging:
 
     def test_logs_response_to_file(self):
         """Test response is logged to JSONL file."""
-        from request_logger import RequestLogger
         import time
+
+        from request_logger import RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
@@ -243,7 +244,7 @@ class TestRequestLoggerQuiet:
 
     def test_quiets_matching_hosts(self):
         """Test matching hosts are not logged."""
-        from request_logger import RequestLogger, QuietHostsConfig
+        from request_logger import QuietHostsConfig, RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"

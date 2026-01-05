@@ -19,8 +19,9 @@ import json
 import logging
 import signal
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from policy_engine import UnifiedPolicy
@@ -59,8 +60,8 @@ class PolicyLoader:
 
     def __init__(
         self,
-        baseline_path: Optional[Path] = None,
-        on_reload: Optional[Callable[[], None]] = None,
+        baseline_path: Path | None = None,
+        on_reload: Callable[[], None] | None = None,
     ):
         """
         Initialize policy loader.
@@ -77,9 +78,9 @@ class PolicyLoader:
         self._on_reload = on_reload
 
         # Policies
-        self._baseline: "UnifiedPolicy" = UnifiedPolicy()
-        self._task_policy: Optional["UnifiedPolicy"] = None
-        self._task_policy_path: Optional[Path] = None
+        self._baseline: UnifiedPolicy = UnifiedPolicy()
+        self._task_policy: UnifiedPolicy | None = None
+        self._task_policy_path: Path | None = None
 
         # Thread safety
         self._lock = threading.RLock()
@@ -87,7 +88,7 @@ class PolicyLoader:
         self._last_task_mtime: float = 0
 
         # File watcher
-        self._watcher_thread: Optional[threading.Thread] = None
+        self._watcher_thread: threading.Thread | None = None
         self._watcher_stop = threading.Event()
 
         # Load baseline if path provided
@@ -111,7 +112,7 @@ class PolicyLoader:
         if self._task_policy_path:
             self._load_task_policy(self._task_policy_path)
 
-    def _load_file(self, path: Path) -> Optional[dict]:
+    def _load_file(self, path: Path) -> dict | None:
         """Load YAML or JSON file, return None on error."""
         if not path.exists():
             log.warning(f"Policy file not found: {path}")
@@ -283,12 +284,12 @@ class PolicyLoader:
             return self._task_policy
 
     @property
-    def baseline_path(self) -> Optional[Path]:
+    def baseline_path(self) -> Path | None:
         """Get baseline policy path."""
         return self._baseline_path
 
     @property
-    def task_policy_path(self) -> Optional[Path]:
+    def task_policy_path(self) -> Path | None:
         """Get task policy path."""
         return self._task_policy_path
 

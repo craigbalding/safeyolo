@@ -36,9 +36,10 @@ import secrets
 import sys
 import threading
 import unicodedata
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import yaml
 from mitmproxy import http
@@ -83,7 +84,7 @@ def write_event(event: str, **data) -> None:
         _log.warning(f"Event '{event}' doesn't match taxonomy (expected: traffic.*, security.*, ops.*, admin.*)")
 
     entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "event": event,
         **data,
     }
@@ -124,7 +125,7 @@ def make_block_response(
     status: int,
     body: dict,
     addon_name: str,
-    extra_headers: Optional[dict] = None,
+    extra_headers: dict | None = None,
 ) -> http.Response:
     """
     Create a standard JSON block response.
@@ -158,7 +159,7 @@ def make_block_response(
 # Config & File Utilities
 # =============================================================================
 
-def load_config_file(path: Path, default: Optional[dict] = None) -> dict:
+def load_config_file(path: Path, default: dict | None = None) -> dict:
     """Load YAML or JSON config file.
 
     Returns default (or {}) if file missing or invalid.
@@ -267,7 +268,7 @@ class BackgroundWorker:
         self._work_fn = work_fn
         self._interval = interval_sec
         self._name = name
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
     def start(self) -> None:
@@ -327,7 +328,7 @@ def calculate_shannon_entropy(s: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in freq.values())
 
 
-def looks_like_secret(value: str, entropy_config: Optional[dict] = None) -> bool:
+def looks_like_secret(value: str, entropy_config: dict | None = None) -> bool:
     """Check if value looks like a secret based on entropy heuristics.
 
     Uses length, character diversity, and Shannon entropy to detect

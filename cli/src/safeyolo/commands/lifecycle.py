@@ -14,7 +14,6 @@ from ..config import (
     DEFAULT_CONFIG,
     GLOBAL_DIR_NAME,
     find_config_dir,
-    get_admin_token,
     load_config,
     save_config,
 )
@@ -23,10 +22,14 @@ from ..docker import (
     check_docker,
     get_container_status,
     is_running,
-    start as docker_start,
-    stop as docker_stop,
     wait_for_healthy,
     write_compose_file,
+)
+from ..docker import (
+    start as docker_start,
+)
+from ..docker import (
+    stop as docker_stop,
 )
 
 console = Console()
@@ -216,7 +219,7 @@ def status() -> None:
     table.add_column("Key", style="bold")
     table.add_column("Value")
 
-    table.add_row("Container", f"[green]running[/green]")
+    table.add_row("Container", "[green]running[/green]")
     table.add_row("Health", container_status.get("health", "unknown"))
     table.add_row("Proxy Port", str(config["proxy"]["port"]))
     table.add_row("Admin Port", str(config["proxy"]["admin_port"]))

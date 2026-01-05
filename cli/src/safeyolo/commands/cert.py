@@ -53,7 +53,7 @@ def env() -> None:
     proxy_port = config.get("proxy", {}).get("port", 8080)
 
     # Output exports for eval
-    print(f"# SafeYolo CA trust (per-process, not system-wide)")
+    print("# SafeYolo CA trust (per-process, not system-wide)")
     print(f"export NODE_EXTRA_CA_CERTS={ca_cert}")
     print(f"export REQUESTS_CA_BUNDLE={ca_cert}")
     print(f"export SSL_CERT_FILE={ca_cert}")
@@ -94,10 +94,10 @@ def show() -> None:
         except Exception:
             pass
 
-        console.print(f"\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
+        console.print("\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
     else:
-        console.print(f"  CA certificate:   [yellow]Not generated yet[/yellow]")
-        console.print(f"\nThe certificate is created when SafeYolo first starts.")
+        console.print("  CA certificate:   [yellow]Not generated yet[/yellow]")
+        console.print("\nThe certificate is created when SafeYolo first starts.")
         console.print("Run [bold]safeyolo start[/bold] to generate it.")
 
 

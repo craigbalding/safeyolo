@@ -16,14 +16,12 @@ import json
 import logging
 import secrets
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
-
-from utils import write_event
 from policy_engine import get_policy_engine
+from utils import write_event
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -110,7 +108,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self) -> Optional[dict]:
+    def _read_json(self) -> dict | None:
         """Read JSON from request body."""
         try:
             content_length = int(self.headers.get("Content-Length", 0))
@@ -122,7 +120,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             log.warning(f"Invalid JSON in request body: {type(e).__name__}: {e}")
             return None
 
-    def _get_addon_mode(self, addon_name: str) -> Optional[dict]:
+    def _get_addon_mode(self, addon_name: str) -> dict | None:
         """Get current mode for an addon."""
         if addon_name not in self.MODE_SWITCHABLE:
             return None
@@ -140,7 +138,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         except AttributeError:
             return {"addon": addon_name, "mode": "unknown", "error": "option not available"}
 
-    def _set_addon_mode(self, addon_name: str, mode: str) -> Optional[dict]:
+    def _set_addon_mode(self, addon_name: str, mode: str) -> dict | None:
         """Set mode for an addon. Returns result dict or None if addon not found."""
         if addon_name not in self.MODE_SWITCHABLE:
             return None
@@ -633,8 +631,8 @@ class AdminAPI:
     name = "admin-api"
 
     def __init__(self):
-        self.server: Optional[HTTPServer] = None
-        self.server_thread: Optional[threading.Thread] = None
+        self.server: HTTPServer | None = None
+        self.server_thread: threading.Thread | None = None
 
     def load(self, loader):
         """Register mitmproxy options."""

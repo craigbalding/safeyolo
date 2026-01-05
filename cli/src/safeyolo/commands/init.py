@@ -13,11 +13,6 @@ from rich.table import Table
 from ..config import (
     DEFAULT_CONFIG,
     PROJECT_DIR_NAME,
-    ensure_directories,
-    get_config_dir,
-    get_config_path,
-    get_data_dir,
-    get_rules_path,
     save_config,
 )
 from ..docker import check_docker, write_compose_file
@@ -126,7 +121,7 @@ def _select_providers_interactive() -> list[str]:
     table.add_column("Provider")
     table.add_column("Protected Hosts")
 
-    for idx, (key, provider) in enumerate(API_PROVIDERS.items(), 1):
+    for idx, (_key, provider) in enumerate(API_PROVIDERS.items(), 1):
         hosts = ", ".join(provider["rules"][0]["allowed_hosts"])
         table.add_row(str(idx), provider["name"], hosts)
 
@@ -279,8 +274,8 @@ def init(
     (config_dir / "data").mkdir(exist_ok=True)
 
     # Generate admin token
-    admin_token = _generate_admin_token(config_dir)
-    console.print(f"  [green]Created[/green] admin token")
+    _generate_admin_token(config_dir)
+    console.print("  [green]Created[/green] admin token")
 
     # Write config.yaml
     config = DEFAULT_CONFIG.copy()
@@ -303,17 +298,17 @@ def init(
 
     if sandbox:
         next_steps = (
-            f"Next steps:\n"
-            f"  1. Run: [bold]safeyolo start[/bold]\n"
-            f"  2. Run: [bold]safeyolo agent add claude-code[/bold]\n"
-            f"  3. Run your agent from [bold]./safeyolo/agents/claude-code/[/bold]"
+            "Next steps:\n"
+            "  1. Run: [bold]safeyolo start[/bold]\n"
+            "  2. Run: [bold]safeyolo agent add claude-code[/bold]\n"
+            "  3. Run your agent from [bold]./safeyolo/agents/claude-code/[/bold]"
         )
     else:
         next_steps = (
-            f"Next steps:\n"
-            f"  1. Run: [bold]safeyolo start[/bold]\n"
-            f"  2. Configure your agent to use proxy at localhost:8080\n"
-            f"  3. Run: [bold]safeyolo watch[/bold] to handle approvals"
+            "Next steps:\n"
+            "  1. Run: [bold]safeyolo start[/bold]\n"
+            "  2. Configure your agent to use proxy at localhost:8080\n"
+            "  3. Run: [bold]safeyolo watch[/bold] to handle approvals"
         )
 
     console.print(

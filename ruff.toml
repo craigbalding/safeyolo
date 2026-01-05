@@ -19,7 +19,9 @@ select = [
 ignore = [
     "E501",   # line too long (handled by line-length)
     "B008",   # function call in default argument (common in Typer/FastAPI)
+    "B904",   # raise from err - noisy for CLI exit patterns
     "B905",   # zip without strict (Python 3.10+)
+    "UP045",  # Optional[X] -> X | None - mitmproxy loader.add_option requires Optional
 ]
 
 [lint.per-file-ignores]

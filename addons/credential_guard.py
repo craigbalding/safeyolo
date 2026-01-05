@@ -22,14 +22,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from mitmproxy import ctx, http
-
 from base import SecurityAddon
-from utils import (
-    make_block_response, load_config_file, get_client_ip,
-    looks_like_secret, load_hmac_secret, hmac_fingerprint,
-)
+from mitmproxy import ctx, http
 from policy_engine import get_policy_engine
+from utils import (
+    get_client_ip,
+    hmac_fingerprint,
+    load_config_file,
+    load_hmac_secret,
+    looks_like_secret,
+    make_block_response,
+)
 
 log = logging.getLogger("safeyolo.credential-guard")
 
@@ -73,7 +76,7 @@ class CredentialRule:
             self.header_names = ["authorization", "x-api-key"]
         self._compiled = [re.compile(p) for p in self.patterns]
 
-    def matches(self, value: str) -> Optional[str]:
+    def matches(self, value: str) -> str | None:
         """Check if value matches any pattern, return matched portion."""
         for pattern in self._compiled:
             match = pattern.search(value)
@@ -101,7 +104,7 @@ DEFAULT_RULES = [
 ]
 
 
-def detect_credential_type(value: str, rules: list[CredentialRule] = None) -> Optional[str]:
+def detect_credential_type(value: str, rules: list[CredentialRule] = None) -> str | None:
     """Detect credential type from value using pattern matching."""
     if rules is None:
         rules = DEFAULT_RULES

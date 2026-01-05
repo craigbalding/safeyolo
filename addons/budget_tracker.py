@@ -17,9 +17,9 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from utils import atomic_write_json, BackgroundWorker
+from utils import BackgroundWorker, atomic_write_json
 
 log = logging.getLogger("safeyolo.budget-tracker")
 
@@ -39,11 +39,11 @@ class GCRABudgetTracker:
     for smooth rate limiting without thundering herd problems.
     """
 
-    def __init__(self, state_file: Optional[Path] = None):
+    def __init__(self, state_file: Path | None = None):
         self._budgets: dict[str, BudgetState] = {}  # key -> state
         self._state_file = state_file
         self._lock = threading.RLock()
-        self._worker: Optional[BackgroundWorker] = None
+        self._worker: BackgroundWorker | None = None
 
         if self._state_file and self._state_file.exists():
             self._load_state()

@@ -207,8 +207,8 @@ class TestPolicyLoaderDirectSet:
 
     def test_set_baseline_directly(self):
         """Test setting baseline policy directly."""
+        from policy_engine import Permission, UnifiedPolicy
         from policy_loader import PolicyLoader
-        from policy_engine import UnifiedPolicy, Permission
 
         loader = PolicyLoader()
 
@@ -221,8 +221,8 @@ class TestPolicyLoaderDirectSet:
 
     def test_set_task_policy_directly(self):
         """Test setting task policy directly."""
+        from policy_engine import Permission, UnifiedPolicy
         from policy_loader import PolicyLoader
-        from policy_engine import UnifiedPolicy, Permission
 
         loader = PolicyLoader()
 
@@ -382,6 +382,7 @@ class TestPolicyLoaderErrorPaths:
     def test_handles_permission_denied(self):
         """Test handling of unreadable policy file."""
         import os
+
         from policy_loader import PolicyLoader
 
         # This test requires non-root execution. If it fails, the container
@@ -435,6 +436,7 @@ permissions:
     def test_handles_symlink_loop(self):
         """Test handling of symlink loop."""
         import os
+
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:

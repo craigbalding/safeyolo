@@ -262,7 +262,7 @@ class TestGetServiceDiscovery:
 
     def test_get_service_discovery_returns_instance(self):
         """Test get_service_discovery returns the global instance."""
-        from service_discovery import get_service_discovery, _discovery
+        from service_discovery import _discovery, get_service_discovery
 
         result = get_service_discovery()
         assert result is _discovery

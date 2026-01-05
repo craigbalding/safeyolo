@@ -8,7 +8,6 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..config import find_config_dir
-from ..docker import is_running, start as docker_start, wait_for_healthy
 from ..templates import TemplateError, get_available_templates, render_template
 
 console = Console()

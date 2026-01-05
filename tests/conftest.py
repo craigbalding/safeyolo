@@ -8,9 +8,10 @@ Key pattern: Use taddons.context() to set up ctx.options properly.
 See: https://snyk.io/advisor/python/mitmproxy/functions/mitmproxy.test.taddons.context
 """
 
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add addons directory to path for standalone imports
 # This matches how mitmproxy loads addons via -s flag
@@ -84,8 +85,8 @@ def taddons_ctx():
 @pytest.fixture
 def policy_engine_initialized(tmp_path):
     """Initialize PolicyEngine with test baseline for credential_guard tests."""
-    from policy_engine import init_policy_engine
     import policy_engine as pe
+    from policy_engine import init_policy_engine
 
     # Save existing engine
     old_engine = pe._policy_engine
@@ -129,7 +130,7 @@ addons:
 @pytest.fixture
 def credential_guard(policy_engine_initialized):
     """Create a fresh CredentialGuard instance with proper mitmproxy context."""
-    from credential_guard import CredentialGuard, DEFAULT_RULES
+    from credential_guard import DEFAULT_RULES, CredentialGuard
     from mitmproxy.test import taddons
 
     addon = CredentialGuard()

@@ -4,8 +4,9 @@ Tests for pattern_scanner.py addon.
 Tests regex patterns for secrets and jailbreak detection.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 class TestSecretPatterns:
@@ -198,8 +199,9 @@ class TestPatternRule:
 
     def test_should_block_high_severity(self):
         """Test should_block returns True for severity >= 4."""
-        from pattern_scanner import PatternRule
         import re
+
+        from pattern_scanner import PatternRule
 
         rule = PatternRule(
             rule_id="test",
@@ -213,8 +215,9 @@ class TestPatternRule:
 
     def test_should_block_low_severity(self):
         """Test should_block returns False for severity < 4."""
-        from pattern_scanner import PatternRule
         import re
+
+        from pattern_scanner import PatternRule
 
         rule = PatternRule(
             rule_id="test",

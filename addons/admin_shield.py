@@ -12,6 +12,7 @@ Usage:
 """
 
 import logging
+
 from mitmproxy import ctx, http
 
 log = logging.getLogger("safeyolo.admin-shield")

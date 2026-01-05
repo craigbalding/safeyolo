@@ -27,10 +27,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from mitmproxy import ctx, http
-
 from base import SecurityAddon
-from utils import atomic_write_json, BackgroundWorker, make_block_response
+from mitmproxy import ctx, http
+from utils import BackgroundWorker, atomic_write_json, make_block_response
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -47,14 +46,14 @@ class CircuitStatus:
     state: CircuitState
     failure_count: int
     success_count: int
-    last_failure_time: Optional[float]
-    last_success_time: Optional[float]
-    opened_at: Optional[float]
+    last_failure_time: float | None
+    last_success_time: float | None
+    opened_at: float | None
     failure_streak: int
     current_timeout: float
 
     @property
-    def time_until_half_open(self) -> Optional[float]:
+    def time_until_half_open(self) -> float | None:
         """Seconds until circuit transitions to half-open."""
         if self.state != CircuitState.OPEN or self.opened_at is None:
             return None
@@ -66,11 +65,11 @@ class CircuitStatus:
 class InMemoryCircuitState:
     """In-memory state storage with optional file-backed persistence."""
 
-    def __init__(self, state_file: Optional[Path] = None):
+    def __init__(self, state_file: Path | None = None):
         self._states: dict[str, dict] = {}
         self._state_file = state_file
         self._lock = threading.RLock()
-        self._worker: Optional[BackgroundWorker] = None
+        self._worker: BackgroundWorker | None = None
 
         if self._state_file and self._state_file.exists():
             self._load_state()
@@ -150,7 +149,7 @@ class CircuitBreaker(SecurityAddon):
     def __init__(self):
         # Don't call super().__init__() - we have custom stats
         self._state = InMemoryCircuitState()
-        self.log_path: Optional[Path] = None
+        self.log_path: Path | None = None
 
         # Default config
         self.failure_threshold = 5
@@ -299,7 +298,7 @@ class CircuitBreaker(SecurityAddon):
         flow.metadata["blocked_by"] = self.name
         flow.response = make_block_response(status, body, self.name, extra_headers)
 
-    def _log_circuit_event(self, event: str, domain: str, flow: Optional[http.HTTPFlow] = None, **extra):
+    def _log_circuit_event(self, event: str, domain: str, flow: http.HTTPFlow | None = None, **extra):
         """Log circuit breaker event."""
         self.log_decision(
             flow if flow else type("Flow", (), {"metadata": {}})(),
@@ -375,7 +374,7 @@ class CircuitBreaker(SecurityAddon):
 
         return True, status
 
-    def record_failure(self, domain: str, error: Optional[str] = None) -> CircuitStatus:
+    def record_failure(self, domain: str, error: str | None = None) -> CircuitStatus:
         """Record a failure for domain."""
         config = self._get_config(domain)
         data = self._state.get(domain)

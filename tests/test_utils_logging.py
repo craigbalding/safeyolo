@@ -97,6 +97,7 @@ class TestWriteEvent:
     def test_invalid_prefix_warns(self, temp_log, caplog):
         """Invalid event prefix logs a warning but still writes."""
         import logging
+
         from utils import write_event
 
         caplog.set_level(logging.WARNING)

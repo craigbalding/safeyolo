@@ -15,15 +15,13 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 import yaml
 from mitmproxy import ctx, http
-
-from utils import write_audit_event, BackgroundWorker
+from utils import BackgroundWorker, write_audit_event
 
 log = logging.getLogger("safeyolo.request-logger")
 
@@ -38,7 +36,7 @@ class QuietHostsConfig:
         self._host_patterns: list[str] = []  # Wildcard patterns like *.example.com
         self._paths: dict[str, list[str]] = {}  # host -> [path patterns]
         self._mtime: float = 0
-        self._worker: Optional[BackgroundWorker] = None
+        self._worker: BackgroundWorker | None = None
 
     def load(self) -> bool:
         """Load config from file."""
@@ -178,8 +176,8 @@ class RequestLogger:
     name = "request-logger"
 
     def __init__(self):
-        self.log_path: Optional[Path] = None
-        self.quiet_hosts: Optional[QuietHostsConfig] = None
+        self.log_path: Path | None = None
+        self.quiet_hosts: QuietHostsConfig | None = None
         self.requests_total = 0
         self.requests_quieted = 0
         self.responses_total = 0
@@ -246,7 +244,7 @@ class RequestLogger:
             return
 
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "event": "traffic.request",
             "request_id": request_id,
             "method": flow.request.method,
@@ -280,7 +278,7 @@ class RequestLogger:
         parsed = urlparse(flow.request.pretty_url)
 
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "event": "traffic.response",
             "request_id": request_id,
             "host": parsed.netloc,

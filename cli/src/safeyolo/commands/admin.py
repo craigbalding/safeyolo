@@ -3,7 +3,6 @@
 import httpx
 import typer
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 from ..api import APIError, get_api
@@ -12,7 +11,6 @@ from ..config import (
     get_admin_token,
     get_certs_dir,
     get_config_path,
-    get_logs_dir,
     get_rules_path,
     load_config,
 )
@@ -40,8 +38,8 @@ def check() -> None:
     if config_dir:
         console.print(f"  [green]✓[/green]  Config directory: {config_dir}")
     else:
-        console.print(f"  [red]✗[/red]  Config directory not found")
-        console.print(f"        Run: [bold]safeyolo init[/bold]")
+        console.print("  [red]✗[/red]  Config directory not found")
+        console.print("        Run: [bold]safeyolo init[/bold]")
         all_ok = False
 
     # 2. Check config file
@@ -50,7 +48,7 @@ def check() -> None:
         if config_path.exists():
             console.print(f"  [green]✓[/green]  Config file: {config_path.name}")
         else:
-            console.print(f"  [red]✗[/red]  Config file missing")
+            console.print("  [red]✗[/red]  Config file missing")
             all_ok = False
 
     # 3. Check rules file
@@ -59,20 +57,20 @@ def check() -> None:
         if rules_path.exists():
             console.print(f"  [green]✓[/green]  Rules file: {rules_path.name}")
         else:
-            console.print(f"  [dim]–[/dim]  Rules file missing (using defaults)")
+            console.print("  [dim]–[/dim]  Rules file missing (using defaults)")
 
     # 4. Check admin token
     token = get_admin_token()
     if token:
-        console.print(f"  [green]✓[/green]  Admin token configured")
+        console.print("  [green]✓[/green]  Admin token configured")
     else:
-        console.print(f"  [dim]–[/dim]  Admin token not set")
+        console.print("  [dim]–[/dim]  Admin token not set")
 
     # 5. Check Docker
     if check_docker():
-        console.print(f"  [green]✓[/green]  Docker available")
+        console.print("  [green]✓[/green]  Docker available")
     else:
-        console.print(f"  [red]✗[/red]  Docker not available")
+        console.print("  [red]✗[/red]  Docker not available")
         all_ok = False
 
     # 6. Check container status
@@ -80,13 +78,13 @@ def check() -> None:
     if status:
         state = status.get("State", {})
         if state.get("Running"):
-            console.print(f"  [green]✓[/green]  Container running")
+            console.print("  [green]✓[/green]  Container running")
             proxy_running = True
         else:
-            console.print(f"  [yellow]![/yellow]  Container not running")
-            console.print(f"        Run: [bold]safeyolo start[/bold]")
+            console.print("  [yellow]![/yellow]  Container not running")
+            console.print("        Run: [bold]safeyolo start[/bold]")
     else:
-        console.print(f"  [dim]–[/dim]  Container not created yet")
+        console.print("  [dim]–[/dim]  Container not created yet")
 
     # 7. Check API connectivity
     if proxy_running:
@@ -94,7 +92,7 @@ def check() -> None:
             api = get_api()
             health = api.health()
             if health.get("status") == "healthy":
-                console.print(f"  [green]✓[/green]  Admin API responding")
+                console.print("  [green]✓[/green]  Admin API responding")
             else:
                 console.print(f"  [yellow]![/yellow]  Admin API unhealthy: {health}")
         except APIError as e:
@@ -110,10 +108,10 @@ def check() -> None:
         certs_dir = get_certs_dir()
         ca_cert = certs_dir / "mitmproxy-ca-cert.pem"
         if ca_cert.exists():
-            console.print(f"  [green]✓[/green]  CA certificate exists")
+            console.print("  [green]✓[/green]  CA certificate exists")
             ca_cert_exists = True
         else:
-            console.print(f"  [dim]–[/dim]  CA certificate (generated on first run)")
+            console.print("  [dim]–[/dim]  CA certificate (generated on first run)")
 
     # 9. Check proxy reachability
     if proxy_running:
@@ -129,7 +127,7 @@ def check() -> None:
                 timeout=10.0,
             )
             if resp.status_code == 200:
-                console.print(f"  [green]✓[/green]  Proxy reachable (HTTP)")
+                console.print("  [green]✓[/green]  Proxy reachable (HTTP)")
             else:
                 console.print(f"  [yellow]![/yellow]  Proxy returned {resp.status_code}")
         except Exception as e:
@@ -152,14 +150,14 @@ def check() -> None:
                 verify=False,
             )
             if resp.status_code == 200:
-                console.print(f"  [green]✓[/green]  HTTPS inspection working")
+                console.print("  [green]✓[/green]  HTTPS inspection working")
             else:
                 console.print(f"  [yellow]![/yellow]  HTTPS returned {resp.status_code}")
-        except httpx.ConnectError as e:
-            console.print(f"  [red]✗[/red]  HTTPS inspection failed")
-            console.print(f"        The proxy can intercept HTTPS but your system may")
-            console.print(f"        not trust the CA certificate yet.")
-            console.print(f"        Run: [bold]safeyolo cert install[/bold]")
+        except httpx.ConnectError:
+            console.print("  [red]✗[/red]  HTTPS inspection failed")
+            console.print("        The proxy can intercept HTTPS but your system may")
+            console.print("        not trust the CA certificate yet.")
+            console.print("        Run: [bold]safeyolo cert install[/bold]")
             all_ok = False
         except Exception as e:
             console.print(f"  [red]✗[/red]  HTTPS test failed: {type(e).__name__}")
@@ -401,7 +399,7 @@ def test(
     proxy_port = config.get("proxy", {}).get("port", 8080)
     proxy_url = f"http://localhost:{proxy_port}"
 
-    console.print(f"[bold]Testing request through proxy[/bold]\n")
+    console.print("[bold]Testing request through proxy[/bold]\n")
     console.print(f"  Proxy: {proxy_url}")
     console.print(f"  URL: {url}")
     console.print(f"  Method: {method}")

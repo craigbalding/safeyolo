@@ -4,8 +4,9 @@ Tests for admin_shield.py addon.
 Tests that the admin API port is blocked from proxy access.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestAdminShield:

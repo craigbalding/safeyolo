@@ -10,8 +10,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..config import find_config_dir, get_agent_ip, get_agents_dir, load_config, register_agent_service
-from ..docker import is_running, start as docker_start, wait_for_healthy
-from ..templates import TemplateError, HostConfigStatus, detect_host_config, get_available_templates, render_template
+from ..docker import is_running, wait_for_healthy
+from ..docker import start as docker_start
+from ..templates import HostConfigStatus, TemplateError, detect_host_config, get_available_templates, render_template
 
 console = Console()
 

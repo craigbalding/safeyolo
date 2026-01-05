@@ -12,13 +12,13 @@ class TestFullAddonChain:
 
     def test_request_flows_through_all_addons(self, make_flow, make_response, tmp_path):
         """Test a request is processed by all active addons."""
-        from request_id import RequestIdGenerator
-        from network_guard import NetworkGuard
-        from credential_guard import CredentialGuard, DEFAULT_RULES
-        from metrics import MetricsCollector
-        from policy_engine import init_policy_engine
-        from mitmproxy.test import taddons
         import policy_engine as pe
+        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from metrics import MetricsCollector
+        from mitmproxy.test import taddons
+        from network_guard import NetworkGuard
+        from policy_engine import init_policy_engine
+        from request_id import RequestIdGenerator
 
         # Save and restore engine
         old_engine = pe._policy_engine
@@ -90,12 +90,12 @@ domains: {}
 
     def test_blocked_request_stops_chain(self, make_flow, tmp_path):
         """Test that blocked request doesn't reach downstream addons."""
-        from network_guard import NetworkGuard
+        import policy_engine as pe
         from credential_guard import CredentialGuard
         from metrics import MetricsCollector
-        from policy_engine import init_policy_engine
         from mitmproxy.test import taddons
-        import policy_engine as pe
+        from network_guard import NetworkGuard
+        from policy_engine import init_policy_engine
 
         old_engine = pe._policy_engine
 
@@ -140,11 +140,11 @@ domains: {}
 
     def test_concurrent_requests_thread_safe(self, make_flow, make_response, tmp_path):
         """Test multiple simultaneous requests don't corrupt state."""
+        import policy_engine as pe
         from metrics import MetricsCollector
+        from mitmproxy.test import taddons
         from network_guard import NetworkGuard
         from policy_engine import init_policy_engine
-        from mitmproxy.test import taddons
-        import policy_engine as pe
 
         old_engine = pe._policy_engine
 
@@ -197,10 +197,10 @@ domains: {}
 
     def test_policy_reload_during_request(self, make_flow, tmp_path):
         """Test policy reload doesn't break in-flight requests."""
-        from network_guard import NetworkGuard
-        from policy_engine import init_policy_engine, get_policy_engine
-        from mitmproxy.test import taddons
         import policy_engine as pe
+        from mitmproxy.test import taddons
+        from network_guard import NetworkGuard
+        from policy_engine import get_policy_engine, init_policy_engine
 
         old_engine = pe._policy_engine
 
@@ -255,8 +255,8 @@ class TestAddonChainMetadata:
 
     def test_network_guard_sets_blocked_by(self, network_guard, make_flow, tmp_path):
         """Test that network_guard sets blocked_by metadata when rate limited."""
-        from policy_engine import init_policy_engine
         import policy_engine as pe
+        from policy_engine import init_policy_engine
 
         # Save and restore engine
         old_engine = pe._policy_engine
@@ -320,8 +320,8 @@ class TestAddonChainOrder:
 
     def test_first_blocker_wins(self, credential_guard, network_guard, make_flow, tmp_path):
         """Test that first addon to block sets response."""
-        from policy_engine import init_policy_engine
         import policy_engine as pe
+        from policy_engine import init_policy_engine
 
         # Save and restore engine
         old_engine = pe._policy_engine
@@ -476,10 +476,10 @@ class TestBlockingMode:
 
     def test_credential_guard_warn_mode_passes_request(self, make_flow, tmp_path):
         """Test credential_guard in warn mode allows request through."""
-        from credential_guard import CredentialGuard, DEFAULT_RULES
-        from policy_engine import init_policy_engine
-        from mitmproxy.test import taddons
         import policy_engine as pe
+        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from mitmproxy.test import taddons
+        from policy_engine import init_policy_engine
 
         # Save and restore engine
         old_engine = pe._policy_engine

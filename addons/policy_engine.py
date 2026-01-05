@@ -28,11 +28,10 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
-
-from utils import write_event, matches_host_pattern, matches_resource_pattern
 from budget_tracker import GCRABudgetTracker
 from policy_loader import PolicyLoader
+from pydantic import BaseModel, Field, model_validator
+from utils import matches_host_pattern, matches_resource_pattern, write_event
 
 log = logging.getLogger("safeyolo.policy-engine")
 
@@ -44,22 +43,22 @@ log = logging.getLogger("safeyolo.policy-engine")
 class PolicyMetadata(BaseModel):
     """Policy file metadata."""
     version: str = "1.0"
-    task_id: Optional[str] = None
-    description: Optional[str] = None
-    created: Optional[str] = None
-    approved: Optional[str] = None
-    brief_hash: Optional[str] = None
-    policy_hash: Optional[str] = None
+    task_id: str | None = None
+    description: str | None = None
+    created: str | None = None
+    approved: str | None = None
+    brief_hash: str | None = None
+    policy_hash: str | None = None
 
 
 class Condition(BaseModel):
     """Optional conditions for permission matching."""
     # For credential:use - what credentials can access this destination
-    credential: Optional[str | list[str]] = None  # e.g., ["openai:*", "hmac:a1b2c3"]
+    credential: str | list[str] | None = None  # e.g., ["openai:*", "hmac:a1b2c3"]
     # For network:request
-    method: Optional[str | list[str]] = None
-    path_prefix: Optional[str] = None
-    content_type: Optional[str] = None
+    method: str | list[str] | None = None
+    path_prefix: str | None = None
+    content_type: str | None = None
 
     def _matches_credential(self, context: dict[str, Any]) -> bool:
         """Check if credential condition matches."""
@@ -127,9 +126,9 @@ class Permission(BaseModel):
     action: Literal["credential:use", "network:request", "file:read", "file:write", "subprocess:exec"]
     resource: str  # glob pattern for destination: "api.openai.com/*", "*.example.com/*"
     effect: Literal["allow", "deny", "prompt", "budget"] = "allow"
-    budget: Optional[int] = None  # Required if effect=budget (requests per minute)
+    budget: int | None = None  # Required if effect=budget (requests per minute)
     tier: Literal["explicit", "inferred"] = "explicit"
-    condition: Optional[Condition] = None
+    condition: Condition | None = None
 
     @model_validator(mode="after")
     def validate_budget_required(self):
@@ -173,9 +172,9 @@ class UnifiedPolicy(BaseModel):
 class PolicyDecision:
     """Result of policy evaluation."""
     effect: Literal["allow", "deny", "prompt", "budget_exceeded"]
-    permission: Optional[Permission] = None  # Matched permission (if any)
+    permission: Permission | None = None  # Matched permission (if any)
     reason: str = ""
-    budget_remaining: Optional[int] = None
+    budget_remaining: int | None = None
 
 
 # =============================================================================
@@ -231,8 +230,8 @@ class PolicyEngine:
 
     def __init__(
         self,
-        baseline_path: Optional[Path] = None,
-        budget_state_path: Optional[Path] = None,
+        baseline_path: Path | None = None,
+        budget_state_path: Path | None = None,
     ):
         # Budget tracking
         self._budget_tracker = GCRABudgetTracker(budget_state_path)
@@ -253,18 +252,18 @@ class PolicyEngine:
     # -------------------------------------------------------------------------
 
     @property
-    def baseline_path(self) -> Optional[Path]:
+    def baseline_path(self) -> Path | None:
         """Get baseline policy path."""
         return self._loader.baseline_path
 
-    def get_baseline(self) -> Optional[UnifiedPolicy]:
+    def get_baseline(self) -> UnifiedPolicy | None:
         """Get current baseline policy."""
         baseline = self._loader.baseline
         if not baseline.permissions:
             return None
         return baseline
 
-    def get_task_policy(self, task_id: Optional[str] = None) -> Optional[UnifiedPolicy]:
+    def get_task_policy(self, task_id: str | None = None) -> UnifiedPolicy | None:
         """Get current task policy (if any).
 
         Args:
@@ -303,7 +302,7 @@ class PolicyEngine:
         action: str,
         resource: str,
         context: dict[str, Any],
-    ) -> Optional[Permission]:
+    ) -> Permission | None:
         """Find first matching permission (most specific first)."""
         permissions = self._get_merged_permissions()
 
@@ -331,7 +330,7 @@ class PolicyEngine:
         credential_type: str,
         destination: str,
         path: str = "/",
-        credential_hmac: Optional[str] = None,
+        credential_hmac: str | None = None,
     ) -> PolicyDecision:
         """
         Evaluate credential usage permission (destination-first matching).
@@ -474,7 +473,7 @@ class PolicyEngine:
             permission=permission,
         )
 
-    def _get_global_budget(self, action: str) -> Optional[int]:
+    def _get_global_budget(self, action: str) -> int | None:
         """Get global budget cap for an action."""
         baseline = self._loader.baseline
         task = self._loader.task_policy
@@ -519,8 +518,8 @@ class PolicyEngine:
     def is_addon_enabled(
         self,
         addon_name: str,
-        domain: Optional[str] = None,
-        client_id: Optional[str] = None,
+        domain: str | None = None,
+        client_id: str | None = None,
     ) -> bool:
         """
         Check if addon is enabled for the given context.
@@ -565,7 +564,7 @@ class PolicyEngine:
     def _get_addon_config(
         self,
         addon_name: str,
-        domain: Optional[str] = None,
+        domain: str | None = None,
     ) -> AddonConfig:
         """Get merged addon configuration."""
         baseline = self._loader.baseline
@@ -604,7 +603,7 @@ class PolicyEngine:
     def get_addon_settings(
         self,
         addon_name: str,
-        domain: Optional[str] = None,
+        domain: str | None = None,
     ) -> dict[str, Any]:
         """Get settings for an addon."""
         config = self._get_addon_config(addon_name, domain)
@@ -662,7 +661,7 @@ class PolicyEngine:
             "global_budgets": baseline.budgets,
         }
 
-    def reset_budgets(self, resource: Optional[str] = None) -> dict[str, Any]:
+    def reset_budgets(self, resource: str | None = None) -> dict[str, Any]:
         """Reset budget counters.
 
         Args:
@@ -821,8 +820,8 @@ class PolicyEngine:
             return
 
         try:
-            import tempfile
             import shutil
+            import tempfile
 
             baseline = self._loader.baseline
             content = yaml.safe_dump(
@@ -859,17 +858,17 @@ class PolicyEngine:
 # Global Instance
 # =============================================================================
 
-_policy_engine: Optional[PolicyEngine] = None
+_policy_engine: PolicyEngine | None = None
 
 
-def get_policy_engine() -> Optional[PolicyEngine]:
+def get_policy_engine() -> PolicyEngine | None:
     """Get the global policy engine instance."""
     return _policy_engine
 
 
 def init_policy_engine(
-    baseline_path: Optional[Path] = None,
-    budget_state_path: Optional[Path] = None,
+    baseline_path: Path | None = None,
+    budget_state_path: Path | None = None,
 ) -> PolicyEngine:
     """Initialize the global policy engine."""
     global _policy_engine
@@ -899,7 +898,7 @@ class PolicyEngineAddon:
     name = "policy-engine"
 
     def __init__(self):
-        self.engine: Optional[PolicyEngine] = None
+        self.engine: PolicyEngine | None = None
 
     def load(self, loader):
         """Register mitmproxy options."""
