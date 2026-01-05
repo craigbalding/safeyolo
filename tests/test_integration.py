@@ -4,6 +4,237 @@ Integration tests for SafeYolo addon chain.
 Tests that addons work together correctly via flow.metadata sharing.
 """
 
+import threading
+
+
+class TestFullAddonChain:
+    """Test all addons working together in realistic scenarios."""
+
+    def test_request_flows_through_all_addons(self, make_flow, make_response, tmp_path):
+        """Test a request is processed by all active addons."""
+        from addons.request_id import RequestIdGenerator
+        from addons.network_guard import NetworkGuard
+        from addons.credential_guard import CredentialGuard, DEFAULT_RULES
+        from addons.metrics import MetricsCollector
+        from addons.policy_engine import init_policy_engine
+        from mitmproxy.test import taddons
+        import addons.policy_engine as pe
+
+        # Save and restore engine
+        old_engine = pe._policy_engine
+
+        # Create permissive baseline
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    condition:
+      credential: ["openai:*"]
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
+
+        try:
+            # Create addon instances
+            rid = RequestIdGenerator()
+            ng = NetworkGuard()
+            cg = CredentialGuard()
+            cg.rules = list(DEFAULT_RULES)
+            cg.hmac_secret = b"test-secret"
+            cg.config = {}
+            cg.safe_headers_config = {}
+            metrics = MetricsCollector()
+
+            # Create a legitimate OpenAI request
+            flow = make_flow(
+                method="POST",
+                url="https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer sk-proj-{'a' * 80}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            with taddons.context(ng, cg):
+                # Run through addon chain (production order)
+                rid.request(flow)
+                assert "request_id" in flow.metadata, "RequestId should set request_id"
+
+                ng.request(flow)
+                assert flow.response is None, "NetworkGuard should allow"
+
+                cg.request(flow)
+                assert flow.response is None, "CredentialGuard should allow (correct host)"
+
+                metrics.request(flow)
+                assert "metrics_start_time" in flow.metadata
+
+                # Simulate response
+                flow.response = make_response(status_code=200)
+                metrics.response(flow)
+
+                assert metrics.requests_total == 1
+                assert metrics.requests_success == 1
+        finally:
+            pe._policy_engine = old_engine
+
+    def test_blocked_request_stops_chain(self, make_flow, tmp_path):
+        """Test that blocked request doesn't reach downstream addons."""
+        from addons.network_guard import NetworkGuard
+        from addons.credential_guard import CredentialGuard
+        from addons.metrics import MetricsCollector
+        from addons.policy_engine import init_policy_engine
+        from mitmproxy.test import taddons
+        import addons.policy_engine as pe
+
+        old_engine = pe._policy_engine
+
+        # Create baseline that blocks evil.com
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "evil.com/*"
+    effect: deny
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
+
+        try:
+            ng = NetworkGuard()
+            cg = CredentialGuard()
+            metrics = MetricsCollector()
+
+            flow = make_flow(url="https://evil.com/api")
+
+            with taddons.context(ng, cg):
+                # NetworkGuard blocks first
+                ng.request(flow)
+                assert flow.response is not None
+                assert flow.response.status_code == 403
+
+                # Downstream addons see blocked flow and skip
+                # (In production, blocked_by metadata signals to skip)
+                assert flow.metadata.get("blocked_by") == "network-guard"
+
+                # Metrics tracks the block
+                metrics.response(flow)
+                assert metrics.requests_blocked == 1
+        finally:
+            pe._policy_engine = old_engine
+
+    def test_concurrent_requests_thread_safe(self, make_flow, make_response, tmp_path):
+        """Test multiple simultaneous requests don't corrupt state."""
+        from addons.metrics import MetricsCollector
+        from addons.network_guard import NetworkGuard
+        from addons.policy_engine import init_policy_engine
+        from mitmproxy.test import taddons
+        import addons.policy_engine as pe
+
+        old_engine = pe._policy_engine
+
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
+
+        try:
+            metrics = MetricsCollector()
+            ng = NetworkGuard()
+            results = []
+            errors = []
+
+            def make_request(i):
+                try:
+                    flow = make_flow(url=f"https://api{i}.example.com/test")
+                    with taddons.context(ng):
+                        ng.request(flow)
+                    metrics.request(flow)
+                    flow.response = make_response(status_code=200)
+                    metrics.response(flow)
+                    results.append(i)
+                except Exception as e:
+                    errors.append(str(e))
+
+            # Launch concurrent requests
+            threads = [threading.Thread(target=make_request, args=(i,)) for i in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert len(errors) == 0, f"Errors occurred: {errors}"
+            assert len(results) == 10
+            assert metrics.requests_total == 10
+            assert metrics.requests_success == 10
+        finally:
+            pe._policy_engine = old_engine
+
+    def test_policy_reload_during_request(self, make_flow, tmp_path):
+        """Test policy reload doesn't break in-flight requests."""
+        from addons.network_guard import NetworkGuard
+        from addons.policy_engine import init_policy_engine, get_policy_engine
+        from mitmproxy.test import taddons
+        import addons.policy_engine as pe
+
+        old_engine = pe._policy_engine
+
+        baseline = tmp_path / "baseline.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+        init_policy_engine(baseline_path=baseline)
+
+        try:
+            ng = NetworkGuard()
+            engine = get_policy_engine()
+
+            # Start a request
+            flow = make_flow(url="https://api.example.com/test")
+
+            with taddons.context(ng):
+                # Trigger policy reload mid-request
+                engine._loader.reload()
+
+                # Request should still work
+                ng.request(flow)
+                assert flow.response is None  # Allowed
+        finally:
+            pe._policy_engine = old_engine
 
 
 class TestAddonChainMetadata:
