@@ -1,0 +1,8 @@
+name: "SafeYolo CodeQL Config"
+
+paths-ignore:
+  - tests
+  - cli/tests
+  - "**/test_*.py"
+  - "**/*_test.py"
+  - "**/conftest.py"
