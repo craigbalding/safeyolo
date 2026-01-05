@@ -53,6 +53,7 @@ COPY addons/__init__.py /app/addons/
 COPY addons/base.py /app/addons/
 COPY addons/utils.py /app/addons/
 COPY addons/budget_tracker.py /app/addons/
+COPY addons/policy_loader.py /app/addons/
 # Copy addons in load order (see scripts/start-safeyolo.sh)
 # Layer 0: Infrastructure
 COPY addons/admin_shield.py /app/addons/

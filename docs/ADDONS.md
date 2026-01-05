@@ -55,6 +55,11 @@ grep "req-abc123def456" logs/safeyolo.jsonl | jq
 
 Unified policy engine using IAM-style vocabulary with **destination-first** credential routing. Handles credential authorization, rate limiting (budgets), and per-domain addon configuration.
 
+**Architecture:** The policy system is split into focused modules:
+- `policy_engine.py` (~950 lines) - Evaluation logic and policy matching
+- `policy_loader.py` (~320 lines) - File loading, watching, SIGHUP handling
+- `budget_tracker.py` (~190 lines) - GCRA-based rate limiting state
+
 **Configuration:** `config/baseline.yaml`
 
 ```yaml
@@ -269,7 +274,24 @@ permissions:
 ```bash
 --set access_control_enabled=true   # Enable access control (default: true)
 --set access_control_block=true     # Block mode (default: true, false = warn only)
+--set access_control_homoglyph=true # Enable homoglyph detection (default: true)
 ```
+
+### Homoglyph Detection
+
+Detects mixed-script domain attacks like `api.оpenai.com` (Cyrillic 'о' instead of Latin 'o'). When enabled, requests to domains with mixed Unicode scripts are blocked before any credential checking.
+
+**Response when blocked (403):**
+```json
+{
+  "error": "Homoglyph domain detected",
+  "domain": "api.оpenai.com",
+  "reason": "Domain contains mixed scripts (possible lookalike attack)",
+  "message": "Request blocked due to suspicious domain encoding"
+}
+```
+
+**Requirements:** Requires `confusable-homoglyphs` package (`pip install confusable-homoglyphs`).
 
 ---
 
@@ -303,7 +325,7 @@ Core security addon. Ensures credentials only reach authorized hosts.
 
 **Default: Block mode**
 
-**~760 lines** - designed for easy security audit.
+**~475 lines** - focused on credential detection and routing, designed for easy security audit.
 
 ### What It Does
 
@@ -479,9 +501,9 @@ curl -X POST http://localhost:9090/plugins/credential-guard/allowlist \
 --set credguard_log_path=/path.jsonl # Separate log file (optional)
 ```
 
-### Additional Features
+### Related Features
 
-**Homoglyph detection:** Detects mixed-script attacks like `api.оpenai.com` (Cyrillic 'о'). Requires `confusable-homoglyphs` package.
+**Homoglyph detection:** Mixed-script attacks like `api.оpenai.com` (Cyrillic 'о') are detected by `access_control.py`, not credential_guard. See access_control section below.
 
 ---
 

@@ -365,11 +365,12 @@ SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons a
 safeyolo/
 ├── addons/              # mitmproxy addons
 │   ├── base.py               # SecurityAddon base class
-│   ├── utils.py              # Shared utilities
-│   ├── policy_engine.py      # Unified policy evaluation
-│   ├── budget_tracker.py     # GCRA-based rate limiting
-│   ├── access_control.py     # Network allow/deny rules
-│   ├── credential_guard.py   # Credential routing
+│   ├── utils.py              # Shared utilities (entropy, HMAC, patterns)
+│   ├── policy_engine.py      # Policy evaluation logic
+│   ├── policy_loader.py      # Policy file loading and hot reload
+│   ├── budget_tracker.py     # GCRA-based rate limiting state
+│   ├── access_control.py     # Network allow/deny + homoglyph detection
+│   ├── credential_guard.py   # Credential routing protection
 │   ├── rate_limiter.py       # Rate limiting (via PolicyEngine)
 │   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
 │   ├── pattern_scanner.py    # Regex scanning for secrets
