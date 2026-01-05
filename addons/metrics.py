@@ -14,6 +14,7 @@ Usage:
 """
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -84,6 +85,7 @@ class MetricsCollector:
     name = "metrics"
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._start_time = time.time()
         self._domain_stats: dict[str, DomainStats] = {}
 
@@ -94,9 +96,10 @@ class MetricsCollector:
         self.requests_error = 0
 
     def _get_domain_stats(self, domain: str) -> DomainStats:
-        if domain not in self._domain_stats:
-            self._domain_stats[domain] = DomainStats()
-        return self._domain_stats[domain]
+        with self._lock:
+            if domain not in self._domain_stats:
+                self._domain_stats[domain] = DomainStats()
+            return self._domain_stats[domain]
 
     def request(self, flow: http.HTTPFlow):
         """Record request."""
@@ -153,9 +156,13 @@ class MetricsCollector:
         """Get metrics as JSON."""
         uptime = time.time() - self._start_time
 
+        # Copy under lock for thread safety
+        with self._lock:
+            domain_stats_copy = dict(self._domain_stats)
+
         # Sort domains by request count
         sorted_domains = sorted(
-            self._domain_stats.items(),
+            domain_stats_copy.items(),
             key=lambda x: x[1].requests,
             reverse=True,
         )
@@ -181,7 +188,7 @@ class MetricsCollector:
                 "success_rate": round(
                     self.requests_success / max(1, self.requests_total), 3
                 ),
-                "domains_tracked": len(self._domain_stats),
+                "domains_tracked": len(domain_stats_copy),
             },
             "problem_domains": problem_domains,
             "domains": {
@@ -193,6 +200,10 @@ class MetricsCollector:
         """Get metrics in Prometheus format."""
         lines = []
         uptime = time.time() - self._start_time
+
+        # Copy under lock for thread safety
+        with self._lock:
+            domain_stats_copy = dict(self._domain_stats)
 
         # Global metrics
         lines.append("# HELP safeyolo_uptime_seconds Proxy uptime")
@@ -215,30 +226,32 @@ class MetricsCollector:
         lines.append("")
         lines.append("# HELP safeyolo_domain_requests_total Requests per domain")
         lines.append("# TYPE safeyolo_domain_requests_total counter")
-        for domain, stats in self._domain_stats.items():
+        for domain, stats in domain_stats_copy.items():
             lines.append(f'safeyolo_domain_requests_total{{domain="{domain}"}} {stats.requests}')
 
         lines.append("")
         lines.append("# HELP safeyolo_domain_success_rate Success rate per domain")
         lines.append("# TYPE safeyolo_domain_success_rate gauge")
-        for domain, stats in self._domain_stats.items():
+        for domain, stats in domain_stats_copy.items():
             lines.append(f'safeyolo_domain_success_rate{{domain="{domain}"}} {stats.success_rate:.3f}')
 
         lines.append("")
         lines.append("# HELP safeyolo_domain_latency_avg_ms Average latency per domain")
         lines.append("# TYPE safeyolo_domain_latency_avg_ms gauge")
-        for domain, stats in self._domain_stats.items():
+        for domain, stats in domain_stats_copy.items():
             lines.append(f'safeyolo_domain_latency_avg_ms{{domain="{domain}"}} {stats.avg_latency_ms:.1f}')
 
         return "\n".join(lines) + "\n"
 
     def get_stats(self) -> dict:
         """Get basic stats for admin API."""
+        with self._lock:
+            domains_tracked = len(self._domain_stats)
         return {
             "requests_total": self.requests_total,
             "requests_success": self.requests_success,
             "requests_blocked": self.requests_blocked,
-            "domains_tracked": len(self._domain_stats),
+            "domains_tracked": domains_tracked,
         }
 
 
