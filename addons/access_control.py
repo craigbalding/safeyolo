@@ -75,19 +75,6 @@ class AccessControl(SecurityAddon):
             help="Block denied requests (False = warn only)",
         )
 
-    # Compatibility properties for existing tests and interfaces
-    @property
-    def checks_total(self) -> int:
-        return self.stats.checks
-
-    @property
-    def allowed_total(self) -> int:
-        return self.stats.allowed
-
-    @property
-    def denied_total(self) -> int:
-        return self.stats.blocked + self.stats.warned
-
     def request(self, flow: http.HTTPFlow):
         """Check network access permissions before request."""
         if not self.is_enabled():
@@ -134,9 +121,7 @@ class AccessControl(SecurityAddon):
         """Get access control statistics."""
         return {
             "enabled": self.is_enabled(),
-            "checks_total": self.stats.checks,
-            "allowed_total": self.stats.allowed,
-            "denied_total": self.stats.blocked + self.stats.warned,
+            **self.stats.__dict__,
         }
 
 

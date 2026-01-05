@@ -30,9 +30,11 @@ from typing import Optional
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe, BackgroundWorker
+    from .base import SecurityAddon
+    from .utils import atomic_write_json, get_client_ip, BackgroundWorker
 except ImportError:
-    from utils import make_block_response, write_event, atomic_write_json, get_client_ip, get_option_safe, BackgroundWorker
+    from base import SecurityAddon
+    from utils import atomic_write_json, get_client_ip, BackgroundWorker
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -66,10 +68,7 @@ class CircuitStatus:
 
 
 class InMemoryCircuitState:
-    """In-memory state storage with optional file-backed persistence.
-
-    Periodically snapshots circuit states to JSON file for restart recovery.
-    """
+    """In-memory state storage with optional file-backed persistence."""
 
     def __init__(self, state_file: Optional[Path] = None):
         self._states: dict[str, dict] = {}
@@ -92,9 +91,9 @@ class InMemoryCircuitState:
             with self._lock:
                 self._states = data.get("states", {})
 
-            log.info(f"Loaded {len(self._states)} circuit breaker states from {self._state_file}")
+            log.info(f"Loaded {len(self._states)} circuit states from {self._state_file}")
         except Exception as e:
-            log.error(f"Failed to load circuit breaker state: {type(e).__name__}: {e}")
+            log.error(f"Failed to load circuit state: {type(e).__name__}: {e}")
             self._states = {}
 
     def _save_state(self):
@@ -104,20 +103,15 @@ class InMemoryCircuitState:
 
         try:
             with self._lock:
-                data = {
-                    "states": self._states.copy(),
-                    "saved_at": time.time()
-                }
+                data = {"states": self._states.copy(), "saved_at": time.time()}
             atomic_write_json(self._state_file, data)
         except Exception as e:
-            log.error(f"Failed to save circuit breaker state: {type(e).__name__}: {e}")
+            log.error(f"Failed to save circuit state: {type(e).__name__}: {e}")
 
     def _start_snapshots(self):
         """Start background worker to snapshot state every 10 seconds."""
         self._worker = BackgroundWorker(
-            self._save_state,
-            interval_sec=10.0,
-            name="circuit-breaker-snapshot"
+            self._save_state, interval_sec=10.0, name="circuit-breaker-snapshot"
         )
         self._worker.start()
         log.info("Started circuit breaker state snapshots (10s interval)")
@@ -147,7 +141,7 @@ class InMemoryCircuitState:
             return list(self._states.keys())
 
 
-class CircuitBreaker:
+class CircuitBreaker(SecurityAddon):
     """
     Native mitmproxy addon for circuit breaker pattern.
 
@@ -158,6 +152,7 @@ class CircuitBreaker:
     name = "circuit-breaker"
 
     def __init__(self):
+        # Don't call super().__init__() - we have custom stats
         self._state = InMemoryCircuitState()
         self.log_path: Optional[Path] = None
 
@@ -174,7 +169,7 @@ class CircuitBreaker:
         # Per-domain config overrides
         self._domain_configs: dict[str, dict] = {}
 
-        # Stats
+        # Circuit-specific stats (different from base AddonStats)
         self.checks_total = 0
         self.opens_total = 0
         self.half_opens_total = 0
@@ -245,12 +240,11 @@ class CircuitBreaker:
             path = ctx.options.circuit_log_path
             self.log_path = Path(path) if path else None
 
-        if "circuit_state_file" in updates or not hasattr(self, '_state'):
+        if "circuit_state_file" in updates or not hasattr(self, "_state"):
             state_path = ctx.options.circuit_state_file
             self._state = InMemoryCircuitState(
                 state_file=Path(state_path) if state_path else None
             )
-
             if state_path:
                 log.info(f"Circuit breaker state persistence enabled: {state_path}")
 
@@ -260,16 +254,13 @@ class CircuitBreaker:
             with open(config_path) as f:
                 data = json.load(f)
 
-            # Global defaults
             if "default" in data:
                 d = data["default"]
                 self.failure_threshold = d.get("failure_threshold", self.failure_threshold)
                 self.success_threshold = d.get("success_threshold", self.success_threshold)
                 self.timeout_seconds = d.get("timeout_seconds", self.timeout_seconds)
 
-            # Per-domain overrides
             self._domain_configs = data.get("domains", {})
-
             log.info(f"Circuit breaker loaded config: {len(self._domain_configs)} domain overrides")
 
         except Exception as e:
@@ -284,11 +275,9 @@ class CircuitBreaker:
             "half_open_max_requests": self.half_open_max_requests,
         }
 
-        # Check for domain override
         if domain in self._domain_configs:
             base.update(self._domain_configs[domain])
 
-        # Check wildcard patterns
         for pattern, config in self._domain_configs.items():
             if pattern.startswith("*.") and domain.endswith(pattern[1:]):
                 base.update(config)
@@ -301,31 +290,27 @@ class CircuitBreaker:
         if not self.use_exponential_backoff or streak == 0:
             return self.timeout_seconds
 
-        timeout = self.timeout_seconds * (self.backoff_multiplier ** streak)
+        timeout = self.timeout_seconds * (self.backoff_multiplier**streak)
         timeout = min(timeout, self.max_timeout_seconds)
 
-        # Add jitter
         jitter_range = timeout * self.jitter_factor
         timeout += random.uniform(-jitter_range, jitter_range)
 
         return max(self.timeout_seconds, timeout)
 
-    def _log_event(self, event: str, domain: str, flow: Optional[http.HTTPFlow] = None, **extra):
-        """Log circuit breaker event.
+    def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
+        """Override base block() - circuit breaker has its own stats."""
+        from .utils import make_block_response
+        flow.metadata["blocked_by"] = self.name
+        flow.response = make_block_response(status, body, self.name, extra_headers)
 
-        Args:
-            event: Event type (open, close, half_open, block)
-            domain: The domain affected
-            flow: Optional HTTP flow for request_id correlation
-            **extra: Additional fields
-        """
-        write_event(
-            "security.circuit",
-            request_id=flow.metadata.get("request_id") if flow else None,
-            addon=self.name,
-            circuit_event=event,
+    def _log_circuit_event(self, event: str, domain: str, flow: Optional[http.HTTPFlow] = None, **extra):
+        """Log circuit breaker event."""
+        self.log_decision(
+            flow if flow else type("Flow", (), {"metadata": {}})(),
+            event,
             domain=domain,
-            **extra
+            **extra,
         )
 
     def get_status(self, domain: str) -> CircuitStatus:
@@ -349,18 +334,16 @@ class CircuitBreaker:
         failure_streak = data.get("failure_streak", 0)
         current_timeout = self._calculate_timeout(failure_streak)
 
-        # Check for automatic state transitions
         if state == CircuitState.OPEN:
             opened_at = data.get("opened_at", 0)
             if time.time() - opened_at >= current_timeout:
-                # Transition to half-open
                 state = CircuitState.HALF_OPEN
                 data["state"] = state.value
                 data["success_count"] = 0
                 data["half_open_requests"] = 0
                 self._state.set(domain, data)
                 self.half_opens_total += 1
-                self._log_event("half_open", domain)
+                self._log_circuit_event("half_open", domain)
                 log.info(f"Circuit half-open: {domain}")
 
         return CircuitStatus(
@@ -386,14 +369,12 @@ class CircuitBreaker:
         if status.state == CircuitState.OPEN:
             return False, status
 
-        # Half-open: allow limited requests
         data = self._state.get(domain)
         half_open_requests = data.get("half_open_requests", 0)
 
         if half_open_requests >= config["half_open_max_requests"]:
             return False, status
 
-        # Increment half-open request count
         data["half_open_requests"] = half_open_requests + 1
         self._state.set(domain, data)
 
@@ -418,24 +399,22 @@ class CircuitBreaker:
 
         if current_state == CircuitState.CLOSED:
             if failure_count >= config["failure_threshold"]:
-                # Open the circuit
                 new_data["state"] = CircuitState.OPEN.value
                 new_data["opened_at"] = now
                 new_data["success_count"] = 0
                 self.opens_total += 1
-                self._log_event("open", domain, failure_count=failure_count, error=error)
+                self._log_circuit_event("open", domain, failure_count=failure_count, error=error)
                 log.warning(f"Circuit OPEN: {domain} (failures: {failure_count})")
             else:
                 new_data["state"] = CircuitState.CLOSED.value
 
         elif current_state == CircuitState.HALF_OPEN:
-            # Any failure in half-open reopens circuit
             new_data["state"] = CircuitState.OPEN.value
             new_data["opened_at"] = now
             new_data["failure_streak"] = failure_streak + 1
             new_data["success_count"] = 0
             self.opens_total += 1
-            self._log_event("reopen", domain, streak=failure_streak + 1, error=error)
+            self._log_circuit_event("reopen", domain, streak=failure_streak + 1, error=error)
             log.warning(f"Circuit REOPENED: {domain} (streak: {failure_streak + 1})")
 
         self._state.set(domain, new_data)
@@ -444,7 +423,6 @@ class CircuitBreaker:
     def record_success(self, domain: str) -> CircuitStatus:
         """Record a success for domain."""
         config = self._get_config(domain)
-        # Get status first to trigger any state transitions (e.g., OPEN -> HALF_OPEN)
         status = self.get_status(domain)
         data = self._state.get(domain)
         now = time.time()
@@ -463,18 +441,16 @@ class CircuitBreaker:
 
         if current_state == CircuitState.HALF_OPEN:
             if success_count >= config["success_threshold"]:
-                # Close the circuit
                 new_data["state"] = CircuitState.CLOSED.value
                 new_data["failure_count"] = 0
                 new_data["failure_streak"] = 0
                 self.recoveries_total += 1
-                self._log_event("close", domain, success_count=success_count)
+                self._log_circuit_event("close", domain, success_count=success_count)
                 log.info(f"Circuit CLOSED: {domain} (recovered)")
             else:
                 new_data["state"] = CircuitState.HALF_OPEN.value
 
         elif current_state == CircuitState.CLOSED:
-            # Decay failure count on success
             failure_count = data.get("failure_count", 0)
             if failure_count > 0:
                 new_data["failure_count"] = failure_count - 1
@@ -485,25 +461,28 @@ class CircuitBreaker:
     def reset(self, domain: str):
         """Manually reset circuit to closed state."""
         self._state.delete(domain)
-        self._log_event("reset", domain)
+        self._log_circuit_event("reset", domain)
         log.info(f"Circuit RESET: {domain}")
 
     def force_open(self, domain: str):
         """Manually open circuit."""
-        self._state.set(domain, {
-            "state": CircuitState.OPEN.value,
-            "opened_at": time.time(),
-            "failure_count": self.failure_threshold,
-            "success_count": 0,
-            "failure_streak": 0,
-            "manual_open": True,
-        })
-        self._log_event("force_open", domain)
+        self._state.set(
+            domain,
+            {
+                "state": CircuitState.OPEN.value,
+                "opened_at": time.time(),
+                "failure_count": self.failure_threshold,
+                "success_count": 0,
+                "failure_streak": 0,
+                "manual_open": True,
+            },
+        )
+        self._log_circuit_event("force_open", domain)
         log.info(f"Circuit FORCE OPEN: {domain}")
 
     def request(self, flow: http.HTTPFlow):
         """Check circuit before request."""
-        if not get_option_safe("circuit_enabled", True):
+        if not self.is_enabled():
             return
 
         domain = flow.request.host
@@ -511,16 +490,21 @@ class CircuitBreaker:
 
         if not allowed:
             retry_after = int(status.time_until_half_open or self.timeout_seconds)
-            flow.metadata["blocked_by"] = self.name
-            log.warning(f"Circuit BLOCKED: {domain}{flow.request.path} (state: {status.state.value}, failures: {status.failure_count})")
-            self._log_event("block", domain, flow=flow,
-                decision="block",
+            self.log_decision(
+                flow,
+                "block",
+                domain=domain,
                 circuit_state=status.state.value,
                 failure_count=status.failure_count,
                 retry_after=retry_after,
-                path=flow.request.path
+                path=flow.request.path,
             )
-            flow.response = make_block_response(
+            log.warning(
+                f"Circuit BLOCKED: {domain}{flow.request.path} "
+                f"(state: {status.state.value}, failures: {status.failure_count})"
+            )
+            self.block(
+                flow,
                 503,
                 {
                     "error": "Service temporarily unavailable",
@@ -528,10 +512,9 @@ class CircuitBreaker:
                     "circuit_state": status.state.value,
                     "retry_after_seconds": retry_after,
                     "message": f"Circuit breaker open for {domain}. "
-                               f"Service has failed {status.failure_count} times. "
-                               f"Will retry in {retry_after} seconds.",
+                    f"Service has failed {status.failure_count} times. "
+                    f"Will retry in {retry_after} seconds.",
                 },
-                self.name,
                 {
                     "Retry-After": str(retry_after),
                     "X-Circuit-State": status.state.value,
@@ -540,10 +523,9 @@ class CircuitBreaker:
 
     def response(self, flow: http.HTTPFlow):
         """Record success/failure based on response."""
-        if not get_option_safe("circuit_enabled", True):
+        if not self.is_enabled():
             return
 
-        # Skip if any addon blocked it (not an upstream failure)
         if flow.metadata.get("blocked_by"):
             return
 
@@ -553,10 +535,8 @@ class CircuitBreaker:
         domain = flow.request.host
         status_code = flow.response.status_code
 
-        # Record failure on 5xx or 429
         if status_code >= 500 or status_code == 429:
-            error = f"HTTP {status_code}"
-            self.record_failure(domain, error)
+            self.record_failure(domain, f"HTTP {status_code}")
         elif status_code < 400:
             self.record_success(domain)
 
@@ -575,7 +555,7 @@ class CircuitBreaker:
             }
 
         return {
-            "enabled": get_option_safe("circuit_enabled", True),
+            "enabled": self.is_enabled(),
             "failure_threshold": self.failure_threshold,
             "timeout_seconds": self.timeout_seconds,
             "checks_total": self.checks_total,
@@ -587,10 +567,9 @@ class CircuitBreaker:
 
     def done(self):
         """Cleanup on shutdown."""
-        if hasattr(self, '_state') and self._state:
+        if hasattr(self, "_state") and self._state:
             self._state.stop_snapshots()
             log.info("Circuit breaker shutdown complete")
 
 
-# mitmproxy addon instance
 addons = [CircuitBreaker()]

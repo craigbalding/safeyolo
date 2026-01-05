@@ -58,19 +58,6 @@ class RateLimiter(SecurityAddon):
             help="Block rate-limited requests (default: block mode)",
         )
 
-    # Compatibility properties for existing interfaces
-    @property
-    def checks_total(self) -> int:
-        return self.stats.checks
-
-    @property
-    def allowed_total(self) -> int:
-        return self.stats.allowed
-
-    @property
-    def limited_total(self) -> int:
-        return self.stats.blocked + self.stats.warned
-
     def request(self, flow: http.HTTPFlow):
         """Check rate limit before request using PolicyEngine."""
         if not self.is_enabled():
@@ -124,9 +111,7 @@ class RateLimiter(SecurityAddon):
 
         return {
             "enabled": self.is_enabled(),
-            "checks_total": self.stats.checks,
-            "allowed_total": self.stats.allowed,
-            "limited_total": self.stats.blocked + self.stats.warned,
+            **self.stats.__dict__,
             "budget_stats": budget_stats,
         }
 

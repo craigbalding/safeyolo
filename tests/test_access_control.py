@@ -18,9 +18,9 @@ class TestAccessControl:
         from addons.access_control import AccessControl
         addon = AccessControl()
         stats = addon.get_stats()
-        assert stats["checks_total"] == 0
-        assert stats["allowed_total"] == 0
-        assert stats["denied_total"] == 0
+        assert stats["checks"] == 0
+        assert stats["allowed"] == 0
+        assert stats["blocked"] == 0
 
     def test_blocks_denied_request(self):
         """Test addon blocks requests with effect=deny."""
@@ -52,8 +52,8 @@ class TestAccessControl:
         assert flow.response is not None
         assert flow.response.status_code == 403
         assert flow.metadata.get("blocked_by") == "access-control"
-        assert addon.denied_total == 1
-        assert addon.allowed_total == 0
+        assert addon.stats.blocked == 1
+        assert addon.stats.allowed == 0
 
     def test_allows_non_denied_request(self):
         """Test addon allows requests without effect=deny."""
@@ -82,8 +82,8 @@ class TestAccessControl:
 
         # Should NOT have blocked
         assert flow.response is None
-        assert addon.allowed_total == 1
-        assert addon.denied_total == 0
+        assert addon.stats.allowed == 1
+        assert addon.stats.blocked == 0
 
     def test_allows_budget_effect(self):
         """Test addon passes through budget effect for rate limiter."""
@@ -112,7 +112,7 @@ class TestAccessControl:
 
         # Should NOT have blocked - budget effect is for rate_limiter
         assert flow.response is None
-        assert addon.allowed_total == 1
+        assert addon.stats.allowed == 1
 
     def test_warn_mode_does_not_block(self):
         """Test warn mode logs but doesn't block."""
@@ -149,8 +149,8 @@ class TestAccessControl:
         # Should NOT have blocked in warn mode
         assert flow.response is None
         assert "blocked_by" not in flow.metadata
-        # But should still count
-        assert addon.denied_total == 1
+        # But should still count as warned
+        assert addon.stats.warned == 1
 
     def test_disabled_does_not_check(self):
         """Test disabled addon doesn't check anything."""
@@ -170,7 +170,7 @@ class TestAccessControl:
 
         # Should not have called policy engine
         mock_engine.evaluate_request.assert_not_called()
-        assert addon.checks_total == 0
+        assert addon.stats.checks == 0
 
     def test_no_engine_allows(self):
         """Test requests pass through if no policy engine."""
@@ -189,7 +189,7 @@ class TestAccessControl:
 
         # No engine = no blocking
         assert flow.response is None
-        assert addon.checks_total == 0
+        assert addon.stats.checks == 0
 
 
 class TestAccessControlIntegration:
