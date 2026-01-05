@@ -312,3 +312,82 @@ class TestGCRACostParameter:
         # Next request should be blocked since we consumed half
         allowed2, _ = tracker.check_and_consume("test-key", 20, cost=10)
         assert allowed2 is False
+
+
+class TestBudgetTrackerErrorPaths:
+    """Test error handling in budget tracker."""
+
+    def test_handles_readonly_state_directory(self):
+        """Test graceful handling of unwritable state dir."""
+        import os
+        from addons.budget_tracker import GCRABudgetTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir) / "readonly"
+            state_dir.mkdir()
+            state_file = state_dir / "budget_state.json"
+
+            # Create tracker with valid path first
+            tracker = GCRABudgetTracker(state_file=state_file)
+            tracker.check_and_consume("test-key", 100)
+
+            # Make directory read-only (can't write new files)
+            os.chmod(state_dir, 0o444)
+
+            try:
+                # Force save should handle the permission error gracefully
+                # It should not raise an exception
+                tracker._save_state()
+
+                # Tracker should still function (in-memory operation)
+                allowed, _ = tracker.check_and_consume("test-key", 100)
+                assert isinstance(allowed, bool)
+            finally:
+                # Restore permissions so cleanup can work
+                os.chmod(state_dir, 0o755)
+                tracker.stop()
+
+    def test_handles_empty_state_file(self):
+        """Test recovery from empty state file."""
+        from addons.budget_tracker import GCRABudgetTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "empty.json"
+            state_file.write_text("")
+
+            # Should not raise error, just start empty
+            tracker = GCRABudgetTracker(state_file=state_file)
+            stats = tracker.get_stats()
+            tracker.stop()
+
+            assert stats["tracked_keys"] == 0
+
+    def test_handles_partial_json_state(self):
+        """Test recovery from partial/truncated JSON state file."""
+        from addons.budget_tracker import GCRABudgetTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "partial.json"
+            state_file.write_text('{"keys": {"test": {"tat": ')  # Truncated JSON
+
+            # Should not raise error, just start empty
+            tracker = GCRABudgetTracker(state_file=state_file)
+            stats = tracker.get_stats()
+            tracker.stop()
+
+            assert stats["tracked_keys"] == 0
+
+    def test_handles_wrong_type_state(self):
+        """Test recovery from wrong type in state file."""
+        from addons.budget_tracker import GCRABudgetTracker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "wrong_type.json"
+            state_file.write_text('["not", "a", "dict"]')  # Array instead of object
+
+            # Should not raise error, just start empty
+            tracker = GCRABudgetTracker(state_file=state_file)
+            stats = tracker.get_stats()
+            tracker.stop()
+
+            assert stats["tracked_keys"] == 0

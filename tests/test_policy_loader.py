@@ -374,3 +374,125 @@ class TestPolicyLoaderProperties:
 
             loader.load_task_policy(task)
             assert loader.task_policy_path == task
+
+
+class TestPolicyLoaderErrorPaths:
+    """Test error handling in policy loader."""
+
+    def test_handles_permission_denied(self):
+        """Test handling of unreadable policy file."""
+        import os
+        from addons.policy_loader import PolicyLoader
+
+        # Skip if running as root (root can read any file)
+        if os.geteuid() == 0:
+            import pytest
+            pytest.skip("Root can read any file, skipping permission test")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "baseline.yaml"
+            path.write_text("""
+permissions:
+  - action: "network:request"
+    resource: "*"
+    effect: allow
+""")
+            # Make file unreadable
+            os.chmod(path, 0o000)
+
+            try:
+                # Should not raise, just create empty policy
+                loader = PolicyLoader(baseline_path=path)
+                assert len(loader.baseline.permissions) == 0
+            finally:
+                # Restore permissions for cleanup
+                os.chmod(path, 0o644)
+
+    def test_handles_directory_as_policy_file(self):
+        """Test handling when policy path is a directory."""
+        from addons.policy_loader import PolicyLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_dir = Path(tmpdir) / "not_a_file"
+            policy_dir.mkdir()
+
+            # Should not raise, just create empty policy
+            loader = PolicyLoader(baseline_path=policy_dir)
+            assert len(loader.baseline.permissions) == 0
+
+    def test_handles_binary_file_as_policy(self):
+        """Test handling of binary file as policy."""
+        from addons.policy_loader import PolicyLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "baseline.yaml"
+            # Write binary data that's not valid YAML
+            path.write_bytes(b"\x00\x01\x02\x03\x04\x05\xff\xfe")
+
+            # Should not raise, just create empty policy
+            loader = PolicyLoader(baseline_path=path)
+            assert len(loader.baseline.permissions) == 0
+
+    def test_handles_symlink_loop(self):
+        """Test handling of symlink loop."""
+        import os
+        from addons.policy_loader import PolicyLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link1 = Path(tmpdir) / "link1.yaml"
+            link2 = Path(tmpdir) / "link2.yaml"
+
+            # Create symlink loop: link1 -> link2 -> link1
+            os.symlink(link2, link1)
+            os.symlink(link1, link2)
+
+            # Should not raise, just create empty policy
+            loader = PolicyLoader(baseline_path=link1)
+            assert len(loader.baseline.permissions) == 0
+
+    def test_reload_handles_file_deleted(self):
+        """Test reload when policy file is deleted."""
+        from addons.policy_loader import PolicyLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "baseline.yaml"
+            path.write_text("""
+permissions:
+  - action: "network:request"
+    resource: "*"
+    effect: allow
+""")
+
+            loader = PolicyLoader(baseline_path=path)
+            assert len(loader.baseline.permissions) == 1
+
+            # Delete the file
+            path.unlink()
+
+            # Reload should handle missing file gracefully
+            result = loader.reload()
+            # Reload fails but doesn't crash
+            assert result is False
+            # Previous policy should be preserved
+            assert len(loader.baseline.permissions) == 1
+
+    def test_watcher_handles_disappearing_file(self):
+        """Test watcher handles file disappearing gracefully."""
+        from addons.policy_loader import PolicyLoader
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "baseline.yaml"
+            path.write_text("permissions: []")
+
+            loader = PolicyLoader(baseline_path=path)
+            loader.start_watcher()
+
+            # Delete the file while watcher is running
+            path.unlink()
+
+            # Wait for watcher poll
+            time.sleep(2.5)
+
+            # Should not crash
+            loader.stop_watcher()
+            assert loader.baseline is not None
