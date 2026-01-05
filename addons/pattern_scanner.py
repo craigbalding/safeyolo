@@ -14,16 +14,16 @@ Usage:
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from mitmproxy import ctx, http
 
 try:
-    from .utils import make_block_response, write_event
+    from .base import SecurityAddon
 except ImportError:
-    from utils import make_block_response, write_event
+    from base import SecurityAddon
 
 log = logging.getLogger("safeyolo.pattern-scanner")
 
@@ -108,7 +108,7 @@ def _compile_rules() -> list[PatternRule]:
     return rules
 
 
-class PatternScanner:
+class PatternScanner(SecurityAddon):
     """
     Native mitmproxy addon for regex-based scanning.
 
@@ -118,10 +118,9 @@ class PatternScanner:
     name = "pattern-scanner"
 
     def __init__(self):
+        # Custom stats - don't call super().__init__()
         self.rules: list[PatternRule] = []
         self.log_path: Optional[Path] = None
-
-        # Stats
         self.scans_total = 0
         self.matches_total = 0
         self.blocks_total = 0
@@ -163,21 +162,12 @@ class PatternScanner:
             path = ctx.options.pattern_log_path
             self.log_path = Path(path) if path else None
 
-    def _log_match(self, flow: http.HTTPFlow, decision: str, **data):
-        """Write pattern match to JSONL audit log.
-
-        Args:
-            flow: HTTP flow for request_id correlation
-            decision: "block", "warn", or "redact"
-            **data: Match details (rule_id, name, category, etc.)
-        """
-        write_event(
-            "security.pattern",
-            request_id=flow.metadata.get("request_id"),
-            addon=self.name,
-            decision=decision,
-            **data
-        )
+    def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
+        """Override base block() - pattern scanner has custom stats."""
+        from .utils import make_block_response
+        self.blocks_total += 1
+        flow.metadata["blocked_by"] = self.name
+        flow.response = make_block_response(status, body, self.name, extra_headers)
 
     def _scan_text(self, text: str, target: str) -> Optional[PatternRule]:
         """Scan text for matching patterns."""
@@ -195,14 +185,12 @@ class PatternScanner:
 
     def request(self, flow: http.HTTPFlow):
         """Scan request for jailbreak patterns."""
-        # Build text to scan
         scan_parts = []
 
         body = flow.request.get_text(strict=False)
         if body:
             scan_parts.append(body)
 
-        # Check relevant headers
         for header in ["User-Agent", "Referer", "X-Custom-Prompt"]:
             value = flow.request.headers.get(header)
             if value:
@@ -229,22 +217,16 @@ class PatternScanner:
         )
 
         if rule.should_block and ctx.options.pattern_block_input:
-            self.blocks_total += 1
-            flow.metadata["blocked_by"] = self.name
             log.warning(f"BLOCKED: Pattern matched INPUT {rule.rule_id} ({rule.name}) -> {flow.request.host}{flow.request.path}")
-            self._log_match(flow, "block", **match_fields)
-            flow.response = make_block_response(
-                403,
-                {
-                    "error": "Request blocked by security policy",
-                    "rule": rule.rule_id,
-                    "category": rule.category,
-                },
-                self.name,
-            )
+            self.log_decision(flow, "block", **match_fields)
+            self.block(flow, 403, {
+                "error": "Request blocked by security policy",
+                "rule": rule.rule_id,
+                "category": rule.category,
+            })
         else:
             log.warning(f"WARN: Pattern matched INPUT {rule.rule_id} ({rule.name}) -> {flow.request.host}{flow.request.path}")
-            self._log_match(flow, "warn", **match_fields)
+            self.log_decision(flow, "warn", **match_fields)
 
     def response(self, flow: http.HTTPFlow):
         """Scan response for leaked secrets."""
@@ -272,27 +254,20 @@ class PatternScanner:
         )
 
         if ctx.options.pattern_redact_secrets and rule.category == "secret":
-            # Redact instead of blocking
             redacted = rule.pattern.sub("[REDACTED]", body)
             flow.response.text = redacted
             flow.response.headers["X-Secrets-Redacted"] = "true"
             log.warning(f"REDACTED: Pattern matched OUTPUT {rule.rule_id} ({rule.name}) <- {flow.request.host}{flow.request.path}")
-            self._log_match(flow, "redact", **match_fields)
+            self.log_decision(flow, "redact", **match_fields)
             return
 
         if rule.should_block and ctx.options.pattern_block_output:
-            self.blocks_total += 1
-            flow.metadata["blocked_by"] = self.name
             log.warning(f"BLOCKED: Pattern matched OUTPUT {rule.rule_id} ({rule.name}) <- {flow.request.host}{flow.request.path}")
-            self._log_match(flow, "block", **match_fields)
-            flow.response = make_block_response(
-                500,
-                {"error": "Response blocked: potential credential leak detected"},
-                self.name,
-            )
+            self.log_decision(flow, "block", **match_fields)
+            self.block(flow, 500, {"error": "Response blocked: potential credential leak detected"})
         else:
             log.warning(f"WARN: Pattern matched OUTPUT {rule.rule_id} ({rule.name}) <- {flow.request.host}{flow.request.path}")
-            self._log_match(flow, "warn", **match_fields)
+            self.log_decision(flow, "warn", **match_fields)
 
     def get_stats(self) -> dict:
         """Get scanner statistics."""
@@ -304,5 +279,4 @@ class PatternScanner:
         }
 
 
-# mitmproxy addon instance
 addons = [PatternScanner()]
