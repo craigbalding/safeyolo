@@ -386,8 +386,8 @@ class TestBlockingMode:
         guard.config = {}
         guard.safe_headers_config = {}
 
-        # Mock _should_block to return False (warn-only mode)
-        guard._should_block = lambda: False
+        # Mock should_block to return False (warn-only mode)
+        guard.should_block = lambda: False
 
         flow = make_flow(
             method="POST",
@@ -412,8 +412,8 @@ class TestBlockingMode:
         guard.config = {}
         guard.safe_headers_config = {}
 
-        # Mock _should_block to return True (blocking mode)
-        guard._should_block = lambda: True
+        # Mock should_block to return True (blocking mode)
+        guard.should_block = lambda: True
 
         flow = make_flow(
             method="POST",

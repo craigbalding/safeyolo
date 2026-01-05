@@ -23,7 +23,6 @@ import math
 import os
 import re
 import secrets
-import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,8 +40,10 @@ except ImportError:
     homoglyph_confusables = None
 
 try:
+    from .base import SecurityAddon
     from .utils import write_event, make_block_response, load_config_file, get_client_ip
 except ImportError:
+    from base import SecurityAddon
     from utils import write_event, make_block_response, load_config_file, get_client_ip
 
 try:
@@ -66,7 +67,6 @@ def load_hmac_secret(secret_path: Path) -> bytes:
     if secret_path.exists():
         return secret_path.read_bytes().strip()
 
-    # Generate new secret
     secret = secrets.token_hex(32).encode()
     secret_path.parent.mkdir(parents=True, exist_ok=True)
     secret_path.write_bytes(secret)
@@ -132,10 +132,7 @@ def detect_homoglyph_attack(text: str) -> Optional[dict]:
     try:
         result = homoglyph_confusables.is_dangerous(text)
         if result:
-            return {
-                "dangerous": True,
-                "message": f"Mixed scripts detected in '{text}'"
-            }
+            return {"dangerous": True, "message": f"Mixed scripts detected in '{text}'"}
     except Exception:
         pass
     return None
@@ -218,7 +215,6 @@ class CredentialRule:
         return None
 
 
-# Default rules for common providers
 DEFAULT_RULES = [
     CredentialRule(
         name="openai",
@@ -239,19 +235,7 @@ DEFAULT_RULES = [
 
 
 def detect_credential_type(value: str, rules: list[CredentialRule] = None) -> Optional[str]:
-    """
-    Detect credential type from value using pattern matching.
-
-    This maps raw credential values to human-readable types for policy evaluation.
-    HMAC fingerprinting is still used for logging (never log raw credentials).
-
-    Args:
-        value: The credential value to analyze
-        rules: Optional list of rules (defaults to DEFAULT_RULES)
-
-    Returns:
-        Credential type name (e.g., "openai", "anthropic") or None if unknown
-    """
+    """Detect credential type from value using pattern matching."""
     if rules is None:
         rules = DEFAULT_RULES
 
@@ -274,30 +258,19 @@ def analyze_headers(
     standard_auth_headers: list[str],
     detection_level: str = "standard"
 ) -> list[dict]:
-    """Analyze headers for credentials.
-
-    Returns list of detections with:
-    - credential: the detected value
-    - rule_name: matched rule or "unknown_secret"
-    - header_name: source header
-    - confidence: high/medium/low
-    - tier: 1 (pattern) or 2 (entropy)
-    """
+    """Analyze headers for credentials."""
     detections = []
 
     for header_name, header_value in headers.items():
         header_lower = header_name.lower()
 
-        # Skip safe headers
         if is_safe_header(header_name, safe_headers_config):
             continue
 
-        # Extract token if Bearer auth
         value = header_value
         if header_lower == "authorization":
             value = extract_bearer_token(header_value)
 
-        # Tier 1: Pattern matching (standard auth headers)
         if header_lower in standard_auth_headers:
             for rule in rules:
                 matched = rule.matches(value)
@@ -313,7 +286,6 @@ def analyze_headers(
                     })
                     break
             else:
-                # No pattern match - check entropy for unknown secrets
                 if detection_level in ("standard", "paranoid") and looks_like_secret(value, entropy_config):
                     detections.append({
                         "credential": value,
@@ -325,7 +297,6 @@ def analyze_headers(
                         "suggested_url": "",
                     })
 
-        # Tier 2: All headers (paranoid mode)
         elif detection_level == "paranoid":
             if looks_like_secret(value, entropy_config):
                 detections.append({
@@ -353,41 +324,18 @@ def determine_decision_with_policy_engine(
     rules: list[CredentialRule],
     hmac_secret: bytes,
 ) -> tuple[str, dict]:
-    """
-    Determine credential decision using PolicyEngine.
-
-    Uses the unified policy system for credential authorization.
-    Supports both type-based matching (e.g., "openai:*") and HMAC-based
-    matching (e.g., "hmac:a1b2c3d4") in policy conditions.
-
-    Args:
-        credential: Raw credential value
-        rule_name: Detected rule name (from pattern matching)
-        host: Target host
-        path: Request path
-        rules: Credential rules (for expected hosts in error messages)
-        hmac_secret: HMAC secret for fingerprinting
-
-    Returns:
-        (decision_type, context) where decision_type is:
-        - "allow": credential approved for destination
-        - "greylist_mismatch": known credential, wrong destination
-        - "greylist_approval": unknown credential, needs approval
-    """
+    """Determine credential decision using PolicyEngine."""
     policy_engine = get_policy_engine()
 
     if policy_engine is None:
-        raise RuntimeError("PolicyEngine not initialized. Call init_policy_engine() first.")
+        raise RuntimeError("PolicyEngine not initialized.")
 
-    # Detect credential type
     credential_type = detect_credential_type(credential, rules)
     if credential_type is None:
         credential_type = "unknown"
 
-    # Calculate HMAC fingerprint for policy matching
     fingerprint = hmac_fingerprint(credential, hmac_secret)
 
-    # Evaluate with PolicyEngine (destination-first matching)
     decision = policy_engine.evaluate_credential(
         credential_type=credential_type,
         destination=host,
@@ -395,26 +343,20 @@ def determine_decision_with_policy_engine(
         credential_hmac=fingerprint,
     )
 
-    # Map PolicyEngine decision to response format
     if decision.effect == "allow":
         return "allow", {}
     elif decision.effect == "deny":
-        # Find expected hosts from rules for error message
         expected_hosts = []
         for rule in rules:
             if rule.name == credential_type:
                 expected_hosts = rule.allowed_hosts
                 break
-        return "greylist_mismatch", {
-            "expected_hosts": expected_hosts,
-            "suggested_url": "",
-        }
+        return "greylist_mismatch", {"expected_hosts": expected_hosts, "suggested_url": ""}
     elif decision.effect == "prompt":
         return "greylist_approval", {"reason": "requires_approval"}
     elif decision.effect == "budget_exceeded":
         return "greylist_approval", {"reason": "budget_exceeded"}
     else:
-        # Unknown effect - default to require approval
         return "greylist_approval", {"reason": decision.reason or "unknown"}
 
 
@@ -462,29 +404,26 @@ def create_approval_response(
         "credential_fingerprint": fingerprint,
         "reason": reason,
         "action": "wait_for_approval",
-        "reflection": f"This credential requires human approval before use. The request has been logged for review.",
+        "reflection": "This credential requires human approval before use.",
     }
     return make_block_response(428, body, "credential-guard")
-
-
 
 
 # =============================================================================
 # Main Addon
 # =============================================================================
 
-class CredentialGuard:
+class CredentialGuard(SecurityAddon):
     """Credential protection addon - detect, validate, decide, emit."""
 
     name = "credential-guard"
 
     def __init__(self):
+        # Custom stats - don't call super().__init__()
         self.rules: list[CredentialRule] = []
         self.config: dict = {}
         self.safe_headers_config: dict = {}
         self.hmac_secret: bytes = b""
-
-        # Stats
         self.violations_total = 0
         self.violations_by_type: dict[str, int] = {}
 
@@ -506,7 +445,6 @@ class CredentialGuard:
     def _load_config(self):
         """Load configuration files."""
         config_dir = Path(__file__).parent.parent / "config"
-
         self.config = load_config_file(config_dir / "credential_guard.yaml")
         self.safe_headers_config = load_config_file(config_dir / "safe_headers.yaml")
         self.hmac_secret = load_hmac_secret(Path("/app/data/hmac_secret"))
@@ -534,7 +472,8 @@ class CredentialGuard:
         else:
             self.rules = list(DEFAULT_RULES)
 
-    def _should_block(self) -> bool:
+    def should_block(self) -> bool:
+        """Override base - uses credguard_block option."""
         return ctx.options.credguard_block
 
     def _get_project_id(self, flow: http.HTTPFlow) -> str:
@@ -559,7 +498,6 @@ class CredentialGuard:
 
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
-        # Check policy bypass
         policy = flow.metadata.get("policy")
         if policy and not policy.is_addon_enabled("credential-guard"):
             return
@@ -568,7 +506,6 @@ class CredentialGuard:
         path = flow.request.path
         project_id = self._get_project_id(flow)
 
-        # Config
         entropy_config = self.config.get("entropy", {
             "min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5
         })
@@ -577,7 +514,6 @@ class CredentialGuard:
             "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
         ])
 
-        # Analyze headers
         detections = analyze_headers(
             headers=dict(flow.request.headers),
             rules=self.rules,
@@ -595,7 +531,6 @@ class CredentialGuard:
             tier = det["tier"]
             fp = hmac_fingerprint(credential, self.hmac_secret)
 
-            # Get decision using PolicyEngine
             decision, context = determine_decision_with_policy_engine(
                 credential=credential,
                 rule_name=rule_name,
@@ -605,7 +540,6 @@ class CredentialGuard:
                 hmac_secret=self.hmac_secret,
             )
 
-            # Log decision
             log_data = {
                 "rule": rule_name, "host": host, "location": f"header:{header}",
                 "fingerprint": f"hmac:{fp}", "confidence": confidence, "tier": tier,
@@ -613,11 +547,9 @@ class CredentialGuard:
             }
 
             if decision == "allow":
-                write_event("security.credential", request_id=flow.metadata.get("request_id"),
-                           addon=self.name, decision="allow", **log_data)
+                self.log_decision(flow, "allow", **log_data)
                 continue
 
-            # Violation
             self._record_violation(rule_name, host)
             flow.metadata["blocked_by"] = self.name
             flow.metadata["credential_fingerprint"] = f"hmac:{fp}"
@@ -626,31 +558,27 @@ class CredentialGuard:
                 log_data["reason"] = "destination_mismatch"
                 log_data["expected_hosts"] = context.get("expected_hosts", [])
 
-                if self._should_block():
-                    write_event("security.credential", request_id=flow.metadata.get("request_id"),
-                               addon=self.name, decision="block", **log_data)
+                if self.should_block():
+                    self.log_decision(flow, "block", **log_data)
                     flow.response = create_mismatch_response(
                         rule_name, host, context.get("expected_hosts", []),
                         f"hmac:{fp}", path, context.get("suggested_url", "")
                     )
                     return
                 else:
-                    write_event("security.credential", request_id=flow.metadata.get("request_id"),
-                               addon=self.name, decision="warn", **log_data)
+                    self.log_decision(flow, "warn", **log_data)
 
             elif decision == "greylist_approval":
                 log_data["reason"] = "requires_approval"
 
-                if self._should_block():
-                    write_event("security.credential", request_id=flow.metadata.get("request_id"),
-                               addon=self.name, decision="block", **log_data)
+                if self.should_block():
+                    self.log_decision(flow, "block", **log_data)
                     flow.response = create_approval_response(
                         rule_name, host, f"hmac:{fp}", path, "unknown_credential"
                     )
                     return
                 else:
-                    write_event("security.credential", request_id=flow.metadata.get("request_id"),
-                               addon=self.name, decision="warn", **log_data)
+                    self.log_decision(flow, "warn", **log_data)
 
     def get_stats(self) -> dict:
         """Get stats for admin API."""
@@ -661,5 +589,4 @@ class CredentialGuard:
         }
 
 
-# mitmproxy addon registration
 addons = [CredentialGuard()]

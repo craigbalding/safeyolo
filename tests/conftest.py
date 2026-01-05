@@ -155,7 +155,7 @@ def rate_limiter():
 
     addon = RateLimiter()
     # Default to blocking mode for tests (production default is warn-only)
-    addon._should_block = lambda: True
+    addon.should_block = lambda: True
     return addon
 
 

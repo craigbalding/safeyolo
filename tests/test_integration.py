@@ -304,4 +304,4 @@ domains: {}
         # When properly configured with context, default is block mode
         with taddons.context(guard) as tctx:
             assert tctx.options.credguard_block is True
-            assert guard._should_block() is True
+            assert guard.should_block() is True
