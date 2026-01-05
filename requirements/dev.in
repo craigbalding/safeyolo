@@ -13,5 +13,6 @@ pytest-cov>=4.0.0
 pre-commit>=3.0.0
 ruff>=0.9.4
 
-# Hash generation
-pip-tools>=7.0.0
+# Note: pip-tools is needed locally to regenerate requirements
+# but not included here to avoid setuptools hash issues in CI
+# Install locally with: pip install pip-tools
