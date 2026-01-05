@@ -23,8 +23,25 @@ echo "Admin port: ${ADMIN_PORT}"
 echo "Cert dir: ${CERT_DIR}"
 echo "Log dir: ${LOG_DIR}"
 
-# Ensure directories exist
-mkdir -p "${CERT_DIR}" "${LOG_DIR}"
+# Ensure directories exist and are writable
+mkdir -p "${CERT_DIR}" "${LOG_DIR}" 2>/dev/null || true
+
+# Check write permissions (important for non-root execution)
+if ! touch "${CERT_DIR}/.write-test" 2>/dev/null; then
+    echo "ERROR: Cannot write to ${CERT_DIR}"
+    echo "  If using non-root (SAFEYOLO_UID/GID), the safeyolo-certs volume"
+    echo "  may have root ownership from a previous run."
+    echo "  Fix: docker volume rm safeyolo-certs && docker volume create safeyolo-certs"
+    exit 1
+fi
+rm -f "${CERT_DIR}/.write-test"
+
+if ! touch "${LOG_DIR}/.write-test" 2>/dev/null; then
+    echo "ERROR: Cannot write to ${LOG_DIR}"
+    echo "  Check directory permissions on host: ls -la ./logs/"
+    exit 1
+fi
+rm -f "${LOG_DIR}/.write-test"
 
 # Generate mitmproxy CA cert if not present
 if [ ! -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
@@ -45,15 +62,22 @@ else
 fi
 
 # Install CA cert to system trust store for Python/pip SSL verification
+# This requires root - skip gracefully for non-root execution
 if [ -f "${CERT_DIR}/mitmproxy-ca-cert.pem" ]; then
-    if [ ! -f /usr/local/share/ca-certificates/mitmproxy.crt ]; then
-        echo "Installing CA certificate to system trust store..."
-        cp "${CERT_DIR}/mitmproxy-ca-cert.pem" /usr/local/share/ca-certificates/mitmproxy.crt
-        if ! update-ca-certificates --fresh; then
-            echo "ERROR: CA certificate installation failed"
-            echo "  pip/curl may fail with SSL errors when going through proxy"
-            # Non-fatal - proxy will still work for non-SSL or --insecure requests
+    if [ "$(id -u)" = "0" ]; then
+        if [ ! -f /usr/local/share/ca-certificates/mitmproxy.crt ]; then
+            echo "Installing CA certificate to system trust store..."
+            cp "${CERT_DIR}/mitmproxy-ca-cert.pem" /usr/local/share/ca-certificates/mitmproxy.crt
+            if ! update-ca-certificates --fresh; then
+                echo "WARNING: CA certificate installation failed"
+                echo "  pip/curl may fail with SSL errors when going through proxy"
+            fi
         fi
+    else
+        echo "Non-root: skipping system CA install (use SSL_CERT_FILE env var instead)"
+        # Export for this process and children (mitmproxy, curl, etc.)
+        export SSL_CERT_FILE="${CERT_DIR}/mitmproxy-ca-cert.pem"
+        export REQUESTS_CA_BUNDLE="${CERT_DIR}/mitmproxy-ca-cert.pem"
     fi
 fi
 
