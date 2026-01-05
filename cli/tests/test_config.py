@@ -1,9 +1,5 @@
 """Tests for config module."""
 
-import os
-from pathlib import Path
-
-import pytest
 import yaml
 
 from safeyolo.config import (

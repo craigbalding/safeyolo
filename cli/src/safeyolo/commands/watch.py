@@ -75,7 +75,7 @@ def format_approval_request(event: dict) -> Panel:
             dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             timestamp = dt.strftime("%H:%M:%S")
         except (ValueError, AttributeError):
-            pass
+            pass  # Keep original timestamp string if parsing fails
 
     # Build content
     table = Table(show_header=False, box=None, padding=(0, 1))

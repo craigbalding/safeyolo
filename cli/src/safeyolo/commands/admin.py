@@ -279,7 +279,7 @@ def mode(
                 if available:
                     console.print(f"[dim]Available: {', '.join(available)}[/dim]")
             except Exception:
-                pass
+                pass  # Best-effort hint, ok to fail silently
         else:
             console.print(f"[red]API Error:[/red] {e}")
         raise typer.Exit(1)
@@ -441,7 +441,7 @@ def test(
                 if "reflection" in body:
                     console.print(f"\n[dim]{body.get('reflection')}[/dim]")
             except Exception:
-                pass
+                pass  # JSON parsing failed, skip body display
 
         # Show headers if requested
         if show_headers:
@@ -460,7 +460,7 @@ def test(
                         preview += "..."
                     console.print(f"\n[dim]{preview}[/dim]")
                 except Exception:
-                    pass
+                    pass  # JSON parsing failed, skip preview
 
     except httpx.ProxyError as e:
         console.print(f"[red]Proxy error:[/red] {e}")

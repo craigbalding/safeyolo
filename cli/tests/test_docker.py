@@ -1,7 +1,6 @@
 """Tests for Docker operations module."""
 
 import subprocess
-from unittest.mock import MagicMock, patch
 
 import pytest
 

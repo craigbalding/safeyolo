@@ -92,7 +92,7 @@ def show() -> None:
             sha256 = hashlib.sha256(content).hexdigest()[:16]
             console.print(f"  SHA256:    {sha256}...")
         except Exception:
-            pass
+            pass  # Skip fingerprint display on any error
 
         console.print("\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
     else:

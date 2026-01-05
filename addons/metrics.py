@@ -142,9 +142,9 @@ class MetricsCollector:
             stats.upstream_429s += 1
         elif status >= 500:
             stats.upstream_5xx += 1
-        elif status == 504:
-            stats.timeouts += 1
-            self.requests_error += 1
+            if status == 504:
+                stats.timeouts += 1
+                self.requests_error += 1
         elif status < 400:
             self.requests_success += 1
             stats.successes += 1
