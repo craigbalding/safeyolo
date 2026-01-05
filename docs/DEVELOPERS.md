@@ -16,7 +16,7 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 │  │ safeyolo CLI │               │ mitmproxy + addons   │    │
 │  │  (Python)    │◄──────────────│                      │    │
 │  │              │  Admin API    │ credential_guard.py  │    │
-│  │  - init      │  :9090        │ rate_limiter.py      │    │
+│  │  - init      │  :9090        │ policy_engine.py     │    │
 │  │  - start     │               │ admin_api.py         │    │
 │  │  - watch     │◄──────────────│ ...                  │    │
 │  │  - logs      │  JSONL logs   │                      │    │
@@ -36,7 +36,7 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 ```
 
 **Key design principles:**
-- Proxy addon is slim (~750 lines) and focused on detect/decide/emit
+- Proxy addons (~5500 lines) are focused on detect/decide/emit
 - CLI handles user interaction, approval workflow, notifications
 - Communication via Admin API (HTTP) and JSONL logs (file)
 - Policy files are the source of truth for approvals
@@ -45,27 +45,43 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 
 ```
 safeyolo/
-├── addons/                  # mitmproxy addons (run in container)
-│   ├── credential_guard.py  # Core credential detection
-│   ├── rate_limiter.py      # Per-domain rate limiting
-│   ├── circuit_breaker.py   # Fail-fast for unhealthy upstreams
-│   ├── pattern_scanner.py   # Regex pattern matching
-│   ├── admin_api.py         # REST API for control
-│   ├── request_logger.py    # JSONL audit logging
-│   ├── metrics.py           # Statistics collection
-│   ├── utils.py             # Shared utilities
-│   └── ...
-├── cli/                     # safeyolo CLI (runs on host)
+├── addons/                   # mitmproxy addons (run in container)
+│   ├── admin_api.py          # REST API for runtime control
+│   ├── admin_shield.py       # Protects admin API endpoints
+│   ├── base.py               # Base addon class with shared functionality
+│   ├── budget_tracker.py     # Token/cost budget tracking
+│   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
+│   ├── credential_guard.py   # Core credential detection and protection
+│   ├── metrics.py            # Statistics collection
+│   ├── network_guard.py      # Network-level security policies
+│   ├── pattern_scanner.py    # Regex pattern matching for secrets
+│   ├── policy_engine.py      # Approval/deny policy evaluation
+│   ├── policy_loader.py      # Policy file loading and caching
+│   ├── request_id.py         # Request ID generation
+│   ├── request_logger.py     # JSONL audit logging
+│   ├── service_discovery.py  # API provider detection
+│   ├── sse_streaming.py      # Server-sent events handling
+│   └── utils.py              # Shared utilities
+├── cli/                      # safeyolo CLI (runs on host)
 │   ├── src/safeyolo/
-│   │   ├── cli.py           # Typer app entry point
-│   │   ├── config.py        # Configuration loading
-│   │   ├── api.py           # Admin API client
-│   │   ├── docker.py        # Container management
-│   │   └── commands/        # CLI commands
+│   │   ├── cli.py            # Typer app entry point
+│   │   ├── config.py         # Configuration loading
+│   │   ├── api.py            # Admin API client
+│   │   ├── docker.py         # Container management
+│   │   └── commands/         # CLI command modules
+│   │       ├── admin.py      # check, mode, policies, test
+│   │       ├── agent.py      # agent subcommands
+│   │       ├── cert.py       # certificate management
+│   │       ├── lifecycle.py  # start, stop, status
+│   │       ├── logs.py       # log viewing
+│   │       ├── sandbox.py    # sandbox subcommands
+│   │       ├── setup.py      # setup subcommands
+│   │       └── watch.py      # real-time log watching
 │   └── pyproject.toml
-├── config/                  # Default configurations
-├── tests/                   # Test suite
-└── docs/                    # Documentation
+├── contrib/                  # Example integrations
+├── config/                   # Default configurations
+├── tests/                    # Addon test suite
+└── docs/                     # Documentation
 ```
 
 ## Building Integrations
@@ -146,26 +162,29 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check (no auth) |
+| GET | `/health` | Health check (no auth required) |
 | GET | `/stats` | Aggregated addon stats |
 | GET | `/modes` | Current addon modes |
 | PUT | `/modes` | Set all addon modes |
+| GET | `/plugins/{addon}/mode` | Get specific addon mode |
 | PUT | `/plugins/{addon}/mode` | Set specific addon mode |
-| GET | `/admin/policies` | List policy files |
-| GET | `/admin/policy/{project}` | Get project policy |
-| PUT | `/admin/policy/{project}` | Write project policy |
-| POST | `/admin/policy/{project}/approve` | Add approval rule |
+| GET | `/admin/policy/baseline` | Get baseline policy |
+| PUT | `/admin/policy/baseline` | Update baseline policy |
+| POST | `/admin/policy/baseline/approve` | Add credential approval |
+| GET | `/admin/policy/task/{task_id}` | Get task-specific policy |
+| GET | `/admin/budgets` | Get budget usage stats |
+| POST | `/admin/budgets/reset` | Reset budget counters |
+| POST | `/admin/policy/validate` | Validate YAML policy content |
 
 **Add an approval via API:**
 ```bash
-curl -X POST "http://localhost:9090/admin/policy/default/approve" \
+curl -X POST "http://localhost:9090/admin/policy/baseline/approve" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "token_hmac": "a1b2c3d4e5f6...",
-    "hosts": ["api.example.com"],
-    "paths": ["/**"],
-    "name": "My API key"
+    "destination": "api.openai.com",
+    "credential": "sk-proj-abc123",
+    "tier": "explicit"
   }'
 ```
 
@@ -179,12 +198,9 @@ api = AdminAPI(base_url="http://localhost:9090", token="...")
 stats = api.stats()
 print(stats["credential-guard"]["violations_total"])
 
-# Add approval
-api.add_approval(
-    project="default",
-    token_hmac="a1b2c3d4e5f6...",
-    hosts=["api.example.com"]
-)
+# Get current modes
+modes = api.get_modes()
+print(modes)
 
 # Change mode
 api.set_mode("credential-guard", "warn")
@@ -320,11 +336,17 @@ pytest tests/ -v
 safeyolo start
 
 # Test with fake credential
-safeyolo test -H "Authorization: Bearer sk-fake123..." https://httpbin.org/get
-# Should return 428 (blocked)
+safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1/models
+# Should return 403 (blocked) with X-Blocked-By header
+
+# Test without credential
+safeyolo test https://httpbin.org/get
+# Should return 200 (allowed)
 ```
 
 ## Contributing
+
+### Contribution Process
 
 1. **Fork and clone** the repository
 2. **Create a branch** for your feature/fix
@@ -332,7 +354,47 @@ safeyolo test -H "Authorization: Bearer sk-fake123..." https://httpbin.org/get
 4. **Run tests** to ensure nothing breaks
 5. **Submit a PR** with a clear description
 
-**Areas for contribution:**
+### Coding Standards
+
+All contributions must:
+
+- **Pass syntax checks** - CI runs `python -m py_compile` on all Python files
+- **Pass tests** - All existing tests must pass, new features need tests
+- **Support Python 3.11+** - Addons tested on 3.11, 3.12, 3.13
+- **Use type hints** - For function signatures (not enforced by CI yet, but preferred)
+- **Follow existing patterns** - Match the style of surrounding code
+
+**Code style:**
+- Use descriptive variable names (no single letters except loop counters)
+- Keep functions focused and single-purpose
+- Add docstrings for public functions
+- Avoid bare `except:` - always catch specific exceptions or log the type
+
+### Testing Requirements
+
+Before submitting a PR:
+
+```bash
+# Run addon tests
+pytest tests/ -v
+
+# Run CLI tests
+cd cli && pytest tests/ -v
+
+# Check syntax (what CI does)
+python -m py_compile addons/*.py
+```
+
+### Pull Request Guidelines
+
+- PRs should address a single concern (bug fix, feature, refactor)
+- Include tests for new functionality
+- Update documentation if adding user-facing changes
+- Keep commits atomic and well-described
+- CI must pass before merge
+
+### Areas for Contribution
+
 - New credential patterns for additional providers
 - Notification backends (Slack, Discord, email)
 - CLI improvements
@@ -345,7 +407,9 @@ The `contrib/` directory contains example integrations you can use as templates:
 
 | Integration | Description |
 |-------------|-------------|
-| `contrib/notifiers/` | Push notifications via ntfy.sh, Pushcut |
+| `contrib/claude-code-chokepoint/` | **Recommended**: Claude Code in enforced chokepoint mode |
+| `contrib/monitors/` | Log monitoring and visualization tools |
+| `contrib/notifiers/` | Push notifications via ntfy with optional approval buttons |
 
 See [contrib/README.md](../contrib/README.md) for the integration pattern and how to build your own.
 
