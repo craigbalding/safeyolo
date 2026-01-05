@@ -9,11 +9,11 @@ SafeYolo is security software. This document outlines our security principles an
 **Principle:** Grant the minimum access required. Don't trust what you don't have to.
 
 **In practice:**
-- SafeYolo container has no Docker socket access. Service discovery uses static config written by the CLI, not runtime Docker queries. (`addons/service_discovery.py`)
+- SafeYolo container has no Docker socket access. Service discovery uses static config written by the CLI, not runtime Docker queries. ([`service_discovery.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/service_discovery.py))
 - Agents run in isolated networks with no direct internet (`internal: true`). Bypass attempts fail rather than leak.
-- Admin API requires bearer token auth for all mutating operations. (`addons/admin_api.py`)
-- Token comparison uses `secrets.compare_digest()` to prevent timing attacks. (`addons/admin_api.py:71`)
-- Admin API ports bind to localhost only (`127.0.0.1:9090`), not all interfaces. (`docker-compose.yml`)
+- Admin API requires bearer token auth for all mutating operations. ([`admin_api.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/admin_api.py))
+- Token comparison uses `secrets.compare_digest()` to prevent timing attacks. ([`admin_api.py:71`](https://github.com/craigbalding/safeyolo/blob/master/addons/admin_api.py#L71))
+- Admin API ports bind to localhost only (`127.0.0.1:9090`), not all interfaces. ([`docker-compose.yml`](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml))
 - Container runs as non-root via host UID/GID mapping (`user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"`).
 
 ### 2. Fail Closed
@@ -22,22 +22,22 @@ SafeYolo is security software. This document outlines our security principles an
 
 **In practice:**
 - Unknown credentials trigger approval workflow, not silent passthrough. PolicyEngine evaluates `effect: prompt` permissions.
-- Destination mismatches return HTTP 428 with actionable feedback, not silent drops. (`addons/credential_guard.py:242`)
-- Circuit breaker fails fast on unhealthy upstreams. (`addons/circuit_breaker.py`)
-- Policy validation uses Pydantic `model_validate()`. Invalid policies are rejected, not silently ignored. (`addons/policy_loader.py:150`)
-- Startup script verifies network guard is in block mode, exits if verification fails. (`scripts/start-safeyolo.sh:307`)
-- Test suite asserts container does not run as root. (`tests/test_policy_loader.py:389`)
+- Destination mismatches return HTTP 428 with actionable feedback, not silent drops. ([`credential_guard.py:242`](https://github.com/craigbalding/safeyolo/blob/master/addons/credential_guard.py#L242))
+- Circuit breaker fails fast on unhealthy upstreams. ([`circuit_breaker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/circuit_breaker.py))
+- Policy validation uses Pydantic `model_validate()`. Invalid policies are rejected, not silently ignored. ([`policy_loader.py:150`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_loader.py#L150))
+- Startup script verifies network guard is in block mode, exits if verification fails. ([`start-safeyolo.sh:319`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh#L319))
+- Test suite asserts container does not run as root. ([`test_policy_loader.py:389`](https://github.com/craigbalding/safeyolo/blob/master/tests/test_policy_loader.py#L389))
 
 ### 3. Never Store Secrets
 
 **Principle:** Credentials should not appear in logs, policies, or anywhere on disk.
 
 **In practice:**
-- Credentials are fingerprinted via HMAC-SHA256. Only the fingerprint is stored/logged. (`addons/utils.py:405`)
+- Credentials are fingerprinted via HMAC-SHA256. Only the fingerprint is stored/logged. ([`utils.py:405`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py#L405))
 - Policy files use human-readable credential types (`openai`, `anthropic`), never raw tokens. (`~/.safeyolo/baseline.yaml`)
 - Log entries include fingerprint for correlation, never the credential itself.
-- HMAC secret uses atomic write with secure permissions (`O_CREAT|O_EXCL`, mode 0o600). (`addons/utils.py:395`)
-- Admin API token files created with mode 0o600. (`scripts/start-safeyolo.sh:238`)
+- HMAC secret uses atomic write with secure permissions (`O_CREAT|O_EXCL`, mode 0o600). ([`utils.py:395`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py#L395))
+- Admin API token files created with mode 0o600. ([`start-safeyolo.sh:249`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh#L249))
 
 ### 4. Destination-First Policy
 
@@ -59,11 +59,11 @@ SafeYolo is security software. This document outlines our security principles an
 
 **In practice:**
 - Tier 1: Pattern matching for known credential formats (OpenAI, Anthropic, GitHub, etc.)
-- Tier 2: Shannon entropy analysis catches unknown high-entropy secrets in auth headers. (`addons/utils.py:309`)
-- Homoglyph detection flags mixed-script domain attacks (`api.οpenai.com` with Cyrillic 'ο'). (`addons/network_guard.py:55`)
-- GCRA rate limiting prevents runaway loops independent of credential checks. (`addons/budget_tracker.py`)
-- Thread-safe operations across all stateful addons via Lock/RLock. (`addons/metrics.py:88`, `addons/policy_loader.py:85`)
-- `blocked_by` metadata coordinates between addons in the chain. (`addons/base.py:140`)
+- Tier 2: Shannon entropy analysis catches unknown high-entropy secrets in auth headers. ([`utils.py:309`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py#L309))
+- Homoglyph detection flags mixed-script domain attacks (`api.οpenai.com` with Cyrillic 'ο'). ([`network_guard.py:55`](https://github.com/craigbalding/safeyolo/blob/master/addons/network_guard.py#L55))
+- GCRA rate limiting prevents runaway loops independent of credential checks. ([`budget_tracker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/budget_tracker.py))
+- Thread-safe operations across all stateful addons via Lock/RLock. ([`metrics.py:88`](https://github.com/craigbalding/safeyolo/blob/master/addons/metrics.py#L88), [`policy_loader.py:85`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_loader.py#L85))
+- `blocked_by` metadata coordinates between addons in the chain. ([`base.py:140`](https://github.com/craigbalding/safeyolo/blob/master/addons/base.py#L140))
 
 ### 6. The Eager Intern Problem
 
@@ -82,9 +82,9 @@ An intern might email the wrong client, cc the wrong list, or paste credentials 
 **Principle:** Every decision should be traceable. When something goes wrong, you need to know what happened.
 
 **In practice:**
-- All requests logged to JSONL with unique request IDs (uuid4 prefix + timestamp). (`addons/request_id.py:30`)
+- All requests logged to JSONL with unique request IDs (uuid4 prefix + timestamp). ([`request_id.py:30`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_id.py#L30))
 - Security decisions include reasoning: credential type, destination, expected hosts, decision.
-- `blocked_by` field in logs shows which addon blocked the request. (`addons/request_logger.py:295`)
+- `blocked_by` field in logs shows which addon blocked the request. ([`request_logger.py:295`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_logger.py#L295))
 - Logs are structured for grep/jq analysis, not just human reading.
 
 ### 8. Minimal Attack Surface
@@ -92,12 +92,12 @@ An intern might email the wrong client, cc the wrong list, or paste credentials 
 **Principle:** Reduce what can be exploited. Every package, port, and capability is a potential attack vector.
 
 **In practice:**
-- Single OS package in container (tmux only). No curl, procps, net-tools, iproute2. (`Dockerfile:35`)
-- `--no-install-recommends` prevents transitive package bloat. (`Dockerfile:35`)
+- Single OS package in container (tmux only). No curl, procps, net-tools, iproute2. ([`Dockerfile:35`](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile#L35))
+- `--no-install-recommends` prevents transitive package bloat. ([`Dockerfile:35`](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile#L35))
 - Addons are passive - they inspect traffic but never initiate network connections. No httpx/requests/aiohttp imports.
-- Stream large bodies (10MB threshold) prevents OOM from media downloads. (`scripts/start-safeyolo.sh:152`)
+- Stream large bodies (10MB threshold) prevents OOM from media downloads. ([`start-safeyolo.sh:163`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh#L163))
 - Health checks use Python httpx instead of curl - one less binary in image.
-- Non-root execution set at runtime via docker-compose, not baked into image. (`docker-compose.yml:43`)
+- Non-root execution set at runtime via docker-compose, not baked into image. ([`docker-compose.yml:62`](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml#L62))
 
 ## Architecture Boundaries
 
