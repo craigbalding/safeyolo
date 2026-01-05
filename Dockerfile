@@ -27,7 +27,9 @@
 # ==============================================================================
 # Base stage - Core addons only (~200MB)
 # ==============================================================================
-FROM python:3.13-slim AS base
+# Pinned to specific digest for supply chain security
+# To update: docker pull python:3.13-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.13-slim
+FROM python:3.13-slim@sha256:45ce78b0ad540b2bbb4eaac6f9cb91c9be5af45ab5f483929f407b4fb98c89dd AS base
 
 # Install minimal system dependencies
 # - tmux: runs mitmproxy TUI in background
