@@ -8,14 +8,4 @@
 services:
   safeyolo:
     volumes:
-      # Shell mux agent for Claude Code command execution
-      # Adjust path to your container_agent.py location
-      - ../claude-dev/lib/container_agent.py:/opt/shell_mux/container_agent.py:ro
-    environment:
-      # Ollama for local LLM inference (optional)
-      - OLLAMA_URL=http://host.docker.internal:11434
-      # Shell mux agent config (required for Claude Code integration)
-      - CONTAINER_NAME=safeyolo
-      - MUX_HOST=${MUX_HOST:-172.30.0.20}
-      - MUX_PORT=9000
       - WORKDIR=/app
