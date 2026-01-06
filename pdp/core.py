@@ -60,8 +60,8 @@ class PDPCore:
 
     def __init__(
         self,
-        baseline_path: Path | None = None,
-        budget_state_path: Path | None = None,
+        baseline_path: Path | str | None = None,
+        budget_state_path: Path | str | None = None,
     ):
         """Initialize PDP with policy paths.
 
@@ -69,6 +69,12 @@ class PDPCore:
             baseline_path: Path to baseline policy YAML (enables file watching)
             budget_state_path: Path to budget state JSON (enables persistence)
         """
+        # Ensure paths are Path objects
+        if baseline_path is not None and not isinstance(baseline_path, Path):
+            baseline_path = Path(baseline_path)
+        if budget_state_path is not None and not isinstance(budget_state_path, Path):
+            budget_state_path = Path(budget_state_path)
+
         self._engine = PolicyEngine(
             baseline_path=baseline_path,
             budget_state_path=budget_state_path,

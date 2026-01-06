@@ -6,9 +6,8 @@ authorized destinations. Emits structured events to JSONL for external
 processing (approval workflow, notifications, alerting).
 
 Design:
-- ~500 lines focused on detect/validate/decide
-- No notification code (handled by external safeyolo CLI)
-- Read-only policy (writes via admin API)
+- Credential detection stays in sensor (never sends raw creds to PDP)
+- PolicyClient abstracts whether PDP is in-process or remote service
 - All decisions logged to JSONL for correlation
 
 Usage:
@@ -18,13 +17,30 @@ Usage:
 import json
 import logging
 import re
+import sys
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from base import SecurityAddon
 from mitmproxy import ctx, http
-from policy_engine import get_policy_engine
+
+# Add pdp to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from pdp import (
+    PolicyClient,
+    PolicyClientConfig,
+    get_policy_client,
+    reset_policy_client,
+    HttpEvent,
+    Effect,
+    CredentialType,
+    CredentialConfidence,
+)
+from sensor_utils import build_http_event_from_flow
+
 from utils import (
     get_client_ip,
     hmac_fingerprint,
@@ -183,51 +199,62 @@ def analyze_headers(
 
 
 # =============================================================================
-# Decision Engine
+# Decision Engine (PolicyClient-based)
 # =============================================================================
 
-def determine_decision_with_policy_engine(
+def evaluate_credential_with_pdp(
+    flow: http.HTTPFlow,
     credential: str,
     rule_name: str,
-    host: str,
-    path: str,
+    confidence: str,
     rules: list[CredentialRule],
     hmac_secret: bytes,
-) -> tuple[str, dict]:
-    """Determine credential decision using PolicyEngine."""
-    policy_engine = get_policy_engine()
+    principal_id: str,
+) -> tuple[Effect, dict]:
+    """Evaluate credential using PolicyClient.
 
-    if policy_engine is None:
-        raise RuntimeError("PolicyEngine not initialized.")
+    Returns:
+        (Effect, context_dict) - Effect enum and additional context
+    """
+    client = get_policy_client()
 
+    # Detect credential type and compute fingerprint
     credential_type = detect_credential_type(credential, rules)
     if credential_type is None:
         credential_type = "unknown"
 
     fingerprint = hmac_fingerprint(credential, hmac_secret)
 
-    decision = policy_engine.evaluate_credential(
+    # Build HttpEvent using shared builder
+    event = build_http_event_from_flow(
+        flow=flow,
+        principal_id=principal_id,
+        credential_detected=True,
         credential_type=credential_type,
-        destination=host,
-        path=path,
-        credential_hmac=fingerprint,
+        credential_fingerprint=fingerprint,
+        credential_confidence=confidence,
     )
 
-    if decision.effect == "allow":
-        return "allow", {}
-    elif decision.effect == "deny":
-        expected_hosts = []
+    # Evaluate via PolicyClient
+    decision = client.evaluate(event)
+
+    # Build context for response building
+    context = {
+        "fingerprint": f"hmac:{fingerprint}",
+        "reason_codes": decision.reason_codes,
+        "reason": decision.reason,
+        "decision": decision,  # Full decision for immediate_response access
+    }
+
+    # Add expected_hosts for mismatch cases
+    if decision.effect in (Effect.DENY, Effect.REQUIRE_APPROVAL):
         for rule in rules:
             if rule.name == credential_type:
-                expected_hosts = rule.allowed_hosts
+                context["expected_hosts"] = rule.allowed_hosts
+                context["suggested_url"] = rule.suggested_url
                 break
-        return "greylist_mismatch", {"expected_hosts": expected_hosts, "suggested_url": ""}
-    elif decision.effect == "prompt":
-        return "greylist_approval", {"reason": "requires_approval"}
-    elif decision.effect == "budget_exceeded":
-        return "greylist_approval", {"reason": "budget_exceeded"}
-    else:
-        return "greylist_approval", {"reason": decision.reason or "unknown"}
+
+    return decision.effect, context
 
 
 # =============================================================================
@@ -277,6 +304,31 @@ def create_approval_response(
         "reflection": "This credential requires human approval before use.",
     }
     return make_block_response(428, body, "credential-guard")
+
+
+def response_from_decision(decision, addon_name: str = "credential-guard") -> http.Response:
+    """Convert PolicyDecision.immediate_response to mitmproxy Response.
+
+    Falls back to generic error if immediate_response not provided.
+    """
+    if decision.immediate_response:
+        ir = decision.immediate_response
+        return make_block_response(ir.status_code, ir.body_json, addon_name)
+
+    # Fallback for decisions without immediate_response
+    status_map = {
+        Effect.DENY: 403,
+        Effect.REQUIRE_APPROVAL: 428,
+        Effect.BUDGET_EXCEEDED: 429,
+        Effect.ERROR: 500,
+    }
+    status = status_map.get(decision.effect, 403)
+    body = {
+        "error": decision.effect.value.replace("_", " ").title(),
+        "reason": decision.reason,
+        "reason_codes": decision.reason_codes,
+    }
+    return make_block_response(status, body, addon_name)
 
 
 # =============================================================================
@@ -401,54 +453,67 @@ class CredentialGuard(SecurityAddon):
             tier = det["tier"]
             fp = hmac_fingerprint(credential, self.hmac_secret)
 
-            decision, context = determine_decision_with_policy_engine(
+            # Evaluate via PolicyClient (PDP)
+            effect, context = evaluate_credential_with_pdp(
+                flow=flow,
                 credential=credential,
                 rule_name=rule_name,
-                host=host,
-                path=path,
+                confidence=confidence,
                 rules=self.rules,
                 hmac_secret=self.hmac_secret,
+                principal_id=f"project:{project_id}",
             )
 
             log_data = {
                 "rule": rule_name, "host": host, "location": f"header:{header}",
-                "fingerprint": f"hmac:{fp}", "confidence": confidence, "tier": tier,
-                "project_id": project_id
+                "fingerprint": context.get("fingerprint", f"hmac:{fp}"),
+                "confidence": confidence, "tier": tier,
+                "project_id": project_id,
+                "reason_codes": context.get("reason_codes", []),
             }
 
-            if decision == "allow":
+            if effect == Effect.ALLOW:
                 self.log_decision(flow, "allow", **log_data)
                 continue
 
+            # Non-allow decision - record violation
             self._record_violation(rule_name, host)
             flow.metadata["blocked_by"] = self.name
-            flow.metadata["credential_fingerprint"] = f"hmac:{fp}"
+            flow.metadata["credential_fingerprint"] = context.get("fingerprint", f"hmac:{fp}")
 
-            if decision == "greylist_mismatch":
+            # Map effect to log reason
+            if effect == Effect.DENY:
                 log_data["reason"] = "destination_mismatch"
                 log_data["expected_hosts"] = context.get("expected_hosts", [])
-
-                if self.should_block():
-                    self.log_decision(flow, "block", **log_data)
-                    flow.response = create_mismatch_response(
-                        rule_name, host, context.get("expected_hosts", []),
-                        f"hmac:{fp}", path, context.get("suggested_url", "")
-                    )
-                    return
-                else:
-                    self.log_decision(flow, "warn", **log_data)
-
-            elif decision == "greylist_approval":
+            elif effect == Effect.REQUIRE_APPROVAL:
                 log_data["reason"] = "requires_approval"
+            elif effect == Effect.BUDGET_EXCEEDED:
+                log_data["reason"] = "budget_exceeded"
+            else:
+                log_data["reason"] = context.get("reason", "policy_violation")
 
-                if self.should_block():
-                    self.log_decision(flow, "block", **log_data)
-                    flow.response = create_approval_response(
-                        rule_name, host, f"hmac:{fp}", path, "unknown_credential"
-                    )
-                    return
+            if self.should_block():
+                self.log_decision(flow, "block", **log_data)
+                # Use PDP's immediate_response if available
+                pdp_decision = context.get("decision")
+                if pdp_decision:
+                    flow.response = response_from_decision(pdp_decision, self.name)
                 else:
-                    self.log_decision(flow, "warn", **log_data)
+                    # Fallback to legacy response builders
+                    if effect == Effect.DENY:
+                        flow.response = create_mismatch_response(
+                            rule_name, host, context.get("expected_hosts", []),
+                            context.get("fingerprint", f"hmac:{fp}"), path,
+                            context.get("suggested_url", "")
+                        )
+                    else:
+                        flow.response = create_approval_response(
+                            rule_name, host, context.get("fingerprint", f"hmac:{fp}"),
+                            path, context.get("reason", "unknown")
+                        )
+                return
+            else:
+                self.log_decision(flow, "warn", **log_data)
 
     def get_stats(self) -> dict:
         """Get stats for admin API."""
