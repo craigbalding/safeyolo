@@ -1,4 +1,4 @@
-FROM gcr.io/oss-fuzz-base/base-builder-python
+FROM gcr.io/oss-fuzz-base/base-builder-python@sha256:5d248948bebce11d057fca6db1f35245f5f67a7d670550a33f493985f67719c8
 
 # Copy project
 COPY . $SRC/safeyolo
