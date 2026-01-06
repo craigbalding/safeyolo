@@ -6,7 +6,7 @@
 cd $SRC/safeyolo
 
 # Package each fuzzer with pyinstaller
-for fuzzer in fuzz/fuzz_*.py; do
+for fuzzer in fuzz/*_fuzzer.py; do
     fuzzer_basename=$(basename -s .py $fuzzer)
     fuzzer_package=${fuzzer_basename}.pkg
 
