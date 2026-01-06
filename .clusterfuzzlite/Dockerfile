@@ -8,4 +8,4 @@ WORKDIR $SRC/safeyolo
 COPY .clusterfuzzlite/build.sh $SRC/
 
 # Install dependencies needed for fuzzing
-RUN pip3 install mitmproxy pyyaml yarl
+RUN pip3 install mitmproxy pyyaml yarl pydantic

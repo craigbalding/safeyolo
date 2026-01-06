@@ -17,7 +17,9 @@ for fuzzer in fuzz/*_fuzzer.py; do
         --hidden-import yarl \
         --hidden-import multidict \
         --hidden-import idna \
+        --hidden-import pydantic \
         --collect-all mitmproxy \
+        --collect-all pydantic \
         $fuzzer
 
     # Create wrapper script (no LD_PRELOAD needed for pure Python)
