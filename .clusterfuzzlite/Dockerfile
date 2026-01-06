@@ -7,5 +7,5 @@ WORKDIR $SRC/safeyolo
 # Copy build script to expected location
 COPY .clusterfuzzlite/build.sh $SRC/
 
-# Install dependencies needed for fuzzing
-RUN pip3 install mitmproxy pyyaml yarl pydantic
+# Install dependencies needed for fuzzing (pinned with hashes)
+RUN pip3 install --require-hashes -r requirements/fuzz.txt
