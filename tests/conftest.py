@@ -84,12 +84,15 @@ def taddons_ctx():
 
 @pytest.fixture
 def policy_engine_initialized(tmp_path):
-    """Initialize PolicyEngine with test baseline for credential_guard tests."""
-    import policy_engine as pe
-    from policy_engine import init_policy_engine
+    """Initialize PDP with test baseline for credential_guard tests.
 
-    # Save existing engine
-    old_engine = pe._policy_engine
+    Uses PDPCore as the authority - tests configure policy through PDP,
+    not the legacy init_policy_engine() path.
+    """
+    from pdp import PolicyClientConfig, get_policy_client, reset_policy_client
+
+    # Reset any existing client
+    reset_policy_client()
 
     # Create test baseline
     baseline = tmp_path / "baseline.yaml"
@@ -120,11 +123,14 @@ addons:
     enabled: true
 """)
 
-    engine = init_policy_engine(baseline_path=baseline)
-    yield engine
+    # Configure PolicyClient with the test baseline
+    config = PolicyClientConfig(baseline_path=baseline)
+    client = get_policy_client(config)
 
-    # Restore
-    pe._policy_engine = old_engine
+    yield client
+
+    # Cleanup
+    reset_policy_client()
 
 
 @pytest.fixture
@@ -155,14 +161,41 @@ def credential_guard(policy_engine_initialized):
 
 
 @pytest.fixture
-def network_guard():
-    """Create a fresh NetworkGuard instance with blocking enabled."""
+def network_guard(tmp_path):
+    """Create a fresh NetworkGuard instance with blocking enabled and default policy."""
     from network_guard import NetworkGuard
+    from pdp import PolicyClientConfig, get_policy_client, reset_policy_client
+
+    # Reset PDP client for fresh state
+    reset_policy_client()
+
+    # Create permissive baseline for network_guard tests
+    baseline = tmp_path / "baseline.yaml"
+    baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+budgets: {}
+required: []
+addons: {}
+domains: {}
+""")
+
+    # Initialize PolicyClient with baseline
+    config = PolicyClientConfig(baseline_path=baseline)
+    get_policy_client(config)
 
     addon = NetworkGuard()
     # Default to blocking mode for tests
     addon.should_block = lambda: True
-    return addon
+
+    yield addon
+
+    # Cleanup
+    reset_policy_client()
 
 
 @pytest.fixture

@@ -24,6 +24,7 @@ ADDON_MODULES = [
     "policy_loader",
     "request_id",
     "request_logger",
+    "sensor_utils",
     "service_discovery",
     "sse_streaming",
     "utils",
@@ -34,14 +35,15 @@ ADDON_MODULES = [
 REQUIRED_NAMES = {
     "circuit_breaker": ["SecurityAddon", "atomic_write_json", "BackgroundWorker", "make_block_response"],
     "pattern_scanner": ["SecurityAddon", "make_block_response"],
-    "credential_guard": ["SecurityAddon", "get_policy_engine", "looks_like_secret", "hmac_fingerprint"],
-    "network_guard": ["SecurityAddon", "get_client_ip", "get_policy_engine"],
+    "credential_guard": ["SecurityAddon", "get_policy_client", "looks_like_secret", "hmac_fingerprint"],
+    "network_guard": ["SecurityAddon", "get_client_ip", "get_policy_client"],
     "base": ["make_block_response", "write_event", "get_option_safe", "get_policy_engine"],
     "policy_engine": ["write_event", "GCRABudgetTracker", "PolicyLoader"],
     "budget_tracker": ["atomic_write_json", "BackgroundWorker"],
     "request_logger": ["write_audit_event", "BackgroundWorker"],
     "admin_api": ["write_event", "get_policy_engine"],
     "policy_loader": ["write_event"],
+    "sensor_utils": ["build_http_event_from_flow"],
 }
 
 

@@ -5,6 +5,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def make_mock_decision(effect, reason="", budget_remaining=None):
+    """Create a mock PolicyDecision for testing."""
+    from pdp import Effect, BudgetBlock
+
+    decision = MagicMock()
+    decision.effect = effect
+    decision.reason = reason
+    decision.reason_codes = []
+
+    if budget_remaining is not None:
+        decision.budget = BudgetBlock(remaining=budget_remaining)
+    else:
+        decision.budget = None
+
+    return decision
+
+
 class TestNetworkGuard:
     """Tests for NetworkGuard addon."""
 
@@ -27,7 +44,7 @@ class TestNetworkGuard:
     def test_blocks_denied_request(self):
         """Test addon blocks requests with effect=deny."""
         from network_guard import NetworkGuard
-        from policy_engine import PolicyDecision
+        from pdp import Effect
 
         addon = NetworkGuard()
 
@@ -36,17 +53,22 @@ class TestNetworkGuard:
         flow.request.host = "evil.com"
         flow.request.path = "/malware"
         flow.request.method = "GET"
+        flow.request.port = 443
+        flow.request.scheme = "https"
+        flow.request.headers = {}
+        flow.request.content = b""
+        flow.request.query = None
         flow.client_conn.peername = ("192.168.1.1", 12345)
         flow.metadata = {}
 
-        # Mock policy engine returning deny
-        mock_engine = MagicMock()
-        mock_engine.evaluate_request.return_value = PolicyDecision(
-            effect="deny",
+        # Mock policy client returning deny
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = make_mock_decision(
+            Effect.DENY,
             reason="Access denied to evil.com"
         )
 
-        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
@@ -60,7 +82,7 @@ class TestNetworkGuard:
     def test_blocks_rate_limited_request(self):
         """Test addon blocks requests with effect=budget_exceeded."""
         from network_guard import NetworkGuard
-        from policy_engine import PolicyDecision
+        from pdp import Effect
 
         addon = NetworkGuard()
 
@@ -68,17 +90,22 @@ class TestNetworkGuard:
         flow.request.host = "api.openai.com"
         flow.request.path = "/v1/chat"
         flow.request.method = "POST"
+        flow.request.port = 443
+        flow.request.scheme = "https"
+        flow.request.headers = {}
+        flow.request.content = b""
+        flow.request.query = None
         flow.client_conn.peername = ("192.168.1.1", 12345)
         flow.metadata = {}
 
-        # Mock policy engine returning budget_exceeded
-        mock_engine = MagicMock()
-        mock_engine.evaluate_request.return_value = PolicyDecision(
-            effect="budget_exceeded",
+        # Mock policy client returning budget_exceeded
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = make_mock_decision(
+            Effect.BUDGET_EXCEEDED,
             reason="Rate limit exceeded for api.openai.com"
         )
 
-        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
@@ -92,7 +119,7 @@ class TestNetworkGuard:
     def test_allows_non_denied_request(self):
         """Test addon allows requests without effect=deny or budget_exceeded."""
         from network_guard import NetworkGuard
-        from policy_engine import PolicyDecision
+        from pdp import Effect
 
         addon = NetworkGuard()
 
@@ -100,18 +127,24 @@ class TestNetworkGuard:
         flow.request.host = "api.openai.com"
         flow.request.path = "/v1/chat"
         flow.request.method = "POST"
+        flow.request.port = 443
+        flow.request.scheme = "https"
+        flow.request.headers = {}
+        flow.request.content = b""
+        flow.request.query = None
+        flow.client_conn.peername = ("192.168.1.1", 12345)
         flow.metadata = {}
         flow.response = None
 
-        # Mock policy engine returning allow
-        mock_engine = MagicMock()
-        mock_engine.evaluate_request.return_value = PolicyDecision(
-            effect="allow",
+        # Mock policy client returning allow
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = make_mock_decision(
+            Effect.ALLOW,
             reason="Allowed",
             budget_remaining=2999
         )
 
-        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
@@ -125,7 +158,7 @@ class TestNetworkGuard:
     def test_warn_mode_does_not_block(self):
         """Test warn mode logs but doesn't block."""
         from network_guard import NetworkGuard
-        from policy_engine import PolicyDecision
+        from pdp import Effect
 
         addon = NetworkGuard()
 
@@ -133,13 +166,18 @@ class TestNetworkGuard:
         flow.request.host = "evil.com"
         flow.request.path = "/malware"
         flow.request.method = "GET"
+        flow.request.port = 443
+        flow.request.scheme = "https"
+        flow.request.headers = {}
+        flow.request.content = b""
+        flow.request.query = None
         flow.client_conn.peername = ("192.168.1.1", 12345)
         flow.metadata = {}
         flow.response = None
 
-        mock_engine = MagicMock()
-        mock_engine.evaluate_request.return_value = PolicyDecision(
-            effect="deny",
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = make_mock_decision(
+            Effect.DENY,
             reason="Access denied"
         )
 
@@ -150,7 +188,7 @@ class TestNetworkGuard:
                 return False  # Warn mode
             return default
 
-        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", side_effect=option_side_effect):
                 addon.request(flow)
 
@@ -169,19 +207,20 @@ class TestNetworkGuard:
         flow.request.host = "evil.com"
         flow.metadata = {}
 
-        mock_engine = MagicMock()
+        mock_client = MagicMock()
 
-        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", return_value=False):
                 addon.request(flow)
 
-        # Should not have called policy engine
-        mock_engine.evaluate_request.assert_not_called()
+        # Should not have called policy client
+        mock_client.evaluate.assert_not_called()
         assert addon.stats.checks == 0
 
-    def test_no_engine_allows(self):
-        """Test requests pass through if no policy engine."""
+    def test_pdp_error_fails_closed(self):
+        """Test that PDP errors result in denial (fail-closed)."""
         from network_guard import NetworkGuard
+        from pdp import Effect
 
         addon = NetworkGuard()
 
@@ -189,17 +228,30 @@ class TestNetworkGuard:
         flow.request.host = "any.com"
         flow.request.path = "/"
         flow.request.method = "GET"
+        flow.request.port = 443
+        flow.request.scheme = "https"
+        flow.request.headers = {}
+        flow.request.content = b""
+        flow.request.query = None
+        flow.client_conn.peername = ("192.168.1.1", 12345)
         flow.metadata = {}
         flow.response = None
 
-        with patch("network_guard.get_policy_engine", return_value=None):
+        # Mock PDP returning error
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = make_mock_decision(
+            Effect.ERROR,
+            reason="PDP unavailable"
+        )
+
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
-        # No engine = no blocking
-        assert flow.response is None
-        assert addon.stats.checks == 1
-        assert addon.stats.allowed == 1
+        # Error should fail closed (block)
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+        assert addon.stats.blocked == 1
 
 
 class TestNetworkGuardIntegration:
@@ -310,9 +362,9 @@ class TestNetworkGuardIntegration:
         assert decision3.effect == "budget_exceeded"
 
     def test_single_evaluation_per_request(self):
-        """Test that NetworkGuard only calls evaluate_request once per request."""
+        """Test that NetworkGuard only calls PolicyClient.evaluate once per request."""
         from network_guard import NetworkGuard
-        from policy_engine import PolicyDecision
+        from pdp import Effect
 
         addon = NetworkGuard()
 
@@ -320,21 +372,27 @@ class TestNetworkGuardIntegration:
         flow.request.host = "api.openai.com"
         flow.request.path = "/v1/chat"
         flow.request.method = "POST"
+        flow.request.port = 443
+        flow.request.scheme = "https"
+        flow.request.headers = {}
+        flow.request.content = b""
+        flow.request.query = None
+        flow.client_conn.peername = ("192.168.1.1", 12345)
         flow.metadata = {}
         flow.response = None
 
-        mock_engine = MagicMock()
-        mock_engine.evaluate_request.return_value = PolicyDecision(
-            effect="allow",
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = make_mock_decision(
+            Effect.ALLOW,
             budget_remaining=100
         )
 
-        with patch("network_guard.get_policy_engine", return_value=mock_engine):
+        with patch("network_guard.get_policy_client", return_value=mock_client):
             with patch("base.get_option_safe", return_value=True):
                 addon.request(flow)
 
-        # Should have called evaluate_request exactly once
-        assert mock_engine.evaluate_request.call_count == 1
+        # Should have called evaluate exactly once
+        assert mock_client.evaluate.call_count == 1
 
 
 class TestHomoglyphDetection:

