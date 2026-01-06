@@ -2,7 +2,7 @@
 network_guard.py - Unified network policy enforcement
 
 Combines access control (deny rules) and rate limiting (budget enforcement)
-into a single addon with one PolicyEngine evaluation per request.
+into a single addon with one PolicyClient evaluation per request.
 
 Handles:
 - Homoglyph detection (mixed-script domain spoofing) → 403
@@ -34,6 +34,8 @@ permissions:
 """
 
 import logging
+import sys
+from pathlib import Path
 
 from mitmproxy import ctx, http
 
@@ -45,8 +47,15 @@ except ImportError:
     confusables = None
 
 from base import SecurityAddon
-from policy_engine import get_policy_engine
 from utils import get_client_ip
+
+# Add pdp to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from pdp import (
+    get_policy_client,
+    Effect,
+)
+from sensor_utils import build_http_event_from_flow
 
 log = logging.getLogger("safeyolo.network-guard")
 
@@ -116,6 +125,12 @@ class NetworkGuard(SecurityAddon):
         except AttributeError:
             return True  # Default on
 
+    def _get_principal_id(self, flow: http.HTTPFlow) -> str:
+        """Get principal ID from flow for policy evaluation."""
+        client_ip = get_client_ip(flow)
+        # TODO: Could use service_discovery for richer principal mapping
+        return f"client:{client_ip}"
+
     def request(self, flow: http.HTTPFlow):
         """Enforce network policy: homoglyphs, access control, rate limits."""
         if not self.is_enabled():
@@ -134,28 +149,43 @@ class NetworkGuard(SecurityAddon):
                 self._handle_homoglyph(flow, domain, path, method, homoglyph)
                 return
 
-        # 2. Single PolicyEngine evaluation for access + rate limiting
-        engine = get_policy_engine()
-        if engine is None:
-            self.stats.allowed += 1
-            return
+        # 2. Build HttpEvent and evaluate via PolicyClient
+        event = build_http_event_from_flow(
+            flow=flow,
+            principal_id=self._get_principal_id(flow),
+            credential_detected=False,  # network_guard doesn't handle credentials
+        )
 
-        decision = engine.evaluate_request(domain, path, method)
+        client = get_policy_client()
+        decision = client.evaluate(event)
 
         # 3. Handle deny → 403
-        if decision.effect == "deny":
+        if decision.effect == Effect.DENY:
             self._handle_deny(flow, domain, path, method, decision.reason)
             return
 
         # 4. Handle budget_exceeded → 429
-        if decision.effect == "budget_exceeded":
+        if decision.effect == Effect.BUDGET_EXCEEDED:
             self._handle_rate_limit(flow, domain, path, method, decision.reason)
             return
 
-        # 5. Allowed - track remaining budget if present
+        # 5. Handle require_approval (credential_guard handles this, but log it)
+        if decision.effect == Effect.REQUIRE_APPROVAL:
+            # network_guard doesn't block on approval - that's credential_guard's job
+            self.stats.allowed += 1
+            return
+
+        # 6. Handle PDP errors
+        if decision.effect == Effect.ERROR:
+            log.error(f"PDP error for {domain}: {decision.reason}")
+            # Fail closed - treat as deny
+            self._handle_deny(flow, domain, path, method, f"PDP error: {decision.reason}")
+            return
+
+        # 7. Allowed - track remaining budget if present
         self.stats.allowed += 1
-        if decision.budget_remaining is not None:
-            flow.metadata["ratelimit_remaining"] = decision.budget_remaining
+        if decision.budget and decision.budget.remaining is not None:
+            flow.metadata["ratelimit_remaining"] = decision.budget.remaining
 
     def _handle_homoglyph(self, flow, domain, path, method, homoglyph):
         """Handle homoglyph attack detection."""
@@ -233,9 +263,8 @@ class NetworkGuard(SecurityAddon):
 
     def get_stats(self) -> dict:
         """Get network guard statistics."""
-        engine = get_policy_engine()
-        budget_stats = engine.get_budget_stats() if engine else {}
-
+        # Budget stats are now managed by PDP
+        # TODO: Add /stats endpoint to PDP for budget info
         return {
             "enabled": self.is_enabled(),
             "checks": self.stats.checks,
@@ -243,7 +272,6 @@ class NetworkGuard(SecurityAddon):
             "blocked": self.stats.blocked,
             "warned": self.stats.warned,
             "rate_limited": self.rate_limited,
-            "budget_stats": budget_stats,
         }
 
 
