@@ -152,6 +152,15 @@ class PolicyClient(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_stats(self) -> dict:
+        """Get PDP statistics.
+
+        Returns:
+            Dict with engine stats (policy hash, evaluation counts, etc.)
+        """
+        pass
+
 
 class LocalPolicyClient(PolicyClient):
     """
@@ -195,6 +204,10 @@ class LocalPolicyClient(PolicyClient):
     ) -> bool:
         """Check if addon is enabled via PDPCore."""
         return self._pdp.is_addon_enabled(addon_name, domain, client_id)
+
+    def get_stats(self) -> dict:
+        """Get PDP statistics."""
+        return self._pdp.get_stats()
 
     def _error_decision(self, event_id: str, error: str) -> PolicyDecision:
         """Create error decision for internal failures."""
@@ -361,6 +374,15 @@ class HttpPolicyClient(PolicyClient):
             "Use local mode or implement /v1/addons/enabled endpoint."
         )
 
+    def get_stats(self) -> dict:
+        """Get PDP statistics via HTTP.
+
+        Not implemented for HTTP mode - would require /v1/stats endpoint.
+        Returns empty dict for compatibility.
+        """
+        # TODO: Implement /v1/stats endpoint in pdp/app.py
+        return {}
+
     def _unavailable_decision(self, event_id: str, reason: str) -> PolicyDecision:
         """Create decision when PDP is unavailable.
 
@@ -428,45 +450,87 @@ class HttpPolicyClient(PolicyClient):
 
 
 # =============================================================================
-# Factory Function
+# Registry API
 # =============================================================================
 
 _client_instance: PolicyClient | None = None
+_client_config: PolicyClientConfig | None = None
 _client_lock = threading.Lock()
 
 
-def get_policy_client(config: PolicyClientConfig | None = None) -> PolicyClient:
+def configure_policy_client(config: PolicyClientConfig) -> None:
     """
-    Get or create a PolicyClient based on configuration.
+    Configure the global PolicyClient singleton.
 
-    First call with config initializes the client.
-    Subsequent calls return the same instance.
+    Must be called before get_policy_client(). In mitmproxy context,
+    the policy_engine addon calls this during load/configure.
 
     Args:
-        config: Optional configuration. Defaults to local mode.
+        config: Client configuration with paths and mode.
+
+    Raises:
+        RuntimeError: If client already configured with different config.
+    """
+    global _client_instance, _client_config
+
+    with _client_lock:
+        if _client_instance is not None:
+            # Already configured - check if config changed
+            if _client_config == config:
+                return  # Same config, no-op
+            # Config changed - need reconfigure
+            log.info("PolicyClient reconfiguring with new config")
+            _client_instance.shutdown()
+            _client_instance = None
+
+        _client_config = config
+        if config.mode == "http":
+            _client_instance = HttpPolicyClient(config)
+        else:
+            _client_instance = LocalPolicyClient(config)
+
+        log.info(
+            "PolicyClient configured",
+            extra={
+                "mode": config.mode,
+                "baseline_path": str(config.baseline_path) if config.baseline_path else None,
+            }
+        )
+
+
+def get_policy_client() -> PolicyClient:
+    """
+    Get the configured PolicyClient singleton.
+
+    Fails closed if not configured - this prevents silent feature loss
+    from using an unconfigured/empty policy.
 
     Returns:
         PolicyClient instance
-    """
-    global _client_instance
 
+    Raises:
+        RuntimeError: If configure_policy_client() was not called first.
+    """
     with _client_lock:
         if _client_instance is None:
-            if config is None:
-                config = PolicyClientConfig()
-
-            if config.mode == "http":
-                _client_instance = HttpPolicyClient(config)
-            else:
-                _client_instance = LocalPolicyClient(config)
-
+            raise RuntimeError(
+                "PolicyClient not configured. "
+                "Ensure policy_engine addon is loaded before other addons."
+            )
         return _client_instance
 
 
+def is_policy_client_configured() -> bool:
+    """Check if PolicyClient has been configured."""
+    with _client_lock:
+        return _client_instance is not None
+
+
 def reset_policy_client() -> None:
-    """Reset the global client (for testing)."""
-    global _client_instance
+    """Reset the global client (for testing only)."""
+    global _client_instance, _client_config
     with _client_lock:
         if _client_instance:
             _client_instance.shutdown()
         _client_instance = None
+        _client_config = None

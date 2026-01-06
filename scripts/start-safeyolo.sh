@@ -228,9 +228,13 @@ if [ -f "${CONFIG_DIR}/rate_limits.json" ]; then
 fi
 
 # Add policy config if file exists
-if [ -f "${CONFIG_DIR}/policy.yaml" ]; then
-    MITM_OPTS="${MITM_OPTS} --set policy_file=${CONFIG_DIR}/policy.yaml"
-    echo "Using policy from ${CONFIG_DIR}/policy.yaml"
+if [ -f "${CONFIG_DIR}/baseline.yaml" ]; then
+    MITM_OPTS="${MITM_OPTS} --set policy_baseline=${CONFIG_DIR}/baseline.yaml"
+    echo "Using policy baseline from ${CONFIG_DIR}/baseline.yaml"
+elif [ -f "${CONFIG_DIR}/policy.yaml" ]; then
+    # Legacy path - remove once migrated
+    MITM_OPTS="${MITM_OPTS} --set policy_baseline=${CONFIG_DIR}/policy.yaml"
+    echo "Using policy baseline from ${CONFIG_DIR}/policy.yaml (legacy path)"
 fi
 
 #echo "Addons: policy -> discovery -> rate_limiter -> circuit_breaker -> credential_guard -> yara -> pattern -> injection -> logger -> metrics -> admin"

@@ -87,7 +87,9 @@ from .client import (
     LocalPolicyClient,
     HttpPolicyClient,
     UnavailableMode,
+    configure_policy_client,
     get_policy_client,
+    is_policy_client_configured,
     reset_policy_client,
 )
 

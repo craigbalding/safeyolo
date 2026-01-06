@@ -148,30 +148,45 @@ if missing:
         extra = expected - actual_modules
         assert not extra, f"ADDON_MODULES has non-existent: {extra}"
 
-    def test_no_addon_imports_get_policy_engine(self):
-        """Ensure no addon imports the legacy get_policy_engine function.
+    def test_get_policy_engine_deleted(self):
+        """Verify legacy get_policy_engine() has been deleted.
 
-        After PDP migration, addons should use PolicyClient or PDPAdminClient.
-
-        TODO: Once confirmed safe, delete get_policy_engine() from policy_engine.py
-        entirely. PDPCore creates its own PolicyEngine instance, so the global
-        singleton is dead code. Then this test can check that the symbol doesn't
-        exist at all.
+        After PDP migration, PolicyEngine is created only by PDPCore (via
+        LocalPolicyClient). The global singleton get_policy_engine() is dead code.
         """
         addons_dir = Path(__file__).parent.parent / "addons"
-        # policy_engine.py defines get_policy_engine (but nothing should call it)
-        excluded = {"policy_engine"}
+        source = (addons_dir / "policy_engine.py").read_text()
+
+        # Should not define get_policy_engine function
+        assert "def get_policy_engine" not in source, (
+            "get_policy_engine() should be deleted. "
+            "Use get_policy_client() instead."
+        )
+
+        # Should not define init_policy_engine function
+        assert "def init_policy_engine" not in source, (
+            "init_policy_engine() should be deleted. "
+            "PolicyClientConfigurator configures the client."
+        )
+
+        # Should not have the _policy_engine global singleton
+        assert "_policy_engine: PolicyEngine" not in source, (
+            "_policy_engine global should be deleted. "
+            "PolicyClient registry owns the singleton."
+        )
+
+    def test_no_addon_imports_get_policy_engine(self):
+        """Ensure no addon references the legacy get_policy_engine function."""
+        addons_dir = Path(__file__).parent.parent / "addons"
         violations = []
 
         for module in ADDON_MODULES:
-            if module in excluded:
-                continue
             source = (addons_dir / f"{module}.py").read_text()
             if "get_policy_engine" in source:
                 violations.append(module)
 
         assert not violations, (
-            f"Addons importing legacy get_policy_engine: {violations}. "
+            f"Addons referencing legacy get_policy_engine: {violations}. "
             f"Use get_policy_client() or get_admin_client() instead."
         )
 
@@ -197,30 +212,189 @@ if missing:
 class TestAddonContracts:
     """Contract tests ensuring addons agree on shared conventions."""
 
-    def test_policy_metadata_key_consistent(self):
-        """Verify producer and consumers use same metadata key for policy.
+    def test_no_addon_uses_policy_engine_metadata(self):
+        """Verify no addon accesses flow.metadata["policy_engine"].
 
-        policy_engine.py sets flow.metadata["X"], consumers read flow.metadata.get("X").
-        If keys don't match, consumers silently get None - a hard-to-find bug.
+        Addons should use get_policy_client() instead of the legacy
+        flow.metadata["policy_engine"] shim. This test ensures the shim
+        was fully removed.
+        """
+        addons_dir = Path(__file__).parent.parent / "addons"
+        violations = []
+
+        for module in ADDON_MODULES:
+            source = (addons_dir / f"{module}.py").read_text()
+            # Check for any access to policy_engine in metadata
+            if 'metadata["policy_engine"]' in source or "metadata['policy_engine']" in source:
+                violations.append(f"{module}: sets metadata['policy_engine']")
+            if 'metadata.get("policy_engine")' in source or "metadata.get('policy_engine')" in source:
+                violations.append(f"{module}: reads metadata.get('policy_engine')")
+
+        assert not violations, (
+            "Addons should use get_policy_client() not flow.metadata:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+        )
+
+    def test_no_addon_accesses_pdp_internals(self):
+        """Verify no addon accesses ._pdp or ._engine internals.
+
+        Addons should use the public PolicyClient interface, not reach into
+        PDPCore or PolicyEngine internals. This ensures proper encapsulation.
         """
         import re
 
         addons_dir = Path(__file__).parent.parent / "addons"
+        violations = []
 
-        # Producer: policy_engine.py sets the key
-        producer_source = (addons_dir / "policy_engine.py").read_text()
-        producer_match = re.search(r'flow\.metadata\["(\w+)"\]\s*=\s*self\.engine', producer_source)
-        assert producer_match, "Could not find policy_engine setting flow.metadata"
-        producer_key = producer_match.group(1)
+        # Patterns that indicate internal access (excluding definitions/docstrings)
+        internal_patterns = [
+            (r'\._pdp\b', '._pdp'),
+            (r'\._engine\b', '._engine'),
+            (r'client\._pdp', 'client._pdp'),
+        ]
 
-        # Consumers: addons that read the key
-        consumers = ["credential_guard.py", "sse_streaming.py"]
-        for consumer_file in consumers:
-            consumer_source = (addons_dir / consumer_file).read_text()
-            consumer_match = re.search(r'flow\.metadata\.get\(["\'](\w+)["\']\)', consumer_source)
-            if consumer_match:
-                consumer_key = consumer_match.group(1)
-                assert consumer_key == producer_key, (
-                    f"{consumer_file} uses key '{consumer_key}' but "
-                    f"policy_engine.py sets '{producer_key}'"
-                )
+        for module in ADDON_MODULES:
+            source = (addons_dir / f"{module}.py").read_text()
+            for pattern, desc in internal_patterns:
+                if re.search(pattern, source):
+                    violations.append(f"{module}: accesses {desc}")
+
+        assert not violations, (
+            "Addons should not access PDPCore internals:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+        )
+
+
+class TestPolicyClientRegistry:
+    """Test PolicyClient singleton registry behavior."""
+
+    def test_get_policy_client_fails_before_configure(self):
+        """get_policy_client() must fail if configure_policy_client() not called.
+
+        This is the fail-closed behavior that prevents silent use of an
+        unconfigured/empty policy.
+        """
+        from pdp import reset_policy_client, get_policy_client
+        import pytest
+
+        reset_policy_client()  # Ensure clean state
+
+        with pytest.raises(RuntimeError) as exc_info:
+            get_policy_client()
+
+        assert "not configured" in str(exc_info.value).lower()
+
+    def test_configure_then_get_policy_client(self):
+        """configure_policy_client() + get_policy_client() returns valid client."""
+        from pdp import (
+            reset_policy_client,
+            configure_policy_client,
+            get_policy_client,
+            is_policy_client_configured,
+            PolicyClientConfig,
+            PolicyClient,
+        )
+
+        reset_policy_client()  # Ensure clean state
+
+        # Before: not configured
+        assert not is_policy_client_configured()
+
+        # Configure with local mode (no paths = empty policy)
+        config = PolicyClientConfig(mode="local")
+        configure_policy_client(config)
+
+        # After: configured
+        assert is_policy_client_configured()
+        client = get_policy_client()
+        assert isinstance(client, PolicyClient)
+
+        # Cleanup
+        reset_policy_client()
+
+    def test_configure_with_baseline_path(self, tmp_path):
+        """configure_policy_client() with baseline_path loads the policy."""
+        from pdp import (
+            reset_policy_client,
+            configure_policy_client,
+            get_policy_client,
+            PolicyClientConfig,
+            LocalPolicyClient,
+        )
+
+        reset_policy_client()
+
+        # Create a minimal baseline policy
+        baseline_path = tmp_path / "baseline.yaml"
+        baseline_path.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    condition:
+      credential: ["openai:*"]
+""")
+
+        config = PolicyClientConfig(
+            mode="local",
+            baseline_path=baseline_path,
+        )
+        configure_policy_client(config)
+
+        client = get_policy_client()
+        assert isinstance(client, LocalPolicyClient)
+
+        # Verify policy was loaded
+        assert client._pdp._engine.get_baseline() is not None
+
+        reset_policy_client()
+
+    def test_single_policy_engine_instance(self, tmp_path):
+        """Verify only one PolicyEngine exists (via PDPCore), not two.
+
+        This is the regression test for the dual-engine bug where:
+        - PolicyEngineAddon created its own PolicyEngine
+        - LocalPolicyClient/PDPCore created another PolicyEngine
+        """
+        from pdp import (
+            reset_policy_client,
+            configure_policy_client,
+            get_policy_client,
+            PolicyClientConfig,
+            LocalPolicyClient,
+        )
+
+        reset_policy_client()
+
+        baseline_path = tmp_path / "baseline.yaml"
+        baseline_path.write_text("""
+metadata:
+  version: "1.0"
+clients:
+  agent:claude-dev:
+    bypass: [credential-guard]
+""")
+
+        config = PolicyClientConfig(
+            mode="local",
+            baseline_path=baseline_path,
+        )
+        configure_policy_client(config)
+
+        client = get_policy_client()
+        assert isinstance(client, LocalPolicyClient)
+
+        # The is_addon_enabled check should use the SAME engine that loaded
+        # the baseline, not an empty one
+        result = client.is_addon_enabled(
+            "credential-guard",
+            client_id="agent:claude-dev",
+        )
+        assert result is False, (
+            "is_addon_enabled should return False for bypassed addon. "
+            "If True, there may be multiple PolicyEngine instances."
+        )
+
+        reset_policy_client()

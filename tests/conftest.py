@@ -89,7 +89,7 @@ def policy_engine_initialized(tmp_path):
     Uses PDPCore as the authority - tests configure policy through PDP,
     not the legacy init_policy_engine() path.
     """
-    from pdp import PolicyClientConfig, get_policy_client, reset_policy_client
+    from pdp import PolicyClientConfig, configure_policy_client, get_policy_client, reset_policy_client
 
     # Reset any existing client
     reset_policy_client()
@@ -125,7 +125,8 @@ addons:
 
     # Configure PolicyClient with the test baseline
     config = PolicyClientConfig(baseline_path=baseline)
-    client = get_policy_client(config)
+    configure_policy_client(config)
+    client = get_policy_client()
 
     yield client
 
@@ -164,7 +165,7 @@ def credential_guard(policy_engine_initialized):
 def network_guard(tmp_path):
     """Create a fresh NetworkGuard instance with blocking enabled and default policy."""
     from network_guard import NetworkGuard
-    from pdp import PolicyClientConfig, get_policy_client, reset_policy_client
+    from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
 
     # Reset PDP client for fresh state
     reset_policy_client()
@@ -186,7 +187,7 @@ domains: {}
 
     # Initialize PolicyClient with baseline
     config = PolicyClientConfig(baseline_path=baseline)
-    get_policy_client(config)
+    configure_policy_client(config)
 
     addon = NetworkGuard()
     # Default to blocking mode for tests

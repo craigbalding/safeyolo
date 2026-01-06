@@ -7,7 +7,7 @@ Tests that addons work together correctly via flow.metadata sharing.
 import threading
 from contextlib import contextmanager
 
-from pdp import PolicyClientConfig, get_policy_client, reset_policy_client
+from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
 
 
 @contextmanager
@@ -32,7 +32,7 @@ def policy_context(tmp_path, policy_yaml: str):
     baseline.write_text(policy_yaml)
 
     config = PolicyClientConfig(baseline_path=baseline)
-    get_policy_client(config)
+    configure_policy_client(config)
 
     try:
         yield

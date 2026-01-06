@@ -418,10 +418,23 @@ class CredentialGuard(SecurityAddon):
         self.violations_total += 1
         self.violations_by_type[rule] = self.violations_by_type.get(rule, 0) + 1
 
+    def _is_enabled(self, flow: http.HTTPFlow) -> bool:
+        """Check if addon is enabled via PolicyClient."""
+        try:
+            client = get_policy_client()
+            return client.is_addon_enabled(
+                "credential-guard",
+                domain=flow.request.host,
+                client_id=self._get_project_id(flow),
+            )
+        except RuntimeError:
+            # PolicyClient not configured - default to enabled
+            return True
+
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
-        policy = flow.metadata.get("policy_engine")
-        if policy and not policy.is_addon_enabled("credential-guard"):
+        # Check if addon is disabled via policy
+        if not self._is_enabled(flow):
             return
 
         host = flow.request.host.lower()
