@@ -152,9 +152,14 @@ if missing:
         """Ensure no addon imports the legacy get_policy_engine function.
 
         After PDP migration, addons should use PolicyClient or PDPAdminClient.
+
+        TODO: Once confirmed safe, delete get_policy_engine() from policy_engine.py
+        entirely. PDPCore creates its own PolicyEngine instance, so the global
+        singleton is dead code. Then this test can check that the symbol doesn't
+        exist at all.
         """
         addons_dir = Path(__file__).parent.parent / "addons"
-        # policy_engine defines get_policy_engine
+        # policy_engine.py defines get_policy_engine (but nothing should call it)
         excluded = {"policy_engine"}
         violations = []
 
@@ -166,7 +171,8 @@ if missing:
                 violations.append(module)
 
         assert not violations, (
-            f"Addons importing legacy get_policy_engine: {violations}"
+            f"Addons importing legacy get_policy_engine: {violations}. "
+            f"Use get_policy_client() or get_admin_client() instead."
         )
 
     def test_no_addon_imports_pdp_core(self):
