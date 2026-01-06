@@ -84,6 +84,13 @@ class PolicyClient(ABC):
     """Abstract interface for policy evaluation.
 
     Sensors depend on this interface, not concrete implementations.
+
+    Main contract:
+        evaluate(HttpEvent) -> PolicyDecision
+
+    The evaluate() method is THE policy query path. All policy decisions
+    should flow through it. Other methods (health_check, is_addon_enabled)
+    are operational/compatibility helpers, not a second policy API.
     """
 
     @abstractmethod
@@ -127,6 +134,13 @@ class PolicyClient(ABC):
         client_id: str | None = None,
     ) -> bool:
         """Check if addon is enabled for the given context.
+
+        NOTE: This is a temporary compatibility hook for the PDP migration.
+        The main contract is evaluate(HttpEvent) -> PolicyDecision.
+
+        TODO: Consider folding this into evaluate() by having addons check
+        the PolicyDecision for an "addon_disabled" reason code, rather than
+        maintaining two separate policy query paths.
 
         Args:
             addon_name: Name of addon to check
