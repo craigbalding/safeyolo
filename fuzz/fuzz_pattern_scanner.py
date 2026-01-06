@@ -45,7 +45,7 @@ def test_scan_text(data: bytes):
         scanner._scan_text(text, "input")
         scanner._scan_text(text, "output")
     except Exception:
-        # Crashes are bugs, exceptions might be acceptable
+        # Intentional: fuzzer continues on exceptions to find crashes
         pass
 
 
@@ -82,9 +82,10 @@ def test_pattern_rule_matches(data: bytes):
         )
         rule.matches(text_str)
     except re.error:
-        # Invalid regex is expected
+        # Invalid regex is expected from fuzz input
         pass
     except Exception:
+        # Intentional: fuzzer continues on exceptions to find crashes
         pass
 
 

@@ -47,6 +47,7 @@ def test_analyze_headers(data: bytes):
             detection_level="standard"
         )
     except Exception:
+        # Intentional: fuzzer continues on exceptions to find crashes
         pass
 
 
@@ -83,6 +84,7 @@ def test_analyze_arbitrary_headers(data: bytes):
             detection_level="paranoid"
         )
     except Exception:
+        # Intentional: fuzzer continues on exceptions to find crashes
         pass
 
 
@@ -97,6 +99,7 @@ def test_extract_bearer_token(data: bytes):
     try:
         extract_bearer_token(text)
     except Exception:
+        # Intentional: fuzzer continues on exceptions to find crashes
         pass
 
 
