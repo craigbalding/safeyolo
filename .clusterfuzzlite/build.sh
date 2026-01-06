@@ -13,6 +13,9 @@ for fuzzer in fuzz/*_fuzzer.py; do
     # Create standalone package
     pyinstaller --distpath $OUT --onefile --name $fuzzer_package \
         --paths addons \
+        --hidden-import yaml \
+        --hidden-import policy_engine \
+        --collect-all mitmproxy \
         $fuzzer
 
     # Create wrapper script (no LD_PRELOAD needed for pure Python)
