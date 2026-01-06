@@ -348,10 +348,18 @@ class HttpPolicyClient(PolicyClient):
     ) -> bool:
         """Check if addon is enabled.
 
-        TODO: Add /v1/addons/enabled endpoint when needed.
-        For now, default to enabled (bypass checks happen locally).
+        Not implemented for HTTP mode - requires /v1/addons/enabled endpoint.
+
+        Raises:
+            NotImplementedError: Always. HTTP mode doesn't support this yet.
+                If you need addon bypass in split-process mode, either:
+                1. Add GET /v1/addons/enabled endpoint to pdp/app.py
+                2. Use local mode (PolicyClientConfig(mode="local"))
         """
-        return True
+        raise NotImplementedError(
+            "is_addon_enabled() not supported in HTTP mode. "
+            "Use local mode or implement /v1/addons/enabled endpoint."
+        )
 
     def _unavailable_decision(self, event_id: str, reason: str) -> PolicyDecision:
         """Create decision when PDP is unavailable.
