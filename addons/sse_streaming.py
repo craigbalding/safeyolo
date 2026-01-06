@@ -76,7 +76,7 @@ class SSEStreaming:
         host = flow.request.host
 
         # Check policy first
-        policy = flow.metadata.get("policy")
+        policy = flow.metadata.get("policy_engine")
         if policy:
             if not policy.is_addon_enabled(self.name):
                 return

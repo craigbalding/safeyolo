@@ -131,7 +131,7 @@ class TestSSEStreamingWithPolicy:
         flow = Mock()
         flow.response.headers.get.return_value = "text/event-stream"
         flow.request.host = "api.example.com"
-        flow.metadata.get.return_value = policy
+        flow.metadata = {"policy_engine": policy}
 
         with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True
@@ -153,7 +153,7 @@ class TestSSEStreamingWithPolicy:
         flow = Mock()
         flow.response.headers.get.return_value = "application/json"
         flow.request.host = "ntfy.example.com"
-        flow.metadata.get.return_value = policy
+        flow.metadata = {"policy_engine": policy}
 
         with patch('sse_streaming.ctx') as mock_ctx:
             mock_ctx.options.sse_streaming_enabled = True

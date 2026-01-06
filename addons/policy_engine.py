@@ -547,15 +547,24 @@ class PolicyEngine:
                         if addon_name in override.bypass:
                             return False
 
-        # Check client bypasses
+        # Check client bypasses and addon config
         if client_id:
             for pattern, override in baseline.clients.items():
                 if _matches_pattern(client_id, pattern):
+                    # Check bypass list
                     if addon_name in override.bypass:
                         # Check if required - cannot bypass required addons
                         if addon_name in baseline.required:
                             return True
                         return False
+                    # Check client-specific addon config
+                    if addon_name in override.addons:
+                        client_config = override.addons[addon_name]
+                        if not client_config.enabled:
+                            # Check if required - cannot disable required addons
+                            if addon_name in baseline.required:
+                                return True
+                            return False
 
         # Check addon config
         config = self._get_addon_config(addon_name, domain)

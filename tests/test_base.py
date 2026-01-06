@@ -122,9 +122,15 @@ class TestSecurityAddonBypass:
         flow = Mock()
         flow.response = None
         flow.request.host = "example.com"
+        flow.client_conn.peername = ("10.0.0.1", 12345)
 
-        # Mock get_policy_engine to return None (no engine)
-        with patch('base.get_policy_engine', return_value=None):
+        # Mock get_policy_client to return client with addon enabled
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = True
+
+        # Mock get_service_discovery to return None (no discovery)
+        with patch('base.get_policy_client', return_value=mock_client), \
+             patch('base.get_service_discovery', return_value=None):
             assert addon.is_bypassed(flow) is False
 
 

@@ -119,6 +119,25 @@ class PolicyClient(ABC):
         """Graceful shutdown - cleanup resources."""
         pass
 
+    @abstractmethod
+    def is_addon_enabled(
+        self,
+        addon_name: str,
+        domain: str | None = None,
+        client_id: str | None = None,
+    ) -> bool:
+        """Check if addon is enabled for the given context.
+
+        Args:
+            addon_name: Name of addon to check
+            domain: Request domain (optional)
+            client_id: Client identifier (optional)
+
+        Returns:
+            True if addon should process this request
+        """
+        pass
+
 
 class LocalPolicyClient(PolicyClient):
     """
@@ -153,6 +172,15 @@ class LocalPolicyClient(PolicyClient):
     def shutdown(self) -> None:
         """Shutdown PDPCore."""
         self._pdp.shutdown()
+
+    def is_addon_enabled(
+        self,
+        addon_name: str,
+        domain: str | None = None,
+        client_id: str | None = None,
+    ) -> bool:
+        """Check if addon is enabled via PDPCore."""
+        return self._pdp.is_addon_enabled(addon_name, domain, client_id)
 
     def _error_decision(self, event_id: str, error: str) -> PolicyDecision:
         """Create error decision for internal failures."""
@@ -297,6 +325,19 @@ class HttpPolicyClient(PolicyClient):
         """Close HTTP client."""
         self._client.close()
         log.info("HttpPolicyClient shutdown")
+
+    def is_addon_enabled(
+        self,
+        addon_name: str,
+        domain: str | None = None,
+        client_id: str | None = None,
+    ) -> bool:
+        """Check if addon is enabled.
+
+        TODO: Add /v1/addons/enabled endpoint when needed.
+        For now, default to enabled (bypass checks happen locally).
+        """
+        return True
 
     def _unavailable_decision(self, event_id: str, reason: str) -> PolicyDecision:
         """Create decision when PDP is unavailable.

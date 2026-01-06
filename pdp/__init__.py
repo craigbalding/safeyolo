@@ -98,6 +98,15 @@ from .core import (
     ENGINE_VERSION,
 )
 
+from .admin_client import (
+    PDPAdminClient,
+    AdminClientConfig,
+    LocalPDPAdminClient,
+    HttpPDPAdminClient,
+    get_admin_client,
+    reset_admin_client,
+)
+
 __all__ = [
     # Enums
     "EventKind",
@@ -141,4 +150,11 @@ __all__ = [
     "get_pdp",
     "reset_pdp",
     "ENGINE_VERSION",
+    # Admin client
+    "PDPAdminClient",
+    "AdminClientConfig",
+    "LocalPDPAdminClient",
+    "HttpPDPAdminClient",
+    "get_admin_client",
+    "reset_admin_client",
 ]

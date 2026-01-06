@@ -420,7 +420,7 @@ class CredentialGuard(SecurityAddon):
 
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
-        policy = flow.metadata.get("policy")
+        policy = flow.metadata.get("policy_engine")
         if policy and not policy.is_addon_enabled("credential-guard"):
             return
 

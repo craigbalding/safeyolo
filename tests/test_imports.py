@@ -37,11 +37,11 @@ REQUIRED_NAMES = {
     "pattern_scanner": ["SecurityAddon", "make_block_response"],
     "credential_guard": ["SecurityAddon", "get_policy_client", "looks_like_secret", "hmac_fingerprint"],
     "network_guard": ["SecurityAddon", "get_client_ip", "get_policy_client"],
-    "base": ["make_block_response", "write_event", "get_option_safe", "get_policy_engine"],
+    "base": ["make_block_response", "write_event", "get_option_safe", "get_policy_client"],
     "policy_engine": ["write_event", "GCRABudgetTracker", "PolicyLoader"],
     "budget_tracker": ["atomic_write_json", "BackgroundWorker"],
     "request_logger": ["write_audit_event", "BackgroundWorker"],
-    "admin_api": ["write_event", "get_policy_engine"],
+    "admin_api": ["write_event", "get_admin_client"],
     "policy_loader": ["write_event"],
     "sensor_utils": ["build_http_event_from_flow"],
 }
@@ -147,3 +147,74 @@ if missing:
 
         extra = expected - actual_modules
         assert not extra, f"ADDON_MODULES has non-existent: {extra}"
+
+    def test_no_addon_imports_get_policy_engine(self):
+        """Ensure no addon imports the legacy get_policy_engine function.
+
+        After PDP migration, addons should use PolicyClient or PDPAdminClient.
+        """
+        addons_dir = Path(__file__).parent.parent / "addons"
+        # policy_engine defines get_policy_engine
+        excluded = {"policy_engine"}
+        violations = []
+
+        for module in ADDON_MODULES:
+            if module in excluded:
+                continue
+            source = (addons_dir / f"{module}.py").read_text()
+            if "get_policy_engine" in source:
+                violations.append(module)
+
+        assert not violations, (
+            f"Addons importing legacy get_policy_engine: {violations}"
+        )
+
+    def test_no_addon_imports_pdp_core(self):
+        """Ensure no addon imports pdp.core directly.
+
+        Addons should use PolicyClient (enforcement) or PDPAdminClient (management).
+        Only client implementations import pdp.core.
+        """
+        addons_dir = Path(__file__).parent.parent / "addons"
+        violations = []
+
+        for module in ADDON_MODULES:
+            source = (addons_dir / f"{module}.py").read_text()
+            if "from pdp.core" in source or "import pdp.core" in source:
+                violations.append(module)
+
+        assert not violations, (
+            f"Addons importing pdp.core directly (use PolicyClient or PDPAdminClient): {violations}"
+        )
+
+
+class TestAddonContracts:
+    """Contract tests ensuring addons agree on shared conventions."""
+
+    def test_policy_metadata_key_consistent(self):
+        """Verify producer and consumers use same metadata key for policy.
+
+        policy_engine.py sets flow.metadata["X"], consumers read flow.metadata.get("X").
+        If keys don't match, consumers silently get None - a hard-to-find bug.
+        """
+        import re
+
+        addons_dir = Path(__file__).parent.parent / "addons"
+
+        # Producer: policy_engine.py sets the key
+        producer_source = (addons_dir / "policy_engine.py").read_text()
+        producer_match = re.search(r'flow\.metadata\["(\w+)"\]\s*=\s*self\.engine', producer_source)
+        assert producer_match, "Could not find policy_engine setting flow.metadata"
+        producer_key = producer_match.group(1)
+
+        # Consumers: addons that read the key
+        consumers = ["credential_guard.py", "sse_streaming.py"]
+        for consumer_file in consumers:
+            consumer_source = (addons_dir / consumer_file).read_text()
+            consumer_match = re.search(r'flow\.metadata\.get\(["\'](\w+)["\']\)', consumer_source)
+            if consumer_match:
+                consumer_key = consumer_match.group(1)
+                assert consumer_key == producer_key, (
+                    f"{consumer_file} uses key '{consumer_key}' but "
+                    f"policy_engine.py sets '{producer_key}'"
+                )

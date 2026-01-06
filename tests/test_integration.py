@@ -566,3 +566,123 @@ domains: {}
         with taddons.context(guard) as tctx:
             assert tctx.options.credguard_block is True
             assert guard.should_block() is True
+
+
+class TestClientBypass:
+    """Tests for client-based addon bypass via ServiceDiscovery IP mapping."""
+
+    def test_admin_client_bypasses_pattern_scanner(self, make_flow, tmp_path):
+        """Test that admin-* clients bypass pattern_scanner per policy.
+
+        This is a REAL integration test - no mocks for policy lookup.
+        It verifies the full flow: client IP -> ServiceDiscovery -> is_bypassed() -> PolicyEngine.
+        """
+        from mitmproxy.test import taddons
+        from pattern_scanner import PatternScanner
+        from service_discovery import get_service_discovery
+
+        # Set up ServiceDiscovery with IP -> project mappings
+        services_yaml = tmp_path / "services.yaml"
+        services_yaml.write_text("""
+services:
+  admin-cli:
+    project: admin-cli
+    ip: "10.0.0.100"
+  user-bob:
+    project: user-bob
+    ip: "10.0.0.200"
+""")
+        discovery = get_service_discovery()
+        discovery._config_path = services_yaml
+        discovery._load_config()
+
+        policy_yaml = """
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+budgets: {}
+required: []
+addons: {}
+domains: {}
+clients:
+  "admin-*":
+    bypass:
+      - pattern-scanner
+"""
+        with policy_context(tmp_path, policy_yaml):
+            scanner = PatternScanner()
+
+            with taddons.context(scanner) as tctx:
+                tctx.options.pattern_block_input = True
+
+                # Flow from admin IP - should be bypassed
+                admin_flow = make_flow(url="http://example.com/api")
+                admin_flow.client_conn.peername = ("10.0.0.100", 12345)
+                assert scanner.is_bypassed(admin_flow) is True, \
+                    "admin-* client should bypass pattern_scanner"
+
+                # Flow from unknown IP - should NOT be bypassed (maps to "default")
+                normal_flow = make_flow(url="http://example.com/api")
+                normal_flow.client_conn.peername = ("10.0.0.50", 12345)
+                assert scanner.is_bypassed(normal_flow) is False, \
+                    "Request from unknown IP should not be bypassed"
+
+                # Flow from non-admin IP - should NOT be bypassed
+                user_flow = make_flow(url="http://example.com/api")
+                user_flow.client_conn.peername = ("10.0.0.200", 12345)
+                assert scanner.is_bypassed(user_flow) is False, \
+                    "user-* client should not bypass pattern_scanner"
+
+    def test_test_client_disables_network_guard(self, make_flow, tmp_path):
+        """Test that test-* clients have network_guard disabled per policy."""
+        from mitmproxy.test import taddons
+        from network_guard import NetworkGuard
+        from service_discovery import get_service_discovery
+
+        # Set up ServiceDiscovery with IP -> project mappings
+        services_yaml = tmp_path / "services.yaml"
+        services_yaml.write_text("""
+services:
+  test-integration:
+    project: test-integration
+    ip: "10.0.0.101"
+""")
+        discovery = get_service_discovery()
+        discovery._config_path = services_yaml
+        discovery._load_config()
+
+        policy_yaml = """
+metadata:
+  version: "1.0"
+permissions:
+  - action: network:request
+    resource: "*"
+    effect: allow
+budgets: {}
+required: []
+addons: {}
+domains: {}
+clients:
+  "test-*":
+    addons:
+      network-guard:
+        enabled: false
+"""
+        with policy_context(tmp_path, policy_yaml):
+            guard = NetworkGuard()
+
+            with taddons.context(guard):
+                # Flow from test IP - should be bypassed
+                test_flow = make_flow(url="http://example.com/api")
+                test_flow.client_conn.peername = ("10.0.0.101", 12345)
+                assert guard.is_bypassed(test_flow) is True, \
+                    "test-* client should have network_guard disabled"
+
+                # Flow from unknown IP - should NOT be bypassed
+                normal_flow = make_flow(url="http://example.com/api")
+                normal_flow.client_conn.peername = ("10.0.0.50", 12345)
+                assert guard.is_bypassed(normal_flow) is False, \
+                    "Request from unknown IP should not be bypassed"

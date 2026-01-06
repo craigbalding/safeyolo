@@ -348,6 +348,151 @@ class PDPCore:
                     log.warning(f"Failed to apply task policy {task_id}: {type(e).__name__}: {e}")
 
     # -------------------------------------------------------------------------
+    # Baseline Policy Management
+    # -------------------------------------------------------------------------
+
+    def get_baseline(self) -> dict | None:
+        """
+        Get the current baseline policy.
+
+        Returns:
+            Policy data as dict, or None if no baseline loaded
+        """
+        baseline = self._engine.get_baseline()
+        if baseline is None:
+            return None
+        return baseline.model_dump()
+
+    def get_baseline_path(self) -> str | None:
+        """Get the path to the baseline policy file."""
+        path = self._engine.baseline_path
+        return str(path) if path else None
+
+    def update_baseline(self, policy_data: dict) -> dict:
+        """
+        Update the baseline policy.
+
+        Args:
+            policy_data: New policy document
+
+        Returns:
+            Status dict with permission count
+        """
+        try:
+            result = self._engine.update_baseline(policy_data)
+            log.info("Baseline policy updated", extra={"permissions": result.get("permission_count", 0)})
+            return {
+                "status": "ok",
+                "permission_count": result.get("permission_count", 0),
+            }
+        except ValueError as e:
+            return {
+                "status": "error",
+                "error": f"Invalid policy: {e}",
+            }
+        except Exception as e:
+            log.error(f"Failed to update baseline: {type(e).__name__}: {e}")
+            return {
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    # -------------------------------------------------------------------------
+    # Credential Approval Management
+    # -------------------------------------------------------------------------
+
+    def add_credential_approval(
+        self,
+        destination: str,
+        credential: str,
+        tier: str = "explicit",
+    ) -> dict:
+        """
+        Add a credential approval to the baseline.
+
+        This allows a credential (by type or HMAC fingerprint) to access
+        a destination.
+
+        Args:
+            destination: Destination pattern (e.g., "api.example.com/*")
+            credential: Credential identifier (e.g., "openai:*" or "hmac:abc123")
+            tier: Permission tier (default: "explicit")
+
+        Returns:
+            Status dict
+        """
+        try:
+            result = self._engine.add_credential_approval(
+                destination=destination,
+                credential=credential,
+                tier=tier,
+            )
+            log.info(
+                "Credential approval added",
+                extra={
+                    "destination": destination,
+                    "credential": credential,
+                    "tier": tier,
+                }
+            )
+            return {
+                "status": "ok",
+                "destination": destination,
+                "credential": credential,
+                "tier": tier,
+                "permission_count": result.get("permission_count", 1),
+            }
+        except ValueError as e:
+            return {
+                "status": "error",
+                "error": str(e),
+            }
+        except Exception as e:
+            log.error(f"Failed to add credential approval: {type(e).__name__}: {e}")
+            return {
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    # -------------------------------------------------------------------------
+    # Budget Management
+    # -------------------------------------------------------------------------
+
+    def get_budget_stats(self) -> dict:
+        """
+        Get current budget usage statistics.
+
+        Returns:
+            Dict with tracked keys and their states
+        """
+        return self._engine.get_budget_stats()
+
+    def reset_budgets(self, resource: str | None = None) -> dict:
+        """
+        Reset budget counters.
+
+        Args:
+            resource: Optional resource pattern to reset. If None, resets all.
+
+        Returns:
+            Status dict
+        """
+        try:
+            result = self._engine.reset_budgets(resource=resource)
+            log.info("Budget counters reset", extra={"resource": resource or "all"})
+            return {
+                "status": "ok",
+                "resource": resource or "all",
+                "reset_count": result.get("reset_count", 0) if isinstance(result, dict) else 0,
+            }
+        except Exception as e:
+            log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
+            return {
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    # -------------------------------------------------------------------------
     # Task Policy Management
     # -------------------------------------------------------------------------
 
@@ -409,6 +554,29 @@ class PDPCore:
         """Get task policy data if it exists."""
         with self._lock:
             return self._task_policies.get(task_id)
+
+    # -------------------------------------------------------------------------
+    # Addon Management
+    # -------------------------------------------------------------------------
+
+    def is_addon_enabled(
+        self,
+        addon_name: str,
+        domain: str | None = None,
+        client_id: str | None = None,
+    ) -> bool:
+        """
+        Check if addon is enabled for the given context.
+
+        Args:
+            addon_name: Name of addon to check
+            domain: Request domain (optional)
+            client_id: Client identifier (optional)
+
+        Returns:
+            True if addon should process this request
+        """
+        return self._engine.is_addon_enabled(addon_name, domain, client_id)
 
     # -------------------------------------------------------------------------
     # Lifecycle
