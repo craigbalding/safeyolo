@@ -10,11 +10,13 @@ for fuzzer in fuzz/*_fuzzer.py; do
     fuzzer_basename=$(basename -s .py $fuzzer)
     fuzzer_package=${fuzzer_basename}.pkg
 
-    # Create standalone package
+    # Create standalone package with all addon dependencies
     pyinstaller --distpath $OUT --onefile --name $fuzzer_package \
         --paths addons \
         --hidden-import yaml \
-        --hidden-import policy_engine \
+        --hidden-import yarl \
+        --hidden-import multidict \
+        --hidden-import idna \
         --collect-all mitmproxy \
         $fuzzer
 
