@@ -5,12 +5,21 @@
 
 cd $SRC/safeyolo
 
-# Install the project in development mode
-pip3 install -e .
-
-# Copy fuzz targets to output
+# Package each fuzzer with pyinstaller
 for fuzzer in fuzz/fuzz_*.py; do
-    fuzzer_name=$(basename "$fuzzer" .py)
-    cp "$fuzzer" "$OUT/$fuzzer_name"
-    chmod +x "$OUT/$fuzzer_name"
+    fuzzer_basename=$(basename -s .py $fuzzer)
+    fuzzer_package=${fuzzer_basename}.pkg
+
+    # Create standalone package
+    pyinstaller --distpath $OUT --onefile --name $fuzzer_package \
+        --paths addons \
+        $fuzzer
+
+    # Create wrapper script (no LD_PRELOAD needed for pure Python)
+    cat > $OUT/$fuzzer_basename << EOF
+#!/bin/sh
+this_dir=\$(dirname "\$0")
+\$this_dir/$fuzzer_package \$@
+EOF
+    chmod +x $OUT/$fuzzer_basename
 done
