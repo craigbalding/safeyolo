@@ -18,7 +18,9 @@ for fuzzer in fuzz/*_fuzzer.py; do
     # Create wrapper script (no LD_PRELOAD needed for pure Python)
     cat > $OUT/$fuzzer_basename << EOF
 #!/bin/sh
+# LLVMFuzzerTestOneInput for fuzzer detection.
 this_dir=\$(dirname "\$0")
+chmod +x \$this_dir/$fuzzer_package
 \$this_dir/$fuzzer_package \$@
 EOF
     chmod +x $OUT/$fuzzer_basename
