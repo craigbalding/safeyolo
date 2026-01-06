@@ -5,12 +5,28 @@ This is a thin wrapper over pdp/core.py. All real logic lives in core.py.
 FastAPI just handles HTTP transport.
 
 Endpoints:
-- POST /v1/evaluate - Evaluate an HttpEvent, return PolicyDecision
-- PUT /v1/tasks/{task_id}/policy - Upsert task policy
-- GET /v1/tasks/{task_id}/policy - Get task policy
-- DELETE /v1/tasks/{task_id} - Delete task policy
-- GET /health - Health check
-- GET /stats - PDP statistics
+  Evaluation:
+    - POST /v1/evaluate - Evaluate an HttpEvent, return PolicyDecision
+
+  Task Policy:
+    - PUT /v1/tasks/{task_id}/policy - Upsert task policy
+    - GET /v1/tasks/{task_id}/policy - Get task policy
+    - DELETE /v1/tasks/{task_id} - Delete task policy
+
+  Baseline Policy:
+    - GET /v1/baseline - Get current baseline policy
+    - PUT /v1/baseline - Update baseline policy
+
+  Credential Approvals:
+    - POST /v1/approvals/credentials - Add credential approval
+
+  Budgets:
+    - GET /v1/budgets - Get budget usage statistics
+    - POST /v1/budgets/reset - Reset budget counters
+
+  Health/Stats:
+    - GET /health - Health check
+    - GET /stats - PDP statistics
 
 Usage:
     uvicorn pdp.app:app --host 0.0.0.0 --port 8080
@@ -191,6 +207,152 @@ async def stats() -> dict:
     """
     pdp = get_pdp()
     return pdp.get_stats()
+
+
+# =============================================================================
+# Baseline Policy Endpoints
+# =============================================================================
+
+@app.get("/v1/baseline")
+async def get_baseline() -> dict:
+    """
+    Get the current baseline policy.
+
+    Returns:
+        The baseline policy document, or 404 if not loaded.
+    """
+    pdp = get_pdp()
+    baseline = pdp.get_baseline()
+    if baseline is None:
+        raise HTTPException(status_code=404, detail="No baseline policy loaded")
+    return {
+        "baseline": baseline,
+        "path": pdp.get_baseline_path(),
+    }
+
+
+@app.put("/v1/baseline")
+async def update_baseline(request: Request) -> dict:
+    """
+    Update the baseline policy.
+
+    Accepts a policy document and updates the current baseline.
+    This persists the policy if a baseline path is configured.
+
+    Body:
+        {"policy": { ... policy document ... }}
+
+    Returns:
+        Status with permission count
+    """
+    pdp = get_pdp()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    policy_data = body.get("policy")
+    if policy_data is None:
+        raise HTTPException(status_code=400, detail="Missing 'policy' field in request body")
+
+    result = pdp.update_baseline(policy_data)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("error"))
+
+    return result
+
+
+# =============================================================================
+# Credential Approval Endpoints
+# =============================================================================
+
+@app.post("/v1/approvals/credentials")
+async def add_credential_approval(request: Request) -> dict:
+    """
+    Add a credential approval to the baseline.
+
+    This allows a credential (by type or HMAC fingerprint) to access
+    a destination. Use this to unblock agents when they hit a
+    credential-destination mismatch.
+
+    Body:
+        {
+            "destination": "api.example.com/*",
+            "credential": "openai:*" or "hmac:abc123",
+            "tier": "explicit" (optional)
+        }
+
+    Returns:
+        Status with approval details
+    """
+    pdp = get_pdp()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    destination = body.get("destination")
+    credential = body.get("credential")
+    tier = body.get("tier", "explicit")
+
+    if not destination:
+        raise HTTPException(status_code=400, detail="Missing 'destination' field")
+    if not credential:
+        raise HTTPException(status_code=400, detail="Missing 'credential' field")
+
+    result = pdp.add_credential_approval(
+        destination=destination,
+        credential=credential,
+        tier=tier,
+    )
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("error"))
+
+    return result
+
+
+# =============================================================================
+# Budget Endpoints
+# =============================================================================
+
+@app.get("/v1/budgets")
+async def get_budgets() -> dict:
+    """
+    Get current budget usage statistics.
+
+    Returns:
+        Dict with tracked keys and their current states
+    """
+    pdp = get_pdp()
+    return pdp.get_budget_stats()
+
+
+@app.post("/v1/budgets/reset")
+async def reset_budgets(request: Request) -> dict:
+    """
+    Reset budget counters.
+
+    Body (optional):
+        {"resource": "pattern"} - Reset specific resource
+        {} or no body - Reset all budgets
+
+    Returns:
+        Status with reset count
+    """
+    pdp = get_pdp()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    resource = body.get("resource") if body else None
+    result = pdp.reset_budgets(resource=resource)
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error"))
+
+    return result
 
 
 # =============================================================================
