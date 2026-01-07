@@ -32,6 +32,7 @@ See: https://github.com/mitmproxy/mitmproxy/issues/4469
 import logging
 
 from mitmproxy import ctx, http
+from utils import get_option_safe
 
 log = logging.getLogger("safeyolo.sse_streaming")
 
@@ -128,7 +129,7 @@ class SSEStreaming:
     def get_stats(self) -> dict:
         """Get streaming statistics."""
         return {
-            "enabled": ctx.options.sse_streaming_enabled,
+            "enabled": get_option_safe("sse_streaming_enabled", True),
             "streams_enabled_total": self.streams_enabled,
             "streams_by_domain": dict(self.streams_by_domain),
             "streams_by_content_type": dict(self.streams_by_content_type),

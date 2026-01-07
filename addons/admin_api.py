@@ -666,28 +666,39 @@ class AdminAPI:
             help="Bearer token for admin API authentication",
         )
 
-        # Start server after a delay (let other addons load first for discovery)
-        def delayed_start():
-            import time
-            time.sleep(1)
-            if self.server is None:
-                try:
-                    self._start_server()
-                except Exception as e:
-                    log.error(f"Failed to start admin server: {type(e).__name__}: {e}")
-
-        threading.Thread(target=delayed_start, daemon=True).start()
-
     def configure(self, updates):
-        """Handle configuration updates (server started via delayed_start in load())."""
-        pass  # Server startup moved to delayed_start thread in load()
+        """Handle configuration updates."""
+        # Start server with delay to ensure mitmproxy is fully initialized
+        if self.server is None and not hasattr(self, '_start_scheduled'):
+            self._start_scheduled = True
+
+            def delayed_start():
+                import time
+                # Wait for mitmproxy to fully initialize
+                for attempt in range(10):
+                    time.sleep(1)
+                    if self.server is not None:
+                        return  # Already started
+                    if hasattr(ctx, 'options') and hasattr(ctx, 'master'):
+                        try:
+                            self._start_server()
+                            return
+                        except Exception as e:
+                            log.error(f"Admin server start attempt {attempt+1} failed: {type(e).__name__}: {e}")
+                    else:
+                        log.debug(f"Admin server waiting for ctx (attempt {attempt+1})")
+                log.error("Admin server failed to start after 10 attempts")
+
+            threading.Thread(target=delayed_start, daemon=True).start()
 
     def running(self):
-        """Called when proxy is fully running - start admin server (backup for non-TUI mode)."""
+        """Called when proxy is fully running - backup server start."""
         if self.server is not None:
-            return  # Already started via configure()
-
-        self._start_server()
+            return
+        try:
+            self._start_server()
+        except Exception as e:
+            log.error(f"Failed to start admin server in running(): {type(e).__name__}: {e}")
 
     def _start_server(self):
         """Start the admin HTTP server."""
@@ -724,6 +735,11 @@ class AdminAPI:
         # Scripts loaded via -s are wrapped: AddonManager -> ScriptLoader -> Script -> module
         # The module has an 'addons' attribute containing actual addon class instances
         discovered = {}
+
+        # ctx.master may not be available during early startup
+        if not hasattr(ctx, 'master') or ctx.master is None:
+            log.debug("Admin API: ctx.master not available, skipping addon discovery")
+            return
 
         addons_obj = getattr(ctx.master, 'addons', None)
         if not addons_obj:

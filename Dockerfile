@@ -44,6 +44,10 @@ RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
 
 WORKDIR /app
 
+# Copy PDP (Policy Decision Point) library
+COPY pdp/ /app/pdp/
+RUN chmod -R 644 /app/pdp/*.py && chmod 755 /app/pdp
+
 # Copy addon framework
 COPY addons/__init__.py /app/addons/
 COPY addons/base.py /app/addons/
@@ -89,6 +93,7 @@ ENV CERT_DIR=/certs-private
 ENV PUBLIC_CERT_DIR=/certs-public
 ENV LOG_DIR=/app/logs
 ENV CONFIG_DIR=/app/config
+ENV PYTHONPATH=/app
 
 # Non-root execution: use docker-compose.yml user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"
 # This runs as the host user's UID/GID, so volume permissions just work.
