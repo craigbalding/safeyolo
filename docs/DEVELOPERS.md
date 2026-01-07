@@ -36,7 +36,9 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 ```
 
 **Key design principles:**
-- Proxy addons (~5500 lines) are focused on detect/decide/emit
+- Addons are sensors: detect credentials/patterns, build HttpEvents, call PolicyClient
+- PDP package (~2500 lines) handles policy evaluation (can run in-process or as service)
+- Detection module (~350 lines) is pure Python for easy testing/fuzzing
 - CLI handles user interaction, approval workflow, notifications
 - Communication via Admin API (HTTP) and JSONL logs (file)
 - Policy files are the source of truth for approvals
@@ -45,7 +47,11 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 
 ```
 safeyolo/
-├── addons/                   # mitmproxy addons (run in container)
+├── addons/                   # mitmproxy addons (sensors, run in container)
+│   ├── detection/            # Pure detection logic (no mitmproxy deps)
+│   │   ├── patterns.py       # PatternRule, compile_rules, scan_text
+│   │   ├── credentials.py    # CredentialRule, analyze_headers, entropy
+│   │   └── matching.py       # Host/resource matching, HMAC fingerprinting
 │   ├── admin_api.py          # REST API for runtime control
 │   ├── admin_shield.py       # Protects admin API endpoints
 │   ├── base.py               # Base addon class with shared functionality
@@ -55,13 +61,20 @@ safeyolo/
 │   ├── metrics.py            # Statistics collection
 │   ├── network_guard.py      # Network-level security policies
 │   ├── pattern_scanner.py    # Regex pattern matching for secrets
-│   ├── policy_engine.py      # Approval/deny policy evaluation
+│   ├── policy_engine.py      # PolicyEngineAddon, mitmproxy integration
 │   ├── policy_loader.py      # Policy file loading and caching
 │   ├── request_id.py         # Request ID generation
 │   ├── request_logger.py     # JSONL audit logging
-│   ├── service_discovery.py  # API provider detection
+│   ├── sensor_utils.py       # HttpEvent builders for sensors
+│   ├── service_discovery.py  # Client IP to project mapping
 │   ├── sse_streaming.py      # Server-sent events handling
-│   └── utils.py              # Shared utilities
+│   └── utils.py              # Shared utilities (logging, blocking)
+├── pdp/                      # Policy Decision Point (library + service)
+│   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
+│   ├── core.py               # PDPCore - policy evaluation engine
+│   ├── client.py             # PolicyClient interface (local/HTTP modes)
+│   ├── admin_client.py       # PDPAdminClient for management ops
+│   └── app.py                # FastAPI service (optional deployment)
 ├── cli/                      # safeyolo CLI (runs on host)
 │   ├── src/safeyolo/
 │   │   ├── cli.py            # Typer app entry point
@@ -78,9 +91,10 @@ safeyolo/
 │   │       ├── setup.py      # setup subcommands
 │   │       └── watch.py      # real-time log watching
 │   └── pyproject.toml
+├── fuzz/                     # Atheris fuzz targets (ClusterFuzzLite)
 ├── contrib/                  # Example integrations
 ├── config/                   # Default configurations
-├── tests/                    # Addon test suite
+├── tests/                    # Test suite (unit + integration)
 └── docs/                     # Documentation
 ```
 
@@ -334,14 +348,19 @@ app.command()(mycommand)
 
 ## Testing
 
-**Run addon tests:**
+**Run tests in container (recommended):**
 ```bash
-# In container
-docker exec safeyolo pytest tests/ -v
-
-# Locally (requires mitmproxy)
-pip install -r requirements/dev.txt
+# All tests (unit + integration)
 pytest tests/ -v
+
+# Integration tests only (requires running proxy)
+pytest tests/test_http_integration.py -v
+```
+
+**Run tests locally:**
+```bash
+pip install -r requirements/dev.txt
+pytest tests/ -v  # Unit tests pass; integration tests need running proxy
 ```
 
 **Run CLI tests:**

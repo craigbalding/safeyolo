@@ -367,18 +367,25 @@ SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons a
 
 ```
 safeyolo/
-├── addons/              # mitmproxy addons
+├── addons/              # mitmproxy addons (sensors)
 │   ├── base.py               # SecurityAddon base class
-│   ├── utils.py              # Shared utilities (entropy, HMAC, patterns)
-│   ├── policy_engine.py      # Policy evaluation logic
-│   ├── policy_loader.py      # Policy file loading and hot reload
-│   ├── budget_tracker.py     # GCRA-based rate limiting state
+│   ├── utils.py              # Shared utilities (logging, blocking responses)
+│   ├── detection/            # Pure detection logic (no mitmproxy deps)
+│   │   ├── patterns.py       # PatternRule, compile_rules, scan_text
+│   │   ├── credentials.py    # CredentialRule, analyze_headers, entropy
+│   │   └── matching.py       # Host/resource pattern matching, HMAC
 │   ├── network_guard.py      # Access control + rate limiting + homoglyph
 │   ├── credential_guard.py   # Credential routing protection
 │   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
 │   ├── pattern_scanner.py    # Regex scanning for secrets
 │   ├── admin_api.py          # REST API on :9090
 │   └── ...
+├── pdp/                 # Policy Decision Point
+│   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
+│   ├── core.py               # PDPCore - policy evaluation engine
+│   ├── client.py             # PolicyClient interface (local/HTTP)
+│   ├── admin_client.py       # PDPAdminClient for management ops
+│   └── app.py                # FastAPI service (optional)
 ├── cli/                 # safeyolo CLI package
 ├── config/              # Default configurations
 │   └── baseline.yaml         # Default policy

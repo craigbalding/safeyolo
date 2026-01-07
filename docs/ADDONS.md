@@ -54,10 +54,20 @@ grep "req-abc123def456" logs/safeyolo.jsonl | jq
 
 Unified policy engine using IAM-style vocabulary with **destination-first** credential routing. Handles credential authorization, rate limiting (budgets), and per-domain addon configuration.
 
-**Architecture:** The policy system is split into focused modules:
-- `policy_engine.py` (~950 lines) - Evaluation logic and policy matching
+**Architecture:** The policy system is split across addons and the PDP package:
+
+*Addons (mitmproxy integration):*
+- `policy_engine.py` (~970 lines) - PolicyEngineAddon, mitmproxy integration
 - `policy_loader.py` (~320 lines) - File loading, watching, SIGHUP handling
 - `budget_tracker.py` (~190 lines) - GCRA-based rate limiting state
+
+*PDP package (policy evaluation core):*
+- `pdp/schemas.py` (~500 lines) - HttpEvent, PolicyDecision, Effect enums
+- `pdp/core.py` (~650 lines) - PDPCore engine, evaluation logic
+- `pdp/client.py` (~530 lines) - PolicyClient interface (local/HTTP modes)
+- `pdp/admin_client.py` (~290 lines) - PDPAdminClient for management ops
+
+Addons use `get_policy_client()` to access the configured PolicyClient instance.
 
 **Configuration:** `config/baseline.yaml`
 
@@ -291,7 +301,7 @@ Core security addon. Ensures credentials only reach authorized hosts.
 
 **Default: Block mode**
 
-**~475 lines** - focused on credential detection and routing, designed for easy security audit.
+**~390 lines** - focused on credential detection and routing. Detection logic lives in `addons/detection/credentials.py`; policy evaluation via `PolicyClient`.
 
 ### What It Does
 
