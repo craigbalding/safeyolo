@@ -32,6 +32,7 @@ See: https://github.com/mitmproxy/mitmproxy/issues/4469
 import logging
 
 from mitmproxy import ctx, http
+from utils import get_option_safe
 
 log = logging.getLogger("safeyolo.sse_streaming")
 
@@ -66,6 +67,22 @@ class SSEStreaming:
             default=True,
             help="Enable SSE streaming support globally",
         )
+        loader.add_option(
+            name="sse_stream_json",
+            typespec=bool,
+            default=False,
+            help="Also stream application/json responses (for ntfy /json endpoints)",
+        )
+
+    def _is_enabled(self, flow: http.HTTPFlow) -> bool:
+        """Check if addon is enabled via PolicyClient."""
+        try:
+            from pdp import get_policy_client
+            client = get_policy_client()
+            return client.is_addon_enabled(self.name, domain=flow.request.host)
+        except (ImportError, RuntimeError):
+            # pdp not available or not configured - default to enabled
+            return True
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """Check response headers and enable streaming if needed."""
@@ -75,14 +92,9 @@ class SSEStreaming:
         content_type = flow.response.headers.get("content-type", "")
         host = flow.request.host
 
-        # Check policy first
-        policy = flow.metadata.get("policy")
-        if policy:
-            if not policy.is_addon_enabled(self.name):
-                return
-            settings = policy.get_addon_settings(self.name)
-        else:
-            settings = {}
+        # Check if addon is disabled via policy
+        if not self._is_enabled(flow):
+            return
 
         should_stream = False
         stream_reason = None
@@ -94,12 +106,12 @@ class SSEStreaming:
                 stream_reason = sse_type
                 break
 
-        # Check for JSON streaming if enabled in policy
-        if not should_stream and settings.get("stream_json"):
+        # Check for JSON streaming if enabled via mitmproxy option
+        if not should_stream and ctx.options.sse_stream_json:
             if content_type.startswith("application/json"):
                 # Only stream JSON for long-lived connections (e.g., ntfy /json)
                 should_stream = True
-                stream_reason = "application/json (policy)"
+                stream_reason = "application/json (option)"
 
         if should_stream:
             flow.response.stream = True
@@ -117,7 +129,7 @@ class SSEStreaming:
     def get_stats(self) -> dict:
         """Get streaming statistics."""
         return {
-            "enabled": ctx.options.sse_streaming_enabled,
+            "enabled": get_option_safe("sse_streaming_enabled", True),
             "streams_enabled_total": self.streams_enabled,
             "streams_by_domain": dict(self.streams_by_domain),
             "streams_by_content_type": dict(self.streams_by_content_type),

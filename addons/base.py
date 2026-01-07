@@ -31,8 +31,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from mitmproxy import http
-from policy_engine import get_policy_engine
-from utils import get_option_safe, make_block_response, write_event
+from service_discovery import get_service_discovery
+from utils import get_client_ip, get_option_safe, make_block_response, write_event
+
+from pdp import get_policy_client
 
 
 @dataclass
@@ -84,17 +86,26 @@ class SecurityAddon:
 
         Returns True if:
         - Flow already has a response (another addon blocked it)
-        - PolicyEngine says addon is disabled for this domain
+        - Policy says addon is disabled for this domain/client
         """
         if flow.response:
             return True
 
-        engine = get_policy_engine()
-        if engine:
-            domain = flow.request.host
-            return not engine.is_addon_enabled(self.name, domain)
+        client = get_policy_client()
+        domain = flow.request.host
 
-        return False
+        # Get client_id from ServiceDiscovery IP mapping
+        discovery = get_service_discovery()
+        if discovery:
+            client_ip = get_client_ip(flow)
+            client_id = discovery.get_project_for_ip(client_ip)
+            # "default" means no specific project, treat as None
+            if client_id == "default":
+                client_id = None
+        else:
+            client_id = None
+
+        return not client.is_addon_enabled(self.name, domain, client_id)
 
     def log_decision(
         self,

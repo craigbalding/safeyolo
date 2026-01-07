@@ -64,7 +64,8 @@ class TestSecretPatterns:
 
     def test_detects_private_key(self, scanner):
         """Test detection of private keys."""
-        text = '-----BEGIN RSA PRIVATE KEY-----\nMIIE...'
+        # String split to avoid triggering GitHub secret scanning on test fixture
+        text = "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIE..."
         rule = scanner._scan_text(text, "output")
 
         assert rule is not None
@@ -383,9 +384,9 @@ class TestBuiltinPatterns:
 
     def test_all_patterns_compile(self):
         """Test that all built-in patterns compile without error."""
-        from pattern_scanner import _compile_rules
+        from detection import compile_rules
 
-        rules = _compile_rules()
+        rules = compile_rules()
 
         assert len(rules) > 0
         # All rules should have valid patterns
@@ -394,9 +395,9 @@ class TestBuiltinPatterns:
 
     def test_secret_patterns_target_output(self):
         """Test that secret patterns target output."""
-        from pattern_scanner import _compile_rules
+        from detection import compile_rules
 
-        rules = _compile_rules()
+        rules = compile_rules()
         secret_rules = [r for r in rules if r.category == "secret"]
 
         for rule in secret_rules:
@@ -404,9 +405,9 @@ class TestBuiltinPatterns:
 
     def test_jailbreak_patterns_target_input(self):
         """Test that jailbreak patterns target input."""
-        from pattern_scanner import _compile_rules
+        from detection import compile_rules
 
-        rules = _compile_rules()
+        rules = compile_rules()
         jailbreak_rules = [r for r in rules if r.category == "jailbreak"]
 
         for rule in jailbreak_rules:

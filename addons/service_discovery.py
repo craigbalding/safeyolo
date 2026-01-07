@@ -88,7 +88,8 @@ class ServiceDiscovery:
         self._ip_to_project.clear()
         self._ranges.clear()
 
-        config_path = self._find_config()
+        # Use pre-set _config_path (e.g., for testing) or find one
+        config_path = self._config_path or self._find_config()
         if not config_path:
             log.debug("No services.yaml found - using default project for all")
             return

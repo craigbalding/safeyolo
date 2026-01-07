@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Atheris fuzzer for credential_guard module.
+"""Atheris fuzzer for credential detection.
 
 Fuzzes credential detection in HTTP headers.
 """
@@ -12,7 +12,7 @@ import atheris
 with atheris.instrument_imports():
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons"))
-    from credential_guard import (
+    from detection import (
         DEFAULT_RULES,
         analyze_headers,
         extract_bearer_token,

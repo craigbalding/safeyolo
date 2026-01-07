@@ -1,7 +1,11 @@
 """
-policy_engine.py - Unified IAM-inspired policy engine for SafeYolo
+policy_engine.py - Policy engine and PolicyClient configurator for SafeYolo
 
-Provides layered policy evaluation with:
+This module provides:
+1. PolicyEngine class - layered policy evaluation (baseline + task policies)
+2. PolicyClientConfigurator addon - configures global PolicyClient singleton
+
+PolicyEngine features:
 - Baseline policy (always active)
 - Task policy (optional, extends baseline)
 - Budget tracking with GCRA algorithm
@@ -9,15 +13,19 @@ Provides layered policy evaluation with:
 
 Policy schema uses IAM-style action/resource/effect vocabulary.
 
-Usage:
-    from policy_engine import get_policy_engine, PolicyDecision
+Usage (via PolicyClient - recommended):
+    from pdp import get_policy_client, create_http_event
 
-    engine = get_policy_engine()
-    decision = engine.evaluate_credential("openai", "api.openai.com", "/v1/chat")
-    if decision.effect == "allow":
+    client = get_policy_client()  # Configured by PolicyClientConfigurator addon
+    decision = client.evaluate(http_event)
+    if decision.effect == Effect.ALLOW:
         # proceed
-    elif decision.effect == "prompt":
-        # require human approval
+    else:
+        # block with decision.immediate_response
+
+The PolicyClientConfigurator addon configures the PolicyClient singleton
+using mitmproxy options (--set policy_baseline=/path/to/baseline.yaml).
+It must be loaded BEFORE any addon that calls get_policy_client().
 """
 
 import fnmatch
@@ -547,15 +555,24 @@ class PolicyEngine:
                         if addon_name in override.bypass:
                             return False
 
-        # Check client bypasses
+        # Check client bypasses and addon config
         if client_id:
             for pattern, override in baseline.clients.items():
                 if _matches_pattern(client_id, pattern):
+                    # Check bypass list
                     if addon_name in override.bypass:
                         # Check if required - cannot bypass required addons
                         if addon_name in baseline.required:
                             return True
                         return False
+                    # Check client-specific addon config
+                    if addon_name in override.addons:
+                        client_config = override.addons[addon_name]
+                        if not client_config.enabled:
+                            # Check if required - cannot disable required addons
+                            if addon_name in baseline.required:
+                                return True
+                            return False
 
         # Check addon config
         config = self._get_addon_config(addon_name, domain)
@@ -855,50 +872,33 @@ class PolicyEngine:
 
 
 # =============================================================================
-# Global Instance
+# Mitmproxy Addon Interface - PolicyClient Configurator
+# =============================================================================
+#
+# This addon configures the global PolicyClient singleton.
+# It must load BEFORE any addon that calls get_policy_client().
+#
+# Design:
+# - Registers mitmproxy options for policy paths
+# - Calls configure_policy_client() on startup/reconfigure
+# - Does NOT own a PolicyEngine instance (PDPCore does via LocalPolicyClient)
+#
+# This is the ONLY place PolicyClient should be configured in mitmproxy mode.
 # =============================================================================
 
-_policy_engine: PolicyEngine | None = None
+class PolicyClientConfigurator:
+    """
+    Mitmproxy addon that configures the global PolicyClient.
 
+    Must be loaded first in the addon chain. Other addons use get_policy_client()
+    to get the configured client.
+    """
 
-def get_policy_engine() -> PolicyEngine | None:
-    """Get the global policy engine instance."""
-    return _policy_engine
-
-
-def init_policy_engine(
-    baseline_path: Path | None = None,
-    budget_state_path: Path | None = None,
-) -> PolicyEngine:
-    """Initialize the global policy engine."""
-    global _policy_engine
-
-    if baseline_path is None:
-        # Default paths
-        baseline_path = Path("/app/config/baseline.yaml")
-        if not baseline_path.exists():
-            baseline_path = Path.home() / ".safeyolo" / "baseline.yaml"
-
-    if budget_state_path is None:
-        budget_state_path = Path("/app/data/policy_budget_state.json")
-        if not budget_state_path.parent.exists():
-            budget_state_path = Path.home() / ".safeyolo" / "data" / "policy_budget_state.json"
-
-    _policy_engine = PolicyEngine(baseline_path, budget_state_path)
-    return _policy_engine
-
-
-# =============================================================================
-# Mitmproxy Addon Interface
-# =============================================================================
-
-class PolicyEngineAddon:
-    """Mitmproxy addon wrapper for PolicyEngine."""
-
-    name = "policy-engine"
+    name = "policy-engine"  # Keep name for backwards compat with existing configs
 
     def __init__(self):
-        self.engine: PolicyEngine | None = None
+        self._configured_baseline: str | None = None
+        self._configured_budget: str | None = None
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -916,35 +916,57 @@ class PolicyEngineAddon:
         )
 
     def configure(self, updates):
-        """Handle option changes."""
+        """Configure PolicyClient when options change."""
         from mitmproxy import ctx
 
-        if "policy_baseline" in updates or self.engine is None:
-            baseline_path = ctx.options.policy_baseline
-            budget_path = ctx.options.policy_budget_state
+        from pdp import PolicyClientConfig, configure_policy_client
 
-            self.engine = init_policy_engine(
-                baseline_path=Path(baseline_path) if baseline_path else None,
-                budget_state_path=Path(budget_path) if budget_path else None,
-            )
+        baseline_path = ctx.options.policy_baseline
+        budget_path = ctx.options.policy_budget_state
 
-    def request(self, flow):
-        """Attach policy info to flow for other addons."""
-        if self.engine:
-            flow.metadata["policy_engine"] = self.engine
+        # Skip if nothing changed (smart reconfigure)
+        if (baseline_path == self._configured_baseline and
+            budget_path == self._configured_budget):
+            return
+
+        # Build config with paths from mitmproxy options
+        config = PolicyClientConfig(
+            mode="local",
+            baseline_path=Path(baseline_path) if baseline_path else None,
+            budget_state_path=Path(budget_path) if budget_path else None,
+        )
+
+        configure_policy_client(config)
+
+        self._configured_baseline = baseline_path
+        self._configured_budget = budget_path
+
+        log.info(
+            "PolicyClient configured",
+            extra={
+                "baseline_path": baseline_path,
+                "budget_state_path": budget_path,
+            }
+        )
 
     def done(self):
         """Cleanup on shutdown."""
-        if self.engine:
-            self.engine.done()
+        from pdp import reset_policy_client
+        reset_policy_client()
 
     def get_stats(self) -> dict:
-        """Get engine statistics."""
-        if self.engine:
-            return self.engine.get_stats()
+        """Get engine statistics via PolicyClient.get_stats()."""
+        from pdp import get_policy_client, is_policy_client_configured
+
+        if is_policy_client_configured():
+            try:
+                client = get_policy_client()
+                return client.get_stats()
+            except Exception:
+                pass
         return {}
 
 
 # Mitmproxy addon instance
-policy_engine_addon = PolicyEngineAddon()
+policy_engine_addon = PolicyClientConfigurator()
 addons = [policy_engine_addon]

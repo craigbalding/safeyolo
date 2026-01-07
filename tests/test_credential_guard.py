@@ -518,7 +518,7 @@ class TestSafeHeaders:
 
     def test_pattern_match(self):
         """Pattern-based header matches are detected."""
-        from credential_guard import is_safe_header
+        from detection import is_safe_header
 
         config = {"safe_patterns": ["request-id", "trace", "correlation"]}
         assert is_safe_header("x-request-id", config) is True
@@ -528,7 +528,7 @@ class TestSafeHeaders:
 
     def test_case_insensitive(self):
         """Header matching is case-insensitive."""
-        from credential_guard import is_safe_header
+        from detection import is_safe_header
 
         config = {"safe_patterns": ["request-id"]}
         assert is_safe_header("X-REQUEST-ID", config) is True
@@ -540,21 +540,21 @@ class TestExtractToken:
 
     def test_bearer_scheme(self):
         """Extract token from 'Bearer <token>' format."""
-        from credential_guard import extract_bearer_token
+        from detection import extract_bearer_token
 
         token = extract_bearer_token("Bearer sk-proj-abc123")
         assert token == "sk-proj-abc123"
 
     def test_no_scheme(self):
         """Token without scheme is returned as-is."""
-        from credential_guard import extract_bearer_token
+        from detection import extract_bearer_token
 
         token = extract_bearer_token("sk-proj-abc123")
         assert token == "sk-proj-abc123"
 
     def test_empty_value(self):
         """Empty value returns empty string."""
-        from credential_guard import extract_bearer_token
+        from detection import extract_bearer_token
 
         assert extract_bearer_token("") == ""
 

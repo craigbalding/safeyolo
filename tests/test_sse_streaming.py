@@ -86,17 +86,23 @@ class TestSSEStreamingDetection:
 
         addon = SSEStreaming()
 
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = True
+
         flow = Mock()
         flow.response.headers.get.return_value = "application/json"
         flow.request.host = "api.example.com"
-        flow.metadata.get.return_value = None
+        # Reset stream attribute to ensure we're testing properly
+        flow.response.stream = False
 
-        with patch('sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx, \
+             patch('pdp.get_policy_client', return_value=mock_client):
             mock_ctx.options.sse_streaming_enabled = True
+            mock_ctx.options.sse_stream_json = False  # JSON streaming disabled
             addon.responseheaders(flow)
 
-        # Should NOT enable streaming for plain JSON
-        assert not hasattr(flow.response, 'stream') or flow.response.stream is not True
+        # Should NOT enable streaming for plain JSON when sse_stream_json is False
+        assert flow.response.stream is False
         assert addon.streams_enabled == 0
 
     def test_disabled_when_option_false(self):
@@ -120,46 +126,47 @@ class TestSSEStreamingWithPolicy:
     """Tests for streaming with policy configuration."""
 
     def test_respects_policy_disabled(self):
-        """Test addon respects policy disabling it."""
+        """Test addon respects policy disabling it via PolicyClient."""
         from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
-        policy = Mock()
-        policy.is_addon_enabled.return_value = False
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = False
 
         flow = Mock()
         flow.response.headers.get.return_value = "text/event-stream"
         flow.request.host = "api.example.com"
-        flow.metadata.get.return_value = policy
 
-        with patch('sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx, \
+             patch('pdp.get_policy_client', return_value=mock_client):
             mock_ctx.options.sse_streaming_enabled = True
             addon.responseheaders(flow)
 
         # Should NOT enable streaming when policy disables addon
         assert addon.streams_enabled == 0
+        mock_client.is_addon_enabled.assert_called_with("sse_streaming", domain="api.example.com")
 
-    def test_streams_json_when_policy_enabled(self):
-        """Test JSON streaming when policy enables stream_json."""
+    def test_streams_json_when_option_enabled(self):
+        """Test JSON streaming when sse_stream_json option is True."""
         from sse_streaming import SSEStreaming
 
         addon = SSEStreaming()
 
-        policy = Mock()
-        policy.is_addon_enabled.return_value = True
-        policy.get_addon_settings.return_value = {"stream_json": True}
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = True
 
         flow = Mock()
         flow.response.headers.get.return_value = "application/json"
         flow.request.host = "ntfy.example.com"
-        flow.metadata.get.return_value = policy
 
-        with patch('sse_streaming.ctx') as mock_ctx:
+        with patch('sse_streaming.ctx') as mock_ctx, \
+             patch('pdp.get_policy_client', return_value=mock_client):
             mock_ctx.options.sse_streaming_enabled = True
+            mock_ctx.options.sse_stream_json = True
             addon.responseheaders(flow)
 
-        # Should enable streaming for JSON when policy says so
+        # Should enable streaming for JSON when option says so
         assert flow.response.stream is True
         assert addon.streams_enabled == 1
 

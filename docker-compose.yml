@@ -81,6 +81,8 @@ services:
         target: /certs-public
         volume:
           nocopy: true
+      # Dev mount - entire project for live editing
+      # For production, use selective mounts instead
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config:/app/config
@@ -91,6 +93,7 @@ services:
       - ./tests:/app/tests
       # Runtime env (dynamically updatable)
       - ./.env:/app/.env
+      #- .:/app
     command: ["/app/scripts/start-safeyolo.sh"]
     env_file:
       - .env

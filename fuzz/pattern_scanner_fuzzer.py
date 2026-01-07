@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Atheris fuzzer for pattern_scanner module.
+"""Atheris fuzzer for pattern detection.
 
-Fuzzes the regex-based pattern matching for secrets and jailbreak detection.
+Fuzzes regex-based pattern matching for secrets and jailbreak detection.
 """
 
 import sys
@@ -14,26 +14,25 @@ with atheris.instrument_imports():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons"))
     import re
 
-    from pattern_scanner import PatternRule, PatternScanner
+    from detection import PatternRule, compile_rules, scan_text
 
 
 # Pre-compile rules once
-SCANNER = None
+RULES = None
 
 
-def get_scanner():
-    """Lazily initialize scanner."""
-    global SCANNER
-    if SCANNER is None:
-        SCANNER = PatternScanner()
-        SCANNER.configure({})
-    return SCANNER
+def get_rules():
+    """Lazily initialize rules."""
+    global RULES
+    if RULES is None:
+        RULES = compile_rules()
+    return RULES
 
 
 @atheris.instrument_func
 def test_scan_text(data: bytes):
-    """Fuzz the _scan_text method with arbitrary input."""
-    scanner = get_scanner()
+    """Fuzz the scan_text function with arbitrary input."""
+    rules = get_rules()
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -42,8 +41,8 @@ def test_scan_text(data: bytes):
 
     # Test both input and output scanning
     try:
-        scanner._scan_text(text, "input")
-        scanner._scan_text(text, "output")
+        scan_text(text, "input", rules)
+        scan_text(text, "output", rules)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
         pass

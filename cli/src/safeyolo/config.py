@@ -221,5 +221,3 @@ def ensure_directories() -> None:
     (config_dir / "certs").mkdir(exist_ok=True)
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
-
-

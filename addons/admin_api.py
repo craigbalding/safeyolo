@@ -22,8 +22,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
-from policy_engine import get_policy_engine
 from utils import write_event
+
+from pdp import get_admin_client
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -287,17 +288,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_policy_baseline(self) -> None:
         """GET /admin/policy/baseline - Read baseline policy."""
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
-        policy = engine.get_baseline()
-        if policy is None:
+        client = get_admin_client()
+        baseline = client.get_baseline()
+        if baseline is None:
             self._send_json({"error": "No baseline policy loaded"}, 404)
             return
         self._send_json({
-            "baseline": policy.model_dump(),
-            "path": str(engine.baseline_path) if engine.baseline_path else None
+            "baseline": baseline,
+            "path": client.get_baseline_path()
         })
 
     def _handle_get_policy_task(self, task_id: str) -> None:
@@ -305,26 +303,20 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if not task_id:
             self._send_json({"error": "missing task_id"}, 400)
             return
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
-        task_policy = engine.get_task_policy(task_id)
+        client = get_admin_client()
+        task_policy = client.get_task_policy(task_id)
         if task_policy is None:
             self._send_json({"error": f"Task policy '{task_id}' not found"}, 404)
             return
         self._send_json({
             "task_id": task_id,
-            "policy": task_policy.model_dump()
+            "policy": task_policy
         })
 
     def _handle_get_budgets(self) -> None:
         """GET /admin/budgets - Current budget usage."""
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
-        budget_stats = engine.get_budget_stats()
+        client = get_admin_client()
+        budget_stats = client.get_budget_stats()
         self._send_json(budget_stats)
 
     def do_GET(self):
@@ -384,10 +376,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_post_baseline_approve(self) -> None:
         """POST /admin/policy/baseline/approve - Add credential permission."""
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
+        client = get_admin_client()
 
         data = self._read_json()
         if not data:
@@ -405,60 +394,59 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing 'credential' field"}, 400)
             return
 
-        try:
-            result = engine.add_credential_approval(
-                destination=destination,
-                credential=credential,
-                tier=tier
-            )
+        result = client.add_credential_approval(
+            destination=destination,
+            credential=credential,
+            tier=tier
+        )
 
-            client_ip = self._get_client_ip()
-            write_event("admin.baseline_approval_added",
-                addon="admin-api",
-                client_ip=client_ip,
-                destination=destination,
-                credential=credential,
-                tier=tier
-            )
-            log.info(f"Baseline approval added: {_sanitize_log(credential)} -> {_sanitize_log(destination)}")  # lgtm[py/log-injection] sanitized
+        if result.get("status") == "error":
+            self._send_json({"error": result.get("error")}, 400)
+            return
 
-            self._send_json({
-                "status": "added",
-                "destination": destination,
-                "credential": credential,
-                "tier": tier,
-                "permission_count": result.get("permission_count", 1)
-            })
+        client_ip = self._get_client_ip()
+        write_event("admin.baseline_approval_added",
+            addon="admin-api",
+            client_ip=client_ip,
+            destination=destination,
+            credential=credential,
+            tier=tier
+        )
+        safe_credential = _sanitize_log(credential)
+        safe_destination = _sanitize_log(destination)
+        log.info(f"Baseline approval added: {safe_credential} -> {safe_destination}")
 
-        except ValueError as e:
-            self._send_json({"error": str(e)}, 400)
-        except Exception as e:
-            log.error(f"Failed to add approval: {type(e).__name__}: {e}")
-            self._send_json({"error": f"Failed to add approval: {type(e).__name__}: {e}"}, 500)
+        self._send_json({
+            "status": "added",
+            "destination": destination,
+            "credential": credential,
+            "tier": tier,
+            "permission_count": result.get("permission_count", 1)
+        })
 
     def _handle_post_budgets_reset(self) -> None:
         """POST /admin/budgets/reset - Reset budget counters."""
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
+        client = get_admin_client()
 
         data = self._read_json() or {}
         resource = data.get("resource")  # Optional: reset specific resource
 
-        try:
-            result = engine.reset_budgets(resource=resource)
-            client_ip = self._get_client_ip()
-            write_event("admin.budgets_reset",
-                addon="admin-api",
-                client_ip=client_ip,
-                resource=resource
-            )
-            log.info(f"Budget counters reset: {_sanitize_log(resource) or 'all'}")
-            self._send_json(result)
-        except Exception as e:
-            log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
-            self._send_json({"error": f"Failed to reset budgets: {type(e).__name__}: {e}"}, 500)
+        result = client.reset_budgets(resource=resource)
+
+        if result.get("status") == "error":
+            log.error(f"Failed to reset budgets: {result.get('error')}")
+            self._send_json({"error": result.get("error")}, 500)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event("admin.budgets_reset",
+            addon="admin-api",
+            client_ip=client_ip,
+            resource=resource
+        )
+        safe_resource = _sanitize_log(resource) if resource else "all"
+        log.info(f"Budget counters reset: {safe_resource}")
+        self._send_json(result)
 
     def do_POST(self):
         """Handle POST requests."""
@@ -540,10 +528,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_put_policy_baseline(self) -> None:
         """PUT /admin/policy/baseline - Update baseline policy."""
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
+        client = get_admin_client()
 
         data = self._read_json()
         if not data:
@@ -555,28 +540,25 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing 'policy' field in request body"}, 400)
             return
 
-        try:
-            result = engine.update_baseline(policy_data)
+        result = client.update_baseline(policy_data)
 
-            client_ip = self._get_client_ip()
-            write_event("admin.baseline_update",
-                addon="admin-api",
-                client_ip=client_ip,
-                permission_count=result.get("permission_count", 0)
-            )
-            log.info(f"Baseline policy updated: {result.get('permission_count', 0)} permissions")
+        if result.get("status") == "error":
+            self._send_json({"error": result.get("error")}, 400)
+            return
 
-            self._send_json({
-                "status": "updated",
-                "permission_count": result.get("permission_count", 0),
-                "message": "Baseline policy updated"
-            })
+        client_ip = self._get_client_ip()
+        write_event("admin.baseline_update",
+            addon="admin-api",
+            client_ip=client_ip,
+            permission_count=result.get("permission_count", 0)
+        )
+        log.info(f"Baseline policy updated: {result.get('permission_count', 0)} permissions")
 
-        except ValueError as e:
-            self._send_json({"error": f"Invalid policy: {e}"}, 400)
-        except Exception as e:
-            log.error(f"Failed to update baseline: {type(e).__name__}: {e}")
-            self._send_json({"error": f"Failed to update baseline: {type(e).__name__}: {e}"}, 500)
+        self._send_json({
+            "status": "updated",
+            "permission_count": result.get("permission_count", 0),
+            "message": "Baseline policy updated"
+        })
 
     def _handle_put_policy_task(self, task_id: str) -> None:
         """PUT /admin/policy/task/{id} - Create/update task policy."""
@@ -584,10 +566,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing task_id"}, 400)
             return
 
-        engine = get_policy_engine()
-        if engine is None:
-            self._send_json({"error": "PolicyEngine not initialized"}, 501)
-            return
+        client = get_admin_client()
 
         data = self._read_json()
         if not data:
@@ -599,30 +578,30 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing 'policy' field in request body"}, 400)
             return
 
-        try:
-            result = engine.set_task_policy(task_id, policy_data)
+        result = client.upsert_task_policy(task_id, policy_data)
 
-            client_ip = self._get_client_ip()
-            write_event("admin.task_policy_update",
-                addon="admin-api",
-                client_ip=client_ip,
-                task_id=task_id,
-                permission_count=result.get("permission_count", 0)
-            )
-            log.info(f"Task policy '{task_id}' updated: {result.get('permission_count', 0)} permissions")
+        if result.get("status") == "error":
+            self._send_json({"error": result.get("error")}, 400)
+            return
 
-            self._send_json({
-                "status": "updated",
-                "task_id": task_id,
-                "permission_count": result.get("permission_count", 0),
-                "message": "Task policy updated"
-            })
+        # PDPCore returns 'permissions', normalize to 'permission_count' for compatibility
+        permission_count = result.get("permissions", result.get("permission_count", 0))
 
-        except ValueError as e:
-            self._send_json({"error": f"Invalid policy: {e}"}, 400)
-        except Exception as e:
-            log.error(f"Failed to update task policy: {type(e).__name__}: {e}")
-            self._send_json({"error": f"Failed to update task policy: {type(e).__name__}: {e}"}, 500)
+        client_ip = self._get_client_ip()
+        write_event("admin.task_policy_update",
+            addon="admin-api",
+            client_ip=client_ip,
+            task_id=task_id,
+            permission_count=permission_count
+        )
+        log.info(f"Task policy '{task_id}' updated: {permission_count} permissions")
+
+        self._send_json({
+            "status": "updated",
+            "task_id": task_id,
+            "permission_count": permission_count,
+            "message": "Task policy updated"
+        })
 
     def do_PUT(self):
         """Handle PUT requests."""
@@ -691,28 +670,39 @@ class AdminAPI:
             help="Bearer token for admin API authentication",
         )
 
-        # Start server after a delay (let other addons load first for discovery)
-        def delayed_start():
-            import time
-            time.sleep(1)
-            if self.server is None:
-                try:
-                    self._start_server()
-                except Exception as e:
-                    log.error(f"Failed to start admin server: {type(e).__name__}: {e}")
-
-        threading.Thread(target=delayed_start, daemon=True).start()
-
     def configure(self, updates):
-        """Handle configuration updates (server started via delayed_start in load())."""
-        pass  # Server startup moved to delayed_start thread in load()
+        """Handle configuration updates."""
+        # Start server with delay to ensure mitmproxy is fully initialized
+        if self.server is None and not hasattr(self, '_start_scheduled'):
+            self._start_scheduled = True
+
+            def delayed_start():
+                import time
+                # Wait for mitmproxy to fully initialize
+                for attempt in range(10):
+                    time.sleep(1)
+                    if self.server is not None:
+                        return  # Already started
+                    if hasattr(ctx, 'options') and hasattr(ctx, 'master'):
+                        try:
+                            self._start_server()
+                            return
+                        except Exception as e:
+                            log.error(f"Admin server start attempt {attempt+1} failed: {type(e).__name__}: {e}")
+                    else:
+                        log.debug(f"Admin server waiting for ctx (attempt {attempt+1})")
+                log.error("Admin server failed to start after 10 attempts")
+
+            threading.Thread(target=delayed_start, daemon=True).start()
 
     def running(self):
-        """Called when proxy is fully running - start admin server (backup for non-TUI mode)."""
+        """Called when proxy is fully running - backup server start."""
         if self.server is not None:
-            return  # Already started via configure()
-
-        self._start_server()
+            return
+        try:
+            self._start_server()
+        except Exception as e:
+            log.error(f"Failed to start admin server in running(): {type(e).__name__}: {e}")
 
     def _start_server(self):
         """Start the admin HTTP server."""
@@ -733,12 +723,40 @@ class AdminAPI:
         self._discover_addons()
         log.info(f"Admin API: discovered {len(AdminRequestHandler.addons_with_stats)} addons with stats")
 
-        # Start HTTP server in background thread
+        # Start HTTP server in background thread with error handling
         self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
+        self._server_port = port
+
+        def serve_with_recovery():
+            """Run server with exception handling and auto-restart."""
+            import sys
+            import time
+            import traceback
+            while True:
+                try:
+                    print(f"[admin_api] Server thread starting on port {port}", file=sys.stderr, flush=True)
+                    self.server.serve_forever()
+                    # serve_forever only returns if shutdown() is called
+                    print("[admin_api] Server shut down cleanly", file=sys.stderr, flush=True)
+                    break
+                except Exception as e:
+                    print(f"[admin_api] CRASHED: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                    traceback.print_exc(file=sys.stderr)
+                    sys.stderr.flush()
+                    # Attempt restart after brief delay
+                    time.sleep(1)
+                    try:
+                        self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
+                        print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
+                    except Exception as restart_err:
+                        print(f"[admin_api] Restart FAILED: {type(restart_err).__name__}: {restart_err}", file=sys.stderr, flush=True)
+                        traceback.print_exc(file=sys.stderr)
+                        break
 
         self.server_thread = threading.Thread(
-            target=self.server.serve_forever,
+            target=serve_with_recovery,
             daemon=True,
+            name="admin-api-server",
         )
         self.server_thread.start()
 
@@ -749,6 +767,11 @@ class AdminAPI:
         # Scripts loaded via -s are wrapped: AddonManager -> ScriptLoader -> Script -> module
         # The module has an 'addons' attribute containing actual addon class instances
         discovered = {}
+
+        # ctx.master may not be available during early startup
+        if not hasattr(ctx, 'master') or ctx.master is None:
+            log.debug("Admin API: ctx.master not available, skipping addon discovery")
+            return
 
         addons_obj = getattr(ctx.master, 'addons', None)
         if not addons_obj:
