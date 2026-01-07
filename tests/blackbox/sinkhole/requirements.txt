@@ -1,0 +1,3 @@
+# Sinkhole server dependencies
+# Uses stdlib for core functionality, httpx only for health checks
+httpx>=0.27.0

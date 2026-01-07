@@ -1,0 +1,88 @@
+# Black Box Test Baseline Policy
+#
+# Mirrors production baseline but with test-friendly settings.
+# This policy is used by SafeYolo during black box testing.
+
+metadata:
+  version: "1.0"
+  description: "Black box test baseline"
+
+permissions:
+  # ---------------------------------------------------------------------------
+  # Credential Permissions - Same as production
+  # ---------------------------------------------------------------------------
+
+  # OpenAI credentials to OpenAI endpoints
+  - action: credential:use
+    resource: "api.openai.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["openai:*"]
+
+  # Anthropic credentials to Anthropic endpoints
+  - action: credential:use
+    resource: "api.anthropic.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["anthropic:*"]
+
+  # GitHub credentials to GitHub endpoints
+  - action: credential:use
+    resource: "api.github.com/*"
+    effect: allow
+    tier: explicit
+    condition:
+      credential: ["github:*"]
+
+  # Unknown destinations require approval (THIS IS WHAT WE'RE TESTING)
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Network Request Budgets (test-friendly limits)
+  # ---------------------------------------------------------------------------
+
+  - action: network:request
+    resource: "api.openai.com/*"
+    effect: budget
+    budget: 100
+    tier: explicit
+
+  - action: network:request
+    resource: "api.anthropic.com/*"
+    effect: budget
+    budget: 100
+    tier: explicit
+
+  # Default budget for all other domains
+  - action: network:request
+    resource: "*"
+    effect: budget
+    budget: 600
+    tier: explicit
+
+budgets:
+  network:request: 1000
+
+required:
+  - credential_guard
+  - network_guard
+  - circuit_breaker
+
+addons:
+  network_guard:
+    enabled: true
+  credential_guard:
+    enabled: true
+    detection_level: standard
+  circuit_breaker:
+    enabled: true
+  pattern_scanner:
+    enabled: true
+
+domains: {}
+clients: {}
