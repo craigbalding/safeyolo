@@ -1,0 +1,4 @@
+# Test runner dependencies
+httpx>=0.27.0
+pytest>=8.0.0
+pytest-timeout>=2.3.0

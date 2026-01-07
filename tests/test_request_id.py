@@ -81,6 +81,83 @@ class TestRequestIdGenerator:
         assert addon.name == "request-id"
 
 
+class TestHopByHopHeaderStripping:
+    """Tests for hop-by-hop header stripping (RFC 7230 Section 6.1)."""
+
+    @pytest.fixture
+    def addon(self):
+        """Create a fresh RequestIdGenerator instance."""
+        from request_id import RequestIdGenerator
+        return RequestIdGenerator()
+
+    def test_proxy_authorization_stripped(self, addon):
+        """Proxy-Authorization header must be stripped (security)."""
+        flow = tflow.tflow()
+        flow.request.headers["Proxy-Authorization"] = "Basic secret123"
+        flow.request.headers["Authorization"] = "Bearer keep-this"
+
+        addon.request(flow)
+
+        assert "Proxy-Authorization" not in flow.request.headers
+        assert "proxy-authorization" not in flow.request.headers
+        # Regular Authorization should be preserved
+        assert flow.request.headers.get("Authorization") == "Bearer keep-this"
+
+    def test_all_hop_by_hop_headers_stripped(self, addon):
+        """All RFC 7230 hop-by-hop headers must be stripped."""
+        flow = tflow.tflow()
+        # Add all hop-by-hop headers
+        flow.request.headers["Connection"] = "keep-alive"
+        flow.request.headers["Keep-Alive"] = "timeout=5"
+        flow.request.headers["Proxy-Authenticate"] = "Basic"
+        flow.request.headers["Proxy-Authorization"] = "Basic secret"
+        flow.request.headers["TE"] = "trailers"
+        flow.request.headers["Trailer"] = "Expires"
+        flow.request.headers["Transfer-Encoding"] = "chunked"
+        flow.request.headers["Upgrade"] = "websocket"
+        # Also add a regular header that should be preserved
+        flow.request.headers["X-Custom"] = "keep-me"
+
+        addon.request(flow)
+
+        # All hop-by-hop headers should be gone
+        for header in ["Connection", "Keep-Alive", "Proxy-Authenticate",
+                       "Proxy-Authorization", "TE", "Trailer",
+                       "Transfer-Encoding", "Upgrade"]:
+            assert header not in flow.request.headers, f"{header} should be stripped"
+
+        # Regular headers preserved
+        assert flow.request.headers.get("X-Custom") == "keep-me"
+
+    def test_connection_header_specified_headers_stripped(self, addon):
+        """Headers listed in Connection header should also be stripped."""
+        flow = tflow.tflow()
+        # Connection header can list additional hop-by-hop headers
+        flow.request.headers["Connection"] = "X-Custom-Hop, close"
+        flow.request.headers["X-Custom-Hop"] = "should-be-stripped"
+        flow.request.headers["X-Regular"] = "keep-me"
+
+        addon.request(flow)
+
+        # Connection itself and headers it lists should be stripped
+        assert "Connection" not in flow.request.headers
+        assert "X-Custom-Hop" not in flow.request.headers
+        # Regular headers preserved
+        assert flow.request.headers.get("X-Regular") == "keep-me"
+
+    def test_case_insensitive_stripping(self, addon):
+        """Header stripping should be case-insensitive."""
+        flow = tflow.tflow()
+        flow.request.headers["PROXY-AUTHORIZATION"] = "Basic secret"
+        flow.request.headers["proxy-authorization"] = "Basic secret2"
+
+        addon.request(flow)
+
+        # Both case variants should be stripped
+        headers_lower = {k.lower() for k in flow.request.headers.keys()}
+        assert "proxy-authorization" not in headers_lower
+
+
 class TestRequestIdIntegration:
     """Integration tests for request_id with other addons."""
 

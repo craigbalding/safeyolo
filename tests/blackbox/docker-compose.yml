@@ -1,0 +1,154 @@
+# SafeYolo Black Box Test Harness
+#
+# Usage:
+#   docker compose up --build --exit-code-from test-runner
+#   docker compose run test-runner pytest test_credential_guard.py -v
+#   docker compose run test-runner bash  # Interactive debugging
+#
+# NOTE: Use --exit-code-from, NOT --abort-on-container-exit
+# The certs-init service exits after setup, which would trigger abort prematurely.
+#
+# Architecture:
+#   - safeyolo: The proxy under test (uses production start-safeyolo.sh)
+#   - sinkhole: Multi-host HTTP server capturing all traffic
+#   - test-runner: Pytest-based test suite
+#
+# Design principle: NEVER duplicate startup logic from production.
+# The blackbox test uses the SAME start-safeyolo.sh script as production,
+# configured via environment variables only. This ensures tests always
+# mirror production behavior (ground truth).
+#
+# All hostnames (api.openai.com, evil.com, etc.) resolve to sinkhole
+# within the test network via Docker network aliases.
+
+services:
+  # Initialize cert directory permissions (mirrors production certs-init)
+  certs-init:
+    image: alpine:3.20
+    user: "0:0"
+    volumes:
+      - safeyolo-test-certs:/certs-private
+      - safeyolo-test-ca:/certs-public
+      - safeyolo-test-logs:/app-logs
+      - safeyolo-test-data:/app-data
+    command: >
+      sh -c "chown 1000:1000 /certs-private /certs-public /app-logs /app-data &&
+             chmod 700 /certs-private &&
+             chmod 755 /certs-public /app-logs /app-data"
+
+  # SafeYolo proxy (the system under test)
+  # Uses production start-safeyolo.sh - configured via env vars ONLY
+  safeyolo:
+    build:
+      context: ../..
+      target: dev
+    container_name: safeyolo-test
+    # Run as non-root to match production
+    user: "1000:1000"
+    depends_on:
+      certs-init:
+        condition: service_completed_successfully
+    networks:
+      testnet:
+        aliases:
+          - safeyolo
+    ports:
+      - "18080:8080"  # Proxy (for debugging)
+      - "19090:9090"  # Admin API (for debugging)
+    volumes:
+      - ./config:/app/config:ro
+      - ./certs:/test-ca:ro  # Test CA for upstream TLS verification
+      - safeyolo-test-certs:/certs-private
+      - safeyolo-test-ca:/certs-public
+      - safeyolo-test-logs:/app/logs
+      - safeyolo-test-data:/app/data
+    environment:
+      # === Startup mode ===
+      - SAFEYOLO_HEADLESS=true  # Use mitmdump (no tmux/TUI)
+      # === TLS CA trust ===
+      - SAFEYOLO_CA_CERT=/test-ca/ca.crt  # Trust test CA for upstream connections
+      # === Ports ===
+      - PROXY_PORT=8080
+      - ADMIN_PORT=9090
+      # === Security mode ===
+      - SAFEYOLO_BLOCK=true
+      # === Auth ===
+      - ADMIN_API_TOKEN=test-token-for-blackbox-tests
+    # Use production startup script - no duplicated logic
+    command: ["/app/scripts/start-safeyolo.sh"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import httpx; httpx.get('http://localhost:9090/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # Sinkhole: captures all traffic for inspection
+  sinkhole:
+    build: ./sinkhole
+    container_name: sinkhole
+    networks:
+      testnet:
+        aliases:
+          # All test hostnames resolve to sinkhole within testnet
+          - api.openai.com
+          - api.anthropic.com
+          - api.github.com
+          - evil.com
+          - attacker.com
+          - httpbin.org
+          - failing.test
+          - legitimate-api.com
+    volumes:
+      - ./certs:/certs:ro  # TLS cert signed by test CA
+    ports:
+      - "19999:9999"  # Control API (for debugging)
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import httpx; httpx.get('http://localhost:9999/health', timeout=2)",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # Test runner
+  test-runner:
+    build: ./runner
+    container_name: test-runner
+    networks:
+      - testnet
+    depends_on:
+      safeyolo:
+        condition: service_healthy
+      sinkhole:
+        condition: service_healthy
+    environment:
+      - PROXY_URL=http://safeyolo:8080
+      - ADMIN_URL=http://safeyolo:9090
+      - ADMIN_API_TOKEN=test-token-for-blackbox-tests
+      - SINKHOLE_API=http://sinkhole:9999
+      # Disable SSL verification warnings for cleaner output
+      - PYTHONWARNINGS=ignore:Unverified HTTPS request
+    volumes:
+      # Mount test files for development iteration
+      - ./runner:/app:ro
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  safeyolo-test-certs:
+  safeyolo-test-ca:
+  safeyolo-test-logs:
+  safeyolo-test-data:
