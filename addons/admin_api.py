@@ -22,8 +22,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
-from pdp import get_admin_client
 from utils import write_event
+
+from pdp import get_admin_client
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -719,12 +720,35 @@ class AdminAPI:
         self._discover_addons()
         log.info(f"Admin API: discovered {len(AdminRequestHandler.addons_with_stats)} addons with stats")
 
-        # Start HTTP server in background thread
+        # Start HTTP server in background thread with error handling
         self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
+        self._server_port = port
+
+        def serve_with_recovery():
+            """Run server with exception handling and auto-restart."""
+            while True:
+                try:
+                    log.info(f"Admin API server thread starting on port {port}")
+                    self.server.serve_forever()
+                    # serve_forever only returns if shutdown() is called
+                    log.info("Admin API server shut down cleanly")
+                    break
+                except Exception as e:
+                    log.error(f"Admin API server crashed: {type(e).__name__}: {e}")
+                    # Attempt restart after brief delay
+                    import time
+                    time.sleep(1)
+                    try:
+                        self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
+                        log.warning("Admin API server restarting after crash")
+                    except Exception as restart_err:
+                        log.error(f"Admin API restart failed: {type(restart_err).__name__}: {restart_err}")
+                        break
 
         self.server_thread = threading.Thread(
-            target=self.server.serve_forever,
+            target=serve_with_recovery,
             daemon=True,
+            name="admin-api-server",
         )
         self.server_thread.start()
 
