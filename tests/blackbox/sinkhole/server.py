@@ -3,13 +3,18 @@ Multi-host HTTP server that acts as a sinkhole for all test traffic.
 
 Routes requests based on Host header to appropriate handlers.
 Records all requests for later inspection via control API.
+
+Supports both HTTP (port 8080) and HTTPS (port 443) for testing
+HTTPS requests through the proxy.
 """
 
 import json
 import logging
+import ssl
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -21,6 +26,28 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
+
+class SSLSafeThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with graceful SSL error handling.
+
+    SSL handshake errors (connection resets, protocol mismatches) are common
+    and should not crash the server. This class catches these errors and logs
+    them at debug level, keeping the server running.
+    """
+
+    def handle_error(self, request, client_address):
+        """Handle errors without crashing on SSL exceptions."""
+        import sys
+        exc_type, exc_value, _ = sys.exc_info()
+
+        # SSL errors are common and expected (client disconnects, protocol issues)
+        if exc_type and issubclass(exc_type, (ssl.SSLError, ConnectionResetError, BrokenPipeError)):
+            log.debug(f"SSL/connection error from {client_address}: {exc_type.__name__}: {exc_value}")
+            return
+
+        # Log other errors but don't crash
+        log.warning(f"Request handler error from {client_address}: {exc_type.__name__}: {exc_value}")
 
 # Thread-safe request storage
 _lock = threading.Lock()
@@ -175,24 +202,78 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
 
-def run_servers(sinkhole_port: int = 8080, control_port: int = 9999):
-    """Run both sinkhole and control API servers."""
-    sinkhole = HTTPServer(("0.0.0.0", sinkhole_port), SinkholeHandler)
-    control = HTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
+def load_tls_cert(cert_path: Path, key_path: Path) -> ssl.SSLContext | None:
+    """Load TLS certificate for HTTPS server.
 
-    log.info(f"Sinkhole server listening on port {sinkhole_port}")
+    The certificate should be pre-generated and signed by the test CA.
+    This mirrors production where upstreams have CA-signed certificates.
+    No self-signed cert generation - ground truth testing requires real TLS.
+
+    Returns:
+        SSLContext if cert exists, None otherwise (falls back to HTTP-only)
+    """
+    if not cert_path.exists() or not key_path.exists():
+        log.warning(f"TLS cert not found at {cert_path} - HTTPS disabled")
+        log.warning("Run: ./certs/generate-certs.sh to create test certificates")
+        return None
+
+    log.info(f"Loading TLS certificate from {cert_path}")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert_path), str(key_path))
+    return context
+
+
+def run_servers(
+    http_port: int = 8080,
+    https_port: int = 443,
+    control_port: int = 9999,
+    cert_path: str = "/certs/sinkhole.crt",
+    key_path: str = "/certs/sinkhole.key",
+):
+    """Run sinkhole (HTTP + HTTPS) and control API servers.
+
+    HTTPS requires a certificate signed by the test CA. This mirrors production
+    where SafeYolo verifies upstream certificates against trusted CAs.
+
+    Uses ThreadingHTTPServer for concurrent request handling (important for
+    tests that make multiple parallel requests through the proxy).
+    """
+    # HTTP sinkhole (for non-TLS tests or fallback)
+    http_server = SSLSafeThreadingHTTPServer(("0.0.0.0", http_port), SinkholeHandler)
+    log.info(f"Sinkhole HTTP server listening on port {http_port}")
+
+    # HTTPS sinkhole (for proxied HTTPS requests - ground truth testing)
+    https_server = None
+    ssl_context = load_tls_cert(Path(cert_path), Path(key_path))
+    if ssl_context:
+        https_server = SSLSafeThreadingHTTPServer(("0.0.0.0", https_port), SinkholeHandler)
+        https_server.socket = ssl_context.wrap_socket(https_server.socket, server_side=True)
+        log.info(f"Sinkhole HTTPS server listening on port {https_port}")
+
+    # Control API (threading for concurrent health checks during tests)
+    control = ThreadingHTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
     log.info(f"Control API listening on port {control_port}")
 
-    # Run control API in background thread
-    control_thread = threading.Thread(target=control.serve_forever, daemon=True)
-    control_thread.start()
+    # Run servers in background threads
+    threads = [
+        threading.Thread(target=http_server.serve_forever, daemon=True, name="http"),
+        threading.Thread(target=control.serve_forever, daemon=True, name="control"),
+    ]
+    if https_server:
+        threads.append(threading.Thread(target=https_server.serve_forever, daemon=True, name="https"))
 
-    # Run sinkhole in main thread
+    for thread in threads:
+        thread.start()
+
+    # Keep main thread alive
     try:
-        sinkhole.serve_forever()
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         log.info("Shutting down...")
-        sinkhole.shutdown()
+        http_server.shutdown()
+        if https_server:
+            https_server.shutdown()
         control.shutdown()
 
 
@@ -200,8 +281,17 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Sinkhole server for blackbox tests")
-    parser.add_argument("--sinkhole-port", type=int, default=8080, help="Port for sinkhole HTTP server")
+    parser.add_argument("--http-port", type=int, default=8080, help="Port for HTTP server")
+    parser.add_argument("--https-port", type=int, default=443, help="Port for HTTPS server")
     parser.add_argument("--control-port", type=int, default=9999, help="Port for control API")
+    parser.add_argument("--cert", type=str, default="/certs/sinkhole.crt", help="TLS certificate path")
+    parser.add_argument("--key", type=str, default="/certs/sinkhole.key", help="TLS key path")
     args = parser.parse_args()
 
-    run_servers(sinkhole_port=args.sinkhole_port, control_port=args.control_port)
+    run_servers(
+        http_port=args.http_port,
+        https_port=args.https_port,
+        control_port=args.control_port,
+        cert_path=args.cert,
+        key_path=args.key,
+    )

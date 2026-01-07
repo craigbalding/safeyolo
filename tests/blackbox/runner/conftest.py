@@ -5,7 +5,6 @@ import time
 
 import httpx
 import pytest
-
 from sinkhole_client import SinkholeClient
 
 # Environment configuration
@@ -13,6 +12,18 @@ PROXY_URL = os.environ.get("PROXY_URL", "http://safeyolo:8080")
 ADMIN_URL = os.environ.get("ADMIN_URL", "http://safeyolo:9090")
 ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "test-token-for-blackbox-tests")
 SINKHOLE_API = os.environ.get("SINKHOLE_API", "http://sinkhole:9999")
+
+# =============================================================================
+# Test credentials - MUST match production detection patterns
+# =============================================================================
+# OpenAI pattern: sk-proj-[a-zA-Z0-9_-]{80,}
+TEST_OPENAI_KEY = "sk-proj-" + "a1b2c3d4e5f6g7h8i9j0" * 4  # 80+ chars after prefix
+
+# Anthropic pattern: sk-ant-api[a-zA-Z0-9-]{90,}
+TEST_ANTHROPIC_KEY = "sk-ant-api03-" + "a1b2c3d4e5f6g7h8i9j0" * 5  # 90+ chars after prefix
+
+# GitHub pattern: gh[ps]_[a-zA-Z0-9]{36}
+TEST_GITHUB_TOKEN = "ghp_" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # 36 chars after prefix
 
 
 @pytest.fixture(scope="session")

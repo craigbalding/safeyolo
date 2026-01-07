@@ -11,4 +11,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py .
 
 # Default: run all tests with verbose output
-CMD ["pytest", "-v", "--tb=short", "--timeout=60"]
+# -p no:cacheprovider: disable cache (volume is read-only)
+CMD ["pytest", "-v", "--tb=short", "--timeout=60", "-p", "no:cacheprovider"]

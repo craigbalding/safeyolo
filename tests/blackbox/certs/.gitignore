@@ -1,0 +1,6 @@
+# Generated certificates - created by generate-certs.sh at test time
+# Do NOT commit private keys to version control
+ca.crt
+ca.key
+sinkhole.crt
+sinkhole.key

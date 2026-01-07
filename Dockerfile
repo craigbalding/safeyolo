@@ -54,6 +54,9 @@ COPY addons/base.py /app/addons/
 COPY addons/utils.py /app/addons/
 COPY addons/budget_tracker.py /app/addons/
 COPY addons/policy_loader.py /app/addons/
+COPY addons/sensor_utils.py /app/addons/
+# Detection module (pure detection logic, no mitmproxy deps)
+COPY addons/detection/ /app/addons/detection/
 # Copy addons in load order (see scripts/start-safeyolo.sh)
 # Layer 0: Infrastructure
 COPY addons/admin_shield.py /app/addons/
@@ -93,7 +96,7 @@ ENV CERT_DIR=/certs-private
 ENV PUBLIC_CERT_DIR=/certs-public
 ENV LOG_DIR=/app/logs
 ENV CONFIG_DIR=/app/config
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/addons
 
 # Non-root execution: use docker-compose.yml user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"
 # This runs as the host user's UID/GID, so volume permissions just work.

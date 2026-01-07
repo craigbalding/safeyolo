@@ -150,6 +150,19 @@ echo ""
 MITM_OPTS=""
 MITM_OPTS="${MITM_OPTS} --set confdir=${CERT_DIR}"
 MITM_OPTS="${MITM_OPTS} --set block_global=false"
+
+# Custom upstream CA trust (SAFEYOLO_CA_CERT)
+# Used for: blackbox tests (test CA), corporate environments (internal CA)
+# Only affects mitmproxy's upstream TLS verification (SafeYolo doesn't initiate outbound calls)
+if [ -n "${SAFEYOLO_CA_CERT}" ]; then
+    if [ -f "${SAFEYOLO_CA_CERT}" ]; then
+        echo "Trusting upstream CA: ${SAFEYOLO_CA_CERT}"
+        MITM_OPTS="${MITM_OPTS} --set ssl_verify_upstream_trusted_ca=${SAFEYOLO_CA_CERT}"
+    else
+        echo "ERROR: SAFEYOLO_CA_CERT set but file not found: ${SAFEYOLO_CA_CERT}"
+        exit 1
+    fi
+fi
 # Note: SSE endpoints (mcp.apify.com, ntfy.sh) now handled by sse_streaming addon
 # They go through the proxy for credential guard inspection, with streaming enabled
 # TLS passthrough for frpc - frp protocol doesn't work through MITM
@@ -276,6 +289,21 @@ if [ -f /opt/shell_mux/container_agent.py ] && [ -n "${CONTAINER_NAME}" ]; then
     python /opt/shell_mux/container_agent.py &
     echo "Agent PID: $!"
 fi
+
+# ==============================================================================
+# Headless mode (SAFEYOLO_HEADLESS=true)
+# Runs mitmdump directly without tmux/TUI - used by blackbox tests and CI
+# ==============================================================================
+if [ "${SAFEYOLO_HEADLESS}" = "true" ]; then
+    echo ""
+    echo "=== Starting in HEADLESS mode (mitmdump) ==="
+    # exec replaces shell - Docker manages process lifecycle
+    exec mitmdump -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} "$@"
+fi
+
+# ==============================================================================
+# Interactive mode (default) - mitmproxy TUI in tmux
+# ==============================================================================
 
 # Build the mitmproxy command and save it for reload script
 MITMPROXY_CMD="mitmproxy -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"

@@ -1,7 +1,7 @@
 """Response handlers for different simulated hosts."""
 
-from dataclasses import dataclass, field
 import json
+from dataclasses import dataclass, field
 
 if __name__ != "__main__":
     from models import CapturedRequest

@@ -31,7 +31,7 @@ jobs:
 
       - name: Run addon tests
         run: |
-          pytest tests/ -v --tb=short
+          pytest tests/ -v --tb=short --ignore=tests/blackbox/
 
   test-cli:
     name: Test CLI
@@ -74,4 +74,4 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          ruff check addons/ cli/src/ tests/
+          ruff check addons/ cli/src/ tests/ --exclude tests/blackbox/

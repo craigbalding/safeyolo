@@ -1,0 +1,56 @@
+name: Blackbox Tests
+
+# Blackbox tests validate SafeYolo's security guarantees end-to-end:
+# - Credentials only reach authorized destinations
+# - Blocked requests don't leak data to upstreams
+# - Hop-by-hop headers are stripped (no credential leakage)
+#
+# These tests run SafeYolo as a black box using the production startup
+# script, with all traffic routed through a test sinkhole for inspection.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 3am UTC daily
+  workflow_dispatch:  # Manual trigger from GitHub UI
+  push:
+    branches: [master, main]
+    paths:
+      - 'addons/**'
+      - 'pdp/**'
+      - 'scripts/start-safeyolo.sh'
+      - 'tests/blackbox/**'
+      - 'Dockerfile'
+      - '.github/workflows/blackbox.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'addons/**'
+      - 'pdp/**'
+      - 'scripts/start-safeyolo.sh'
+      - 'tests/blackbox/**'
+      - 'Dockerfile'
+      - '.github/workflows/blackbox.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  blackbox:
+    name: Security Blackbox Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run blackbox tests
+        run: ./tests/blackbox/run-tests.sh
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: blackbox-test-logs
+          path: |
+            tests/blackbox/logs/
+          retention-days: 7
