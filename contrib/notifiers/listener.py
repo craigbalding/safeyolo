@@ -20,7 +20,7 @@ import sys
 import time
 
 import httpx
-from tenacity import retry, wait_exponential, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, wait_exponential
 
 # Configuration from environment
 CALLBACK_TOPIC = os.getenv("NTFY_CALLBACK_TOPIC", "")
@@ -115,7 +115,7 @@ def listen():
                         if parsed["action"] == "approve":
                             call_admin_api(parsed["fingerprint"], parsed["host"], parsed["project"])
                         else:
-                            log(f"Denied (no action taken)")
+                            log("Denied (no action taken)")
 
 
 @retry(

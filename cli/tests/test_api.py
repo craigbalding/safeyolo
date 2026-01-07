@@ -1,6 +1,6 @@
 """Tests for API client module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -189,7 +189,7 @@ class TestAdminAPIAllowlist:
         mock_httpx["response"].json.return_value = {"status": "added"}
 
         api = AdminAPI(token="test")
-        result = api.add_allowlist("sk-test", "api.openai.com", ttl_seconds=600)
+        api.add_allowlist("sk-test", "api.openai.com", ttl_seconds=600)
 
         call_args = mock_httpx["client"].request.call_args
         assert call_args[1]["json"]["credential_prefix"] == "sk-test"
@@ -200,7 +200,7 @@ class TestAdminAPIAllowlist:
         mock_httpx["response"].json.return_value = {"cleared": 5}
 
         api = AdminAPI(token="test")
-        result = api.clear_allowlist()
+        api.clear_allowlist()
 
         call_args = mock_httpx["client"].request.call_args
         assert call_args[0][0] == "DELETE"

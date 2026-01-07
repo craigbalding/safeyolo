@@ -7,7 +7,7 @@ import pytest
 
 def make_mock_decision(effect, reason="", budget_remaining=None):
     """Create a mock PolicyDecision for testing."""
-    from pdp import Effect, BudgetBlock
+    from pdp import BudgetBlock
 
     decision = MagicMock()
     decision.effect = effect
@@ -44,6 +44,7 @@ class TestNetworkGuard:
     def test_blocks_denied_request(self):
         """Test addon blocks requests with effect=deny."""
         from network_guard import NetworkGuard
+
         from pdp import Effect
 
         addon = NetworkGuard()
@@ -82,6 +83,7 @@ class TestNetworkGuard:
     def test_blocks_rate_limited_request(self):
         """Test addon blocks requests with effect=budget_exceeded."""
         from network_guard import NetworkGuard
+
         from pdp import Effect
 
         addon = NetworkGuard()
@@ -119,6 +121,7 @@ class TestNetworkGuard:
     def test_allows_non_denied_request(self):
         """Test addon allows requests without effect=deny or budget_exceeded."""
         from network_guard import NetworkGuard
+
         from pdp import Effect
 
         addon = NetworkGuard()
@@ -158,6 +161,7 @@ class TestNetworkGuard:
     def test_warn_mode_does_not_block(self):
         """Test warn mode logs but doesn't block."""
         from network_guard import NetworkGuard
+
         from pdp import Effect
 
         addon = NetworkGuard()
@@ -220,6 +224,7 @@ class TestNetworkGuard:
     def test_pdp_error_fails_closed(self):
         """Test that PDP errors result in denial (fail-closed)."""
         from network_guard import NetworkGuard
+
         from pdp import Effect
 
         addon = NetworkGuard()
@@ -364,6 +369,7 @@ class TestNetworkGuardIntegration:
     def test_single_evaluation_per_request(self):
         """Test that NetworkGuard only calls PolicyClient.evaluate once per request."""
         from network_guard import NetworkGuard
+
         from pdp import Effect
 
         addon = NetworkGuard()

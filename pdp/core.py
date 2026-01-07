@@ -25,23 +25,22 @@ import hashlib
 import logging
 import sys
 import threading
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 # Import existing policy engine components
 # Note: When running as standalone service, these need to be on PYTHONPATH
 sys.path.insert(0, str(Path(__file__).parent.parent / "addons"))
-from policy_engine import PolicyEngine, PolicyDecision as LegacyDecision, UnifiedPolicy
+from policy_engine import PolicyDecision as LegacyDecision
+from policy_engine import PolicyEngine, UnifiedPolicy
 
 from .schemas import (
-    HttpEvent,
-    PolicyDecision,
-    Effect,
-    DecisionEventBlock,
     BudgetBlock,
-    ImmediateResponseBlock,
     ChecksBlock,
+    DecisionEventBlock,
+    Effect,
+    HttpEvent,
+    ImmediateResponseBlock,
+    PolicyDecision,
 )
 
 log = logging.getLogger("safeyolo.pdp.core")
@@ -521,7 +520,7 @@ class PDPCore:
 
             self._task_policies[task_id] = policy_data
 
-            log.info(f"Upserted task policy", extra={"task_id": task_id})
+            log.info("Upserted task policy", extra={"task_id": task_id})
             return {
                 "status": "ok",
                 "task_id": task_id,
@@ -545,7 +544,7 @@ class PDPCore:
                 if self._engine._loader._task_policy:
                     if self._engine._loader._task_policy.metadata.task_id == task_id:
                         self._engine._loader._task_policy = None
-                log.info(f"Deleted task policy", extra={"task_id": task_id})
+                log.info("Deleted task policy", extra={"task_id": task_id})
                 return {"status": "ok", "task_id": task_id}
             else:
                 return {"status": "not_found", "task_id": task_id}

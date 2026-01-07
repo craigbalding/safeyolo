@@ -18,9 +18,7 @@ import json
 import logging
 import re
 import sys
-import uuid
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -29,18 +27,7 @@ from mitmproxy import ctx, http
 
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from pdp import (
-    PolicyClient,
-    PolicyClientConfig,
-    get_policy_client,
-    reset_policy_client,
-    HttpEvent,
-    Effect,
-    CredentialType,
-    CredentialConfidence,
-)
 from sensor_utils import build_http_event_from_flow
-
 from utils import (
     get_client_ip,
     hmac_fingerprint,
@@ -48,6 +35,11 @@ from utils import (
     load_hmac_secret,
     looks_like_secret,
     make_block_response,
+)
+
+from pdp import (
+    Effect,
+    get_policy_client,
 )
 
 log = logging.getLogger("safeyolo.credential-guard")

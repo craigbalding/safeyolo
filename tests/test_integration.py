@@ -202,6 +202,7 @@ domains: {}
         """Test policy reload doesn't break in-flight requests."""
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
+
         from pdp import get_policy_client
 
         policy_yaml = """

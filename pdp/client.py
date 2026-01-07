@@ -30,22 +30,20 @@ Usage:
     decision = client.evaluate(http_event)
 """
 
-import asyncio
 import logging
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Literal
 
 from .schemas import (
-    HttpEvent,
-    PolicyDecision,
-    Effect,
     DecisionEventBlock,
+    Effect,
+    HttpEvent,
     ImmediateResponseBlock,
+    PolicyDecision,
 )
 
 log = logging.getLogger("safeyolo.pdp.client")
@@ -288,7 +286,7 @@ class HttpPolicyClient(PolicyClient):
         # Backpressure: block if too many in-flight
         acquired = self._semaphore.acquire(timeout=self._timeout)
         if not acquired:
-            log.warning(f"HttpPolicyClient backpressure: semaphore timeout")
+            log.warning("HttpPolicyClient backpressure: semaphore timeout")
             return self._unavailable_decision(event_id, "backpressure")
 
         try:
@@ -327,7 +325,7 @@ class HttpPolicyClient(PolicyClient):
             return self._unavailable_decision(event_id, f"PDP error: {response.status_code}")
 
         except httpx.TimeoutException:
-            log.warning(f"PDP timeout", extra={"event_id": event_id})
+            log.warning("PDP timeout", extra={"event_id": event_id})
             return self._unavailable_decision(event_id, "timeout")
 
         except httpx.ConnectError as e:
@@ -340,7 +338,6 @@ class HttpPolicyClient(PolicyClient):
 
     def health_check(self) -> bool:
         """Check PDP health endpoint."""
-        import httpx
 
         try:
             response = self._client.get("/health", timeout=1.0)
@@ -389,7 +386,7 @@ class HttpPolicyClient(PolicyClient):
         Applies unavailable_mode: deny (default) or allow.
         """
         if self._unavailable_mode == UnavailableMode.ALLOW:
-            log.warning(f"PDP unavailable, failing OPEN (dangerous)", extra={"event_id": event_id})
+            log.warning("PDP unavailable, failing OPEN (dangerous)", extra={"event_id": event_id})
             return PolicyDecision(
                 version=1,
                 event=DecisionEventBlock(
@@ -403,7 +400,7 @@ class HttpPolicyClient(PolicyClient):
             )
 
         # Default: fail closed (DENY)
-        log.warning(f"PDP unavailable, failing CLOSED", extra={"event_id": event_id, "reason": reason})
+        log.warning("PDP unavailable, failing CLOSED", extra={"event_id": event_id, "reason": reason})
         return PolicyDecision(
             version=1,
             event=DecisionEventBlock(

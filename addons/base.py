@@ -31,9 +31,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from mitmproxy import http
-from pdp import get_policy_client
 from service_discovery import get_service_discovery
 from utils import get_client_ip, get_option_safe, make_block_response, write_event
+
+from pdp import get_policy_client
 
 
 @dataclass

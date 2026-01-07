@@ -41,10 +41,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .core import PDPCore, get_pdp, reset_pdp
+from .core import get_pdp, reset_pdp
 from .schemas import HttpEvent, PolicyDecision
 
 log = logging.getLogger("safeyolo.pdp.app")
@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
     baseline_path = os.environ.get("PDP_BASELINE_PATH")
     budget_path = os.environ.get("PDP_BUDGET_STATE_PATH")
 
-    pdp = get_pdp(
+    get_pdp(
         baseline_path=Path(baseline_path) if baseline_path else None,
         budget_state_path=Path(budget_path) if budget_path else None,
     )

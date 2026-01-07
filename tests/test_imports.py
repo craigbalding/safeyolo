@@ -274,8 +274,9 @@ class TestPolicyClientRegistry:
         This is the fail-closed behavior that prevents silent use of an
         unconfigured/empty policy.
         """
-        from pdp import reset_policy_client, get_policy_client
         import pytest
+
+        from pdp import get_policy_client, reset_policy_client
 
         reset_policy_client()  # Ensure clean state
 
@@ -287,12 +288,12 @@ class TestPolicyClientRegistry:
     def test_configure_then_get_policy_client(self):
         """configure_policy_client() + get_policy_client() returns valid client."""
         from pdp import (
-            reset_policy_client,
+            PolicyClient,
+            PolicyClientConfig,
             configure_policy_client,
             get_policy_client,
             is_policy_client_configured,
-            PolicyClientConfig,
-            PolicyClient,
+            reset_policy_client,
         )
 
         reset_policy_client()  # Ensure clean state
@@ -315,11 +316,11 @@ class TestPolicyClientRegistry:
     def test_configure_with_baseline_path(self, tmp_path):
         """configure_policy_client() with baseline_path loads the policy."""
         from pdp import (
-            reset_policy_client,
+            LocalPolicyClient,
+            PolicyClientConfig,
             configure_policy_client,
             get_policy_client,
-            PolicyClientConfig,
-            LocalPolicyClient,
+            reset_policy_client,
         )
 
         reset_policy_client()
@@ -359,11 +360,11 @@ permissions:
         - LocalPolicyClient/PDPCore created another PolicyEngine
         """
         from pdp import (
-            reset_policy_client,
+            LocalPolicyClient,
+            PolicyClientConfig,
             configure_policy_client,
             get_policy_client,
-            PolicyClientConfig,
-            LocalPolicyClient,
+            reset_policy_client,
         )
 
         reset_policy_client()

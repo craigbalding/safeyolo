@@ -21,12 +21,11 @@ from mitmproxy import http
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from pdp import (
-    HttpEvent,
-    CredentialType,
     CredentialConfidence,
+    CredentialType,
+    HttpEvent,
     create_http_event,
 )
-
 
 # Map rule names to CredentialType enum
 RULE_TO_CREDENTIAL_TYPE = {

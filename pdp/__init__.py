@@ -49,64 +49,61 @@ HTTP client usage:
     decision = client.evaluate(event)
 """
 
-from .schemas import (
-    # Enums
-    EventKind,
-    EventPhase,
-    IdentitySource,
-    CredentialType,
-    CredentialConfidence,
-    BodyObserved,
-    Effect,
-    # Event blocks
-    EventBlock,
-    PrincipalBlock,
-    HttpBlock,
-    CredentialBlock,
-    BodyBlock,
-    ContextBlock,
-    HttpEvent,
-    # Decision blocks
-    DecisionEventBlock,
-    ChecksBlock,
-    BudgetBlock,
-    ImmediateResponseBlock,
-    ApprovalBlock,
-    CacheBlock,
-    PolicyDecision,
-    # Factory functions
-    create_http_event,
-    create_allow_decision,
-    create_deny_decision,
-    create_budget_exceeded_decision,
+from .admin_client import (
+    AdminClientConfig,
+    HttpPDPAdminClient,
+    LocalPDPAdminClient,
+    PDPAdminClient,
+    get_admin_client,
+    reset_admin_client,
 )
-
 from .client import (
+    HttpPolicyClient,
+    LocalPolicyClient,
     PolicyClient,
     PolicyClientConfig,
-    LocalPolicyClient,
-    HttpPolicyClient,
     UnavailableMode,
     configure_policy_client,
     get_policy_client,
     is_policy_client_configured,
     reset_policy_client,
 )
-
 from .core import (
+    ENGINE_VERSION,
     PDPCore,
     get_pdp,
     reset_pdp,
-    ENGINE_VERSION,
 )
-
-from .admin_client import (
-    PDPAdminClient,
-    AdminClientConfig,
-    LocalPDPAdminClient,
-    HttpPDPAdminClient,
-    get_admin_client,
-    reset_admin_client,
+from .schemas import (
+    ApprovalBlock,
+    BodyBlock,
+    BodyObserved,
+    BudgetBlock,
+    CacheBlock,
+    ChecksBlock,
+    ContextBlock,
+    CredentialBlock,
+    CredentialConfidence,
+    CredentialType,
+    # Decision blocks
+    DecisionEventBlock,
+    Effect,
+    # Event blocks
+    EventBlock,
+    # Enums
+    EventKind,
+    EventPhase,
+    HttpBlock,
+    HttpEvent,
+    IdentitySource,
+    ImmediateResponseBlock,
+    PolicyDecision,
+    PrincipalBlock,
+    create_allow_decision,
+    create_budget_exceeded_decision,
+    create_deny_decision,
+    # Factory functions
+    create_http_event,
 )
 
 __all__ = [
@@ -145,7 +142,9 @@ __all__ = [
     "LocalPolicyClient",
     "HttpPolicyClient",
     "UnavailableMode",
+    "configure_policy_client",
     "get_policy_client",
+    "is_policy_client_configured",
     "reset_policy_client",
     # Core
     "PDPCore",

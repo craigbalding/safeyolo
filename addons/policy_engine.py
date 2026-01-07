@@ -918,6 +918,7 @@ class PolicyClientConfigurator:
     def configure(self, updates):
         """Configure PolicyClient when options change."""
         from mitmproxy import ctx
+
         from pdp import PolicyClientConfig, configure_policy_client
 
         baseline_path = ctx.options.policy_baseline

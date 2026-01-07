@@ -51,11 +51,12 @@ from utils import get_client_ip
 
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from pdp import (
-    get_policy_client,
-    Effect,
-)
 from sensor_utils import build_http_event_from_flow
+
+from pdp import (
+    Effect,
+    get_policy_client,
+)
 
 log = logging.getLogger("safeyolo.network-guard")
 

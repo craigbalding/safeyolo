@@ -83,7 +83,17 @@ services:
           nocopy: true
       # Dev mount - entire project for live editing
       # For production, use selective mounts instead
-      - .:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+      # Dev mounts for live editing - remove for production use
+      - ./addons:/app/addons
+      - ./scripts:/app/scripts
+      - ./models:/app/models
+      - ./tests:/app/tests
+      # Runtime env (dynamically updatable)
+      - ./.env:/app/.env
+      #- .:/app
     command: ["/app/scripts/start-safeyolo.sh"]
     env_file:
       - .env

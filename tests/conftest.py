@@ -165,6 +165,7 @@ def credential_guard(policy_engine_initialized):
 def network_guard(tmp_path):
     """Create a fresh NetworkGuard instance with blocking enabled and default policy."""
     from network_guard import NetworkGuard
+
     from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
 
     # Reset PDP client for fresh state
