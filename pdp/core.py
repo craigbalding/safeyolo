@@ -49,6 +49,19 @@ log = logging.getLogger("safeyolo.pdp.core")
 ENGINE_VERSION = "pdp-0.1.0"
 
 
+def _sanitize_for_log(value):
+    """Sanitize user-controlled values before logging to prevent log injection.
+
+    Strips CR/LF characters from strings to prevent log line injection.
+    Non-string values are returned unchanged.
+    """
+    if value is None:
+        return value
+    if isinstance(value, str):
+        return value.replace("\r", "").replace("\n", "")
+    return value
+
+
 class PDPCore:
     """
     Policy Decision Point core library.
@@ -123,12 +136,15 @@ class PDPCore:
         event_id = event.event.event_id
         policy_hash = self.policy_hash
 
+        safe_event_id = _sanitize_for_log(event_id)
+        safe_host = _sanitize_for_log(event.http.host)
+        safe_method = _sanitize_for_log(event.http.method)
         log.debug(
             "Evaluating event",
             extra={
-                "event_id": event_id,
-                "host": event.http.host,
-                "method": event.http.method,
+                "event_id": safe_event_id,
+                "host": safe_host,
+                "method": safe_method,
                 "credential_detected": event.credential.detected,
             }
         )
@@ -385,15 +401,16 @@ class PDPCore:
                 "permission_count": result.get("permission_count", 0),
             }
         except ValueError as e:
+            log.warning(f"Invalid baseline policy: {type(e).__name__}: {e}")
             return {
                 "status": "error",
-                "error": f"Invalid policy: {e}",
+                "error": "Invalid policy document",
             }
         except Exception as e:
             log.error(f"Failed to update baseline: {type(e).__name__}: {e}")
             return {
                 "status": "error",
-                "error": f"{type(e).__name__}: {e}",
+                "error": "Failed to update baseline policy",
             }
 
     # -------------------------------------------------------------------------
@@ -442,15 +459,16 @@ class PDPCore:
                 "permission_count": result.get("permission_count", 1),
             }
         except ValueError as e:
+            log.warning(f"Invalid credential approval: {type(e).__name__}: {e}")
             return {
                 "status": "error",
-                "error": str(e),
+                "error": "Invalid credential approval parameters",
             }
         except Exception as e:
             log.error(f"Failed to add credential approval: {type(e).__name__}: {e}")
             return {
                 "status": "error",
-                "error": f"{type(e).__name__}: {e}",
+                "error": "Failed to add credential approval",
             }
 
     # -------------------------------------------------------------------------
@@ -488,7 +506,7 @@ class PDPCore:
             log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
             return {
                 "status": "error",
-                "error": f"{type(e).__name__}: {e}",
+                "error": "Failed to reset budget counters",
             }
 
     # -------------------------------------------------------------------------
@@ -512,10 +530,11 @@ class PDPCore:
                 policy = UnifiedPolicy.model_validate(policy_data)
                 policy.metadata.task_id = task_id
             except Exception as e:
+                log.warning(f"Invalid task policy for {task_id}: {type(e).__name__}: {e}")
                 return {
                     "status": "error",
                     "task_id": task_id,
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": "Invalid policy document",
                 }
 
             self._task_policies[task_id] = policy_data

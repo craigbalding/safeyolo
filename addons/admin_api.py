@@ -412,7 +412,9 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             credential=credential,
             tier=tier
         )
-        log.info(f"Baseline approval added: {_sanitize_log(credential)} -> {_sanitize_log(destination)}")  # lgtm[py/log-injection] sanitized
+        safe_credential = _sanitize_log(credential)
+        safe_destination = _sanitize_log(destination)
+        log.info(f"Baseline approval added: {safe_credential} -> {safe_destination}")
 
         self._send_json({
             "status": "added",
@@ -442,7 +444,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             client_ip=client_ip,
             resource=resource
         )
-        log.info(f"Budget counters reset: {_sanitize_log(resource) or 'all'}")
+        safe_resource = _sanitize_log(resource) if resource else "all"
+        log.info(f"Budget counters reset: {safe_resource}")
         self._send_json(result)
 
     def do_POST(self):

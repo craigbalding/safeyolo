@@ -44,7 +44,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .core import get_pdp, reset_pdp
+from .core import _sanitize_for_log, get_pdp, reset_pdp
 from .schemas import HttpEvent, PolicyDecision
 
 log = logging.getLogger("safeyolo.pdp.app")
@@ -128,14 +128,14 @@ async def evaluate(event: HttpEvent) -> PolicyDecision:
         log.debug(
             "Evaluated",
             extra={
-                "event_id": event.event.event_id,
+                "event_id": _sanitize_for_log(event.event.event_id),
                 "effect": decision.effect.value,
             }
         )
         return decision
     except Exception as e:
         log.error(f"Evaluation failed: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Evaluation failed")
 
 
 @app.put("/v1/tasks/{task_id}/policy")

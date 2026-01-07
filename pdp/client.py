@@ -451,7 +451,6 @@ class HttpPolicyClient(PolicyClient):
 # =============================================================================
 
 _client_instance: PolicyClient | None = None
-_client_config: PolicyClientConfig | None = None
 _client_lock = threading.Lock()
 
 
@@ -468,23 +467,23 @@ def configure_policy_client(config: PolicyClientConfig) -> None:
     Raises:
         RuntimeError: If client already configured with different config.
     """
-    global _client_instance, _client_config
+    global _client_instance
 
     with _client_lock:
         if _client_instance is not None:
             # Already configured - check if config changed
-            if _client_config == config:
+            if getattr(_client_instance, "_config", None) == config:
                 return  # Same config, no-op
             # Config changed - need reconfigure
             log.info("PolicyClient reconfiguring with new config")
             _client_instance.shutdown()
             _client_instance = None
 
-        _client_config = config
         if config.mode == "http":
             _client_instance = HttpPolicyClient(config)
         else:
             _client_instance = LocalPolicyClient(config)
+        _client_instance._config = config
 
         log.info(
             "PolicyClient configured",
@@ -525,9 +524,8 @@ def is_policy_client_configured() -> bool:
 
 def reset_policy_client() -> None:
     """Reset the global client (for testing only)."""
-    global _client_instance, _client_config
+    global _client_instance
     with _client_lock:
         if _client_instance:
             _client_instance.shutdown()
         _client_instance = None
-        _client_config = None
