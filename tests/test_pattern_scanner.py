@@ -64,7 +64,8 @@ class TestSecretPatterns:
 
     def test_detects_private_key(self, scanner):
         """Test detection of private keys."""
-        text = '-----BEGIN RSA PRIVATE KEY-----\nMIIE...'
+        # String split to avoid triggering GitHub secret scanning on test fixture
+        text = "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIE..."
         rule = scanner._scan_text(text, "output")
 
         assert rule is not None
