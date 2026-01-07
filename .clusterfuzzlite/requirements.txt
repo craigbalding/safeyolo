@@ -1,0 +1,7 @@
+# Dependencies for ClusterFuzzLite fuzzing
+# Pinned with hashes for supply-chain security (OpenSSF Scorecard)
+# Note: oss-fuzz base image uses Python 3.11 (cp311)
+pyyaml==6.0.3 \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d
+yarl==1.22.0 \
+    --hash=sha256:4c52a6e78aef5cf47a98ef8e934755abf53953379b7d53e68b15ff4420e6683d

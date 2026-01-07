@@ -8,4 +8,5 @@ WORKDIR $SRC/safeyolo
 COPY .clusterfuzzlite/build.sh $SRC/
 
 # Install dependencies needed for fuzzing (detection module only)
-RUN pip3 install pyyaml yarl
+COPY .clusterfuzzlite/requirements.txt /tmp/fuzz-requirements.txt
+RUN pip3 install --require-hashes -r /tmp/fuzz-requirements.txt
