@@ -729,23 +729,28 @@ class AdminAPI:
 
         def serve_with_recovery():
             """Run server with exception handling and auto-restart."""
+            import sys
+            import time
+            import traceback
             while True:
                 try:
-                    log.info(f"Admin API server thread starting on port {port}")
+                    print(f"[admin_api] Server thread starting on port {port}", file=sys.stderr, flush=True)
                     self.server.serve_forever()
                     # serve_forever only returns if shutdown() is called
-                    log.info("Admin API server shut down cleanly")
+                    print("[admin_api] Server shut down cleanly", file=sys.stderr, flush=True)
                     break
                 except Exception as e:
-                    log.error(f"Admin API server crashed: {type(e).__name__}: {e}")
+                    print(f"[admin_api] CRASHED: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+                    traceback.print_exc(file=sys.stderr)
+                    sys.stderr.flush()
                     # Attempt restart after brief delay
-                    import time
                     time.sleep(1)
                     try:
                         self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
-                        log.warning("Admin API server restarting after crash")
+                        print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
                     except Exception as restart_err:
-                        log.error(f"Admin API restart failed: {type(restart_err).__name__}: {restart_err}")
+                        print(f"[admin_api] Restart FAILED: {type(restart_err).__name__}: {restart_err}", file=sys.stderr, flush=True)
+                        traceback.print_exc(file=sys.stderr)
                         break
 
         self.server_thread = threading.Thread(

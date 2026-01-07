@@ -13,97 +13,15 @@ Usage:
 """
 
 import logging
-import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from base import SecurityAddon
+from detection import PatternRule, compile_rules
 from mitmproxy import ctx, http
 from utils import make_block_response
 
 log = logging.getLogger("safeyolo.pattern-scanner")
-
-
-@dataclass
-class PatternRule:
-    """A pattern detection rule."""
-    rule_id: str
-    name: str
-    pattern: re.Pattern
-    target: str  # "input", "output", "both"
-    severity: int  # 1-5
-    category: str  # "secret", "jailbreak", "pii"
-
-    def matches(self, text: str) -> re.Match | None:
-        return self.pattern.search(text)
-
-    @property
-    def should_block(self) -> bool:
-        return self.severity >= 4
-
-
-# Built-in secret patterns (scan output/responses)
-BUILTIN_SECRET_PATTERNS = [
-    (r"sk-[a-zA-Z0-9]{48}", "openai_api_key", "OpenAI API Key", 5),
-    (r"sk-ant-[a-zA-Z0-9-]{95}", "anthropic_api_key", "Anthropic API Key", 5),
-    (r"AKIA[0-9A-Z]{16}", "aws_access_key", "AWS Access Key ID", 5),
-    (r"AIza[0-9A-Za-z-_]{35}", "google_api_key", "Google API Key", 5),
-    (r"ghp_[a-zA-Z0-9]{36}", "github_pat", "GitHub Personal Access Token", 5),
-    (r"gho_[a-zA-Z0-9]{36}", "github_oauth", "GitHub OAuth Token", 5),
-    (r"(?i)(api[_-]?key|apikey)['\"]?\s*[:=]\s*['\"]?([a-zA-Z0-9_-]{20,})", "generic_api_key", "Generic API Key", 4),
-    (r"(?i)bearer\s+[a-zA-Z0-9_-]{20,}", "bearer_token", "Bearer Token", 4),
-    (r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----", "private_key", "Private Key", 5),
-    (r"(?i)(postgres|mysql|mongodb)://[^\s]+:[^\s]+@", "db_connection_string", "Database Connection String", 5),
-]
-
-# Built-in jailbreak patterns (scan input/requests)
-BUILTIN_JAILBREAK_PATTERNS = [
-    (r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)", "ignore_instructions", "Instruction override", 4),
-    (r"disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)", "disregard_instructions", "Instruction override", 4),
-    (r"forget\s+(everything|all)\s+(you|that)\s+(know|learned|were)", "forget_training", "Memory reset attempt", 4),
-    (r"you\s+are\s+(now\s+)?(?:DAN|jailbroken|unrestricted|unfiltered)", "dan_jailbreak", "DAN jailbreak", 5),
-    (r"pretend\s+(you\s+)?(are|to\s+be)\s+(a|an)?\s*(evil|malicious|unrestricted)", "evil_roleplay", "Malicious roleplay", 4),
-    (r"developer\s+mode\s+(enabled?|activated?|on)", "developer_mode", "Fake developer mode", 4),
-    (r"enable\s+(developer|debug|admin)\s+mode", "enable_mode", "Privileged mode attempt", 4),
-    (r"(what|show|tell|reveal|repeat|print)\s+(is\s+)?(your|the)\s+(system\s+)?(prompt|instructions?)", "prompt_extraction", "System prompt extraction", 3),
-    (r"\[INST\]|\[/INST\]|<\|im_start\|>|<\|im_end\|>", "instruction_markers", "LLM instruction markers", 4),
-    (r"<<SYS>>|<</SYS>>", "llama_system", "Llama system markers", 4),
-]
-
-
-def _compile_rules() -> list[PatternRule]:
-    """Compile built-in patterns into rules."""
-    rules = []
-
-    for pattern_str, rule_id, desc, severity in BUILTIN_SECRET_PATTERNS:
-        try:
-            rules.append(PatternRule(
-                rule_id=f"secret:{rule_id}",
-                name=desc,
-                pattern=re.compile(pattern_str, re.IGNORECASE),
-                target="output",
-                severity=severity,
-                category="secret",
-            ))
-        except re.error as e:
-            # rule_id is a pattern identifier (e.g. "aws_key"), not an actual secret
-            log.warning(f"Invalid pattern {rule_id}: {e}")  # nosec: not sensitive
-
-    for pattern_str, rule_id, desc, severity in BUILTIN_JAILBREAK_PATTERNS:
-        try:
-            rules.append(PatternRule(
-                rule_id=f"jailbreak:{rule_id}",
-                name=desc,
-                pattern=re.compile(pattern_str, re.IGNORECASE),
-                target="input",
-                severity=severity,
-                category="jailbreak",
-            ))
-        except re.error as e:
-            log.warning(f"Invalid pattern {rule_id}: {e}")
-
-    return rules
 
 
 class PatternScanner(SecurityAddon):
@@ -153,7 +71,7 @@ class PatternScanner(SecurityAddon):
     def configure(self, updates):
         """Handle option changes."""
         if not self.rules:
-            self.rules = _compile_rules()
+            self.rules = compile_rules()
             log.info(f"Pattern scanner loaded {len(self.rules)} rules")
 
         if "pattern_log_path" in updates:

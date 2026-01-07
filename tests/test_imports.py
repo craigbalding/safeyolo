@@ -35,7 +35,7 @@ ADDON_MODULES = [
 REQUIRED_NAMES = {
     "circuit_breaker": ["SecurityAddon", "atomic_write_json", "BackgroundWorker", "make_block_response"],
     "pattern_scanner": ["SecurityAddon", "make_block_response"],
-    "credential_guard": ["SecurityAddon", "get_policy_client", "looks_like_secret", "hmac_fingerprint"],
+    "credential_guard": ["SecurityAddon", "get_policy_client", "hmac_fingerprint"],
     "network_guard": ["SecurityAddon", "get_client_ip", "get_policy_client"],
     "base": ["make_block_response", "write_event", "get_option_safe", "get_policy_client"],
     "policy_engine": ["write_event", "GCRABudgetTracker", "PolicyLoader"],
