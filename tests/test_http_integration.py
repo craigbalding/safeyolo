@@ -7,18 +7,18 @@ They are "specification quality" - good enough to verify a reimplementation in a
 Requirements:
 - SafeYolo proxy running on PROXY_HOST:PROXY_PORT (default localhost:8080)
 - Admin API available on ADMIN_HOST:ADMIN_PORT (default localhost:9090)
-- ADMIN_API_TOKEN environment variable set
+- Admin token via ADMIN_API_TOKEN env var or /app/data/admin_token file
 
 Test server:
 - Provides deterministic responses based on path
 - Runs on a random high port for each test session
 
 Usage:
-    # From host with SafeYolo running:
-    ADMIN_API_TOKEN=xxx pytest tests/test_http_integration.py -v
+    # Inside container (reads token from /app/data/admin_token):
+    pytest tests/test_http_integration.py -v
 
-    # Inside container with shell_mux:
-    python3 /projects/claude-dev/lib/shell_mux.py exec safeyolo pytest tests/test_http_integration.py -v
+    # From host with explicit token:
+    ADMIN_API_TOKEN=xxx pytest tests/test_http_integration.py -v
 """
 
 import json
@@ -42,12 +42,24 @@ PROXY_HOST = os.environ.get("PROXY_HOST", "localhost")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "8080"))
 ADMIN_HOST = os.environ.get("ADMIN_HOST", "localhost")
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "9090"))
-ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "")
+
+# Load admin token from env or disk
+def _load_admin_token() -> str:
+    """Load admin token from environment or /app/data/admin_token."""
+    token = os.environ.get("ADMIN_API_TOKEN", "")
+    if token:
+        return token
+    token_path = "/app/data/admin_token"
+    if os.path.exists(token_path):
+        return open(token_path).read().strip()
+    return ""
+
+ADMIN_TOKEN = _load_admin_token()
 
 # Skip all tests if proxy is not available
 pytestmark = pytest.mark.skipif(
     not ADMIN_TOKEN,
-    reason="ADMIN_API_TOKEN not set - SafeYolo integration tests require running proxy"
+    reason="ADMIN_API_TOKEN not set and /app/data/admin_token not found"
 )
 
 

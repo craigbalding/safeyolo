@@ -1,7 +1,7 @@
 #!/bin/bash -eu
 
 # Build script for ClusterFuzzLite
-# Builds Atheris fuzz targets for SafeYolo
+# Builds Atheris fuzz targets for SafeYolo detection module
 
 cd $SRC/safeyolo
 
@@ -10,16 +10,13 @@ for fuzzer in fuzz/*_fuzzer.py; do
     fuzzer_basename=$(basename -s .py $fuzzer)
     fuzzer_package=${fuzzer_basename}.pkg
 
-    # Create standalone package with all addon dependencies
+    # Create standalone package (detection module is pure Python + yarl)
     pyinstaller --distpath $OUT --onefile --name $fuzzer_package \
         --paths addons \
         --hidden-import yaml \
         --hidden-import yarl \
         --hidden-import multidict \
         --hidden-import idna \
-        --hidden-import pydantic \
-        --collect-all mitmproxy \
-        --collect-all pydantic \
         $fuzzer
 
     # Create wrapper script (no LD_PRELOAD needed for pure Python)

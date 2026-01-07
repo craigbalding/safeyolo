@@ -6,14 +6,20 @@ Pure functions suitable for testing and fuzzing.
 """
 
 from .credentials import (
-    CredentialRule,
     DEFAULT_RULES,
+    CredentialRule,
     analyze_headers,
     calculate_shannon_entropy,
     detect_credential_type,
     extract_bearer_token,
     is_safe_header,
     looks_like_secret,
+)
+from .matching import (
+    hmac_fingerprint,
+    matches_host_pattern,
+    matches_resource_pattern,
+    normalize_path,
 )
 from .patterns import (
     BUILTIN_JAILBREAK_PATTERNS,
@@ -39,4 +45,9 @@ __all__ = [
     "analyze_headers",
     "looks_like_secret",
     "calculate_shannon_entropy",
+    # Matching
+    "hmac_fingerprint",
+    "matches_host_pattern",
+    "matches_resource_pattern",
+    "normalize_path",
 ]

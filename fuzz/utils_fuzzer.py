@@ -12,7 +12,7 @@ import atheris
 with atheris.instrument_imports():
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons"))
-    from utils import (
+    from detection import (
         calculate_shannon_entropy,
         hmac_fingerprint,
         looks_like_secret,
