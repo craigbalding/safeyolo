@@ -42,9 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install core Python dependencies (frozen = exact lockfile versions with hashes)
-# Use uv pip for system-level install (no venv) in Docker
 COPY pyproject.toml uv.lock ./
-RUN uv export --frozen --no-dev --no-hashes | uv pip install --system -r -
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Add uv venv to PATH
+ENV PATH="/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -118,9 +120,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dev/test dependencies
+# Install dev/test dependencies (venv already in PATH from base)
 COPY pyproject.toml uv.lock ./
-RUN uv export --frozen --group dev --no-hashes | uv pip install --system -r -
+RUN uv sync --frozen --group dev --no-install-project
 
 # Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app

@@ -12,4 +12,7 @@ COPY .clusterfuzzlite/build.sh $SRC/
 
 # Install dependencies needed for fuzzing (detection module only)
 COPY .clusterfuzzlite/pyproject.toml .clusterfuzzlite/uv.lock /tmp/fuzz/
-RUN cd /tmp/fuzz && uv export --frozen --no-hashes | uv pip install --system -r -
+RUN cd /tmp/fuzz && uv sync --frozen --no-install-project
+
+# Add uv venv to PATH
+ENV PATH="/tmp/fuzz/.venv/bin:$PATH"

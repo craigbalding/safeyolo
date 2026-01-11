@@ -1,0 +1,11 @@
+# Blackbox test runner dependencies
+
+[project]
+name = "safeyolo-blackbox-runner"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.25.0",
+    "pytest>=7.0.0",
+    "pytest-timeout>=2.0.0",
+]
