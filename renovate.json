@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "matchManagers": ["uv"],
+      "groupName": "python dependencies",
+      "commitMessagePrefix": "deps:"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "commitMessagePrefix": "ci:"
+    }
+  ]
+}

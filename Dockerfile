@@ -31,6 +31,9 @@
 # To update: docker pull python:3.13-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.13-slim
 FROM python:3.13-slim@sha256:45ce78b0ad540b2bbb4eaac6f9cb91c9be5af45ab5f483929f407b4fb98c89dd AS base
 
+# Install uv for fast, reproducible installs
+COPY --from=ghcr.io/astral-sh/uv:0.9.24 /uv /usr/local/bin/uv
+
 # Install minimal system dependencies
 # - tmux: runs mitmproxy TUI in background
 # Note: health checks use Python httpx (no curl needed)
@@ -38,9 +41,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     && rm -rf /var/lib/apt/lists/*
 
-# Install core Python dependencies (no ML, no YARA)
-COPY requirements/base.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+# Install core Python dependencies (frozen = exact lockfile versions with hashes)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Add uv venv to PATH
+ENV PATH="/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -114,9 +120,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dev/test dependencies (need both files since dev.txt references base.txt)
-COPY requirements/base.txt requirements/dev.txt /tmp/
-RUN pip install --no-cache-dir --require-hashes -r /tmp/dev.txt
+# Install dev/test dependencies (venv already in PATH from base)
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --group dev --no-install-project
 
 # Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app

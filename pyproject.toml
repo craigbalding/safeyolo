@@ -1,0 +1,51 @@
+# SafeYolo - Security Proxy for AI Coding Agents
+#
+# Dependency management with uv:
+#   uv lock              - Update lockfile
+#   uv sync              - Install runtime deps
+#   uv sync --group dev  - Install with dev deps
+#   uv run pytest        - Run tests
+
+[project]
+name = "safeyolo-proxy"
+version = "0.1.0"
+description = "Egress control proxy for AI coding agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Craig Balding", email = "craig@threatspotting.com" }
+]
+
+# Runtime dependencies (from requirements/base.in)
+dependencies = [
+    "mitmproxy>=12.0.0",
+    "httpx>=0.25.0",
+    "tenacity>=8.2.0",
+    "pyyaml>=6.0",
+    "yarl>=1.9.0",
+    "confusable-homoglyphs>=3.3.0",
+    "pydantic>=2.10.0,<2.12",
+]
+
+[dependency-groups]
+# Development and testing (from requirements/dev.in)
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "pre-commit>=3.0.0",
+    "ruff>=0.9.4",
+]
+# SBOM generation
+sbom = [
+    "cyclonedx-bom>=5.1.0",
+]
+
+# Note: uv.lock includes hashes by default for supply-chain security
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# Ruff config is in ruff.toml

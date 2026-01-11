@@ -1,0 +1,11 @@
+# ClusterFuzzLite fuzzing dependencies
+# Only includes deps needed by addons/detection/ (no mitmproxy)
+
+[project]
+name = "safeyolo-fuzz"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "yarl>=1.9.0",
+]
