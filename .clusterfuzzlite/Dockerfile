@@ -11,8 +11,6 @@ WORKDIR $SRC/safeyolo
 COPY .clusterfuzzlite/build.sh $SRC/
 
 # Install dependencies needed for fuzzing (detection module only)
+# Use system install for PyInstaller compatibility (it scans system site-packages)
 COPY .clusterfuzzlite/pyproject.toml .clusterfuzzlite/uv.lock /tmp/fuzz/
-RUN cd /tmp/fuzz && uv sync --frozen --no-install-project
-
-# Add uv venv to PATH
-ENV PATH="/tmp/fuzz/.venv/bin:$PATH"
+RUN cd /tmp/fuzz && uv export --frozen --no-hashes | uv pip install --system -r -
