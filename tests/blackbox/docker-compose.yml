@@ -91,7 +91,9 @@ services:
 
   # Sinkhole: captures all traffic for inspection
   sinkhole:
-    build: ./sinkhole
+    build:
+      context: ../..
+      dockerfile: tests/blackbox/sinkhole/Dockerfile
     container_name: sinkhole
     networks:
       testnet:
@@ -123,7 +125,9 @@ services:
 
   # Test runner
   test-runner:
-    build: ./runner
+    build:
+      context: ../..
+      dockerfile: tests/blackbox/runner/Dockerfile
     container_name: test-runner
     networks:
       - testnet
