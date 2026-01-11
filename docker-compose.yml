@@ -88,6 +88,7 @@ services:
       - ./config:/app/config
       # Dev mounts for live editing - remove for production use
       - ./addons:/app/addons
+      - ./pdp:/app/pdp
       - ./scripts:/app/scripts
       - ./models:/app/models
       - ./tests:/app/tests
@@ -100,6 +101,7 @@ services:
     environment:
       - PROXY_PORT=8080
       - ADMIN_PORT=9090
+      - MITMPROXY_LOG_LEVEL=debug
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
 

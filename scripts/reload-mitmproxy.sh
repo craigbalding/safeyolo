@@ -17,8 +17,6 @@
 # SafeYolo returns to startup defaults (warn-only unless SAFEYOLO_BLOCK=true).
 # For persistent blocking mode, set SAFEYOLO_BLOCK=true in docker-compose.yml.
 
-set -e
-
 CMD_FILE="/tmp/mitmproxy-cmd.sh"
 
 if [ ! -f "$CMD_FILE" ]; then

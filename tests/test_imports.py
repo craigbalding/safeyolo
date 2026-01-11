@@ -17,6 +17,7 @@ ADDON_MODULES = [
     "budget_tracker",
     "circuit_breaker",
     "credential_guard",
+    "file_logging",
     "metrics",
     "network_guard",
     "pattern_scanner",

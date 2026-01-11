@@ -281,3 +281,97 @@ class TestMakeBlockResponse:
         for status in [400, 403, 429, 500, 502, 503]:
             resp = make_block_response(status, {"error": "test"}, "test")
             assert resp.status_code == status
+
+
+class TestConfigureFileLogging:
+    """Tests for configure_file_logging function."""
+
+    def test_creates_log_directory(self, tmp_path):
+        """Creates log directory if it doesn't exist."""
+        import logging
+
+        from utils import configure_file_logging
+
+        log_path = tmp_path / "logs" / "mitmproxy.log"
+        assert not log_path.parent.exists()
+
+        with patch("utils.MITMPROXY_LOG_PATH", log_path):
+            # Clear any existing handlers first
+            logger = logging.getLogger("safeyolo")
+            logger.handlers = []
+            configure_file_logging()
+
+        assert log_path.parent.exists()
+
+    def test_adds_rotating_file_handler(self, tmp_path):
+        """Adds RotatingFileHandler to safeyolo logger."""
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        from utils import configure_file_logging
+
+        log_path = tmp_path / "mitmproxy.log"
+
+        with patch("utils.MITMPROXY_LOG_PATH", log_path):
+            logger = logging.getLogger("safeyolo")
+            logger.handlers = []
+            configure_file_logging()
+
+        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(handlers) == 1
+
+    def test_idempotent(self, tmp_path):
+        """Calling twice doesn't add duplicate handlers."""
+        import logging
+        from logging.handlers import RotatingFileHandler
+
+        from utils import configure_file_logging
+
+        log_path = tmp_path / "mitmproxy.log"
+
+        with patch("utils.MITMPROXY_LOG_PATH", log_path):
+            logger = logging.getLogger("safeyolo")
+            logger.handlers = []
+            configure_file_logging()
+            configure_file_logging()  # Second call
+
+        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(handlers) == 1
+
+    def test_raises_on_permission_error(self, tmp_path):
+        """Raises RuntimeError if can't create log directory."""
+        from utils import configure_file_logging
+
+        # Path that can't be created (root-level)
+        log_path = tmp_path / "nonexistent" / "mitmproxy.log"
+
+        with patch("utils.MITMPROXY_LOG_PATH", log_path):
+            with patch("pathlib.Path.mkdir", side_effect=PermissionError("denied")):
+                import logging
+                logger = logging.getLogger("safeyolo")
+                logger.handlers = []
+
+                with pytest.raises(RuntimeError, match="FATAL.*cannot run without logging"):
+                    configure_file_logging()
+
+
+class TestFileLoggingAddon:
+    """Tests for FileLoggingAddon mitmproxy addon."""
+
+    def test_running_calls_configure(self, tmp_path):
+        """running() hook calls configure_file_logging."""
+        from utils import FileLoggingAddon
+
+        addon = FileLoggingAddon()
+
+        with patch("utils.configure_file_logging") as mock_configure:
+            addon.running()
+
+        mock_configure.assert_called_once()
+
+    def test_addon_can_be_instantiated(self):
+        """FileLoggingAddon can be instantiated without errors."""
+        from utils import FileLoggingAddon
+
+        addon = FileLoggingAddon()
+        assert addon is not None

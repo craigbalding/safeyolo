@@ -156,6 +156,25 @@ permissions:
     budget: 180  # 3 rps
     tier: explicit
 
+  # Go module proxy and checksums
+  - action: network:request
+    resource: "proxy.golang.org/*"
+    effect: budget
+    budget: 300  # 5 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "sum.golang.org/*"
+    effect: budget
+    budget: 300  # 5 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "storage.googleapis.com/proxy-golang-org/*"
+    effect: budget
+    budget: 300  # 5 rps - separate from generic googleapis
+    tier: explicit
+
   # Media sites (conservative)
   - action: network:request
     resource: "*.youtube.com/*"
@@ -358,6 +377,16 @@ domains:
       - prompt_injection
 
   "registry.npmjs.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+  "proxy.golang.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+  "sum.golang.org":
     bypass:
       - yara_scanner
       - prompt_injection

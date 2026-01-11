@@ -136,18 +136,11 @@ class PDPCore:
         event_id = event.event.event_id
         policy_hash = self.policy_hash
 
-        safe_event_id = _sanitize_for_log(event_id)
         safe_host = _sanitize_for_log(event.http.host)
         safe_method = _sanitize_for_log(event.http.method)
-        log.debug(
-            "Evaluating event",
-            extra={
-                "event_id": safe_event_id,
-                "host": safe_host,
-                "method": safe_method,
-                "credential_detected": event.credential.detected,
-            }
-        )
+        safe_path = _sanitize_for_log(event.http.path)
+        cred_flag = "+cred" if event.credential.detected else ""
+        log.debug(f"Evaluate {safe_method} {safe_host}{safe_path}{cred_flag}")
 
         # Load task policy if specified
         if event.context and event.context.task_id:
