@@ -103,6 +103,8 @@ ENV PUBLIC_CERT_DIR=/certs-public
 ENV LOG_DIR=/app/logs
 ENV CONFIG_DIR=/app/config
 ENV PYTHONPATH=/app:/app/addons
+# Cache dir for uv, pytest, ruff etc. (HOME=/ is not writable by non-root)
+ENV XDG_CACHE_HOME=/tmp/.cache
 
 # Non-root execution: use docker-compose.yml user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"
 # This runs as the host user's UID/GID, so volume permissions just work.
@@ -120,11 +122,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dev/test dependencies (venv already in PATH from base)
+# Install dev/test dependencies into existing /.venv (not /app/.venv)
+# Base stage set WORKDIR /app, so we must switch back to / where the venv lives
+WORKDIR /
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --group dev --no-install-project
 
-# Mount point for source code (use -v $(pwd):/app)
 WORKDIR /app
 
 # Default to bash for interactive use
