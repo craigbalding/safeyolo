@@ -143,11 +143,17 @@ permissions:
     budget: 120  # 2 rps
     tier: explicit
 
-  # Package registries
+  # Package registries (uv does parallel fetches, needs headroom)
   - action: network:request
     resource: "pypi.org/*"
     effect: budget
-    budget: 180  # 3 rps
+    budget: 1200  # 20 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "files.pythonhosted.org/*"
+    effect: budget
+    budget: 1200  # 20 rps - package downloads
     tier: explicit
 
   - action: network:request

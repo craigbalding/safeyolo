@@ -44,6 +44,15 @@ sbom = [
 
 # Note: uv.lock includes hashes by default for supply-chain security
 
+[tool.uv.workspace]
+members = [
+    "cli",
+    # Note: .clusterfuzzlite is NOT a workspace member.
+    # It has its own lockfile for OSS-Fuzz/ClusterFuzzLite compatibility.
+    "tests/blackbox/runner",
+    "tests/blackbox/sinkhole",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

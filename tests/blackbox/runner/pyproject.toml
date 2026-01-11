@@ -9,3 +9,6 @@ dependencies = [
     "pytest>=7.0.0",
     "pytest-timeout>=2.0.0",
 ]
+
+[tool.pytest.ini_options]
+timeout = 60
