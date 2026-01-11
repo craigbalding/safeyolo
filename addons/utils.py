@@ -46,13 +46,102 @@ from mitmproxy import http
 from yarl import URL
 
 # Default audit log path - can be overridden via environment
+# Environment variables:
+#   SAFEYOLO_LOG_PATH       - Log file path (default: /app/logs/safeyolo.jsonl)
+#   SAFEYOLO_LOG_MAX_MB     - Max file size in MB before rotation (default: 50)
+#   SAFEYOLO_LOG_BACKUPS    - Number of backup files to keep (default: 5)
 AUDIT_LOG_PATH = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
+SAFEYOLO_LOG_MAX_BYTES = int(os.environ.get("SAFEYOLO_LOG_MAX_MB", "50")) * 1_000_000
+SAFEYOLO_LOG_BACKUPS = int(os.environ.get("SAFEYOLO_LOG_BACKUPS", "5"))
+
+# =============================================================================
+# File Logging Configuration
+# =============================================================================
+# Configure Python logging to write to file in addition to mitmproxy's Events view.
+# This ensures logs survive crashes - critical for debugging.
+#
+# Environment variables:
+#   MITMPROXY_LOG_PATH      - Log file path (default: /app/logs/mitmproxy.log)
+#   MITMPROXY_LOG_LEVEL     - Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+#   MITMPROXY_LOG_MAX_MB    - Max file size in MB before rotation (default: 10)
+#   MITMPROXY_LOG_BACKUPS   - Number of backup files to keep (default: 3)
+
+MITMPROXY_LOG_PATH = Path(os.environ.get("MITMPROXY_LOG_PATH", "/app/logs/mitmproxy.log"))
+MITMPROXY_LOG_LEVEL = os.environ.get("MITMPROXY_LOG_LEVEL", "INFO").upper()
+MITMPROXY_LOG_MAX_BYTES = int(os.environ.get("MITMPROXY_LOG_MAX_MB", "10")) * 1_000_000
+MITMPROXY_LOG_BACKUPS = int(os.environ.get("MITMPROXY_LOG_BACKUPS", "3"))
+
+
+def configure_file_logging():
+    """Configure file logging for safeyolo loggers.
+
+    Called from FileLoggingAddon.running() - NOT at import time.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    logger = logging.getLogger("safeyolo")
+
+    # Skip if already configured (idempotent)
+    if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        return
+
+    try:
+        MITMPROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as err:
+        raise RuntimeError(
+            f"FATAL: Cannot create log directory {MITMPROXY_LOG_PATH.parent}: {err}. "
+            "Security proxy cannot run without logging."
+        ) from err
+
+    level = getattr(logging, MITMPROXY_LOG_LEVEL, logging.INFO)
+    handler = RotatingFileHandler(
+        MITMPROXY_LOG_PATH,
+        maxBytes=MITMPROXY_LOG_MAX_BYTES,
+        backupCount=MITMPROXY_LOG_BACKUPS,
+    )
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    ))
+    handler.setLevel(level)
+    logger.addHandler(handler)
+    logger.setLevel(level)
+
+
+class FileLoggingAddon:
+    """Addon to configure file logging at mitmproxy startup."""
+
+    def running(self):
+        """Configure file logging when mitmproxy is fully started."""
+        configure_file_logging()
 
 # Valid event prefixes for taxonomy validation
 VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.")
 
 # Module-level logger for write_event errors
 _log = logging.getLogger("safeyolo.utils")
+
+
+def _rotate_jsonl_if_needed() -> None:
+    """Rotate JSONL audit log if it exceeds max size."""
+    if not AUDIT_LOG_PATH.exists():
+        return
+    try:
+        if AUDIT_LOG_PATH.stat().st_size < SAFEYOLO_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+
+    # Rotate: .5 -> delete, .4 -> .5, ... .1 -> .2, current -> .1
+    for i in range(SAFEYOLO_LOG_BACKUPS, 0, -1):
+        old_backup = AUDIT_LOG_PATH.with_suffix(f".jsonl.{i}")
+        new_backup = AUDIT_LOG_PATH.with_suffix(f".jsonl.{i + 1}")
+        if i == SAFEYOLO_LOG_BACKUPS and old_backup.exists():
+            old_backup.unlink()
+        elif old_backup.exists():
+            old_backup.rename(new_backup)
+
+    if AUDIT_LOG_PATH.exists():
+        AUDIT_LOG_PATH.rename(AUDIT_LOG_PATH.with_suffix(".jsonl.1"))
 
 
 def write_event(event: str, **data) -> None:
@@ -90,6 +179,7 @@ def write_event(event: str, **data) -> None:
     }
     try:
         AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_jsonl_if_needed()
         with open(AUDIT_LOG_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception as e:

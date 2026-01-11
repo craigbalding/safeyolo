@@ -11,6 +11,21 @@
 
 set -e
 
+# ---------------------------------------------------------------------------
+# Graceful shutdown: send 'Q' to mitmproxy TUI (triggers done() hooks)
+# ---------------------------------------------------------------------------
+cleanup() {
+    echo ""
+    echo "=== SafeYolo Shutdown ==="
+    tmux send-keys -t proxy Q 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8; do
+        tmux has-session -t proxy 2>/dev/null || { echo "mitmproxy exited"; break; }
+        sleep 1
+    done
+    exit 0
+}
+trap cleanup SIGTERM SIGINT SIGHUP
+
 CERT_DIR="${CERT_DIR:-/certs-private}"
 PUBLIC_CERT_DIR="${PUBLIC_CERT_DIR:-/certs-public}"
 LOG_DIR="${LOG_DIR:-/app/logs}"
@@ -130,6 +145,7 @@ load_addon() {
 
 echo "Loading addons:"
 # Layer 0: Infrastructure
+load_addon "/app/addons/file_logging.py"
 load_addon "/app/addons/admin_shield.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
@@ -253,8 +269,10 @@ fi
 #echo "Addons: policy -> discovery -> rate_limiter -> circuit_breaker -> credential_guard -> yara -> pattern -> injection -> logger -> metrics -> admin"
 echo "Attach to TUI: docker exec -it safeyolo tmux attach"
 
-# Ensure log file exists for tail
+# Ensure log files exist
 touch "${LOG_DIR}/safeyolo.jsonl"
+touch "${LOG_DIR}/mitmproxy.log"
+echo "Logs: ${LOG_DIR}/safeyolo.jsonl (structured), ${LOG_DIR}/mitmproxy.log (addon debug)"
 
 # Generate admin API token if not provided
 ADMIN_TOKEN_FILE="/app/data/admin_token"
@@ -297,6 +315,7 @@ fi
 if [ "${SAFEYOLO_HEADLESS}" = "true" ]; then
     echo ""
     echo "=== Starting in HEADLESS mode (mitmdump) ==="
+    # File logging configured via file_logging.py addon's running() hook
     # exec replaces shell - Docker manages process lifecycle
     exec mitmdump -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} "$@"
 fi

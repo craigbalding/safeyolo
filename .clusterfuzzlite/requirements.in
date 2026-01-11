@@ -1,0 +1,4 @@
+# Direct dependencies for ClusterFuzzLite fuzzing
+# Run: pip-compile --generate-hashes --python-version 3.11 -o requirements.txt requirements.in
+pyyaml==6.0.3
+yarl==1.22.0
