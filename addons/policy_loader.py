@@ -91,6 +91,10 @@ class PolicyLoader:
         self._watcher_thread: threading.Thread | None = None
         self._watcher_stop = threading.Event()
 
+        # SIGHUP reload (signal-safe: handler sets event, worker does I/O)
+        self._sighup_event = threading.Event()
+        self._sighup_thread: threading.Thread | None = None
+
         # Load baseline if path provided
         if baseline_path:
             self._load_baseline()
@@ -102,15 +106,30 @@ class PolicyLoader:
         """Setup SIGHUP handler for hot reload."""
         try:
             signal.signal(signal.SIGHUP, self._handle_sighup)
+            # Start worker thread that does the actual reload (signal handler just sets flag)
+            self._sighup_thread = threading.Thread(
+                target=self._sighup_worker, daemon=True, name="sighup-reload"
+            )
+            self._sighup_thread.start()
         except (ValueError, OSError):
             pass  # Not main thread or not supported
 
     def _handle_sighup(self, _signum, _frame) -> None:
-        """Handle SIGHUP signal."""
-        log.info("Received SIGHUP, reloading policies...")
-        self._load_baseline()
-        if self._task_policy_path:
-            self._load_task_policy(self._task_policy_path)
+        """Handle SIGHUP signal - async-signal-safe, just sets event."""
+        self._sighup_event.set()
+
+    def _sighup_worker(self) -> None:
+        """Background thread that performs reload when SIGHUP received."""
+        while True:
+            self._sighup_event.wait()
+            self._sighup_event.clear()
+            try:
+                log.info("Received SIGHUP, reloading policies...")
+                self._load_baseline()
+                if self._task_policy_path:
+                    self._load_task_policy(self._task_policy_path)
+            except Exception as exc:
+                log.error(f"SIGHUP reload failed: {type(exc).__name__}: {exc}")
 
     def _load_file(self, path: Path) -> dict | None:
         """Load YAML or JSON file, return None on error."""
