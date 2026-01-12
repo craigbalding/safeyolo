@@ -28,9 +28,16 @@ TEST_GITHUB_TOKEN = "ghp_" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # 36 chars afte
 
 @pytest.fixture(scope="session")
 def sinkhole():
-    """Sinkhole client for request inspection."""
+    """Sinkhole client for request inspection.
+
+    Skips tests gracefully if sinkhole is not available (e.g., isolation-only runs).
+    This allows proxy tests and isolation tests to run as separate CI steps.
+    """
     client = SinkholeClient(SINKHOLE_API)
-    client.wait_for_ready(timeout=60)
+    try:
+        client.wait_for_ready(timeout=5)
+    except Exception:
+        pytest.skip("Sinkhole not available - skipping proxy tests")
     yield client
     client.close()
 
@@ -70,19 +77,24 @@ def proxy_client():
     client.close()
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def clear_sinkhole(sinkhole):
-    """Clear sinkhole before each test for isolation."""
+    """Clear sinkhole before each test for isolation.
+
+    NOT autouse - only proxy tests that explicitly request sinkhole will use this.
+    Isolation tests (runtime_security, sandbox_isolation, key_isolation) don't
+    need sinkhole - they read JSON from verifier containers.
+    """
     sinkhole.clear_requests()
     yield
 
 
 @pytest.fixture(scope="session")
-def wait_for_services(sinkhole, admin_client):
-    """Ensure all services are ready before tests run."""
-    # Sinkhole ready (handled by sinkhole fixture)
+def wait_for_safeyolo(admin_client):
+    """Ensure SafeYolo is ready (no sinkhole dependency).
 
-    # SafeYolo admin API ready
+    Use this for tests that don't need sinkhole, like security posture tests.
+    """
     for attempt in range(60):
         try:
             resp = admin_client.get("/health")
@@ -94,4 +106,15 @@ def wait_for_services(sinkhole, admin_client):
     else:
         pytest.fail("SafeYolo admin API not ready after 60 seconds")
 
+    yield
+
+
+@pytest.fixture(scope="session")
+def wait_for_services(sinkhole, wait_for_safeyolo):
+    """Ensure all services are ready before tests run.
+
+    Use this for tests that need both sinkhole and safeyolo.
+    """
+    # Sinkhole ready (handled by sinkhole fixture)
+    # SafeYolo ready (handled by wait_for_safeyolo fixture)
     yield
