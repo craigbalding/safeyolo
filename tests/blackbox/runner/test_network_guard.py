@@ -7,7 +7,7 @@ Black box tests for network guard (access control + rate limiting).
 class TestAccessControl:
     """Test domain-based access control."""
 
-    def test_allowed_domain_passes(self, proxy_client, sinkhole, wait_for_services):
+    def test_allowed_domain_passes(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """Request to allowed domain should pass through."""
         response = proxy_client.get("https://httpbin.org/get")
 
@@ -20,7 +20,7 @@ class TestAccessControl:
 class TestRateLimiting:
     """Test rate limiting (budget) enforcement."""
 
-    def test_multiple_requests_allowed_within_budget(self, proxy_client, sinkhole, admin_client, wait_for_services):
+    def test_multiple_requests_allowed_within_budget(self, proxy_client, sinkhole, clear_sinkhole, admin_client, wait_for_services):
         """Multiple requests within budget should succeed."""
         # Reset budgets to ensure clean state
         admin_client.post("/admin/budgets/reset")
@@ -50,7 +50,7 @@ class TestRateLimiting:
 class TestProxyHeaderStripping:
     """Test that proxy-specific headers are handled correctly."""
 
-    def test_proxy_authorization_not_forwarded(self, proxy_client, sinkhole, wait_for_services):
+    def test_proxy_authorization_not_forwarded(self, proxy_client, sinkhole, clear_sinkhole, wait_for_services):
         """Proxy-Authorization header should be consumed, not forwarded."""
         response = proxy_client.get(
             "https://httpbin.org/get",

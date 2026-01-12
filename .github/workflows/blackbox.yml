@@ -1,12 +1,13 @@
 name: Blackbox Tests
 
-# Blackbox tests validate SafeYolo's security guarantees end-to-end:
-# - Credentials only reach authorized destinations
-# - Blocked requests don't leak data to upstreams
-# - Hop-by-hop headers are stripped (no credential leakage)
+# Blackbox tests validate SafeYolo's security guarantees end-to-end.
+#
+# Two test suites:
+#   - Proxy tests: Credential routing, network guard via sinkhole inspection
+#   - Isolation tests: Container hardening (CDK), network isolation, key isolation
 #
 # These tests run SafeYolo as a black box using the production startup
-# script, with all traffic routed through a test sinkhole for inspection.
+# script. See docs/security-testing-design.md for architecture details.
 
 on:
   schedule:

@@ -1,0 +1,369 @@
+# SafeYolo Isolation Test Overlay
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.security.yml up --build --exit-code-from test-runner
+#
+# This overlay adds isolation verification tests:
+#   - security-verifier: CDK-based container security posture assessment
+#   - isolation-verifier: Network isolation tests for Sandbox Mode
+#   - key-isolation-verifier: Verifies private CA key is not exposed
+#
+# All verifiers write structured JSON results to the security-results volume.
+# The test-runner reads these results and asserts on them.
+#
+# This separation allows fast proxy tests (base compose) while
+# still running comprehensive isolation tests when needed.
+
+services:
+  # Extend certs-init to also initialize security-results volume
+  certs-init:
+    volumes:
+      - security-results:/security-results
+    command: >
+      sh -c "chown 1000:1000 /certs-private /certs-public /app-logs /app-data /security-results &&
+             chmod 700 /certs-private &&
+             chmod 755 /certs-public /app-logs /app-data /security-results"
+
+  # Add safeyolo to isolation network for network isolation tests
+  safeyolo:
+    networks:
+      testnet:
+        aliases:
+          - safeyolo
+      isolation-net:
+        # Docker auto-assigns IP; we use DNS (service name) for discovery
+
+  # Security posture verifier - runs CDK to assess container security
+  # Uses same constraints as safeyolo (user 1000:1000) to verify the
+  # security posture an agent container would have.
+  # CDK (https://github.com/cdk-team/CDK) is a maintained container
+  # security testing tool that reports capabilities, seccomp, namespaces.
+  security-verifier:
+    image: alpine:3.20@sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c
+    container_name: security-verifier
+    user: "1000:1000"
+    depends_on:
+      certs-init:
+        condition: service_completed_successfully
+    networks:
+      - testnet
+    volumes:
+      - security-results:/results
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        echo "=== Container Security Posture Assessment ==="
+        echo "Using CDK (Container Development Kit) v1.5.5"
+        echo ""
+
+        # Download CDK static binary with hash verification
+        CDK_SHA256="202f3fc5babfcb64b3c1d99bf24563f1bbce31cbbf4216a83116c8f6149efe80"
+        echo "Downloading CDK..."
+        wget -q https://github.com/cdk-team/CDK/releases/download/v1.5.5/cdk_linux_amd64 -O /tmp/cdk
+        echo "Verifying hash..."
+        echo "$${CDK_SHA256}  /tmp/cdk" | sha256sum -c - || { echo "HASH MISMATCH - aborting"; exit 1; }
+        chmod +x /tmp/cdk
+
+        # Run security evaluation and capture output
+        echo "Running security evaluation..."
+        RAW_OUTPUT=$$(/tmp/cdk evaluate 2>&1 || true)
+
+        # Parse results into JSON
+        UID_VAL=$$(id -u)
+        GID_VAL=$$(id -g)
+
+        # Check for dangerous capabilities in output
+        HAS_SYS_ADMIN="false"
+        HAS_SYS_MODULE="false"
+        HAS_DAC_READ_SEARCH="false"
+        PRIVILEGED="false"
+        DOCKER_SOCKET="false"
+        SECCOMP_DISABLED="false"
+
+        echo "$$RAW_OUTPUT" | grep -qi "SYS_ADMIN Capability Found" && HAS_SYS_ADMIN="true"
+        echo "$$RAW_OUTPUT" | grep -qi "SYS_MODULE" && HAS_SYS_MODULE="true"
+        echo "$$RAW_OUTPUT" | grep -qi "DAC_READ_SEARCH" && HAS_DAC_READ_SEARCH="true"
+        echo "$$RAW_OUTPUT" | grep -qi "Privileged Container" && PRIVILEGED="true"
+        echo "$$RAW_OUTPUT" | grep -qi "docker.sock" && DOCKER_SOCKET="true"
+        echo "$$RAW_OUTPUT" | grep -qi "Seccomp: disabled" && SECCOMP_DISABLED="true"
+
+        # Count critical findings (grep outputs lines, wc -l counts them - always succeeds)
+        CRITICAL_COUNT=$$(echo "$$RAW_OUTPUT" | grep "^Critical" | wc -l | tr -d ' ')
+
+        # Determine overall pass/fail
+        ALL_PASSED="true"
+        [ "$$UID_VAL" = "0" ] && ALL_PASSED="false"
+        [ "$$GID_VAL" = "0" ] && ALL_PASSED="false"
+        [ "$$HAS_SYS_ADMIN" = "true" ] && ALL_PASSED="false"
+        [ "$$HAS_SYS_MODULE" = "true" ] && ALL_PASSED="false"
+        [ "$$HAS_DAC_READ_SEARCH" = "true" ] && ALL_PASSED="false"
+        [ "$$PRIVILEGED" = "true" ] && ALL_PASSED="false"
+        [ "$$DOCKER_SOCKET" = "true" ] && ALL_PASSED="false"
+        [ "$$SECCOMP_DISABLED" = "true" ] && ALL_PASSED="false"
+        [ "$$CRITICAL_COUNT" -gt 0 ] 2>/dev/null && ALL_PASSED="false"
+
+        # Write JSON results
+        cat > /results/cdk-evaluate.json << ENDJSON
+        {
+          "uid": $$UID_VAL,
+          "gid": $$GID_VAL,
+          "capabilities": {
+            "has_sys_admin": $$HAS_SYS_ADMIN,
+            "has_sys_module": $$HAS_SYS_MODULE,
+            "has_dac_read_search": $$HAS_DAC_READ_SEARCH
+          },
+          "seccomp_disabled": $$SECCOMP_DISABLED,
+          "privileged": $$PRIVILEGED,
+          "docker_socket_mounted": $$DOCKER_SOCKET,
+          "critical_findings_count": $$CRITICAL_COUNT,
+          "all_passed": $$ALL_PASSED
+        }
+        ENDJSON
+
+        # Also write raw output for debugging
+        echo "$$RAW_OUTPUT" > /results/cdk-evaluate-raw.txt
+
+        echo ""
+        echo "=== Security evaluation complete ==="
+        cat /results/cdk-evaluate.json
+
+        # Exit based on results
+        [ "$$ALL_PASSED" = "true" ] && exit 0 || exit 1
+
+  # Network isolation verifier - proves Sandbox Mode agents can't bypass proxy
+  # This container runs on the internal-only network and verifies:
+  # 1. Direct internet access is blocked (no default gateway)
+  # 2. DNS resolution is blocked (no DNS server reachable)
+  # 3. Proxy on internal network IS reachable
+  isolation-verifier:
+    image: alpine:3.20@sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c
+    container_name: isolation-verifier
+    depends_on:
+      certs-init:
+        condition: service_completed_successfully
+      safeyolo:
+        condition: service_healthy
+    networks:
+      # ONLY on isolation-net - simulates a sandboxed agent
+      - isolation-net
+    volumes:
+      - security-results:/results
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        # Install tools for connectivity tests
+        apk add --no-cache bind-tools >/dev/null 2>&1 || true
+
+        echo "=== Network Isolation Tests ==="
+        echo "Testing that containers on internal network cannot bypass proxy"
+        echo ""
+
+        DIRECT_HTTP_BLOCKED="false"
+        DIRECT_HTTPS_BLOCKED="false"
+        DNS_BLOCKED="false"
+        PROXY_REACHABLE="false"
+
+        # Test 1: Direct internet access should FAIL
+        echo -n "Test 1: Direct HTTP to 1.1.1.1... "
+        if wget -q --timeout=3 http://1.1.1.1 -O /dev/null 2>/dev/null; then
+          echo "FAIL - agent can bypass proxy!"
+        else
+          echo "BLOCKED (good)"
+          DIRECT_HTTP_BLOCKED="true"
+        fi
+
+        # Test 2: Direct HTTPS should FAIL
+        echo -n "Test 2: Direct HTTPS to 8.8.8.8:443... "
+        if wget -q --timeout=3 --no-check-certificate https://8.8.8.8 -O /dev/null 2>/dev/null; then
+          echo "FAIL - agent can bypass proxy!"
+        else
+          echo "BLOCKED (good)"
+          DIRECT_HTTPS_BLOCKED="true"
+        fi
+
+        # Test 3: External DNS resolution should FAIL
+        echo -n "Test 3: DNS resolution via 8.8.8.8... "
+        if nslookup google.com 8.8.8.8 >/dev/null 2>&1; then
+          echo "FAIL - DNS leak!"
+        else
+          echo "BLOCKED (good)"
+          DNS_BLOCKED="true"
+        fi
+
+        # Test 4: Proxy on internal network should be reachable via Docker DNS
+        echo -n "Test 4: Proxy reachable via service name 'safeyolo'... "
+        if nc -z -w3 safeyolo 8080 2>/dev/null; then
+          echo "REACHABLE (good)"
+          PROXY_REACHABLE="true"
+        else
+          echo "FAIL - proxy not reachable on internal network!"
+        fi
+
+        # Determine overall result
+        ALL_PASSED="false"
+        if [ "$$DIRECT_HTTP_BLOCKED" = "true" ] && \
+           [ "$$DIRECT_HTTPS_BLOCKED" = "true" ] && \
+           [ "$$DNS_BLOCKED" = "true" ] && \
+           [ "$$PROXY_REACHABLE" = "true" ]; then
+          ALL_PASSED="true"
+        fi
+
+        # Write JSON results
+        cat > /results/isolation.json << ENDJSON
+        {
+          "direct_http_blocked": $$DIRECT_HTTP_BLOCKED,
+          "direct_https_blocked": $$DIRECT_HTTPS_BLOCKED,
+          "dns_blocked": $$DNS_BLOCKED,
+          "proxy_reachable": $$PROXY_REACHABLE,
+          "all_passed": $$ALL_PASSED
+        }
+        ENDJSON
+
+        echo ""
+        if [ "$$ALL_PASSED" = "true" ]; then
+          echo "=== ALL NETWORK ISOLATION TESTS PASSED ==="
+          echo "Sandbox Mode network isolation is working correctly."
+          exit 0
+        else
+          echo "=== NETWORK ISOLATION TESTS FAILED ==="
+          exit 1
+        fi
+
+  # Key isolation verifier - verifies private CA key is NOT exposed
+  # Runs as user 1000 (same as agent containers would run as)
+  # Checks that the public CA volume doesn't contain the private key
+  key-isolation-verifier:
+    image: alpine:3.20@sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c
+    container_name: key-isolation-verifier
+    user: "1000:1000"
+    depends_on:
+      safeyolo:
+        condition: service_healthy
+    networks:
+      - testnet
+    volumes:
+      # Mount the PUBLIC CA volume (what agents would have access to)
+      - safeyolo-test-ca:/certs-public:ro
+      # Results volume
+      - security-results:/results
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        echo "=== Private Key Isolation Tests ==="
+        echo "Verifying private CA key is NOT accessible to agents"
+        echo ""
+
+        PUBLIC_CERT_EXISTS="false"
+        PRIVATE_KEY_IN_PUBLIC="false"
+        PUBLIC_CERT_READABLE="false"
+        PRIVATE_KEY_CONTENT="false"
+
+        # List contents of public CA volume
+        echo "Files in public CA volume:"
+        ls -la /certs-public/ || true
+        echo ""
+
+        # Test 1: Public cert should exist
+        echo -n "Test 1: Public CA certificate exists... "
+        if ls /certs-public/*cert*.pem >/dev/null 2>&1 || \
+           ls /certs-public/*.crt >/dev/null 2>&1; then
+          echo "YES (good)"
+          PUBLIC_CERT_EXISTS="true"
+        else
+          echo "NO - public cert missing!"
+        fi
+
+        # Test 2: Private key file should NOT exist in public volume
+        echo -n "Test 2: Private key file NOT in public volume... "
+        if ls /certs-public/ | grep -v cert | grep -E '(\.key|mitmproxy-ca\.pem|private)' >/dev/null 2>&1; then
+          echo "FAIL - private key file found!"
+          PRIVATE_KEY_IN_PUBLIC="true"
+        else
+          echo "CLEAN (good)"
+        fi
+
+        # Test 3: Public cert is readable
+        echo -n "Test 3: Public cert is readable... "
+        CERT_CONTENT=$$(cat /certs-public/*cert*.pem 2>/dev/null || cat /certs-public/*.crt 2>/dev/null || echo "")
+        if echo "$$CERT_CONTENT" | grep -q "BEGIN CERTIFICATE"; then
+          echo "YES (good)"
+          PUBLIC_CERT_READABLE="true"
+        else
+          echo "NO - cannot read public cert"
+        fi
+
+        # Test 4: Public cert does NOT contain private key material
+        echo -n "Test 4: Public cert contains no private key... "
+        if echo "$$CERT_CONTENT" | grep -q "PRIVATE KEY"; then
+          echo "FAIL - private key found in cert file!"
+          PRIVATE_KEY_CONTENT="true"
+        else
+          echo "CLEAN (good)"
+        fi
+
+        # Determine overall result
+        ALL_PASSED="false"
+        if [ "$$PUBLIC_CERT_EXISTS" = "true" ] && \
+           [ "$$PRIVATE_KEY_IN_PUBLIC" = "false" ] && \
+           [ "$$PUBLIC_CERT_READABLE" = "true" ] && \
+           [ "$$PRIVATE_KEY_CONTENT" = "false" ]; then
+          ALL_PASSED="true"
+        fi
+
+        # Write JSON results
+        cat > /results/key-isolation.json << ENDJSON
+        {
+          "public_cert_exists": $$PUBLIC_CERT_EXISTS,
+          "private_key_in_public_volume": $$PRIVATE_KEY_IN_PUBLIC,
+          "public_cert_readable": $$PUBLIC_CERT_READABLE,
+          "private_key_in_cert_content": $$PRIVATE_KEY_CONTENT,
+          "all_passed": $$ALL_PASSED
+        }
+        ENDJSON
+
+        echo ""
+        if [ "$$ALL_PASSED" = "true" ]; then
+          echo "=== ALL KEY ISOLATION TESTS PASSED ==="
+          echo "Private CA key is properly isolated."
+          exit 0
+        else
+          echo "=== KEY ISOLATION TESTS FAILED ==="
+          exit 1
+        fi
+
+  # Extend test-runner with isolation test dependencies and volumes
+  # Note: sinkhole dependency removed - isolation tests don't need it,
+  # and proxy tests will skip gracefully if sinkhole isn't available.
+  test-runner:
+    depends_on:
+      safeyolo:
+        condition: service_healthy
+      security-verifier:
+        condition: service_completed_successfully
+      isolation-verifier:
+        condition: service_completed_successfully
+      key-isolation-verifier:
+        condition: service_completed_successfully
+    volumes:
+      - ./runner:/app:ro
+      # Security verifier results
+      - security-results:/security-results:ro
+      # Public CA volume for key isolation tests (Python-based validation)
+      - safeyolo-test-ca:/certs-public:ro
+
+networks:
+  # Internal-only network for Sandbox Mode isolation testing
+  # Containers on this network have NO default gateway - they cannot
+  # reach the internet except through the proxy.
+  isolation-net:
+    driver: bridge
+    internal: true  # Critical: no default gateway, no internet route
+
+volumes:
+  security-results:
