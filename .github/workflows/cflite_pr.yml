@@ -3,18 +3,25 @@ name: ClusterFuzzLite PR fuzzing
 on:
   pull_request:
     paths:
-      - 'addons/**'
+      # Only trigger on actual fuzz targets (detection subpackage), not all addons
+      - 'addons/detection/**'
       - 'fuzz/**'
       - '.clusterfuzzlite/**'
 
-permissions: read-all
+# Cancel in-progress runs when PR is updated. Saves runner minutes on iterative pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions. ClusterFuzzLite needs contents:read for checkout and
+# actions:read for corpus caching. The original read-all was overly broad.
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   PR:
     runs-on: ubuntu-latest
-    concurrency:
-      group: ${{ github.workflow }}-${{ matrix.sanitizer }}-${{ github.ref }}
-      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:

@@ -8,6 +8,10 @@ name: Blackbox Tests
 #
 # These tests run SafeYolo as a black box using the production startup
 # script. See docs/security-testing-design.md for architecture details.
+#
+# NOTE: pull_request trigger removed intentionally. Blackbox tests are slow
+# (~5 min) and iteration-heavy PRs would burn runner minutes. Security coverage
+# is preserved via: (1) push-to-main gate, (2) daily scheduled run.
 
 on:
   schedule:
@@ -18,19 +22,17 @@ on:
     paths:
       - 'addons/**'
       - 'pdp/**'
+      - 'config/**'
       - 'scripts/start-safeyolo.sh'
       - 'tests/blackbox/**'
       - 'Dockerfile'
+      - 'docker-compose.yml'
       - '.github/workflows/blackbox.yml'
-  pull_request:
-    branches: [master, main]
-    paths:
-      - 'addons/**'
-      - 'pdp/**'
-      - 'scripts/start-safeyolo.sh'
-      - 'tests/blackbox/**'
-      - 'Dockerfile'
-      - '.github/workflows/blackbox.yml'
+
+# Cancel in-progress runs when a new commit is pushed (e.g., rapid merges).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -3,10 +3,24 @@ name: CodeQL
 on:
   push:
     branches: [master, main]
+    paths:
+      - '**/*.py'
+      - '.github/codeql/**'
+      - '.github/workflows/codeql.yml'
   pull_request:
     branches: [master, main]
+    paths:
+      - '**/*.py'
+      - '.github/codeql/**'
+      - '.github/workflows/codeql.yml'
   schedule:
+    # Weekly full scan catches anything missed by path filters
     - cron: "0 0 * * 0"
+
+# Cancel in-progress runs when PR is updated.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
