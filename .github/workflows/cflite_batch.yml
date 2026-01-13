@@ -2,11 +2,20 @@ name: ClusterFuzzLite batch fuzzing
 
 on:
   schedule:
-    # Run every 6 hours
-    - cron: '0 */6 * * *'
+    # Run once daily at 3am UTC (reduced from every 6 hours to save runner minutes).
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
-permissions: read-all
+# Cancel in-progress runs on manual re-dispatch or overlapping scheduled runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions. ClusterFuzzLite needs contents:read for checkout and
+# actions:read for corpus caching. The original read-all was overly broad.
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   BatchFuzzing:

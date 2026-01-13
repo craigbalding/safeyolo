@@ -3,8 +3,34 @@ name: CI
 on:
   push:
     branches: [master, main]
+    paths:
+      - 'addons/**'
+      - 'pdp/**'
+      - 'cli/**'
+      - 'tests/**'
+      - 'config/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'ruff.toml'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [master, main]
+    paths:
+      - 'addons/**'
+      - 'pdp/**'
+      - 'cli/**'
+      - 'tests/**'
+      - 'config/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'ruff.toml'
+      - '.github/workflows/ci.yml'
+
+# Cancel in-progress runs when a new commit is pushed to the same branch/PR.
+# Reduces runner minutes for iterative PR pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,7 +42,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        # PRs run only 3.12 for faster feedback; push to main runs full matrix.
+        # Rationale: most regressions caught by one version; full coverage on merge.
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.12", "3.13"]') }}
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
