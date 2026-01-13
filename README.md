@@ -111,12 +111,14 @@ This materially reduces host + network risk while keeping the workflow smooth �
 Install SafeYolo on your laptop — or run it on a home server / VPS for an always-on “agent box” you can connect to remotely:
 
 ```bash
-# Generate agent container template
-safeyolo sandbox setup
+# Initialize with sandbox mode
+safeyolo init --sandbox
 
-# Run agent in isolated container
-cd claude-code
-docker compose run --rm claudecode
+# Add and run an agent (creates config + starts it)
+safeyolo agent add myproject claude-code ~/code
+
+# Later, just run by name
+safeyolo agent run myproject
 ```
 
 The agent container connects to an internal Docker network where SafeYolo is the only route to the internet. Bypass attempts fail rather than leak.
@@ -124,9 +126,12 @@ The agent container connects to an internal Docker network where SafeYolo is the
 **Multi-agent:** Run multiple agents with separate policies:
 
 ```bash
-safeyolo agent add claude-code
-safeyolo agent add openai-codex
-safeyolo agent run claude-code  # Each agent gets isolated policy
+safeyolo agent add work claude-code ~/work
+safeyolo agent add side-project claude-code ~/side-project
+safeyolo agent add codex-agent openai-codex ~/code
+
+safeyolo agent run work       # Each agent gets isolated policy
+safeyolo agent run codex-agent
 ```
 
 See `safeyolo agent list` for available templates.
@@ -160,9 +165,9 @@ For security principles, threat model, and vulnerability reporting, see [SECURIT
 | `safeyolo status` | Show health and stats |
 | `safeyolo cert env` | Print CA trust and proxy environment variables |
 | `safeyolo cert show` | Show CA cert location and fingerprint |
-| `safeyolo agent add <name>` | Add agent container (multi-agent setup) |
-| `safeyolo agent run <name>` | Run agent in isolated container |
-| `safeyolo agent list` | List available agent templates |
+| `safeyolo agent add <name> <template> <folder>` | Add and run an agent |
+| `safeyolo agent run <name> [folder]` | Run an existing agent |
+| `safeyolo agent list` | List templates and configured agents |
 | `safeyolo setup check` | Verify Docker access and prerequisites |
 | `safeyolo init` | Setup wizard (for customization) |
 | `safeyolo check` | Verify setup, proxy, and HTTPS working |

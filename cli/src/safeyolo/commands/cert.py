@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from ..config import find_config_dir, get_certs_dir, load_config
+from ..docker import copy_ca_cert_to_host, is_running
 
 console = Console()
 
@@ -43,6 +44,12 @@ def env() -> None:
         raise typer.Exit(1)
 
     ca_cert = get_ca_cert_path()
+
+    # If cert not on host, try to copy from running container
+    if not ca_cert and is_running():
+        copy_ca_cert_to_host()
+        ca_cert = get_ca_cert_path()
+
     if not ca_cert:
         console.print("[red]CA certificate not found.[/red]")
         console.print("The certificate is generated when SafeYolo starts.")
@@ -51,9 +58,15 @@ def env() -> None:
 
     config = load_config()
     proxy_port = config.get("proxy", {}).get("port", 8080)
+    sandbox = config.get("sandbox", False)
 
     # Output exports for eval
-    print("# SafeYolo CA trust (per-process, not system-wide)")
+    if sandbox:
+        print("# SafeYolo Sandbox Mode")
+        print("# Agents should run in containers with the safeyolo-ca volume mounted.")
+        print("# These env vars are for diagnostic use outside the sandbox.")
+    else:
+        print("# SafeYolo CA trust (per-process, not system-wide)")
     print(f"export NODE_EXTRA_CA_CERTS={ca_cert}")
     print(f"export REQUESTS_CA_BUNDLE={ca_cert}")
     print(f"export SSL_CERT_FILE={ca_cert}")
@@ -77,9 +90,18 @@ def show() -> None:
 
     ca_cert = get_ca_cert_path()
 
+    # If cert not on host, try to copy from running container
+    if not ca_cert and is_running():
+        copy_ca_cert_to_host()
+        ca_cert = get_ca_cert_path()
+
+    config = load_config()
+    sandbox = config.get("sandbox", False)
+
     console.print("[bold]CA Certificate Status[/bold]\n")
     console.print(f"  Config directory: {config_dir}")
     console.print(f"  Certs directory:  {get_certs_dir()}")
+    console.print(f"  Mode:             {'Sandbox' if sandbox else 'Try'}")
 
     if ca_cert:
         console.print(f"  CA certificate:   [green]{ca_cert}[/green]")
@@ -93,6 +115,10 @@ def show() -> None:
             console.print(f"  SHA256:    {sha256}...")
         except Exception:
             pass  # Skip fingerprint display on any error
+
+        if sandbox:
+            console.print("\n[dim]Sandbox Mode: Agents access the CA via Docker volume mount.[/dim]")
+            console.print("[dim]Host access is available for diagnostics but not recommended for agents.[/dim]")
 
         console.print("\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
     else:

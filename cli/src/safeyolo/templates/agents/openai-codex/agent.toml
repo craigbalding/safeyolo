@@ -1,0 +1,37 @@
+schema_version = 1
+
+[agent]
+name = "openai-codex"
+description = "OpenAI Codex CLI - Terminal-based coding agent"
+
+[install]
+mise = "npm:@openai/codex"
+binary = "codex"
+
+[run]
+command = "codex"
+args = []
+auto_args = ["--full-auto"]  # Only with: safeyolo agent run --auto
+
+[auth]
+env_var = "OPENAI_API_KEY"
+oauth_file = ".codex/auth.json"
+setup_hint = "Run: codex login --device-auth"
+
+[host]
+config_dirs = [".codex"]
+config_files = []
+
+[docker]
+env = { CODEX_HOME = "/home/agent/.codex" }
+
+[instructions]
+content = """
+SafeYolo Container: Use mise for languages/tools (not apt-get or npm -g).
+Examples: mise install go@latest, mise install python@3.12, mise use -g npm:typescript
+List versions: mise ls-remote python
+"""
+
+[instructions.injection]
+type = "cli_arg"
+arg_name = "developer_instructions"

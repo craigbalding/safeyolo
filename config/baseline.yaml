@@ -162,6 +162,25 @@ permissions:
     budget: 180  # 3 rps
     tier: explicit
 
+  # Rust crates.io (cargo does many parallel fetches)
+  - action: network:request
+    resource: "index.crates.io/*"
+    effect: budget
+    budget: 3000  # 50 rps - index lookups
+    tier: explicit
+
+  - action: network:request
+    resource: "static.crates.io/*"
+    effect: budget
+    budget: 1200  # 20 rps - crate downloads
+    tier: explicit
+
+  - action: network:request
+    resource: "crates.io/*"
+    effect: budget
+    budget: 600  # 10 rps
+    tier: explicit
+
   # Go module proxy and checksums
   - action: network:request
     resource: "proxy.golang.org/*"
@@ -412,3 +431,13 @@ clients:
     addons:
       network_guard:
         enabled: false
+
+  # Unknown principals (source IP not in services.yaml)
+  # This happens when:
+  #   - A new container joined the network but 'safeyolo sync' wasn't run
+  #   - An external IP somehow reached the proxy
+  # Policy: Allow with logging - don't break things, but make it visible
+  # Run 'safeyolo sync' to map the IP to a project
+  "unknown":
+    log_level: warning
+    # Use default rate limits, don't bypass any security checks

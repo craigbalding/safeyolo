@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Path to CDK evaluation results (mounted from security-verifier container)
 CDK_RESULTS_PATH = Path("/security-results/cdk-evaluate.json")
 

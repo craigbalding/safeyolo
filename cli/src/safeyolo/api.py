@@ -169,6 +169,14 @@ class AdminAPI:
         """Clear all temp allowlist entries."""
         return self._request("DELETE", "/plugins/credential-guard/allowlist")
 
+    def pending_approvals(self) -> list[dict[str, Any]]:
+        """Get pending credential approval requests.
+
+        TODO: Implement when proxy-side tracking is added.
+        Currently returns empty list as the feature is not yet implemented.
+        """
+        return []
+
 
 def get_api() -> AdminAPI:
     """Get a configured API client instance."""

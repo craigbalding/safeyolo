@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Path to isolation test results (mounted from isolation-verifier container)
 ISOLATION_RESULTS_PATH = Path("/security-results/isolation.json")
 

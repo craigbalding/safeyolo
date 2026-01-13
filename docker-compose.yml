@@ -1,28 +1,26 @@
 # SafeYolo - Development Infrastructure
 #
-# FOR DEVELOPMENT ONLY. Uses 172.30.x subnet (different from CLI's 172.31.x).
+# FOR DEVELOPMENT ONLY. Docker assigns subnet automatically.
 # For production, use the CLI: safeyolo init --sandbox
 #
 # Owns the internal network that all project containers join.
 # Provides: mitmproxy gateway, CC dev sidecar, service discovery
 #
 # Start first: docker compose up -d
-# Projects then join the safeyolo-internal network
+# Projects then join the internal network (safeyolo_internal)
 #
 # Non-root execution (recommended):
 #   echo "SAFEYOLO_UID=$(id -u)" >> .env
 #   echo "SAFEYOLO_GID=$(id -g)" >> .env
 #   docker compose up -d
 #
-# Network configuration (override in .env if needed):
-#   SAFEYOLO_IP=172.30.0.10
-#   INTERNAL_SUBNET=172.30.0.0/24
+# Network: Docker picks subnet automatically. Use DNS names (e.g., "safeyolo") not IPs.
 #
 # For shell_mux integration (Claude Code command execution):
 #   See docker-compose.override.yml.example
 #
 # Networks:
-#   - safeyolo-internal: All containers (projects + CC) live here, no direct internet
+#   - internal (safeyolo_internal): All containers (projects + CC) live here, no direct internet
 #   - default: SafeYolo's internet access (the only outbound path)
 
 services:
@@ -62,8 +60,8 @@ services:
     user: "${SAFEYOLO_UID:-1000}:${SAFEYOLO_GID:-1000}"
     #restart: unless-stopped
     networks:
-      safeyolo-internal:
-        ipv4_address: ${SAFEYOLO_IP:-172.30.0.10}
+      internal:
+        # Reachable via Docker DNS name "safeyolo"
       default:
         # Internet access
     ports:
@@ -108,13 +106,10 @@ services:
 networks:
   # Internal network - all project containers join this
   # No direct internet access - must go through SafeYolo
-  safeyolo-internal:
-    name: safeyolo-internal
+  # Docker assigns subnet automatically
+  internal:
     driver: bridge
     internal: true
-    ipam:
-      config:
-        - subnet: ${INTERNAL_SUBNET:-172.30.0.0/24}
 
   # Default network - only SafeYolo uses this for internet
   default:

@@ -11,7 +11,6 @@ members = [
     "safeyolo",
     "safeyolo-blackbox-runner",
     "safeyolo-blackbox-sinkhole",
-    "safeyolo-fuzz",
     "safeyolo-proxy",
 ]
 
@@ -1918,21 +1917,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "httpx", specifier = ">=0.25.0" }]
-
-[[package]]
-name = "safeyolo-fuzz"
-version = "0.1.0"
-source = { virtual = ".clusterfuzzlite" }
-dependencies = [
-    { name = "pyyaml" },
-    { name = "yarl" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "yarl", specifier = ">=1.9.0" },
-]
 
 [[package]]
 name = "safeyolo-proxy"

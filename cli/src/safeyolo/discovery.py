@@ -1,0 +1,290 @@
+"""Dynamic IP discovery from Docker network state.
+
+This module queries the Docker daemon to discover container IP assignments
+and writes services.yaml for the proxy to consume. This replaces the old
+static IP allocation approach.
+
+Usage:
+    # In CLI lifecycle commands
+    from safeyolo.discovery import regenerate_services, validate_services
+
+    # After docker-compose up
+    path, count = regenerate_services()
+
+    # Check for drift
+    issues = validate_services()
+"""
+
+import json
+import logging
+import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
+
+import yaml
+
+from .config import INTERNAL_NETWORK_NAME, find_config_dir, get_services_path
+
+log = logging.getLogger("safeyolo.discovery")
+
+# Subprocess timeout (seconds)
+DOCKER_INSPECT_TIMEOUT_SECONDS = 5
+
+
+class DiscoveryError(Exception):
+    """Failed to discover network state."""
+
+    pass
+
+
+def get_compose_network_name() -> str:
+    """Get the full Docker network name including compose project prefix.
+
+    Docker Compose V2 prefixes network names with the project name using
+    underscore separator (e.g., "safeyolo_internal"). Project name defaults
+    to the directory containing docker-compose.yml.
+
+    Returns:
+        Full network name, e.g., "safeyolo_internal"
+    """
+    config_dir = find_config_dir()
+    if config_dir:
+        # Project name is the config directory name (e.g., "safeyolo")
+        project_name = config_dir.name
+        return f"{project_name}_{INTERNAL_NETWORK_NAME}"
+    # Fallback to unprefixed name
+    return INTERNAL_NETWORK_NAME
+
+
+def query_network_containers(network_name: str | None = None) -> dict[str, str]:
+    """Query Docker for container IPs on the specified network.
+
+    Args:
+        network_name: Docker network to inspect (default: compose-prefixed internal network).
+
+    Returns:
+        Dict mapping container name to IP address.
+        Example: {"safeyolo": "172.20.0.2", "claude-code": "172.20.0.3"}
+
+    Raises:
+        DiscoveryError: If Docker query fails.
+    """
+    if network_name is None:
+        network_name = get_compose_network_name()
+
+    try:
+        result = subprocess.run(
+            ["docker", "network", "inspect", network_name],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise DiscoveryError(
+            f"Docker network inspect timed out after {DOCKER_INSPECT_TIMEOUT_SECONDS}s"
+        )
+    except subprocess.CalledProcessError as err:
+        if "No such network" in err.stderr:
+            return {}  # Network doesn't exist yet
+        raise DiscoveryError(f"Failed to inspect network: {err.stderr}")
+    except FileNotFoundError:
+        raise DiscoveryError("Docker not found - is Docker installed?")
+
+    try:
+        networks = json.loads(result.stdout)
+        if not networks:
+            return {}
+
+        containers = networks[0].get("Containers", {})
+        return {
+            info["Name"]: info["IPv4Address"].split("/")[0]
+            for info in containers.values()
+            if info.get("IPv4Address")
+        }
+    except (json.JSONDecodeError, KeyError, IndexError) as err:
+        raise DiscoveryError(f"Failed to parse network info: {err}")
+
+
+def _atomic_write_yaml(path: Path, data: dict, header_lines: list[str] | None = None) -> None:
+    """Atomically write YAML via temp file rename.
+
+    Args:
+        path: Target file path
+        data: YAML-serializable data
+        header_lines: Optional header comment lines (without # prefix)
+    """
+    tmp = path.with_suffix(".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, "w") as f:
+        if header_lines:
+            for line in header_lines:
+                f.write(f"# {line}\n")
+            f.write("\n")
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    tmp.rename(path)
+
+
+def write_services_yaml(container_ips: dict[str, str], path: Path | None = None) -> Path:
+    """Write services.yaml from container IP mapping.
+
+    Args:
+        container_ips: Dict mapping container name to IP.
+        path: Output path (default: standard services.yaml location).
+
+    Returns:
+        Path to written file.
+    """
+    path = path or get_services_path()
+
+    # Build services config
+    # Skip the proxy itself - we only need agent mappings
+    services = {}
+    for name, ip in container_ips.items():
+        if name == "safeyolo":
+            continue  # Proxy doesn't need to be in the mapping
+
+        # Container name = project name (hyphenated names used directly)
+        services[name] = {
+            "ip": ip,
+            "project": name,
+        }
+
+    # Write atomically to avoid race with file watcher
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = [
+        "Auto-generated by safeyolo CLI - do not edit manually",
+        "Regenerate with: safeyolo sync",
+        f"Last updated: {timestamp}",
+    ]
+    _atomic_write_yaml(path, {"services": services}, header_lines=header)
+
+    log.debug(f"Wrote {len(services)} services to {path}")
+    return path
+
+
+def regenerate_services() -> tuple[Path, int]:
+    """Query Docker and regenerate services.yaml.
+
+    This is the main entry point called by CLI commands after
+    docker-compose operations.
+
+    Returns:
+        Tuple of (path to services.yaml, number of services registered).
+
+    Raises:
+        DiscoveryError: If Docker query fails.
+    """
+    network_name = get_compose_network_name()
+    log.info(f"Querying Docker network: {network_name}")
+    container_ips = query_network_containers(network_name)
+    path = write_services_yaml(container_ips)
+    # Count excludes proxy
+    count = len([name for name in container_ips if name != "safeyolo"])
+    log.info(f"Regenerated services.yaml with {count} service(s)")
+    return path, count
+
+
+def clear_services() -> None:
+    """Mark services.yaml as stale (called on stop).
+
+    Rather than deleting the file, we write an empty services dict
+    with a stale marker. This prevents the proxy from using outdated
+    mappings if it's somehow still running.
+    """
+    path = get_services_path()
+    if not path.exists():
+        log.debug("services.yaml does not exist, nothing to clear")
+        return
+
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = [
+        "SafeYolo stopped - services.yaml is stale",
+        "Run 'safeyolo start' to regenerate",
+        f"Cleared: {timestamp}",
+    ]
+    _atomic_write_yaml(path, {"services": {}}, header_lines=header)
+
+    log.info(f"Marked services.yaml as stale: {path}")
+
+
+def validate_services() -> list[str]:
+    """Validate services.yaml against running containers.
+
+    Checks for:
+    - Stale entries (in yaml but container not running)
+    - IP mismatches (yaml IP differs from actual)
+    - Unmapped containers (running but not in yaml)
+
+    Returns:
+        List of issue descriptions (empty if valid).
+    """
+    issues = []
+
+    path = get_services_path()
+    if not path.exists():
+        issues.append("services.yaml does not exist")
+        return issues
+
+    # Load current services.yaml
+    try:
+        with open(path) as f:
+            content = f.read()
+            # Check for stale marker
+            if "stale" in content.lower():
+                issues.append("services.yaml is marked as stale")
+            config = yaml.safe_load(content) or {}
+    except Exception as err:
+        issues.append(f"Cannot read services.yaml: {err}")
+        return issues
+
+    services = config.get("services", {})
+
+    # Get actual container IPs
+    try:
+        actual = query_network_containers()
+    except DiscoveryError as err:
+        issues.append(f"Cannot query Docker: {err}")
+        return issues
+
+    # Check for stale entries (in yaml but not running)
+    # Container name = project name (no mapping needed)
+    for project, entry in services.items():
+        expected_ip = entry.get("ip")
+        actual_ip = actual.get(project)
+
+        if not actual_ip:
+            issues.append(f"Stale: {project} ({expected_ip}) - container not running")
+        elif actual_ip != expected_ip:
+            issues.append(f"Mismatch: {project} expected {expected_ip}, actual {actual_ip}")
+
+    # Check for unmapped containers (running but not in yaml)
+    for container_name, ip in actual.items():
+        if container_name == "safeyolo":
+            continue
+        if container_name not in services:
+            issues.append(f"Unmapped: {container_name} ({ip}) - not in services.yaml")
+
+    return issues
+
+
+def get_service_mapping() -> dict[str, str]:
+    """Get current IP to project mapping from services.yaml.
+
+    Returns:
+        Dict mapping IP address to project name.
+        Example: {"172.20.0.3": "claude-code"}
+    """
+    path = get_services_path()
+    if not path.exists():
+        return {}
+
+    try:
+        with open(path) as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as err:
+        log.warning(f"Failed to read services.yaml: {type(err).__name__}: {err}")
+        return {}
+
+    services = config.get("services", {})
+    return {entry["ip"]: project for project, entry in services.items() if "ip" in entry}

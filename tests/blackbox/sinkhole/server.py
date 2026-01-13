@@ -19,6 +19,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from handlers import DEFAULT_HANDLER, HANDLERS, Response
+
 from models import CapturedRequest
 
 log = logging.getLogger("sinkhole")
