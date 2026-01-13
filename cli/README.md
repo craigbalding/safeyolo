@@ -81,8 +81,8 @@ Sandbox Mode runs AI agents in isolated Docker containers with all traffic route
 **Quick start:**
 
 ```bash
-# Initialize with sandbox mode
-safeyolo init --sandbox
+# Initialize (sandbox mode is the default)
+safeyolo init
 
 # Add and run a Claude Code agent
 safeyolo agent add myproject claude-code ~/code
