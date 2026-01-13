@@ -89,7 +89,7 @@ def check() -> None:
     # Check if safeyolo network exists
     try:
         result = subprocess.run(
-            ["docker", "network", "inspect", "safeyolo-internal"],
+            ["docker", "network", "inspect", "safeyolo_internal"],
             capture_output=True,
             text=True,
             timeout=5,

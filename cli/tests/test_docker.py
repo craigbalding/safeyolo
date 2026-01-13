@@ -3,11 +3,12 @@
 import subprocess
 
 import pytest
+import yaml
 
 from safeyolo.docker import (
     DockerError,
     check_docker,
-    generate_compose_file,
+    generate_compose,
     get_container_name,
     get_container_status,
     is_running,
@@ -110,40 +111,78 @@ class TestGetContainerStatus:
         assert status["health"] == "none"
 
 
-class TestGenerateComposeFile:
-    """Tests for generate_compose_file()."""
+class TestGenerateCompose:
+    """Tests for generate_compose()."""
 
-    def test_generates_valid_yaml(self, tmp_config_dir):
-        """Generates valid docker-compose YAML."""
-        content = generate_compose_file()
+    def test_generates_valid_yaml_sandbox(self, tmp_config_dir):
+        """Generates valid docker-compose YAML for sandbox mode."""
+        content = generate_compose(sandbox=True)
         assert "services:" in content
         assert "safeyolo:" in content
-        assert "8080:8080" in content
-        assert "9090:9090" in content
+        # Ports should be localhost-bound
+        assert "127.0.0.1:" in content
+        assert "8080" in content
+        assert "9090" in content
+
+    def test_generates_valid_yaml_try_mode(self, tmp_config_dir):
+        """Generates valid docker-compose YAML for try mode."""
+        content = generate_compose(sandbox=False)
+        assert "services:" in content
+        assert "safeyolo:" in content
+        # Ports should be localhost-bound in try mode too
+        assert "127.0.0.1:" in content
 
     def test_includes_volumes(self, tmp_config_dir):
         """Includes volume mounts."""
-        content = generate_compose_file()
+        content = generate_compose(sandbox=True)
         assert "/app/logs" in content
-        assert "/certs" in content
+        assert "/certs-private" in content
         assert "/app/data" in content
 
     def test_includes_rules_if_exists(self, tmp_config_dir):
         """Includes rules.json mount if file exists."""
         (tmp_config_dir / "rules.json").write_text("{}")
-        content = generate_compose_file()
+        content = generate_compose(sandbox=True)
         assert "credential_rules.json" in content
 
     def test_includes_environment(self, tmp_config_dir):
         """Includes environment variables."""
-        content = generate_compose_file()
+        content = generate_compose(sandbox=True)
         assert "SAFEYOLO_BLOCK=true" in content
 
     def test_includes_healthcheck(self, tmp_config_dir):
         """Includes health check configuration."""
-        content = generate_compose_file()
+        content = generate_compose(sandbox=True)
         assert "healthcheck:" in content
         assert "/health" in content
+
+    def test_sandbox_includes_internal_network(self, tmp_config_dir):
+        """Sandbox mode includes internal network definition."""
+        content = generate_compose(sandbox=True)
+        assert "internal: true" in content
+        # Network is named "internal" in compose; Docker Compose prefixes with project name at runtime
+        assert "\n  internal:\n" in content  # Network definition under networks:
+
+    def test_try_mode_no_internal_network(self, tmp_config_dir):
+        """Try mode does not include internal network."""
+        content = generate_compose(sandbox=False)
+        assert "internal: true" not in content
+
+    def test_includes_user_directive(self, tmp_config_dir):
+        """Both modes include non-root user directive."""
+        for sandbox in (True, False):
+            content = generate_compose(sandbox=sandbox)
+            assert "user:" in content
+
+    def test_sandbox_includes_certs_init(self, tmp_config_dir):
+        """Sandbox mode includes certs-init service."""
+        content = generate_compose(sandbox=True)
+        assert "certs-init:" in content
+
+    def test_try_mode_no_certs_init(self, tmp_config_dir):
+        """Try mode does not include certs-init service."""
+        content = generate_compose(sandbox=False)
+        assert "certs-init:" not in content
 
 
 class TestWriteComposeFile:
@@ -250,3 +289,122 @@ class TestDockerError:
         """Stores error message."""
         err = DockerError("Command failed")
         assert "Command failed" in str(err)
+
+
+class TestComposeSecurityProperties:
+    """Verify security properties in generated compose YAML.
+
+    These tests parse the generated YAML and verify security-critical properties:
+    - Localhost-only port bindings
+    - Non-root user directive
+    - Internal network isolation (sandbox mode)
+    - Private cert volume isolation
+    """
+
+    def test_all_ports_localhost_bound_sandbox(self, tmp_config_dir):
+        """Sandbox mode: all ports must be 127.0.0.1 bound."""
+        content = generate_compose(sandbox=True)
+        parsed = yaml.safe_load(content)
+
+        for svc_name, svc in parsed.get("services", {}).items():
+            for port in svc.get("ports", []):
+                port_str = str(port)
+                assert port_str.startswith("127.0.0.1:"), \
+                    f"Service {svc_name} port not localhost-bound: {port}"
+
+    def test_all_ports_localhost_bound_try(self, tmp_config_dir):
+        """Try mode: all ports must be 127.0.0.1 bound."""
+        content = generate_compose(sandbox=False)
+        parsed = yaml.safe_load(content)
+
+        for svc_name, svc in parsed.get("services", {}).items():
+            for port in svc.get("ports", []):
+                port_str = str(port)
+                assert port_str.startswith("127.0.0.1:"), \
+                    f"Service {svc_name} port not localhost-bound: {port}"
+
+    def test_sandbox_has_internal_network(self, tmp_config_dir):
+        """Sandbox mode must create internal network with no gateway."""
+        content = generate_compose(sandbox=True)
+        parsed = yaml.safe_load(content)
+
+        networks = parsed.get("networks", {})
+        # Network is named "internal" in compose; Docker Compose prefixes with project name at runtime
+        internal_net = networks.get("internal")
+
+        assert internal_net is not None, "Sandbox mode missing internal network"
+        assert internal_net.get("internal") is True, \
+            "Internal network not marked as internal (no gateway isolation)"
+
+    def test_try_mode_no_internal_network(self, tmp_config_dir):
+        """Try mode should not create internal network."""
+        content = generate_compose(sandbox=False)
+        parsed = yaml.safe_load(content)
+
+        networks = parsed.get("networks", {})
+        assert "safeyolo_internal" not in networks, \
+            "Try mode should not have internal network"
+
+    def test_safeyolo_runs_nonroot(self, tmp_config_dir):
+        """Safeyolo service must have non-root user directive."""
+        for sandbox in (True, False):
+            content = generate_compose(sandbox=sandbox)
+            parsed = yaml.safe_load(content)
+
+            user = parsed["services"]["safeyolo"].get("user")
+            assert user is not None, f"No user directive (sandbox={sandbox})"
+
+            uid = str(user).split(":")[0]
+            assert uid not in ("0", "root"), \
+                f"Runs as root (sandbox={sandbox}): {user}"
+
+    def test_private_volume_only_safeyolo(self, tmp_config_dir):
+        """Private cert volume should only be mounted by safeyolo/certs-init."""
+        for sandbox in (True, False):
+            content = generate_compose(sandbox=sandbox)
+            parsed = yaml.safe_load(content)
+
+            allowed_services = {"safeyolo", "certs-init"}
+
+            for svc_name, svc in parsed.get("services", {}).items():
+                if svc_name in allowed_services:
+                    continue
+
+                volumes = svc.get("volumes", [])
+                for vol in volumes:
+                    assert "certs-private" not in str(vol), \
+                        f"Service {svc_name} has access to private certs!"
+
+    def test_public_ca_volume_exists_sandbox(self, tmp_config_dir):
+        """Sandbox mode should define public CA volume."""
+        content = generate_compose(sandbox=True)
+        parsed = yaml.safe_load(content)
+
+        volumes = parsed.get("volumes", {})
+        has_ca_volume = "safeyolo-ca" in volumes or any(
+            "ca" in str(v).lower() for v in volumes
+        )
+        assert has_ca_volume, "Sandbox mode missing public CA volume"
+
+    def test_sandbox_safeyolo_on_both_networks(self, tmp_config_dir):
+        """Sandbox mode: safeyolo must be on internal and default networks."""
+        content = generate_compose(sandbox=True)
+        parsed = yaml.safe_load(content)
+
+        safeyolo_networks = parsed["services"]["safeyolo"].get("networks", {})
+        # Network is named "internal" in compose; Docker Compose prefixes with project name at runtime
+        assert "internal" in safeyolo_networks, \
+            "Safeyolo not on internal network"
+        assert "default" in safeyolo_networks, \
+            "Safeyolo not on default network (no internet access)"
+
+    def test_certs_init_runs_as_root(self, tmp_config_dir):
+        """Certs-init must run as root to set permissions."""
+        content = generate_compose(sandbox=True)
+        parsed = yaml.safe_load(content)
+
+        certs_init = parsed["services"].get("certs-init")
+        assert certs_init is not None, "Missing certs-init service"
+
+        user = certs_init.get("user")
+        assert user == "0:0", f"Certs-init should run as root, got: {user}"

@@ -1,15 +1,18 @@
 """Docker container management for SafeYolo."""
 
+import logging
+import os
 import subprocess
 import time
 from pathlib import Path
 
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
 from .config import (
     CA_VOLUME_NAME,
     INTERNAL_NETWORK_NAME,
-    INTERNAL_SUBNET,
     PRIVATE_CERTS_VOLUME_NAME,
-    SAFEYOLO_INTERNAL_IP,
+    PROXY_CONTAINER_NAME,
     get_certs_dir,
     get_config_dir,
     get_data_dir,
@@ -19,6 +22,16 @@ from .config import (
     load_config,
 )
 
+log = logging.getLogger("safeyolo.docker")
+
+# Template directory for compose files
+COMPOSE_TEMPLATES_DIR = Path(__file__).parent / "templates" / "compose"
+
+# Subprocess timeout constants (seconds)
+DOCKER_BUILD_TIMEOUT_SECONDS = 300  # 5 minutes - fresh builds can be slow
+DOCKER_INSPECT_TIMEOUT_SECONDS = 5  # Network/container inspect is fast
+DOCKER_COMPOSE_TIMEOUT_SECONDS = 30  # Up/down/pull operations
+
 
 class DockerError(Exception):
     """Docker operation failed."""
@@ -26,18 +39,39 @@ class DockerError(Exception):
     pass
 
 
-def _run(args: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
-    """Run a command and return result."""
+class BuildError(Exception):
+    """Image build failed."""
+
+    pass
+
+
+def _run(
+    args: list[str],
+    check: bool = True,
+    capture: bool = True,
+    timeout: int = DOCKER_COMPOSE_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """Run a command and return result.
+
+    Args:
+        args: Command and arguments
+        check: Raise on non-zero exit
+        capture: Capture stdout/stderr
+        timeout: Max seconds to wait (default: DOCKER_COMPOSE_TIMEOUT_SECONDS)
+    """
     try:
         result = subprocess.run(
             args,
             check=check,
             capture_output=capture,
             text=True,
+            timeout=timeout,
         )
         return result
-    except subprocess.CalledProcessError as e:
-        raise DockerError(f"Command failed: {' '.join(args)}\n{e.stderr}")
+    except subprocess.TimeoutExpired:
+        raise DockerError(f"Command timed out after {timeout}s: {' '.join(args)}")
+    except subprocess.CalledProcessError as err:
+        raise DockerError(f"Command failed: {' '.join(args)}\n{err.stderr}")
     except FileNotFoundError:
         raise DockerError(f"Command not found: {args[0]}")
 
@@ -45,10 +79,77 @@ def _run(args: list[str], check: bool = True, capture: bool = True) -> subproces
 def check_docker() -> bool:
     """Check if Docker is available."""
     try:
-        result = _run(["docker", "version"], check=False)
+        result = _run(["docker", "version"], check=False, timeout=DOCKER_INSPECT_TIMEOUT_SECONDS)
         return result.returncode == 0
     except DockerError:
         return False
+
+
+def get_repo_root() -> Path | None:
+    """Find safeyolo repo root by locating Dockerfile.
+
+    Walks up from CLI package location to find Dockerfile.
+    Returns None if not found (e.g., pip installed from PyPI).
+    """
+    # Start from this file's location: cli/src/safeyolo/docker.py
+    current = Path(__file__).resolve().parent
+
+    # Walk up looking for Dockerfile (max 5 levels)
+    for _ in range(5):
+        dockerfile = current / "Dockerfile"
+        if dockerfile.exists():
+            return current
+        current = current.parent
+
+    return None
+
+
+def image_exists(image_name: str) -> bool:
+    """Check if a Docker image exists locally."""
+    result = _run(
+        ["docker", "images", "-q", image_name],
+        check=False,
+        timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
+    )
+    return bool(result.stdout.strip())
+
+
+def build_image(tag: str = "safeyolo:latest", quiet: bool = False) -> None:
+    """Build the safeyolo Docker image from repo source.
+
+    Args:
+        tag: Image tag to build
+        quiet: Suppress build output
+
+    Raises:
+        BuildError: If repo not found or build fails
+
+    Note:
+        Output is not captured so user sees build progress in terminal.
+        Errors show exit code only (stderr goes to terminal).
+    """
+    repo_root = get_repo_root()
+    if not repo_root:
+        raise BuildError(
+            "Cannot find safeyolo repo root (no Dockerfile found).\n"
+            "If installed from PyPI, pull the image instead:\n"
+            "  docker pull safeyolo:latest"
+        )
+
+    args = ["docker", "build", "-t", tag, str(repo_root)]
+    if quiet:
+        args.insert(2, "-q")
+
+    try:
+        # Don't capture output so user sees build progress
+        subprocess.run(args, check=True, timeout=DOCKER_BUILD_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise BuildError(
+            f"Docker build timed out after {DOCKER_BUILD_TIMEOUT_SECONDS}s.\n"
+            "Check network connectivity or try: docker build --no-cache"
+        )
+    except subprocess.CalledProcessError as err:
+        raise BuildError(f"Docker build failed (exit code {err.returncode})")
 
 
 def get_container_name() -> str:
@@ -63,6 +164,7 @@ def is_running() -> bool:
     result = _run(
         ["docker", "ps", "-q", "-f", f"name={name}"],
         check=False,
+        timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
     )
     return bool(result.stdout.strip())
 
@@ -77,6 +179,7 @@ def get_container_status() -> dict | None:
             name,
         ],
         check=False,
+        timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
         return None
@@ -91,199 +194,107 @@ def get_container_status() -> dict | None:
     return None
 
 
-def generate_compose_file() -> str:
-    """Generate docker-compose.yml content from config."""
-    config = load_config()
-    proxy = config["proxy"]
-    config_dir = get_config_dir()
+def generate_compose(sandbox: bool = True) -> str:
+    """Generate docker-compose.yml content from config using Jinja2 template.
 
-    # Resolve paths
-    logs_dir = get_logs_dir()
-    certs_dir = get_certs_dir()
-    policies_dir = get_policies_dir()
-    data_dir = get_data_dir()
-    rules_path = get_rules_path()
+    Args:
+        sandbox: If True (default), generate Sandbox Mode with network isolation.
+                 If False, generate Try Mode for evaluation.
 
-    compose = f"""# Generated by safeyolo CLI
-# Do not edit manually - run 'safeyolo init' to regenerate
+    Both modes:
+    - Use localhost-only port bindings (127.0.0.1)
+    - Run as non-root (host UID/GID)
+    - Use Docker volume for private key (never exposed to host)
 
-services:
-  safeyolo:
-    image: {proxy.get('image', 'safeyolo:latest')}
-    container_name: {proxy.get('container_name', 'safeyolo')}
-    ports:
-      - "{proxy.get('port', 8080)}:8080"
-      - "{proxy.get('admin_port', 9090)}:9090"
-    volumes:
-      - {logs_dir}:/app/logs
-      - {certs_dir}:/certs
-      - {policies_dir}:/app/data/policies
-      - {data_dir}:/app/data
-"""
+    Sandbox Mode additionally:
+    - Creates internal network for agent isolation
+    - Uses Docker volume for public CA (agents mount it)
+    - Includes certs-init service for volume permissions
 
-    # Add rules.json if it exists
-    if rules_path.exists():
-        compose += f"      - {rules_path}:/app/config/credential_rules.json:ro\n"
-
-    # Add policy.yaml if it exists
-    policy_path = config_dir / "policy.yaml"
-    if policy_path.exists():
-        compose += f"      - {policy_path}:/app/config/policy.yaml:ro\n"
-
-    compose += """    environment:
-      - SAFEYOLO_BLOCK=true
-    restart: unless-stopped
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=1
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import httpx; exit(0 if httpx.get('http://localhost:9090/health', timeout=2).status_code == 200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-"""
-
-    return compose
-
-
-def generate_secure_compose_file() -> str:
-    """Generate docker-compose.yml for Sandbox Mode with network isolation.
-
-    Sandbox Mode creates an internal Docker network with no internet access.
-    SafeYolo bridges between the internal network and the internet, forcing
-    all agent traffic through the proxy.
-
-    Uses split cert volumes for security:
-    - safeyolo-certs-private: Private key material (only safeyolo accesses)
-    - safeyolo-ca: Public CA cert (agents mount read-only)
+    Try Mode:
+    - Host-mounts public CA cert directory (user reads it directly)
+    - No internal network (agent runs on host)
     """
-    import os
-
     config = load_config()
     proxy = config["proxy"]
     config_dir = get_config_dir()
 
     # Resolve paths
-    logs_dir = get_logs_dir()
-    policies_dir = get_policies_dir()
-    data_dir = get_data_dir()
     rules_path = get_rules_path()
-
-    # Get UID/GID for non-root execution
-    uid = os.getuid()
-    gid = os.getgid()
-
-    compose = f"""# Generated by safeyolo CLI (Sandbox Mode)
-# Do not edit manually - run 'safeyolo init --sandbox' to regenerate
-#
-# Sandbox Mode: Agent containers on {INTERNAL_NETWORK_NAME} have NO direct
-# internet access. All traffic must go through SafeYolo at {SAFEYOLO_INTERNAL_IP}.
-#
-# Non-root execution: Container runs as UID:GID {uid}:{gid}
-# Split certs: Private keys in {PRIVATE_CERTS_VOLUME_NAME}, public CA in {CA_VOLUME_NAME}
-
-services:
-  # Initialize cert volume ownership (runs once before safeyolo)
-  certs-init:
-    image: alpine:3.20
-    user: "0:0"
-    volumes:
-      - {PRIVATE_CERTS_VOLUME_NAME}:/certs-private
-      - {CA_VOLUME_NAME}:/certs-public
-    command: ["sh", "-c", "chown {uid}:{gid} /certs-private /certs-public && chmod 700 /certs-private && chmod 755 /certs-public"]
-
-  safeyolo:
-    depends_on:
-      certs-init:
-        condition: service_completed_successfully
-    image: {proxy.get('image', 'safeyolo:latest')}
-    container_name: {proxy.get('container_name', 'safeyolo')}
-    user: "{uid}:{gid}"
-    networks:
-      {INTERNAL_NETWORK_NAME}:
-        ipv4_address: {SAFEYOLO_INTERNAL_IP}
-      default:
-        # Internet access via default bridge
-    ports:
-      - "127.0.0.1:{proxy.get('port', 8080)}:8080"
-      - "127.0.0.1:{proxy.get('admin_port', 9090)}:9090"
-    volumes:
-      - {logs_dir}:/app/logs
-      - {PRIVATE_CERTS_VOLUME_NAME}:/certs-private
-      - {CA_VOLUME_NAME}:/certs-public
-      - {policies_dir}:/app/data/policies
-      - {data_dir}:/app/data
-"""
-
-    # Add rules.json if it exists
-    if rules_path.exists():
-        compose += f"      - {rules_path}:/app/config/credential_rules.json:ro\n"
-
-    # Add policy.yaml if it exists
     policy_path = config_dir / "policy.yaml"
-    if policy_path.exists():
-        compose += f"      - {policy_path}:/app/config/policy.yaml:ro\n"
 
-    compose += f"""    environment:
-      - SAFEYOLO_BLOCK=true
-      - CERT_DIR=/certs-private
-      - PUBLIC_CERT_DIR=/certs-public
-    restart: unless-stopped
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=1
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import httpx; exit(0 if httpx.get('http://localhost:9090/health', timeout=2).status_code == 200 else 1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    # Template variables
+    variables = {
+        "sandbox": sandbox,
+        # Proxy config
+        "image": proxy.get("image", "safeyolo:latest"),
+        "container_name": proxy.get("container_name", "safeyolo"),
+        "proxy_port": proxy.get("port", 8080),
+        "admin_port": proxy.get("admin_port", 9090),
+        # User (non-root execution)
+        "uid": os.getuid(),
+        "gid": os.getgid(),
+        # Paths
+        "logs_dir": get_logs_dir(),
+        "certs_dir": get_certs_dir(),
+        "policies_dir": get_policies_dir(),
+        "data_dir": get_data_dir(),
+        "rules_path": str(rules_path) if rules_path.exists() else None,
+        "policy_path": str(policy_path) if policy_path.exists() else None,
+        # Network constants (for sandbox mode)
+        "internal_network": INTERNAL_NETWORK_NAME,
+        "proxy_hostname": PROXY_CONTAINER_NAME,  # Docker DNS name for proxy
+        # Volume names
+        "private_certs_volume": PRIVATE_CERTS_VOLUME_NAME,
+        "public_certs_volume": CA_VOLUME_NAME,
+    }
 
-networks:
-  {INTERNAL_NETWORK_NAME}:
-    driver: bridge
-    internal: true  # No default gateway - agents cannot bypass proxy
-    ipam:
-      config:
-        - subnet: {INTERNAL_SUBNET}
-
-volumes:
-  {PRIVATE_CERTS_VOLUME_NAME}:
-    name: {PRIVATE_CERTS_VOLUME_NAME}
-  {CA_VOLUME_NAME}:
-    name: {CA_VOLUME_NAME}
-"""
-
-    return compose
+    # Render template
+    env = Environment(
+        loader=FileSystemLoader(str(COMPOSE_TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html", "xml"]),
+        keep_trailing_newline=True,
+    )
+    template = env.get_template("safeyolo.yml.j2")
+    return template.render(**variables)
 
 
-def write_compose_file(sandbox: bool = False) -> Path:
+def write_compose_file(sandbox: bool = True) -> Path:
     """Write docker-compose.yml to config directory.
 
     Args:
-        sandbox: If True, generate Sandbox Mode compose with network isolation
+        sandbox: If True (default), generate Sandbox Mode with network isolation.
+                 If False, generate Try Mode for evaluation.
     """
     config_dir = get_config_dir(create=True)
     compose_path = config_dir / "docker-compose.yml"
-
-    if sandbox:
-        compose_path.write_text(generate_secure_compose_file())
-    else:
-        compose_path.write_text(generate_compose_file())
-
+    compose_path.write_text(generate_compose(sandbox=sandbox))
     return compose_path
 
 
-def start(detach: bool = True, pull: bool = False) -> None:
+def start(detach: bool = True, pull: bool = False, auto_build: bool = True) -> bool:
     """Start SafeYolo container.
 
     Args:
         detach: Run in background
         pull: Pull latest image first
+        auto_build: Build image if missing (default True)
+
+    Returns:
+        True if image was built, False if it already existed
     """
     if not check_docker():
         raise DockerError("Docker is not available - please install Docker")
 
     config = load_config()
+    image_name = config["proxy"].get("image", "safeyolo:latest")
+    built = False
+
+    # Auto-build if image doesn't exist
+    if auto_build and not pull and not image_exists(image_name):
+        build_image(tag=image_name)
+        built = True
+
     sandbox = config.get("sandbox", False)
     compose_path = write_compose_file(sandbox=sandbox)
 
@@ -295,6 +306,7 @@ def start(detach: bool = True, pull: bool = False) -> None:
         args.append("-d")
 
     _run(args)
+    return built
 
 
 def stop() -> None:
@@ -369,3 +381,33 @@ def wait_for_healthy(timeout: int = 30) -> bool:
             return False
         time.sleep(1)
     return False
+
+
+def copy_ca_cert_to_host() -> Path | None:
+    """Copy CA certificate from container to host certs directory.
+
+    In Sandbox Mode, the CA cert lives in a Docker volume. This copies it
+    to the host for diagnostic use (inspecting cert, testing proxy from host).
+
+    Returns:
+        Path to copied cert, or None if copy failed.
+    """
+    name = get_container_name()
+    certs_dir = get_certs_dir()
+    certs_dir.mkdir(parents=True, exist_ok=True)
+
+    ca_cert_path = certs_dir / "mitmproxy-ca-cert.pem"
+    container_cert_path = "/certs-public/mitmproxy-ca-cert.pem"
+
+    try:
+        result = _run(
+            ["docker", "cp", f"{name}:{container_cert_path}", str(ca_cert_path)],
+            check=False,
+            timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0 and ca_cert_path.exists():
+            return ca_cert_path
+    except DockerError as exc:
+        log.debug("Failed to copy CA cert from container: %s", exc)
+
+    return None

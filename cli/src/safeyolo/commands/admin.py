@@ -9,6 +9,7 @@ from ..api import APIError, get_api
 from ..config import (
     find_config_dir,
     get_admin_token,
+    get_admin_token_path,
     get_certs_dir,
     get_config_path,
     get_rules_path,
@@ -61,10 +62,11 @@ def check() -> None:
 
     # 4. Check admin token
     token = get_admin_token()
+    token_path = get_admin_token_path()
     if token:
-        console.print("  [green]✓[/green]  Admin token configured")
+        console.print(f"  [green]✓[/green]  Admin token: {token_path}")
     else:
-        console.print("  [dim]–[/dim]  Admin token not set")
+        console.print(f"  [dim]–[/dim]  Admin token not set (expected at {token_path})")
 
     # 5. Check Docker
     if check_docker():
@@ -76,8 +78,7 @@ def check() -> None:
     # 6. Check container status
     status = get_container_status()
     if status:
-        state = status.get("State", {})
-        if state.get("Running"):
+        if status.get("status") == "running":
             console.print("  [green]✓[/green]  Container running")
             proxy_running = True
         else:

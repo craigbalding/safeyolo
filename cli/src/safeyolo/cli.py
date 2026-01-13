@@ -1,5 +1,7 @@
 """SafeYolo CLI - Security proxy for AI coding agents."""
 
+import os
+
 import typer
 from rich.console import Console
 
@@ -8,7 +10,7 @@ from .commands.admin import check, mode, policies, test
 from .commands.agent import agent_app
 from .commands.cert import cert_app
 from .commands.init import init
-from .commands.lifecycle import start, status, stop
+from .commands.lifecycle import build, start, status, stop, sync
 from .commands.logs import logs
 from .commands.sandbox import sandbox_app
 from .commands.setup import setup_app
@@ -45,7 +47,12 @@ def main(
 
     Protects your API keys when using AI coding assistants like Claude Code.
     """
-    pass
+    # Refuse to run as root unless explicitly allowed
+    if os.getuid() == 0 and not os.environ.get("SAFEYOLO_ALLOW_ROOT"):
+        console.print("[red]Refusing to run as root.[/red]")
+        console.print("Running as root causes permission issues with mounted volumes.")
+        console.print("Set SAFEYOLO_ALLOW_ROOT=1 to override.")
+        raise typer.Exit(1)
 
 
 # Register commands
@@ -53,6 +60,8 @@ app.command()(init)
 app.command()(start)
 app.command()(stop)
 app.command()(status)
+app.command()(build)
+app.command()(sync)
 app.command()(logs)
 app.command()(watch)
 app.command()(check)

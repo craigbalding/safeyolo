@@ -199,27 +199,28 @@ def init(
         "--providers", "-p",
         help="Comma-separated providers (openai,anthropic,github,google,aws)",
     ),
-    sandbox: bool = typer.Option(
+    try_mode: bool = typer.Option(
         False,
-        "--sandbox", "-s",
-        help="Enable Sandbox Mode with network isolation (recommended)",
+        "--try",
+        help="Use Try Mode (bypassable) instead of Sandbox Mode",
     ),
 ) -> None:
     """Initialize SafeYolo configuration.
 
     Creates configuration files for the SafeYolo security proxy. By default,
-    runs an interactive wizard to select API providers.
+    uses Sandbox Mode with network isolation where bypass attempts fail.
 
-    Use --sandbox to enable Sandbox Mode, which creates a Docker network that
-    forces all agent traffic through SafeYolo (bypass attempts fail).
+    Use --try for evaluation without network isolation (agents can bypass).
 
     Examples:
 
-        safeyolo init                    # Interactive setup (Try Mode)
-        safeyolo init --sandbox          # Sandbox Mode with network isolation
+        safeyolo init                    # Sandbox Mode (secure default)
+        safeyolo init --try              # Try Mode for evaluation
         safeyolo init --no-interactive   # Use defaults
         safeyolo init -p openai,anthropic  # Specify providers
     """
+    # Sandbox is default, --try disables it
+    sandbox = not try_mode
 
     # Determine target directory
     if directory:

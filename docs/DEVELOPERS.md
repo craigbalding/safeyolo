@@ -85,6 +85,7 @@ safeyolo/
 │   │       ├── admin.py      # check, mode, policies, test
 │   │       ├── agent.py      # agent subcommands
 │   │       ├── cert.py       # certificate management
+│   │       ├── init.py       # init command
 │   │       ├── lifecycle.py  # start, stop, status
 │   │       ├── logs.py       # log viewing
 │   │       ├── sandbox.py    # sandbox subcommands
@@ -186,6 +187,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | PUT | `/admin/policy/baseline` | Update baseline policy |
 | POST | `/admin/policy/baseline/approve` | Add credential approval |
 | GET | `/admin/policy/task/{task_id}` | Get task-specific policy |
+| PUT | `/admin/policy/task/{task_id}` | Create/update task policy |
 | GET | `/admin/budgets` | Get budget usage stats |
 | POST | `/admin/budgets/reset` | Reset budget counters |
 | POST | `/admin/policy/validate` | Validate YAML policy content |
@@ -298,8 +300,8 @@ addons = [MyAddon()]
 
 **Install dev dependencies and pre-commit hooks:**
 ```bash
-# Install dev dependencies
-pip install -r requirements/dev.txt
+# Install dev dependencies (using uv)
+uv sync --group dev
 
 # Install pre-commit hooks (runs linting before each commit)
 pre-commit install
@@ -321,7 +323,7 @@ The CLI is a standard Python package using Typer.
 **Setup:**
 ```bash
 cd cli
-pip install -e ".[dev]"
+uv sync --group dev
 ```
 
 **Add a new command:**
@@ -359,8 +361,8 @@ pytest tests/test_http_integration.py -v
 
 **Run tests locally:**
 ```bash
-pip install -r requirements/dev.txt
-pytest tests/ -v  # Unit tests pass; integration tests need running proxy
+uv sync --group dev
+uv run pytest tests/ -v  # Unit tests pass; integration tests need running proxy
 ```
 
 **Run CLI tests:**
@@ -399,7 +401,7 @@ All contributions must:
 
 - **Pass syntax checks** - CI runs `python -m py_compile` on all Python files
 - **Pass tests** - All existing tests must pass, new features need tests
-- **Support Python 3.11+** - Addons tested on 3.11, 3.12, 3.13
+- **Support Python 3.12+** - Addons tested on 3.12, 3.13
 - **Use type hints** - For function signatures (not enforced by CI yet, but preferred)
 - **Follow existing patterns** - Match the style of surrounding code
 

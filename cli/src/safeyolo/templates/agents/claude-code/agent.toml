@@ -1,0 +1,54 @@
+schema_version = 1
+
+[agent]
+name = "claude-code"
+description = "Claude Code - Anthropic's AI coding assistant"
+
+[install]
+mise = "npm:@anthropic-ai/claude-code"
+binary = "claude"
+
+[run]
+command = "claude"
+args = []
+auto_args = ["--dangerously-skip-permissions"]  # Only with: safeyolo agent run --auto
+
+[auth]
+env_var = "ANTHROPIC_API_KEY"
+oauth_file = ".claude/.credentials.json"
+setup_hint = "Set ANTHROPIC_API_KEY in .env"
+
+[host]
+config_dirs = [".claude"]
+config_files = [".claude.json"]
+
+[docker]
+env = {}
+
+[instructions]
+content = """
+# SafeYolo Container Environment
+
+This is a sandboxed container with network isolation via SafeYolo proxy.
+
+## Installing Languages and Tools
+
+Use mise (not apt-get, npm -g, or pip install --user):
+
+  mise install go@latest
+  mise install python@3.12
+  mise install rust@latest
+  mise use -g npm:typescript
+
+List available versions: mise ls-remote python
+
+## What Won't Work
+
+- apt-get/apt (non-root container)
+- npm install -g (use mise instead)
+- pip install --user (use mise python, then pip in venv)
+"""
+
+[instructions.injection]
+type = "system_file"
+path = "/etc/claude-code/CLAUDE.md"

@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Path to key isolation test results (from key-isolation-verifier container)
 KEY_ISOLATION_RESULTS_PATH = Path("/security-results/key-isolation.json")
 

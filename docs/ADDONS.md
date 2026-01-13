@@ -58,7 +58,7 @@ Unified policy engine using IAM-style vocabulary with **destination-first** cred
 
 *Addons (mitmproxy integration):*
 - `policy_engine.py` (~970 lines) - PolicyEngineAddon, mitmproxy integration
-- `policy_loader.py` (~320 lines) - File loading, watching, SIGHUP handling
+- `policy_loader.py` (~300 lines) - File loading, watching, hot reload
 - `budget_tracker.py` (~190 lines) - GCRA-based rate limiting state
 
 *PDP package (policy evaluation core):*
@@ -66,6 +66,7 @@ Unified policy engine using IAM-style vocabulary with **destination-first** cred
 - `pdp/core.py` (~650 lines) - PDPCore engine, evaluation logic
 - `pdp/client.py` (~530 lines) - PolicyClient interface (local/HTTP modes)
 - `pdp/admin_client.py` (~290 lines) - PDPAdminClient for management ops
+- `pdp/app.py` (~380 lines) - FastAPI adapter for running PDP as a service
 
 Addons use `get_policy_client()` to access the configured PolicyClient instance.
 
@@ -167,7 +168,7 @@ Maps client IPs to projects for per-project credential policy isolation.
 
 **Options:**
 ```bash
---set discovery_network=safeyolo-internal
+--set discovery_network=safeyolo_internal
 ```
 
 ---
@@ -454,18 +455,7 @@ permissions:
 - **Type-based:** When key rotation is expected (new keys auto-approved)
 - **HMAC-based:** When you want to approve only a specific credential (more secure for unknown types)
 
-**HMAC fingerprinting:** Credentials are never logged raw. First 16 chars of HMAC-SHA256 used for logging, policy matching, and temp allowlist.
-
-### Temp Allowlist
-
-For immediate one-off approvals (not persisted across restarts):
-
-```bash
-# Via admin API
-curl -X POST http://localhost:9090/plugins/credential-guard/allowlist \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"credential_prefix": "sk-abc", "host": "api.example.com", "ttl_seconds": 300}'
-```
+**HMAC fingerprinting:** Credentials are never logged raw. First 16 chars of HMAC-SHA256 used for logging and policy matching.
 
 ### Options
 
@@ -552,8 +542,7 @@ Per-domain statistics collection.
 
 **Access:**
 ```bash
-curl http://localhost:9090/stats    # JSON
-curl http://localhost:9090/metrics  # Prometheus
+curl http://localhost:9090/stats    # JSON (includes metrics)
 ```
 
 ---
@@ -577,20 +566,19 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 |--------|------|-------------|
 | GET | `/health` | Health check (no auth) |
 | GET | `/stats` | Aggregated addon stats |
-| GET | `/metrics` | Prometheus format |
 | GET | `/modes` | Current addon modes |
 | PUT | `/modes` | Set all addon modes |
+| GET | `/plugins/{addon}/mode` | Get specific addon mode |
 | PUT | `/plugins/{addon}/mode` | Set specific addon mode |
 | GET | `/admin/policy/baseline` | Read baseline policy |
 | PUT | `/admin/policy/baseline` | Update baseline policy |
 | POST | `/admin/policy/baseline/approve` | Add credential permission |
+| POST | `/admin/policy/validate` | Validate policy YAML |
 | GET | `/admin/policy/task/{id}` | Read task policy |
 | PUT | `/admin/policy/task/{id}` | Create/update task policy |
 | GET | `/admin/budgets` | Current budget usage |
 | POST | `/admin/budgets/reset` | Reset budget counters |
-| GET | `/plugins/credential-guard/allowlist` | List temp allowlist |
-| POST | `/plugins/credential-guard/allowlist` | Add temp allowlist entry |
-| DELETE | `/plugins/credential-guard/allowlist` | Clear temp allowlist |
+| GET | `/debug/addons` | Debug: list loaded addons |
 
 ### Mode Switching
 
@@ -650,16 +638,6 @@ curl -X POST http://localhost:9090/admin/budgets/reset \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"resource": "api.openai.com"}'
-```
-
-### Temp Allowlist
-
-For temporary one-off approvals (not persisted):
-```bash
-curl -X POST http://localhost:9090/plugins/credential-guard/allowlist \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"credential_prefix": "sk-abc", "host": "api.example.com", "ttl_seconds": 300}'
 ```
 
 ---

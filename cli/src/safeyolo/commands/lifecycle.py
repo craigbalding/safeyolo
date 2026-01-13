@@ -17,10 +17,21 @@ from ..config import (
     load_config,
     save_config,
 )
+from ..discovery import (
+    DiscoveryError,
+    clear_services,
+    regenerate_services,
+    validate_services,
+)
 from ..docker import (
+    DOCKER_BUILD_TIMEOUT_SECONDS,
+    BuildError,
     DockerError,
     check_docker,
+    copy_ca_cert_to_host,
     get_container_status,
+    get_repo_root,
+    image_exists,
     is_running,
     wait_for_healthy,
     write_compose_file,
@@ -91,7 +102,7 @@ def _bootstrap_config(config_dir: Path) -> None:
     rules_path.write_text(json.dumps(DEFAULT_RULES, indent=2))
 
     # Write docker-compose.yml
-    write_compose_file(secure=False)
+    write_compose_file(sandbox=False)
 
 
 def start(
@@ -133,18 +144,46 @@ def start(
 
     console.print("[bold]Starting SafeYolo...[/bold]")
 
+    # Check if image exists, show build message if auto-building
+    config = load_config()
+    image_name = config["proxy"].get("image", "safeyolo:latest")
+    if not pull and not image_exists(image_name):
+        console.print(f"[yellow]Image '{image_name}' not found locally.[/yellow]")
+        repo_root = get_repo_root()
+        if repo_root:
+            console.print(f"Building from {repo_root}...")
+        else:
+            console.print("[red]Cannot auto-build: repo not found.[/red]")
+            console.print("Either build manually or pull the image:")
+            console.print("  docker pull safeyolo:latest")
+            raise typer.Exit(1)
+
     try:
         docker_start(detach=True, pull=pull)
-    except DockerError as e:
-        console.print(f"[red]Failed to start:[/red] {e}")
+    except BuildError as err:
+        console.print(f"[red]Build failed:[/red] {err}")
+        raise typer.Exit(1)
+    except DockerError as err:
+        console.print(f"[red]Failed to start:[/red] {err}")
         raise typer.Exit(1)
 
     if wait:
         console.print("Waiting for healthy status...", end=" ")
         if wait_for_healthy(timeout=30):
             console.print("[green]ready![/green]")
+            # Copy CA cert to host for diagnostic access
+            if copy_ca_cert_to_host():
+                console.print("  CA certificate copied to host")
         else:
             console.print("[yellow]timeout (may still be starting)[/yellow]")
+
+    # Regenerate service mappings from actual Docker state
+    try:
+        path, count = regenerate_services()
+        if count > 0:
+            console.print(f"[green]Registered {count} service(s)[/green]")
+    except DiscoveryError as err:
+        console.print(f"[yellow]Warning: Could not update service mappings: {err}[/yellow]")
 
     # Show connection info
     if first_run:
@@ -183,6 +222,10 @@ def stop() -> None:
     try:
         docker_stop()
         console.print("[green]Stopped.[/green]")
+
+        # Mark service mappings as stale
+        clear_services()
+
     except DockerError as e:
         console.print(f"[red]Failed to stop:[/red] {e}")
         raise typer.Exit(1)
@@ -271,3 +314,98 @@ def status() -> None:
 
     except APIError:
         pass  # Already shown API unavailable above
+
+    # Validate service mappings
+    console.print()
+    issues = validate_services()
+    if not issues:
+        console.print("[green]Service mappings: valid[/green]")
+    else:
+        console.print("[yellow]Service mapping issues:[/yellow]")
+        for issue in issues:
+            console.print(f"  - {issue}")
+        console.print("\nRun [bold]safeyolo sync[/bold] to fix.")
+
+
+def sync() -> None:
+    """Regenerate service mappings from current Docker state.
+
+    Use this after manual docker-compose operations or to verify
+    the current mapping is accurate.
+
+    Examples:
+
+        safeyolo sync
+    """
+    if not is_running():
+        console.print("[yellow]SafeYolo is not running.[/yellow]")
+        console.print("Run [bold]safeyolo start[/bold] first.")
+        raise typer.Exit(1)
+
+    try:
+        path, count = regenerate_services()
+        console.print(f"[green]Synchronized {count} service(s)[/green]")
+        console.print(f"  Written to: {path}")
+    except DiscoveryError as err:
+        console.print(f"[red]Failed to sync:[/red] {err}")
+        raise typer.Exit(1)
+
+
+def build(
+    tag: str = typer.Option(
+        "safeyolo:latest",
+        "--tag", "-t",
+        help="Image tag to build",
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Build without using cache",
+    ),
+) -> None:
+    """Build SafeYolo Docker image from source.
+
+    Builds the image from the local repo checkout. Use this when developing
+    SafeYolo or when you don't want to pull from a registry.
+
+    Examples:
+
+        safeyolo build
+        safeyolo build --tag safeyolo:dev
+        safeyolo build --no-cache
+    """
+    if not check_docker():
+        console.print("[red]Docker is not available.[/red]")
+        raise typer.Exit(1)
+
+    repo_root = get_repo_root()
+    if not repo_root:
+        console.print("[red]Cannot find safeyolo repo root.[/red]")
+        console.print(
+            "The 'build' command requires a local repo checkout.\n"
+            "If installed from PyPI, pull the image instead:\n"
+            "  docker pull safeyolo:latest"
+        )
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Building {tag}...[/bold]")
+    console.print(f"Context: {repo_root}")
+
+    import subprocess
+
+    args = ["docker", "build", "-t", tag, str(repo_root)]
+    if no_cache:
+        args.insert(2, "--no-cache")
+
+    try:
+        subprocess.run(args, check=True, timeout=DOCKER_BUILD_TIMEOUT_SECONDS)
+        console.print(f"[green]Built {tag}[/green]")
+    except subprocess.TimeoutExpired:
+        console.print(
+            f"[red]Build timed out after {DOCKER_BUILD_TIMEOUT_SECONDS}s[/red]\n"
+            "Check network connectivity or try: docker build --no-cache"
+        )
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as err:
+        console.print(f"[red]Build failed with exit code {err.returncode}[/red]")
+        raise typer.Exit(1)

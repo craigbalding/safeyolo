@@ -66,6 +66,43 @@ safeyolo status
 | `safeyolo mode <addon>` | Show mode for specific addon |
 | `safeyolo mode <addon> <warn\|block>` | Set addon mode |
 
+### Agent Management (Sandbox Mode)
+
+Sandbox Mode runs AI agents in isolated Docker containers with all traffic routed through SafeYolo.
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo agent add <name> <template> <folder>` | Add an agent and run it |
+| `safeyolo agent run <name> [folder]` | Run an existing agent |
+| `safeyolo agent list` | List templates and configured agents |
+| `safeyolo agent shell <name>` | Open shell in running agent |
+| `safeyolo agent remove <name>` | Remove an agent |
+
+**Quick start:**
+
+```bash
+# Initialize with sandbox mode
+safeyolo init --sandbox
+
+# Add and run a Claude Code agent
+safeyolo agent add myproject claude-code ~/code
+
+# Later, just run by name
+safeyolo agent run myproject
+
+# Or run with a different folder
+safeyolo agent run myproject ~/other-project
+```
+
+**Available templates:**
+- `claude-code` - Anthropic's Claude Code CLI
+- `openai-codex` - OpenAI Codex CLI
+
+**Notes:**
+- Agent names must be lowercase alphanumeric with hyphens (hostname rules)
+- `add` is idempotent: running it twice just runs the existing agent
+- Use `--no-run` with `add` to create config without running
+
 ## Configuration
 
 Configuration is stored in `./safeyolo/` (project-specific) or `~/.safeyolo/` (global).

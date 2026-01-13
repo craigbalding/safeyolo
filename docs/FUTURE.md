@@ -86,7 +86,7 @@ credential_guard:
 
 **Problem**: `OLLAMA_URL` and other env vars are only read at container startup. Changing `.env` requires container restart.
 
-**Goal**: Addons should re-read `/app/.env` on SIGHUP or file change, allowing runtime config updates without restart.
+**Goal**: Addons should re-read `/app/.env` on file change, allowing runtime config updates without restart.
 
 **Work required**:
 - [ ] Add `.env` file watcher (similar to policy/rate_limits watchers)

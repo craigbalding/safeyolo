@@ -28,7 +28,7 @@ The generated template handles network isolation, CA certificate mounting, and p
 
 SafeYolo creates a Docker network marked `internal: true`:
 
-1. **safeyolo-internal** (`172.31.0.0/24`)
+1. **safeyolo_internal** (`172.31.0.0/24`)
    - No default gateway to internet
    - Agent containers live here
    - Direct connections get "no route to host"
@@ -38,7 +38,7 @@ SafeYolo creates a Docker network marked `internal: true`:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  safeyolo-internal (no internet)                            │
+│  safeyolo_internal (no internet)                            │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
 │  │  Agent       │  │  App         │  │  Worker      │      │
