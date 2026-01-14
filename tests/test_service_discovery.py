@@ -1,7 +1,7 @@
 """
-Tests for service_discovery.py - IP to project mapping with hot reload.
+Tests for service_discovery.py - IP to client mapping with hot reload.
 
-Tests dynamic service registry for project isolation.
+Tests dynamic service registry for client isolation.
 """
 
 import tempfile
@@ -18,9 +18,9 @@ class TestServiceEntry:
         """Test creating entry with exact IP."""
         from service_discovery import ServiceEntry
 
-        entry = ServiceEntry(name="my-service", project="my-project", ip="10.0.0.5")
+        entry = ServiceEntry(name="my-service", client="my-project", ip="10.0.0.5")
         assert entry.name == "my-service"
-        assert entry.project == "my-project"
+        assert entry.client == "my-project"
         assert entry.ip == "10.0.0.5"
         assert entry.ip_range is None
 
@@ -29,10 +29,10 @@ class TestServiceEntry:
         from service_discovery import ServiceEntry
 
         entry = ServiceEntry(
-            name="services", project="multi-project", ip_range="10.0.0.0/24"
+            name="services", client="multi-project", ip_range="10.0.0.0/24"
         )
         assert entry.name == "services"
-        assert entry.project == "multi-project"
+        assert entry.client == "multi-project"
         assert entry.ip is None
         assert entry.ip_range == "10.0.0.0/24"
 
@@ -47,13 +47,13 @@ class TestServiceDiscovery:
         discovery = ServiceDiscovery()
         assert discovery.name == "service-discovery"
 
-    def test_unknown_project_when_no_config(self):
-        """Test returns 'unknown' project when no config."""
+    def test_unknown_client_when_no_config(self):
+        """Test returns 'unknown' client when no config."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
-        project = discovery.get_project_for_ip("192.168.1.100")
-        assert project == "unknown"
+        client = discovery.get_client_for_ip("192.168.1.100")
+        assert client == "unknown"
 
 
 class TestServiceDiscoveryOptions:
@@ -104,10 +104,10 @@ class TestServiceDiscoveryLoading:
             config_path.write_text("""
 services:
   claude-agent:
-    project: my-project
+    client: my-project
     ip: 10.0.0.5
   other-agent:
-    project: other-project
+    client: other-project
     ip: 10.0.0.10
 """)
 
@@ -118,9 +118,9 @@ services:
             with patch.object(discovery, '_find_config', return_value=config_path):
                 discovery._load_config()
 
-            assert discovery.get_project_for_ip("10.0.0.5") == "my-project"
-            assert discovery.get_project_for_ip("10.0.0.10") == "other-project"
-            assert discovery.get_project_for_ip("10.0.0.99") == "unknown"
+            assert discovery.get_client_for_ip("10.0.0.5") == "my-project"
+            assert discovery.get_client_for_ip("10.0.0.10") == "other-project"
+            assert discovery.get_client_for_ip("10.0.0.99") == "unknown"
 
     def test_loads_ip_range_mapping(self):
         """Test loading IP range mappings from config."""
@@ -131,10 +131,10 @@ services:
             config_path.write_text("""
 services:
   dev-agents:
-    project: development
+    client: development
     ip_range: 10.0.1.0/24
   prod-agents:
-    project: production
+    client: production
     ip_range: 10.0.2.0/24
 """)
 
@@ -143,10 +143,10 @@ services:
             with patch.object(discovery, '_find_config', return_value=config_path):
                 discovery._load_config()
 
-            assert discovery.get_project_for_ip("10.0.1.50") == "development"
-            assert discovery.get_project_for_ip("10.0.1.255") == "development"
-            assert discovery.get_project_for_ip("10.0.2.1") == "production"
-            assert discovery.get_project_for_ip("10.0.3.1") == "unknown"
+            assert discovery.get_client_for_ip("10.0.1.50") == "development"
+            assert discovery.get_client_for_ip("10.0.1.255") == "development"
+            assert discovery.get_client_for_ip("10.0.2.1") == "production"
+            assert discovery.get_client_for_ip("10.0.3.1") == "unknown"
 
     def test_exact_ip_takes_precedence(self):
         """Test exact IP match takes precedence over range."""
@@ -157,10 +157,10 @@ services:
             config_path.write_text("""
 services:
   special-agent:
-    project: special
+    client: special
     ip: 10.0.1.5
   dev-agents:
-    project: development
+    client: development
     ip_range: 10.0.1.0/24
 """)
 
@@ -170,9 +170,9 @@ services:
                 discovery._load_config()
 
             # Exact IP should match special, not the range
-            assert discovery.get_project_for_ip("10.0.1.5") == "special"
+            assert discovery.get_client_for_ip("10.0.1.5") == "special"
             # Other IPs in range should match development
-            assert discovery.get_project_for_ip("10.0.1.10") == "development"
+            assert discovery.get_client_for_ip("10.0.1.10") == "development"
 
     def test_handles_missing_config(self):
         """Test graceful handling of missing config file."""
@@ -184,7 +184,7 @@ services:
             discovery._load_config()
 
         # Should work but return unknown for everything
-        assert discovery.get_project_for_ip("10.0.0.5") == "unknown"
+        assert discovery.get_client_for_ip("10.0.0.5") == "unknown"
 
     def test_handles_invalid_ip_range(self):
         """Test handling of invalid IP range in config."""
@@ -195,10 +195,10 @@ services:
             config_path.write_text("""
 services:
   good-service:
-    project: valid
+    client: valid
     ip: 10.0.0.5
   bad-service:
-    project: invalid
+    client: invalid
     ip_range: not-a-valid-range
 """)
 
@@ -209,7 +209,7 @@ services:
                 discovery._load_config()
 
             # Valid service should work
-            assert discovery.get_project_for_ip("10.0.0.5") == "valid"
+            assert discovery.get_client_for_ip("10.0.0.5") == "valid"
 
     def test_handles_invalid_client_ip(self):
         """Test handling of invalid client IP."""
@@ -217,8 +217,8 @@ services:
 
         discovery = ServiceDiscovery()
         # Should not raise, just return unknown
-        project = discovery.get_project_for_ip("not-an-ip")
-        assert project == "unknown"
+        client = discovery.get_client_for_ip("not-an-ip")
+        assert client == "unknown"
 
 
 class TestServiceDiscoveryStats:
@@ -233,10 +233,10 @@ class TestServiceDiscoveryStats:
             config_path.write_text("""
 services:
   my-service:
-    project: my-project
+    client: my-project
     ip: 10.0.0.5
   my-range:
-    project: range-project
+    client: range-project
     ip_range: 10.0.1.0/24
 """)
 
@@ -295,7 +295,7 @@ class TestServiceDiscoveryReload:
             config_path.write_text("""
 services:
   old-service:
-    project: old
+    client: old
     ip: 10.0.0.5
 """)
 
@@ -304,13 +304,13 @@ services:
             with patch.object(discovery, '_find_config', return_value=config_path):
                 discovery._load_config()
 
-            assert discovery.get_project_for_ip("10.0.0.5") == "old"
+            assert discovery.get_client_for_ip("10.0.0.5") == "old"
 
             # Update config
             config_path.write_text("""
 services:
   new-service:
-    project: new
+    client: new
     ip: 10.0.0.10
 """)
 
@@ -318,9 +318,9 @@ services:
                 discovery.reload()
 
             # Old mapping should be gone
-            assert discovery.get_project_for_ip("10.0.0.5") == "unknown"
+            assert discovery.get_client_for_ip("10.0.0.5") == "unknown"
             # New mapping should work
-            assert discovery.get_project_for_ip("10.0.0.10") == "new"
+            assert discovery.get_client_for_ip("10.0.0.10") == "new"
 
 
 class TestServiceDiscoveryStaleDetection:
@@ -335,7 +335,7 @@ class TestServiceDiscoveryStaleDetection:
             config_path.write_text("""# SafeYolo stopped - services.yaml is stale
 services:
   old-service:
-    project: old
+    client: old
     ip: 10.0.0.5
 """)
 
@@ -345,7 +345,7 @@ services:
                 discovery._load_config()
 
             # Stale file should result in no mappings
-            assert discovery.get_project_for_ip("10.0.0.5") == "unknown"
+            assert discovery.get_client_for_ip("10.0.0.5") == "unknown"
             assert discovery.get_stats()["services_count"] == 0
 
 
@@ -466,12 +466,12 @@ class TestServiceDiscoveryUnknownIPs:
         discovery = ServiceDiscovery()
 
         # First lookup should add to unknown set
-        discovery.get_project_for_ip("192.168.1.100")
+        discovery.get_client_for_ip("192.168.1.100")
         assert "192.168.1.100" in discovery._unknown_ips
 
         # Same IP shouldn't be re-added (set behavior)
         initial_count = len(discovery._unknown_ips)
-        discovery.get_project_for_ip("192.168.1.100")
+        discovery.get_client_for_ip("192.168.1.100")
         assert len(discovery._unknown_ips) == initial_count
 
     def test_unknown_ips_in_stats(self):
@@ -479,8 +479,8 @@ class TestServiceDiscoveryUnknownIPs:
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
-        discovery.get_project_for_ip("192.168.1.100")
-        discovery.get_project_for_ip("192.168.1.101")
+        discovery.get_client_for_ip("192.168.1.100")
+        discovery.get_client_for_ip("192.168.1.101")
 
         stats = discovery.get_stats()
         assert stats["unknown_ips_count"] == 2
@@ -494,7 +494,7 @@ class TestServiceDiscoveryUnknownIPs:
 
         # Add more than the cap
         for i in range(MAX_UNKNOWN_IPS_TRACKED + 100):
-            discovery.get_project_for_ip(f"10.0.{i // 256}.{i % 256}")
+            discovery.get_client_for_ip(f"10.0.{i // 256}.{i % 256}")
 
         # Should be capped
         assert len(discovery._unknown_ips) <= MAX_UNKNOWN_IPS_TRACKED
@@ -512,7 +512,7 @@ class TestServiceDiscoveryThreadSafety:
             config_path.write_text("""
 services:
   agent-1:
-    project: project-1
+    client: client-1
     ip: 10.0.0.1
 """)
 
@@ -527,8 +527,8 @@ services:
             def reader():
                 try:
                     for _ in range(100):
-                        project = discovery.get_project_for_ip("10.0.0.1")
-                        results.append(project)
+                        client = discovery.get_client_for_ip("10.0.0.1")
+                        results.append(client)
                 except Exception as e:
                     errors.append(e)
 
@@ -538,7 +538,7 @@ services:
                         config_path.write_text(f"""
 services:
   agent-{i}:
-    project: project-{i}
+    client: client-{i}
     ip: 10.0.0.1
 """)
                         with patch.object(discovery, '_find_config', return_value=config_path):
@@ -557,8 +557,8 @@ services:
 
             # No errors should occur
             assert len(errors) == 0
-            # All results should be valid project names
-            assert all(r.startswith("project-") or r == "unknown" for r in results)
+            # All results should be valid client IDs
+            assert all(r.startswith("client-") or r == "unknown" for r in results)
 
     def test_concurrent_unknown_ip_tracking(self):
         """Test that concurrent unknown IP lookups respect the cap strictly.
@@ -580,7 +580,7 @@ services:
             try:
                 for i in range(200):
                     # Each thread uses different IPs to maximize contention
-                    discovery.get_project_for_ip(f"10.{thread_id}.{i // 256}.{i % 256}")
+                    discovery.get_client_for_ip(f"10.{thread_id}.{i // 256}.{i % 256}")
             except Exception as e:
                 errors.append(e)
 

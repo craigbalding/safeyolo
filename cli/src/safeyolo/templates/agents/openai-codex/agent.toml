@@ -11,7 +11,8 @@ binary = "codex"
 [run]
 command = "codex"
 args = []
-auto_args = ["--full-auto"]  # Only with: safeyolo agent run --auto
+auto_args = ["--full-auto"]  # Only with: safeyolo agent run --yolo
+help_arg = "--help"  # For: safeyolo agent help <name>
 
 [auth]
 env_var = "OPENAI_API_KEY"
@@ -19,7 +20,7 @@ oauth_file = ".codex/auth.json"
 setup_hint = "Run: codex login --device-auth"
 
 [host]
-config_dirs = [".codex"]
+config_dirs = [".codex", ".safeyolo-hooks"]
 config_files = []
 
 [docker]

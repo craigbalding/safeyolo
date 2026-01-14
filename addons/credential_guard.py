@@ -273,7 +273,7 @@ class CredentialGuard(SecurityAddon):
             from service_discovery import get_service_discovery
             sd = get_service_discovery()
             if sd:
-                return sd.get_project_for_ip(client_ip)
+                return sd.get_client_for_ip(client_ip)
         except Exception as e:
             log.debug(f"Service discovery lookup failed: {type(e).__name__}: {e}")
         return "default"

@@ -15,45 +15,25 @@ from safeyolo.config import (
 
 
 class TestFindConfigDir:
-    """Tests for find_config_dir()."""
+    """Tests for find_config_dir().
 
-    def test_finds_project_dir(self, tmp_path, monkeypatch):
-        """Finds ./safeyolo/ directory."""
-        config_dir = tmp_path / "safeyolo"
+    Note: find_config_dir() returns CONFIG_DIR if it exists, None otherwise.
+    It uses the fixed path ~/.safeyolo (no project-local search).
+    """
+
+    def test_returns_config_dir_if_exists(self, tmp_path, monkeypatch):
+        """Returns config dir when directory exists."""
+        config_dir = tmp_path / ".safeyolo"
         config_dir.mkdir()
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = find_config_dir()
         assert result == config_dir
 
-    def test_finds_global_dir(self, tmp_path, monkeypatch):
-        """Finds ~/.safeyolo/ directory."""
-        global_dir = tmp_path / ".safeyolo"
-        global_dir.mkdir()
-        other_dir = tmp_path / "some_other_dir"
-        other_dir.mkdir()
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.chdir(other_dir)
-
-        result = find_config_dir()
-        assert result == global_dir
-
-    def test_prefers_project_over_global(self, tmp_path, monkeypatch):
-        """Prefers ./safeyolo/ over ~/.safeyolo/."""
-        project_dir = tmp_path / "safeyolo"
-        project_dir.mkdir()
-        global_dir = tmp_path / ".safeyolo"
-        global_dir.mkdir()
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.chdir(tmp_path)
-
-        result = find_config_dir()
-        assert result == project_dir
-
     def test_returns_none_if_missing(self, tmp_path, monkeypatch):
-        """Returns None if no config directory exists."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        """Returns None if config dir doesn't exist."""
+        config_dir = tmp_path / ".safeyolo"  # Not created
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = find_config_dir()
         assert result is None
@@ -70,8 +50,9 @@ class TestLoadConfig:
 
     def test_returns_defaults_if_missing(self, tmp_path, monkeypatch):
         """Returns DEFAULT_CONFIG if no config file."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"
+        config_dir.mkdir()
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
         config = load_config()
         assert config == DEFAULT_CONFIG
 
@@ -103,13 +84,12 @@ class TestSaveConfig:
 
     def test_creates_parent_dirs(self, tmp_path, monkeypatch):
         """Creates parent directories if needed."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"  # Not created yet
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
         config = {"version": 1}
         save_config(config)
 
-        # Default is now ~/.safeyolo/
-        assert (tmp_path / ".safeyolo" / "config.yaml").exists()
+        assert (config_dir / "config.yaml").exists()
 
 
 class TestDeepMerge:
@@ -143,7 +123,11 @@ class TestGetAdminToken:
     def test_from_env_var(self, monkeypatch, tmp_path):
         """Returns token from environment variable."""
         monkeypatch.setenv("SAFEYOLO_ADMIN_TOKEN", "env-token-123")
-        monkeypatch.chdir(tmp_path)
+        # Still need to isolate config dir to avoid reading real token file
+        config_dir = tmp_path / ".safeyolo"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = get_admin_token()
         assert result == "env-token-123"
@@ -169,8 +153,10 @@ class TestGetAdminToken:
     def test_returns_none_if_missing(self, tmp_path, monkeypatch):
         """Returns None if no token configured."""
         monkeypatch.delenv("SAFEYOLO_ADMIN_TOKEN", raising=False)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = get_admin_token()
         assert result is None
@@ -186,9 +172,8 @@ class TestGetConfigPath:
 
     def test_get_config_dir_creates(self, tmp_path, monkeypatch):
         """get_config_dir creates directory when create=True."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        config_dir = get_config_dir(create=True)
-        assert config_dir.exists()
-        # Default is now ~/.safeyolo/
-        assert config_dir.name == ".safeyolo"
+        config_dir = tmp_path / ".safeyolo"  # Not created yet
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+        result = get_config_dir(create=True)
+        assert result.exists()
+        assert result == config_dir

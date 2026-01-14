@@ -28,6 +28,7 @@ The last argument (`~/code`) is where your project files live on the host - the 
 - **All traffic routes through SafeYolo proxy** - no direct internet access
 - **API keys are protected** - credentials only reach their intended hosts
 - **Everything is logged** - JSONL audit trail for review
+- **Dev-ready containers** - agents install their own toolchains via mise — no root needed
 
 ## Key Features
 

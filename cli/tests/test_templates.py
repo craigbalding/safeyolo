@@ -328,8 +328,8 @@ class TestRenderTemplate:
         content = env_path.read_text()
         assert f"SAFEYOLO_UID={os.getuid()}" in content
         assert f"SAFEYOLO_GID={os.getgid()}" in content
-        assert f"SAFEYOLO_PROJECT_DIR={project_dir}" in content
-        assert "SAFEYOLO_PROJECT_NAME=myproject" in content
+        assert f"USER_DIR={project_dir}" in content
+        assert "USER_DIRNAME=myproject" in content
 
     def test_creates_compose_file(self, tmp_config_dir, tmp_path):
         """Creates docker-compose.yml from template."""

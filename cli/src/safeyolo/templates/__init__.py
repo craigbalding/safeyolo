@@ -154,13 +154,13 @@ def render_template(
         "instructions_arg": agent_config.instructions.arg_name,
     }
 
-    # Generate .env file with host UID/GID and default project
-    project_name = Path(project_dir).name
+    # Generate .env file with host UID/GID and user's folder
+    user_dirname = Path(project_dir).name
     env_content = (
         f"SAFEYOLO_UID={os.getuid()}\n"
         f"SAFEYOLO_GID={os.getgid()}\n"
-        f"SAFEYOLO_PROJECT_DIR={project_dir}\n"
-        f"SAFEYOLO_PROJECT_NAME={project_name}\n"
+        f"USER_DIR={project_dir}\n"
+        f"USER_DIRNAME={user_dirname}\n"
     )
     env_path = output_dir / ".env"
     env_path.write_text(env_content)

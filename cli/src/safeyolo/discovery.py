@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-from .config import INTERNAL_NETWORK_NAME, find_config_dir, get_services_path
+from .config import COMPOSE_NETWORK_NAME, get_services_path
 
 log = logging.getLogger("safeyolo.discovery")
 
@@ -38,22 +38,16 @@ class DiscoveryError(Exception):
 
 
 def get_compose_network_name() -> str:
-    """Get the full Docker network name including compose project prefix.
+    """Get the full Docker network name.
 
-    Docker Compose V2 prefixes network names with the project name using
-    underscore separator (e.g., "safeyolo_internal"). Project name defaults
-    to the directory containing docker-compose.yml.
+    Returns the fixed network name used by SafeYolo's docker-compose setup.
+    Network is created with explicit project name (-p safeyolo) so the name
+    is always "safeyolo_internal" regardless of config directory location.
 
     Returns:
-        Full network name, e.g., "safeyolo_internal"
+        Full network name: "safeyolo_internal"
     """
-    config_dir = find_config_dir()
-    if config_dir:
-        # Project name is the config directory name (e.g., "safeyolo")
-        project_name = config_dir.name
-        return f"{project_name}_{INTERNAL_NETWORK_NAME}"
-    # Fallback to unprefixed name
-    return INTERNAL_NETWORK_NAME
+    return COMPOSE_NETWORK_NAME
 
 
 def query_network_containers(network_name: str | None = None) -> dict[str, str]:
@@ -144,10 +138,10 @@ def write_services_yaml(container_ips: dict[str, str], path: Path | None = None)
         if name == "safeyolo":
             continue  # Proxy doesn't need to be in the mapping
 
-        # Container name = project name (hyphenated names used directly)
+        # Container name = client ID (hyphenated names used directly)
         services[name] = {
             "ip": ip,
-            "project": name,
+            "client": name,
         }
 
     # Write atomically to avoid race with file watcher
@@ -248,15 +242,14 @@ def validate_services() -> list[str]:
         return issues
 
     # Check for stale entries (in yaml but not running)
-    # Container name = project name (no mapping needed)
-    for project, entry in services.items():
+    for name, entry in services.items():
         expected_ip = entry.get("ip")
-        actual_ip = actual.get(project)
+        actual_ip = actual.get(name)
 
         if not actual_ip:
-            issues.append(f"Stale: {project} ({expected_ip}) - container not running")
+            issues.append(f"Stale: {name} ({expected_ip}) - container not running")
         elif actual_ip != expected_ip:
-            issues.append(f"Mismatch: {project} expected {expected_ip}, actual {actual_ip}")
+            issues.append(f"Mismatch: {name} expected {expected_ip}, actual {actual_ip}")
 
     # Check for unmapped containers (running but not in yaml)
     for container_name, ip in actual.items():
@@ -269,10 +262,10 @@ def validate_services() -> list[str]:
 
 
 def get_service_mapping() -> dict[str, str]:
-    """Get current IP to project mapping from services.yaml.
+    """Get current IP to client mapping from services.yaml.
 
     Returns:
-        Dict mapping IP address to project name.
+        Dict mapping IP address to client ID.
         Example: {"172.20.0.3": "claude-code"}
     """
     path = get_services_path()
@@ -287,4 +280,4 @@ def get_service_mapping() -> dict[str, str]:
         return {}
 
     services = config.get("services", {})
-    return {entry["ip"]: project for project, entry in services.items() if "ip" in entry}
+    return {entry["ip"]: name for name, entry in services.items() if "ip" in entry}

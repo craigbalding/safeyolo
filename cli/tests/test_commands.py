@@ -96,8 +96,8 @@ class TestLogsCommand:
 
     def test_no_config_exits(self, cli_runner, tmp_path, monkeypatch):
         """Exits with error if no config directory."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"  # Not created
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = cli_runner.invoke(app, ["logs"])
         assert result.exit_code == 1
@@ -144,8 +144,8 @@ class TestStatusCommand:
 
     def test_no_config_shows_warning(self, cli_runner, tmp_path, monkeypatch):
         """Shows warning when no config."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"  # Not created
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = cli_runner.invoke(app, ["status"])
         assert "no safeyolo configuration" in result.output.lower()
@@ -208,14 +208,14 @@ class TestCertShowCommand:
 
     def test_no_config_shows_warning(self, cli_runner, tmp_path, monkeypatch):
         """Shows warning when no config."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"  # Not created
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = cli_runner.invoke(app, ["cert", "show"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "start" in result.output.lower()
 
-    def test_shows_cert_not_generated(self, cli_runner, tmp_config_dir):
+    def test_shows_cert_not_generated(self, cli_runner, tmp_config_dir, mock_docker_available):
         """Shows message when cert not yet generated."""
         result = cli_runner.invoke(app, ["cert", "show"])
         assert result.exit_code == 0
@@ -238,8 +238,8 @@ class TestCheckCommand:
 
     def test_no_config_fails(self, cli_runner, tmp_path, monkeypatch):
         """Fails when no config directory."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"  # Not created
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
 
         result = cli_runner.invoke(app, ["check"])
         assert result.exit_code == 1
@@ -259,12 +259,13 @@ class TestStartCommand:
 
     def test_auto_bootstraps_on_first_run(self, cli_runner, tmp_path, monkeypatch, mock_docker_available):
         """Auto-creates config on first run."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        config_dir = tmp_path / ".safeyolo"  # Not created yet
+        logs_dir = tmp_path / ".local" / "state" / "safeyolo"
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+        monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
 
         result = cli_runner.invoke(app, ["start", "--no-wait"])
         # Should bootstrap and attempt to start (may fail on docker but config should exist)
-        config_dir = tmp_path / ".safeyolo"
         assert config_dir.exists() or "First run" in result.output or "Starting" in result.output
 
     def test_starts_with_docker(self, cli_runner, tmp_config_dir, mock_docker_available):
@@ -288,29 +289,26 @@ class TestStopCommand:
         assert len(stop_calls) > 0
 
 
+def _docker_container_running() -> bool:
+    """Check if safeyolo container is running (safe for import time)."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-q", "-f", "name=safeyolo"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 class TestSmokeIntegration:
     """Smoke test with real container (skipped if not running)."""
 
-    @pytest.fixture
-    def container_running(self):
-        """Check if safeyolo container is running."""
-        try:
-            result = subprocess.run(
-                ["docker", "ps", "-q", "-f", "name=safeyolo"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return bool(result.stdout.strip())
-        except Exception:
-            return False
-
     @pytest.mark.skipif(
-        not subprocess.run(
-            ["docker", "ps", "-q", "-f", "name=safeyolo"],
-            capture_output=True,
-        ).stdout.strip(),
-        reason="SafeYolo container not running",
+        not _docker_container_running(),
+        reason="SafeYolo container not running or Docker not available",
     )
     def test_check_with_real_container(self, cli_runner):
         """Runs check against real running container."""

@@ -1,7 +1,7 @@
 """
 service_discovery.py - Dynamic service registry with hot reload
 
-Maps container IPs to project IDs for per-project credential policies.
+Maps container IPs to client IDs for per-client credential policies.
 Watches services.yaml for changes and automatically reloads.
 
 Canonical path: /app/data/services.yaml (in container)
@@ -13,7 +13,7 @@ File format:
     services:
       agent-name:
         ip: "172.20.0.3"
-        project: "agent-name"
+        client: "agent-name"
 """
 
 import logging
@@ -39,7 +39,7 @@ class ServiceEntry:
     """A registered service."""
 
     name: str
-    project: str
+    client: str
     ip: str | None = None
     ip_range: str | None = None
 
@@ -48,7 +48,7 @@ class ServiceDiscovery:
     """
     Dynamic service registry with file watching.
 
-    Reads services.yaml to map client IPs to project IDs.
+    Reads services.yaml to map client IPs to client IDs.
     Automatically reloads when the file changes.
     """
 
@@ -57,8 +57,8 @@ class ServiceDiscovery:
     def __init__(self):
         self.network = "safeyolo_internal"
         self._services: dict[str, ServiceEntry] = {}  # name -> entry
-        self._ip_to_project: dict[str, str] = {}  # exact IP -> project
-        self._ranges: list[tuple] = []  # (ip_network, project)
+        self._ip_to_client: dict[str, str] = {}  # exact IP -> client
+        self._ranges: list[tuple] = []  # (ip_network, client)
         self._last_load: float = 0
         self._config_path: Path | None = None
         self._file_mtime: float = 0
@@ -66,7 +66,7 @@ class ServiceDiscovery:
         self._stop_watching = False
         self._watch_interval: int = DEFAULT_WATCH_INTERVAL_SECONDS
         self._unknown_ips: set[str] = set()  # Track unknown IPs for diagnostics
-        self._lock = Lock()  # Protects _services, _ip_to_project, _ranges during reload
+        self._lock = Lock()  # Protects _services, _ip_to_client, _ranges during reload
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -142,7 +142,7 @@ class ServiceDiscovery:
                 if self._services:
                     log.warning("services.yaml deleted, clearing mappings")
                     self._services = {}
-                    self._ip_to_project = {}
+                    self._ip_to_client = {}
                     self._ranges = []
             return False
 
@@ -179,17 +179,17 @@ class ServiceDiscovery:
         """
         # Build new mappings in local variables (no lock needed yet)
         new_services: dict[str, ServiceEntry] = {}
-        new_ip_to_project: dict[str, str] = {}
+        new_ip_to_client: dict[str, str] = {}
         new_ranges: list[tuple] = []
 
         # Use pre-set _config_path (e.g., for testing) or find one
         config_path = self._config_path or self._find_config()
         if not config_path:
-            log.debug("No services.yaml found - using 'unknown' project for all requests")
+            log.debug("No services.yaml found - using 'unknown' client for all requests")
             # Atomically clear under lock
             with self._lock:
                 self._services = new_services
-                self._ip_to_project = new_ip_to_project
+                self._ip_to_client = new_ip_to_client
                 self._ranges = new_ranges
             return
 
@@ -210,7 +210,7 @@ class ServiceDiscovery:
                 # Clear mappings - don't use stale data
                 with self._lock:
                     self._services = new_services
-                    self._ip_to_project = new_ip_to_project
+                    self._ip_to_client = new_ip_to_client
                     self._ranges = new_ranges
                 return
 
@@ -218,31 +218,31 @@ class ServiceDiscovery:
 
             services = config.get("services", {})
             for name, entry in services.items():
-                project = entry.get("project", name)
+                client = entry.get("client", name)
 
                 # Exact IP mapping
                 if "ip" in entry:
                     ip = entry["ip"]
-                    new_ip_to_project[ip] = project
-                    new_services[name] = ServiceEntry(name=name, project=project, ip=ip)
-                    log.debug(f"Registered: {ip} -> {project}")
+                    new_ip_to_client[ip] = client
+                    new_services[name] = ServiceEntry(name=name, client=client, ip=ip)
+                    log.debug(f"Registered: {ip} -> {client}")
 
                 # IP range mapping
                 elif "ip_range" in entry:
                     try:
                         network = ip_network(entry["ip_range"], strict=False)
-                        new_ranges.append((network, project))
+                        new_ranges.append((network, client))
                         new_services[name] = ServiceEntry(
-                            name=name, project=project, ip_range=entry["ip_range"]
+                            name=name, client=client, ip_range=entry["ip_range"]
                         )
-                        log.debug(f"Registered: {entry['ip_range']} -> {project}")
+                        log.debug(f"Registered: {entry['ip_range']} -> {client}")
                     except ValueError as e:
                         log.warning(f"Invalid IP range for {name}: {e}")
 
             # Atomically swap in new mappings
             with self._lock:
                 self._services = new_services
-                self._ip_to_project = new_ip_to_project
+                self._ip_to_client = new_ip_to_client
                 self._ranges = new_ranges
 
             self._last_load = time.time()
@@ -252,30 +252,30 @@ class ServiceDiscovery:
             log.warning(f"Failed to load {config_path}: {type(e).__name__}: {e}")
             # On error, keep existing mappings (don't clear)
 
-    def get_project_for_ip(self, ip: str) -> str:
-        """Get project ID for a client IP.
+    def get_client_for_ip(self, ip: str) -> str:
+        """Get client ID for an IP address.
 
         Thread-safe: reads mappings under lock.
 
         Returns:
-            Project name if IP is mapped, otherwise "unknown".
+            Client ID if IP is mapped, otherwise "unknown".
             Policy should explicitly handle "unknown" principals.
         """
         # Take a snapshot under lock to avoid races with reload
         with self._lock:
-            ip_to_project = self._ip_to_project
+            ip_to_client = self._ip_to_client
             ranges = self._ranges
 
         # Check exact IP match first (no lock needed - we have a snapshot)
-        if ip in ip_to_project:
-            return ip_to_project[ip]
+        if ip in ip_to_client:
+            return ip_to_client[ip]
 
         # Check IP ranges
         try:
-            client_ip = ip_address(ip)
-            for network, project in ranges:
-                if client_ip in network:
-                    return project
+            addr = ip_address(ip)
+            for network, client in ranges:
+                if addr in network:
+                    return client
         except ValueError:
             pass  # Invalid IP format, fall through to unknown
 
@@ -307,7 +307,7 @@ class ServiceDiscovery:
         # Snapshot under lock
         with self._lock:
             services_snapshot = dict(self._services)
-            ip_count = len(self._ip_to_project)
+            ip_count = len(self._ip_to_client)
             range_count = len(self._ranges)
 
         return {
@@ -322,7 +322,7 @@ class ServiceDiscovery:
             "watch_interval": self._watch_interval,
             "services": {
                 name: {
-                    "project": entry.project,
+                    "client": entry.client,
                     "ip": entry.ip,
                     "ip_range": entry.ip_range,
                 }

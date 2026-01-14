@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -122,15 +123,44 @@ def _validate_instance_name(name: str) -> None:
         raise typer.Exit(1)
 
 
+def _load_agent_metadata(name: str) -> dict:
+    """Load agent metadata from .safeyolo.json."""
+    metadata_file = get_agents_dir() / name / ".safeyolo.json"
+    if metadata_file.exists():
+        try:
+            return json.loads(metadata_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _get_agent_binary(metadata: dict) -> str | None:
+    """Get the agent binary name from template config."""
+    template_name = metadata.get("template")
+    if not template_name:
+        return None
+    try:
+        agent_config = get_agent_config(template_name)
+        return agent_config.install.binary
+    except TemplateError:
+        return None
+
+
 def _run_agent(
     name: str,
     folder_override: str | None = None,
     yolo: bool = False,
     dangerously_allow_unowned: bool = False,
+    agent_args: list[str] | None = None,
+    skip_default_args: bool = False,
 ) -> int:
     """Run an agent container. Returns exit code.
 
     Shared logic used by both `add` (auto-run) and `run` commands.
+
+    Args:
+        agent_args: Extra arguments to pass to the agent CLI (after --)
+        skip_default_args: If True, ignore user_default_args even if no agent_args
     """
     agent_dir = get_agents_dir() / name
     compose_file = agent_dir / "docker-compose.yml"
@@ -139,6 +169,10 @@ def _run_agent(
         console.print(f"[red]Agent not found: {name}[/red]")
         console.print("Run [bold]safeyolo agent add <name> <template> <folder>[/bold] first.")
         raise typer.Exit(1)
+
+    # Load metadata for user_default_args and binary name
+    metadata = _load_agent_metadata(name)
+    binary = _get_agent_binary(metadata)
 
     # Check SafeYolo is running
     if not is_running():
@@ -182,14 +216,36 @@ def _run_agent(
             console.print(f"[red]Folder not found: {folder_path}[/red]")
             raise typer.Exit(1)
         _check_project_ownership(folder_path, dangerously_allow_unowned)
-        cmd.extend(["-e", f"SAFEYOLO_PROJECT_DIR={folder_path}"])
-        cmd.extend(["-e", f"SAFEYOLO_PROJECT_NAME={folder_path.name}"])
+        cmd.extend(["-e", f"USER_DIR={folder_path}"])
+        cmd.extend(["-e", f"USER_DIRNAME={folder_path.name}"])
     if yolo:
         cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
     cmd.append(service_name)
 
+    # Add agent-specific args (passthrough or defaults)
+    # Must prepend binary name since docker replaces CMD with these args
+    if agent_args:
+        if binary:
+            cmd.append(binary)
+        cmd.extend(agent_args)
+    elif not skip_default_args and metadata.get("user_default_args"):
+        if binary:
+            cmd.append(binary)
+        cmd.extend(metadata["user_default_args"])
+
     result = subprocess.run(cmd, cwd=agent_dir)
     return result.returncode
+
+
+def _parse_user_default_args(value: str | None) -> list[str] | None:
+    """Parse user_default_args string into list."""
+    if not value:
+        return None
+    try:
+        return shlex.split(value)
+    except ValueError:
+        # If shlex fails, fall back to simple split
+        return value.split()
 
 
 @agent_app.command()
@@ -221,6 +277,11 @@ def add(
         "--ephemeral",
         help="Don't persist config (credentials lost on container exit)",
     ),
+    user_default_args: str = typer.Option(
+        None,
+        "--user-default-args",
+        help="Default args to pass to agent CLI (e.g., '--continue')",
+    ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
         "--dangerously-allow-unowned",
@@ -237,6 +298,7 @@ def add(
         safeyolo agent add myproject claude-code .
         safeyolo agent add work claude-code ~/projects/myapp
         safeyolo agent add assistant openai-codex ~/code --no-run
+        safeyolo agent add boris claude-code . --user-default-args="--continue"
     """
     # Validate instance name (hostname rules)
     _validate_instance_name(name)
@@ -333,22 +395,27 @@ def add(
 
     # Write metadata file
     metadata = {"template": template, "folder": folder_str}
+    parsed_args = _parse_user_default_args(user_default_args)
+    if parsed_args:
+        metadata["user_default_args"] = parsed_args
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
 
     # Show created files
     for filepath in files:
         console.print(f"  [green]Created[/green] {filepath}")
 
-    console.print(
-        Panel(
-            f"[green]Agent '{name}' added![/green]\n\n"
-            f"Template: {template}\n"
-            f"Folder: {folder_str}\n"
-            f"Network: {get_compose_network_name()}\n"
-            f"Proxy: http://safeyolo:8080 (Docker DNS)",
-            title="Success",
-        )
-    )
+    panel_lines = [
+        f"[green]Agent '{name}' added![/green]\n",
+        f"Template: {template}",
+        f"Folder: {folder_str}",
+    ]
+    if parsed_args:
+        panel_lines.append(f"Default args: {' '.join(parsed_args)}")
+    panel_lines.extend([
+        f"Network: {get_compose_network_name()}",
+        "Proxy: http://safeyolo:8080 (Docker DNS)",
+    ])
+    console.print(Panel("\n".join(panel_lines), title="Success"))
 
     # Auto-run unless --no-run
     if not no_run:
@@ -449,14 +516,20 @@ def remove(
             log.debug(f"Service regeneration skipped: {type(err).__name__}: {err}")
 
 
-@agent_app.command()
+@agent_app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
 def run(
+    ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
-    folder: str = typer.Argument(
-        None, help="Override folder to mount (default: from agent add)"
+    folder: str = typer.Option(
+        None, "--folder", "-f", help="Override folder to mount (default: from agent add)"
     ),
     yolo: bool = typer.Option(
         False, "--yolo", help="Enable auto-accept mode (skips permission prompts)"
+    ),
+    fresh: bool = typer.Option(
+        False, "--fresh", help="Ignore user_default_args, start fresh session"
     ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
@@ -469,17 +542,32 @@ def run(
     Starts SafeYolo if not running, then launches the agent container.
     Use this as shorthand after initial 'agent add'.
 
+    Pass agent-specific flags after '--':
+
+        safeyolo agent run boris -- --continue
+        safeyolo agent run boris -- --resume my-session
+
+    If user_default_args is configured (via 'agent config'), those args
+    are used by default. Use --fresh to ignore them.
+
     Examples:
 
         safeyolo agent run myproject
-        safeyolo agent run myproject ~/other/folder
+        safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --yolo
+        safeyolo agent run myproject -- --continue
+        safeyolo agent run myproject --fresh
     """
+    # ctx.args contains everything after '--'
+    agent_args = ctx.args if ctx.args else None
+
     exit_code = _run_agent(
         name,
         folder_override=folder,
         yolo=yolo,
         dangerously_allow_unowned=dangerously_allow_unowned,
+        agent_args=agent_args,
+        skip_default_args=fresh,
     )
     raise typer.Exit(exit_code)
 
@@ -526,3 +614,107 @@ def shell(
     result = subprocess.run(cmd, cwd=agent_dir)
 
     raise typer.Exit(result.returncode)
+
+
+@agent_app.command()
+def config(
+    name: str = typer.Argument(..., help="Agent instance name"),
+    user_default_args: str = typer.Option(
+        None,
+        "--user-default-args",
+        help="Set default args for agent CLI (use '' to clear)",
+    ),
+    show: bool = typer.Option(
+        False,
+        "--show",
+        help="Show current configuration",
+    ),
+) -> None:
+    """View or update agent configuration.
+
+    Examples:
+
+        safeyolo agent config boris --show
+        safeyolo agent config boris --user-default-args="--continue"
+        safeyolo agent config boris --user-default-args=""
+    """
+    agent_dir = get_agents_dir() / name
+    metadata_file = agent_dir / ".safeyolo.json"
+
+    if not metadata_file.exists():
+        console.print(f"[red]Agent not found: {name}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        metadata = json.loads(metadata_file.read_text())
+    except (json.JSONDecodeError, OSError) as err:
+        console.print(f"[red]Failed to read agent config:[/red] {type(err).__name__}: {err}")
+        raise typer.Exit(1)
+
+    if show or user_default_args is None:
+        # Show current config
+        table = Table(title=f"Agent: {name}")
+        table.add_column("Setting", style="bold")
+        table.add_column("Value")
+        table.add_row("Template", metadata.get("template", "?"))
+        table.add_row("Folder", metadata.get("folder", "?"))
+        current_args = metadata.get("user_default_args")
+        if current_args:
+            table.add_row("Default args", " ".join(current_args))
+        else:
+            table.add_row("Default args", "[dim]not set[/dim]")
+        console.print(table)
+        return
+
+    # Update user_default_args
+    if user_default_args == "":
+        # Clear the setting
+        if "user_default_args" in metadata:
+            del metadata["user_default_args"]
+        console.print(f"[green]Cleared user_default_args for {name}[/green]")
+    else:
+        parsed_args = _parse_user_default_args(user_default_args)
+        if parsed_args:
+            metadata["user_default_args"] = parsed_args
+            console.print(f"[green]Set user_default_args for {name}:[/green] {' '.join(parsed_args)}")
+        else:
+            console.print("[yellow]No args provided[/yellow]")
+            return
+
+    metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
+
+
+@agent_app.command(name="help")
+def agent_help(
+    name: str = typer.Argument(..., help="Agent instance name"),
+) -> None:
+    """Show agent CLI help.
+
+    Runs the agent's --help command inside the container to show available flags.
+    Use 'safeyolo agent shell <name>' to experiment with other flags interactively.
+
+    Examples:
+
+        safeyolo agent help boris
+    """
+    # Use passthrough with --help (or configured help_arg)
+    metadata = _load_agent_metadata(name)
+    template_name = metadata.get("template")
+
+    help_arg = "--help"
+    if template_name:
+        try:
+            agent_config = get_agent_config(template_name)
+            help_arg = agent_config.run.help_arg
+        except TemplateError:
+            pass  # Optional - continue with default --help if template lookup fails
+
+    # Parse help_arg in case it has multiple parts
+    help_args = help_arg.split()
+
+    exit_code = _run_agent(name, agent_args=help_args, skip_default_args=True)
+
+    # Suggest shell for experimentation
+    console.print(f"\n[dim]To experiment with flags: safeyolo agent shell {name}[/dim]")
+
+    raise typer.Exit(exit_code)

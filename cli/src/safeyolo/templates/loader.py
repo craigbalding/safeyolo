@@ -20,6 +20,7 @@ class RunConfig:
     command: str  # e.g., "codex"
     args: list[str] = field(default_factory=list)  # Always included
     auto_args: list[str] = field(default_factory=list)  # Only with --auto flag
+    help_arg: str = "--help"  # How to invoke help (for safeyolo agent help)
 
     @property
     def full_command(self) -> str:
@@ -140,6 +141,7 @@ def load_agent_config(agent_dir: Path) -> AgentConfig:
             command=run.get("command", ""),
             args=run.get("args", []),
             auto_args=run.get("auto_args", []),
+            help_arg=run.get("help_arg", "--help"),
         ),
         auth=AuthConfig(
             env_var=auth.get("env_var", ""),

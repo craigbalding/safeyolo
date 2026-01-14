@@ -62,4 +62,8 @@ RUN printf '%s\n' \
     && cp /usr/local/bin/apt-get /usr/local/bin/dnf \
     && cp /usr/local/bin/apt-get /usr/local/bin/apk
 
+# SafeYolo init script - does setup then exec's to agent binary
+COPY safeyolo-init.sh /usr/local/bin/safeyolo-init
+RUN chmod +x /usr/local/bin/safeyolo-init
+
 CMD ["bash"]
