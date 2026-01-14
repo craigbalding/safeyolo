@@ -54,8 +54,12 @@ If you want to follow along (or be an early tester), star the repo and watch rel
 ## Quick Start (v1 preview)
 
 ```bash
-# Install CLI
+# Install CLI (when published)
 pipx install safeyolo
+
+# Or install from source (works now)
+git clone https://github.com/craigbalding/safeyolo.git
+cd safeyolo && uv pip install -e cli/
 
 # Start proxy (auto-configures on first run)
 safeyolo start
@@ -96,7 +100,7 @@ Try Mode uses per-process environment variables to route traffic through SafeYol
 
 ```bash
 safeyolo start
-eval $(safeyolo cert env)
+eval "$(safeyolo cert env)"
 # Your agent now goes through SafeYolo
 ```
 
@@ -372,7 +376,6 @@ SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons a
 ## Files
 
 ```
-safeyolo/
 ├── addons/              # mitmproxy addons (sensors)
 │   ├── base.py               # SecurityAddon base class
 │   ├── utils.py              # Shared utilities (logging, blocking responses)
@@ -392,7 +395,8 @@ safeyolo/
 │   ├── client.py             # PolicyClient interface (local/HTTP)
 │   ├── admin_client.py       # PDPAdminClient for management ops
 │   └── app.py                # FastAPI service (optional)
-├── cli/                 # safeyolo CLI package
+├── cli/                 # safeyolo CLI (uv workspace member)
+│   └── src/safeyolo/         # CLI package
 ├── config/              # Default configurations
 │   └── baseline.yaml         # Default policy
 ├── contrib/             # Example integrations
