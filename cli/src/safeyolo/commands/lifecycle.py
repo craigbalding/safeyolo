@@ -1,6 +1,7 @@
 """Container lifecycle commands: start, stop, status."""
 
 import json
+import os
 import secrets
 from pathlib import Path
 
@@ -122,9 +123,18 @@ def start(
         "--wait/--no-wait",
         help="Wait for healthy status",
     ),
+    headless: bool = typer.Option(
+        False,
+        "--headless",
+        help="Run without TUI (mitmdump instead of mitmproxy)",
+    ),
 ) -> None:
     """Start SafeYolo proxy container."""
     first_run = False
+
+    # Set headless env var (passthrough to container via compose)
+    if headless:
+        os.environ["SAFEYOLO_HEADLESS"] = "true"
 
     # Check Docker first
     if not check_docker():
