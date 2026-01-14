@@ -13,7 +13,7 @@
 ```bash
 # Install from source
 git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo && uv pip install -e cli/
+cd safeyolo/cli && uv tool install -e .
 
 # Initialize and start the proxy
 safeyolo init

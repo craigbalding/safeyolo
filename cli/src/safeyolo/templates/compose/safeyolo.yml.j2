@@ -60,6 +60,7 @@ services:
 {% endif %}
     environment:
       - SAFEYOLO_BLOCK=true
+      - SAFEYOLO_HEADLESS=${SAFEYOLO_HEADLESS:-}
       - CERT_DIR=/certs-private
       - PUBLIC_CERT_DIR=/certs-public
     restart: unless-stopped
