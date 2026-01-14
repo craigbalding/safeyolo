@@ -14,7 +14,6 @@ Usage:
     mitmdump -s addons/credential_guard.py --set credguard_block=true
 """
 
-import json
 import logging
 import sys
 from pathlib import Path
@@ -22,7 +21,6 @@ from typing import Optional
 
 from base import SecurityAddon
 from detection import (
-    DEFAULT_RULES,
     CredentialRule,
     analyze_headers,
     detect_credential_type,
@@ -198,10 +196,10 @@ class CredentialGuard(SecurityAddon):
         self.hmac_secret: bytes = b""
         self.violations_total = 0
         self.violations_by_type: dict[str, int] = {}
+        self._last_policy_hash: str = ""
 
     def load(self, loader):
         """Register mitmproxy options."""
-        loader.add_option("credguard_rules", Optional[str], None, "Path to rules JSON")
         loader.add_option("credguard_block", bool, True, "Block violations (default: true)")
         loader.add_option("credguard_scan_urls", bool, False, "Scan URLs for credentials")
         loader.add_option("credguard_scan_bodies", bool, False, "Scan request bodies")
@@ -211,8 +209,6 @@ class CredentialGuard(SecurityAddon):
         """Handle configuration updates."""
         if not self.config:
             self._load_config()
-        if "credguard_rules" in updates:
-            self._load_rules()
 
     def _load_config(self):
         """Load configuration files."""
@@ -221,28 +217,47 @@ class CredentialGuard(SecurityAddon):
         self.safe_headers_config = load_config_file(config_dir / "safe_headers.yaml")
         self.hmac_secret = load_hmac_secret(Path("/app/data/hmac_secret"))
 
-    def _load_rules(self):
-        """Load credential rules."""
-        rules_path = ctx.options.credguard_rules
-        if rules_path and Path(rules_path).exists():
+    def _load_rules_from_policy(self, config: dict):
+        """Load credential rules from policy configuration.
+
+        Args:
+            config: Sensor config dict with credential_rules
+        """
+        raw_rules = config.get("credential_rules", [])
+        self.rules = []
+
+        for r in raw_rules:
             try:
-                with open(rules_path) as f:
-                    data = json.load(f)
-                self.rules = [
-                    CredentialRule(
-                        name=r["name"],
-                        patterns=r.get("patterns", [r.get("pattern")]),
-                        allowed_hosts=r.get("allowed_hosts", []),
-                        suggested_url=r.get("suggested_url", ""),
-                    )
-                    for r in data.get("credentials", [])
-                ]
-                log.info(f"Loaded {len(self.rules)} rules from {rules_path}")
+                self.rules.append(CredentialRule(
+                    name=r["name"],
+                    patterns=r.get("patterns", []),
+                    allowed_hosts=r.get("allowed_hosts", []),
+                    header_names=r.get("header_names", ["authorization", "x-api-key"]),
+                    suggested_url=r.get("suggested_url", ""),
+                ))
             except Exception as e:
-                log.error(f"Failed to load rules: {type(e).__name__}: {e}")
-                self.rules = list(DEFAULT_RULES)
+                log.warning(f"Invalid credential rule '{r.get('name', 'unknown')}': {type(e).__name__}: {e}")
+
+        if self.rules:
+            log.info(f"Loaded {len(self.rules)} credential rules from policy")
         else:
-            self.rules = list(DEFAULT_RULES)
+            log.warning("No credential rules loaded from policy")
+
+    def _maybe_reload_rules(self):
+        """Reload credential rules if policy changed."""
+        try:
+            client = get_policy_client()
+            config = client.get_sensor_config()
+            policy_hash = config.get("policy_hash", "")
+
+            if policy_hash != self._last_policy_hash:
+                self._load_rules_from_policy(config)
+                self._last_policy_hash = policy_hash
+        except RuntimeError:
+            # PolicyClient not configured yet - skip reload
+            pass
+        except Exception as e:
+            log.warning(f"Failed to reload credential rules: {type(e).__name__}: {e}")
 
     def should_block(self) -> bool:
         """Override base - uses credguard_block option."""
@@ -283,6 +298,9 @@ class CredentialGuard(SecurityAddon):
 
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
+        # Reload rules if policy changed
+        self._maybe_reload_rules()
+
         # Check if addon is disabled via policy
         if not self._is_enabled(flow):
             return

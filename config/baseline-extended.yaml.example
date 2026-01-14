@@ -1,0 +1,270 @@
+# SafeYolo Extended Policy Example
+#
+# Additional rate limits, domain overrides, and client configuration.
+# Copy sections you need into your baseline.yaml.
+#
+# This file contains settings removed from the default baseline to keep it
+# focused on common AI coding agent use cases.
+
+# =============================================================================
+# ADDITIONAL RATE LIMITS
+# =============================================================================
+# Add these to the permissions section of baseline.yaml
+
+permissions:
+  # ---------------------------------------------------------------------------
+  # Apify / MCP
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "api.apify.com/*"
+    effect: budget
+    budget: 1800  # 30 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "mcp.apify.com/*"
+    effect: budget
+    budget: 1800  # 30 rps
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Telegram
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "api.telegram.org/*"
+    effect: budget
+    budget: 1800  # 30 rps
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Telemetry (high volume)
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "statsig.anthropic.com/*"
+    effect: budget
+    budget: 12000  # 200 rps
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Sentry
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "*.sentry.io/*"
+    effect: budget
+    budget: 1200  # 20 rps
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Go module proxy storage (separate from generic googleapis)
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "storage.googleapis.com/proxy-golang-org/*"
+    effect: budget
+    budget: 300  # 5 rps
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Media sites (conservative)
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "*.youtube.com/*"
+    effect: budget
+    budget: 12  # 0.2 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "*.googlevideo.com/*"
+    effect: budget
+    budget: 30  # 0.5 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "*.soundcloud.com/*"
+    effect: budget
+    budget: 30  # 0.5 rps
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Podcast hosts (conservative)
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "*.podbean.com/*"
+    effect: budget
+    budget: 60  # 1 rps
+    tier: explicit
+
+  - action: network:request
+    resource: "*.libsyn.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.buzzsprout.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.anchor.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.spreaker.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.simplecast.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.transistor.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.captivate.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.megaphone.fm/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.omnycontent.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  - action: network:request
+    resource: "*.acast.com/*"
+    effect: budget
+    budget: 60
+    tier: explicit
+
+  # ---------------------------------------------------------------------------
+  # Ntfy notifications
+  # ---------------------------------------------------------------------------
+  - action: network:request
+    resource: "slim-horse.pikapod.net/*"
+    effect: budget
+    budget: 600  # 10 rps
+    tier: explicit
+
+# =============================================================================
+# ADDITIONAL ADDON CONFIGURATION
+# =============================================================================
+# Add these to the addons section of baseline.yaml
+
+addons:
+  yara_scanner:
+    enabled: true
+
+  prompt_injection:
+    enabled: false  # Requires classifier service
+
+  sse_streaming:
+    enabled: false  # Enabled per-domain below
+
+# =============================================================================
+# ADDITIONAL DOMAIN OVERRIDES
+# =============================================================================
+# Add these to the domains section of baseline.yaml
+
+domains:
+  # SSE/streaming endpoints
+  "ntfy.sh":
+    addons:
+      sse_streaming:
+        enabled: true
+        stream_json: true
+
+  "mcp.apify.com":
+    addons:
+      sse_streaming:
+        enabled: true
+
+  # LLM APIs - enable injection detection if available
+  "api.openai.com":
+    addons:
+      prompt_injection:
+        enabled: true
+        mode: dual
+
+  "api.anthropic.com":
+    addons:
+      prompt_injection:
+        enabled: true
+        mode: dual
+
+  # Telemetry - not LLM traffic
+  "statsig.anthropic.com":
+    bypass:
+      - prompt_injection
+
+  "*.datadoghq.com":
+    bypass:
+      - prompt_injection
+
+  "*.segment.io":
+    bypass:
+      - prompt_injection
+
+  # Package registries - skip heavy scanning
+  "pypi.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+  "registry.npmjs.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+  "proxy.golang.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+  "sum.golang.org":
+    bypass:
+      - yara_scanner
+      - prompt_injection
+
+# =============================================================================
+# CLIENT OVERRIDES
+# =============================================================================
+# Add this section to baseline.yaml
+
+clients:
+  # Admin clients bypass pattern scanning
+  "admin-*":
+    bypass:
+      - pattern_scanner
+
+  # Test clients bypass rate limiting (for integration tests)
+  "test-*":
+    addons:
+      network_guard:
+        enabled: false
+
+  # Unknown principals (source IP not in services.yaml)
+  # This happens when:
+  #   - A new container joined the network but 'safeyolo sync' wasn't run
+  #   - An external IP somehow reached the proxy
+  # Policy: Allow with logging - don't break things, but make it visible
+  # Run 'safeyolo sync' to map the IP to a project
+  "unknown":
+    log_level: warning
+    # Use default rate limits, don't bypass any security checks

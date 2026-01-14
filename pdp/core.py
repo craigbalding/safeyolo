@@ -376,6 +376,27 @@ class PDPCore:
         path = self._engine.baseline_path
         return str(path) if path else None
 
+    def get_sensor_config(self) -> dict:
+        """Get sensor configuration: credential rules and scan patterns.
+
+        Returns configuration needed by sensors/addons:
+        - credential_rules: For credential detection and routing
+        - scan_patterns: For content scanning
+        - policy_hash: For cache invalidation
+
+        Returns:
+            Dict with credential_rules, scan_patterns, and policy_hash
+        """
+        return {
+            "credential_rules": [
+                r.model_dump() for r in self._engine.get_credential_rules()
+            ],
+            "scan_patterns": [
+                p.model_dump() for p in self._engine.get_scan_patterns()
+            ],
+            "policy_hash": self.policy_hash,
+        }
+
     def update_baseline(self, policy_data: dict) -> dict:
         """
         Update the baseline policy.

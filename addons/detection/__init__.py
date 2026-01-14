@@ -1,8 +1,12 @@
 """
 detection - Pattern and credential detection logic
 
-Regex-based pattern matching for secrets, jailbreaks, and credentials.
 Pure functions suitable for testing and fuzzing.
+
+Modules:
+- credentials: Credential detection in headers, routing validation
+- patterns: User-configurable pattern scanning framework
+- matching: Host/resource pattern matching utilities
 """
 
 from .credentials import (
@@ -22,21 +26,16 @@ from .matching import (
     normalize_path,
 )
 from .patterns import (
-    BUILTIN_JAILBREAK_PATTERNS,
-    BUILTIN_SECRET_PATTERNS,
+    BUILTIN_PATTERN_SETS,
     PatternRule,
-    compile_rules,
+    compile_pattern,
+    load_builtin_set,
+    load_patterns_from_config,
     scan_text,
 )
 
 __all__ = [
-    # Patterns
-    "PatternRule",
-    "BUILTIN_SECRET_PATTERNS",
-    "BUILTIN_JAILBREAK_PATTERNS",
-    "compile_rules",
-    "scan_text",
-    # Credentials
+    # Credentials (header detection + routing)
     "CredentialRule",
     "DEFAULT_RULES",
     "is_safe_header",
@@ -45,7 +44,14 @@ __all__ = [
     "analyze_headers",
     "looks_like_secret",
     "calculate_shannon_entropy",
-    # Matching
+    # User-configurable patterns
+    "PatternRule",
+    "compile_pattern",
+    "load_patterns_from_config",
+    "load_builtin_set",
+    "BUILTIN_PATTERN_SETS",
+    "scan_text",
+    # Matching utilities
     "hmac_fingerprint",
     "matches_host_pattern",
     "matches_resource_pattern",

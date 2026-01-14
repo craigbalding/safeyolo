@@ -121,6 +121,25 @@ required: []
 addons:
   credential_guard:
     enabled: true
+
+credential_rules:
+  - name: openai
+    patterns:
+      - "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+      - "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts:
+      - api.openai.com
+  - name: anthropic
+    patterns:
+      - "sk-ant-api[a-zA-Z0-9-]{90,}"
+    allowed_hosts:
+      - api.anthropic.com
+  - name: github
+    patterns:
+      - "gh[ps]_[a-zA-Z0-9]{36}"
+    allowed_hosts:
+      - api.github.com
+      - github.com
 """)
 
     # Configure PolicyClient with the test baseline
@@ -136,8 +155,11 @@ addons:
 
 @pytest.fixture
 def credential_guard(policy_engine_initialized):
-    """Create a fresh CredentialGuard instance with proper mitmproxy context."""
-    from credential_guard import DEFAULT_RULES, CredentialGuard
+    """Create a fresh CredentialGuard instance with proper mitmproxy context.
+
+    Rules are loaded from PolicyClient via get_sensor_config() - no manual setup needed.
+    """
+    from credential_guard import CredentialGuard
     from mitmproxy.test import taddons
 
     addon = CredentialGuard()
@@ -149,14 +171,10 @@ def credential_guard(policy_engine_initialized):
         tctx.options.credguard_scan_urls = False
         tctx.options.credguard_scan_bodies = True  # Enable for integration tests
 
-        # Load rules
-        addon.rules = list(DEFAULT_RULES)
-
-        # v2 initialization
+        # Test initialization - rules load from PolicyClient.get_sensor_config()
         addon.hmac_secret = b"test-secret-for-hmac-fingerprinting-in-tests"
         addon.config = {}
         addon.safe_headers_config = {}
-        # default_policy already initialized in __init__
 
         yield addon  # Keep context alive during test
 

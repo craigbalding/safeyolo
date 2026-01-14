@@ -5,11 +5,9 @@ Command-line interface for managing the SafeYolo security proxy.
 ## Installation
 
 ```bash
-# Recommended: pipx (isolated environment)
-pipx install safeyolo
-
-# Alternative: pip
-pip install safeyolo
+# From source (PyPI package coming soon)
+git clone https://github.com/craigbalding/safeyolo.git
+cd safeyolo && uv pip install -e cli/
 ```
 
 ## Quick Start

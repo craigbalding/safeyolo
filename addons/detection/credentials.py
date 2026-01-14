@@ -1,5 +1,9 @@
 """
 credentials.py - Credential detection and header analysis
+
+Detects credentials in HTTP headers and validates routing to authorized
+destinations. Body/URL scanning for arbitrary patterns is handled by
+pattern_scanner.py.
 """
 
 import math

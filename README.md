@@ -6,407 +6,130 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11693/badge)](https://www.bestpractices.dev/projects/11693)
 [![CodeQL](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml)
 
-**Policy-based cyber hygiene for autonomous coding agents.**  
-Because your agent is helpful, fast… and occasionally over-enthusiastic on the internet.
+**Secure sandbox for AI coding agents.** Run Claude Code or Codex with network isolation, credential protection, and audit logging.
 
-SafeYolo is an **egress control plane** for AI coding agents: it sits between your agent and the internet, enforcing **per-agent policies** and producing an **audit trail** of outbound HTTP(S) calls.
-
-It’s built for the uncomfortable reality that agents can be too *resourceful* sometimes: if an agent hallucinates an API endpoint and leaks your key, or simply “tries something” that would harm your IP reputation (or overwhelm someone else's service), SafeYolo helps keep that enthusiasm **on-policy**.
-
-### What you get
-- **Controlled egress:** place limits on where your agent can wander and ensure your API keys in HTTP requests only reach approved hosts.
-- **Evidence by default:** JSONL logs with decisions + correlation (useful for reviews, audits, and “what happened?” moments).
-- **Two ways to run it:** a fast “try it” mode, and an enforced mode where bypass attempts fail.
-
-### Trust & Risk
-
-SafeYolo is a local TLS-intercepting proxy (MITM). It can only block leaked credentials if it can see where they're going.
-
-**What SafeYolo guarantees (by design):**
-- **Sandbox Mode reduces risk:** agent runs in unprivileged container with no direct internet; proxy is the only egress path
-- **Try Mode is for evaluation, not enforcement:** agents can bypass by unsetting proxy vars
-- **Evidence by default:** decisions logged locally (JSONL) for review
-
-**What SafeYolo does not claim:**
-- Not a malware sandbox; doesn't defend against determined adversaries
-- Doesn't "solve" prompt injection; constrains outbound behavior only
-
-**Supply-chain:** Don't trust a prebuilt image? Build locally from source.
-
-### How Does It Intercept Claude/Codex Traffic?
-
-- **Try Mode:** SafeYolo prints standard proxy + CA env vars; your agent respects them and routes HTTP(S) through the local proxy.
-- **Sandbox Mode:** Agent runs in Docker network with no direct internet access; SafeYolo proxy is the only route out.
-
-No "routing magic" - just standard proxying with explicit TLS inspection.
-
-### Who SafeYolo is for
-- **Builders using agentic tools** who want **simple egress control** without slowing down shipping.
-- **Security pros and platform engineers** who want a **low-friction, defensible sandbox** to try agents safely.
-- **Teams heading into security reviews** (ISO 27001 / SOC 2 / enterprise procurement) who need **policy + enforcement + evidence** for agent governance.
-
-## Status
-
-SafeYolo is **pre-v1** and currently undergoing breaking changes. The CLI and container image are **not published yet**, so the Quick Start commands below won’t work today.
-
-If you want to follow along (or be an early tester), star the repo and watch releases — v1 is the first “stable install” milestone.
-
-## Quick Start (v1 preview)
+## Quick Start
 
 ```bash
-# Install CLI (when published)
-pipx install safeyolo
-
-# Or install from source (works now)
+# Install from source
 git clone https://github.com/craigbalding/safeyolo.git
 cd safeyolo && uv pip install -e cli/
 
-# Start proxy (auto-configures on first run)
-safeyolo start
-
-# Print what would be set (safe, no changes)
-safeyolo cert env
-
-# If it looks right, apply it
-eval "$(safeyolo cert env)"
-
-# Run your agent
-claude
-```
-
-`safeyolo cert env` prints standard `HTTP_PROXY`/`HTTPS_PROXY` env vars - inspect them first if you don't like `eval`.
-
-That's it. SafeYolo is now inspecting all HTTPS traffic from your shell session.
-
-## Profiles
-
-| Profile | Setup | Typical use |
-|---------|-------|-------------|
-| **Managed** (default) | CLI handles everything | Most users |
-| **Integrated** | Bring your own config | Teams with existing Docker/K8s infrastructure |
-
-Both profiles support single or multiple agents with per-agent policies.
-
-## Deployment Modes
-
-| Mode | Enforcement | Use case |
-|------|-------------|----------|
-| **Try Mode** (default) | Per-process - agents can bypass | Fast proxy setup; bypassable |
-| **Sandbox Mode** | Enforced - bypass attempts fail | Container network isolation; proxy is the only egress path |
-
-### Try Mode (Default)
-
-Try Mode uses per-process environment variables to route traffic through SafeYolo. It's the fastest way to try things out:
-
-```bash
-safeyolo start
-eval "$(safeyolo cert env)"
-# Your agent now goes through SafeYolo
-```
-
-**Limitation:** In **Try Mode** agents may bypass the proxy in response to getting blocked - just as an eager intern might - by unsetting proxy variables or opening direct sockets. This is expected and not the intended deployment mode (use Sandbox Mode for that). Try Mode is for evaluating SafeYolo UX, not for security research or properly constraining agents.
-
-### Sandbox Mode (Enforced)
-
-In **Sandbox Mode**, SafeYolo runs your coding agent in an **unprivileged container** with **no direct internet access**. The only outbound path is through the **SafeYolo proxy container**, where outbound HTTP(S) traffic is **inspected, controlled, and logged**.
-
-This materially reduces host + network risk while keeping the workflow smooth — you get guardrails and evidence without turning every request into a permission-prompt-fest.
-
-Install SafeYolo on your laptop — or run it on a home server / VPS for an always-on “agent box” you can connect to remotely:
-
-```bash
-# Initialize (sandbox mode is the default)
+# Initialize and start the proxy
 safeyolo init
+safeyolo start
 
-# Add and run an agent (creates config + starts it)
+# Run Claude Code in a secure sandbox
 safeyolo agent add myproject claude-code ~/code
-
-# Later, just run by name
-safeyolo agent run myproject
 ```
 
-The agent container connects to an internal Docker network where SafeYolo is the only route to the internet. Bypass attempts fail rather than leak.
+The last argument (`~/code`) is where your project files live on the host - the agent works on these files but runs in an isolated container where:
 
-**Multi-agent:** Run multiple agents with separate policies:
+- **All traffic routes through SafeYolo proxy** - no direct internet access
+- **API keys are protected** - credentials only reach their intended hosts
+- **Everything is logged** - JSONL audit trail for review
+
+## Key Features
+
+- **One-command agent setup** - pre-configured templates for Claude Code and Codex
+- **Credential routing** - OpenAI keys only reach `api.openai.com`, Anthropic keys only reach `api.anthropic.com`
+- **Human-in-the-loop** - credentials to new destinations require one-time approval
+- **Rate limiting** - prevent runaway loops from harming your IP reputation
+- **Audit trail** - every request logged with decisions and correlation
+
+## Multiple Agents
+
+Run multiple agents with separate policies and isolated networks:
 
 ```bash
 safeyolo agent add work claude-code ~/work
 safeyolo agent add side-project claude-code ~/side-project
-safeyolo agent add codex-agent openai-codex ~/code
+safeyolo agent add codex openai-codex ~/experiments
 
 safeyolo agent run work       # Each agent gets isolated policy
-safeyolo agent run codex-agent
 ```
 
-See `safeyolo agent list` for available templates.
+## Templates
 
-**Authentication:** If you've already logged into your coding agent from your host (via `claude` or `codex`), your credentials are mounted into the container automatically. Otherwise, when the containerized agent starts up, you can choose how to authenticate following the agent providers first-run screen.
+| Template | Agent |
+|----------|-------|
+| `claude-code` | Anthropic Claude Code CLI |
+| `openai-codex` | OpenAI Codex CLI |
 
-## What SafeYolo Does
-
-Implements a policy layer to control agent network egress.  SafeYolo doesn’t try to detect why a request happened — it constrains what can happen next.  Features include:
-
-**Access control** - Allow/deny rules for network access. Restrict which domains agents can reach (allowlist or denylist mode).
-
-**Credential routing** - Help prevent credentials being sent to unexpected destinations. An OpenAI key to `api.openai.com.attacker.io` (e.g., from a bad link, agent mistake, or untrusted content) gets blocked with HTTP 428 + JSON payload (machine-readable, agent can retry after approval).
-
-**Smart detection** - Pattern matching for known providers (OpenAI, Anthropic, GitHub, etc.) plus entropy analysis may catch unknown secrets.
-
-**Human-in-the-loop** - Unknown credentials trigger approval prompts. Approve once, and it's remembered.
-
-**Rate limiting** - Per-domain limits prevent runaway loops from blacklisting your IP.
-
-**Audit trail** - Every request logged to JSONL with decision reasons and request correlation.
-
-For security principles, threat model, and vulnerability reporting, see [SECURITY.md](docs/SECURITY.md).
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `safeyolo start` | Start the proxy container (auto-configures on first run) |
-| `safeyolo stop` | Stop the proxy |
-| `safeyolo status` | Show health and stats |
-| `safeyolo cert env` | Print CA trust and proxy environment variables |
-| `safeyolo cert show` | Show CA cert location and fingerprint |
-| `safeyolo agent add <name> <template> <folder>` | Add and run an agent |
-| `safeyolo agent run <name> [folder]` | Run an existing agent |
-| `safeyolo agent list` | List templates and configured agents |
-| `safeyolo setup check` | Verify Docker access and prerequisites |
-| `safeyolo init` | Setup wizard (for customization) |
-| `safeyolo check` | Verify setup, proxy, and HTTPS working |
-| `safeyolo watch` | Monitor and approve credentials |
-| `safeyolo logs -f` | Follow logs in real-time |
-| `safeyolo mode` | View/change addon modes |
-| `safeyolo test` | Test request through proxy |
-
-## How It Works
-
-```
-                    ┌─────────────────────┐
-                    │      Internet       │
-                    │  api.openai.com     │
-                    │  api.anthropic.com  │
-                    │  github.com         │
-                    └──────────▲──────────┘
-                               │
-┌──────────────────────────────┼──────────────────────────────┐
-│                      Your Machine                           │
-│                              │                              │
-│  ┌────────────────┐  ┌───────┴───────────────────────────┐  │
-│  │  safeyolo CLI  │  │      SafeYolo Container (:8080)   │  │
-│  │                │  │                                   │  │
-│  │  start, watch, │  │  network_guard    - deny/limit?   │  │
-│  │  cert env      │  │  credential_guard - wrong dest?   │  │
-│  │                │  │  pattern_scanner  - secrets?      │  │
-│  └───────┬────────┘  │  circuit_breaker  - unhealthy?    │  │
-│          │           └───────────────────▲───────────────┘  │
-│          │ manages                       │                  │
-│          ▼                               │ all traffic      │
-│  ┌───────────────────────────────────────┼───────────────┐  │
-│  │  ~/.safeyolo/                         │               │  │
-│  │    config.yaml    ┌───────────────────┴────────────┐  │  │
-│  │    rules.json     │                                │  │  │
-│  │    policies/      │  ┌──────────┐  ┌──────────┐    │  │  │
-│  │    logs/          │  │  Claude  │  │  Codex   │ ...│  │  │
-│  │                   │  └──────────┘  └──────────┘    │  │  │
-│  │                   │         Agent Containers       │  │  │
-│  └───────────────────┴────────────────────────────────┴──┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+If you've already authenticated on your host (via `claude` or `codex`), credentials are mounted automatically.
 
 ## Approval Workflow
 
-When SafeYolo blocks a credential:
+When SafeYolo blocks a credential heading to an unexpected destination:
 
-1. Agent gets HTTP 428 with details (credential type, expected hosts)
-2. Event appears in `safeyolo watch`
-3. You approve or deny interactively
-4. Approved credentials are saved to policy file
-5. Subsequent requests pass through
+1. Agent gets HTTP 428 with details
+2. You see the event in `safeyolo watch`
+3. Approve or deny interactively
+4. Approved credentials are remembered
 
-```bash
+```
 $ safeyolo watch
-
-Watching: ~/.safeyolo/logs/safeyolo.jsonl
 
 ╭─ Credential Blocked 14:32:15 ─────────────────────────────╮
 │ Credential   anthropic                                    │
 │ Destination  api.example.com                              │
-│ Fingerprint  hmac:a1b2c3d4...                             │
 │ Reason       destination_mismatch                         │
 ├───────────────────────────────────────────────────────────┤
 │ [A]pprove | [D]eny | [S]kip                               │
 ╰───────────────────────────────────────────────────────────╯
-Action (a/d/s): a
-Approved - a1b2c3d4... -> api.example.com
 ```
 
-## Configuration
+---
 
-Configuration lives in `~/.safeyolo/` (auto-created on first `safeyolo start`).
+## Try Mode (Evaluation Only)
 
-```
-~/.safeyolo/
-├── config.yaml          # Proxy settings
-├── baseline.yaml        # Policy: credentials, rate limits, addon config
-├── certs/               # CA certificate for HTTPS inspection
-├── logs/                # Audit logs (safeyolo.jsonl)
-└── data/                # Admin token, HMAC secret
-```
-
-### baseline.yaml
-
-Unified policy using IAM-style vocabulary with **destination-first** credential routing:
-
-```yaml
-permissions:
-  # Destination-first: what credentials can access each endpoint
-  - action: credential:use
-    resource: "api.openai.com/*"      # destination pattern
-    effect: allow
-    condition:
-      credential: ["openai:*"]        # credential types allowed
-
-  - action: credential:use
-    resource: "api.anthropic.com/*"
-    effect: allow
-    condition:
-      credential: ["anthropic:*"]
-
-  # HMAC-based approval for specific unknown credentials
-  - action: credential:use
-    resource: "api.custom.com/*"
-    effect: allow
-    condition:
-      credential: ["hmac:a1b2c3d4"]   # specific credential fingerprint
-
-  # Unknown destinations require approval
-  - action: credential:use
-    resource: "*"
-    effect: prompt
-
-  # Rate limits (requests per minute)
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: budget
-    budget: 3000  # 50 rps
-
-required:
-  - credential_guard
-  - network_guard
-
-addons:
-  credential_guard: {enabled: true}
-  network_guard: {enabled: true}
-
-domains:
-  "*.internal":
-    bypass: [pattern_scanner]
-```
-
-**Credential condition formats:**
-- `openai:*` - type-based (any OpenAI key)
-- `hmac:a1b2c3d4` - HMAC-based (specific credential fingerprint)
-
-**Policy effects:**
-- `allow` - permit immediately
-- `deny` - block immediately
-- `prompt` - trigger human approval
-- `budget` - allow up to N requests/minute, then deny
-
-## Addon Modes
-
-Addons can run in `block` or `warn` mode:
+For quick evaluation without container isolation, you can run SafeYolo as a local proxy:
 
 ```bash
-# View all modes
-safeyolo mode
-
-# Set credential-guard to warn-only (for debugging)
-safeyolo mode credential-guard warn
-
-# Set back to blocking
-safeyolo mode credential-guard block
+safeyolo start
+eval "$(safeyolo cert env)"
+claude
 ```
+
+**Limitation:** In Try Mode, agents can bypass the proxy by unsetting environment variables or opening direct sockets. Use Sandbox Mode (the default) for actual protection.
+
+---
+
+## Trust Model
+
+SafeYolo is a TLS-intercepting proxy. It can only protect credentials it can see.
+
+**What SafeYolo provides:**
+- Sandbox Mode runs agents in unprivileged containers with no direct internet
+- No Docker socket in containers - all Docker operations run from the CLI on your host
+- Credentials are fingerprinted (HMAC), never logged in cleartext
+- Container security properties (non-root, no capabilities, seccomp) verified by [CI tests](tests/blackbox/)
+
+**What SafeYolo does NOT do:**
+- Defend against determined adversaries running arbitrary code
+- Detect or prevent prompt injection
+- Replace application-layer auth
+
+**Don't trust pre-built images?** Build locally: `docker build -t safeyolo .` - digest-pinned base, minimal deps, runs non-root. See [SECURITY.md](SECURITY.md) for full container security details.
+
+---
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - Docker
 
-## Threat Model
+## Status
 
-SafeYolo is designed to reduce accidental outbound risk from helpful-but-sloppy (and sometimes persistent) agentic automation, not to defend against a determined adversary running arbitrary code.
+SafeYolo is **pre-v1**. The CLI works from source (as shown above). PyPI package coming soon.
 
-**SafeYolo catches:**
-- Hallucinated endpoints (wrong host due to lost context: my-app.podhost.example → other-app.podhost.example)
-- Runaway agent loops that hammer 3rd party services
-- Lookalike domains and Unicode confusables (e.g., Cyrillic 'a' in `аpi.openai.com`)
-- Proxy bypass attempts (Sandbox Mode only - they fail rather than leak)
+## Documentation
 
-**SafeYolo does NOT:**
-- Detect or "solve" prompt injection
-- Replace application-layer authentication / authorization
-- Prevent non-proxied egress in Try Mode (agents can bypass by going direct)
-
-## Architecture
-
-SafeYolo runs mitmproxy with a layered chain of addons. Order matters - addons are loaded in strict sequence. See [docs/ADDONS.md](docs/ADDONS.md) for full reference.
-
-| Layer | Addon | Purpose | Default |
-|-------|-------|---------|---------|
-| 0 | admin_shield | Block proxy access to admin API | Always on |
-| 0 | request_id | Assigns unique ID for correlation | Always on |
-| 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
-| 0 | policy_engine | Unified policy evaluation and budgets | Always on |
-| 1 | network_guard | Access control + rate limiting | Block |
-| 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
-| 2 | credential_guard | Block credentials to wrong hosts | Block |
-| 2 | pattern_scanner | Regex scanning for secrets | Warn |
-| 3 | request_logger | JSONL audit logging | Always on |
-| 3 | metrics | Per-domain statistics | Always on |
-| 3 | admin_api | REST API on :9090 | Always on |
-
-**Layer 0 (Infrastructure):** Request IDs, policy engine, streaming support.
-**Layer 1 (Network Policy):** Access control, rate limiting, circuit breakers.
-**Layer 2 (Security Inspection):** Credential routing and content scanning.
-**Layer 3 (Observability):** Logging, metrics, admin API.
-
-## Files
-
-```
-├── addons/              # mitmproxy addons (sensors)
-│   ├── base.py               # SecurityAddon base class
-│   ├── utils.py              # Shared utilities (logging, blocking responses)
-│   ├── detection/            # Pure detection logic (no mitmproxy deps)
-│   │   ├── patterns.py       # PatternRule, compile_rules, scan_text
-│   │   ├── credentials.py    # CredentialRule, analyze_headers, entropy
-│   │   └── matching.py       # Host/resource pattern matching, HMAC
-│   ├── network_guard.py      # Access control + rate limiting + homoglyph
-│   ├── credential_guard.py   # Credential routing protection
-│   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
-│   ├── pattern_scanner.py    # Regex scanning for secrets
-│   ├── admin_api.py          # REST API on :9090
-│   └── ...
-├── pdp/                 # Policy Decision Point
-│   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
-│   ├── core.py               # PDPCore - policy evaluation engine
-│   ├── client.py             # PolicyClient interface (local/HTTP)
-│   ├── admin_client.py       # PDPAdminClient for management ops
-│   └── app.py                # FastAPI service (optional)
-├── cli/                 # safeyolo CLI (uv workspace member)
-│   └── src/safeyolo/         # CLI package
-├── config/              # Default configurations
-│   └── baseline.yaml         # Default policy
-├── contrib/             # Example integrations
-├── tests/               # Test suite
-└── docs/                # Additional documentation
-```
-
-## Contributing
-
-See [docs/DEVELOPERS.md](docs/DEVELOPERS.md) for architecture and integration guides.
+- [CLI Reference](cli/README.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Architecture & Addons](docs/ADDONS.md)
+- [Security & Threat Model](SECURITY.md)
+- [Contributing](docs/DEVELOPERS.md)
 
 ## License
 

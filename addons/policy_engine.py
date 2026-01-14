@@ -146,6 +146,37 @@ class Permission(BaseModel):
         return self
 
 
+class CredentialRule(BaseModel):
+    """Credential detection and routing rule.
+
+    Defines patterns for detecting credential types and where they can be routed.
+    Used by credential_guard for detection and policy evaluation for routing.
+    """
+    name: str  # e.g., "openai", "anthropic", "github"
+    patterns: list[str]  # Regex patterns for detection
+    allowed_hosts: list[str]  # Where this credential can go
+    header_names: list[str] = Field(
+        default_factory=lambda: ["authorization", "x-api-key"]
+    )
+    suggested_url: str = ""  # Hint for error messages
+
+
+class ScanPattern(BaseModel):
+    """Content scan pattern rule.
+
+    Defines patterns for detecting sensitive content in URLs, headers, or bodies.
+    Used by pattern_scanner to block or log matching content.
+    """
+    name: str
+    pattern: str  # Regex pattern
+    target: Literal["request", "response", "both"] = "both"
+    scope: list[Literal["url", "headers", "body"]] = Field(default_factory=lambda: ["body"])
+    action: Literal["block", "log"] = "log"
+    severity: Literal["low", "medium", "high", "critical"] = "medium"
+    message: str = ""
+    case_sensitive: bool = True
+
+
 class AddonConfig(BaseModel):
     """Configuration for a single addon."""
     enabled: bool = True
@@ -162,11 +193,27 @@ class DomainOverride(BaseModel):
 
 
 class UnifiedPolicy(BaseModel):
-    """Complete policy document."""
+    """Complete policy document.
+
+    Contains all security configuration for a baseline or task policy:
+    - permissions: IAM-style access control rules
+    - credential_rules: Credential detection patterns and allowed destinations
+    - scan_patterns: Content scanning patterns for URLs/headers/bodies
+    - budgets: Global rate limit caps
+    - addons: Addon-specific configuration
+    """
     metadata: PolicyMetadata = Field(default_factory=PolicyMetadata)
     permissions: list[Permission] = Field(default_factory=list)
     budgets: dict[str, int] = Field(default_factory=dict)  # Global budget caps
     required: list[str] = Field(default_factory=list)  # Addons that cannot be disabled
+
+    # Credential detection and routing
+    credential_rules: list[CredentialRule] = Field(default_factory=list)
+
+    # Content scanning patterns
+    scan_patterns: list[ScanPattern] = Field(default_factory=list)
+
+    # Addon and domain configuration
     addons: dict[str, AddonConfig] = Field(default_factory=dict)
     domains: dict[str, DomainOverride] = Field(default_factory=dict)
     clients: dict[str, DomainOverride] = Field(default_factory=dict)
@@ -291,6 +338,30 @@ class PolicyEngine:
     def clear_task_policy(self) -> None:
         """Clear active task policy."""
         self._loader.clear_task_policy()
+
+    def get_credential_rules(self) -> list[CredentialRule]:
+        """Get merged credential rules from baseline + task policy.
+
+        Returns credential detection and routing rules. Task rules are
+        appended to baseline (additive, not replacement).
+        """
+        rules = list(self._loader.baseline.credential_rules)
+        task = self._loader.task_policy
+        if task:
+            rules.extend(task.credential_rules)
+        return rules
+
+    def get_scan_patterns(self) -> list[ScanPattern]:
+        """Get merged scan patterns from baseline + task policy.
+
+        Returns content scanning patterns. Task patterns are appended
+        to baseline (additive, not replacement).
+        """
+        patterns = list(self._loader.baseline.scan_patterns)
+        task = self._loader.task_policy
+        if task:
+            patterns.extend(task.scan_patterns)
+        return patterns
 
     # -------------------------------------------------------------------------
     # Permission Evaluation
