@@ -26,9 +26,10 @@ def cli_runner():
 def tmp_safeyolo_env(tmp_path, monkeypatch):
     """Set up a complete safeyolo environment for integration tests."""
     # Create config directory structure
-    config_dir = tmp_path / "safeyolo"
+    config_dir = tmp_path / ".safeyolo"
     config_dir.mkdir()
-    (config_dir / "logs").mkdir()
+    logs_dir = tmp_path / ".local" / "state" / "safeyolo"
+    logs_dir.mkdir(parents=True)
     (config_dir / "certs").mkdir()
     (config_dir / "policies").mkdir()
     (config_dir / "data").mkdir()
@@ -45,8 +46,10 @@ def tmp_safeyolo_env(tmp_path, monkeypatch):
         "  image: safeyolo:test\n"
     )
 
-    # Change to parent so find_config_dir() finds ./safeyolo/
-    monkeypatch.chdir(tmp_path)
+    # Set environment variables - accessor functions check these at call time
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
+
     return config_dir
 
 
@@ -150,7 +153,7 @@ class TestLifecycleStop:
 services:
   claude-code:
     ip: 172.20.0.3
-    project: claude-code
+    client: claude-code
 """)
 
         # Mock docker commands
@@ -244,7 +247,7 @@ class TestLifecycleStatus:
 services:
   claude-code:
     ip: 172.20.0.3
-    project: claude-code
+    client: claude-code
 """)
 
         # Mock docker commands
@@ -289,7 +292,7 @@ services:
 services:
   old-agent:
     ip: 172.20.0.99
-    project: old-agent
+    client: old-agent
 """)
 
         # Mock docker commands - network has no old-agent
@@ -400,7 +403,7 @@ class TestAgentLifecycle:
 services:
   test-agent:
     ip: 172.20.0.5
-    project: test-agent
+    client: test-agent
 """)
 
         # Mock docker commands

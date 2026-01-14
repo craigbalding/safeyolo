@@ -12,7 +12,8 @@ from rich.table import Table
 
 from ..config import (
     DEFAULT_CONFIG,
-    PROJECT_DIR_NAME,
+    get_config_dir,
+    get_logs_dir,
     save_config,
 )
 from ..docker import check_docker, write_compose_file
@@ -179,11 +180,6 @@ def _generate_admin_token(config_dir: Path) -> str:
 
 
 def init(
-    directory: Path = typer.Option(
-        None,
-        "--dir", "-d",
-        help="Directory to initialize (default: ./safeyolo)",
-    ),
     force: bool = typer.Option(
         False,
         "--force", "-f",
@@ -222,12 +218,9 @@ def init(
     # Sandbox is default, --try disables it
     sandbox = not try_mode
 
-    # Determine target directory
-    if directory:
-        config_dir = directory
-    else:
-        config_dir = Path.cwd() / PROJECT_DIR_NAME
-
+    # Fixed paths
+    config_dir = get_config_dir()
+    logs_dir = get_logs_dir()
     config_path = config_dir / "config.yaml"
     rules_path = config_dir / "rules.json"
 
@@ -269,7 +262,7 @@ def init(
 
     # Create directories
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "logs").mkdir(exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "certs").mkdir(exist_ok=True)
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
@@ -317,7 +310,8 @@ def init(
             f"[green]SafeYolo initialized![/green]\n\n"
             f"Mode: {mode_label}\n"
             f"Protected providers: {', '.join(provider_names)}\n"
-            f"Configuration: {config_dir}\n\n"
+            f"Configuration: {config_dir}\n"
+            f"Logs: {logs_dir}\n\n"
             f"{next_steps}",
             title="Success",
         )

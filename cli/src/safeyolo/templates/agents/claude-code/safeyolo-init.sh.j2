@@ -1,0 +1,57 @@
+#!/bin/bash
+# SafeYolo agent init - setup then exec to agent binary
+# Args passed through: safeyolo-init claude --continue → mise exec -- claude --continue
+set -e
+
+# === Root setup phase ===
+mkdir -p /home/agent/.cache /home/agent/.config /home/agent/.local/share/mise /home/agent/.local/state
+chown -R "${SAFEYOLO_UID}:${SAFEYOLO_GID}" /home/agent
+chmod 700 /home/agent
+
+echo "agent:x:${SAFEYOLO_UID}:${SAFEYOLO_GID}::/home/agent:/bin/bash" >> /etc/passwd
+echo "agent:x:${SAFEYOLO_GID}:" >> /etc/group
+
+{% if instructions_type == "system_file" and instructions_path %}
+# Inject container instructions (system-level, read by agent)
+mkdir -p "$(dirname '{{ instructions_path }}')"
+cat > '{{ instructions_path }}' << 'SAFEYOLO_INSTRUCTIONS'
+{{ instructions_content }}
+SAFEYOLO_INSTRUCTIONS
+{% endif %}
+
+# === Install agent if needed (as non-root) ===
+setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups \
+  bash -c 'mise use -g {{ mise_package }}@latest' 2>/dev/null || true
+
+# === User init hook (runs as non-root, for custom tools/setup) ===
+if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
+  setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups \
+    bash /home/agent/.safeyolo-hooks/agent-init.sh
+fi
+
+# === Parse command ===
+CMD="$1"
+shift
+
+# YOLO mode args (safeyolo agent run --yolo)
+EXTRA_ARGS=""
+if [ -n "${SAFEYOLO_YOLO_MODE:-}" ]; then
+  EXTRA_ARGS="{{ agent.run.auto_args_str }}"
+  echo "[yolo mode: ${EXTRA_ARGS}]"
+fi
+
+# === Auth check ===
+if [ -f "/home/agent/{{ oauth_file }}" ] || [ -n "${​{{ auth_env_var }}:-}" ]; then
+  echo "(SafeYolo provides network isolation)"
+  echo "Shell: safeyolo agent shell {{ instance_name }}"
+  echo ""
+  # Drop privileges and exec agent with all args
+  exec setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups \
+    mise exec -- "$CMD" $EXTRA_ARGS "$@"
+else
+  echo "{{ setup_hint }}"
+  echo ""
+  echo "(SafeYolo provides network isolation)"
+  echo ""
+  exec setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups bash
+fi

@@ -183,15 +183,15 @@ class TestWriteServicesYaml:
 
         assert output_path.exists()
 
-    def test_uses_container_name_as_project(self, tmp_path):
-        """Uses container name directly as project name."""
+    def test_uses_container_name_as_client(self, tmp_path):
+        """Uses container name directly as client ID."""
         from safeyolo.discovery import write_services_yaml
 
         output_path = tmp_path / "services.yaml"
         write_services_yaml({"my-agent": "172.20.0.5"}, output_path)
 
         content = yaml.safe_load(output_path.read_text())
-        assert content["services"]["my-agent"]["project"] == "my-agent"
+        assert content["services"]["my-agent"]["client"] == "my-agent"
 
 
 class TestRegenerateServices:
@@ -276,7 +276,7 @@ class TestValidateServices:
 services:
   claude-code:
     ip: 172.20.0.3
-    project: claude-code
+    client: claude-code
 """)
         monkeypatch.setattr("safeyolo.discovery.get_services_path", lambda: services_path)
         monkeypatch.setattr("safeyolo.discovery.query_network_containers", lambda: {
@@ -296,7 +296,7 @@ services:
 services:
   old-agent:
     ip: 172.20.0.5
-    project: old-agent
+    client: old-agent
 """)
         monkeypatch.setattr("safeyolo.discovery.get_services_path", lambda: services_path)
         monkeypatch.setattr("safeyolo.discovery.query_network_containers", lambda: {
@@ -316,7 +316,7 @@ services:
 services:
   claude-code:
     ip: 172.20.0.99
-    project: claude-code
+    client: claude-code
 """)
         monkeypatch.setattr("safeyolo.discovery.get_services_path", lambda: services_path)
         monkeypatch.setattr("safeyolo.discovery.query_network_containers", lambda: {
@@ -368,8 +368,8 @@ services:
 class TestGetServiceMapping:
     """Tests for get_service_mapping()."""
 
-    def test_returns_ip_to_project_mapping(self, tmp_path, monkeypatch):
-        """Returns dict mapping IP to project name."""
+    def test_returns_ip_to_client_mapping(self, tmp_path, monkeypatch):
+        """Returns dict mapping IP to client ID."""
         from safeyolo.discovery import get_service_mapping
 
         services_path = tmp_path / "services.yaml"
@@ -377,10 +377,10 @@ class TestGetServiceMapping:
 services:
   claude-code:
     ip: 172.20.0.3
-    project: claude-code
+    client: claude-code
   openai-codex:
     ip: 172.20.0.4
-    project: openai-codex
+    client: openai-codex
 """)
         monkeypatch.setattr("safeyolo.discovery.get_services_path", lambda: services_path)
 

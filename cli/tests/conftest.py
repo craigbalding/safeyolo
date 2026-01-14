@@ -16,10 +16,16 @@ def cli_runner():
 
 @pytest.fixture
 def tmp_config_dir(tmp_path, monkeypatch):
-    """Create temp safeyolo config directory and set as cwd."""
-    config_dir = tmp_path / "safeyolo"
+    """Create temp safeyolo config directory with proper isolation.
+
+    Uses environment variable overrides (SAFEYOLO_CONFIG_DIR, SAFEYOLO_LOGS_DIR)
+    which are checked by the config accessor functions at call time.
+    This is the clean approach - no need to patch module-level constants.
+    """
+    config_dir = tmp_path / ".safeyolo"
     config_dir.mkdir()
-    (config_dir / "logs").mkdir()
+    logs_dir = tmp_path / ".local" / "state" / "safeyolo"
+    logs_dir.mkdir(parents=True)
     (config_dir / "certs").mkdir()
     (config_dir / "policies").mkdir()
     (config_dir / "data").mkdir()
@@ -33,8 +39,10 @@ def tmp_config_dir(tmp_path, monkeypatch):
         "  container_name: safeyolo-test\n"
     )
 
-    # Change to parent so find_config_dir() finds ./safeyolo/
-    monkeypatch.chdir(tmp_path)
+    # Set environment variables - accessor functions check these at call time
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
+
     return config_dir
 
 
@@ -126,7 +134,9 @@ def sample_log_events():
 @pytest.fixture
 def write_log_file(tmp_config_dir, sample_log_events):
     """Write sample log events to JSONL file."""
-    log_file = tmp_config_dir / "logs" / "safeyolo.jsonl"
+    from safeyolo.config import get_logs_dir
+    logs_dir = get_logs_dir()
+    log_file = logs_dir / "safeyolo.jsonl"
     with open(log_file, "w") as f:
         for event in sample_log_events:
             f.write(json.dumps(event) + "\n")

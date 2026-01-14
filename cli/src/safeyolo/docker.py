@@ -10,6 +10,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .config import (
     CA_VOLUME_NAME,
+    COMPOSE_PROJECT_NAME,
     INTERNAL_NETWORK_NAME,
     PRIVATE_CERTS_VOLUME_NAME,
     PROXY_CONTAINER_NAME,
@@ -136,7 +137,7 @@ def build_image(tag: str = "safeyolo:latest", quiet: bool = False) -> None:
             "  docker pull safeyolo:latest"
         )
 
-    args = ["docker", "build", "-t", tag, str(repo_root)]
+    args = ["docker", "build", "--no-cache", "-t", tag, str(repo_root)]
     if quiet:
         args.insert(2, "-q")
 
@@ -299,9 +300,9 @@ def start(detach: bool = True, pull: bool = False, auto_build: bool = True) -> b
     compose_path = write_compose_file(sandbox=sandbox)
 
     if pull:
-        _run(["docker", "compose", "-f", str(compose_path), "pull"])
+        _run(["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "pull"])
 
-    args = ["docker", "compose", "-f", str(compose_path), "up"]
+    args = ["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "up"]
     if detach:
         args.append("-d")
 
@@ -320,7 +321,7 @@ def stop() -> None:
         _run(["docker", "stop", name], check=False)
         return
 
-    _run(["docker", "compose", "-f", str(compose_path), "down"])
+    _run(["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "down"])
 
 
 def restart() -> None:
@@ -329,7 +330,7 @@ def restart() -> None:
     compose_path = config_dir / "docker-compose.yml"
 
     if compose_path.exists():
-        _run(["docker", "compose", "-f", str(compose_path), "restart"])
+        _run(["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "restart"])
     else:
         stop()
         start()

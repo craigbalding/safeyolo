@@ -12,8 +12,8 @@ from rich.table import Table
 from ..api import APIError, get_api
 from ..config import (
     DEFAULT_CONFIG,
-    GLOBAL_DIR_NAME,
     find_config_dir,
+    get_config_dir,
     load_config,
     save_config,
 )
@@ -27,6 +27,7 @@ from ..docker import (
     DOCKER_BUILD_TIMEOUT_SECONDS,
     BuildError,
     DockerError,
+    build_image,
     check_docker,
     copy_ca_cert_to_host,
     get_container_status,
@@ -106,6 +107,11 @@ def _bootstrap_config(config_dir: Path) -> None:
 
 
 def start(
+    build: bool = typer.Option(
+        False,
+        "--build", "-b",
+        help="Rebuild image before starting",
+    ),
     pull: bool = typer.Option(
         False,
         "--pull", "-p",
@@ -129,7 +135,7 @@ def start(
     config_dir = find_config_dir()
     if not config_dir:
         first_run = True
-        config_dir = Path.home() / GLOBAL_DIR_NAME
+        config_dir = get_config_dir()
         console.print("[bold]First run setup...[/bold]")
         _bootstrap_config(config_dir)
         console.print(f"  Created {config_dir}")
@@ -141,13 +147,26 @@ def start(
 
     config = load_config()
     proxy_port = config["proxy"]["port"]
+    image_name = config["proxy"].get("image", "safeyolo:latest")
 
     console.print("[bold]Starting SafeYolo...[/bold]")
 
+    # Force rebuild if requested
+    if build:
+        repo_root = get_repo_root()
+        if repo_root:
+            console.print(f"Building from {repo_root}...")
+            try:
+                build_image(tag=image_name)
+            except BuildError as err:
+                console.print(f"[red]Build failed:[/red] {err}")
+                raise typer.Exit(1)
+        else:
+            console.print("[red]Cannot build: repo not found.[/red]")
+            raise typer.Exit(1)
+
     # Check if image exists, show build message if auto-building
-    config = load_config()
-    image_name = config["proxy"].get("image", "safeyolo:latest")
-    if not pull and not image_exists(image_name):
+    if not build and not pull and not image_exists(image_name):
         console.print(f"[yellow]Image '{image_name}' not found locally.[/yellow]")
         repo_root = get_repo_root()
         if repo_root:

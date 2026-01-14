@@ -98,7 +98,7 @@ class SecurityAddon:
         discovery = get_service_discovery()
         if discovery:
             client_ip = get_client_ip(flow)
-            client_id = discovery.get_project_for_ip(client_ip)
+            client_id = discovery.get_client_for_ip(client_ip)
             # "default" means no specific project, treat as None
             if client_id == "default":
                 client_id = None

@@ -14,6 +14,7 @@ from .commands.lifecycle import build, start, status, stop, sync
 from .commands.logs import logs
 from .commands.sandbox import sandbox_app
 from .commands.setup import setup_app
+from .commands.tmux import tmux_app
 from .commands.watch import watch
 
 console = Console()
@@ -74,6 +75,7 @@ app.add_typer(agent_app, name="agent")
 app.add_typer(cert_app, name="cert")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(setup_app, name="setup")
+app.add_typer(tmux_app, name="tmux")
 
 
 # Convenience aliases

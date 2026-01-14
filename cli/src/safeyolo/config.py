@@ -1,21 +1,40 @@
 """Configuration loading and path management."""
 
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-# Config directory names
-PROJECT_DIR_NAME = "safeyolo"
-GLOBAL_DIR_NAME = ".safeyolo"
-
 # Secure mode network constants
+COMPOSE_PROJECT_NAME = "safeyolo"  # Explicit project name for docker compose -p
 INTERNAL_NETWORK_NAME = "internal"
+COMPOSE_NETWORK_NAME = "safeyolo_internal"  # Full network name (project_internal)
 # Proxy container name - used for Docker DNS resolution (agents use http://safeyolo:8080)
 PROXY_CONTAINER_NAME = "safeyolo"
 # Cert volumes (split for security: private key separate from public CA)
 PRIVATE_CERTS_VOLUME_NAME = "safeyolo-certs-private"  # Private key material (600 perms)
 CA_VOLUME_NAME = "safeyolo-ca"  # Public CA cert only (agents mount read-only)
+
+# Environment variable names for path overrides (useful for testing and custom setups)
+_CONFIG_DIR_ENV = "SAFEYOLO_CONFIG_DIR"
+_LOGS_DIR_ENV = "SAFEYOLO_LOGS_DIR"
+
+
+def _get_config_dir_path() -> Path:
+    """Get config directory path, checking env var override."""
+    override = os.environ.get(_CONFIG_DIR_ENV)
+    if override:
+        return Path(override)
+    return Path.home() / ".safeyolo"
+
+
+def _get_logs_dir_path() -> Path:
+    """Get logs directory path, checking env var override."""
+    override = os.environ.get(_LOGS_DIR_ENV)
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "state" / "safeyolo"
 
 
 def get_services_path() -> Path:
@@ -48,41 +67,31 @@ DEFAULT_CONFIG = {
 
 
 def find_config_dir() -> Path | None:
-    """Find the safeyolo config directory.
+    """Check if config directory exists.
 
-    Search order:
-    1. ./safeyolo/ (project-specific)
-    2. ~/.safeyolo/ (global)
-
-    Returns None if no config directory exists.
+    Returns ~/.safeyolo/ if it exists, None otherwise.
+    Used to check if SafeYolo is initialized.
     """
-    # Check project-specific first
-    project_dir = Path.cwd() / PROJECT_DIR_NAME
-    if project_dir.is_dir():
-        return project_dir
-
-    # Check global
-    global_dir = Path.home() / GLOBAL_DIR_NAME
-    if global_dir.is_dir():
-        return global_dir
-
+    config_dir = _get_config_dir_path()
+    if config_dir.is_dir():
+        return config_dir
     return None
 
 
 def get_config_dir(create: bool = False) -> Path:
-    """Get the config directory, optionally creating it.
-
-    Prefers existing directory (project or global), defaults to global for new.
-    """
-    existing = find_config_dir()
-    if existing:
-        return existing
-
-    # Default to global (~/.safeyolo/) for new configs
-    global_dir = Path.home() / GLOBAL_DIR_NAME
+    """Get the config directory (~/.safeyolo/)."""
+    config_dir = _get_config_dir_path()
     if create:
-        global_dir.mkdir(parents=True, exist_ok=True)
-    return global_dir
+        config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def get_logs_dir(create: bool = False) -> Path:
+    """Get the logs directory (~/.local/state/safeyolo/)."""
+    logs_dir = _get_logs_dir_path()
+    if create:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+    return logs_dir
 
 
 def get_config_path() -> Path:
@@ -93,11 +102,6 @@ def get_config_path() -> Path:
 def get_rules_path() -> Path:
     """Get path to rules.json."""
     return get_config_dir() / "rules.json"
-
-
-def get_logs_dir() -> Path:
-    """Get path to logs directory."""
-    return get_config_dir() / "logs"
 
 
 def get_certs_dir() -> Path:
@@ -181,7 +185,8 @@ def get_admin_token() -> str | None:
 def ensure_directories() -> None:
     """Ensure all required directories exist."""
     config_dir = get_config_dir(create=True)
-    (config_dir / "logs").mkdir(exist_ok=True)
     (config_dir / "certs").mkdir(exist_ok=True)
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
+    # Logs directory is separate from config
+    get_logs_dir(create=True)
