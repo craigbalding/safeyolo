@@ -111,8 +111,8 @@ This materially reduces host + network risk while keeping the workflow smooth �
 Install SafeYolo on your laptop — or run it on a home server / VPS for an always-on “agent box” you can connect to remotely:
 
 ```bash
-# Initialize with sandbox mode
-safeyolo init --sandbox
+# Initialize (sandbox mode is the default)
+safeyolo init
 
 # Add and run an agent (creates config + starts it)
 safeyolo agent add myproject claude-code ~/code

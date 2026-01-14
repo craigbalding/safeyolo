@@ -4,7 +4,7 @@
 # Agent CLI installed at runtime via mise (see mise.toml)
 # Languages: Install with `mise install python@3.12` etc.
 
-FROM node:22-slim
+FROM node:22-slim@sha256:6f5144a04c933bb2b7d5e8bb822d8ecf827635056deb4c503a650a63e12dd862
 
 # Pinned mise version with checksums
 ARG MISE_VERSION=2026.1.1
