@@ -1,37 +1,27 @@
 # SafeYolo Baseline Policy
 #
-# Always-active default protections. Task policies extend this, cannot weaken it.
-# Uses IAM-style action/resource/effect vocabulary.
+# Default protections for AI coding agents. This policy:
+# - Routes credentials to their correct hosts (OpenAI keys -> api.openai.com)
+# - Rate-limits common services to prevent IP blacklisting
+# - Requires approval for credentials going to unknown destinations
+#
+# Customize by editing this file or mounting your own policy.yaml
 #
 # Policy schema (destination-first for credential:use):
 #   - resource = destination pattern (the endpoint being protected)
-#   - condition.credential = what credentials can access it (type or HMAC)
-#
-# Policy layering:
-#   Layer 0: Invariants (hardcoded in code)
-#   Layer 1: Baseline (this file - always active)
-#   Layer 2: Task policy (optional, extends baseline)
+#   - condition.credential = what credentials can access it
 
 metadata:
   version: "1.0"
-  description: "SafeYolo baseline policy - default protections"
+  description: "SafeYolo baseline policy"
 
 # =============================================================================
 # PERMISSIONS
 # =============================================================================
-# Each permission defines: action, resource, effect, and optional conditions.
-#
-# For credential:use:
-#   - resource = destination pattern (e.g., "api.openai.com/*")
-#   - condition.credential = allowed credential types/HMACs
-#
-# For network:request:
-#   - resource = destination pattern
-#   - effect = budget means rate limiting (requests per minute)
 
 permissions:
   # ---------------------------------------------------------------------------
-  # Credential Permissions - Destination-first (what can access each endpoint)
+  # Credential Routing - Which credentials can reach which hosts
   # ---------------------------------------------------------------------------
 
   # OpenAI endpoints accept OpenAI credentials
@@ -72,11 +62,10 @@ permissions:
     tier: explicit
 
   # ---------------------------------------------------------------------------
-  # Network Request Budgets (Rate Limiting)
+  # Rate Limits (requests per minute) - Prevent runaway agents
   # ---------------------------------------------------------------------------
-  # Budget = requests per minute. GCRA algorithm for smooth limiting.
 
-  # High-volume LLM APIs
+  # LLM APIs - high volume
   - action: network:request
     resource: "api.openai.com/*"
     effect: budget
@@ -95,41 +84,7 @@ permissions:
     budget: 3000  # 50 rps
     tier: explicit
 
-  # Apify / MCP
-  - action: network:request
-    resource: "api.apify.com/*"
-    effect: budget
-    budget: 1800  # 30 rps
-    tier: explicit
-
-  - action: network:request
-    resource: "mcp.apify.com/*"
-    effect: budget
-    budget: 1800  # 30 rps
-    tier: explicit
-
-  # Telegram
-  - action: network:request
-    resource: "api.telegram.org/*"
-    effect: budget
-    budget: 1800  # 30 rps
-    tier: explicit
-
-  # Telemetry (high volume)
-  - action: network:request
-    resource: "statsig.anthropic.com/*"
-    effect: budget
-    budget: 12000  # 200 rps
-    tier: explicit
-
-  # Sentry
-  - action: network:request
-    resource: "*.sentry.io/*"
-    effect: budget
-    budget: 1200  # 20 rps
-    tier: explicit
-
-  # GitHub API (conservative)
+  # GitHub API - conservative (has its own rate limits)
   - action: network:request
     resource: "api.github.com/*"
     effect: budget
@@ -143,7 +98,7 @@ permissions:
     budget: 120  # 2 rps
     tier: explicit
 
-  # Package registries (uv does parallel fetches, needs headroom)
+  # Package registries - devs install packages frequently
   - action: network:request
     resource: "pypi.org/*"
     effect: budget
@@ -153,16 +108,16 @@ permissions:
   - action: network:request
     resource: "files.pythonhosted.org/*"
     effect: budget
-    budget: 1200  # 20 rps - package downloads
+    budget: 1200  # 20 rps
     tier: explicit
 
   - action: network:request
     resource: "registry.npmjs.org/*"
     effect: budget
-    budget: 180  # 3 rps
+    budget: 600  # 10 rps
     tier: explicit
 
-  # Rust crates.io (cargo does many parallel fetches)
+  # Rust crates.io (cargo does parallel fetches)
   - action: network:request
     resource: "index.crates.io/*"
     effect: budget
@@ -172,7 +127,7 @@ permissions:
   - action: network:request
     resource: "static.crates.io/*"
     effect: budget
-    budget: 1200  # 20 rps - crate downloads
+    budget: 1200  # 20 rps - downloads
     tier: explicit
 
   - action: network:request
@@ -181,7 +136,7 @@ permissions:
     budget: 600  # 10 rps
     tier: explicit
 
-  # Go module proxy and checksums
+  # Go modules
   - action: network:request
     resource: "proxy.golang.org/*"
     effect: budget
@@ -194,105 +149,6 @@ permissions:
     budget: 300  # 5 rps
     tier: explicit
 
-  - action: network:request
-    resource: "storage.googleapis.com/proxy-golang-org/*"
-    effect: budget
-    budget: 300  # 5 rps - separate from generic googleapis
-    tier: explicit
-
-  # Media sites (conservative)
-  - action: network:request
-    resource: "*.youtube.com/*"
-    effect: budget
-    budget: 12  # 0.2 rps
-    tier: explicit
-
-  - action: network:request
-    resource: "*.googlevideo.com/*"
-    effect: budget
-    budget: 30  # 0.5 rps
-    tier: explicit
-
-  - action: network:request
-    resource: "*.soundcloud.com/*"
-    effect: budget
-    budget: 30  # 0.5 rps
-    tier: explicit
-
-  # Podcast hosts (conservative)
-  - action: network:request
-    resource: "*.podbean.com/*"
-    effect: budget
-    budget: 60  # 1 rps
-    tier: explicit
-
-  - action: network:request
-    resource: "*.libsyn.com/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.buzzsprout.com/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.anchor.fm/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.spreaker.com/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.simplecast.com/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.transistor.fm/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.captivate.fm/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.megaphone.fm/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.omnycontent.com/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  - action: network:request
-    resource: "*.acast.com/*"
-    effect: budget
-    budget: 60
-    tier: explicit
-
-  # Ntfy notifications
-  - action: network:request
-    resource: "slim-horse.pikapod.net/*"
-    effect: budget
-    budget: 600  # 10 rps
-    tier: explicit
-
   # Default rate limit for all other domains
   - action: network:request
     resource: "*"
@@ -303,20 +159,53 @@ permissions:
 # =============================================================================
 # GLOBAL BUDGETS
 # =============================================================================
-# Aggregate caps across all permissions
 
 budgets:
   network:request: 12000  # Total requests per minute across all domains
 
 # =============================================================================
-# REQUIRED ADDONS
+# REQUIRED ADDONS (cannot be disabled)
 # =============================================================================
-# These addons cannot be disabled by task policies
 
 required:
   - credential_guard
   - network_guard
   - circuit_breaker
+
+# =============================================================================
+# CREDENTIAL DETECTION AND ROUTING RULES
+# =============================================================================
+# Define patterns for detecting credential types and their allowed destinations.
+# Used by credential_guard for detection and policy evaluation for routing.
+
+credential_rules:
+  - name: openai
+    patterns:
+      - "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+      - "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts:
+      - api.openai.com
+    header_names:
+      - authorization
+      - x-api-key
+
+  - name: anthropic
+    patterns:
+      - "sk-ant-api[a-zA-Z0-9-]{90,}"
+    allowed_hosts:
+      - api.anthropic.com
+    header_names:
+      - authorization
+      - x-api-key
+
+  - name: github
+    patterns:
+      - "gh[ps]_[a-zA-Z0-9]{36}"
+    allowed_hosts:
+      - api.github.com
+      - github.com
+    header_names:
+      - authorization
 
 # =============================================================================
 # ADDON CONFIGURATION
@@ -328,116 +217,172 @@ addons:
 
   credential_guard:
     enabled: true
-    detection_level: standard  # patterns-only | standard | paranoid
+    detection_level: standard  # standard | paranoid
 
   circuit_breaker:
     enabled: true
 
   pattern_scanner:
     enabled: true
-
-  yara_scanner:
-    enabled: true
-
-  prompt_injection:
-    enabled: false  # Requires classifier service
-
-  sse_streaming:
-    enabled: false  # Enabled per-domain below
+    # Optional builtin pattern sets (disabled by default)
+    # Available: secrets, pii
+    builtin_sets: []
+    # Set pattern_block_request=true or pattern_block_response=true to enable blocking
 
 # =============================================================================
 # DOMAIN OVERRIDES
 # =============================================================================
 
 domains:
-  # SSE/streaming endpoints
-  "ntfy.sh":
-    addons:
-      sse_streaming:
-        enabled: true
-        stream_json: true
-
-  "mcp.apify.com":
-    addons:
-      sse_streaming:
-        enabled: true
-
-  # LLM APIs - enable injection detection if available
-  "api.openai.com":
-    addons:
-      prompt_injection:
-        enabled: true
-        mode: dual
-
-  "api.anthropic.com":
-    addons:
-      prompt_injection:
-        enabled: true
-        mode: dual
-
-  # Internal services - trust more
+  # Internal services - bypass extra scanning
   "*.internal":
     bypass:
-      - yara_scanner
-      - pattern_scanner
-      - prompt_injection
-
-  # Telemetry - not LLM traffic
-  "statsig.anthropic.com":
-    bypass:
-      - prompt_injection
-
-  "*.datadoghq.com":
-    bypass:
-      - prompt_injection
-
-  "*.segment.io":
-    bypass:
-      - prompt_injection
-
-  # Package registries - skip heavy scanning
-  "pypi.org":
-    bypass:
-      - yara_scanner
-      - prompt_injection
-
-  "registry.npmjs.org":
-    bypass:
-      - yara_scanner
-      - prompt_injection
-
-  "proxy.golang.org":
-    bypass:
-      - yara_scanner
-      - prompt_injection
-
-  "sum.golang.org":
-    bypass:
-      - yara_scanner
-      - prompt_injection
-
-# =============================================================================
-# CLIENT OVERRIDES
-# =============================================================================
-
-clients:
-  # Admin clients bypass pattern scanning
-  "admin-*":
-    bypass:
       - pattern_scanner
 
-  # Test clients bypass rate limiting (for integration tests)
-  "test-*":
-    addons:
-      network_guard:
-        enabled: false
+# =============================================================================
+# EXAMPLES (uncomment and customize as needed)
+# =============================================================================
 
-  # Unknown principals (source IP not in services.yaml)
-  # This happens when:
-  #   - A new container joined the network but 'safeyolo sync' wasn't run
-  #   - An external IP somehow reached the proxy
-  # Policy: Allow with logging - don't break things, but make it visible
-  # Run 'safeyolo sync' to map the IP to a project
-  "unknown":
-    log_level: warning
-    # Use default rate limits, don't bypass any security checks
+# --- Example: Add a custom credential type ---
+# Add to permissions section:
+#
+#   - action: credential:use
+#     resource: "api.myservice.com/*"
+#     effect: allow
+#     tier: explicit
+#     condition:
+#       credential: ["myservice:*"]
+#
+# Then add the pattern to your rules.json or credential_rules.json
+
+# --- Example: Approve a specific credential by HMAC fingerprint ---
+# You don't need to add these manually - SafeYolo prompts for approval on
+# first use via `safeyolo watch`. Approved credentials are saved automatically.
+#
+# This example is for PRE-APPROVING credentials to avoid the prompt (e.g., in
+# CI/CD or when deploying a known configuration). The fingerprint is shown
+# when SafeYolo blocks a credential, or generate it with:
+#
+#   python scripts/generate_fingerprint.py
+#
+# Add to permissions section:
+#
+#   - action: credential:use
+#     resource: "api.custom.com/*"
+#     effect: allow
+#     tier: explicit
+#     condition:
+#       credential: ["hmac:a1b2c3d4e5f6..."]
+
+# --- Example: Add rate limits for a new domain ---
+# Add to permissions section:
+#
+#   - action: network:request
+#     resource: "api.newservice.com/*"
+#     effect: budget
+#     budget: 600  # requests per minute
+#     tier: explicit
+
+# --- Example: Bypass scanners for trusted domains ---
+# Add to domains section:
+#
+#   "trusted.internal.com":
+#     bypass:
+#       - pattern_scanner
+#       - credential_guard  # only if you fully trust this domain
+
+# --- Example: Enable SSE streaming for a domain ---
+# Add to domains section:
+#
+#   "streaming.example.com":
+#     addons:
+#       sse_streaming:
+#         enabled: true
+
+# =============================================================================
+# PATTERN SCANNER - User-Defined Pattern Detection
+# =============================================================================
+#
+# pattern_scanner detects arbitrary patterns in URLs, headers, and/or bodies.
+# Unlike credential_guard (which handles credential ROUTING), pattern_scanner
+# handles pattern DETECTION for domain-specific sensitive data.
+#
+# Two ways to configure:
+#
+# 1. BUILTIN SETS - Enable pre-defined pattern sets in addons.pattern_scanner:
+#      pattern_scanner:
+#        builtin_sets: [secrets]  # Available: secrets, pii
+#
+# 2. CUSTOM PATTERNS - Define your own in scan_patterns below
+#
+# Pattern configuration:
+#   - name: Rule name (shown in logs and block responses)
+#   - pattern: Regex pattern to match
+#   - target: Direction - "request" | "response" | "both"
+#   - scope: Where to look - list of "url" | "headers" | "body" (default: [body])
+#   - action: What to do - "block" | "log"
+#   - severity: For logging - "low" | "medium" | "high" | "critical"
+#   - message: Custom message shown on match
+#   - case_sensitive: true (default) | false
+#
+# To enable blocking, set mitmproxy options:
+#   --set pattern_block_request=true   # Block matching requests
+#   --set pattern_block_response=true  # Block matching responses
+
+scan_patterns: []
+  # Uncomment and customize examples below:
+  #
+  # --- Prevent internal project IDs from leaking (URL or body) ---
+  # - name: internal-project-ids
+  #   pattern: "PROJ-[0-9]{5}"
+  #   target: request
+  #   scope: [body, url]
+  #   action: block
+  #   severity: high
+  #   message: "Internal project ID detected - use external reference instead"
+  #
+  # --- Audit customer ID boundary crossings ---
+  # - name: customer-ids
+  #   pattern: "CUST-[A-Z]{3}-\\d{6}"
+  #   target: both
+  #   scope: [body]
+  #   action: log
+  #   severity: medium
+  #   message: "Customer ID crossed proxy boundary"
+  #
+  # --- Block restricted classification markers (check everywhere) ---
+  # - name: restricted-markers
+  #   pattern: "(CONFIDENTIAL|INTERNAL-ONLY|DO-NOT-SHARE)"
+  #   target: request
+  #   scope: [body, url, headers]
+  #   action: block
+  #   severity: critical
+  #   case_sensitive: false
+  #   message: "Restricted classification marker detected"
+  #
+  # --- Healthcare: Protect patient identifiers ---
+  # - name: patient-mrn
+  #   pattern: "MRN[0-9]{10}"
+  #   target: both
+  #   scope: [body]
+  #   action: block
+  #   severity: critical
+  #   message: "Patient MRN detected - use de-identified reference"
+  #
+  # --- Finance: Log account number crossings ---
+  # - name: account-numbers
+  #   pattern: "ACCT-[0-9]{12}"
+  #   target: both
+  #   scope: [body, url]
+  #   action: log
+  #   severity: high
+  #   message: "Account number crossed boundary"
+  #
+  # --- Compliance: Block export-controlled terms ---
+  # - name: export-control
+  #   pattern: "(ITAR|EAR99|ECCN-[0-9A-Z]+)"
+  #   target: request
+  #   scope: [body]
+  #   action: block
+  #   severity: critical
+  #   message: "Export-controlled term detected"

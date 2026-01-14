@@ -138,6 +138,63 @@ We're explicit about what SafeYolo does NOT protect against:
 | **Non-HTTP exfiltration** | Out of scope (v1) | DNS tunneling, ICMP, etc. Use network-level controls if needed. |
 | **Compromised ~/.safeyolo/** | Out of scope (v1) | If an attacker controls your config directory, all bets are off. |
 
+## Container Security
+
+**Don't trust pre-built images?** Build locally from source:
+
+```bash
+docker build -t safeyolo .
+```
+
+### Why You Can Verify
+
+| Aspect | Implementation | Verification |
+|--------|----------------|--------------|
+| **Base image** | `python:3.13-slim` pinned by SHA256 digest | [Dockerfile:32](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile#L32) |
+| **OS packages** | Single package: tmux (no curl, no network tools) | [Dockerfile:40](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile#L40) |
+| **Python deps** | Locked with hashes in `uv.lock` | [uv.lock](https://github.com/craigbalding/safeyolo/blob/master/uv.lock) |
+| **No Docker socket** | Container cannot access Docker API | [docker-compose.yml](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) |
+| **Non-root** | Runs as host UID/GID via compose | [docker-compose.yml:62](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml#L62) |
+| **Read-only root** | Filesystem is read-only where possible | [docker-compose.yml](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) |
+
+### What the Container Can Access
+
+- **Mounted volumes only:** `~/.safeyolo/` for config, logs, certs
+- **Network:** Listens on configured ports (8080, 9090 by default)
+- **No host filesystem:** Cannot read/write outside mounted paths
+- **No Docker socket:** Neither proxy nor agent containers have `/var/run/docker.sock` mounted - all Docker operations are performed by the CLI on your host
+
+### Automated Security Testing
+
+The [blackbox test suite](tests/blackbox/) runs container security verification on every CI build using [CDK (Container Development Kit)](https://github.com/cdk-team/CDK):
+
+| Test | Verifies |
+|------|----------|
+| Non-root execution | UID/GID != 0 |
+| No privileged mode | `--privileged` not set |
+| No dangerous capabilities | SYS_ADMIN, SYS_MODULE, DAC_READ_SEARCH absent |
+| Seccomp enabled | Syscall filtering active |
+| No Docker socket | `/var/run/docker.sock` not mounted |
+| Network isolation | Direct internet access blocked, DNS blocked, proxy-only egress |
+
+See [`test_runtime_security.py`](tests/blackbox/runner/test_runtime_security.py) and [`test_sandbox_isolation.py`](tests/blackbox/runner/test_sandbox_isolation.py).
+
+### Build Verification
+
+```bash
+# Build from source
+docker build -t safeyolo:local .
+
+# Verify digest matches Dockerfile
+docker inspect safeyolo:local --format='{{.Config.Image}}'
+
+# Check no unexpected SUID binaries
+docker run --rm safeyolo:local find / -perm -4000 2>/dev/null
+
+# Verify runs as non-root
+docker run --rm safeyolo:local id
+```
+
 ## Dependency Trust
 
 We evaluate dependencies for security posture. Last reviewed: 2026-01-05.

@@ -14,7 +14,7 @@ with atheris.instrument_imports():
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons"))
     import re
 
-    from detection import PatternRule, compile_rules, scan_text
+    from detection import PatternRule, load_builtin_set, load_patterns_from_config, scan_text
 
 
 # Pre-compile rules once
@@ -25,7 +25,7 @@ def get_rules():
     """Lazily initialize rules."""
     global RULES
     if RULES is None:
-        RULES = compile_rules()
+        RULES = load_patterns_from_config(load_builtin_set("secrets"))
     return RULES
 
 

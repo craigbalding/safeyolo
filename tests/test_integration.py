@@ -45,7 +45,8 @@ class TestFullAddonChain:
 
     def test_request_flows_through_all_addons(self, make_flow, make_response, tmp_path):
         """Test a request is processed by all active addons."""
-        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from credential_guard import CredentialGuard
+        from detection import DEFAULT_RULES
         from metrics import MetricsCollector
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
@@ -352,7 +353,8 @@ class TestRealisticScenarios:
 
     def test_openai_request_through_chain(self, circuit_breaker, make_flow, make_response, tmp_path):
         """Test a realistic OpenAI API request through the chain."""
-        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from credential_guard import CredentialGuard
+        from detection import DEFAULT_RULES
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
 
@@ -412,7 +414,7 @@ domains: {}
 
     def test_exfiltration_attempt_blocked(self, make_flow, tmp_path):
         """Test that credential exfiltration to wrong host is blocked."""
-        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from credential_guard import CredentialGuard
         from mitmproxy.test import taddons
 
         policy_yaml = """
@@ -431,10 +433,16 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
+credential_rules:
+  - name: openai
+    patterns:
+      - "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+      - "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts:
+      - api.openai.com
 """
         with policy_context(tmp_path, policy_yaml):
             cg = CredentialGuard()
-            cg.rules = list(DEFAULT_RULES)
             cg.hmac_secret = b"test-secret"
             cg.config = {}
             cg.safe_headers_config = {}
@@ -519,7 +527,7 @@ class TestBlockingMode:
 
     def test_credential_guard_warn_mode_passes_request(self, make_flow, tmp_path):
         """Test credential_guard in warn mode allows request through."""
-        from credential_guard import DEFAULT_RULES, CredentialGuard
+        from credential_guard import CredentialGuard
         from mitmproxy.test import taddons
 
         policy_yaml = """
@@ -533,10 +541,15 @@ budgets: {}
 required: []
 addons: {}
 domains: {}
+credential_rules:
+  - name: openai
+    patterns:
+      - "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts:
+      - api.openai.com
 """
         with policy_context(tmp_path, policy_yaml):
             guard = CredentialGuard()
-            guard.rules = list(DEFAULT_RULES)
             guard.hmac_secret = b"test-secret"
             guard.config = {}
             guard.safe_headers_config = {}
@@ -617,7 +630,7 @@ clients:
             scanner = PatternScanner()
 
             with taddons.context(scanner) as tctx:
-                tctx.options.pattern_block_input = True
+                tctx.options.pattern_block_request = True
 
                 # Flow from admin IP - should be bypassed
                 admin_flow = make_flow(url="http://example.com/api")

@@ -2,6 +2,43 @@
 
 Complete documentation for SafeYolo's mitmproxy addons.
 
+## How It Works
+
+```
+                    ┌─────────────────────┐
+                    │      Internet       │
+                    │  api.openai.com     │
+                    │  api.anthropic.com  │
+                    │  github.com         │
+                    └──────────▲──────────┘
+                               │
+┌──────────────────────────────┼──────────────────────────────┐
+│                      Your Machine                           │
+│                              │                              │
+│  ┌────────────────┐  ┌───────┴───────────────────────────┐  │
+│  │  safeyolo CLI  │  │      SafeYolo Container (:8080)   │  │
+│  │                │  │                                   │  │
+│  │  start, watch, │  │  network_guard    - deny/limit?   │  │
+│  │  agent add     │  │  credential_guard - wrong dest?   │  │
+│  │                │  │  pattern_scanner  - secrets?      │  │
+│  └───────┬────────┘  │  circuit_breaker  - unhealthy?    │  │
+│          │           └───────────────────▲───────────────┘  │
+│          │ manages                       │                  │
+│          ▼                               │ all traffic      │
+│  ┌───────────────────────────────────────┼───────────────┐  │
+│  │  ~/.safeyolo/                         │               │  │
+│  │    config.yaml    ┌───────────────────┴────────────┐  │  │
+│  │    baseline.yaml  │                                │  │  │
+│  │    policies/      │  ┌──────────┐  ┌──────────┐    │  │  │
+│  │    logs/          │  │  Claude  │  │  Codex   │ ...│  │  │
+│  │                   │  └──────────┘  └──────────┘    │  │  │
+│  │                   │         Agent Containers       │  │  │
+│  └───────────────────┴────────────────────────────────┴──┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+In **Sandbox Mode**, agent containers have no direct internet access. All traffic routes through SafeYolo where addons inspect, control, and log requests.
+
 ## Overview
 
 Addons are loaded in this order (order matters for security):

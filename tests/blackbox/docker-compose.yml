@@ -65,7 +65,7 @@ services:
       - "18080:8080"  # Proxy (for debugging)
       - "19090:9090"  # Admin API (for debugging)
     volumes:
-      - ./config:/app/config:ro
+      - ../../config:/app/config:ro  # Use production config (not test-specific copy)
       - ./certs:/test-ca:ro  # Test CA for upstream TLS verification
       - safeyolo-test-certs:/certs-private
       - safeyolo-test-ca:/certs-public

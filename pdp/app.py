@@ -17,6 +17,9 @@ Endpoints:
     - GET /v1/baseline - Get current baseline policy
     - PUT /v1/baseline - Update baseline policy
 
+  Sensor Configuration:
+    - GET /v1/sensor_config - Get credential rules and scan patterns
+
   Credential Approvals:
     - POST /v1/approvals/credentials - Add credential approval
 
@@ -229,6 +232,25 @@ async def get_baseline() -> dict:
         "baseline": baseline,
         "path": pdp.get_baseline_path(),
     }
+
+
+@app.get("/v1/sensor_config")
+async def get_sensor_config() -> dict:
+    """
+    Get sensor configuration: credential rules and scan patterns.
+
+    Returns configuration needed by sensors/addons for detection and scanning.
+    Includes policy_hash for cache invalidation.
+
+    Returns:
+        {
+            "credential_rules": [...],
+            "scan_patterns": [...],
+            "policy_hash": "sha256:..."
+        }
+    """
+    pdp = get_pdp()
+    return pdp.get_sensor_config()
 
 
 @app.put("/v1/baseline")

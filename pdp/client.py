@@ -159,6 +159,20 @@ class PolicyClient(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_sensor_config(self) -> dict:
+        """Get sensor configuration: credential rules and scan patterns.
+
+        Returns configuration for sensors/addons:
+        - credential_rules: For credential detection and routing
+        - scan_patterns: For content scanning
+        - policy_hash: For cache invalidation
+
+        Returns:
+            Dict with credential_rules, scan_patterns, and policy_hash
+        """
+        pass
+
 
 class LocalPolicyClient(PolicyClient):
     """
@@ -206,6 +220,10 @@ class LocalPolicyClient(PolicyClient):
     def get_stats(self) -> dict:
         """Get PDP statistics."""
         return self._pdp.get_stats()
+
+    def get_sensor_config(self) -> dict:
+        """Get sensor configuration from PDPCore."""
+        return self._pdp.get_sensor_config()
 
     def _error_decision(self, event_id: str, error: str) -> PolicyDecision:
         """Create error decision for internal failures."""
@@ -379,6 +397,29 @@ class HttpPolicyClient(PolicyClient):
         """
         # TODO: Implement /v1/stats endpoint in pdp/app.py
         return {}
+
+    def get_sensor_config(self) -> dict:
+        """Get sensor configuration via HTTP.
+
+        Calls GET /v1/sensor_config endpoint.
+
+        Returns:
+            Dict with credential_rules, scan_patterns, and policy_hash
+        """
+        import httpx
+
+        try:
+            response = self._client.get("/v1/sensor_config", timeout=2.0)
+            if response.status_code == 200:
+                return response.json()
+            log.warning(f"get_sensor_config failed: {response.status_code}")
+            return {"credential_rules": [], "scan_patterns": [], "policy_hash": "error"}
+        except httpx.TimeoutException:
+            log.warning("get_sensor_config timeout")
+            return {"credential_rules": [], "scan_patterns": [], "policy_hash": "timeout"}
+        except Exception as e:
+            log.warning(f"get_sensor_config error: {type(e).__name__}: {e}")
+            return {"credential_rules": [], "scan_patterns": [], "policy_hash": "error"}
 
     def _unavailable_decision(self, event_id: str, reason: str) -> PolicyDecision:
         """Create decision when PDP is unavailable.
