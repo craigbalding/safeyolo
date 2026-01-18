@@ -463,9 +463,9 @@ class PDPCore:
             log.info(
                 "Credential approval added",
                 extra={
-                    "destination": destination,
-                    "cred_id": cred_id,
-                    "tier": tier,
+                    "destination": _sanitize_for_log(destination),
+                    "cred_id": _sanitize_for_log(cred_id),
+                    "tier": _sanitize_for_log(tier),
                 }
             )
             return {
@@ -513,7 +513,7 @@ class PDPCore:
         """
         try:
             result = self._engine.reset_budgets(resource=resource)
-            log.info("Budget counters reset", extra={"resource": resource or "all"})
+            log.info("Budget counters reset", extra={"resource": _sanitize_for_log(resource) or "all"})
             return {
                 "status": "ok",
                 "resource": resource or "all",
@@ -556,7 +556,7 @@ class PDPCore:
 
             self._task_policies[task_id] = policy_data
 
-            log.info("Upserted task policy", extra={"task_id": task_id})
+            log.info("Upserted task policy", extra={"task_id": _sanitize_for_log(task_id)})
             return {
                 "status": "ok",
                 "task_id": task_id,
@@ -580,7 +580,7 @@ class PDPCore:
                 if self._engine._loader._task_policy:
                     if self._engine._loader._task_policy.metadata.task_id == task_id:
                         self._engine._loader._task_policy = None
-                log.info("Deleted task policy", extra={"task_id": task_id})
+                log.info("Deleted task policy", extra={"task_id": _sanitize_for_log(task_id)})
                 return {"status": "ok", "task_id": task_id}
             else:
                 return {"status": "not_found", "task_id": task_id}
