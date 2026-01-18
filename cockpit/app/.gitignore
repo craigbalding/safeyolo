@@ -1,6 +1,53 @@
+# binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+
+# Go
+go.work
+vendor/
+
+# Caches
+.npm
+.eslintcache
+.node_repl_history
+*.tgz
+
+# Wails/go specific build output
+*.app
+*.test
+*.out
+
+# Build outputs
 .task
-bin
+dist/
+bin/
+build/
 frontend/dist
-frontend/node_modules
+frontend/node_modules/
 build/linux/appimage/build
 build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+build/bin/
+frontend/dist/
+frontend/.output/
+frontend/.cache/
+frontend/out/
+frontend/.temp/
+frontend/*.log
+frontend/npm-debug.log*
+
+# Wails generated, sharable
+frontend/wailsjs/
+# frontend/wailsjs/* 
+# !frontend/wailsjs/go/*.ts
+# !frontend/wailsjs/runtime/*.ts
+frontend/bindings/
+# wails.json
+
+

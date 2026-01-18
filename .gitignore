@@ -14,6 +14,8 @@ CLAUDE.md
 
 # Local
 .DS_Store
+*.DS_Store
+.DS_Store?
 *.local
 *.log*
 *.pem
@@ -24,11 +26,22 @@ npm-debug.log*
 .cache
 %stash
 *.tmp
-
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.AppleDouble
+.LSOverride
 
 # Host-specific config (each host has its own)
 docker-compose.override.yml
 .env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
 
 # Large ML model files (regenerate with scripts/export_piguard_onnx_v2.py)
 models/piguard-onnx/model.onnx
@@ -40,13 +53,13 @@ _archive_plugins/
 
 # Dist
 node_modules
-dist
-dist-ssr
-server/dist
-content/public/dist
 
-# Profile
-.rspack-profile-*/
+# Other common ignores
+*.tgz
+*.pid
+*.seed
+pids
+*.pid.lock
 
 # IDE / Agent
 .vscode/*
