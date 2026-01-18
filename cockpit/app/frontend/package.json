@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@wailsio/runtime": "latest",
-    "lit": "^3.1.0"
+    "lit": "^3.1.0",
+    "@patternfly/elements": "latest"
   },
   "devDependencies": {
     "typescript": "^5.2.2",

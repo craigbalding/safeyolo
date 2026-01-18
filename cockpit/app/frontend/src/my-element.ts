@@ -1,7 +1,10 @@
 import {css, html, LitElement} from 'lit'
 import {customElement, property} from 'lit/decorators.js'
 import {Events} from "@wailsio/runtime";
-import {GreetService} from '../bindings/changeme';
+import {GreetService} from '../bindings/changeme'
+import '@patternfly/elements/pf-card/pf-card.js'
+import '@patternfly/elements/pf-button/pf-button.js'
+import '@patternfly/elements/pf-clipboard-copy/pf-clipboard-copy.js'
 
 /**
  * An example element.
@@ -61,6 +64,28 @@ export class MyElement extends LitElement {
                         <button aria-label="greet-btn" class="btn" @click=${this.doGreet}>Greet</button>
                     </div>
                 </div>
+                <br />
+                <pf-card>
+                    <h3 slot="header">Card header</h3>
+                    <p>This is the pf-card body.</p>
+                    <pf-button slot="footer">OK</pf-button>
+                </pf-card>
+                <br/>
+                <pf-clipboard-copy code expandable expanded>
+                    { "menu": {
+                        "id": "file",
+                        "value": "File",
+                        "popup": {
+                    "menuitem": [
+                    {"value": "New", "onclick": "CreateNewDoc()"},
+                    {"value": "Open", "onclick": "OpenDoc()"},
+                    {"value": "Close", "onclick": "CloseDoc()"}
+                    ]
+                        }
+                    }}
+                </pf-clipboard-copy>
+                <pf-button variant="link" href="https://patternflyelements.org/" target="_blank" icon="location-arrow">Go to PatternFly</pf-button>
+                <br />
                 <div class="footer">
                     <div><p>Click on the Wails logo to learn more</p></div>
                     <div><p>${this.time}</p></div>
