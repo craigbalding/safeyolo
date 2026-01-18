@@ -1,5 +1,6 @@
 """Container lifecycle commands: start, stop, status."""
 
+import os
 import secrets
 import shutil
 from pathlib import Path
