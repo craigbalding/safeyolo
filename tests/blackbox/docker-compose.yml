@@ -31,7 +31,8 @@
 # within the test network via Docker network aliases.
 
 services:
-  # Initialize cert directory permissions (mirrors production certs-init)
+  # Initialize cert/config directory permissions and copy config into volume
+  # This mirrors production where ~/.safeyolo contains both config and data
   certs-init:
     image: alpine:3.20@sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c
     user: "0:0"
@@ -39,11 +40,14 @@ services:
       - safeyolo-test-certs:/certs-private
       - safeyolo-test-ca:/certs-public
       - safeyolo-test-logs:/app-logs
-      - safeyolo-test-data:/app-data
+      - safeyolo-test-config:/safeyolo
+      - ../../config:/config-source:ro
     command: >
-      sh -c "chown 1000:1000 /certs-private /certs-public /app-logs /app-data &&
+      sh -c "cp /config-source/*.yaml /safeyolo/ 2>/dev/null || true &&
+             mkdir -p /safeyolo/data &&
+             chown -R 1000:1000 /certs-private /certs-public /app-logs /safeyolo &&
              chmod 700 /certs-private &&
-             chmod 755 /certs-public /app-logs /app-data"
+             chmod 755 /certs-public /app-logs /safeyolo /safeyolo/data"
 
   # SafeYolo proxy (the system under test)
   # Uses production start-safeyolo.sh - configured via env vars ONLY
@@ -65,12 +69,11 @@ services:
       - "18080:8080"  # Proxy (for debugging)
       - "19090:9090"  # Admin API (for debugging)
     volumes:
-      - ../../config:/safeyolo:ro  # Use production config (not test-specific copy)
+      - safeyolo-test-config:/safeyolo  # Config + data in single volume (mirrors production ~/.safeyolo)
       - ./certs:/test-ca:ro  # Test CA for upstream TLS verification
       - safeyolo-test-certs:/certs-private
       - safeyolo-test-ca:/certs-public
       - safeyolo-test-logs:/app/logs
-      - safeyolo-test-data:/safeyolo/data
     environment:
       # === TLS CA trust ===
       - SAFEYOLO_CA_CERT=/test-ca/ca.crt  # Trust test CA for upstream connections
@@ -163,4 +166,4 @@ volumes:
   safeyolo-test-certs:
   safeyolo-test-ca:
   safeyolo-test-logs:
-  safeyolo-test-data:
+  safeyolo-test-config:

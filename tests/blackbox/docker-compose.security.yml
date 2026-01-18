@@ -16,13 +16,16 @@
 
 services:
   # Extend certs-init to also initialize security-results volume
+  # NOTE: Compose overlays REPLACE commands, so we must include full logic from base
   certs-init:
     volumes:
       - security-results:/security-results
     command: >
-      sh -c "chown 1000:1000 /certs-private /certs-public /app-logs /app-data /security-results &&
+      sh -c "cp /config-source/*.yaml /safeyolo/ 2>/dev/null || true &&
+             mkdir -p /safeyolo/data &&
+             chown -R 1000:1000 /certs-private /certs-public /app-logs /safeyolo /security-results &&
              chmod 700 /certs-private &&
-             chmod 755 /certs-public /app-logs /app-data /security-results"
+             chmod 755 /certs-public /app-logs /safeyolo /safeyolo/data /security-results"
 
   # Add safeyolo to isolation network for network isolation tests
   safeyolo:
