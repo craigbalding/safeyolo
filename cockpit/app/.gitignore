@@ -29,6 +29,7 @@ vendor/
 dist/
 bin/
 build/
+!Taskfile.yml
 frontend/dist
 frontend/node_modules/
 build/linux/appimage/build
