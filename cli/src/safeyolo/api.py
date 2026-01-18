@@ -63,8 +63,21 @@ class AdminAPI:
                 response = client.request(method, url, headers=headers, json=json)
         except httpx.ConnectError:
             raise APIError(f"Cannot connect to {self.base_url} - is SafeYolo running?")
+        except httpx.RemoteProtocolError:
+            raise APIError(
+                "Server disconnected unexpectedly - admin API may have crashed. "
+                "Check 'docker logs safeyolo' for details."
+            )
+        except httpx.ReadError:
+            raise APIError(
+                f"Connection lost while reading response from {self.base_url}. "
+                f"Check 'docker logs safeyolo' for errors."
+            )
         except httpx.TimeoutException:
-            raise APIError(f"Request to {url} timed out")
+            raise APIError(
+                f"Request to {url} timed out after {self.timeout}s. "
+                f"Admin API may still be starting - try again in a few seconds."
+            )
 
         if response.status_code == 401:
             raise APIError("Authentication failed - check admin token", 401)
@@ -127,22 +140,23 @@ class AdminAPI:
 
     def add_approval(
         self,
-        project: str,
-        token_hmac: str,
-        hosts: list[str],
-        paths: list[str] | None = None,
-        name: str = "",
+        destination: str,
+        cred_id: str,
+        tier: str = "explicit",
     ) -> dict[str, Any]:
-        """Add an approval rule to a project policy."""
+        """Add a credential approval to baseline policy.
+
+        Args:
+            destination: Target host (e.g., "api.openai.com")
+            cred_id: Credential identifier (e.g., "hmac:abc123" or "openai:*")
+            tier: Permission tier ("explicit", "wildcard", etc.)
+        """
         payload = {
-            "token_hmac": token_hmac,
-            "hosts": hosts,
+            "destination": destination,
+            "cred_id": cred_id,
+            "tier": tier,
         }
-        if paths:
-            payload["paths"] = paths
-        if name:
-            payload["name"] = name
-        return self._request("POST", f"/admin/policy/{project}/approve", json=payload)
+        return self._request("POST", "/admin/policy/baseline/approve", json=payload)
 
     def get_allowlist(self) -> list[dict[str, Any]]:
         """Get temp allowlist entries."""
@@ -168,6 +182,26 @@ class AdminAPI:
     def clear_allowlist(self) -> dict[str, Any]:
         """Clear all temp allowlist entries."""
         return self._request("DELETE", "/plugins/credential-guard/allowlist")
+
+    def log_denial(
+        self,
+        destination: str,
+        cred_id: str,
+        reason: str = "user_denied",
+    ) -> dict[str, Any]:
+        """Log a credential denial event.
+
+        Args:
+            destination: Target host that was denied
+            cred_id: Credential identifier (e.g., "hmac:abc123")
+            reason: Reason for denial
+        """
+        payload = {
+            "destination": destination,
+            "cred_id": cred_id,
+            "reason": reason,
+        }
+        return self._request("POST", "/admin/policy/baseline/deny", json=payload)
 
     def pending_approvals(self) -> list[dict[str, Any]]:
         """Get pending credential approval requests.

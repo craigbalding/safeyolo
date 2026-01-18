@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 from mitmproxy import ctx
 from utils import write_event
 
-from pdp import get_admin_client
+from pdp import get_policy_client
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -80,8 +80,6 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         "network-guard": "network_guard_block",
         "credential-guard": "credguard_block",
         "pattern-scanner": "pattern_block_input",
-        "yara-scanner": "yara_block_on_match",
-        "prompt-injection": "injection_block",
     }
 
     def log_message(self, format, *args):
@@ -288,7 +286,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_policy_baseline(self) -> None:
         """GET /admin/policy/baseline - Read baseline policy."""
-        client = get_admin_client()
+        client = get_policy_client()
         baseline = client.get_baseline()
         if baseline is None:
             self._send_json({"error": "No baseline policy loaded"}, 404)
@@ -303,7 +301,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if not task_id:
             self._send_json({"error": "missing task_id"}, 400)
             return
-        client = get_admin_client()
+        client = get_policy_client()
         task_policy = client.get_task_policy(task_id)
         if task_policy is None:
             self._send_json({"error": f"Task policy '{task_id}' not found"}, 404)
@@ -315,7 +313,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_budgets(self) -> None:
         """GET /admin/budgets - Current budget usage."""
-        client = get_admin_client()
+        client = get_policy_client()
         budget_stats = client.get_budget_stats()
         self._send_json(budget_stats)
 
@@ -376,7 +374,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_post_baseline_approve(self) -> None:
         """POST /admin/policy/baseline/approve - Add credential permission."""
-        client = get_admin_client()
+        client = get_policy_client()
 
         data = self._read_json()
         if not data:
@@ -384,19 +382,19 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         destination = data.get("destination")
-        credential = data.get("credential")
+        cred_id = data.get("cred_id")
         tier = data.get("tier", "explicit")
 
         if not destination:
             self._send_json({"error": "missing 'destination' field"}, 400)
             return
-        if not credential:
-            self._send_json({"error": "missing 'credential' field"}, 400)
+        if not cred_id:
+            self._send_json({"error": "missing 'cred_id' field"}, 400)
             return
 
         result = client.add_credential_approval(
             destination=destination,
-            credential=credential,
+            cred_id=cred_id,
             tier=tier
         )
 
@@ -409,24 +407,61 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             client_ip=client_ip,
             destination=destination,
-            credential=credential,
+            cred_id=cred_id,
             tier=tier
         )
-        safe_credential = _sanitize_log(credential)
+        safe_cred_id = _sanitize_log(cred_id)
         safe_destination = _sanitize_log(destination)
-        log.info(f"Baseline approval added: {safe_credential} -> {safe_destination}")
+        log.info(f"Baseline approval added: {safe_cred_id} -> {safe_destination}")
 
         self._send_json({
             "status": "added",
             "destination": destination,
-            "credential": credential,
+            "cred_id": cred_id,
             "tier": tier,
             "permission_count": result.get("permission_count", 1)
         })
 
+    def _handle_post_baseline_deny(self) -> None:
+        """POST /admin/policy/baseline/deny - Log credential denial."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        destination = data.get("destination")
+        cred_id = data.get("cred_id")
+        reason = data.get("reason", "user_denied")
+
+        if not destination:
+            self._send_json({"error": "missing 'destination' field"}, 400)
+            return
+        if not cred_id:
+            self._send_json({"error": "missing 'cred_id' field"}, 400)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event("admin.credential_denial",
+            addon="admin-api",
+            client_ip=client_ip,
+            destination=destination,
+            cred_id=cred_id,
+            reason=reason
+        )
+        safe_cred_id = _sanitize_log(cred_id)
+        safe_destination = _sanitize_log(destination)
+        log.info(f"Credential denied: {safe_cred_id} -> {safe_destination} ({reason})")
+
+        self._send_json({
+            "status": "logged",
+            "destination": destination,
+            "cred_id": cred_id,
+            "reason": reason,
+        })
+
     def _handle_post_budgets_reset(self) -> None:
         """POST /admin/budgets/reset - Reset budget counters."""
-        client = get_admin_client()
+        client = get_policy_client()
 
         data = self._read_json() or {}
         resource = data.get("resource")  # Optional: reset specific resource
@@ -460,6 +495,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         static_handlers = {
             "/admin/policy/validate": self._handle_post_policy_validate,
             "/admin/policy/baseline/approve": self._handle_post_baseline_approve,
+            "/admin/policy/baseline/deny": self._handle_post_baseline_deny,
             "/admin/budgets/reset": self._handle_post_budgets_reset,
         }
 
@@ -528,7 +564,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_put_policy_baseline(self) -> None:
         """PUT /admin/policy/baseline - Update baseline policy."""
-        client = get_admin_client()
+        client = get_policy_client()
 
         data = self._read_json()
         if not data:
@@ -566,7 +602,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing task_id"}, 400)
             return
 
-        client = get_admin_client()
+        client = get_policy_client()
 
         data = self._read_json()
         if not data:

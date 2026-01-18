@@ -24,13 +24,13 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 │         │                                │                   │
 │         │                                │                   │
 │         ▼                                ▼                   │
-│  ┌──────────────┐               ┌──────────────────────┐    │
-│  │ ./safeyolo/  │               │ Proxy :8080          │    │
-│  │  config.yaml │               │                      │    │
-│  │  rules.json  │               │ Intercepts HTTP      │    │
-│  │  policies/   │               │ from AI agents       │    │
-│  │  logs/       │               │                      │    │
-│  └──────────────┘               └──────────────────────┘    │
+│  ┌───────────────┐              ┌──────────────────────┐    │
+│  │ ./safeyolo/   │              │ Proxy :8080          │    │
+│  │  config.yaml  │              │                      │    │
+│  │  baseline.yaml│              │ Intercepts HTTP      │    │
+│  │  policies/    │              │ from AI agents       │    │
+│  │  logs/        │              │                      │    │
+│  └───────────────┘              └──────────────────────┘    │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -72,8 +72,7 @@ safeyolo/
 ├── pdp/                      # Policy Decision Point (library + service)
 │   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
 │   ├── core.py               # PDPCore - policy evaluation engine
-│   ├── client.py             # PolicyClient interface (local/HTTP modes)
-│   ├── admin_client.py       # PDPAdminClient for management ops
+│   ├── client.py             # PolicyClient interface (local/HTTP modes, incl. admin)
 │   └── app.py                # FastAPI service (optional deployment)
 ├── cli/                      # safeyolo CLI (runs on host)
 │   ├── src/safeyolo/

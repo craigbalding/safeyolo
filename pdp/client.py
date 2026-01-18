@@ -173,6 +173,111 @@ class PolicyClient(ABC):
         """
         pass
 
+    # -------------------------------------------------------------------------
+    # Admin Operations (read)
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    def get_baseline(self) -> dict | None:
+        """Get current baseline policy.
+
+        Returns:
+            Policy data as dict, or None if no baseline loaded
+        """
+        pass
+
+    @abstractmethod
+    def get_baseline_path(self) -> str | None:
+        """Get path to baseline policy file.
+
+        Returns:
+            File path as string, or None
+        """
+        pass
+
+    @abstractmethod
+    def get_task_policy(self, task_id: str) -> dict | None:
+        """Get task policy by ID.
+
+        Args:
+            task_id: Task identifier
+
+        Returns:
+            Policy data as dict, or None if not found
+        """
+        pass
+
+    @abstractmethod
+    def get_budget_stats(self) -> dict:
+        """Get current budget usage statistics.
+
+        Returns:
+            Dict with tracked keys and their states
+        """
+        pass
+
+    # -------------------------------------------------------------------------
+    # Admin Operations (write)
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    def add_credential_approval(
+        self,
+        destination: str,
+        cred_id: str,
+        tier: str = "explicit",
+    ) -> dict:
+        """Add credential approval to baseline.
+
+        Allows a credential (by type or HMAC fingerprint) to access a destination.
+
+        Args:
+            destination: Target host (e.g., "api.openai.com")
+            cred_id: Credential identifier (e.g., "hmac:abc123" or "openai:*")
+            tier: Permission tier
+
+        Returns:
+            Status dict with permission count
+        """
+        pass
+
+    @abstractmethod
+    def reset_budgets(self, resource: str | None = None) -> dict:
+        """Reset budget counters.
+
+        Args:
+            resource: Optional resource pattern to reset. If None, resets all.
+
+        Returns:
+            Status dict
+        """
+        pass
+
+    @abstractmethod
+    def update_baseline(self, policy_data: dict) -> dict:
+        """Update baseline policy.
+
+        Args:
+            policy_data: New policy document
+
+        Returns:
+            Status dict with permission count
+        """
+        pass
+
+    @abstractmethod
+    def upsert_task_policy(self, task_id: str, policy_data: dict) -> dict:
+        """Upsert a task policy.
+
+        Args:
+            task_id: Unique task identifier
+            policy_data: Policy document
+
+        Returns:
+            Status dict with task_id
+        """
+        pass
+
 
 class LocalPolicyClient(PolicyClient):
     """
@@ -224,6 +329,51 @@ class LocalPolicyClient(PolicyClient):
     def get_sensor_config(self) -> dict:
         """Get sensor configuration from PDPCore."""
         return self._pdp.get_sensor_config()
+
+    # -------------------------------------------------------------------------
+    # Admin Operations (read)
+    # -------------------------------------------------------------------------
+
+    def get_baseline(self) -> dict | None:
+        """Get current baseline policy."""
+        return self._pdp.get_baseline()
+
+    def get_baseline_path(self) -> str | None:
+        """Get path to baseline policy file."""
+        return self._pdp.get_baseline_path()
+
+    def get_task_policy(self, task_id: str) -> dict | None:
+        """Get task policy by ID."""
+        return self._pdp.get_task_policy(task_id)
+
+    def get_budget_stats(self) -> dict:
+        """Get current budget usage statistics."""
+        return self._pdp.get_budget_stats()
+
+    # -------------------------------------------------------------------------
+    # Admin Operations (write)
+    # -------------------------------------------------------------------------
+
+    def add_credential_approval(
+        self,
+        destination: str,
+        cred_id: str,
+        tier: str = "explicit",
+    ) -> dict:
+        """Add credential approval to baseline."""
+        return self._pdp.add_credential_approval(destination, cred_id, tier)
+
+    def reset_budgets(self, resource: str | None = None) -> dict:
+        """Reset budget counters."""
+        return self._pdp.reset_budgets(resource)
+
+    def update_baseline(self, policy_data: dict) -> dict:
+        """Update baseline policy."""
+        return self._pdp.update_baseline(policy_data)
+
+    def upsert_task_policy(self, task_id: str, policy_data: dict) -> dict:
+        """Upsert a task policy."""
+        return self._pdp.upsert_task_policy(task_id, policy_data)
 
     def _error_decision(self, event_id: str, error: str) -> PolicyDecision:
         """Create error decision for internal failures."""
@@ -420,6 +570,123 @@ class HttpPolicyClient(PolicyClient):
         except Exception as e:
             log.warning(f"get_sensor_config error: {type(e).__name__}: {e}")
             return {"credential_rules": [], "scan_patterns": [], "policy_hash": "error"}
+
+    # -------------------------------------------------------------------------
+    # Admin Operations (read)
+    # -------------------------------------------------------------------------
+
+    def get_baseline(self) -> dict | None:
+        """Get current baseline policy via HTTP."""
+        try:
+            response = self._client.get("/v1/baseline", timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("policy")
+            return None
+        except Exception as e:
+            log.warning(f"get_baseline error: {type(e).__name__}: {e}")
+            return None
+
+    def get_baseline_path(self) -> str | None:
+        """Get path to baseline policy file via HTTP."""
+        try:
+            response = self._client.get("/v1/baseline", timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("path")
+            return None
+        except Exception as e:
+            log.warning(f"get_baseline_path error: {type(e).__name__}: {e}")
+            return None
+
+    def get_task_policy(self, task_id: str) -> dict | None:
+        """Get task policy by ID via HTTP."""
+        try:
+            response = self._client.get(f"/v1/tasks/{task_id}/policy", timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("policy")
+            return None
+        except Exception as e:
+            log.warning(f"get_task_policy error: {type(e).__name__}: {e}")
+            return None
+
+    def get_budget_stats(self) -> dict:
+        """Get current budget usage statistics via HTTP."""
+        try:
+            response = self._client.get("/v1/budgets", timeout=2.0)
+            if response.status_code == 200:
+                return response.json()
+            return {}
+        except Exception as e:
+            log.warning(f"get_budget_stats error: {type(e).__name__}: {e}")
+            return {}
+
+    # -------------------------------------------------------------------------
+    # Admin Operations (write)
+    # -------------------------------------------------------------------------
+
+    def add_credential_approval(
+        self,
+        destination: str,
+        cred_id: str,
+        tier: str = "explicit",
+    ) -> dict:
+        """Add credential approval to baseline via HTTP."""
+        try:
+            response = self._client.post(
+                "/v1/approvals/credentials",
+                json={"destination": destination, "cred_id": cred_id, "tier": tier},
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": f"HTTP {response.status_code}"}
+        except Exception as e:
+            log.error(f"add_credential_approval error: {type(e).__name__}: {e}")
+            return {"error": str(e)}
+
+    def reset_budgets(self, resource: str | None = None) -> dict:
+        """Reset budget counters via HTTP."""
+        try:
+            payload = {"resource": resource} if resource else {}
+            response = self._client.post("/v1/budgets/reset", json=payload, timeout=5.0)
+            if response.status_code == 200:
+                return response.json()
+            return {"error": f"HTTP {response.status_code}"}
+        except Exception as e:
+            log.error(f"reset_budgets error: {type(e).__name__}: {e}")
+            return {"error": str(e)}
+
+    def update_baseline(self, policy_data: dict) -> dict:
+        """Update baseline policy via HTTP."""
+        try:
+            response = self._client.put(
+                "/v1/baseline",
+                json={"policy": policy_data},
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": f"HTTP {response.status_code}"}
+        except Exception as e:
+            log.error(f"update_baseline error: {type(e).__name__}: {e}")
+            return {"error": str(e)}
+
+    def upsert_task_policy(self, task_id: str, policy_data: dict) -> dict:
+        """Upsert a task policy via HTTP."""
+        try:
+            response = self._client.put(
+                f"/v1/tasks/{task_id}/policy",
+                json=policy_data,
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+            return {"error": f"HTTP {response.status_code}"}
+        except Exception as e:
+            log.error(f"upsert_task_policy error: {type(e).__name__}: {e}")
+            return {"error": str(e)}
 
     def _unavailable_decision(self, event_id: str, reason: str) -> PolicyDecision:
         """Create decision when PDP is unavailable.

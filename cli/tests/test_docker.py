@@ -135,15 +135,9 @@ class TestGenerateCompose:
     def test_includes_volumes(self, tmp_config_dir):
         """Includes volume mounts."""
         content = generate_compose(sandbox=True)
-        assert "/app/logs" in content
+        assert "/safeyolo" in content  # Config mount
+        assert "/app/logs" in content  # Logs mount
         assert "/certs-private" in content
-        assert "/app/data" in content
-
-    def test_includes_rules_if_exists(self, tmp_config_dir):
-        """Includes rules.json mount if file exists."""
-        (tmp_config_dir / "rules.json").write_text("{}")
-        content = generate_compose(sandbox=True)
-        assert "credential_rules.json" in content
 
     def test_includes_environment(self, tmp_config_dir):
         """Includes environment variables."""

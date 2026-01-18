@@ -41,8 +41,8 @@ REQUIRED_NAMES = {
     "base": ["make_block_response", "write_event", "get_option_safe", "get_policy_client"],
     "policy_engine": ["write_event", "GCRABudgetTracker", "PolicyLoader"],
     "budget_tracker": ["atomic_write_json", "BackgroundWorker"],
-    "request_logger": ["write_audit_event", "BackgroundWorker"],
-    "admin_api": ["write_event", "get_admin_client"],
+    "request_logger": ["get_policy_client"],  # Now loads config from PDP
+    "admin_api": ["write_event", "get_policy_client"],
     "policy_loader": ["write_event"],
     "sensor_utils": ["build_http_event_from_flow"],
 }
@@ -188,13 +188,13 @@ if missing:
 
         assert not violations, (
             f"Addons referencing legacy get_policy_engine: {violations}. "
-            f"Use get_policy_client() or get_admin_client() instead."
+            f"Use get_policy_client() instead."
         )
 
     def test_no_addon_imports_pdp_core(self):
         """Ensure no addon imports pdp.core directly.
 
-        Addons should use PolicyClient (enforcement) or PDPAdminClient (management).
+        Addons should use PolicyClient.
         Only client implementations import pdp.core.
         """
         addons_dir = Path(__file__).parent.parent / "addons"
@@ -206,7 +206,7 @@ if missing:
                 violations.append(module)
 
         assert not violations, (
-            f"Addons importing pdp.core directly (use PolicyClient or PDPAdminClient): {violations}"
+            f"Addons importing pdp.core directly (use PolicyClient): {violations}"
         )
 
 

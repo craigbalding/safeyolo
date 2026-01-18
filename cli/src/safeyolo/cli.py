@@ -9,6 +9,7 @@ from . import __version__
 from .commands.admin import check, mode, policies, test
 from .commands.agent import agent_app
 from .commands.cert import cert_app
+from .commands.demo import demo
 from .commands.init import init
 from .commands.lifecycle import build, start, status, stop, sync
 from .commands.logs import logs
@@ -65,6 +66,7 @@ app.command()(build)
 app.command()(sync)
 app.command()(logs)
 app.command()(watch)
+app.command()(demo)
 app.command()(check)
 app.command()(mode)
 app.command()(policies)

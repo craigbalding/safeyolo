@@ -149,7 +149,6 @@ class CircuitBreaker(SecurityAddon):
     def __init__(self):
         # Don't call super().__init__() - we have custom stats
         self._state = InMemoryCircuitState()
-        self.log_path: Path | None = None
 
         # Default config
         self.failure_threshold = 5
@@ -203,15 +202,9 @@ class CircuitBreaker(SecurityAddon):
             help="Path to circuit breaker config JSON",
         )
         loader.add_option(
-            name="circuit_log_path",
-            typespec=Optional[str],
-            default=None,
-            help="Path for JSONL circuit events log",
-        )
-        loader.add_option(
             name="circuit_state_file",
             typespec=Optional[str],
-            default="/app/data/circuit_breaker_state.json",
+            default="/safeyolo/data/circuit_breaker_state.json",
             help="Path to circuit breaker state file for persistence",
         )
 
@@ -230,10 +223,6 @@ class CircuitBreaker(SecurityAddon):
             config_path = ctx.options.circuit_config
             if config_path and Path(config_path).exists():
                 self._load_config(config_path)
-
-        if "circuit_log_path" in updates:
-            path = ctx.options.circuit_log_path
-            self.log_path = Path(path) if path else None
 
         if "circuit_state_file" in updates or not hasattr(self, "_state"):
             state_path = ctx.options.circuit_state_file

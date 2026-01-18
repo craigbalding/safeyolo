@@ -65,15 +65,13 @@ services:
       - "18080:8080"  # Proxy (for debugging)
       - "19090:9090"  # Admin API (for debugging)
     volumes:
-      - ../../config:/app/config:ro  # Use production config (not test-specific copy)
+      - ../../config:/safeyolo:ro  # Use production config (not test-specific copy)
       - ./certs:/test-ca:ro  # Test CA for upstream TLS verification
       - safeyolo-test-certs:/certs-private
       - safeyolo-test-ca:/certs-public
       - safeyolo-test-logs:/app/logs
-      - safeyolo-test-data:/app/data
+      - safeyolo-test-data:/safeyolo/data
     environment:
-      # === Startup mode ===
-      - SAFEYOLO_HEADLESS=true  # Use mitmdump (no tmux/TUI)
       # === TLS CA trust ===
       - SAFEYOLO_CA_CERT=/test-ca/ca.crt  # Trust test CA for upstream connections
       # === Ports ===

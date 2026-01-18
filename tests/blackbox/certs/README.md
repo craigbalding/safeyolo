@@ -17,7 +17,7 @@ No shortcuts:
 The blackbox test uses the **same `start-safeyolo.sh` script** as production, configured via
 environment variables:
 
-- `SAFEYOLO_HEADLESS=true` - Use mitmdump (no tmux/TUI)
+- `SAFEYOLO_TUI=true` - Use mitmproxy TUI in tmux (default is headless mitmdump)
 - `SAFEYOLO_CA_CERT=/test-ca/ca.crt` - Trust test CA for upstream connections
 
 This ensures tests always mirror production behavior. Any fix to production TLS handling

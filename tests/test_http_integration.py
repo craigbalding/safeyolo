@@ -7,14 +7,14 @@ They are "specification quality" - good enough to verify a reimplementation in a
 Requirements:
 - SafeYolo proxy running on PROXY_HOST:PROXY_PORT (default localhost:8080)
 - Admin API available on ADMIN_HOST:ADMIN_PORT (default localhost:9090)
-- Admin token via ADMIN_API_TOKEN env var or /app/data/admin_token file
+- Admin token via ADMIN_API_TOKEN env var or /safeyolo/data/admin_token file
 
 Test server:
 - Provides deterministic responses based on path
 - Runs on a random high port for each test session
 
 Usage:
-    # Inside container (reads token from /app/data/admin_token):
+    # Inside container (reads token from /safeyolo/data/admin_token):
     pytest tests/test_http_integration.py -v
 
     # From host with explicit token:
@@ -42,16 +42,29 @@ PROXY_HOST = os.environ.get("PROXY_HOST", "localhost")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "8080"))
 ADMIN_HOST = os.environ.get("ADMIN_HOST", "localhost")
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "9090"))
+# When proxy runs in Docker, test server on host needs different hostname
+# Set TEST_SERVER_HOST=host.docker.internal when running against containerized proxy
+TEST_SERVER_HOST = os.environ.get("TEST_SERVER_HOST", "")
 
 # Load admin token from env or disk
 def _load_admin_token() -> str:
-    """Load admin token from environment or /app/data/admin_token."""
+    """Load admin token from environment or disk.
+
+    Checks (in order):
+    1. ADMIN_API_TOKEN env var
+    2. ~/.safeyolo/data/admin_token (host)
+    3. /safeyolo/data/admin_token (container)
+    """
     token = os.environ.get("ADMIN_API_TOKEN", "")
     if token:
         return token
-    token_path = "/app/data/admin_token"
-    if os.path.exists(token_path):
-        return open(token_path).read().strip()
+    # Try host path first, then container path
+    for token_path in [
+        os.path.expanduser("~/.safeyolo/data/admin_token"),
+        "/safeyolo/data/admin_token",
+    ]:
+        if os.path.exists(token_path):
+            return open(token_path).read().strip()
     return ""
 
 ADMIN_TOKEN = _load_admin_token()
@@ -59,7 +72,7 @@ ADMIN_TOKEN = _load_admin_token()
 # Skip all tests if proxy is not available
 pytestmark = pytest.mark.skipif(
     not ADMIN_TOKEN,
-    reason="ADMIN_API_TOKEN not set and /app/data/admin_token not found"
+    reason="ADMIN_API_TOKEN not set and /safeyolo/data/admin_token not found"
 )
 
 
@@ -180,29 +193,33 @@ class UpstreamServer:
     """Local HTTP server that runs in a background thread for integration tests."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
-        self.host = host
+        # When TEST_SERVER_HOST is set, bind to 0.0.0.0 so Docker can reach us
+        self.bind_host = "0.0.0.0" if TEST_SERVER_HOST else host
+        # URL host is TEST_SERVER_HOST if set, otherwise the bind host
+        self.url_host = TEST_SERVER_HOST or host
         self.port = port
         self.server: HTTPServer | None = None
         self.thread: threading.Thread | None = None
 
     def start(self) -> int:
         """Start the server and return the port."""
-        self.server = HTTPServer((self.host, self.port), UpstreamHandler)
+        self.server = HTTPServer((self.bind_host, self.port), UpstreamHandler)
         # If port was 0, get the actual assigned port
         self.port = self.server.server_address[1]
 
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
-        # Wait for server to be ready
+        # Wait for server to be ready (always check localhost, even if bound to 0.0.0.0)
+        check_host = "127.0.0.1"
         for _ in range(50):
             try:
-                with socket.create_connection((self.host, self.port), timeout=0.1):
+                with socket.create_connection((check_host, self.port), timeout=0.1):
                     return self.port
             except (ConnectionRefusedError, OSError):
                 time.sleep(0.1)
 
-        raise RuntimeError(f"Test server failed to start on {self.host}:{self.port}")
+        raise RuntimeError(f"Test server failed to start on {self.bind_host}:{self.port}")
 
     def stop(self) -> None:
         """Stop the test server."""
@@ -225,7 +242,7 @@ class UpstreamServer:
     @property
     def base_url(self) -> str:
         """Get the base URL for this server."""
-        return f"http://{self.host}:{self.port}"
+        return f"http://{self.url_host}:{self.port}"
 
 
 # ==============================================================================

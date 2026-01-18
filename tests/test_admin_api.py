@@ -401,14 +401,16 @@ class TestAdminAPIAddon:
         assert addon.name == "admin-api"
 
     def test_mode_switchable_addons(self):
-        """Test MODE_SWITCHABLE contains expected addons."""
+        """Test MODE_SWITCHABLE contains expected addons.
+
+        Note: yara-scanner and prompt-injection are only in the experimental build,
+        not the base build. This test checks the base build addons.
+        """
         from admin_api import AdminRequestHandler
 
         expected = {
             "network-guard",
             "credential-guard",
             "pattern-scanner",
-            "yara-scanner",
-            "prompt-injection",
         }
         assert set(AdminRequestHandler.MODE_SWITCHABLE.keys()) == expected

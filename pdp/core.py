@@ -377,16 +377,18 @@ class PDPCore:
         return str(path) if path else None
 
     def get_sensor_config(self) -> dict:
-        """Get sensor configuration: credential rules and scan patterns.
+        """Get sensor configuration: credential rules, scan patterns, and addon config.
 
         Returns configuration needed by sensors/addons:
         - credential_rules: For credential detection and routing
         - scan_patterns: For content scanning
+        - addons: Per-addon configuration from baseline.yaml
         - policy_hash: For cache invalidation
 
         Returns:
-            Dict with credential_rules, scan_patterns, and policy_hash
+            Dict with credential_rules, scan_patterns, addons, and policy_hash
         """
+        baseline = self._engine.get_baseline()
         return {
             "credential_rules": [
                 r.model_dump() for r in self._engine.get_credential_rules()
@@ -394,6 +396,7 @@ class PDPCore:
             "scan_patterns": [
                 p.model_dump() for p in self._engine.get_scan_patterns()
             ],
+            "addons": {k: v.model_dump() for k, v in baseline.addons.items()} if baseline else {},
             "policy_hash": self.policy_hash,
         }
 
@@ -434,7 +437,7 @@ class PDPCore:
     def add_credential_approval(
         self,
         destination: str,
-        credential: str,
+        cred_id: str,
         tier: str = "explicit",
     ) -> dict:
         """
@@ -445,7 +448,7 @@ class PDPCore:
 
         Args:
             destination: Destination pattern (e.g., "api.example.com/*")
-            credential: Credential identifier (e.g., "openai:*" or "hmac:abc123")
+            cred_id: Credential identifier (e.g., "hmac:abc123" or "openai:*")
             tier: Permission tier (default: "explicit")
 
         Returns:
@@ -454,21 +457,21 @@ class PDPCore:
         try:
             result = self._engine.add_credential_approval(
                 destination=destination,
-                credential=credential,
+                cred_id=cred_id,
                 tier=tier,
             )
             log.info(
                 "Credential approval added",
                 extra={
                     "destination": destination,
-                    "credential": credential,
+                    "cred_id": cred_id,
                     "tier": tier,
                 }
             )
             return {
                 "status": "ok",
                 "destination": destination,
-                "credential": credential,
+                "cred_id": cred_id,
                 "tier": tier,
                 "permission_count": result.get("permission_count", 1),
             }

@@ -246,12 +246,6 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
     fingerprint = event.get("fingerprint", "")
     host = event.get("host", "")
 
-    # Extract HMAC from fingerprint (format: "hmac:abc123...")
-    if fingerprint.startswith("hmac:"):
-        token_hmac = fingerprint[5:]
-    else:
-        token_hmac = fingerprint
-
     # Show the request
     console.print()
     console.print(format_approval_request(event))
@@ -265,16 +259,16 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
             return False
 
         if response in ("a", "approve", "y", "yes"):
-            # Approve - use "baseline" as the policy target
+            # Approve - add credential permission to baseline policy
+            # fingerprint is already in format "hmac:abc123"
             try:
                 result = api.add_approval(
-                    project="baseline",
-                    token_hmac=token_hmac,
-                    hosts=[host],
+                    destination=host,
+                    cred_id=fingerprint,
                 )
                 status = result.get("status", "unknown")
                 if status == "added":
-                    console.print(f"[green]Approved[/green] - {token_hmac[:8]}... -> {host}")
+                    console.print(f"[green]Approved[/green] - {fingerprint[:16]}... -> {host}")
                 elif status == "exists":
                     console.print("[yellow]Already approved[/yellow]")
                 else:
@@ -285,7 +279,16 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
                 return False
 
         elif response in ("d", "deny", "n", "no"):
-            console.print(f"[red]Denied[/red] - {token_hmac[:8]}...")
+            # Log the denial
+            try:
+                api.log_denial(
+                    destination=host,
+                    cred_id=fingerprint,
+                    reason="user_denied",
+                )
+            except APIError as e:
+                console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
+            console.print(f"[red]Denied[/red] - {fingerprint[:16]}...")
             return False
 
         elif response in ("s", "skip", ""):
@@ -420,6 +423,10 @@ def watch(
 
     Monitors the SafeYolo JSONL log for blocked credential requests and
     prompts you to approve or deny them interactively.
+
+    Each fingerprint+destination pair is only prompted once per session.
+    If you deny a credential and it tries again, you won't be re-prompted
+    until you restart 'safeyolo watch'.
 
     Examples:
 

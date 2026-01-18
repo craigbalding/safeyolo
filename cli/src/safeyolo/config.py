@@ -29,14 +29,6 @@ def _get_config_dir_path() -> Path:
     return Path.home() / ".safeyolo"
 
 
-def _get_logs_dir_path() -> Path:
-    """Get logs directory path, checking env var override."""
-    override = os.environ.get(_LOGS_DIR_ENV)
-    if override:
-        return Path(override)
-    return Path.home() / ".local" / "state" / "safeyolo"
-
-
 def get_services_path() -> Path:
     """Get path to services.yaml (in data dir, mounted to container).
 
@@ -87,8 +79,13 @@ def get_config_dir(create: bool = False) -> Path:
 
 
 def get_logs_dir(create: bool = False) -> Path:
-    """Get the logs directory (~/.local/state/safeyolo/)."""
-    logs_dir = _get_logs_dir_path()
+    """Get the logs directory ($SAFEYOLO_LOGS_DIR or $XDG_STATE_HOME/safeyolo/)."""
+    override = os.environ.get(_LOGS_DIR_ENV)
+    if override:
+        logs_dir = Path(override)
+    else:
+        xdg_state = os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+        logs_dir = Path(xdg_state) / "safeyolo"
     if create:
         logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
@@ -97,11 +94,6 @@ def get_logs_dir(create: bool = False) -> Path:
 def get_config_path() -> Path:
     """Get path to config.yaml."""
     return get_config_dir() / "config.yaml"
-
-
-def get_rules_path() -> Path:
-    """Get path to rules.json."""
-    return get_config_dir() / "rules.json"
 
 
 def get_certs_dir() -> Path:
@@ -188,5 +180,4 @@ def ensure_directories() -> None:
     (config_dir / "certs").mkdir(exist_ok=True)
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
-    # Logs directory is separate from config
-    get_logs_dir(create=True)
+    (config_dir / "logs").mkdir(exist_ok=True)

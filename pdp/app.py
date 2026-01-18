@@ -300,7 +300,7 @@ async def add_credential_approval(request: Request) -> dict:
     Body:
         {
             "destination": "api.example.com/*",
-            "credential": "openai:*" or "hmac:abc123",
+            "cred_id": "openai:*" or "hmac:abc123",
             "tier": "explicit" (optional)
         }
 
@@ -314,17 +314,17 @@ async def add_credential_approval(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     destination = body.get("destination")
-    credential = body.get("credential")
+    cred_id = body.get("cred_id")
     tier = body.get("tier", "explicit")
 
     if not destination:
         raise HTTPException(status_code=400, detail="Missing 'destination' field")
-    if not credential:
-        raise HTTPException(status_code=400, detail="Missing 'credential' field")
+    if not cred_id:
+        raise HTTPException(status_code=400, detail="Missing 'cred_id' field")
 
     result = pdp.add_credential_approval(
         destination=destination,
-        credential=credential,
+        cred_id=cred_id,
         tier=tier,
     )
 

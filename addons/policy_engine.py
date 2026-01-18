@@ -776,14 +776,14 @@ class PolicyEngine:
     def add_credential_approval(
         self,
         destination: str,
-        credential: str | list[str],
+        cred_id: str | list[str],
         tier: str = "explicit",
     ) -> dict[str, Any]:
         """Add credential permission to baseline policy (destination-first).
 
         Args:
             destination: Destination host pattern (e.g., "api.example.com", "*.example.com")
-            credential: Credential type(s) or HMAC(s) to allow (e.g., "openai:*", "hmac:a1b2c3")
+            cred_id: Credential identifier(s) (e.g., "hmac:a1b2c3", "openai:*")
             tier: Permission tier ("explicit" or "inferred")
 
         Returns:
@@ -792,10 +792,10 @@ class PolicyEngine:
         if tier not in ("explicit", "inferred"):
             raise ValueError(f"tier must be 'explicit' or 'inferred', got '{tier}'")
 
-        credentials = [credential] if isinstance(credential, str) else credential
+        cred_ids = [cred_id] if isinstance(cred_id, str) else cred_id
 
         # Create new permission (destination-first)
-        condition = Condition(credential=credentials)
+        condition = Condition(credential=cred_ids)
         new_permission = Permission(
             action="credential:use",
             resource=f"{destination}/*",
@@ -815,12 +815,12 @@ class PolicyEngine:
         if self._loader.baseline_path:
             self._save_baseline()
 
-        log.info(f"Added credential approval: {destination} accepts {credentials}")
+        log.info(f"Added credential approval: {destination} accepts {cred_ids}")
         write_event(
             "admin.credential_approval_added",
             addon="policy-engine",
             destination=destination,
-            credential=credentials,
+            cred_id=cred_ids,
             tier=tier,
         )
 
@@ -902,7 +902,13 @@ class PolicyEngine:
         }
 
     def _save_baseline(self) -> None:
-        """Save baseline policy to file (atomic write)."""
+        """Save baseline policy to file (atomic write).
+
+        Note: This rewrites the entire file from the Pydantic model, which
+        means any comments or custom formatting in the original YAML are lost.
+        If comment preservation becomes important, consider ruamel.yaml's
+        round-trip mode instead of pyyaml.
+        """
         baseline_path = self._loader.baseline_path
         if not baseline_path:
             return
@@ -916,6 +922,7 @@ class PolicyEngine:
                 baseline.model_dump(exclude_none=True),
                 default_flow_style=False,
                 allow_unicode=True,
+                sort_keys=False,
             )
 
             baseline_path.parent.mkdir(parents=True, exist_ok=True)

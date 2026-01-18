@@ -17,7 +17,6 @@ Usage:
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 from base import SecurityAddon
 from detection import (
@@ -33,7 +32,6 @@ from sensor_utils import build_http_event_from_flow
 from utils import (
     get_client_ip,
     hmac_fingerprint,
-    load_config_file,
     load_hmac_secret,
     make_block_response,
 )
@@ -203,19 +201,31 @@ class CredentialGuard(SecurityAddon):
         loader.add_option("credguard_block", bool, True, "Block violations (default: true)")
         loader.add_option("credguard_scan_urls", bool, False, "Scan URLs for credentials")
         loader.add_option("credguard_scan_bodies", bool, False, "Scan request bodies")
-        loader.add_option("credguard_log_path", Optional[str], None, "JSONL log path")
 
     def configure(self, updates):
         """Handle configuration updates."""
-        if not self.config:
-            self._load_config()
+        if not self.hmac_secret:
+            self.hmac_secret = load_hmac_secret(Path("/safeyolo/data/hmac_secret"))
 
-    def _load_config(self):
-        """Load configuration files."""
-        config_dir = Path(__file__).parent.parent / "config"
-        self.config = load_config_file(config_dir / "credential_guard.yaml")
-        self.safe_headers_config = load_config_file(config_dir / "safe_headers.yaml")
-        self.hmac_secret = load_hmac_secret(Path("/app/data/hmac_secret"))
+    def _load_config_from_pdp(self, sensor_config: dict):
+        """Load config from PDP sensor config.
+
+        Args:
+            sensor_config: Dict from PolicyClient.get_sensor_config()
+        """
+        cg = sensor_config.get("addons", {}).get("credential_guard", {})
+        self.config = {
+            "entropy": cg.get("entropy", {
+                "min_length": 20,
+                "min_charset_diversity": 0.5,
+                "min_shannon_entropy": 3.5,
+            }),
+            "detection_level": cg.get("detection_level", "standard"),
+            "standard_auth_headers": cg.get("standard_auth_headers", [
+                "authorization", "x-api-key", "api-key", "x-auth-token", "apikey"
+            ]),
+        }
+        self.safe_headers_config = cg.get("safe_headers", {})
 
     def _load_rules_from_policy(self, config: dict):
         """Load credential rules from policy configuration.
@@ -244,14 +254,15 @@ class CredentialGuard(SecurityAddon):
             log.warning("No credential rules loaded from policy")
 
     def _maybe_reload_rules(self):
-        """Reload credential rules if policy changed."""
+        """Reload credential rules and config if policy changed."""
         try:
             client = get_policy_client()
-            config = client.get_sensor_config()
-            policy_hash = config.get("policy_hash", "")
+            sensor_config = client.get_sensor_config()
+            policy_hash = sensor_config.get("policy_hash", "")
 
             if policy_hash != self._last_policy_hash:
-                self._load_rules_from_policy(config)
+                self._load_rules_from_policy(sensor_config)
+                self._load_config_from_pdp(sensor_config)
                 self._last_policy_hash = policy_hash
         except RuntimeError:
             # PolicyClient not configured yet - skip reload

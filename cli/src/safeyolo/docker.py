@@ -16,10 +16,7 @@ from .config import (
     PROXY_CONTAINER_NAME,
     get_certs_dir,
     get_config_dir,
-    get_data_dir,
     get_logs_dir,
-    get_policies_dir,
-    get_rules_path,
     load_config,
 )
 
@@ -206,6 +203,8 @@ def generate_compose(sandbox: bool = True) -> str:
     - Use localhost-only port bindings (127.0.0.1)
     - Run as non-root (host UID/GID)
     - Use Docker volume for private key (never exposed to host)
+    - Config mount: ~/.safeyolo/ -> /safeyolo/
+    - Logs mount: ~/.local/state/safeyolo/ -> /app/logs/
 
     Sandbox Mode additionally:
     - Creates internal network for agent isolation
@@ -220,11 +219,7 @@ def generate_compose(sandbox: bool = True) -> str:
     proxy = config["proxy"]
     config_dir = get_config_dir()
 
-    # Resolve paths
-    rules_path = get_rules_path()
-    policy_path = config_dir / "policy.yaml"
-
-    # Template variables
+    # Template variables - single config_dir mount replaces individual paths
     variables = {
         "sandbox": sandbox,
         # Proxy config
@@ -235,13 +230,11 @@ def generate_compose(sandbox: bool = True) -> str:
         # User (non-root execution)
         "uid": os.getuid(),
         "gid": os.getgid(),
-        # Paths
+        # SafeYolo home (contains data/, baseline.yaml)
+        "config_dir": config_dir,
+        # Logs go to XDG state directory
         "logs_dir": get_logs_dir(),
-        "certs_dir": get_certs_dir(),
-        "policies_dir": get_policies_dir(),
-        "data_dir": get_data_dir(),
-        "rules_path": str(rules_path) if rules_path.exists() else None,
-        "policy_path": str(policy_path) if policy_path.exists() else None,
+        "certs_dir": get_certs_dir(),  # Still needed for Try Mode public cert mount
         # Network constants (for sandbox mode)
         "internal_network": INTERNAL_NETWORK_NAME,
         "proxy_hostname": PROXY_CONTAINER_NAME,  # Docker DNS name for proxy

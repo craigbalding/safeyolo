@@ -1,11 +1,12 @@
 # SafeYolo - Security Proxy for AI Coding Agents
 #
 # Build targets:
-#   base - Core addons only (~200MB) - Default
-#   dev  - Development/testing environment
+#   (default) - Production: hardened, no apt/dpkg, minimal attack surface
+#   dev       - Development: has apt, gcc for building packages
+#   base      - Intermediate: has apt but no gcc (rarely used directly)
 #
 # Examples:
-#   docker build -t safeyolo .                    # Base (default)
+#   docker build -t safeyolo .                    # Production (default)
 #   docker build --target dev -t safeyolo:dev .   # Development
 #
 # Core addons:
@@ -82,8 +83,8 @@ COPY addons/admin_api.py /app/addons/
 # Optional
 COPY addons/service_discovery.py /app/addons/
 
-# Copy configuration
-COPY config/ /app/config/
+# Note: Configuration is mounted from host at runtime (~/.safeyolo/ -> /safeyolo/)
+# No baked-in config - 'safeyolo init' creates the config directory
 
 # Copy scripts (dev: mount -v $(pwd):/app overrides these)
 COPY scripts/ /app/scripts/
@@ -100,8 +101,8 @@ ENV PROXY_PORT=8080
 ENV ADMIN_PORT=9090
 ENV CERT_DIR=/certs-private
 ENV PUBLIC_CERT_DIR=/certs-public
+ENV CONFIG_DIR=/safeyolo
 ENV LOG_DIR=/app/logs
-ENV CONFIG_DIR=/app/config
 ENV PYTHONPATH=/app:/app/addons
 # Cache dir for uv, pytest, ruff etc. (HOME=/ is not writable by non-root)
 ENV XDG_CACHE_HOME=/tmp/.cache
@@ -134,6 +135,59 @@ WORKDIR /app
 CMD ["bash"]
 
 # ==============================================================================
-# Default target is base (lightweight)
+# Production stage - Hardened for deployment
 # ==============================================================================
 FROM base
+
+# Remove packages not needed at runtime (reduces attack surface)
+# Can't use apt-get purge (dpkg needs diff, apt needs keyring) so delete directly
+# You have Python and tmux. What more could you possibly need?
+RUN rm -rf /var/lib/dpkg /var/lib/apt /var/cache/apt /var/log/apt \
+    # Package management
+    && rm -f /usr/bin/apt* /usr/bin/dpkg* \
+    && rm -f /usr/sbin/dpkg* \
+    # Security risks - container escape / privilege escalation
+    && rm -f /usr/sbin/chroot /usr/bin/chroot \
+    && rm -f /usr/bin/nsenter /usr/bin/unshare \
+    && rm -f /usr/bin/su /usr/bin/newgrp /usr/bin/sg \
+    && rm -f /usr/bin/setpriv /usr/bin/runcon /usr/bin/chcon \
+    # Auth/user management (container runs as fixed UID)
+    && rm -f /usr/bin/login /usr/bin/passwd /usr/bin/adduser /usr/bin/deluser \
+    && rm -f /usr/bin/chage /usr/bin/chfn /usr/bin/chsh /usr/bin/expiry /usr/bin/gpasswd \
+    && rm -f /usr/sbin/adduser /usr/sbin/deluser /usr/sbin/addgroup /usr/sbin/delgroup \
+    && rm -f /usr/sbin/useradd /usr/sbin/userdel /usr/sbin/usermod \
+    && rm -f /usr/sbin/groupadd /usr/sbin/groupdel /usr/sbin/groupmod \
+    && rm -f /usr/sbin/chpasswd /usr/sbin/chgpasswd /usr/sbin/newusers \
+    && rm -f /usr/sbin/pwck /usr/sbin/pwconv /usr/sbin/pwunconv \
+    && rm -f /usr/sbin/grpck /usr/sbin/grpconv /usr/sbin/grpunconv \
+    && rm -f /usr/sbin/vigr /usr/sbin/vipw /usr/sbin/mkhomedir_helper \
+    && rm -f /usr/sbin/add-shell /usr/sbin/remove-shell /usr/sbin/update-shells \
+    && rm -f /usr/sbin/shadowconfig /usr/sbin/pwhistory_helper \
+    && rm -f /usr/sbin/pam* /usr/sbin/unix_chkpwd /usr/sbin/unix_update /usr/sbin/faillock \
+    && rm -f /usr/sbin/update-passwd \
+    # System exploration (not needed at runtime)
+    && rm -f /usr/bin/lscpu /usr/bin/lsmem /usr/bin/lsblk /usr/bin/lsipc \
+    && rm -f /usr/bin/lslocks /usr/bin/lslogins /usr/bin/lsns \
+    && rm -f /bin/dmesg /usr/bin/dmesg \
+    && rm -f /usr/bin/ldd \
+    # Debian config system
+    && rm -f /usr/bin/debconf* /usr/sbin/dpkg-preconfigure /usr/sbin/dpkg-reconfigure \
+    && rm -f /usr/bin/deb-systemd-helper /usr/bin/deb-systemd-invoke \
+    && rm -f /usr/sbin/service /usr/sbin/start-stop-daemon \
+    && rm -f /usr/sbin/invoke-rc.d /usr/sbin/update-rc.d /usr/sbin/policy-rc.d \
+    # Filesystem utilities (read-only root)
+    && rm -f /bin/mount /bin/umount /usr/bin/mount /usr/bin/umount /usr/bin/mountpoint \
+    && rm -f /usr/sbin/mkfs* /usr/sbin/mkswap /usr/sbin/swapon /usr/sbin/swapoff /usr/sbin/swaplabel \
+    && rm -f /usr/sbin/fsck* /usr/sbin/fsfreeze /usr/sbin/fstrim /usr/sbin/fstab-decode \
+    && rm -f /usr/sbin/losetup /usr/sbin/blkid /usr/sbin/blk* /usr/sbin/blockdev \
+    && rm -f /usr/sbin/findfs /usr/sbin/wipefs /usr/sbin/zramctl \
+    && rm -f /usr/sbin/pivot_root /usr/sbin/switch_root \
+    # Shell utilities (not needed at runtime)
+    && rm -f /usr/bin/find /usr/bin/xargs /usr/bin/locate \
+    && rm -f /usr/bin/diff /usr/bin/diff3 /usr/bin/sdiff /usr/bin/cmp \
+    # Misc utilities not needed
+    && rm -f /usr/bin/wall /usr/bin/write /usr/bin/mesg \
+    && rm -f /usr/bin/script /usr/bin/scriptlive /usr/bin/scriptreplay \
+    && rm -f /usr/bin/who /usr/bin/users /usr/bin/pinky /usr/bin/last \
+    && rm -f /usr/sbin/agetty /usr/sbin/getty /usr/sbin/sulogin /usr/sbin/nologin \
+    && rm -f /usr/sbin/runuser /usr/sbin/killall5

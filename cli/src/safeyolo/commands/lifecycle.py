@@ -1,8 +1,8 @@
 """Container lifecycle commands: start, stop, status."""
 
-import json
 import os
 import secrets
+import shutil
 from pathlib import Path
 
 import typer
@@ -47,37 +47,8 @@ from ..docker import (
 
 console = Console()
 
-# Default rules for common API providers
-DEFAULT_RULES = {
-    "credentials": [
-        {
-            "name": "openai",
-            "pattern": "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}",
-            "allowed_hosts": ["api.openai.com"],
-        },
-        {
-            "name": "openai_project",
-            "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
-            "allowed_hosts": ["api.openai.com"],
-        },
-        {
-            "name": "anthropic",
-            "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
-            "allowed_hosts": ["api.anthropic.com"],
-        },
-        {
-            "name": "github",
-            "pattern": "gh[ps]_[a-zA-Z0-9]{36}",
-            "allowed_hosts": ["api.github.com", "github.com"],
-        },
-    ],
-    "entropy_detection": {
-        "enabled": True,
-        "min_length": 20,
-        "min_charset_diversity": 0.5,
-        "min_shannon_entropy": 3.5,
-    },
-}
+# Path to bundled baseline.yaml in package
+BASELINE_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "baseline.yaml"
 
 
 def _bootstrap_config(config_dir: Path) -> None:
@@ -99,9 +70,10 @@ def _bootstrap_config(config_dir: Path) -> None:
     config = DEFAULT_CONFIG.copy()
     save_config(config)
 
-    # Write rules.json
-    rules_path = config_dir / "rules.json"
-    rules_path.write_text(json.dumps(DEFAULT_RULES, indent=2))
+    # Copy baseline.yaml (policy file)
+    baseline_path = config_dir / "baseline.yaml"
+    if BASELINE_TEMPLATE_PATH.exists():
+        shutil.copy(BASELINE_TEMPLATE_PATH, baseline_path)
 
     # Write docker-compose.yml
     write_compose_file(sandbox=False)
@@ -327,14 +299,13 @@ def status() -> None:
     # Show modes
     try:
         api = get_api()
-        modes = api.get_modes()
+        modes = api.get_modes().get("modes", {})
 
         mode_table = Table(title="Addon Modes", show_header=True)
         mode_table.add_column("Addon")
         mode_table.add_column("Mode")
 
-        for addon, mode_info in modes.items():
-            mode = mode_info.get("mode", "unknown")
+        for addon, mode in modes.items():
             style = "red bold" if mode == "block" else "yellow"
             mode_table.add_row(addon, f"[{style}]{mode}[/{style}]")
 

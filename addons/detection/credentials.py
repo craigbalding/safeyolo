@@ -120,7 +120,7 @@ DEFAULT_RULES = [
     ),
     CredentialRule(
         name="anthropic",
-        patterns=[r"sk-ant-api[a-zA-Z0-9-]{90,}"],
+        patterns=[r"sk-ant-api[a-zA-Z0-9_-]{90,}"],
         allowed_hosts=["api.anthropic.com"],
     ),
     CredentialRule(

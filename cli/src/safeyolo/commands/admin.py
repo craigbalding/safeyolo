@@ -2,6 +2,7 @@
 
 import httpx
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -12,7 +13,6 @@ from ..config import (
     get_admin_token_path,
     get_certs_dir,
     get_config_path,
-    get_rules_path,
     load_config,
 )
 from ..docker import check_docker, get_container_status
@@ -52,15 +52,38 @@ def check() -> None:
             console.print("  [red]✗[/red]  Config file missing")
             all_ok = False
 
-    # 3. Check rules file
+    # 3. Check baseline.yaml (policy file) - CRITICAL
     if config_dir:
-        rules_path = get_rules_path()
-        if rules_path.exists():
-            console.print(f"  [green]✓[/green]  Rules file: {rules_path.name}")
+        baseline_path = config_dir / "baseline.yaml"
+        if baseline_path.exists():
+            try:
+                with open(baseline_path) as f:
+                    policy = yaml.safe_load(f)
+                if policy and isinstance(policy, dict):
+                    if "permissions" in policy:
+                        perm_count = len(policy.get("permissions", []))
+                        console.print(
+                            f"  [green]✓[/green]  Policy file: baseline.yaml ({perm_count} permissions)"
+                        )
+                    else:
+                        console.print(
+                            "  [yellow]![/yellow]  Policy file: baseline.yaml (no permissions section)"
+                        )
+                else:
+                    console.print("  [yellow]![/yellow]  Policy file: baseline.yaml (empty or invalid)")
+            except yaml.YAMLError as e:
+                console.print(f"  [red]✗[/red]  Policy file: invalid YAML - {e}")
+                all_ok = False
+            except Exception as e:
+                console.print(f"  [red]✗[/red]  Policy file: error reading - {e}")
+                all_ok = False
         else:
-            console.print("  [dim]–[/dim]  Rules file missing (using defaults)")
+            console.print("  [red]✗[/red]  Policy file: baseline.yaml NOT FOUND")
+            console.print("        Run: [bold]safeyolo init[/bold] to create default policy")
+            console.print("        [dim]The proxy will refuse to start without a policy file.[/dim]")
+            all_ok = False
 
-    # 4. Check admin token
+    # 5. Check admin token
     token = get_admin_token()
     token_path = get_admin_token_path()
     if token:
@@ -68,14 +91,14 @@ def check() -> None:
     else:
         console.print(f"  [dim]–[/dim]  Admin token not set (expected at {token_path})")
 
-    # 5. Check Docker
+    # 6. Check Docker
     if check_docker():
         console.print("  [green]✓[/green]  Docker available")
     else:
         console.print("  [red]✗[/red]  Docker not available")
         all_ok = False
 
-    # 6. Check container status
+    # 7. Check container status
     status = get_container_status()
     if status:
         if status.get("status") == "running":
@@ -87,12 +110,12 @@ def check() -> None:
     else:
         console.print("  [dim]–[/dim]  Container not created yet")
 
-    # 7. Check API connectivity
+    # 8. Check API connectivity
     if proxy_running:
         try:
             api = get_api()
             health = api.health()
-            if health.get("status") == "healthy":
+            if health.get("status") == "ok":
                 console.print("  [green]✓[/green]  Admin API responding")
             else:
                 console.print(f"  [yellow]![/yellow]  Admin API unhealthy: {health}")
@@ -103,7 +126,7 @@ def check() -> None:
             console.print(f"  [red]✗[/red]  Admin API unreachable: {e}")
             all_ok = False
 
-    # 8. Check CA certificate
+    # 9. Check CA certificate
     ca_cert_exists = False
     if config_dir:
         certs_dir = get_certs_dir()
@@ -114,7 +137,7 @@ def check() -> None:
         else:
             console.print("  [dim]–[/dim]  CA certificate (generated on first run)")
 
-    # 9. Check proxy reachability
+    # 10. Check proxy reachability
     if proxy_running:
         config = load_config()
         proxy_port = config.get("proxy", {}).get("port", 8080)
@@ -135,7 +158,7 @@ def check() -> None:
             console.print(f"  [red]✗[/red]  Proxy unreachable: {type(e).__name__}")
             all_ok = False
 
-    # 10. Check HTTPS inspection
+    # 11. Check HTTPS inspection
     if proxy_running and ca_cert_exists:
         config = load_config()
         proxy_port = config.get("proxy", {}).get("port", 8080)
@@ -363,7 +386,7 @@ def policies(
 
 def test(
     url: str = typer.Argument(
-        "https://api.anthropic.com/v1/messages",
+        "https://httpbin.org/get",
         help="URL to test through the proxy",
     ),
     method: str = typer.Option(
@@ -389,9 +412,8 @@ def test(
 
     Examples:
 
-        safeyolo test                                    # Test default URL
+        safeyolo test                                    # Test default (httpbin.org)
         safeyolo test https://api.openai.com/v1/models  # Test OpenAI
-        safeyolo test https://httpbin.org/get           # Test plain HTTP
         safeyolo test -H "Authorization: Bearer sk-test..." https://api.openai.com/v1/models
     """
     # Get proxy config

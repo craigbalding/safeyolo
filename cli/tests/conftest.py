@@ -20,15 +20,16 @@ def tmp_config_dir(tmp_path, monkeypatch):
 
     Uses environment variable overrides (SAFEYOLO_CONFIG_DIR, SAFEYOLO_LOGS_DIR)
     which are checked by the config accessor functions at call time.
-    This is the clean approach - no need to patch module-level constants.
     """
     config_dir = tmp_path / ".safeyolo"
     config_dir.mkdir()
-    logs_dir = tmp_path / ".local" / "state" / "safeyolo"
-    logs_dir.mkdir(parents=True)
     (config_dir / "certs").mkdir()
     (config_dir / "policies").mkdir()
     (config_dir / "data").mkdir()
+
+    # Logs go to XDG state directory (separate from config)
+    logs_dir = tmp_path / ".local" / "state" / "safeyolo"
+    logs_dir.mkdir(parents=True)
 
     # Write minimal config
     (config_dir / "config.yaml").write_text(
