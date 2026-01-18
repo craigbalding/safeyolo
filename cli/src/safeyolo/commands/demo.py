@@ -48,7 +48,7 @@ def _make_request(
     """Make request through proxy, return (status, headers, body)."""
     proxy_url = _get_proxy_url()
 
-    with httpx.Client(proxy=proxy_url, verify=False, timeout=timeout) as client:
+    with httpx.Client(proxy=proxy_url, timeout=timeout) as client:
         resp = client.request(method, url, headers=headers or {})
         return resp.status_code, dict(resp.headers), resp.text[:500]
 
