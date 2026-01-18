@@ -1,14 +1,13 @@
 """Initialize SafeYolo configuration."""
 
-import json
 import secrets
+import shutil
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
-from rich.table import Table
+from rich.prompt import Confirm
 
 from ..config import (
     DEFAULT_CONFIG,
@@ -18,154 +17,10 @@ from ..config import (
 )
 from ..docker import check_docker, write_compose_file
 
+# Path to bundled baseline.yaml in package
+BASELINE_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "baseline.yaml"
+
 console = Console()
-
-# Available API providers with their rules
-API_PROVIDERS = {
-    "openai": {
-        "name": "OpenAI",
-        "rules": [
-            {
-                "name": "openai",
-                "pattern": "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}",
-                "allowed_hosts": ["api.openai.com"],
-            },
-            {
-                "name": "openai_project",
-                "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
-                "allowed_hosts": ["api.openai.com"],
-            },
-        ],
-    },
-    "anthropic": {
-        "name": "Anthropic",
-        "rules": [
-            {
-                "name": "anthropic",
-                "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
-                "allowed_hosts": ["api.anthropic.com"],
-            },
-        ],
-    },
-    "github": {
-        "name": "GitHub",
-        "rules": [
-            {
-                "name": "github",
-                "pattern": "gh[ps]_[a-zA-Z0-9]{36}",
-                "allowed_hosts": ["api.github.com", "github.com"],
-            },
-        ],
-    },
-    "google": {
-        "name": "Google AI",
-        "rules": [
-            {
-                "name": "google_ai",
-                "pattern": "AIza[a-zA-Z0-9_-]{35}",
-                "allowed_hosts": ["generativelanguage.googleapis.com"],
-            },
-        ],
-    },
-    "aws": {
-        "name": "AWS",
-        "rules": [
-            {
-                "name": "aws_access_key",
-                "pattern": "AKIA[A-Z0-9]{16}",
-                "allowed_hosts": ["*.amazonaws.com"],
-            },
-        ],
-    },
-}
-
-# Default credential rules for common providers
-DEFAULT_RULES = {
-    "credentials": [
-        {
-            "name": "openai",
-            "pattern": "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}",
-            "allowed_hosts": ["api.openai.com"],
-        },
-        {
-            "name": "openai_project",
-            "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
-            "allowed_hosts": ["api.openai.com"],
-        },
-        {
-            "name": "anthropic",
-            "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
-            "allowed_hosts": ["api.anthropic.com"],
-        },
-        {
-            "name": "github",
-            "pattern": "gh[ps]_[a-zA-Z0-9]{36}",
-            "allowed_hosts": ["api.github.com", "github.com"],
-        },
-    ],
-    "entropy_detection": {
-        "enabled": True,
-        "min_length": 20,
-        "min_charset_diversity": 0.5,
-        "min_shannon_entropy": 3.5,
-    },
-}
-
-
-def _select_providers_interactive() -> list[str]:
-    """Interactively select API providers."""
-    console.print("\n[bold]Select API providers to protect:[/bold]\n")
-
-    # Show available providers
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Provider")
-    table.add_column("Protected Hosts")
-
-    for idx, (_key, provider) in enumerate(API_PROVIDERS.items(), 1):
-        hosts = ", ".join(provider["rules"][0]["allowed_hosts"])
-        table.add_row(str(idx), provider["name"], hosts)
-
-    console.print(table)
-    console.print()
-
-    # Get selection
-    choices = Prompt.ask(
-        "Enter numbers to enable (comma-separated, or 'all')",
-        default="1,2,3"  # OpenAI, Anthropic, GitHub by default
-    )
-
-    if choices.lower() == "all":
-        return list(API_PROVIDERS.keys())
-
-    selected = []
-    provider_keys = list(API_PROVIDERS.keys())
-    for part in choices.split(","):
-        part = part.strip()
-        if part.isdigit():
-            idx = int(part) - 1
-            if 0 <= idx < len(provider_keys):
-                selected.append(provider_keys[idx])
-
-    return selected or ["openai", "anthropic", "github"]
-
-
-def _build_rules(providers: list[str]) -> dict:
-    """Build rules config from selected providers."""
-    rules = []
-    for provider_key in providers:
-        if provider_key in API_PROVIDERS:
-            rules.extend(API_PROVIDERS[provider_key]["rules"])
-
-    return {
-        "credentials": rules,
-        "entropy_detection": {
-            "enabled": True,
-            "min_length": 20,
-            "min_charset_diversity": 0.5,
-            "min_shannon_entropy": 3.5,
-        },
-    }
 
 
 def _generate_admin_token(config_dir: Path) -> str:
@@ -190,11 +45,6 @@ def init(
         "--interactive/--no-interactive", "-i",
         help="Run interactive setup wizard",
     ),
-    providers: str = typer.Option(
-        None,
-        "--providers", "-p",
-        help="Comma-separated providers (openai,anthropic,github,google,aws)",
-    ),
     try_mode: bool = typer.Option(
         False,
         "--try",
@@ -213,7 +63,6 @@ def init(
         safeyolo init                    # Sandbox Mode (secure default)
         safeyolo init --try              # Try Mode for evaluation
         safeyolo init --no-interactive   # Use defaults
-        safeyolo init -p openai,anthropic  # Specify providers
     """
     # Sandbox is default, --try disables it
     sandbox = not try_mode
@@ -222,7 +71,6 @@ def init(
     config_dir = get_config_dir()
     logs_dir = get_logs_dir()
     config_path = config_dir / "config.yaml"
-    rules_path = config_dir / "rules.json"
 
     # Check for existing config
     if config_path.exists() and not force:
@@ -248,17 +96,7 @@ def init(
             if not Confirm.ask("Continue anyway?", default=True):
                 raise typer.Exit(1)
 
-    console.print(f"\n[bold]Initializing SafeYolo in {config_dir}[/bold]")
-
-    # Select providers
-    if providers:
-        selected_providers = [p.strip() for p in providers.split(",")]
-    elif interactive:
-        selected_providers = _select_providers_interactive()
-    else:
-        selected_providers = ["openai", "anthropic", "github"]
-
-    console.print(f"\n[dim]Providers: {', '.join(selected_providers)}[/dim]\n")
+    console.print(f"\n[bold]Initializing SafeYolo in {config_dir}[/bold]\n")
 
     # Create directories
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -277,17 +115,22 @@ def init(
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 
-    # Write rules.json
-    rules = _build_rules(selected_providers)
-    rules_path.write_text(json.dumps(rules, indent=2))
-    console.print(f"  [green]Created[/green] {rules_path}")
+    # Copy baseline.yaml (policy file)
+    baseline_path = config_dir / "baseline.yaml"
+    if BASELINE_TEMPLATE_PATH.exists():
+        shutil.copy(BASELINE_TEMPLATE_PATH, baseline_path)
+        console.print(f"  [green]Created[/green] {baseline_path}")
+    else:
+        console.print(
+            f"  [red]Warning[/red]: Could not find baseline.yaml template at {BASELINE_TEMPLATE_PATH}"
+        )
+        console.print("    The proxy will fail to start without a policy file.")
 
     # Write docker-compose.yml
     compose_path = write_compose_file(sandbox=sandbox)
     console.print(f"  [green]Created[/green] {compose_path}")
 
     # Summary
-    provider_names = [API_PROVIDERS.get(p, {}).get("name", p) for p in selected_providers]
     mode_label = "[bold green]Sandbox Mode[/bold green]" if sandbox else "Try Mode"
 
     if sandbox:
@@ -309,8 +152,8 @@ def init(
         Panel(
             f"[green]SafeYolo initialized![/green]\n\n"
             f"Mode: {mode_label}\n"
-            f"Protected providers: {', '.join(provider_names)}\n"
             f"Configuration: {config_dir}\n"
+            f"Policy: {baseline_path}\n"
             f"Logs: {logs_dir}\n\n"
             f"{next_steps}",
             title="Success",

@@ -33,7 +33,7 @@ services:
       - "127.0.0.1:9090:9090"   # Admin API (localhost only)
     volumes:
       - certs:/certs
-      - ./data:/app/data
+      - ./data:/safeyolo/data
       - ./logs:/app/logs
     environment:
       - PROXY_PORT=8080

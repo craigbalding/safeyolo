@@ -8,8 +8,17 @@ Key pattern: Use taddons.context() to set up ctx.options properly.
 See: https://snyk.io/advisor/python/mitmproxy/functions/mitmproxy.test.taddons.context
 """
 
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+# Set log path to temp directory BEFORE utils.py is imported
+# (AUDIT_LOG_PATH is evaluated at module import time)
+os.environ.setdefault(
+    "SAFEYOLO_LOG_PATH",
+    str(Path(tempfile.gettempdir()) / "safeyolo-test.jsonl"),
+)
 
 import pytest
 

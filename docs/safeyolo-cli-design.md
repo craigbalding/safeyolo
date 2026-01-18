@@ -20,7 +20,7 @@ SafeYolo CLI is a host-side command-line tool that provides a friendly interface
 │  ┌────────────────┐       ┌──────────────────────────────┐  │
 │  │  safeyolo CLI  │◄─────►│  ~/.safeyolo/ (or ./safeyolo)│  │
 │  │                │       │    config.yaml                │  │
-│  │  Commands:     │       │    rules.json                 │  │
+│  │  Commands:     │       │    baseline.yaml              │  │
 │  │  - init        │       │    policies/                  │  │
 │  │  - start/stop  │       │    logs/                      │  │
 │  │  - watch       │       └──────────────────────────────┘  │
@@ -45,7 +45,7 @@ SafeYolo CLI is a host-side command-line tool that provides a friendly interface
 │  │  └─────────────────────────────────────────────────┘ │  │
 │  │                                                       │  │
 │  │  Mounted volumes:                                     │  │
-│  │  - /config (rules.json, policy.yaml)                  │  │
+│  │  - /config (baseline.yaml)                            │  │
 │  │  - /logs (safeyolo.jsonl)                             │  │
 │  │  - /certs (mitmproxy CA)                              │  │
 │  │  - /data (hmac_secret, policies/)                     │  │
@@ -243,7 +243,7 @@ The `token_hmac` serves as the approval token - it's deterministic for the same 
 ~/.safeyolo/                    # Global config (fallback)
 ./safeyolo/                     # Project-specific (preferred)
 ├── config.yaml                 # Main configuration
-├── rules.json                  # Credential patterns + allowed hosts
+├── baseline.yaml               # Policy file (permissions, credential rules)
 ├── policies/                   # Approved credentials per project
 │   ├── default.yaml
 │   └── {project}.yaml
@@ -285,28 +285,25 @@ approval:
     - destination_mismatch   # Known credential, wrong host
 ```
 
-### rules.json
+### baseline.yaml
 
-```json
-{
-  "credentials": [
-    {
-      "name": "openai",
-      "pattern": "sk-[a-zA-Z0-9]{48}",
-      "allowed_hosts": ["api.openai.com"]
-    },
-    {
-      "name": "anthropic",
-      "pattern": "sk-ant-[a-zA-Z0-9-]{95}",
-      "allowed_hosts": ["api.anthropic.com"]
-    }
-  ],
-  "entropy_detection": {
-    "enabled": true,
-    "min_length": 20,
-    "min_entropy": 3.5
-  }
-}
+Credential patterns and other policy rules are defined in `baseline.yaml`:
+
+```yaml
+# Credential patterns for routing protection
+credential_rules:
+  - name: openai
+    pattern: "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts: ["api.openai.com"]
+  - name: anthropic
+    pattern: "sk-ant-api[a-zA-Z0-9-]{90,}"
+    allowed_hosts: ["api.anthropic.com"]
+
+# Entropy detection settings
+entropy_detection:
+  enabled: true
+  min_length: 20
+  min_shannon_entropy: 3.5
 ```
 
 ## Distribution

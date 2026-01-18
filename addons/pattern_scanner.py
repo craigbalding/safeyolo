@@ -28,8 +28,6 @@ Usage:
 """
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 from base import SecurityAddon
 from detection.patterns import (
@@ -54,7 +52,6 @@ class PatternScanner(SecurityAddon):
 
     def __init__(self):
         self.rules: list[PatternRule] = []
-        self.log_path: Path | None = None
         self.scans_total = 0
         self.matches_total = 0
         self.blocks_total = 0
@@ -74,18 +71,6 @@ class PatternScanner(SecurityAddon):
             default=False,
             help="Block responses matching patterns (default: log only)",
         )
-        loader.add_option(
-            name="pattern_log_path",
-            typespec=Optional[str],
-            default=None,
-            help="Path for JSONL match log",
-        )
-
-    def configure(self, updates):
-        """Handle option changes."""
-        if "pattern_log_path" in updates:
-            path = ctx.options.pattern_log_path
-            self.log_path = Path(path) if path else None
 
     def _load_patterns_from_config(self, sensor_config: dict):
         """Load scan patterns from sensor configuration.

@@ -237,7 +237,7 @@ addons: {}
         # Add approval
         engine.add_credential_approval(
             destination="api.custom.com",
-            credential="custom:*"
+            cred_id="custom:*"
         )
 
         # Should now be allowed
@@ -262,7 +262,7 @@ addons: {}
         # Add HMAC-specific approval
         engine.add_credential_approval(
             destination="api.specific.com",
-            credential="hmac:uniquehmac123"
+            cred_id="hmac:uniquehmac123"
         )
 
         # Should now be allowed with correct HMAC

@@ -7,7 +7,7 @@ Prevents thundering herd problems with virtual scheduling.
 Usage:
     from budget_tracker import GCRABudgetTracker
 
-    tracker = GCRABudgetTracker(state_file=Path("/app/data/budget_state.json"))
+    tracker = GCRABudgetTracker(state_file=Path("/safeyolo/data/budget_state.json"))
     allowed, remaining = tracker.check_and_consume("api.openai.com", 3000)  # 3000 req/min
 """
 

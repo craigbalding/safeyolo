@@ -4,7 +4,7 @@ service_discovery.py - Dynamic service registry with hot reload
 Maps container IPs to client IDs for per-client credential policies.
 Watches services.yaml for changes and automatically reloads.
 
-Canonical path: /app/data/services.yaml (in container)
+Canonical path: /safeyolo/data/services.yaml (in container)
     - Mounted from ~/.safeyolo/data/ on host
     - CLI writes via `safeyolo start` or `safeyolo sync`
     - Users with custom tooling can edit the host file directly
@@ -160,14 +160,14 @@ class ServiceDiscovery:
         """Get canonical services.yaml path.
 
         Returns:
-            /app/data/services.yaml if it exists, None otherwise.
+            /safeyolo/data/services.yaml if it exists, None otherwise.
 
         Note:
             This is the only supported location. The file is mounted from
             ~/.safeyolo/data/services.yaml on the host. Users with custom
             tooling should write to that host path.
         """
-        canonical_path = Path("/app/data/services.yaml")
+        canonical_path = Path("/safeyolo/data/services.yaml")
         if canonical_path.exists():
             return canonical_path
         return None

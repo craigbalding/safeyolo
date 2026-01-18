@@ -108,7 +108,7 @@ Configuration is stored in `./safeyolo/` (project-specific) or `~/.safeyolo/` (g
 ```
 safeyolo/
 ├── config.yaml          # Main configuration
-├── rules.json           # Credential patterns
+├── baseline.yaml        # Policy file (permissions, credential rules)
 ├── docker-compose.yml   # Generated compose file
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
@@ -131,25 +131,22 @@ modes:
   pattern_scanner: warn
 ```
 
-### rules.json
+### baseline.yaml
 
-Define credential patterns and their allowed destinations:
+The policy file defines permissions, credential rules, and scan patterns. See the default `baseline.yaml` for full documentation. Key sections:
 
-```json
-{
-  "credentials": [
-    {
-      "name": "openai",
-      "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
-      "allowed_hosts": ["api.openai.com"]
-    },
-    {
-      "name": "anthropic",
-      "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
-      "allowed_hosts": ["api.anthropic.com"]
-    }
-  ]
-}
+```yaml
+# Credential patterns for routing protection
+credential_rules:
+  - name: openai
+    pattern: "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts: ["api.openai.com"]
+
+# IAM-style permissions
+permissions:
+  - action: "network:request"
+    resource: "api.openai.com/*"
+    effect: allow
 ```
 
 ## Workflow

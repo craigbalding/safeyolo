@@ -634,11 +634,11 @@ class TestCanonicalPath:
             # Should not find file at wrong location
             result = discovery._find_config()
 
-            # Result should be None (canonical path /app/data/services.yaml won't exist in test)
+            # Result should be None (canonical path /safeyolo/data/services.yaml won't exist in test)
             assert result is None
 
     def test_uses_canonical_path_when_exists(self):
-        """Test uses /app/data/services.yaml when it exists."""
+        """Test uses /safeyolo/data/services.yaml when it exists."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
@@ -646,4 +646,4 @@ class TestCanonicalPath:
         # Mock the canonical path existing
         with patch('pathlib.Path.exists', return_value=True):
             result = discovery._find_config()
-            assert result == Path("/app/data/services.yaml")
+            assert result == Path("/safeyolo/data/services.yaml")

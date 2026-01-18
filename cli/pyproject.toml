@@ -60,6 +60,7 @@ include = [
     "src/safeyolo/**/*.py",
     "src/safeyolo/templates/**/*.j2",
     "src/safeyolo/templates/**/*.md",
+    "src/safeyolo/templates/**/*.yaml",
     "src/safeyolo/templates/**/.env.example",
 ]
 

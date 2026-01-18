@@ -142,34 +142,34 @@ class TestAdminAPIApproval:
     """Tests for approval endpoints."""
 
     def test_add_approval(self, tmp_config_dir, mock_httpx):
-        """Adds approval rule."""
-        mock_httpx["response"].json.return_value = {"status": "approved"}
+        """Adds approval rule with specific cred_id."""
+        mock_httpx["response"].json.return_value = {"status": "added"}
 
         api = AdminAPI(token="test")
         result = api.add_approval(
-            project="default",
-            token_hmac="abc123",
-            hosts=["api.example.com"],
-            paths=["/**"],
+            destination="api.example.com",
+            cred_id="hmac:abc123def456",
+            tier="explicit",
         )
 
-        assert result["status"] == "approved"
+        assert result["status"] == "added"
         call_args = mock_httpx["client"].request.call_args
-        assert "/admin/policy/default/approve" in call_args[0][1]
-        assert call_args[1]["json"]["token_hmac"] == "abc123"
-        assert call_args[1]["json"]["hosts"] == ["api.example.com"]
+        assert "/admin/policy/baseline/approve" in call_args[0][1]
+        assert call_args[1]["json"]["destination"] == "api.example.com"
+        assert call_args[1]["json"]["cred_id"] == "hmac:abc123def456"
 
     def test_add_approval_minimal(self, tmp_config_dir, mock_httpx):
-        """Adds approval with minimal params."""
-        mock_httpx["response"].json.return_value = {"status": "approved"}
+        """Adds approval with minimal params (tier defaults to explicit)."""
+        mock_httpx["response"].json.return_value = {"status": "added"}
 
         api = AdminAPI(token="test")
-        api.add_approval(project="default", token_hmac="xyz", hosts=["example.com"])
+        api.add_approval(destination="example.com", cred_id="hmac:xyz789")
 
         call_args = mock_httpx["client"].request.call_args
         payload = call_args[1]["json"]
-        assert "paths" not in payload
-        assert "name" not in payload
+        assert payload["destination"] == "example.com"
+        assert payload["cred_id"] == "hmac:xyz789"
+        assert payload["tier"] == "explicit"
 
 
 class TestAdminAPIAllowlist:

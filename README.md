@@ -80,6 +80,8 @@ $ safeyolo watch
 ╰───────────────────────────────────────────────────────────╯
 ```
 
+**Try it yourself:** Run `safeyolo demo` for a guided tour of the security features. Run `safeyolo watch` in a second terminal to see approvals appear in real-time.
+
 ---
 
 ## Try Mode (Evaluation Only)

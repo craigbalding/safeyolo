@@ -127,6 +127,8 @@ In `warn` mode, violations are logged but traffic is not blocked. Useful for:
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
 | `SAFEYOLO_ALLOW_ROOT` | Allow running CLI as root (not recommended) |
+| `SAFEYOLO_TUI` | Set to `true` for mitmproxy TUI in tmux (default: headless mitmdump) |
+| `SAFEYOLO_BLOCK` | Set to `true` to enable blocking mode for all security addons |
 
 ## Per-Agent Policies
 

@@ -49,14 +49,6 @@ HTTP client usage:
     decision = client.evaluate(event)
 """
 
-from .admin_client import (
-    AdminClientConfig,
-    HttpPDPAdminClient,
-    LocalPDPAdminClient,
-    PDPAdminClient,
-    get_admin_client,
-    reset_admin_client,
-)
 from .client import (
     HttpPolicyClient,
     LocalPolicyClient,
@@ -151,11 +143,4 @@ __all__ = [
     "get_pdp",
     "reset_pdp",
     "ENGINE_VERSION",
-    # Admin client
-    "PDPAdminClient",
-    "AdminClientConfig",
-    "LocalPDPAdminClient",
-    "HttpPDPAdminClient",
-    "get_admin_client",
-    "reset_admin_client",
 ]

@@ -2,11 +2,11 @@
 #
 # SafeYolo startup script
 #
-# Generates mitmproxy CA cert if needed, then starts mitmproxy TUI
-# in tmux with native addon chain. JSONL logs are tailed to stdout
-# for `docker logs -f`.
+# Generates mitmproxy CA cert if needed, then starts mitmdump (headless)
+# with native addon chain. JSONL logs go to file.
 #
-# Attach to TUI: docker exec -it safeyolo tmux attach
+# For interactive TUI mode: SAFEYOLO_TUI=true
+#   Runs mitmproxy in tmux, attach with: docker exec -it safeyolo tmux attach
 #
 
 set -e
@@ -28,8 +28,8 @@ trap cleanup SIGTERM SIGINT SIGHUP
 
 CERT_DIR="${CERT_DIR:-/certs-private}"
 PUBLIC_CERT_DIR="${PUBLIC_CERT_DIR:-/certs-public}"
+CONFIG_DIR="${CONFIG_DIR:-/safeyolo}"
 LOG_DIR="${LOG_DIR:-/app/logs}"
-CONFIG_DIR="${CONFIG_DIR:-/app/config}"
 PROXY_PORT="${PROXY_PORT:-8080}"
 ADMIN_PORT="${ADMIN_PORT:-9090}"
 
@@ -184,8 +184,6 @@ fi
 # TLS passthrough for frpc - frp protocol doesn't work through MITM
 # Port 7000 is frps server, port 443 still gets MITM for health checks
 MITM_OPTS="${MITM_OPTS} --ignore-hosts '^api\\.asterfold\\.ai:7000$'"
-MITM_OPTS="${MITM_OPTS} --set safeyolo_log_path=${LOG_DIR}/safeyolo.jsonl"
-MITM_OPTS="${MITM_OPTS} --set credguard_log_path=${LOG_DIR}/safeyolo.jsonl"
 MITM_OPTS="${MITM_OPTS} --set admin_port=${ADMIN_PORT}"
 # Stream large responses to prevent OOM on media downloads (podcasts, etc.)
 # Security addons operate on request bodies and LLM API responses, not large media files
@@ -244,30 +242,35 @@ if [ -f "/app/addons/pattern_scanner.py" ]; then
 fi
 echo ""
 
-# Add credential rules if file exists
-if [ -f "${CONFIG_DIR}/credential_rules.json" ]; then
-    MITM_OPTS="${MITM_OPTS} --set credguard_rules=${CONFIG_DIR}/credential_rules.json"
-    echo "Using credential rules from ${CONFIG_DIR}/credential_rules.json"
-fi
-
 # Add rate limit config if file exists
 if [ -f "${CONFIG_DIR}/rate_limits.json" ]; then
     MITM_OPTS="${MITM_OPTS} --set ratelimit_config=${CONFIG_DIR}/rate_limits.json"
     echo "Using rate limits from ${CONFIG_DIR}/rate_limits.json"
 fi
 
-# Add policy config if file exists
-if [ -f "${CONFIG_DIR}/baseline.yaml" ]; then
-    MITM_OPTS="${MITM_OPTS} --set policy_baseline=${CONFIG_DIR}/baseline.yaml"
-    echo "Using policy baseline from ${CONFIG_DIR}/baseline.yaml"
-elif [ -f "${CONFIG_DIR}/policy.yaml" ]; then
-    # Legacy path - remove once migrated
-    MITM_OPTS="${MITM_OPTS} --set policy_baseline=${CONFIG_DIR}/policy.yaml"
-    echo "Using policy baseline from ${CONFIG_DIR}/policy.yaml (legacy path)"
+# Policy file is REQUIRED - fail closed if missing
+if [ ! -f "${CONFIG_DIR}/baseline.yaml" ]; then
+    echo ""
+    echo "=========================================="
+    echo "FATAL: Policy file not found"
+    echo "=========================================="
+    echo ""
+    echo "SafeYolo requires a policy file to operate."
+    echo "Expected: ${CONFIG_DIR}/baseline.yaml"
+    echo ""
+    echo "To fix:"
+    echo "  1. Run 'safeyolo init' to create default policy"
+    echo "  2. Or mount your own baseline.yaml to ${CONFIG_DIR}/"
+    echo ""
+    echo "A security proxy cannot run without a policy."
+    echo "=========================================="
+    exit 1
 fi
+MITM_OPTS="${MITM_OPTS} --set policy_baseline=${CONFIG_DIR}/baseline.yaml"
+echo "Using policy baseline from ${CONFIG_DIR}/baseline.yaml"
 
 #echo "Addons: policy -> discovery -> rate_limiter -> circuit_breaker -> credential_guard -> yara -> pattern -> injection -> logger -> metrics -> admin"
-echo "Attach to TUI: docker exec -it safeyolo tmux attach"
+echo "For TUI mode: set SAFEYOLO_TUI=true"
 
 # Ensure log files exist
 touch "${LOG_DIR}/safeyolo.jsonl"
@@ -275,11 +278,11 @@ touch "${LOG_DIR}/mitmproxy.log"
 echo "Logs: ${LOG_DIR}/safeyolo.jsonl (structured), ${LOG_DIR}/mitmproxy.log (addon debug)"
 
 # Generate admin API token if not provided
-ADMIN_TOKEN_FILE="/app/data/admin_token"
+ADMIN_TOKEN_FILE="${CONFIG_DIR}/data/admin_token"
 if [ ! -f "$ADMIN_TOKEN_FILE" ] && [ -z "${ADMIN_API_TOKEN}" ]; then
     echo ""
     echo "Generating admin API token..."
-    mkdir -p /app/data
+    mkdir -p "${CONFIG_DIR}/data"
     python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$ADMIN_TOKEN_FILE"
     chmod 600 "$ADMIN_TOKEN_FILE"
     GENERATED_TOKEN=$(cat "$ADMIN_TOKEN_FILE")
@@ -309,75 +312,79 @@ if [ -f /opt/shell_mux/container_agent.py ] && [ -n "${CONTAINER_NAME}" ]; then
 fi
 
 # ==============================================================================
-# Headless mode (SAFEYOLO_HEADLESS=true)
-# Runs mitmdump directly without tmux/TUI - used by blackbox tests and CI
+# TUI mode (SAFEYOLO_TUI=true)
+# Runs mitmproxy TUI in tmux - for interactive debugging/monitoring
 # ==============================================================================
-if [ "${SAFEYOLO_HEADLESS}" = "true" ]; then
+if [ "${SAFEYOLO_TUI}" = "true" ]; then
     echo ""
-    echo "=== Starting in HEADLESS mode (mitmdump) ==="
-    # File logging configured via file_logging.py addon's running() hook
-    # exec replaces shell - Docker manages process lifecycle
-    exec mitmdump -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} "$@"
-fi
+    echo "=== Starting in TUI mode (mitmproxy in tmux) ==="
+    echo "Attach to TUI: docker exec -it safeyolo tmux attach"
 
-# ==============================================================================
-# Interactive mode (default) - mitmproxy TUI in tmux
-# ==============================================================================
+    # Build the mitmproxy command and save it for reload script
+    MITMPROXY_CMD="mitmproxy -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"
+    echo "${MITMPROXY_CMD}" > /tmp/mitmproxy-cmd.sh
+    chmod +x /tmp/mitmproxy-cmd.sh
 
-# Build the mitmproxy command and save it for reload script
-MITMPROXY_CMD="mitmproxy -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"
-echo "${MITMPROXY_CMD}" > /tmp/mitmproxy-cmd.sh
-chmod +x /tmp/mitmproxy-cmd.sh
+    # Start mitmproxy TUI in tmux (detached)
+    # tmux provides the PTY that mitmproxy's TUI needs
+    tmux new-session -d -s proxy "${MITMPROXY_CMD}"
 
-# Start mitmproxy TUI in tmux (detached)
-# tmux provides the PTY that mitmproxy's TUI needs
-tmux new-session -d -s proxy "${MITMPROXY_CMD}"
+    # Give mitmproxy a moment to start (or crash)
+    sleep 2
 
-# Give mitmproxy a moment to start (or crash)
-sleep 2
-
-# Check if tmux session is still alive
-if ! tmux has-session -t proxy 2>/dev/null; then
-    echo "ERROR: mitmproxy failed to start. Check ${LOG_DIR}/mitmproxy.log"
-    cat "${LOG_DIR}/mitmproxy.log"
-    exit 1
-fi
-
-# Configure network guard to block mode (fail closed if this fails)
-echo "Configuring network guard to block mode..."
-ADMIN_READY=false
-for i in $(seq 1 30); do
-    if python3 -c "import httpx; exit(0 if httpx.get('http://localhost:9090/health', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}, timeout=2).status_code == 200 else 1)" 2>/dev/null; then
-        ADMIN_READY=true
-        break
+    # Check if tmux session is still alive
+    if ! tmux has-session -t proxy 2>/dev/null; then
+        echo "ERROR: mitmproxy failed to start. Check ${LOG_DIR}/mitmproxy.log"
+        cat "${LOG_DIR}/mitmproxy.log"
+        exit 1
     fi
-    sleep 1
-done
 
-if [ "$ADMIN_READY" != "true" ]; then
-    echo "ERROR: Admin API not ready after 30 seconds - failing closed"
-    tmux kill-session -t proxy 2>/dev/null
-    exit 1
+    # Configure network guard to block mode (fail closed if this fails)
+    echo "Configuring network guard to block mode..."
+    ADMIN_READY=false
+    for i in $(seq 1 30); do
+        if python3 -c "import httpx; exit(0 if httpx.get('http://localhost:9090/health', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}, timeout=2).status_code == 200 else 1)" 2>/dev/null; then
+            ADMIN_READY=true
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$ADMIN_READY" != "true" ]; then
+        echo "ERROR: Admin API not ready after 30 seconds - failing closed"
+        tmux kill-session -t proxy 2>/dev/null
+        exit 1
+    fi
+
+    # Enable blocking for network guard and verify
+    python3 -c "import httpx; httpx.put('http://localhost:9090/plugins/network-guard/mode', json={'mode':'block'}, headers={'Authorization': 'Bearer $ADMIN_TOKEN'})" 2>/dev/null
+
+    # Verify it took effect via GET /plugins/network-guard/mode
+    MODE=$(python3 -c "import httpx; r=httpx.get('http://localhost:9090/plugins/network-guard/mode', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}); print(r.json().get('mode','unknown'))" 2>/dev/null)
+
+    if [ "$MODE" != "block" ]; then
+        echo "ERROR: Failed to set network guard to block mode (got: $MODE) - failing closed"
+        tmux kill-session -t proxy 2>/dev/null
+        exit 1
+    fi
+
+    echo "Network guard confirmed in block mode"
+
+    # Tail JSONL logs to stdout (for docker logs -f)
+    echo "SafeYolo ready - tailing JSONL logs to stdout"
+    tail -f "${LOG_DIR}/safeyolo.jsonl" &
+    TAIL_PID=$!
+
+    # Wait for tail (keeps shell alive to reap zombie children)
+    wait $TAIL_PID
+    exit 0
 fi
 
-# Enable blocking for network guard and verify
-python3 -c "import httpx; httpx.put('http://localhost:9090/plugins/network-guard/mode', json={'mode':'block'}, headers={'Authorization': 'Bearer $ADMIN_TOKEN'})" 2>/dev/null
-
-# Verify it took effect via GET /plugins/network-guard/mode
-MODE=$(python3 -c "import httpx; r=httpx.get('http://localhost:9090/plugins/network-guard/mode', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}); print(r.json().get('mode','unknown'))" 2>/dev/null)
-
-if [ "$MODE" != "block" ]; then
-    echo "ERROR: Failed to set network guard to block mode (got: $MODE) - failing closed"
-    tmux kill-session -t proxy 2>/dev/null
-    exit 1
-fi
-
-echo "Network guard confirmed in block mode"
-
-# Tail JSONL logs to stdout (for docker logs -f)
-echo "SafeYolo ready - tailing JSONL logs to stdout"
-tail -f "${LOG_DIR}/safeyolo.jsonl" &
-TAIL_PID=$!
-
-# Wait for tail (keeps shell alive to reap zombie children)
-wait $TAIL_PID
+# ==============================================================================
+# Headless mode (default) - mitmdump without tmux/TUI
+# ==============================================================================
+echo ""
+echo "=== Starting in headless mode (mitmdump) ==="
+# File logging configured via file_logging.py addon's running() hook
+# exec replaces shell - Docker manages process lifecycle
+exec mitmdump -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} "$@"

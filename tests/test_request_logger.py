@@ -2,126 +2,66 @@
 Tests for request_logger.py - Request/response JSONL logging.
 
 Tests logging functionality and quiet hosts configuration.
+Note: Quiet hosts config now loaded from PDP, not file-based QuietHostsConfig.
 """
 
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+import utils  # Import to patch AUDIT_LOG_PATH
 
 
-class TestQuietHostsConfig:
-    """Tests for QuietHostsConfig class."""
+class TestRequestLoggerShouldQuiet:
+    """Tests for _should_quiet internal method."""
 
-    def test_loads_empty_config(self):
-        """Test loading empty config file."""
-        from request_logger import QuietHostsConfig
+    def test_matches_exact_host(self):
+        """Test exact host matching."""
+        from request_logger import RequestLogger
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "quiet_hosts.yaml"
-            config_path.write_text("hosts: []\npaths: {}")
+        addon = RequestLogger()
+        addon._quiet_hosts = {"statsig.anthropic.com", "telemetry.example.com"}
 
-            config = QuietHostsConfig(config_path)
-            result = config.load()
+        assert addon._should_quiet("statsig.anthropic.com", "/v1/rgstr") is True
+        assert addon._should_quiet("telemetry.example.com", "/metrics") is True
+        assert addon._should_quiet("api.example.com", "/data") is False
 
-            assert result is True
+    def test_matches_wildcard_patterns(self):
+        """Test wildcard host pattern matching."""
+        from request_logger import RequestLogger
 
-    def test_loads_hosts_list(self):
-        """Test loading hosts list from config."""
-        from request_logger import QuietHostsConfig
+        addon = RequestLogger()
+        addon._quiet_host_patterns = ["*.telemetry.com", "stats.*"]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "quiet_hosts.yaml"
-            config_path.write_text("""
-hosts:
-  - statsig.anthropic.com
-  - telemetry.example.com
-""")
+        assert addon._should_quiet("app.telemetry.com", "/") is True
+        assert addon._should_quiet("api.telemetry.com", "/") is True
+        assert addon._should_quiet("stats.example.com", "/") is True
+        assert addon._should_quiet("api.example.com", "/") is False
 
-            config = QuietHostsConfig(config_path)
-            config.load()
+    def test_matches_path_patterns(self):
+        """Test host:path pattern matching."""
+        from request_logger import RequestLogger
 
-            assert config.should_quiet("statsig.anthropic.com", "/v1/rgstr") is True
-            assert config.should_quiet("telemetry.example.com", "/metrics") is True
-            assert config.should_quiet("api.example.com", "/data") is False
+        addon = RequestLogger()
+        addon._quiet_paths = {
+            "api.example.com": ["/health", "/metrics/*"]
+        }
 
-    def test_loads_wildcard_patterns(self):
-        """Test loading wildcard host patterns."""
-        from request_logger import QuietHostsConfig
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "quiet_hosts.yaml"
-            config_path.write_text("""
-hosts:
-  - "*.telemetry.com"
-  - "stats.*"
-""")
-
-            config = QuietHostsConfig(config_path)
-            config.load()
-
-            assert config.should_quiet("app.telemetry.com", "/") is True
-            assert config.should_quiet("api.telemetry.com", "/") is True
-            assert config.should_quiet("stats.example.com", "/") is True
-            assert config.should_quiet("api.example.com", "/") is False
-
-    def test_loads_path_patterns(self):
-        """Test loading host:path patterns."""
-        from request_logger import QuietHostsConfig
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "quiet_hosts.yaml"
-            config_path.write_text("""
-hosts: []
-paths:
-  api.example.com:
-    - /health
-    - /metrics/*
-""")
-
-            config = QuietHostsConfig(config_path)
-            config.load()
-
-            assert config.should_quiet("api.example.com", "/health") is True
-            assert config.should_quiet("api.example.com", "/metrics/foo") is True
-            assert config.should_quiet("api.example.com", "/v1/data") is False
-
-    def test_handles_missing_file(self):
-        """Test handling of missing config file."""
-        from request_logger import QuietHostsConfig
-
-        config = QuietHostsConfig(Path("/nonexistent/path.yaml"))
-        result = config.load()
-
-        assert result is False
-
-    def test_handles_invalid_yaml(self):
-        """Test handling of invalid YAML."""
-        from request_logger import QuietHostsConfig
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "quiet_hosts.yaml"
-            config_path.write_text("not: valid: yaml: {{{")
-
-            config = QuietHostsConfig(config_path)
-            result = config.load()
-
-            assert result is False
+        assert addon._should_quiet("api.example.com", "/health") is True
+        assert addon._should_quiet("api.example.com", "/metrics/foo") is True
+        assert addon._should_quiet("api.example.com", "/v1/data") is False
 
     def test_case_insensitive_matching(self):
         """Test host matching is case insensitive."""
-        from request_logger import QuietHostsConfig
+        from request_logger import RequestLogger
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "quiet_hosts.yaml"
-            config_path.write_text("hosts:\n  - Example.Com")
+        addon = RequestLogger()
+        addon._quiet_hosts = {"example.com"}
 
-            config = QuietHostsConfig(config_path)
-            config.load()
-
-            assert config.should_quiet("example.com", "/") is True
-            assert config.should_quiet("EXAMPLE.COM", "/") is True
-            assert config.should_quiet("Example.Com", "/") is True
+        assert addon._should_quiet("example.com", "/") is True
+        assert addon._should_quiet("EXAMPLE.COM", "/") is True
+        assert addon._should_quiet("Example.Com", "/") is True
 
 
 class TestRequestLogger:
@@ -155,17 +95,17 @@ class TestRequestLoggerLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
 
-            addon = RequestLogger()
-            addon.log_path = log_path
+            with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+                addon = RequestLogger()
 
-            flow = Mock()
-            flow.metadata = {"request_id": "test-123"}
-            flow.request.pretty_url = "https://api.example.com/v1/data"
-            flow.request.method = "GET"
-            flow.request.content = b"test body"
-            flow.client_conn.peername = ("192.168.1.1", 12345)
+                flow = Mock()
+                flow.metadata = {"request_id": "test-123"}
+                flow.request.pretty_url = "https://api.example.com/v1/data"
+                flow.request.method = "GET"
+                flow.request.content = b"test body"
+                flow.client_conn.peername = ("192.168.1.1", 12345)
 
-            addon.request(flow)
+                addon.request(flow)
 
             # Read log file
             assert log_path.exists()
@@ -188,16 +128,16 @@ class TestRequestLoggerLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
 
-            addon = RequestLogger()
-            addon.log_path = log_path
+            with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+                addon = RequestLogger()
 
-            flow = Mock()
-            flow.metadata = {"request_id": "test-456", "start_time": time.time()}
-            flow.request.pretty_url = "https://api.example.com/v1/data"
-            flow.response.status_code = 200
-            flow.response.content = b"response body"
+                flow = Mock()
+                flow.metadata = {"request_id": "test-456", "start_time": time.time()}
+                flow.request.pretty_url = "https://api.example.com/v1/data"
+                flow.response.status_code = 200
+                flow.response.content = b"response body"
 
-            addon.response(flow)
+                addon.response(flow)
 
             assert log_path.exists()
             with open(log_path) as f:
@@ -216,20 +156,20 @@ class TestRequestLoggerLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
 
-            addon = RequestLogger()
-            addon.log_path = log_path
+            with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+                addon = RequestLogger()
 
-            flow = Mock()
-            flow.metadata = {
-                "request_id": "test-789",
-                "blocked_by": "credential-guard",
-                "credential_fingerprint": "hmac:abc123",
-            }
-            flow.request.pretty_url = "https://evil.com/steal"
-            flow.response.status_code = 428
-            flow.response.content = b""
+                flow = Mock()
+                flow.metadata = {
+                    "request_id": "test-789",
+                    "blocked_by": "credential-guard",
+                    "credential_fingerprint": "hmac:abc123",
+                }
+                flow.request.pretty_url = "https://evil.com/steal"
+                flow.response.status_code = 428
+                flow.response.content = b""
 
-            addon.response(flow)
+                addon.response(flow)
 
             with open(log_path) as f:
                 entry = json.loads(f.readline())
@@ -244,26 +184,24 @@ class TestRequestLoggerQuiet:
 
     def test_quiets_matching_hosts(self):
         """Test matching hosts are not logged."""
-        from request_logger import QuietHostsConfig, RequestLogger
+        from request_logger import RequestLogger
 
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
-            config_path = Path(tmpdir) / "quiet.yaml"
-            config_path.write_text("hosts:\n  - telemetry.example.com")
 
-            addon = RequestLogger()
-            addon.log_path = log_path
-            addon.quiet_hosts = QuietHostsConfig(config_path)
-            addon.quiet_hosts.load()
+            with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+                addon = RequestLogger()
+                # Directly set quiet hosts (normally loaded from PDP)
+                addon._quiet_hosts = {"telemetry.example.com"}
 
-            flow = Mock()
-            flow.metadata = {}
-            flow.request.pretty_url = "https://telemetry.example.com/v1/track"
-            flow.request.method = "POST"
-            flow.request.content = b""
-            flow.client_conn.peername = ("127.0.0.1", 12345)
+                flow = Mock()
+                flow.metadata = {}
+                flow.request.pretty_url = "https://telemetry.example.com/v1/track"
+                flow.request.method = "POST"
+                flow.request.content = b""
+                flow.client_conn.peername = ("127.0.0.1", 12345)
 
-            addon.request(flow)
+                addon.request(flow)
 
             # Should NOT write to log
             assert not log_path.exists() or log_path.stat().st_size == 0
@@ -277,16 +215,16 @@ class TestRequestLoggerQuiet:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
 
-            addon = RequestLogger()
-            addon.log_path = log_path
+            with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+                addon = RequestLogger()
 
-            flow = Mock()
-            flow.metadata = {"quieted": True}
-            flow.request.pretty_url = "https://telemetry.example.com/v1/track"
-            flow.response.status_code = 200
-            flow.response.content = b""
+                flow = Mock()
+                flow.metadata = {"quieted": True}
+                flow.request.pretty_url = "https://telemetry.example.com/v1/track"
+                flow.response.status_code = 200
+                flow.response.content = b""
 
-            addon.response(flow)
+                addon.response(flow)
 
             # Should NOT write to log
             assert not log_path.exists() or log_path.stat().st_size == 0
@@ -298,19 +236,19 @@ class TestRequestLoggerQuiet:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.jsonl"
 
-            addon = RequestLogger()
-            addon.log_path = log_path
+            with patch.object(utils, "AUDIT_LOG_PATH", log_path):
+                addon = RequestLogger()
 
-            flow = Mock()
-            flow.metadata = {
-                "quieted": True,
-                "blocked_by": "network-guard"
-            }
-            flow.request.pretty_url = "https://telemetry.example.com/v1/track"
-            flow.response.status_code = 403
-            flow.response.content = b""
+                flow = Mock()
+                flow.metadata = {
+                    "quieted": True,
+                    "blocked_by": "network-guard"
+                }
+                flow.request.pretty_url = "https://telemetry.example.com/v1/track"
+                flow.response.status_code = 403
+                flow.response.content = b""
 
-            addon.response(flow)
+                addon.response(flow)
 
             # SHOULD write to log because it was blocked
             assert log_path.exists()
@@ -328,7 +266,6 @@ class TestRequestLoggerStats:
         from request_logger import RequestLogger
 
         addon = RequestLogger()
-        addon.log_path = Path("/app/logs/test.jsonl")
         addon.requests_total = 100
         addon.requests_quieted = 10
         addon.responses_total = 85
@@ -340,4 +277,3 @@ class TestRequestLoggerStats:
         assert stats["requests_quieted"] == 10
         assert stats["responses_total"] == 85
         assert stats["blocks_total"] == 5
-        assert stats["log_path"] == "/app/logs/test.jsonl"

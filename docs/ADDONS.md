@@ -101,8 +101,7 @@ Unified policy engine using IAM-style vocabulary with **destination-first** cred
 *PDP package (policy evaluation core):*
 - `pdp/schemas.py` (~500 lines) - HttpEvent, PolicyDecision, Effect enums
 - `pdp/core.py` (~650 lines) - PDPCore engine, evaluation logic
-- `pdp/client.py` (~530 lines) - PolicyClient interface (local/HTTP modes)
-- `pdp/admin_client.py` (~290 lines) - PDPAdminClient for management ops
+- `pdp/client.py` (~600 lines) - PolicyClient interface (local/HTTP modes, incl. admin)
 - `pdp/app.py` (~380 lines) - FastAPI adapter for running PDP as a service
 
 Addons use `get_policy_client()` to access the configured PolicyClient instance.
@@ -377,22 +376,15 @@ Core security addon. Ensures credentials only reach authorized hosts.
 
 ### Configuration
 
-**Credential patterns:** `config/credential_rules.json`
-```json
-{
-  "credentials": [
-    {
-      "name": "openai",
-      "pattern": "sk-proj-[a-zA-Z0-9_-]{80,}",
-      "allowed_hosts": ["api.openai.com"]
-    },
-    {
-      "name": "anthropic",
-      "pattern": "sk-ant-api[a-zA-Z0-9-]{90,}",
-      "allowed_hosts": ["api.anthropic.com"]
-    }
-  ]
-}
+**Credential patterns:** `config/baseline.yaml` (credential_rules section)
+```yaml
+credential_rules:
+  - name: openai
+    pattern: "sk-proj-[a-zA-Z0-9_-]{80,}"
+    allowed_hosts: ["api.openai.com"]
+  - name: anthropic
+    pattern: "sk-ant-api[a-zA-Z0-9-]{90,}"
+    allowed_hosts: ["api.anthropic.com"]
 ```
 
 **Entropy settings:** `config/credential_guard.yaml`
@@ -498,7 +490,6 @@ permissions:
 
 ```bash
 --set credguard_block=true          # Block mode (default: true)
---set credguard_rules=/path/to.json # Rules file path
 --set credguard_scan_urls=false     # Scan URL query params (default: false)
 --set credguard_scan_bodies=false   # Scan request bodies (default: false)
 --set credguard_log_path=/path.jsonl # Separate log file (optional)
