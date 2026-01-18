@@ -41,7 +41,7 @@ if [ -n "${SAFEYOLO_YOLO_MODE:-}" ]; then
 fi
 
 # === Auth check ===
-if [ -f "/home/agent/{{ oauth_file }}" ] || [ -n "${​{{ auth_env_var }}:-}" ]; then
+if [ -f "/home/agent/{{ oauth_file }}" ] || [ -n "${{ '{' ~ auth_env_var ~ ':-}' }}" ]; then
   echo "(SafeYolo provides network isolation)"
   echo "Shell: safeyolo agent shell {{ instance_name }}"
   echo ""

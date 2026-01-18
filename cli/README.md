@@ -7,7 +7,7 @@ Command-line interface for managing the SafeYolo security proxy.
 ```bash
 # From source (PyPI package coming soon)
 git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo && uv pip install -e cli/
+cd safeyolo/cli && uv tool install -e .
 ```
 
 ## Quick Start
