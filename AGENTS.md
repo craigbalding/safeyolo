@@ -13,9 +13,9 @@ This Git repo does not have actual monorepo organizing files in the root (except
 The effective solution is mostly Python based (with shell scripts and docker definitions), that's the default flavour, that's the default context of stuff in folders not listed below as 'island submodules'.
 
 The 'island sumodules' by <reporoot/[foldername]> definition:
-- **/ui.app** part ("submodule") is a no-Python TS webapp with some Golang code, which uses bun for scripting
+- **/cockpit/app** part ("submodule") is a no-Python TS webapp with some Golang code, which uses bun for scripting
 
-Fundamental instructions created for the default Python world development (like /docs) should not be applied to the TS world island submodules, and vice versa the 'island submodules'-specific instructions (like /ui.app/docs) should be ignored in the global context unless explicitly imported to the given context.
+Fundamental instructions created for the default Python world development (like /docs) should not be applied to the TS world island submodules, and vice versa the 'island submodules'-specific instructions (like /cockpit/app/docs) should be ignored in the global context unless explicitly imported to the given context.
 
 We also use 'shared folders', but those are not globally shared by defualt. Further instructions will tell which shared folders to observe in the given context.
 
@@ -32,7 +32,7 @@ We also use 'shared folders', but those are not globally shared by defualt. Furt
 - Unconditionally parse (read) the specialized context files identified by the `follow!` instruction.
   - The instruction format is `follow! [relative/path/to/file.md](absolute/path/to/file.md)` or just `follow! [relative/path/to/file.md]`.
   - Treat the content of these referenced specialized files as if they were directly embedded in the given agents file document.
-- In monorepo root (this one), in the roots of 'island submodules' (like /ui.app) and roots of shared folders we place standard AGENTS.md files which are the entry points for collecting those relevant context instructions.
+- In monorepo root (this one), in the roots of 'island submodules' (like /cockpit/app) and roots of shared folders we place standard AGENTS.md files which are the entry points for collecting those relevant context instructions.
 
 ## Island Submodules
 
@@ -40,7 +40,7 @@ Island submodules are separate parts of the monorepo with their own technology s
 
 ### Known Island Submodules
 
-- **/ui.app**: TypeScript webapp with Golang code, uses bun for scripting (no Python)
+- **/cockpit/app**: TypeScript webapp with Golang code, uses bun for scripting (no Python)
 
 ### Shared Folders
 
@@ -66,7 +66,7 @@ When your task requires working across different contexts:
 
 1. **Identify current context**: Check which AGENTS.md file you're reading. The root AGENTS.md (this file) covers the default Python context and island submodule overview.
 
-2. **Switch to island submodule context**: To work in an island submodule (e.g., `/ui.app`), navigate to its AGENTS.md file and treat it as your new entry point.
+2. **Switch to island submodule context**: To work in an island submodule (e.g., `/cockpit/app`), navigate to its AGENTS.md file and treat it as your new entry point.
 
 3. **Follow context imports**: Use `follow!` instructions to import specialized context files relevant to your current context.
 
@@ -88,7 +88,7 @@ SafeYolo is a TLS-intercepting proxy that:
 
 ### Repository Structure (Default Python Context)
 
-**Note**: This structure shows only directories in the default Python context. Island submodules (like `/ui.app`) have their own separate structures.
+**Note**: This structure shows only directories in the default Python context. Island submodules (like `/cockpit/app`) have their own separate structures.
 
 ```
 safeyolo/
