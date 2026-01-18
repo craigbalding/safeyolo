@@ -848,5 +848,5 @@ class AdminAPI:
             log.info("Admin API stopped")
 
 
-# mitmproxy addon instance
+# add mitmproxy addon instance
 addons = [AdminAPI()]
