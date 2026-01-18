@@ -1,0 +1,4 @@
+- Other context files should never be descovered or searched for automatically, instead follow the rule that all relevant context files are explicitly referenced in the standard AGENTS.md files hierarchy of the given package or shared folder.
+- Package-specific rules override monorepo rules when conflicting.
+- Shared guidelines should be referenced, not duplicated.
+  - See the relevant section below
