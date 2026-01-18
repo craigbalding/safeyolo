@@ -1,3 +1,4 @@
+# Base
 __pycache__/
 *.pyc
 *.pyo
@@ -11,6 +12,20 @@ CLAUDE.md
 .coverage
 .hypothesis/
 
+# Local
+.DS_Store
+*.local
+*.log*
+*.pem
+npm-debug.log*
+.pnpm-debug.log*
+.turbo/*
+!.turbo/preferences
+.cache
+%stash
+*.tmp
+
+
 # Host-specific config (each host has its own)
 docker-compose.override.yml
 .env
@@ -22,3 +37,30 @@ models/piguard-onnx/tokenizer.json
 # Archive folders (old prototype code, not for public release)
 _archive_prototype/
 _archive_plugins/
+
+# Dist
+node_modules
+dist
+dist-ssr
+server/dist
+content/public/dist
+
+# Profile
+.rspack-profile-*/
+
+# IDE / Agent
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea
+.windsurf
+!.windsurf/workflows
+.crush
+
+# LLM large blobs
+*.gguf
+ggufs
+
+# Assets
+vendor/adobe.fonts
+

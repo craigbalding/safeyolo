@@ -1,0 +1,6 @@
+telemetry = false
+[install]
+linker = 'isolated'
+
+[run]
+shell = "bun"

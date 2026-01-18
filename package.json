@@ -1,0 +1,19 @@
+{
+  "name": "safeyolo-monorepo",
+  "version": "1000.0.0",
+  "description": "SafeYolo root packagejson for housekeeping scripts and ts island submodules",
+  "private": true,
+  "workspaces": [
+    "ui.app"
+  ],
+  "scripts": {
+    "bun:install": "bun install",
+    "bun:update": "bun update",
+    "purge:node-cache": "find . -type d \\( -name \"node_modules\" -o -name \"bun.lockb\" \\) -prune -exec rm -rf '{}' +",
+    "bun:check": "bun run bun:check-workspaces",
+    "bun:check-workspaces": "bun pm ls"
+  },
+  "engines": {
+    "bun": ">=1.3"
+  }
+}
