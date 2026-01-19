@@ -6,32 +6,28 @@ SafeYolo is a security proxy for AI coding agents built with mitmproxy, Python, 
 
 ## Main carta
 
+**TLDR:** 
+* If it's not about tasks within the /cockpit folder, adhere to /CLAUDE.md! Abort processing this file.
+* If ./CLAUDE.md is not present, continue processing this file.
+
 **Hello non-deterministic agent!** Never compress the instructions given in this 'Main carta' or instruct yourself to recover this 'Main carta' after compressing. Ignoring the instructions herein renders an agent's operation useless, better stop processing if this requirement is not guaranteed to be followed during the whole course of operation. The 'Main carta' itself:
 
-This Git repo does not have actual monorepo organizing files in the root (except the obvious ones like gitignore), it's a monorepo by the fact of uniting different parts of the solution, which parts can be totally alien by their nature, let's call those 'island submodules' (do not expect those be actual git submodules). 
+This Git repo does not have actual monorepo organizing files in the root (except the obvious ones like gitignore), it's a monorepo by the fact of uniting different parts of the solution, which parts can be totally alien by their nature, let's call those 'island submodules' (do not expect those to be actual git submodules). 
 
 The effective solution is mostly Python based (with shell scripts and docker definitions), that's the default flavour, that's the default context of stuff in folders not listed below as 'island submodules'.
 
-The 'island sumodules' by <reporoot/[foldername]> definition:
+The 'island submodules' by <reporoot/[foldername]> definition:
 - **/cockpit/app** part ("submodule") is a no-Python TS webapp with some Golang code, which uses bun for scripting
 
-Fundamental instructions created for the default Python world development (like /docs) should not be applied to the TS world island submodules, and vice versa the 'island submodules'-specific instructions (like /cockpit/app/docs) should be ignored in the global context unless explicitly imported to the given context.
+Fundamental instructions created for the default Python world development (like CLAUDE.md and the ones in /docs) should not be applied to the TS world island submodules, and vice versa the 'island submodules'-specific instructions (like agent.md and docs folder in /cockpit) should be ignored in the global context unless explicitly imported to the given context.
 
-We also use 'shared folders', but those are not globally shared by defualt. Further instructions will tell which shared folders to observe in the given context.
-
-### Forbidden behaviour
-- Never change the tooling or configuration installed or set outside of the monorepo (this git repo)
-  - Such chnages should be suggested to the user to perform and may likely be rejected and so then the agent is to suggest other solutons
+We also use 'shared folders', but those are not globally shared by default. Further instructions will tell which shared folders to observe in the given context.
 
 ### Monorepo Basics
 
-#### Context
+#### Contexts
 
-- Instead of self-contained agants.md or a conventioanl hierarchy of agents.md-s we use specialized context/conventions/instructions/guidline files, like for example the fundamental ones in the /docs folder (part of the default context, not automatically applicable in case of working in an 'island submodule').
-- Also instead of self-contained agents.md-s and similar we plan to use 'specilaized context files', where an agents file (note: may well not only be named agents.md, but a conventional agents file) when it refers to an external context/conventions/instructions/guidelines file (a specialized context file) the content of that external file should be treated as if it was inherent part of the content of the given angents file.
-- Unconditionally parse (read) the specialized context files identified by the `follow!` instruction.
-  - The instruction format is `follow! [relative/path/to/file.md](absolute/path/to/file.md)` or just `follow! [relative/path/to/file.md]`.
-  - Treat the content of these referenced specialized files as if they were directly embedded in the given agents file document.
+- For the default "Python" context the fundamental context/conventions/instructions/guideline files are in /.CLAUDE.md and the (root) /docs folder (part of the default context, not automatically applicable in case of working in the 'scope' of an 'island submodule').
 - In monorepo root (this one), in the roots of 'island submodules' (like /cockpit/app) and roots of shared folders we place standard AGENTS.md files which are the entry points for collecting those relevant context instructions.
 
 ## Island Submodules
