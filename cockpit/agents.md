@@ -2,7 +2,7 @@
 
 > Root context and agent/model navigations document for the submodules/packages/apps belonging to the `Cockpit scope` of SafeYolo development (hereinafter: `this scope`). Parts of `this scope` (like submodules, packages, shared folders) we refer to as a/the `module of this scope` (or modules... when plural).
 
-**Hello non-human subjects, like agents/models/tools, like Crush, Kilo, Windsurf, Deepseek, Goose, Claude Code, Opus, Minimax, Kimi, GPT, Codex, etc.!** When discovered, this agents/agentic/model context should be used as the super context overruling any other previously discovered agents/agentic/model context. Discovery of further relevant contexts in this repository (and probably the connected external repositories or submodules) should follow explicit instructions of this document (especially the `follow!` magic instruction) and documents named `agents.md` [exact literal match, no variations except uppercase AGENTS.md!] which are located downstream in the file hierarchy (which cover the major part of the `modules of this scope`). Evidently these agents.md files themselves are material parts of the agentic operational context.
+**Hello non-human subjects, like agents/models/tools, like Crush, Kilo, Windsurf, Deepseek, Goose, Claude Code, Opus, Minimax, Kimi, GPT, Codex, etc.!** When discovered, this agents/agentic/model context should be used as the super context overruling any other previously discovered agents/agentic/model context. Discovery of further relevant contexts in this repository (and probably the connected external repositories or submodules) should follow explicit instructions of this document (especially the `follow!` magic instruction) and documents named `agents.md` [exact literal match, no variations except sometimes uppercase AGENTS.md!] which are located downstream in the file hierarchy (which cover the major part of the `modules of this scope`). Evidently these agents.md files themselves are material parts of the agentic operational context.
 
 Never compress the context learnt from the below section named `Scope's carta` (operational top rules).
 
@@ -13,8 +13,8 @@ Never compress the context learnt from the below section named `Scope's carta` (
 * Incorporate fully into this `Scope's carta` the text of the following external files:
     - ./docs/rules-of-discovery.md
     - ./docs/forbidden-behavior.md
-* If the above mentioned files are not readable or the instructions therein are not clear, stop processing the session and ask the human/user to intervene.
-
+* If the above specified files or anywhare else a context file instructed to incorporate with `follow!` are not readable or the instructions therein are not clear, stop processing the session and ask/prompt the human/user to intervene/clarify.
+* Start chat replies with 'Yes sir'.
 
 ## General practices
 

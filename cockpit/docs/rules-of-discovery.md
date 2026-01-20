@@ -5,7 +5,7 @@
 1. Instead of a self-contained conventional agents.md hierarchy and special folders with agentic rules (like /specs, /docs) we utilize the conventional hierarchy of agents.md-s extended by specialized context/conventions/instructions/guideline files (hereinafter: `specialized context files`/file) explicitly referenced in the relevant agents.md files. Which `specialized context files` are to be used/discovered conditionally according to the instructions given in the referring agents.md.
 
 1. Unconditionally parse (read) the `specialized context files` identified by the `follow!` instruction.
-    * The instruction format is `follow! [relative/path/to/file.md](path/to/file.md)` or just `follow! [relative/path/to/file.md]`.
+    * The instruction format is `follow! [symbolic-path/to/file.md](relative/path/to/file.md)` or just `follow! [relative/path/to/file.md]`.
     * Treat the content of these referenced `specialized context files` as if they were directly embedded in the given agents file document.
         * The `follow!` instruction might narrow the context embedding with detailed instructions which parts or aspects of the referenced `specialized context file` to incorporate in the actual context of the session.
     * Treat the whole or explicitly narrowed down content of that external file as if it was inherent part of the content of the given agents.md file (or the inherited intermediary file and so of the agents.md file).
