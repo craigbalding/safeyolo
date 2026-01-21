@@ -15,4 +15,4 @@
 
 4. **⚠️ NEVER place agent-generated plans, architecture documents, or suggestions in `./docs` folders**
     * The `./docs` folder is for human-curated documentation only
-    * Agent-generated artifacts MUST go to `[dev]/archive.plans-sessions/candidates/` with `YYMMDD` prefix
+    * Agent-generated artifacts MUST go to `\[dev\]/archive.plans-sessions/candidates/` with `YYMMDD` prefix
