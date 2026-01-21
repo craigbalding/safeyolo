@@ -5,13 +5,15 @@ Ignore when working on non-typescript or non-javascript code.
 
 ## Basics
 - Load the relevant tsconfig.json and all upstream (extends) ts configs
-  - take into account specifics of the given package manager or the runner regarding hoisting
+   - take into account specifics of the given package manager or the runner regarding hoisting
 - Normally use latest TypeScript syntax from 'latest'
 - ESNext modules only (except explicitly marked exceptions)
 - Resolution: 
-  - Bundler for apps
-  - NodeNext for libraries unless specified otherwise
+   - Bundler for apps
+   - NodeNext for libraries unless specified otherwise
 
+## Coding choices
+- We prefer types over interfaces
 
 ## Coding style & imports
 - When defining a function, class or similar where its name is proceeded by round parentheses, do add a space between the name and the parentheses

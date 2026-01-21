@@ -51,4 +51,7 @@ frontend/wailsjs/
 frontend/bindings/
 # wails.json
 
+# etc
+!CLAUDE.md
+
 

@@ -1,3 +1,11 @@
+# Hello
+
+* With Claude code you need to instruct it to start a new session in this folder for it to load the context as expected.
+      - If the context is proper it will start replies with a llama or frog icon and :
+* With Crush or Windsurf it's enough to say that "we work with the cockpit/app subfolder".
+      - If it works then it acknowledges like: "🦙: Context loaded. I'm now working with the cockpit/app island submodule"
+      - If the context is proper it will start every replies with a llama icon and :
+
 # Welcome to Your New Wails3 Project!
 
 Congratulations on generating your Wails3 application! This README will guide you through the next steps to get your project up and running.

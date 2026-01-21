@@ -12,15 +12,21 @@ Never compress the context learnt from the below section named `Scope's carta` (
 * Always refer to actual source code and current documentation for accurate context.
 * Incorporate fully into this `Scope's carta` the text of the following external files:
     - ./docs/rules-of-discovery.md
-    - ./docs/forbidden-behavior.md
+    - ./docs/unwanted-behavior.md
 * If the above specified files or anywhare else a context file instructed to incorporate with `follow!` are not readable or the instructions therein are not clear, stop processing the session and ask/prompt the human/user to intervene/clarify.
-* Start chat replies with 'Yes sir'.
+* Start chat replies with a llama emoji plus a ': ' string.
 
 ## General practices
 
-* In the `module of this scope` type of folders maintain `agents.memory.md` to persist trans-session / long term memory regarding that submodule/package/shared folder. The rules of maintaining an `agents.memory.md` are in:
-    - ./docs/rules-of-agentic-memory.md
+* In the `module of this scope` type of folders maintain `agents.memory.md` to persist trans-session / long term memory regarding that submodule/package/shared folder. 
+    - The rules of maintaining an `agents.memory.md` are in:
+        - ./docs/rules-of-agentic-memory.md
+
+* If a coding agent/tool generates plans or suggestions and decides to store it as files:
+    - the proper place is not ./docs or similar, but in the folder of the relevant `module of this scope`:
+        - `\[dev\]/archive.plans-sessions/candidates`
+    - the filename has to be prefixed with `YYMMDD` (year, month, date)
 
 * When the human/user asks to record the details of a session's plan or document results and circumstances of a session, then first check the conventions of processing such requests in
-    - ./docs/agents-tasks-done-and-plans-log.md
+    - ./docs/agents-tasks-done-and-plans-archive.md
 

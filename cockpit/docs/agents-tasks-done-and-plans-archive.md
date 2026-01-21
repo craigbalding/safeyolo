@@ -1,15 +1,15 @@
-## Agents' logs
+## Agents' logs / Session tasks and plans summaries archive
 
 > Recording details of tasks done and session plans aka `agents' logs`
 
 ## Main conventions
 
-### Forbidden behavior
+### Forbidden/unwanted behavior
 The details stored in the `agent's logs` folder and files should not be used as context of agentic coding tasks or any other context performed by agents/models/tools, it's purely for processing by humans.
-See the related section of ./forbidden-behavior.md .
+See the related section of ./unwanted-behavior.md .
 
 ### Location
-Logs regarding the tasks done and session plans should be placed in `[dev]/agentslog/` directory of the relevant `module of this scope`.
+On user's request summaries of tasks done and session plans should be placed in `\[dev\]/archive.plans-sessions` subfolder of the top directory of the relevant `module of this scope`.
 
 ### File Naming Pattern
 Use the following format for task documentation files:
