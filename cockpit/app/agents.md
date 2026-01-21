@@ -13,7 +13,7 @@
 
 3. Apply other context files according to the instructions of discovery defined by the above ones (specifically following the conditional rule of `follow!`)
 
-4. ./agents.memory.md - persistant memory collected during the previous sessions
+4. ./agents.memory.md - persistent memory collected during the previous sessions
 
 5. /agents.md - the root context explaining the superscope, not critical for most tasks unless otherwise instructed
 
@@ -25,5 +25,10 @@ CRITICAL: Instructions below should only be processed when the rules/conventions
 
 ## Local module instructions
 
-* TypeScript conventions:
+* ⚠️ **TypeScript conventions (MANDATORY before generating any TS/JS code)**:
     - follow! [`conventions/typescript-standards.md`](../docs/conventions/typescript-standards.md)
+    - Key reminders (read full file for complete rules):
+        - Prefer `type` over `interface`
+        - No semicolons unless necessary
+        - Single quotes over double quotes
+        - Space between function name and parentheses
