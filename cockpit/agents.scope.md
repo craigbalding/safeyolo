@@ -25,7 +25,7 @@ Never compress the context learnt from the below section named `Scope's carta` (
 * ⚠️ **File storage for agent-generated plans, architecture docs, or suggestions**:
     - **NEVER** place such files in `./docs` or similar documentation folders
     - **ALWAYS** place them in the relevant `module of this scope` folder at: 
-    - `\[dev\]/archive.agentic-plans-sessions/candidates/`
+        - `\[dev\]/archive.agentic-plans-sessions/candidates/`
     - Prefix filename with `YYMMDD` (year, month, day)
         - like: `260121a.cockpit-scripts-bridge-architecture.plan.md`
 
