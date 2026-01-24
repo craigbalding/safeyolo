@@ -1,4 +1,4 @@
-# Cockpit (scope) agents.md
+# Cockpit scope /  agents.scope.md
 
 > Root context and agent/model navigations document for the submodules/packages/apps belonging to the `Cockpit scope` of SafeYolo development (hereinafter: `this scope`). Parts of `this scope` (like submodules, packages, shared folders) we refer to as a/the `module of this scope` (or modules... when plural).
 
@@ -11,8 +11,8 @@ Never compress the context learnt from the below section named `Scope's carta` (
 * The above clause starting `Hello non-human subjects...` is rule #1 of the carta, always obey.
 * Always refer to actual source code and current documentation for accurate context.
 * Incorporate fully into this `Scope's carta` the text of the following external files:
-    - ./docs/rules-of-discovery.md
-    - ./docs/unwanted-behavior.md
+    - ./docs/contexts/rules-of-discovery.md
+    - ./docs/contexts/unwanted-behavior.md
 * **⚠️ MANDATORY** When one of the above specified files or a file to which a `follow!` instruction points to incorporate -- are not readable or the instructions therein are not clear, stop processing the session and ask/prompt the human/user to intervene/clarify.
 * Start chat replies with a llama emoji plus a ': ' string.
 
@@ -20,15 +20,15 @@ Never compress the context learnt from the below section named `Scope's carta` (
 
 * In the `module of this scope` type of folders maintain `agents.memory.md` to persist trans-session / long term memory regarding that submodule/package/shared folder. 
     - The rules of maintaining an `agents.memory.md` are in:
-        - ./docs/rules-of-agentic-memory.md
+        - ./docs/contexts/rules-of-agentic-memory.md
 
 * ⚠️ **File storage for agent-generated plans, architecture docs, or suggestions**:
     - **NEVER** place such files in `./docs` or similar documentation folders
     - **ALWAYS** place them in the relevant `module of this scope` folder at: 
-        - `\[dev\]/archive.agentic-plans-sessions/candidates/`
+    - `\[dev\]/archive.agentic-plans-sessions/candidates/`
     - Prefix filename with `YYMMDD` (year, month, day)
         - like: `260121a.cockpit-scripts-bridge-architecture.plan.md`
 
 * When the human/user asks to record the details of a session's plan or document results and circumstances of a session, then first check the conventions of processing such requests in
-    - ./docs/archived-agentic-plans-sessions.md
+    - ./docs/contexts/archived-agentic-plans-sessions.md
 
