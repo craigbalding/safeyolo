@@ -63,6 +63,13 @@ export class StateDemo extends withStores(LitElement, [
   }
 
   render() {
+    const counter = $counter.get()
+    const counterSquared = $counterSquared.get()
+    const displayName = $displayName.get()
+    const isLoggedIn = $isLoggedIn.get()
+    const theme = $theme.get()
+    const user = $user.get()
+
     return html`
       <div class="container">
         <h2>Nanostores State Management Demo</h2>
@@ -70,16 +77,16 @@ export class StateDemo extends withStores(LitElement, [
         <pf-card class="demo-card">
           <h3 slot="header">
             Counter State
-            <pf-badge>${$counter.get()}</pf-badge>
+            <pf-badge>${counter}</pf-badge>
           </h3>
           <div class="counter-section">
             <div class="stat-row">
               <span>Current Value:</span>
-              <code>${$counter.get()}</code>
+              <code>${counter}</code>
             </div>
             <div class="stat-row">
               <span>Squared (computed):</span>
-              <code>${$counterSquared.get()}</code>
+              <code>${counterSquared}</code>
             </div>
             <div class="button-row">
               <pf-button variant="primary" @click=${this.handleDecrement}>
@@ -98,25 +105,25 @@ export class StateDemo extends withStores(LitElement, [
         <pf-card class="demo-card">
           <h3 slot="header">
             User State
-            <pf-badge state=${$isLoggedIn.get() ? 'green' : 'grey'}>
-              ${$isLoggedIn.get() ? 'Logged In' : 'Guest'}
+            <pf-badge state=${isLoggedIn ? 'green' : 'grey'}>
+              ${isLoggedIn ? 'Logged In' : 'Guest'}
             </pf-badge>
           </h3>
           <div class="user-section">
             <div class="stat-row">
               <span>Display Name (computed):</span>
-              <code>${$displayName.get()}</code>
+              <code>${displayName}</code>
             </div>
-            ${$user.get()
+            ${user
               ? html`
                   <div class="stat-row">
                     <span>User ID:</span>
-                    <code>${$user.get()?.id}</code>
+                    <code>${user.id}</code>
                   </div>
                 `
               : null}
             <div class="button-row">
-              ${$isLoggedIn.get()
+              ${isLoggedIn
                 ? html`
                     <pf-button variant="danger" @click=${this.handleLogout}>
                       Logout
@@ -134,12 +141,12 @@ export class StateDemo extends withStores(LitElement, [
         <pf-card class="demo-card">
           <h3 slot="header">
             Theme State
-            <pf-badge state=${`theme-${$theme.get()}`}>${$theme.get()}</pf-badge>
+            <pf-badge state=${`theme-${theme}`}>${theme}</pf-badge>
           </h3>
           <div class="theme-section">
             <div class="stat-row">
               <span>Current Theme:</span>
-              <code>${$theme.get()}</code>
+              <code>${theme}</code>
             </div>
             <div class="button-row">
               <pf-button variant="secondary" @click=${this.handleThemeCycle}>
