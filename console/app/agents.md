@@ -22,11 +22,6 @@ in this directory:**
 3. Apply other context files according to the instructions of discovery defined
    by the above ones (specifically following the conditional rule of `follow!`)
 
-4. ./agents.memory.md - persistent memory collected during the previous sessions
-
-5. /agents.md - the root context explaining the superscope, not critical for
-   most tasks unless otherwise instructed
-
 Ignore /CLAUDE.md if present
 
 ---
@@ -36,11 +31,13 @@ defined and referenced in the ../agents.scope.md were processed.
 
 ## Local module instructions
 
-- ⚠️ **TypeScript conventions (MANDATORY before generating any TS/JS code)**:
+1. ⚠️ **TypeScript conventions (MANDATORY before generating any TS/JS code)**:
   - follow!
     [`conventions/typescript-standards.md`](../docs/conventions/typescript-standards.md)
-  - Key reminders (read full file for complete rules):
-    - Prefer `type` over `interface`
-    - No semicolons unless necessary
-    - Single quotes over double quotes
-    - Space between function name and parentheses
+
+2. ⚠️ **MANDATORY local specifications** in `./docs/specs/`:
+  - follow!
+    [`app specificatoins context`](./docs/specs-context.md)
+    it defines the 'local specification context files' to load in order to successfully code the given application.
+
+3. Learn from `./agents.memory.md` the persistent memory collected during the previous sessions in order to avoid discovering and researching issues which were resolved in the previous coding sessions.

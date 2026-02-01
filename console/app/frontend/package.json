@@ -12,7 +12,11 @@
   "dependencies": {
     "@wailsio/runtime": "latest",
     "lit": "^3.3.0",
-    "@patternfly/elements": "latest"
+    "@patternfly/elements": "latest",
+    "nanostores": "latest",
+    "@tanstack/ai": "latest",
+    "arktype": "latest",
+    "arkregex": "latest"
   },
   "devDependencies": {
     "typescript": "^5.2.2",

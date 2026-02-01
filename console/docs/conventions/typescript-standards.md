@@ -43,3 +43,4 @@ Ignore when working on non-typescript or non-javascript code.
 - All variables and parameters must be used
 - Prefer explicit type annotations for public APIs
 - Use const assertions where appropriate
+- Use 'arktype' validator where appropriate

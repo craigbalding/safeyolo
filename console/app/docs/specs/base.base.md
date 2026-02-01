@@ -1,2 +1,1 @@
-# Basic stuff about SafeYolo Console app
-
+# The basic local coding context
