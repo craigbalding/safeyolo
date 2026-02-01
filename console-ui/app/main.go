@@ -34,9 +34,9 @@ func main() {
 	// 'Assets' configures the asset server with the 'FS' variable pointing to the frontend files.
 	// 'Bind' is a list of Go struct instances. The frontend has access to the methods of these instances.
 	// 'Mac' options tailor the application when running an macOS.
-	app := application.New(application.Options{
-		Name:        "SafeYolo_Console",
-		Description: "A demo of using raw HTML & CSS",
+	appOptions := application.Options{
+		Name:        "SY console",
+		Description: "Monitoring and operations console of SafeYolo",
 		Services: []application.Service{
 			application.NewService(&GreetService{}),
 		},
@@ -46,7 +46,9 @@ func main() {
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
-	})
+	}
+
+	app := application.New(appOptions)
 
 	// Create a new window with the necessary options.
 	// 'Title' is the title of the window.
@@ -54,7 +56,7 @@ func main() {
 	// 'BackgroundColour' is the background colour of the window.
 	// 'URL' is the URL that will be loaded into the webview.
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title: "Window 1",
+		Title: appOptions.Name,
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			Backdrop:                application.MacBackdropTranslucent,

@@ -9,9 +9,9 @@ includes:
   android: ./build/android/Taskfile.yml
 
 vars:
-  APP_NAME: "SafeYolo_Console"
+  APP_NAME: "syco"
   BIN_DIR: "bin"
-  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 7926}}'
 
 tasks:
   build:
