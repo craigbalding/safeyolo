@@ -37,7 +37,7 @@ defined and referenced in the ../agents.scope.md were processed.
 
 2. ⚠️ **MANDATORY local specifications** in `./docs/specs/`:
   - follow!
-    [`app specificatoins context`](./docs/specs-context.md)
+    [`app specificatoins context`](./docs/specs/specs-context.md)
     it defines the 'local specification context files' to load in order to successfully code the given application.
 
 3. Learn from `./agents.memory.md` the persistent memory collected during the previous sessions in order to avoid discovering and researching issues which were resolved in the previous coding sessions.
