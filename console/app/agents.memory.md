@@ -88,7 +88,42 @@ agent "find all deno config files"  # Launches separate process
 
 ---
 
-## Pattern 11: TypeScript Compiler and tsconfig.json
+## Pattern 11: Nanostores/Lit with PatternFly Elements Slot Content
+
+### Issue
+
+When using `@nanostores/lit` with `withStores()` and PatternFly elements like `pf-badge`, slot content updates don't propagate to child web components.
+
+`withStores` subscribes to stores and triggers `requestUpdate()` on the host Lit element, but child web components don't automatically re-render when their slot content changes. PatternFly's `pf-badge` reads `this.textContent` during render but only re-renders when its own reactive properties (`state`, `number`, `threshold`) change.
+
+### Solution
+
+Bind to a reactive property on the child component that changes with the state:
+
+```typescript
+// ❌ WRONG - slot content alone doesn't trigger pf-badge re-render
+<pf-badge>${$theme.get()}</pf-badge>
+
+// ✅ CORRECT - changing 'state' triggers pf-badge to re-render
+// which then reads the updated slot content
+// render() {
+const theme = $theme.get()
+// return html`
+<pf-badge state=${`theme-${theme}`}>${theme}</pf-badge>
+// ` }
+```
+
+Key insight: `pf-badge` re-renders when `state` changes, and during that re-render it reads its `textContent` (the slot). Without the `state` binding, the badge never re-renders even though the parent Lit element does.
+
+### Applies To
+
+- PatternFly Elements (`pf-badge`, etc.)
+- Any web component that doesn't observe slot mutations
+- Components that cache slot content during initial render
+
+---
+
+## Pattern 12: TypeScript Compiler and tsconfig.json
 
 ### Issue
 
@@ -128,6 +163,7 @@ For future extension development:
 - [ ] Use `private accessor` order (modifier before accessor keyword)
 - [ ] Use agent tool only for complex multi-step searches
 - [ ] Always use `tsc` with tsconfig.json, never on individual files directly
+- [ ] When using `pf-badge` with reactive content, bind a changing attribute (like `state`) to trigger re-render
 
 ---
 
