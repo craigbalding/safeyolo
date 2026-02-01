@@ -88,6 +88,38 @@ agent "find all deno config files"  # Launches separate process
 
 ---
 
+## Pattern 11: TypeScript Compiler and tsconfig.json
+
+### Issue
+
+Running `tsc` on individual files without the project's `tsconfig.json` causes spurious errors.
+These errors are false positives - the code compiles correctly when using the proper configuration.
+
+### Solution
+
+Always use the project's `tsconfig.json` when type-checking:
+
+```bash
+# ❌ WRONG - Individual files, misses tsconfig settings
+bunx tsc --noEmit src/state-demo.ts src/pieces/store.ts
+
+# ✅ CORRECT - Use project tsconfig (picks up all settings)
+bunx tsc --noEmit
+
+# ✅ CORRECT - Build command uses vite which respects tsconfig
+bun run build
+bun run build:dev
+```
+
+### Applies To
+
+- Type-checking TypeScript files
+- CI/CD type checking steps
+- Pre-commit type validation
+- Any `tsc` invocation
+
+---
+
 ## Summary Checklist
 
 For future extension development:
@@ -95,6 +127,7 @@ For future extension development:
 - [ ] Use `accessor` keyword with all Lit 3 decorators
 - [ ] Use `private accessor` order (modifier before accessor keyword)
 - [ ] Use agent tool only for complex multi-step searches
+- [ ] Always use `tsc` with tsconfig.json, never on individual files directly
 
 ---
 
