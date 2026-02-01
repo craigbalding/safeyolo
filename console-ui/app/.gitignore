@@ -28,7 +28,8 @@ vendor/
 .task
 dist/
 bin/
-build/
+build/**/*
+!config.yml
 !Taskfile.yml
 frontend/dist
 frontend/node_modules/
@@ -45,7 +46,7 @@ frontend/npm-debug.log*
 
 # Wails generated, sharable
 frontend/wailsjs/
-# frontend/wailsjs/* 
+# frontend/wailsjs/*
 # !frontend/wailsjs/go/*.ts
 # !frontend/wailsjs/runtime/*.ts
 frontend/bindings/
@@ -53,5 +54,5 @@ frontend/bindings/
 
 # etc
 !CLAUDE.md
-
-
+!build/config.yml
+!build/Taskfile.yml
