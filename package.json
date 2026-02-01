@@ -4,7 +4,7 @@
   "description": "SafeYolo root packagejson for housekeeping scripts and ts island submodules",
   "private": true,
   "workspaces": [
-    "cockpit/app"
+    "console/app"
   ],
   "scripts": {
     "bun:install": "bun install",

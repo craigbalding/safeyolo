@@ -7,7 +7,7 @@ SafeYolo is a security proxy for AI coding agents built with mitmproxy, Python, 
 ## Main carta
 
 **TLDR:** 
-* If it's not about tasks within the /cockpit folder, adhere to /CLAUDE.md! Abort processing this file.
+* If it's not about tasks within the /console folder, adhere to /CLAUDE.md! Abort processing this file.
 * If ./CLAUDE.md is not present, continue processing this file.
 
 **Hello non-deterministic agent!** Never compress the instructions given in this 'Main carta' or instruct yourself to recover this 'Main carta' after compressing. Ignoring the instructions herein renders an agent's operation useless, better stop processing if this requirement is not guaranteed to be followed during the whole course of operation. The 'Main carta' itself:
@@ -17,9 +17,9 @@ This Git repo does not have actual monorepo organizing files in the root (except
 The effective solution is mostly Python based (with shell scripts and docker definitions), that's the default flavour, that's the default context of stuff in folders not listed below as 'island submodules'.
 
 The 'island submodules' by <reporoot/[foldername]> definition:
-- **/cockpit/app** part ("submodule") is a no-Python TS webapp with some Golang code, which uses bun for scripting
+- **/console/app** part ("submodule") is a no-Python TS webapp with some Golang code, which uses bun for scripting
 
-Fundamental instructions created for the default Python world development (like CLAUDE.md and the ones in /docs) should not be applied to the TS world island submodules, and vice versa the 'island submodules'-specific instructions (like agent.md and docs folder in /cockpit) should be ignored in the global context unless explicitly imported to the given context.
+Fundamental instructions created for the default Python world development (like CLAUDE.md and the ones in /docs) should not be applied to the TS world island submodules, and vice versa the 'island submodules'-specific instructions (like agent.md and docs folder in /console) should be ignored in the global context unless explicitly imported to the given context.
 
 We also use 'shared folders', but those are not globally shared by default. Further instructions will tell which shared folders to observe in the given context.
 
@@ -28,7 +28,7 @@ We also use 'shared folders', but those are not globally shared by default. Furt
 #### Contexts
 
 - For the default "Python" context the fundamental context/conventions/instructions/guideline files are in /.CLAUDE.md and the (root) /docs folder (part of the default context, not automatically applicable in case of working in the 'scope' of an 'island submodule').
-- In monorepo root (this one), in the roots of 'island submodules' (like /cockpit/app) and roots of shared folders we place standard AGENTS.md files which are the entry points for collecting those relevant context instructions.
+- In monorepo root (this one), in the roots of 'island submodules' (like /console/app) and roots of shared folders we place standard AGENTS.md files which are the entry points for collecting those relevant context instructions.
 
 ## Island Submodules
 
@@ -36,7 +36,7 @@ Island submodules are separate parts of the monorepo with their own technology s
 
 ### Known Island Submodules
 
-- **/cockpit/app**: TypeScript webapp with Golang code, uses bun for scripting (no Python)
+- **/console/app**: TypeScript webapp with Golang code, uses bun for scripting (no Python)
 
 ### Shared Folders
 
@@ -62,7 +62,7 @@ When your task requires working across different contexts:
 
 1. **Identify current context**: Check which AGENTS.md file you're reading. The root AGENTS.md (this file) covers the default Python context and island submodule overview.
 
-2. **Switch to island submodule context**: To work in an island submodule (e.g., `/cockpit/app`), navigate to its AGENTS.md file and treat it as your new entry point.
+2. **Switch to island submodule context**: To work in an island submodule (e.g., `/console/app`), navigate to its AGENTS.md file and treat it as your new entry point.
 
 3. **Follow context imports**: Use `follow!` instructions to import specialized context files relevant to your current context.
 
@@ -84,7 +84,7 @@ SafeYolo is a TLS-intercepting proxy that:
 
 ### Repository Structure (Default Python Context)
 
-**Note**: This structure shows only directories in the default Python context. Island submodules (like `/cockpit/app`) have their own separate structures.
+**Note**: This structure shows only directories in the default Python context. Island submodules (like `/console/app`) have their own separate structures.
 
 ```
 safeyolo/

@@ -1,2 +1,2 @@
-# Basic stuff about SafeYolo Cockpit app
+# Basic stuff about SafeYolo Console app
 
