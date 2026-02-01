@@ -13,9 +13,14 @@
 - Files comprising one package or complex component should be separated in a subfolder, or named in a manner like 'what-shouldve-been-the-subfolder-name.specific-name.ts'.
 - Types can acompany the class or function, or may occupy a separate file.
 
+# Package management
+- Use `bun install` / `bun i` / `bun add`
+- Never use `npm`, neither `npm install` / `npm i` / `npm add` nor `npm` for any other purpose
+
 ## Coding conventions 
 - Make sure to include 'TypeScript Standards' (typescript-standards.md) conventions
-- Use 'nanonanostores' for state management and as a runtime js cross-component shared store
+- Use 'nanostores' for state management and as a runtime js cross-component shared store
+- Use '@nanostores/lit' with Lit (https://github.com/nanostores/nanostores?tab=readme-ov-file#lit)
 
 ## HTML design
 - Use Lit

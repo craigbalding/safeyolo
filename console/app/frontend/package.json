@@ -7,19 +7,21 @@
     "dev": "vite",
     "build:dev": "tsc && vite build --minify false --mode development",
     "build": "tsc && vite build --mode production",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deno:fmt": "deno fmt --config=../../../deno.jsonc"
   },
   "dependencies": {
-    "@wailsio/runtime": "latest",
-    "lit": "^3.3.0",
+    "@nanostores/lit": "latest",
     "@patternfly/elements": "latest",
-    "nanostores": "latest",
     "@tanstack/ai": "latest",
+    "@wailsio/runtime": "latest",
+    "arkregex": "latest",
     "arktype": "latest",
-    "arkregex": "latest"
+    "lit": "^3.3.0",
+    "nanostores": "latest"
   },
   "devDependencies": {
     "typescript": "^5.2.2",
-    "vite": "7.3.1"
+    "vite": "latest"
   }
 }

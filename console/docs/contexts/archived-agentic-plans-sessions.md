@@ -9,7 +9,7 @@ The details stored in the `agent's logs` folder and files should not be used as 
 See the related section of ./unwanted-behavior.md .
 
 ### Location
-On user's request summaries of tasks done and session plans should be placed in `\[dev\]/archive.agentic-plans-sessions` subfolder of the top directory of the relevant `module of this scope`.
+On user's request summaries of tasks done and session plans should be placed in `_@dev/archive.agentic-plans-sessions` subfolder of the top directory of the relevant `module of this scope`.
 
 ### File Naming Pattern
 Use the following format for task documentation files:

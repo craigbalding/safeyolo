@@ -21,18 +21,23 @@ This document should be used as a persistent memory for agents and models, so th
 ### Issue
 
 Decorators without `accessor` keyword fail with modern Lit 3 and Web Component
-specs.
+specs. Also, modifier order matters - TypeScript requires `private` before
+`accessor`.
 
 ### Solution
 
-Always use `accessor` keyword with reactive property decorators:
+Always use `accessor` keyword with reactive property decorators, with `private`
+before `accessor`:
 
 ```typescript
 // ❌ WRONG (old syntax)
 @state() private currentView: ViewType = 'archive'
 
-// ✅ CORRECT (Lit 3+ syntax)
+// ❌ WRONG (wrong modifier order)
 @state() accessor private currentView: ViewType = 'archive'
+
+// ✅ CORRECT (Lit 3+ syntax)
+@state() private accessor currentView: ViewType = 'archive'
 ```
 
 ### Applies To
@@ -88,6 +93,7 @@ agent "find all deno config files"  # Launches separate process
 For future extension development:
 
 - [ ] Use `accessor` keyword with all Lit 3 decorators
+- [ ] Use `private accessor` order (modifier before accessor keyword)
 - [ ] Use agent tool only for complex multi-step searches
 
 ---

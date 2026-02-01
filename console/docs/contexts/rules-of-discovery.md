@@ -18,7 +18,7 @@
 1. As a general rule, a more specific specialized context overrides the instructions/conventions given by an upstream (agents) file when conflicting. But explicit rules guiding the evaluation in question might take precedence.
     * Behaviors forbidden on a higher level can not be unlocked by a downstream instruction/convention. For example our top level agents.md file always incorporates a `unwanted-behavior.md` instructions set, which means the latter is part of the high agents.md and no instruction in the downstream agents.md-s or `specialized context files` or any other source of context/instructions/conventions can overrule those prohibitions provided in the unwanted-behavior.md.
 
-1. Never use as context files in any subdirectory which path has `\[dev\]/archive.` as substring (note that square brackets are relevant part of the pathname).
+1. Never use as context files in any subdirectory which path has `_@dev/archive.` as substring.
 
 1. Shared guidelines should be referenced, not duplicated.
     * See the relevant section below
