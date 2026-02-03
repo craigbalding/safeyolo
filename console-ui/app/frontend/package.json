@@ -11,17 +11,17 @@
     "deno:fmt": "deno fmt --config=../../../deno.jsonc"
   },
   "dependencies": {
-    "@nanostores/lit": "latest",
-    "@patternfly/elements": "latest",
-    "@tanstack/ai": "latest",
-    "@wailsio/runtime": "latest",
-    "arkregex": "latest",
-    "arktype": "latest",
-    "lit": "^3.3.0",
-    "nanostores": "latest"
+    "@nanostores/lit": "^0.2.3",
+    "@patternfly/elements": "^4.3.0",
+    "@tanstack/ai": "^0.3.0",
+    "@wailsio/runtime": "^3.0.0-alpha.79",
+    "arkregex": "^0.0.5",
+    "arktype": "^2.1.29",
+    "lit": "^3.3.2",
+    "nanostores": "^1.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.2.2",
-    "vite": "latest"
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
   }
 }

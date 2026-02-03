@@ -11,11 +11,11 @@
         "@wailsio/runtime": "latest",
         "arkregex": "latest",
         "arktype": "latest",
-        "lit": "^3.3.0",
+        "lit": "latest",
         "nanostores": "latest",
       },
       "devDependencies": {
-        "typescript": "^5.2.2",
+        "typescript": "latest",
         "vite": "latest",
       },
     },
@@ -149,7 +149,7 @@
 
     "@types/trusted-types": ["@types/trusted-types@2.0.7", "", {}, "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw=="],
 
-    "@wailsio/runtime": ["@wailsio/runtime@3.0.0-alpha.78", "", {}, "sha512-OwupMaPV20+9rMJdPTSqlmmu3BaMUEZOdngFK2cAjW228ecO5mg5vq1VPx9op1dftbpKJCKqsVhOpxa0EEQnRA=="],
+    "@wailsio/runtime": ["@wailsio/runtime@3.0.0-alpha.79", "", {}, "sha512-NITzxKmJsMEruc39L166lbPJVECxzcbdqpHVqOOF7Cu/7Zqk/e3B/gNpkUjhNyo5rVb3V1wpS8oEgLUmpu1cwA=="],
 
     "arkregex": ["arkregex@0.0.5", "", { "dependencies": { "@ark/util": "0.56.0" } }, "sha512-ncYjBdLlh5/QnVsAA8De16Tc9EqmYM7y/WU9j+236KcyYNUXogpz3sC4ATIZYzzLxwI+0sEOaQLEmLmRleaEXw=="],
 
