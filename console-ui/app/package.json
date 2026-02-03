@@ -1,10 +1,21 @@
 {
+  "name": "syco-app",
+  "private": true,
+  "version": "1000.0.0",
+  "workspaces": [
+    "frontend",
+    "ptyend"
+  ],
   "scripts": {
-    "app:bun-install": "bun install --latest",
-    "app:bun-upgrade": "bun update --latest",
+    "app:bun:install": "bun install --filter '*' --latest",
+    "app:bun:upgrade": "bun update --filter '*' --latest",
     "app:dev": "wails3 dev",
     "app:build": "wails3 build",
     "app:regenerate-build-assets": "wails3 generate build-assets -typescript -dir ./build && cp _@dev/Taskfile.yml build/ && cp _@dev/config.yml build/",
     "app:update-build-assets": "wails3 update build-assets -dir ./build"
+  },
+  "dependencies": {
+    "@syco-app/frontend": "workspace:*",
+    "@syco-app/pty-runner": "workspace:*"
   }
 }
