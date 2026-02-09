@@ -1,48 +1,49 @@
 #!/usr/bin/env bun
 import { spawn } from 'bun'
+import { parseArgs, type ParseArgsOptionsConfig } from 'node:util'
 
-const args = Bun.argv.slice(2) // Skip [bun, script.ts]
+const options = {
+    socket: { type: 'string', default: '/tmp/safeyolo-runner.sock' },
+    cols: { type: 'string', default: '80' },
+    rows: { type: 'string', default: '24' },
+    tcp: { type: 'boolean', default: false },
+} satisfies ParseArgsOptionsConfig
 
-// Try to find explicit split (in case user did '-- --')
-let splitIndex = args.indexOf('--')
-
-// If no '--' found, assume the first argument that DOESN'T start with '-' is the command
-if (splitIndex === -1) {
-  splitIndex = args.findIndex((arg) => !arg.startsWith('-'))
-}
-
-// If we still can't find a command, error out
-if (splitIndex === -1) {
-  console.error(
-    'Error: Could not determine command. Usage: ./runner.ts [flags] -- [command]',
-  )
+const dashIndex = Bun.argv.indexOf('---')
+if (dashIndex === -1) {
+  console.error('Error: Usage: ./runner.ts [flags] --- [command]')
   process.exit(1)
 }
 
-// Separate Script Flags vs Command
-// If we found a "--", the command is everything AFTER it.
-// If we found a command name (heuristic), the command starts THERE.
-const scriptFlags = args.slice(0, splitIndex)
-// If the split was on "--", we skip it (+1). If it was on "ls", we keep it.
-const commandStartIndex = args[splitIndex] === '--'
-  ? splitIndex + 1
-  : splitIndex
-const command = args.slice(commandStartIndex)
-
-if (command.length === 0) {
-  console.error('Error: No command specified.')
+// Everything between script path and '---' are runner flags
+// Everything after '---' is the command
+const runnerArgs = Bun.argv.slice(2, dashIndex)  // From index 2 (after bun + script) up to '--'
+const commandArgs = Bun.argv.slice(dashIndex + 1)
+if (commandArgs.length === 0) {
+  console.error('Error: No command provided after --')
   process.exit(1)
 }
 
-const ws = new WebSocket('ws://localhost:34115/terminal')
+const { values } = parseArgs({
+  args: runnerArgs,
+  options,
+  strict: true,
+  allowPositionals: false,
+})
+
+// values.socket, values.cols, values.rows, values.tcp
+// commandArgs[0] is the command, rest are its args
+
+const ws = new WebSocket(`ws+unix://${values.socket}`)
+// const ws = new WebSocket('ws://localhost:34115/terminal')
 
 ws.onopen = () => {
-  const proc = spawn(command, {
+  const proc = spawn(commandArgs, {
     stdin: 'pipe',
     stdout: 'pipe', // PTY merges stderr into stdout usually
     terminal: {
-      cols: 80, // Default start size, Wails will update this
-      rows: 24,
+      cols: parseInt(values.cols), // Default start size, Wails will update this
+      rows: parseInt(values.rows),
       data(term, data) {
         ws.send(data)
       },
