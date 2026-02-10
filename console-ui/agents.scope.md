@@ -21,7 +21,8 @@ Never compress the context learnt from the below section named `Scope's carta` (
     - `bun` or `bun run` or `bunx` (when appropriate)
 * Never use Python, npm or yarn scripts to manage utilities/tasks when working in the 'scope'
 * Formating:
-    - use `deno fmt`, and use the `../../../deno.jsonc` as config always
+    - use `deno fmt`, and use the `../deno.jsonc` as config always
+    - check the nearest `package.json` for the command with `deno fmt`
 * **Context compaction behavior:**
     - **DEFAULT**: Compact context proactively to avoid hitting context window limits (critical for models with limited context like Deepseek)
     - **EXCEPTION**: When user prompt starts with `!context:unlimited`, do NOT automatically compact context
