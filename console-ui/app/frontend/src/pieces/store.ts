@@ -1,4 +1,4 @@
-import {atom, computed} from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 // ^ Core state atoms
 type User = {
@@ -14,9 +14,9 @@ export const $user = atom<User | null>(null)
 export const $theme = atom<Theme>('system')
 
 // ^ Computed derived state
-export const $isLoggedIn = computed($user, user => user !== null)
-export const $displayName = computed($user, user => user?.name ?? 'Guest')
-export const $counterSquared = computed($counter, count => count * count)
+export const $isLoggedIn = computed($user, (user) => user !== null)
+export const $displayName = computed($user, (user) => user?.name ?? 'Guest')
+export const $counterSquared = computed($counter, (count) => count * count)
 
 // ^ Actions to modify state
 export function incrementCounter(): void {
@@ -32,7 +32,7 @@ export function resetCounter(): void {
 }
 
 export function setUser(name: string, id: number): void {
-  $user.set({name, id})
+  $user.set({ name, id })
 }
 
 export function clearUser(): void {

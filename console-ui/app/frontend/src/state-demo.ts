@@ -1,6 +1,6 @@
-import {css, html, LitElement} from 'lit'
-import {customElement} from 'lit/decorators.js'
-import {withStores} from '@nanostores/lit'
+import { css, html, LitElement } from 'lit'
+import { customElement } from 'lit/decorators.js'
+import { withStores } from '@nanostores/lit'
 import '@patternfly/elements/pf-card/pf-card.js'
 import '@patternfly/elements/pf-button/pf-button.js'
 import '@patternfly/elements/pf-badge/pf-badge.js'
@@ -89,13 +89,13 @@ export class StateDemo extends withStores(LitElement, [
               <code>${counterSquared}</code>
             </div>
             <div class="button-row">
-              <pf-button variant="primary" @click=${this.handleDecrement}>
+              <pf-button variant="primary" @click="${this.handleDecrement}">
                 - Decrement
               </pf-button>
-              <pf-button variant="secondary" @click=${this.handleReset}>
+              <pf-button variant="secondary" @click="${this.handleReset}">
                 Reset
               </pf-button>
-              <pf-button variant="primary" @click=${this.handleIncrement}>
+              <pf-button variant="primary" @click="${this.handleIncrement}">
                 Increment +
               </pf-button>
             </div>
@@ -105,7 +105,7 @@ export class StateDemo extends withStores(LitElement, [
         <pf-card class="demo-card">
           <h3 slot="header">
             User State
-            <pf-badge state=${isLoggedIn ? 'green' : 'grey'}>
+            <pf-badge state="${isLoggedIn ? 'green' : 'grey'}">
               ${isLoggedIn ? 'Logged In' : 'Guest'}
             </pf-badge>
           </h3>
@@ -116,24 +116,24 @@ export class StateDemo extends withStores(LitElement, [
             </div>
             ${user
               ? html`
-                  <div class="stat-row">
-                    <span>User ID:</span>
-                    <code>${user.id}</code>
-                  </div>
-                `
+                <div class="stat-row">
+                  <span>User ID:</span>
+                  <code>${user.id}</code>
+                </div>
+              `
               : null}
             <div class="button-row">
               ${isLoggedIn
                 ? html`
-                    <pf-button variant="danger" @click=${this.handleLogout}>
-                      Logout
-                    </pf-button>
-                  `
+                  <pf-button variant="danger" @click="${this.handleLogout}">
+                    Logout
+                  </pf-button>
+                `
                 : html`
-                    <pf-button variant="primary" @click=${this.handleLogin}>
-                      Random Login
-                    </pf-button>
-                  `}
+                  <pf-button variant="primary" @click="${this.handleLogin}">
+                    Random Login
+                  </pf-button>
+                `}
             </div>
           </div>
         </pf-card>
@@ -141,7 +141,7 @@ export class StateDemo extends withStores(LitElement, [
         <pf-card class="demo-card">
           <h3 slot="header">
             Theme State
-            <pf-badge state=${`theme-${theme}`}>${theme}</pf-badge>
+            <pf-badge state="${`theme-${theme}`}">${theme}</pf-badge>
           </h3>
           <div class="theme-section">
             <div class="stat-row">
@@ -149,7 +149,7 @@ export class StateDemo extends withStores(LitElement, [
               <code>${theme}</code>
             </div>
             <div class="button-row">
-              <pf-button variant="secondary" @click=${this.handleThemeCycle}>
+              <pf-button variant="secondary" @click="${this.handleThemeCycle}">
                 Cycle Theme (light → dark → system)
               </pf-button>
             </div>
@@ -241,8 +241,7 @@ export class StateDemo extends withStores(LitElement, [
     .info-section {
       padding: 1rem;
       background: var(--pf-global--palette--blue-50, #e7f1fa);
-      border-left: 4px solid
-        var(--pf-global--primary-color--100, #0066cc);
+      border-left: 4px solid var(--pf-global--primary-color--100, #0066cc);
       border-radius: 0 4px 4px 0;
     }
 
