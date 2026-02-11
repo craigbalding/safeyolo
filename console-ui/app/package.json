@@ -17,6 +17,6 @@
   },
   "dependencies": {
     "@syco-app/frontend": "workspace:*",
-    "@syco-app/pty-runner": "workspace:*"
+    "@syco-app/pty-tele": "workspace:*"
   }
 }

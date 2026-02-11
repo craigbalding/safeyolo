@@ -3,8 +3,8 @@ import { spawn } from 'bun'
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util'
 
 const me_ = 'SafeYolo tele client'
-const err_ : [undefined|string, string] = [undefined, `${me_} failed`]
-const getErr = (err?: unknown) => `${me_} failed: ${ err || err_[0] || err_[1]}`
+const err_: [undefined | string, string] = [undefined, `${me_} failed`]
+const getErr = (err?: unknown) => `${me_} failed: ${err || err_[0] || err_[1]}`
 
 try {
   if (!import.meta.main) {
@@ -36,8 +36,7 @@ try {
     allowPositionals: false,
   })
 
-  // Simple length-prefixed frame protocol
-  // [1 byte type][4 bytes length][data]
+  // Simple length-prefixed frame protocol, [1 byte type][4 bytes length][data]
   const TYPE_OUTPUT = 0x00 // pty stdout -> socket
   const TYPE_INPUT = 0x01 // socket -> pty stdin
   const TYPE_RESIZE = 0x02 // socket -> pty resize
@@ -61,16 +60,15 @@ try {
     const procExitCode = await proc.exited
     socket.end()
     process.exit(procExitCode)
-
-  } catch(err:unknown) {
+  } catch (err: unknown) {
     throw `${err}`
   }
 
-  function getClientObj (): Bun.UnixSocketOptions {
+  function getClientObj(): Bun.UnixSocketOptions {
     return {
       unix: values.socket,
       socket: {
-        data (_socket, data: Uint8Array) {
+        data(_socket, data: Uint8Array) {
           let offset = 0
           while (typeof proc !== 'undefined' && offset < data.length) {
             if (offset + 5 > data.length) break
@@ -84,7 +82,8 @@ try {
             const pyl = data.slice(offset + 5, offset + 5 + length)
 
             if (
-              type === TYPE_INPUT && proc?.stdin && typeof proc?.stdin === 'object'
+              type === TYPE_INPUT && proc?.stdin &&
+              typeof proc?.stdin === 'object'
             ) {
               proc.stdin.write(pyl)
               proc.stdin.flush()
@@ -100,23 +99,21 @@ try {
             offset += 5 + length
           }
         },
-        close () {
+        close() {
           process.exit(0)
         },
-        error (_socket, error) {
+        error(_socket, error) {
           throw `Connection error: ${error.message}`
         },
       },
     }
   }
-
-} catch(err: unknown) {
+} catch (err: unknown) {
   console.log(getErr(err))
   process.exit(1)
 }
 
-
-function encodeFrame (type: number, data: Uint8Array): Uint8Array {
+function encodeFrame(type: number, data: Uint8Array): Uint8Array {
   const frame = new Uint8Array(5 + data.length)
   frame[0] = type
   const view = new DataView(frame.buffer)
