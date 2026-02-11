@@ -2,7 +2,7 @@
   "fmt": {
     "semiColons": false,
     "singleQuote": true,
-    "line-width": 120,
-    "indent-width": 2
+    "lineWidth": 120,
+    "indentWidth": 2
   }
 }

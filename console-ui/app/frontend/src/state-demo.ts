@@ -158,8 +158,7 @@ export class StateDemo extends withStores(LitElement, [
 
         <div class="info-section">
           <p>
-            <strong>Note:</strong> All state is shared across components using
-            nanostores. Try adding multiple
+            <strong>Note:</strong> All state is shared across components using nanostores. Try adding multiple
             <code>&lt;state-demo&gt;</code>
             elements - they will stay in sync!
           </p>

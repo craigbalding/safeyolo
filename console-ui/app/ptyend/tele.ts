@@ -3,6 +3,10 @@ import { spawn } from 'bun'
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util'
 
 const me_ = 'SafeYolo tele client'
+const defaults_ = {
+  pathtoSock: '/tmp/safeyolo-runner.sock',
+  ptyDims: ['132', '32'],
+} as const
 const err_: [undefined | string, string] = [undefined, `${me_} failed`]
 const getErr = (err?: unknown) => `${me_} failed: ${err || err_[0] || err_[1]}`
 
@@ -12,9 +16,9 @@ try {
   }
 
   const options = {
-    socket: { type: 'string', default: '/tmp/safeyolo-runner.sock' },
-    cols: { type: 'string', default: '80' },
-    rows: { type: 'string', default: '24' },
+    socket: { type: 'string', default: defaults_.pathtoSock },
+    cols: { type: 'string', default: defaults_.ptyDims[0] },
+    rows: { type: 'string', default: defaults_.ptyDims[1] },
     tcp: { type: 'boolean', default: false },
   } satisfies ParseArgsOptionsConfig
 
@@ -35,6 +39,18 @@ try {
     strict: true,
     allowPositionals: false,
   })
+
+  if (values.tcp) {
+    const scriptDir = import.meta.dir!
+    const wsProc = spawn(['bun', `${scriptDir}/tele-ws.ts`, ...Bun.argv.slice(2)], {
+      stdio: ['inherit', 'inherit', 'inherit'],
+    })
+    const exitCode = await wsProc.exited
+    if (exitCode !== 0) {
+      throw `tele-ws.ts exited with code ${exitCode}`
+    }
+    process.exit(0)
+  }
 
   // Simple length-prefixed frame protocol, [1 byte type][4 bytes length][data]
   const TYPE_OUTPUT = 0x00 // pty stdout -> socket

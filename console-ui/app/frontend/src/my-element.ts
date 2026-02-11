@@ -61,8 +61,7 @@ export class MyElement extends LitElement {
               aria-label="input"
               class="input"
               .value="${this.name}"
-              @input="${(e: InputEvent) =>
-                this.name = (e.target as HTMLInputElement).value}"
+              @input="${(e: InputEvent) => this.name = (e.target as HTMLInputElement).value}"
               type="text"
               autocomplete="off"
             />
@@ -79,9 +78,8 @@ export class MyElement extends LitElement {
         </pf-card>
         <br />
         <pf-clipboard-copy code expandable expanded>
-          { "menu": { "id": "file", "value": "File", "popup": { "menuitem": [
-          {"value": "New", "onclick": "CreateNewDoc()"}, {"value": "Open", "onclick":
-          "OpenDoc()"}, {"value": "Close", "onclick": "CloseDoc()"} ] } }}
+          { "menu": { "id": "file", "value": "File", "popup": { "menuitem": [ {"value": "New", "onclick": "CreateNewDoc()"},
+          {"value": "Open", "onclick": "OpenDoc()"}, {"value": "Close", "onclick": "CloseDoc()"} ] } }}
         </pf-clipboard-copy>
         <pf-button
           variant="link"
