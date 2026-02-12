@@ -56,13 +56,17 @@ func main() {
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
+		var pending []byte
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\n[Server] Connection closed: %v\n", err)
 				return
 			}
-			processFrames(buf[:n])
+			// Append new data to any pending partial frame
+			pending = append(pending, buf[:n]...)
+			// Process complete frames, keep any partial remainder
+			pending = processFramesBuffer(pending)
 		}
 	}()
 
@@ -103,20 +107,22 @@ func main() {
 	fmt.Println("[Server] Exiting")
 }
 
-func processFrames(data []byte) {
+// processFramesBuffer processes complete frames from the buffer and returns
+// any remaining partial frame data for the next read.
+func processFramesBuffer(data []byte) []byte {
 	offset := 0
 	for offset < len(data) {
 		if offset+5 > len(data) {
-			fmt.Printf("[Partial frame: %d bytes]\n", len(data)-offset)
-			return
+			// Need more data for complete header
+			return data[offset:]
 		}
 
 		frameType := data[offset]
 		length := binary.BigEndian.Uint32(data[offset+1:])
 
 		if offset+5+int(length) > len(data) {
-			fmt.Printf("[Partial payload: need %d, have %d]\n", length, len(data)-offset-5)
-			return
+			// Need more data for complete payload
+			return data[offset:]
 		}
 
 		payload := data[offset+5 : offset+5+int(length)]
@@ -135,6 +141,8 @@ func processFrames(data []byte) {
 
 		offset += 5 + int(length)
 	}
+	// All data processed, nothing pending
+	return nil
 }
 
 func sendFrame(conn net.Conn, frameType byte, payload []byte) {

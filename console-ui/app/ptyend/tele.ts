@@ -99,8 +99,8 @@ try {
             if (offset + 5 > data.length) break
 
             const type = data[offset]!
-            const view = new DataView(data.buffer, data.byteOffset)
-            const length = view.getUint32(offset + 1, false)
+            const view = new DataView(data.buffer, data.byteOffset + offset)
+            const length = view.getUint32(1, false)
 
             if (offset + 5 + length > data.length) break
 
