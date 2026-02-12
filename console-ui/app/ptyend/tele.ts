@@ -5,15 +5,17 @@ import { parseArgs, type ParseArgsOptionsConfig } from 'node:util'
 const me_ = 'SafeYolo tele client'
 const defaults_ = {
   pathtoSock: '/tmp/safeyolo-runner.sock',
-  ptyDims: ['132', '32'],
+  ptyDims: ['132', '32'], // Terminal Dims
 } as const
-const err_: [undefined | string, string] = [undefined, `${me_} failed`]
+const err_: [undefined | string, string] = [undefined, `unexpected error`]
 const getErr = (err?: unknown) => `${me_} failed: ${err || err_[0] || err_[1]}`
 
 try {
   if (!import.meta.main) {
     throw `Not a library`
   }
+
+  // ## Args:
 
   const options = {
     socket: { type: 'string', default: defaults_.pathtoSock },
@@ -28,6 +30,7 @@ try {
   }
 
   const runnerArgs = Bun.argv.slice(2, dashIndex)
+  // commandArgs is the user supplied subject command to teleport
   const commandArgs = Bun.argv.slice(dashIndex + 1)
   if (commandArgs.length === 0) {
     throw `\nNo command provided after ---`
@@ -39,6 +42,8 @@ try {
     strict: true,
     allowPositionals: false,
   })
+
+  // ## WebSocket case is a different modul
 
   if (values.tcp) {
     const scriptDir = import.meta.dir!
@@ -52,6 +57,8 @@ try {
     process.exit(0)
   }
 
+  // ## UDS (Unix socket) case we handle in this script
+
   // Simple length-prefixed frame protocol, [1 byte type][4 bytes length][data]
   const TYPE_OUTPUT = 0x00 // pty stdout -> socket
   const TYPE_INPUT = 0x01 // socket -> pty stdin
@@ -60,6 +67,7 @@ try {
   let proc: ReturnType<typeof spawn>
   let socket: Bun.Socket
 
+  // The actual teleportation of the PTY proc
   try {
     socket = await Bun.connect(getClientObj())
     proc = spawn(commandArgs, {
@@ -80,6 +88,7 @@ try {
     throw `${err}`
   }
 
+  // The UDS socket:
   function getClientObj(): Bun.UnixSocketOptions {
     return {
       unix: values.socket,
@@ -124,10 +133,15 @@ try {
       },
     }
   }
+
+// END OF CORE CODES
+
 } catch (err: unknown) {
   console.log(getErr(err))
   process.exit(1)
 }
+
+// ## Helpers:
 
 function encodeFrame(type: number, data: Uint8Array): Uint8Array {
   const frame = new Uint8Array(5 + data.length)
