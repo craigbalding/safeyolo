@@ -30,7 +30,7 @@ try {
   }
 
   const runnerArgs = Bun.argv.slice(2, dashIndex)
-  // commandArgs is the user supplied subject command to teleport
+  // commandArgs is the user-supplied subject command to teleport
   const commandArgs = Bun.argv.slice(dashIndex + 1)
   if (commandArgs.length === 0) {
     throw `\nNo command provided after ---`
@@ -118,13 +118,14 @@ try {
                 if (msg.cols && msg.rows) {
                   proc.terminal.resize(msg.cols, msg.rows)
                 }
-              } catch { /* ignore invalid resize */ }
+              } catch { /* @TODO ignore invalid resize */ }
             }
 
             offset += 5 + length
           }
         },
         close() {
+          // The normal exiting
           process.exit(0)
         },
         error(_socket, error) {
@@ -134,8 +135,7 @@ try {
     }
   }
 
-// END OF CORE CODES
-
+  // END OF CORE CODES
 } catch (err: unknown) {
   console.log(getErr(err))
   process.exit(1)
