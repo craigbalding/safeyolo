@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+/// <reference types="bun" />
+
 import { spawn } from 'bun'
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util'
 
@@ -68,25 +70,21 @@ try {
   let socket: Bun.Socket
 
   // The actual teleportation of the PTY proc
-  try {
-    socket = await Bun.connect(getClientObj())
-    proc = spawn(commandArgs, {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      terminal: {
-        cols: parseInt(values.cols),
-        rows: parseInt(values.rows),
-        data(_, data: Uint8Array) {
-          socket.write(encodeFrame(TYPE_OUTPUT, data))
-        },
+  socket = await Bun.connect(getClientObj())
+  proc = spawn(commandArgs, {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    terminal: {
+      cols: parseInt(values.cols),
+      rows: parseInt(values.rows),
+      data(_, data: Uint8Array) {
+        socket.write(encodeFrame(TYPE_OUTPUT, data))
       },
-    })
-    const procExitCode = await proc.exited
-    socket.end()
-    process.exit(procExitCode)
-  } catch (err: unknown) {
-    throw `${err}`
-  }
+    },
+  })
+  const procExitCode = await proc.exited
+  socket.end()
+  process.exit(procExitCode)
 
   // The UDS socket:
   function getClientObj(): Bun.UnixSocketOptions {
@@ -129,7 +127,9 @@ try {
           process.exit(0)
         },
         error(_socket, error) {
-          throw `Connection error: ${error.message}`
+          proc?.kill?.()
+          console.error(getErr(`Connection error: ${error.message}`))
+          process.exit(1)
         },
       },
     }

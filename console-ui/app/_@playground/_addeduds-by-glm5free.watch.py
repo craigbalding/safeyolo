@@ -4,7 +4,9 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -18,12 +20,110 @@ from rich.table import Table
 
 from ..api import AdminAPI, APIError, get_api
 from ..config import get_logs_dir
-from ..uds import UDSServer
 
 console = Console()
 
 # Default status file location
 STATUS_FILE = Path.home() / ".cache" / "safeyolo" / "tmux_status.txt"
+
+
+class UDSServer:
+    """Unix Domain Socket server for broadcasting JSONL events."""
+
+    def __init__(self, socket_path: Path):
+        self.socket_path = socket_path
+        self._clients: list[socket.socket] = []
+        self._lock = threading.Lock()
+        self._server_socket: socket.socket | None = None
+        self._running = False
+        self._accept_thread: threading.Thread | None = None
+
+    def start(self) -> bool:
+        """Start the UDS server. Returns True if successful."""
+        try:
+            if self.socket_path.exists():
+                self.socket_path.unlink()
+
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+
+            self._server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._server_socket.bind(str(self.socket_path))
+            self._server_socket.listen(5)
+            self._server_socket.settimeout(1.0)
+            self._running = True
+
+            self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+            self._accept_thread.start()
+
+            return True
+        except Exception as e:
+            console.print(f"[red]Failed to start socket server: {e}[/red]")
+            return False
+
+    def stop(self):
+        """Stop the server and clean up."""
+        self._running = False
+
+        with self._lock:
+            for client in self._clients:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            self._clients.clear()
+
+        if self._server_socket:
+            try:
+                self._server_socket.close()
+            except Exception:
+                pass
+
+        if self.socket_path.exists():
+            try:
+                self.socket_path.unlink()
+            except Exception:
+                pass
+
+    def broadcast(self, event: dict):
+        """Broadcast an event to all connected clients."""
+        if not self._running:
+            return
+
+        message = json.dumps(event) + "\n"
+        data = message.encode("utf-8")
+
+        with self._lock:
+            dead_clients = []
+            for client in self._clients:
+                try:
+                    client.sendall(data)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    dead_clients.append(client)
+
+            for client in dead_clients:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                self._clients.remove(client)
+
+    def client_count(self) -> int:
+        """Return number of connected clients."""
+        with self._lock:
+            return len(self._clients)
+
+    def _accept_loop(self):
+        """Accept new connections in a loop."""
+        while self._running and self._server_socket:
+            try:
+                client, _ = self._server_socket.accept()
+                client.setblocking(False)
+                with self._lock:
+                    self._clients.append(client)
+            except TimeoutError:
+                continue
+            except OSError:
+                break
 
 
 def is_in_tmux() -> bool:
@@ -261,7 +361,9 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
     # Get user input
     while True:
         try:
-            response = console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+            response = (
+                console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+            )
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Interrupted[/dim]")
             return False
@@ -434,30 +536,25 @@ def watch(
         safeyolo watch --tmux --no-toasts  # Tmux mode without toasts
         safeyolo watch --socket /tmp/safeyolo.sock  # Stream JSONL to socket
     """
-    # Determine log path
     if log_file:
         log_path = Path(log_file)
     else:
         log_path = get_logs_dir() / "safeyolo.jsonl"
 
-    # Tmux mode - separate code path
     if tmux:
         watch_tmux(log_path, interval, toasts=toasts)
         return
 
-    # Get API client for approvals
     api = None
     if interactive:
         try:
             api = get_api()
-            # Test connection
             api.health()
         except APIError as e:
             console.print(f"[yellow]Warning:[/yellow] Cannot connect to admin API: {e}")
             console.print("[dim]Approvals will be disabled. Run 'safeyolo start' first.[/dim]")
             api = None
 
-    # Start UDS server if socket path provided
     uds_server = None
     if socket_path:
         uds_server = UDSServer(Path(socket_path))
@@ -472,39 +569,31 @@ def watch(
         console.print("[dim]Press Ctrl+C to exit.[/dim]")
     console.print()
 
-    # Track seen events to avoid duplicates
     seen_fingerprints: set[str] = set()
 
     def cleanup():
         if uds_server:
             uds_server.stop()
 
-    # Handle signals for clean shutdown
     signal.signal(signal.SIGTERM, lambda _sig, _frame: (_ for _ in ()).throw(KeyboardInterrupt))
     signal.signal(signal.SIGINT, lambda _sig, _frame: (_ for _ in ()).throw(KeyboardInterrupt))
 
     try:
         for event in tail_jsonl(log_path, follow=follow):
-            # Broadcast to UDS clients if socket is enabled
             if uds_server:
                 uds_server.broadcast(event)
 
             event_type = event.get("event", "")
 
-            # Filter to security events if requested
             if security_only and not event_type.startswith("security."):
                 continue
 
-            # Check for credential blocks needing approval
-            # Fields are at root level, not nested under "data"
             if event_type == "security.credential_guard":
                 decision = event.get("decision", "")
                 reason = event.get("reason", "")
                 fingerprint = event.get("fingerprint", "")
 
-                # Only prompt for blocks that need approval
                 if decision == "block" and reason in ("requires_approval", "destination_mismatch"):
-                    # Deduplicate by fingerprint+host
                     dedup_key = f"{fingerprint}:{event.get('host', '')}"
                     if dedup_key in seen_fingerprints:
                         continue
@@ -513,13 +602,10 @@ def watch(
                     if interactive and api:
                         handle_approval(event, api)
                     else:
-                        # Just display the event
                         console.print(format_approval_request(event))
                 else:
-                    # Other security.credential events - show summary
                     _print_event_summary(event)
             else:
-                # Other events - show summary
                 _print_event_summary(event)
 
     except KeyboardInterrupt:
