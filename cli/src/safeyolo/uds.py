@@ -4,11 +4,59 @@ import json
 import select
 import socket
 import threading
+import tomllib
 from pathlib import Path
 
 from rich.console import Console
 
+from .config import find_uds_config
+
 console = Console()
+
+
+def _load_uds_config() -> dict:
+    """Load UDS configuration from uds.toml.
+
+    Priority (highest to lowest):
+    1. ~/.safeyolo/uds.toml (user override)
+    2. cli/src/safeyolo/uds.toml (package default)
+    3. Hardcoded fallback (if neither exists)
+    """
+    defaults = {
+        "sockets": {
+            "dir": "/tmp",
+            "watch_id": "watch-unnamed",
+            "tele_id": "tele-unnamed",
+        }
+    }
+
+    # Check user config first (via centralized helper)
+    user_config = find_uds_config()
+    if user_config:
+        return tomllib.loads(user_config.read_text())
+
+    # Fall back to package default
+    package_default = Path(__file__).parent / "uds.toml"
+    if package_default.exists():
+        return tomllib.loads(package_default.read_text())
+
+    return defaults
+
+
+def get_socket_path(service_id: str) -> Path:
+    """Get socket path for a service (watch_id, tele_id, etc.).
+
+    Args:
+        service_id: The config key from [sockets] section (e.g., "watch_id")
+
+    Returns:
+        Path in format: {dir}/safeyolo_{id}.sock
+    """
+    config = _load_uds_config()
+    sockets = config.get("sockets", {})
+    base_dir = sockets.get("dir", "/tmp").rstrip("/")
+    socket_id = sockets.get(service_id, f"{service_id.replace('_id', '')}-unnamed")
+    return Path(f"{base_dir}/safeyolo_{socket_id}.sock")
 
 
 class UDSServer:

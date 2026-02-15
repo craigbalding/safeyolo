@@ -12,11 +12,14 @@
 
 import { spawn } from 'bun'
 
+const us_ = 'safeyolo'
 const me_ = 'SafeYolo watch UDS consumer'
+const _pathtoSock = `${(Bun.env.SY_UDS_DIR || '/tmp').replace(/\/$/, '')}/` +
+  `${us_}_${Bun.env.SY_UDS_WATCH_SOCKET_ID || 'watch-unnamed'}.sock`
 const defaults_ = {
-  pathtoSock: '/tmp/safeyolo_poc.sock',
-  watchCmd: 'safeyolo',
-  watchArgs: ['watch', '--socket', '/tmp/safeyolo_poc.sock', '--log-only', '--all'],
+  pathtoSock: _pathtoSock,
+  watchCmd: us_,
+  watchArgs: ['watch', '--socket', _pathtoSock, '--log-only', '--all'],
 } as const
 
 const err_: [undefined | string, string] = [undefined, `unexpected error`]
@@ -70,10 +73,10 @@ function formatEvent(event: SafeYoloEvent): string {
 
   const reset = '\x1b[0m'
   const decisionColor = decision === 'block'
-    ? '\x1b[31m'  // red
+    ? '\x1b[31m' // red
     : decision === 'warn'
-      ? '\x1b[33m'  // yellow
-      : '\x1b[36m' // cyan
+    ? '\x1b[33m' // yellow
+    : '\x1b[36m' // cyan
 
   let output = `[${ts}] ${decisionColor}${evt}${reset} host=${host}`
   if (decision) output += ` decision=${decision}`
@@ -110,7 +113,7 @@ try {
   })
 
   // Wait a moment for socket to be created
-  await new Promise(r => setTimeout(r, 500))
+  await new Promise((r) => setTimeout(r, 500))
 
   // Check if socket exists
   const socketExists = await Bun.file(defaults_.pathtoSock).exists()
@@ -162,7 +165,6 @@ try {
   }
 
   process.exit(exitCode)
-
 } catch (err: unknown) {
   console.error(getErr(err))
   process.exit(1)

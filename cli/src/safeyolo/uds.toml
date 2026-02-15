@@ -1,0 +1,7 @@
+[sockets]
+# Base directory for UDS sockets
+dir = "/tmp"
+
+# Socket identifiers (used with format: {dir}/safeyolo_{id}.sock)
+watch_id = "watch-unnamed"
+tele_id = "tele-unnamed"

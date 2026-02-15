@@ -18,7 +18,7 @@ from rich.table import Table
 
 from ..api import AdminAPI, APIError, get_api
 from ..config import get_logs_dir
-from ..uds import UDSServer
+from ..uds import UDSServer, get_socket_path as get_uds_socket_path
 
 console = Console()
 
@@ -417,7 +417,7 @@ def watch(
     tmux: bool = typer.Option(False, "--tmux", "-t", help="Tmux status mode - write status file"),
     interval: int = typer.Option(2, "--interval", "-n", help="Status update interval in seconds (tmux mode)"),
     toasts: bool = typer.Option(True, "--toasts/--no-toasts", help="Send tmux toasts for approval events (tmux mode)"),
-    socket_path: str | None = typer.Option(None, "--socket", "-s", help="Unix domain socket path for JSONL streaming"),
+    uds: str | None = typer.Option(None, "--uds", help="Enable UDS socket streaming (uses default path, or specify custom path)"),
 ):
     """Watch logs and handle credential approval requests.
 
@@ -430,9 +430,10 @@ def watch(
         safeyolo watch --log-only   # Just display events, no prompts
         safeyolo watch --all        # Show all events, not just security
         safeyolo watch --tmux       # Tmux status mode with toasts
-        safeyolo watch --tmux -n 5  # Tmux mode with 5s interval
-        safeyolo watch --tmux --no-toasts  # Tmux mode without toasts
-        safeyolo watch --socket /tmp/safeyolo.sock  # Stream JSONL to socket
+        safeyolo watch --tmux --interval 5  # Tmux mode with 5s interval
+        safeyolo watch --tmux --no-toasts   # Tmux mode without toasts
+        safeyolo watch --uds        # Stream JSONL to default UDS socket
+        safeyolo watch --uds /tmp/custom.sock  # Stream to custom UDS socket
     """
     # Determine log path
     if log_file:
@@ -457,13 +458,15 @@ def watch(
             console.print("[dim]Approvals will be disabled. Run 'safeyolo start' first.[/dim]")
             api = None
 
-    # Start UDS server if socket path provided
+    # Start UDS server if requested
     uds_server = None
-    if socket_path:
-        uds_server = UDSServer(Path(socket_path))
+    if uds is not None:
+        # --uds alone (empty string) uses default, --uds <path> uses custom path
+        uds_path = Path(uds) if uds else get_uds_socket_path("watch_id")
+        uds_server = UDSServer(uds_path)
         if not uds_server.start():
             return
-        console.print(f"[bold]Socket:[/bold] {socket_path}")
+        console.print(f"[bold]Socket:[/bold] {uds_path}")
 
     console.print(f"[bold]Watching:[/bold] {log_path}")
     if interactive and api:

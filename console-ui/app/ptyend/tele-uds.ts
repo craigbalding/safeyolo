@@ -1,14 +1,20 @@
 #!/usr/bin/env bun
 /// <reference types="bun" />
+/**
+  @TODO desc
+**/
 
 import { spawn } from 'bun'
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util'
 
+const us_ = 'safeyolo'
 const me_ = 'SafeYolo tele client'
+const _pathtoSock = `${(Bun.env.SY_UDS_DIR || '/tmp').replace(/\/$/, '')}/` +
+  `${us_}_${Bun.env.SY_UDS_TELE_SOCKET_ID || 'tele-unnamed'}.sock`
 const defaults_ = {
-  pathtoSock: '/tmp/safeyolo-runner.sock',
+  pathtoSock: _pathtoSock,
   ptyDims: ['132', '32'], // Terminal Dims
-} as const
+}
 const err_: [undefined | string, string] = [undefined, `unexpected error`]
 const getErr = (err?: unknown) => `${me_} failed: ${err || err_[0] || err_[1]}`
 

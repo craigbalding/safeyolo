@@ -129,6 +129,27 @@ def get_admin_token_path() -> Path:
     return get_data_dir() / "admin_token"
 
 
+def get_uds_config_path() -> Path:
+    """Get path to UDS config file (uds.toml).
+
+    Returns path to user's uds.toml in config dir.
+    Use find_uds_config() to check existence with fallback logic.
+    """
+    return get_config_dir() / "uds.toml"
+
+
+def find_uds_config() -> Path | None:
+    """Check if user UDS config exists.
+
+    Returns path to user's ~/.safeyolo/uds.toml if it exists, None otherwise.
+    Used by UDS loading logic which falls back to package defaults.
+    """
+    config_path = get_uds_config_path()
+    if config_path.exists():
+        return config_path
+    return None
+
+
 def load_config() -> dict[str, Any]:
     """Load configuration from config.yaml.
 
