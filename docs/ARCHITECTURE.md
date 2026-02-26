@@ -205,12 +205,14 @@ class SecurityAddon:
 
 Addons process requests in order (defined in `main.py`):
 
-1. `request_id` - Assigns unique ID to each request
-2. `network_guard` - Domain allowlist enforcement
-3. `credential_guard` - Credential routing validation
-4. `pattern_scanner` - Content pattern detection
-5. `circuit_breaker` - Upstream failure protection
-6. `metrics` - Prometheus metrics collection
+1. `admin_shield` - Blocks proxy access to admin API
+2. `loop_guard` - Detects and breaks proxy loops (Via header)
+3. `request_id` - Assigns unique ID to each request
+4. `network_guard` - Domain allowlist enforcement
+5. `credential_guard` - Credential routing validation
+6. `pattern_scanner` - Content pattern detection
+7. `circuit_breaker` - Upstream failure protection
+8. `metrics` - Prometheus metrics collection
 
 First addon to block wins; subsequent addons see `flow.response` is set.
 

@@ -18,6 +18,7 @@ ADDON_MODULES = [
     "circuit_breaker",
     "credential_guard",
     "file_logging",
+    "loop_guard",
     "metrics",
     "network_guard",
     "pattern_scanner",

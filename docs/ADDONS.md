@@ -46,6 +46,7 @@ Addons are loaded in this order (order matters for security):
 | Layer | Addon | Purpose | Default Mode |
 |-------|-------|---------|--------------|
 | 0 | admin_shield | Block proxy access to admin API | Always on |
+| 0 | loop_guard | Detect and break proxy loops (Via header) | Always on |
 | 0 | request_id | Request ID for event correlation | Always on |
 | 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
 | 0 | policy_engine | Unified policy evaluation and budgets | Always on |
@@ -58,7 +59,7 @@ Addons are loaded in this order (order matters for security):
 | 3 | admin_api | REST API on :9090 | Always on |
 
 **Layers:**
-- **Layer 0 (Infrastructure):** Must run first - request IDs, policy engine, streaming
+- **Layer 0 (Infrastructure):** Must run first - loop detection, request IDs, policy engine, streaming
 - **Layer 1 (Network Policy):** Access control, rate limiting, circuit breakers
 - **Layer 2 (Security Inspection):** Credential routing, content scanning
 - **Layer 3 (Observability):** Logging, metrics, admin API
@@ -67,6 +68,26 @@ Addons are loaded in this order (order matters for security):
 - `network_guard` and `credential_guard` block by default (core protections)
 - `pattern_scanner` warns by default (higher false positive rate)
 - Other addons are always active with no mode toggle
+
+---
+
+## loop_guard.py
+
+Detects and breaks proxy loops using the RFC 7230 Via header mechanism.
+
+**How it works:**
+- Runs in the `requestheaders` hook (fires before all `request` hooks)
+- Checks if the `Via` header contains our token (`safeyolo`)
+- If found: request has already passed through us → respond 508 Loop Detected
+- If not found: inject `1.1 safeyolo` into `Via` so looped-back requests carry it
+
+**Why this matters:**
+When a request targets an address that resolves back to SafeYolo's own listen port (e.g. `host.docker.internal:8080`), it creates an infinite request amplification loop — thousands of requests per second filling logs and consuming resources.
+
+**Example blocked response:**
+```json
+{"error": "Loop Detected", "message": "Request would create a proxy loop"}
+```
 
 ---
 
