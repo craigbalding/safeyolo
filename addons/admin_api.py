@@ -14,55 +14,21 @@ Usage:
 
 import json
 import logging
-import re
 import secrets
 import threading
-import unicodedata
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
-from utils import write_event
+from utils import sanitize_for_log, write_event
 
 from pdp import get_policy_client
 
 log = logging.getLogger("safeyolo.admin")
 
 
-# Safe unicode categories for logging (letters, numbers, punctuation, symbols, space)
-_SAFE_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo",  # Letters
-                              "Nd", "Nl", "No",              # Numbers
-                              "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",  # Punctuation
-                              "Sm", "Sc", "Sk", "So",        # Symbols
-                              "Zs"})                         # Space (but not Zl/Zp line seps)
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-# Explicit blocklist: ASCII control chars + Unicode line/paragraph separators
-_BLOCKED_CODEPOINTS = frozenset(range(0x20)) | {0x7F, 0x2028, 0x2029}
-
-
-def _is_safe_char(c: str) -> bool:
-    """Check if character is safe for logging."""
-    cp = ord(c)
-    if cp in _BLOCKED_CODEPOINTS:
-        return False
-    return unicodedata.category(c) in _SAFE_CATEGORIES
-
-
-def _sanitize_log(value: str, max_len: int = 200) -> str:
-    """Sanitize user input for safe logging (prevent log injection).
-
-    Uses Unicode category whitelist plus explicit codepoint blocklist.
-    Replaces unsafe chars with '?' to make sanitization visible.
-    """
-    if value is None:
-        return ""
-    # Strip ANSI escapes first
-    text = _ANSI_ESCAPE_RE.sub("?", str(value))
-    # Replace unsafe characters with '?' (makes sanitization visible in logs)
-    sanitized = "".join(c if _is_safe_char(c) else "?" for c in text)
-    # Collapse repeated '?' to single '?'
-    sanitized = re.sub(r"\?+", "?", sanitized)
-    return sanitized[:max_len] + "..." if len(sanitized) > max_len else sanitized
+# Alias for brevity within this module
+_sanitize_log = sanitize_for_log
 
 
 class AdminRequestHandler(BaseHTTPRequestHandler):
@@ -185,7 +151,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         try:
             setattr(ctx.options, option_name, option_value)
-            log.info(f"Mode changed: {addon_name} -> {_sanitize_log(mode)} ({option_name}={option_value})")
+            log.info(f"Mode changed: {_sanitize_log(addon_name)} -> {_sanitize_log(mode)} ({option_name}={option_value})")
             return {
                 "addon": addon_name,
                 "mode": mode,
@@ -194,7 +160,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "status": "updated",
             }
         except Exception as e:
-            log.error(f"Failed to set mode for {addon_name}: {type(e).__name__}: {e}")
+            log.error(f"Failed to set mode for {_sanitize_log(addon_name)}: {type(e).__name__}: {e}")
             return {"addon": addon_name, "error": f"{type(e).__name__}: {e}"}
 
     def _get_all_modes(self) -> dict:
@@ -630,7 +596,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             task_id=task_id,
             permission_count=permission_count
         )
-        log.info(f"Task policy '{task_id}' updated: {permission_count} permissions")
+        log.info(f"Task policy '{_sanitize_log(task_id)}' updated: {permission_count} permissions")
 
         self._send_json({
             "status": "updated",
