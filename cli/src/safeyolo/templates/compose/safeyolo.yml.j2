@@ -51,9 +51,15 @@ services:
 {% endif %}
       - {{ config_dir }}:/safeyolo
       - {{ logs_dir }}:/app/logs
+{% if dev %}
+      # Dev mode: live-edit source from host
+      - {{ repo_root }}/addons:/app/addons
+      - {{ repo_root }}/pdp:/app/pdp
+{% endif %}
     environment:
       - SAFEYOLO_BLOCK=true
       - SAFEYOLO_HEADLESS=${SAFEYOLO_HEADLESS:-}
+      - SAFEYOLO_TUI=${SAFEYOLO_TUI:-}
       - CERT_DIR=/certs-private
       - PUBLIC_CERT_DIR=/certs-public
     restart: unless-stopped

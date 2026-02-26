@@ -65,6 +65,13 @@ permissions:
   # Rate Limits (requests per minute) - Prevent runaway agents
   # ---------------------------------------------------------------------------
 
+  # Docker host internal - high limit for health checks and local services
+  - action: network:request
+    resource: "host.docker.internal/*"
+    effect: budget
+    budget: 12000  # 200 rps - local traffic, no external risk
+    tier: explicit
+
   # LLM APIs - high volume
   - action: network:request
     resource: "api.openai.com/*"

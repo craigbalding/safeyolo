@@ -100,6 +100,11 @@ def start(
         "--headless",
         help="Run without TUI (mitmdump instead of mitmproxy)",
     ),
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help="Mount source code for live editing (requires repo checkout)",
+    ),
 ) -> None:
     """Start SafeYolo proxy container."""
     first_run = False
@@ -159,8 +164,11 @@ def start(
             console.print("  docker pull safeyolo:latest")
             raise typer.Exit(1)
 
+    if dev:
+        console.print("[bold]Dev mode:[/bold] addons/ and pdp/ mounted from repo")
+
     try:
-        docker_start(detach=True, pull=pull)
+        docker_start(detach=True, pull=pull, dev=dev)
     except BuildError as err:
         console.print(f"[red]Build failed:[/red] {err}")
         raise typer.Exit(1)
