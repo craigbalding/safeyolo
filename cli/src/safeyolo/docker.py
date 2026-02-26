@@ -192,12 +192,14 @@ def get_container_status() -> dict | None:
     return None
 
 
-def generate_compose(sandbox: bool = True) -> str:
+def generate_compose(sandbox: bool = True, dev: bool = False) -> str:
     """Generate docker-compose.yml content from config using Jinja2 template.
 
     Args:
         sandbox: If True (default), generate Sandbox Mode with network isolation.
                  If False, generate Try Mode for evaluation.
+        dev: If True, add volume mounts for addons/ and pdp/ from repo checkout
+             so local edits are reflected after container restart.
 
     Both modes:
     - Use localhost-only port bindings (127.0.0.1)
@@ -214,14 +216,28 @@ def generate_compose(sandbox: bool = True) -> str:
     Try Mode:
     - Host-mounts public CA cert directory (user reads it directly)
     - No internal network (agent runs on host)
+
+    Raises:
+        DockerError: If dev=True but repo root not found.
     """
     config = load_config()
     proxy = config["proxy"]
     config_dir = get_config_dir()
 
+    # Resolve repo root for dev mode
+    repo_root = None
+    if dev:
+        repo_root = get_repo_root()
+        if not repo_root:
+            raise DockerError(
+                "Dev mode requires a repo checkout (no Dockerfile found).\n"
+                "If installed from PyPI, dev mode is not available."
+            )
+
     # Template variables - single config_dir mount replaces individual paths
     variables = {
         "sandbox": sandbox,
+        "dev": dev,
         # Proxy config
         "image": proxy.get("image", "safeyolo:latest"),
         "container_name": proxy.get("container_name", "safeyolo"),
@@ -242,6 +258,8 @@ def generate_compose(sandbox: bool = True) -> str:
         "private_certs_volume": PRIVATE_CERTS_VOLUME_NAME,
         "public_certs_volume": CA_VOLUME_NAME,
     }
+    if repo_root:
+        variables["repo_root"] = repo_root
 
     # Render template
     env = Environment(
@@ -253,26 +271,28 @@ def generate_compose(sandbox: bool = True) -> str:
     return template.render(**variables)
 
 
-def write_compose_file(sandbox: bool = True) -> Path:
+def write_compose_file(sandbox: bool = True, dev: bool = False) -> Path:
     """Write docker-compose.yml to config directory.
 
     Args:
         sandbox: If True (default), generate Sandbox Mode with network isolation.
                  If False, generate Try Mode for evaluation.
+        dev: If True, add volume mounts for live source editing.
     """
     config_dir = get_config_dir(create=True)
     compose_path = config_dir / "docker-compose.yml"
-    compose_path.write_text(generate_compose(sandbox=sandbox))
+    compose_path.write_text(generate_compose(sandbox=sandbox, dev=dev))
     return compose_path
 
 
-def start(detach: bool = True, pull: bool = False, auto_build: bool = True) -> bool:
+def start(detach: bool = True, pull: bool = False, auto_build: bool = True, dev: bool = False) -> bool:
     """Start SafeYolo container.
 
     Args:
         detach: Run in background
         pull: Pull latest image first
         auto_build: Build image if missing (default True)
+        dev: Mount source code for live editing
 
     Returns:
         True if image was built, False if it already existed
@@ -290,7 +310,7 @@ def start(detach: bool = True, pull: bool = False, auto_build: bool = True) -> b
         built = True
 
     sandbox = config.get("sandbox", False)
-    compose_path = write_compose_file(sandbox=sandbox)
+    compose_path = write_compose_file(sandbox=sandbox, dev=dev)
 
     if pull:
         _run(["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "pull"])
