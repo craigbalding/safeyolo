@@ -19,6 +19,7 @@ Based on: https://martinfowler.com/bliki/CircuitBreaker.html
 
 import json
 import logging
+import math
 import random
 import threading
 import time
@@ -163,6 +164,13 @@ class CircuitBreaker(SecurityAddon):
         # Per-domain config overrides
         self._domain_configs: dict[str, dict] = {}
 
+        # Domains excluded from circuit breaking (local infrastructure)
+        self._excluded_domains: set[str] = {
+            "localhost",
+            "127.0.0.1",
+            "host.docker.internal",
+        }
+
         # Circuit-specific stats (different from base AddonStats)
         self.checks_total = 0
         self.opens_total = 0
@@ -245,6 +253,8 @@ class CircuitBreaker(SecurityAddon):
                 self.timeout_seconds = d.get("timeout_seconds", self.timeout_seconds)
 
             self._domain_configs = data.get("domains", {})
+            if "excluded_domains" in data:
+                self._excluded_domains.update(data["excluded_domains"])
             log.info(f"Circuit breaker loaded config: {len(self._domain_configs)} domain overrides")
 
         except Exception as e:
@@ -273,6 +283,13 @@ class CircuitBreaker(SecurityAddon):
         """Calculate timeout with exponential backoff and jitter."""
         if not self.use_exponential_backoff or streak == 0:
             return self.timeout_seconds
+
+        # Cap streak to prevent OverflowError in exponentiation.
+        # max_streak is the point where timeout >= max_timeout_seconds.
+        if self.backoff_multiplier > 1:
+            max_streak = math.ceil(math.log(self.max_timeout_seconds / self.timeout_seconds,
+                                            self.backoff_multiplier))
+            streak = min(streak, max_streak)
 
         timeout = self.timeout_seconds * (self.backoff_multiplier**streak)
         timeout = min(timeout, self.max_timeout_seconds)
@@ -469,6 +486,9 @@ class CircuitBreaker(SecurityAddon):
             return
 
         domain = flow.request.host
+        if domain in self._excluded_domains:
+            return
+
         allowed, status = self.should_allow_request(domain)
 
         if not allowed:
@@ -516,6 +536,8 @@ class CircuitBreaker(SecurityAddon):
             return
 
         domain = flow.request.host
+        if domain in self._excluded_domains:
+            return
         status_code = flow.response.status_code
 
         if status_code >= 500 or status_code == 429:

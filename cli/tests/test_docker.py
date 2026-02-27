@@ -1,6 +1,7 @@
 """Tests for Docker operations module."""
 
 import subprocess
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -177,6 +178,29 @@ class TestGenerateCompose:
         """Try mode does not include certs-init service."""
         content = generate_compose(sandbox=False)
         assert "certs-init:" not in content
+
+    def test_dev_mode_includes_source_mounts(self, tmp_config_dir):
+        """Dev mode adds addons/ and pdp/ volume mounts."""
+        content = generate_compose(sandbox=False, dev=True)
+        parsed = yaml.safe_load(content)
+        volumes = parsed["services"]["safeyolo"]["volumes"]
+        volume_strs = [str(vol) for vol in volumes]
+        has_addons = any("/app/addons" in vol for vol in volume_strs)
+        has_pdp = any("/app/pdp" in vol for vol in volume_strs)
+        assert has_addons, f"Missing addons mount in volumes: {volume_strs}"
+        assert has_pdp, f"Missing pdp mount in volumes: {volume_strs}"
+
+    def test_default_no_dev_mounts(self, tmp_config_dir):
+        """Default (dev=False) does not include source mounts."""
+        content = generate_compose(sandbox=False, dev=False)
+        assert "/app/addons" not in content
+        assert "/app/pdp" not in content
+
+    def test_dev_mode_requires_repo_root(self, tmp_config_dir):
+        """Dev mode raises DockerError when repo root not found."""
+        with patch("safeyolo.docker.get_repo_root", return_value=None):
+            with pytest.raises(DockerError, match="Dev mode requires a repo checkout"):
+                generate_compose(sandbox=False, dev=True)
 
 
 class TestWriteComposeFile:

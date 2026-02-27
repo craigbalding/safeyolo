@@ -111,22 +111,23 @@ fi
 #
 # Layer 0: Infrastructure (MUST be first)
 #   0. admin_shield   - Block proxy access to admin API (security gate)
-#   1. request_id     - Assign unique ID for event correlation
-#   2. sse_streaming  - SSE/streaming support for LLM responses
-#   3. policy_engine  - Unified policy evaluation (other addons query this)
+#   1. loop_guard     - Detect and break proxy loops (Via header)
+#   2. request_id     - Assign unique ID for event correlation
+#   3. sse_streaming  - SSE/streaming support for LLM responses
+#   4. policy_engine  - Unified policy evaluation (other addons query this)
 #
 # Layer 1: Network Policy (single evaluation for access + rate limiting)
-#   4. network_guard  - Access control + rate limiting (deny→403, budget→429)
-#   5. circuit_breaker - Fail-fast for unhealthy upstreams
+#   5. network_guard  - Access control + rate limiting (deny→403, budget→429)
+#   6. circuit_breaker - Fail-fast for unhealthy upstreams
 #
 # Layer 2: Security Inspection (credential and content scanning)
-#   6. credential_guard - API key protection and routing
-#   7. pattern_scanner  - Fast regex for secrets/jailbreaks
+#   7. credential_guard - API key protection and routing
+#   8. pattern_scanner  - Fast regex for secrets/jailbreaks
 #
 # Layer 3: Observability (observe but don't block)
-#   8. request_logger - JSONL structured logging
-#   9. metrics        - Per-domain statistics
-#  10. admin_api      - Control plane REST API
+#   9. request_logger - JSONL structured logging
+#  10. metrics        - Per-domain statistics
+#  11. admin_api      - Control plane REST API
 
 ADDON_ARGS=""
 
@@ -147,6 +148,7 @@ echo "Loading addons:"
 # Layer 0: Infrastructure
 load_addon "/app/addons/file_logging.py"
 load_addon "/app/addons/admin_shield.py"
+load_addon "/app/addons/loop_guard.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
 load_addon "/app/addons/policy_engine.py"

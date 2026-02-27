@@ -58,6 +58,7 @@ safeyolo/
 │   ├── budget_tracker.py     # Token/cost budget tracking
 │   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
 │   ├── credential_guard.py   # Core credential detection and protection
+│   ├── loop_guard.py         # Proxy loop detection (Via header)
 │   ├── metrics.py            # Statistics collection
 │   ├── network_guard.py      # Network-level security policies
 │   ├── pattern_scanner.py    # Regex pattern matching for secrets
@@ -296,6 +297,18 @@ addons = [MyAddon()]
 - Check `flow.metadata.get("policy")` for per-domain config
 
 ## Development Setup
+
+**Running with live source editing:**
+```bash
+# CLI: mounts addons/ and pdp/ from repo checkout into the container
+safeyolo start --dev
+
+# Edit addons/*.py or pdp/*.py, then restart to pick up changes:
+safeyolo stop && safeyolo start --dev
+
+# Rebuild required for changes to scripts/ (baked into image):
+safeyolo start --dev --build
+```
 
 **Install dev dependencies and pre-commit hooks:**
 ```bash
