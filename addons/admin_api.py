@@ -40,12 +40,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     admin_token = None  # Bearer token for authentication (set by AdminAPI)
 
 
-    # Addons that support mode switching: name -> option_name
-    # All options now use consistent "block" semantics: True=block, False=warn
+    # Addons that support mode switching: name -> list of option names
+    # All options use consistent "block" semantics: True=block, False=warn
     MODE_SWITCHABLE = {
-        "network-guard": "network_guard_block",
-        "credential-guard": "credguard_block",
-        "pattern-scanner": "pattern_block_input",
+        "network-guard": ["network_guard_block"],
+        "credential-guard": ["credguard_block"],
+        "pattern-scanner": ["pattern_block_request", "pattern_block_response"],
     }
 
     def log_message(self, format, *args):
@@ -128,15 +128,16 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if addon_name not in self.MODE_SWITCHABLE:
             return None
 
-        option_name = self.MODE_SWITCHABLE[addon_name]
+        option_names = self.MODE_SWITCHABLE[addon_name]
         try:
-            option_value = getattr(ctx.options, option_name)
-            mode = "block" if option_value else "warn"
+            option_values = {name: getattr(ctx.options, name) for name in option_names}
+            # "block" if any option is True, "warn" if all are False
+            any_blocking = any(option_values.values())
+            mode = "block" if any_blocking else "warn"
             return {
                 "addon": addon_name,
                 "mode": mode,
-                "option": option_name,
-                "option_value": option_value,
+                "options": option_values,
             }
         except AttributeError:
             return {"addon": addon_name, "mode": "unknown", "error": "option not available"}
@@ -146,17 +147,18 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if addon_name not in self.MODE_SWITCHABLE:
             return None
 
-        option_name = self.MODE_SWITCHABLE[addon_name]
+        option_names = self.MODE_SWITCHABLE[addon_name]
         option_value = (mode == "block")
 
         try:
-            setattr(ctx.options, option_name, option_value)
-            log.info(f"Mode changed: {_sanitize_log(addon_name)} -> {_sanitize_log(mode)} ({option_name}={option_value})")
+            for option_name in option_names:
+                setattr(ctx.options, option_name, option_value)
+            option_values = dict.fromkeys(option_names, option_value)
+            log.info(f"Mode changed: {_sanitize_log(addon_name)} -> {_sanitize_log(mode)} ({option_values})")
             return {
                 "addon": addon_name,
                 "mode": mode,
-                "option": option_name,
-                "option_value": option_value,
+                "options": option_values,
                 "status": "updated",
             }
         except Exception as e:
@@ -723,9 +725,10 @@ class AdminAPI:
 
         # Find other addons to wire up
         self._discover_addons()
-        log.info(f"Admin API: discovered {len(AdminRequestHandler.addons_with_stats)} addons with stats")
 
         # Start HTTP server in background thread with error handling
+        # allow_reuse_address must be set before bind() — use class attribute
+        HTTPServer.allow_reuse_address = True
         self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
         self._server_port = port
 
