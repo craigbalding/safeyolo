@@ -24,12 +24,7 @@ class AdminShield:
     name = "admin-shield"
 
     def load(self, loader):
-        loader.add_option(
-            name="admin_port",
-            typespec=int,
-            default=9090,
-            help="Admin API port to protect",
-        )
+        # admin_port is registered by admin_api.py — read via ctx.options
         loader.add_option(
             name="shield_extra_ports",
             typespec=str,
