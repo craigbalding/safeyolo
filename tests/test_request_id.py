@@ -158,6 +158,78 @@ class TestHopByHopHeaderStripping:
         assert "proxy-authorization" not in headers_lower
 
 
+class TestWebSocketUpgradePreservation:
+    """Tests for WebSocket upgrade header preservation."""
+
+    @pytest.fixture
+    def addon(self):
+        """Create a fresh RequestIdGenerator instance."""
+        from request_id import RequestIdGenerator
+        return RequestIdGenerator()
+
+    def _make_websocket_flow(self):
+        """Create a flow with WebSocket upgrade headers."""
+        flow = tflow.tflow()
+        flow.request.headers["Connection"] = "Upgrade"
+        flow.request.headers["Upgrade"] = "websocket"
+        flow.request.headers["Sec-WebSocket-Key"] = "dGhlIHNhbXBsZSBub25jZQ=="
+        flow.request.headers["Sec-WebSocket-Version"] = "13"
+        return flow
+
+    def test_websocket_upgrade_headers_preserved(self, addon):
+        """Upgrade and Connection headers are preserved for WebSocket handshakes."""
+        flow = self._make_websocket_flow()
+
+        addon.request(flow)
+
+        assert flow.request.headers.get("Upgrade") == "websocket"
+        assert flow.request.headers.get("Connection") == "Upgrade"
+        assert flow.request.headers.get("Sec-WebSocket-Key") == "dGhlIHNhbXBsZSBub25jZQ=="
+
+    def test_websocket_metadata_flag_set(self, addon):
+        """WebSocket upgrade sets is_websocket metadata flag."""
+        flow = self._make_websocket_flow()
+
+        addon.request(flow)
+
+        assert flow.metadata.get("is_websocket") is True
+
+    def test_non_websocket_upgrade_still_stripped(self, addon):
+        """Non-WebSocket Upgrade headers are still stripped."""
+        flow = tflow.tflow()
+        flow.request.headers["Connection"] = "Upgrade"
+        flow.request.headers["Upgrade"] = "h2c"
+
+        addon.request(flow)
+
+        assert "Upgrade" not in flow.request.headers
+        assert "Connection" not in flow.request.headers
+        assert flow.metadata.get("is_websocket") is not True
+
+    def test_websocket_other_hop_by_hop_still_stripped(self, addon):
+        """Other hop-by-hop headers are still stripped even for WebSocket."""
+        flow = self._make_websocket_flow()
+        flow.request.headers["Proxy-Authorization"] = "Basic secret"
+        flow.request.headers["Keep-Alive"] = "timeout=5"
+
+        addon.request(flow)
+
+        # WebSocket headers preserved
+        assert flow.request.headers.get("Upgrade") == "websocket"
+        assert flow.request.headers.get("Connection") == "Upgrade"
+        # Other hop-by-hop headers still stripped
+        assert "Proxy-Authorization" not in flow.request.headers
+        assert "Keep-Alive" not in flow.request.headers
+
+    def test_websocket_request_id_still_assigned(self, addon):
+        """WebSocket requests still get a request ID."""
+        flow = self._make_websocket_flow()
+
+        addon.request(flow)
+
+        assert flow.metadata["request_id"].startswith("req-")
+
+
 class TestRequestIdIntegration:
     """Integration tests for request_id with other addons."""
 
