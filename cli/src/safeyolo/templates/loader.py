@@ -130,6 +130,14 @@ def load_agent_config(agent_dir: Path) -> AgentConfig:
     instructions = data.get("instructions", {})
     injection = instructions.get("injection", {})
 
+    # Load instructions content from file if specified
+    content = instructions.get("content", "")
+    content_file = instructions.get("content_file")
+    if content_file and not content:
+        content_path = agent_dir / content_file
+        if content_path.exists():
+            content = content_path.read_text()
+
     return AgentConfig(
         name=agent.get("name", agent_dir.name),
         description=agent.get("description", ""),
@@ -159,7 +167,7 @@ def load_agent_config(agent_dir: Path) -> AgentConfig:
             image=docker.get("image"),
         ),
         instructions=InstructionsConfig(
-            content=instructions.get("content", ""),
+            content=content,
             injection_type=injection.get("type", "system_file"),
             path=injection.get("path"),
             arg_name=injection.get("arg_name"),

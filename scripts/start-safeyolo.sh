@@ -111,10 +111,11 @@ fi
 #
 # Layer 0: Infrastructure (MUST be first)
 #   0. admin_shield   - Block proxy access to admin API (security gate)
-#   1. loop_guard     - Detect and break proxy loops (Via header)
-#   2. request_id     - Assign unique ID for event correlation
-#   3. sse_streaming  - SSE/streaming support for LLM responses
-#   4. policy_engine  - Unified policy evaluation (other addons query this)
+#   1. agent_relay    - Read-only PDP relay for agent self-service
+#   2. loop_guard     - Detect and break proxy loops (Via header)
+#   3. request_id     - Assign unique ID for event correlation
+#   4. sse_streaming  - SSE/streaming support for LLM responses
+#   5. policy_engine  - Unified policy evaluation (other addons query this)
 #
 # Layer 1: Network Policy (single evaluation for access + rate limiting)
 #   5. network_guard  - Access control + rate limiting (deny→403, budget→429)
@@ -147,7 +148,9 @@ load_addon() {
 echo "Loading addons:"
 # Layer 0: Infrastructure
 load_addon "/app/addons/file_logging.py"
+load_addon "/app/addons/memory_monitor.py"
 load_addon "/app/addons/admin_shield.py"
+load_addon "/app/addons/agent_relay.py"
 load_addon "/app/addons/loop_guard.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/sse_streaming.py"
@@ -158,6 +161,7 @@ load_addon "/app/addons/circuit_breaker.py"
 # Layer 2: Security Inspection
 load_addon "/app/addons/credential_guard.py"
 load_addon "/app/addons/pattern_scanner.py"
+load_addon "/app/addons/test_context.py"
 # Layer 3: Observability
 load_addon "/app/addons/request_logger.py"
 load_addon "/app/addons/metrics.py"
@@ -242,6 +246,21 @@ if [ -f "/app/addons/pattern_scanner.py" ]; then
         echo "  pattern-scanner: WARN-ONLY"
     fi
 fi
+
+# test-context: defaults to BLOCK (428 soft-reject for missing context)
+if [ -f "/app/addons/test_context.py" ]; then
+    TEST_CONTEXT_BLOCK="${TEST_CONTEXT_BLOCK:-true}"
+    if [ "${SAFEYOLO_BLOCK}" = "true" ]; then
+        TEST_CONTEXT_BLOCK="true"
+    fi
+    if [ "${TEST_CONTEXT_BLOCK}" = "true" ]; then
+        echo "  test-context: BLOCK"
+        MITM_OPTS="${MITM_OPTS} --set test_context_block=true"
+    else
+        echo "  test-context: WARN-ONLY"
+        MITM_OPTS="${MITM_OPTS} --set test_context_block=false"
+    fi
+fi
 echo ""
 
 # Add rate limit config if file exists
@@ -321,6 +340,14 @@ if [ "${SAFEYOLO_TUI}" = "true" ]; then
     echo ""
     echo "=== Starting in TUI mode (mitmproxy in tmux) ==="
     echo "Attach to TUI: docker exec -it safeyolo tmux attach"
+
+    # TUI mode: load flow pruner to prevent unbounded memory growth.
+    # mitmproxy keeps every flow in memory for the scrollable list.
+    # Without pruning, this OOM-kills the process after ~1500-2000 flows.
+    if [ -f "/app/addons/flow_pruner.py" ]; then
+        ADDON_ARGS="${ADDON_ARGS} -s /app/addons/flow_pruner.py"
+        echo "  - flow_pruner.py (TUI memory protection)"
+    fi
 
     # Build the mitmproxy command and save it for reload script
     MITMPROXY_CMD="mitmproxy -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} $@"

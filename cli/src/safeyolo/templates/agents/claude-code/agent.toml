@@ -27,28 +27,7 @@ config_files = [".claude.json"]
 env = {}
 
 [instructions]
-content = """
-# SafeYolo Container Environment
-
-This is a sandboxed container with network isolation via SafeYolo proxy.
-
-## Installing Languages and Tools
-
-Use mise (not apt-get, npm -g, or pip install --user):
-
-  mise install go@latest
-  mise install python@3.12
-  mise install rust@latest
-  mise use -g npm:typescript
-
-List available versions: mise ls-remote python
-
-## What Won't Work
-
-- apt-get/apt (non-root container)
-- npm install -g (use mise instead)
-- pip install --user (use mise python, then pip in venv)
-"""
+content_file = "instructions.md"
 
 [instructions.injection]
 type = "system_file"
