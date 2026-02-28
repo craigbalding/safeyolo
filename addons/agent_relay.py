@@ -130,8 +130,10 @@ class AgentRelay:
             token = ctx.options.admin_api_token
             if token:
                 return token
-        except AttributeError:
-            pass
+        except AttributeError as exc:
+            # ctx.options may not have admin_api_token (addon not loaded or option renamed);
+            # fall back to environment / file-based token sources.
+            log.debug(f"admin_api_token option not available on ctx.options: {exc}")
         # Fallback to environment / file
         import os
         from pathlib import Path
