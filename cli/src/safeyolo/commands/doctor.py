@@ -161,14 +161,9 @@ def _check_mitmproxy_process() -> DiagResult:
                     message="Running in TUI mode (PID 1)",
                 )
     except subprocess.TimeoutExpired as exc:
-        last_error = f"Timeout while checking mitmproxy process via docker exec: {exc}"
+        last_error = f"Timeout checking PID 1: {exc}"
     except FileNotFoundError as exc:
-        last_error = f"docker executable not found while checking mitmproxy process: {exc}"
-            name="mitmproxy process",
-            status="fail",
-            message=f"Unable to inspect container process: {type(exc).__name__}",
-            remediation="Ensure Docker is installed, the Docker daemon is running, and the SafeYolo container is accessible.",
-        )
+        last_error = f"docker not found: {exc}"
 
     # TUI mode: mitmproxy runs under tmux, not as PID 1.
     # Scan /proc/*/cmdline for any mitmproxy/mitmdump process.
@@ -193,31 +188,31 @@ def _check_mitmproxy_process() -> DiagResult:
         )
         if result.returncode == 0 and result.stdout.strip():
             line = result.stdout.strip()
-    except subprocess.TimeoutExpired as exc:
-        last_error = f"Timeout while scanning mitmproxy processes via docker exec: {exc}"
-    except FileNotFoundError as exc:
-        last_error = f"docker executable not found while scanning mitmproxy processes: {exc}"
+            # Extract PID from /proc/<pid>/cmdline path at end of line
+            pid = "unknown"
             if "/proc/" in line:
-    detail = "The proxy process may have crashed."
-    if last_error:
-        detail = f"{detail} Last error: {last_error}"
-
                 parts = line.rsplit("/proc/", 1)[-1]
                 pid = parts.split("/")[0]
             mode = "TUI mode" if "mitmproxy" in line and "mitmdump" not in line else "headless"
             return DiagResult(
-        detail=detail,
+                name="mitmproxy process",
                 status="pass",
                 message=f"Running in {mode} (PID {pid})",
             )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    except subprocess.TimeoutExpired as exc:
+        last_error = f"Timeout scanning /proc: {exc}"
+    except FileNotFoundError as exc:
+        last_error = f"docker not found: {exc}"
+
+    detail = "The proxy process may have crashed."
+    if last_error:
+        detail = f"{detail} Last error: {last_error}"
 
     return DiagResult(
         name="mitmproxy process",
         status="fail",
         message="mitmproxy not running inside container",
-        detail="The proxy process may have crashed.",
+        detail=detail,
         remediation="safeyolo stop && safeyolo start",
     )
 

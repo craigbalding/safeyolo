@@ -18,10 +18,10 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import time
 from pathlib import Path
-import logging
 
 DEFAULT_TTL_SECONDS = 3600  # 1 hour
 
