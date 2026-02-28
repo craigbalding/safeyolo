@@ -79,12 +79,10 @@ class FlowPruner:
                 removable.append(flow)
                 removed += 1
 
-        for flow in removable:
-            ctx.master.view.remove(flow)
-
-        if removed > 0:
-            self._total_pruned += removed
-            log.debug(f"Pruned {removed} flows (total pruned: {self._total_pruned}, retained: {len(view)})")
+        if removable:
+            view.remove(removable)
+            self._total_pruned += len(removable)
+            log.info(f"Pruned {len(removable)} flows (total pruned: {self._total_pruned}, retained: {len(view)})")
 
 
 addons = [FlowPruner()]
