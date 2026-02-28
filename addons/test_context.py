@@ -177,7 +177,7 @@ class TestContext(SecurityAddon):
 
             if self.should_block():
                 body = {
-                    "error": "Pentest context required",
+                    "error": "Test context required",
                     "type": "missing_context",
                     "destination": flow.request.host,
                     "action": "add_header",

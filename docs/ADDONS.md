@@ -666,7 +666,7 @@ addons:
 **Response when missing (428):**
 ```json
 {
-  "error": "Pentest context required",
+  "error": "Test context required",
   "type": "missing_context",
   "destination": "target.example.com",
   "header": "X-Test-Context",
