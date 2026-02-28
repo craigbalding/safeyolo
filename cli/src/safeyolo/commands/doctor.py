@@ -7,6 +7,7 @@ import ssl
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from typing import Optional
 
 import typer
 import yaml
@@ -135,7 +136,7 @@ def _check_mitmproxy_process() -> DiagResult:
     In TUI mode, checks /proc/*/cmdline for any mitmproxy process.
     """
     name = get_container_name()
-    last_error: str | None = None
+    last_error: Optional[str] = None
 
     # Check PID 1 cmdline (headless mode: exec mitmdump replaces shell)
     try:
