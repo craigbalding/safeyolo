@@ -266,8 +266,9 @@ proxy:
 
 modes:
   credential_guard: block    # block | warn
-  rate_limiter: block        # block | warn
+  network_guard: block       # block | warn
   pattern_scanner: warn      # block | warn
+  test_context: block        # block | warn
 
 notifications:
   method: ntfy               # ntfy | macos | webhook | none

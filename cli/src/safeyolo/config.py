@@ -121,6 +121,11 @@ def get_admin_token_path() -> Path:
     return get_data_dir() / "admin_token"
 
 
+def get_readonly_token_path() -> Path:
+    """Get path to readonly token file."""
+    return get_data_dir() / "readonly_token"
+
+
 def load_config() -> dict[str, Any]:
     """Load configuration from config.yaml.
 

@@ -54,11 +54,15 @@ safeyolo/
 │   │   └── matching.py       # Host/resource matching, HMAC fingerprinting
 │   ├── admin_api.py          # REST API for runtime control
 │   ├── admin_shield.py       # Protects admin API endpoints
+│   ├── agent_relay.py        # Read-only PDP relay for agent self-service
 │   ├── base.py               # Base addon class with shared functionality
-│   ├── budget_tracker.py     # Token/cost budget tracking
+│   ├── budget_tracker.py     # GCRA-based rate limiting
 │   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
 │   ├── credential_guard.py   # Core credential detection and protection
+│   ├── file_logging.py       # Structured JSONL file logging setup
+│   ├── flow_pruner.py        # TUI-only: prune old flows for memory
 │   ├── loop_guard.py         # Proxy loop detection (Via header)
+│   ├── memory_monitor.py     # Process memory + connection tracking
 │   ├── metrics.py            # Statistics collection
 │   ├── network_guard.py      # Network-level security policies
 │   ├── pattern_scanner.py    # Regex pattern matching for secrets
@@ -69,11 +73,13 @@ safeyolo/
 │   ├── sensor_utils.py       # HttpEvent builders for sensors
 │   ├── service_discovery.py  # Client IP to project mapping
 │   ├── sse_streaming.py      # Server-sent events handling
+│   ├── test_context.py       # X-Test-Context header enforcement
 │   └── utils.py              # Shared utilities (logging, blocking)
 ├── pdp/                      # Policy Decision Point (library + service)
 │   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
 │   ├── core.py               # PDPCore - policy evaluation engine
 │   ├── client.py             # PolicyClient interface (local/HTTP modes, incl. admin)
+│   ├── tokens.py             # HMAC-signed readonly tokens for agent relay
 │   └── app.py                # FastAPI service (optional deployment)
 ├── cli/                      # safeyolo CLI (runs on host)
 │   ├── src/safeyolo/
@@ -85,11 +91,13 @@ safeyolo/
 │   │       ├── admin.py      # check, mode, policies, test
 │   │       ├── agent.py      # agent subcommands
 │   │       ├── cert.py       # certificate management
+│   │       ├── doctor.py     # 11-check diagnostic cascade
 │   │       ├── init.py       # init command
 │   │       ├── lifecycle.py  # start, stop, status
 │   │       ├── logs.py       # log viewing
 │   │       ├── sandbox.py    # sandbox subcommands
 │   │       ├── setup.py      # setup subcommands
+│   │       ├── token.py      # token create/list/revoke
 │   │       └── watch.py      # real-time log watching
 │   └── pyproject.toml
 ├── fuzz/                     # Atheris fuzz targets (ClusterFuzzLite)

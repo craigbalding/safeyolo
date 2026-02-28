@@ -12,7 +12,7 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── policies/            # Per-project approval policies
 ├── agents/              # Agent container configurations
-└── data/                # Admin token, HMAC secret
+└── data/                # Admin token, HMAC secret, relay tokens
 ```
 
 ## config.yaml
@@ -33,6 +33,7 @@ modes:
   credential_guard: block
   network_guard: block
   pattern_scanner: warn
+  test_context: block
 ```
 
 ## baseline.yaml
@@ -75,10 +76,13 @@ permissions:
 required:
   - credential_guard
   - network_guard
+  - circuit_breaker
 
 addons:
   credential_guard: {enabled: true}
   network_guard: {enabled: true}
+  test_context:
+    target_hosts: []  # Add hosts to activate
 
 domains:
   "*.internal":

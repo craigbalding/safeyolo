@@ -323,6 +323,56 @@ def status() -> None:
     except APIError:
         pass  # Already shown API unavailable above
 
+    # Memory section
+    try:
+        api = get_api()
+        stats = api.stats()
+        mem = stats.get("memory-monitor", {})
+        if mem:
+            mem_table = Table(title="Memory", show_header=False)
+            mem_table.add_column("Key", style="bold")
+            mem_table.add_column("Value")
+
+            rss = mem.get("rss_mb", 0)
+            peak = mem.get("rss_hwm_mb", 0)
+            start = mem.get("rss_start_mb", 0)
+            uptime_h = mem.get("uptime_s", 0) / 3600
+
+            rss_style = "green" if rss < 200 else "yellow" if rss < 400 else "red"
+            mem_table.add_row(
+                "RSS",
+                f"[{rss_style}]{rss:.0f} MB[/{rss_style}] (started: {start:.0f} MB, peak: {peak:.0f} MB)",
+            )
+            mem_table.add_row("Uptime", f"{uptime_h:.1f}h")
+            mem_table.add_row("Total Flows", str(mem.get("total_flows", 0)))
+
+            conns = mem.get("connections", [])
+            if conns:
+                mem_table.add_row("", "")
+                mem_table.add_row("Active Connections", str(len(conns)))
+                for conn in conns[:5]:
+                    age_m = conn["age_s"] // 60
+                    mem_table.add_row(
+                        f"  {conn['domain']}",
+                        f"{conn['flows']} flows, {age_m}m",
+                    )
+
+            ws = mem.get("websockets", [])
+            if ws:
+                mem_table.add_row("", "")
+                mem_table.add_row("WebSocket Sessions", str(len(ws)))
+                for session in ws:
+                    mem_table.add_row(
+                        f"  {session['domain']}",
+                        f"{session['messages']} msgs, {session['age_s'] // 60}m",
+                    )
+
+            console.print()
+            console.print(mem_table)
+
+    except APIError:
+        pass  # Already shown API unavailable above
+
     # Validate service mappings
     console.print()
     issues = validate_services()

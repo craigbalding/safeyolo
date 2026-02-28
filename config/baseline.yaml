@@ -229,6 +229,13 @@ addons:
   circuit_breaker:
     enabled: true
 
+  test_context:
+    target_hosts: []  # Add hosts to activate, remove to deactivate
+    # Example:
+    # target_hosts:
+    #   - "target.example.com"
+    #   - "*.target-corp.com"
+
   pattern_scanner:
     enabled: true
     # Optional builtin pattern sets (disabled by default)
@@ -297,6 +304,15 @@ domains:
 #     bypass:
 #       - pattern_scanner
 #       - credential_guard  # only if you fully trust this domain
+
+# --- Example: Enable test context tracking for target hosts ---
+# Requires all HTTP requests to declared target hosts to include
+# X-Test-Context header linking them to specific test activities.
+# Add hosts to activate, remove to deactivate.
+#
+#   test_context:
+#     target_hosts:
+#       - "target.example.com"
 
 # --- Example: Enable SSE streaming for a domain ---
 # Add to domains section:
