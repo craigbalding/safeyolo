@@ -135,6 +135,7 @@ def _check_mitmproxy_process() -> DiagResult:
     In TUI mode, checks /proc/*/cmdline for any mitmproxy process.
     """
     name = get_container_name()
+    last_error: str | None = None
 
     # Check PID 1 cmdline (headless mode: exec mitmdump replaces shell)
     try:
@@ -158,8 +159,10 @@ def _check_mitmproxy_process() -> DiagResult:
                     status="pass",
                     message="Running in TUI mode (PID 1)",
                 )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        return DiagResult(
+    except subprocess.TimeoutExpired as exc:
+        last_error = f"Timeout while checking mitmproxy process via docker exec: {exc}"
+    except FileNotFoundError as exc:
+        last_error = f"docker executable not found while checking mitmproxy process: {exc}"
             name="mitmproxy process",
             status="fail",
             message=f"Unable to inspect container process: {type(exc).__name__}",
@@ -189,14 +192,20 @@ def _check_mitmproxy_process() -> DiagResult:
         )
         if result.returncode == 0 and result.stdout.strip():
             line = result.stdout.strip()
-            # Extract PID from /proc/<pid>/cmdline path at end of line
-            pid = "unknown"
+    except subprocess.TimeoutExpired as exc:
+        last_error = f"Timeout while scanning mitmproxy processes via docker exec: {exc}"
+    except FileNotFoundError as exc:
+        last_error = f"docker executable not found while scanning mitmproxy processes: {exc}"
             if "/proc/" in line:
+    detail = "The proxy process may have crashed."
+    if last_error:
+        detail = f"{detail} Last error: {last_error}"
+
                 parts = line.rsplit("/proc/", 1)[-1]
                 pid = parts.split("/")[0]
             mode = "TUI mode" if "mitmproxy" in line and "mitmdump" not in line else "headless"
             return DiagResult(
-                name="mitmproxy process",
+        detail=detail,
                 status="pass",
                 message=f"Running in {mode} (PID {pid})",
             )
