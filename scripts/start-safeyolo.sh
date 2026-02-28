@@ -110,25 +110,31 @@ fi
 # Build addon chain - order matters!
 #
 # Layer 0: Infrastructure (MUST be first)
-#   0. admin_shield   - Block proxy access to admin API (security gate)
-#   1. agent_relay    - Read-only PDP relay for agent self-service
-#   2. loop_guard     - Detect and break proxy loops (Via header)
-#   3. request_id     - Assign unique ID for event correlation
-#   4. sse_streaming  - SSE/streaming support for LLM responses
-#   5. policy_engine  - Unified policy evaluation (other addons query this)
+#   0. file_logging   - Structured JSONL file logging setup
+#   1. memory_monitor - Process memory + connection tracking
+#   2. admin_shield   - Block proxy access to admin API (security gate)
+#   3. agent_relay    - Read-only PDP relay for agent self-service
+#   4. loop_guard     - Detect and break proxy loops (Via header)
+#   5. request_id     - Assign unique ID for event correlation
+#   6. sse_streaming  - SSE/streaming support for LLM responses
+#   7. policy_engine  - Unified policy evaluation (other addons query this)
 #
 # Layer 1: Network Policy (single evaluation for access + rate limiting)
-#   5. network_guard  - Access control + rate limiting (deny→403, budget→429)
-#   6. circuit_breaker - Fail-fast for unhealthy upstreams
+#   8. network_guard   - Access control + rate limiting (deny→403, budget→429)
+#   9. circuit_breaker - Fail-fast for unhealthy upstreams
 #
 # Layer 2: Security Inspection (credential and content scanning)
-#   7. credential_guard - API key protection and routing
-#   8. pattern_scanner  - Fast regex for secrets/jailbreaks
+#  10. credential_guard - API key protection and routing
+#  11. pattern_scanner  - Fast regex for secrets/jailbreaks
+#  12. test_context     - X-Test-Context header enforcement for target hosts
 #
 # Layer 3: Observability (observe but don't block)
-#   9. request_logger - JSONL structured logging
-#  10. metrics        - Per-domain statistics
-#  11. admin_api      - Control plane REST API
+#  13. request_logger - JSONL structured logging
+#  14. metrics        - Per-domain statistics
+#  15. admin_api      - Control plane REST API
+#
+# TUI-only (appended when SAFEYOLO_TUI=true):
+#  16. flow_pruner    - Prune old flows to prevent memory growth
 
 ADDON_ARGS=""
 

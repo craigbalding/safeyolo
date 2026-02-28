@@ -24,6 +24,9 @@ safeyolo watch
 
 # Check status
 safeyolo status
+
+# Diagnose problems
+safeyolo doctor
 ```
 
 ## Commands
@@ -35,8 +38,33 @@ safeyolo status
 | `safeyolo init` | Initialize configuration with interactive wizard |
 | `safeyolo start` | Start the proxy container |
 | `safeyolo stop` | Stop the proxy container |
-| `safeyolo status` | Show proxy status and statistics |
+| `safeyolo status` | Show proxy status, addon stats, and memory usage |
+| `safeyolo build` | Build SafeYolo Docker image from source |
+| `safeyolo sync` | Regenerate service mappings from current Docker state |
 | `safeyolo check` | Verify setup is working correctly |
+| `safeyolo doctor` | Run 11-check diagnostic cascade (config, Docker, proxy, addons) |
+| `safeyolo demo` | Guided tour of SafeYolo security features |
+
+**Aliases:** `safeyolo up` = `start`, `safeyolo down` = `stop`
+
+**Start options:**
+
+```bash
+safeyolo start              # Normal start
+safeyolo start --dev        # Dev mode: mount addons/ and pdp/ from local repo
+safeyolo start --build      # Rebuild image before starting
+safeyolo start --headless   # Force headless mode (no TUI)
+safeyolo start --pull       # Pull latest image before starting
+```
+
+**Doctor options:**
+
+```bash
+safeyolo doctor             # Run all checks, stop at first failure
+safeyolo doctor --verbose   # Show details for passing checks too
+safeyolo doctor --json      # Output results as JSON
+safeyolo doctor --fix       # Attempt to fix problems automatically
+```
 
 ### Monitoring & Logs
 
@@ -53,6 +81,7 @@ safeyolo status
 |---------|-------------|
 | `safeyolo watch` | Monitor logs and handle approval requests interactively |
 | `safeyolo watch --log-only` | Display events without prompts |
+| `safeyolo watch --tmux` | Optimized for tmux status bar integration |
 | `safeyolo policies` | List approval policies |
 | `safeyolo policies <project>` | Show policy details |
 
@@ -74,6 +103,8 @@ Sandbox Mode runs AI agents in isolated Docker containers with all traffic route
 | `safeyolo agent run <name> [folder]` | Run an existing agent |
 | `safeyolo agent list` | List templates and configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
+| `safeyolo agent config <name>` | View or update agent configuration |
+| `safeyolo agent help <name>` | Show agent CLI help (runs `--help` inside container) |
 | `safeyolo agent remove <name>` | Remove an agent |
 
 **Quick start:**
@@ -90,6 +121,15 @@ safeyolo agent run myproject
 
 # Or run with a different folder
 safeyolo agent run myproject ~/other-project
+
+# Run with passthrough args to the agent CLI
+safeyolo agent run myproject -- --verbose
+
+# Run in yolo mode (auto-accept all prompts)
+safeyolo agent run myproject --yolo
+
+# Fresh session (new container, no state from previous runs)
+safeyolo agent run myproject --fresh
 ```
 
 **Available templates:**
@@ -100,6 +140,60 @@ safeyolo agent run myproject ~/other-project
 - Agent names must be lowercase alphanumeric with hyphens (hostname rules)
 - `add` is idempotent: running it twice just runs the existing agent
 - Use `--no-run` with `add` to create config without running
+- Use `--ephemeral` with `add` for throwaway containers
+
+### Token Management
+
+Manage readonly relay tokens for agent self-service diagnostics. Agents use these tokens to query proxy status, memory, and policy via the relay endpoint.
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo token create` | Create a new readonly relay token |
+| `safeyolo token list` | List all active tokens |
+| `safeyolo token revoke <jti>` | Revoke a specific token |
+| `safeyolo token revoke --all` | Revoke all tokens |
+
+```bash
+# Create a token (default: 24h TTL)
+safeyolo token create
+
+# Create a token with custom TTL
+safeyolo token create --ttl 7d
+safeyolo token create --ttl 1h
+
+# List active tokens
+safeyolo token list
+
+# Revoke all tokens
+safeyolo token revoke --all
+```
+
+### Certificate Management
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo cert env` | Print env vars for CA trust and proxy config |
+| `safeyolo cert show` | Show CA certificate location and status |
+
+```bash
+# Configure shell for proxy CA trust (useful for pip, curl, etc.)
+eval $(safeyolo cert env)
+```
+
+### Tmux Integration
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo tmux setup` | Configure current tmux session for SafeYolo status line |
+| `safeyolo tmux config` | Output tmux config snippet |
+| `safeyolo tmux config --write` | Write config to `~/.config/tmux/safeyolo.conf` |
+| `safeyolo tmux status` | Show current SafeYolo status (for status bar scripts) |
+
+### Setup & Prerequisites
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo setup check` | Check system prerequisites (Docker group, network) |
 
 ## Configuration
 
@@ -113,7 +207,7 @@ safeyolo/
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
 ├── policies/            # Approved credentials
-└── data/                # Runtime data (admin token, HMAC secret)
+└── data/                # Runtime data (admin token, HMAC secret, relay tokens)
 ```
 
 ### config.yaml
@@ -127,8 +221,9 @@ proxy:
   container_name: safeyolo
 modes:
   credential_guard: block
-  rate_limiter: block
+  network_guard: block
   pattern_scanner: warn
+  test_context: block
 ```
 
 ### baseline.yaml
@@ -174,6 +269,9 @@ When a credential is blocked:
 | Variable | Description |
 |----------|-------------|
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
+| `SAFEYOLO_CONFIG_DIR` | Override config directory location |
+| `SAFEYOLO_TUI` | Set to `true` for mitmproxy TUI mode (default: headless) |
+| `SAFEYOLO_BLOCK` | Set to `true` to enable blocking for all security addons |
 
 ## License
 

@@ -21,6 +21,7 @@ Complete documentation for SafeYolo's mitmproxy addons.
 │  │  start, watch, │  │  network_guard    - deny/limit?   │  │
 │  │  agent add     │  │  credential_guard - wrong dest?   │  │
 │  │                │  │  pattern_scanner  - secrets?      │  │
+│  │                │  │  test_context     - tagged test?  │  │
 │  └───────┬────────┘  │  circuit_breaker  - unhealthy?    │  │
 │          │           └───────────────────▲───────────────┘  │
 │          │ manages                       │                  │
@@ -45,7 +46,10 @@ Addons are loaded in this order (order matters for security):
 
 | Layer | Addon | Purpose | Default Mode |
 |-------|-------|---------|--------------|
+| 0 | file_logging | Structured JSONL file logging setup | Always on |
+| 0 | memory_monitor | Process memory and connection tracking | Always on |
 | 0 | admin_shield | Block proxy access to admin API | Always on |
+| 0 | agent_relay | Read-only PDP relay for agent self-service | Always on |
 | 0 | loop_guard | Detect and break proxy loops (Via header) | Always on |
 | 0 | request_id | Request ID for event correlation | Always on |
 | 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
@@ -54,20 +58,104 @@ Addons are loaded in this order (order matters for security):
 | 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | 2 | credential_guard | Block credentials to wrong hosts | **Block** |
 | 2 | pattern_scanner | Regex scanning for secrets | Warn |
+| 2 | test_context | Require X-Test-Context header on target hosts | **Block** |
 | 3 | request_logger | JSONL audit logging | Always on |
 | 3 | metrics | Per-domain statistics | Always on |
 | 3 | admin_api | REST API on :9090 | Always on |
+| TUI | flow_pruner | Prune old flows to prevent TUI memory growth | TUI-only |
 
 **Layers:**
-- **Layer 0 (Infrastructure):** Must run first - loop detection, request IDs, policy engine, streaming
+- **Layer 0 (Infrastructure):** Must run first - logging, memory tracking, loop detection, request IDs, policy engine, streaming
 - **Layer 1 (Network Policy):** Access control, rate limiting, circuit breakers
-- **Layer 2 (Security Inspection):** Credential routing, content scanning
+- **Layer 2 (Security Inspection):** Credential routing, content scanning, test context
 - **Layer 3 (Observability):** Logging, metrics, admin API
+- **TUI-only:** Loaded only in interactive TUI mode (`SAFEYOLO_TUI=true`)
 
 **Default behavior:**
-- `network_guard` and `credential_guard` block by default (core protections)
+- `network_guard`, `credential_guard`, and `test_context` block by default (core protections)
 - `pattern_scanner` warns by default (higher false positive rate)
+- `test_context` is only active when `target_hosts` is non-empty in baseline.yaml
 - Other addons are always active with no mode toggle
+
+---
+
+## file_logging.py
+
+Configures structured JSONL file logging at mitmproxy startup.
+
+**Always active**
+
+**How it works:**
+- Runs in the `running()` hook (fires once at startup, before any traffic)
+- Configures a `RotatingFileHandler` for `LOG_DIR/safeyolo.jsonl`
+- All subsequent `write_event()` calls from any addon go to this file
+
+---
+
+## memory_monitor.py
+
+Tracks process memory and active connection/WebSocket state for OOM diagnostics.
+
+**Always active** (infrastructure, not a security sensor)
+
+**How it works:**
+- Reads RSS and HWM from `/proc/self/status` (zero stored state)
+- Tracks active connections (`client_connected`/`client_disconnected` hooks)
+- Tracks WebSocket sessions (`websocket_start`/`websocket_end` hooks)
+- Emits `ops.memory` events every 60 seconds with snapshot of state
+- All tracked state self-cleans on disconnect/close
+
+**Key design:** Does NOT inherit SecurityAddon. Uses the simpler standalone pattern.
+
+**Stats (via admin API):**
+```json
+{
+  "rss_mb": 142.3,
+  "rss_hwm_mb": 155.1,
+  "rss_start_mb": 98.5,
+  "uptime_s": 3600,
+  "total_flows": 1523,
+  "active_connections": 3,
+  "active_websockets": 1
+}
+```
+
+---
+
+## agent_relay.py
+
+Read-only PDP relay on virtual hostname `_safeyolo.proxy.internal` for agent self-service diagnostics.
+
+**Always active** (infrastructure, not a security sensor)
+
+**How it works:**
+- Intercepts requests to `_safeyolo.proxy.internal` (virtual hostname, doesn't resolve)
+- Validates HMAC-signed readonly bearer tokens
+- Returns PDP data as synthetic HTTP responses (never touches the network)
+- Sets `flow.metadata["blocked_by"]` so downstream addons skip relay requests
+
+**Important:** Agents must use `http://` (not `https://`) since the virtual hostname doesn't resolve and CONNECT tunnels would fail.
+
+**Endpoints:**
+
+| Path | Description |
+|------|-------------|
+| `/health` | Health check (no auth required) |
+| `/status` | Aggregated addon stats |
+| `/policy` | Current baseline policy |
+| `/budgets` | Budget usage per resource |
+| `/config` | Sensor config (credential rules, scan patterns) |
+| `/explain?host=X&cred=Y` | Explain what would happen for a request |
+| `/memory` | Memory and connection stats |
+
+**Token management:**
+```bash
+# On host: create a readonly token
+safeyolo token create
+
+# Agent uses token in requests
+curl -H "Authorization: Bearer <token>" http://_safeyolo.proxy.internal/status
+```
 
 ---
 
@@ -543,6 +631,73 @@ Fast regex scanning for secrets and suspicious patterns.
 ```bash
 --set pattern_block_input=false   # Block matching requests
 --set pattern_block_output=false  # Block matching responses
+```
+
+---
+
+## test_context.py
+
+Links HTTP traffic to test activities via `X-Test-Context` header on operator-declared target hosts.
+
+**Default: Block mode** (428 soft-reject)
+
+**Activation:** Active when `target_hosts` is non-empty in baseline.yaml. No separate enable flag — add target hosts to activate, remove to deactivate.
+
+**How it works:**
+1. Requests to non-target hosts pass through untouched
+2. Requests to target hosts must include `X-Test-Context` header
+3. Missing or malformed header → 428 response with instructions
+4. Valid header → parsed, stored in metadata, stripped before upstream
+5. Response phase logs the response with the test context
+
+**Header format:** `X-Test-Context: run=<run_id>;agent=<agent_id>;test=<test_id>`
+
+Required keys: `run`, `agent`. Optional: `test`, `phase`.
+
+**Configuration (baseline.yaml):**
+```yaml
+addons:
+  test_context:
+    target_hosts:
+      - "target.example.com"
+      - "*.target-corp.com"   # Wildcards supported
+```
+
+**Response when missing (428):**
+```json
+{
+  "error": "Pentest context required",
+  "type": "missing_context",
+  "destination": "target.example.com",
+  "header": "X-Test-Context",
+  "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
+  "example": "X-Test-Context: run=sec1;agent=idor;test=IDOR-003"
+}
+```
+
+**Options:**
+```bash
+--set test_context_block=true   # Block mode (default: true, false = warn only)
+```
+
+---
+
+## flow_pruner.py
+
+Prunes old completed flows from mitmproxy's in-memory view to prevent TUI memory growth.
+
+**TUI-only** (loaded only when `SAFEYOLO_TUI=true`)
+
+**Why this exists:** mitmproxy's TUI retains every flow object in memory for the scrollable list. After ~1500-2000 flows, memory grows until the process is killed (exit code 137). This addon caps the retained flow count.
+
+**How it works:**
+- Checks every 30 seconds via the `response()` hook
+- When flow count exceeds the limit, removes oldest completed flows
+- Uses `ctx.master.view.remove(flow)` to free the flow objects
+
+**Options:**
+```bash
+--set flow_pruner_max=500   # Maximum flows to retain (default: 500)
 ```
 
 ---

@@ -203,16 +203,34 @@ class SecurityAddon:
 
 ### Addon Chain
 
-Addons process requests in order (defined in `main.py`):
+Addons process requests in order (defined in `scripts/start-safeyolo.sh`):
 
-1. `admin_shield` - Blocks proxy access to admin API
-2. `loop_guard` - Detects and breaks proxy loops (Via header)
-3. `request_id` - Assigns unique ID to each request
-4. `network_guard` - Domain allowlist enforcement
-5. `credential_guard` - Credential routing validation
-6. `pattern_scanner` - Content pattern detection
-7. `circuit_breaker` - Upstream failure protection
-8. `metrics` - Prometheus metrics collection
+**Layer 0 - Infrastructure:**
+1. `file_logging` - Structured JSONL file logging setup
+2. `memory_monitor` - Process memory and connection tracking
+3. `admin_shield` - Blocks proxy access to admin API
+4. `agent_relay` - Read-only PDP relay for agent self-service
+5. `loop_guard` - Detects and breaks proxy loops (Via header)
+6. `request_id` - Assigns unique ID to each request
+7. `sse_streaming` - SSE/streaming support for LLM responses
+8. `policy_engine` - Unified policy evaluation and budgets
+
+**Layer 1 - Network Policy:**
+9. `network_guard` - Access control + rate limiting + homoglyph detection
+10. `circuit_breaker` - Fail-fast for unhealthy upstreams
+
+**Layer 2 - Security Inspection:**
+11. `credential_guard` - Credential routing validation
+12. `pattern_scanner` - Content pattern detection
+13. `test_context` - X-Test-Context header enforcement for target hosts
+
+**Layer 3 - Observability:**
+14. `request_logger` - JSONL audit logging
+15. `metrics` - Per-domain statistics
+16. `admin_api` - REST control plane on :9090
+
+**TUI-only:**
+17. `flow_pruner` - Prune old flows to prevent memory growth (loaded when `SAFEYOLO_TUI=true`)
 
 First addon to block wins; subsequent addons see `flow.response` is set.
 
@@ -305,21 +323,38 @@ This is called at the start of each `request()` hook, ensuring rules stay in syn
 safeyolo/
 ├── addons/
 │   ├── base.py              # SecurityAddon base class
-│   ├── credential_guard.py  # Credential routing protection
-│   ├── pattern_scanner.py   # Content pattern detection
-│   ├── network_guard.py     # Domain allowlist
-│   ├── circuit_breaker.py   # Upstream failure protection
-│   ├── policy_engine.py     # UnifiedPolicy model, PolicyEngine
-│   ├── policy_loader.py     # YAML loading, PolicyLoader
+│   ├── utils.py             # Shared utilities (logging, blocking)
+│   ├── sensor_utils.py      # HttpEvent builders for sensors
 │   ├── detection/
 │   │   ├── credentials.py   # Credential detection logic
-│   │   └── patterns.py      # Pattern compilation, builtin sets
-│   └── utils.py             # Shared utilities
+│   │   ├── patterns.py      # Pattern compilation, builtin sets
+│   │   └── matching.py      # Host/resource matching, HMAC
+│   ├── file_logging.py      # Structured JSONL file logging setup
+│   ├── memory_monitor.py    # Process memory + connection tracking
+│   ├── admin_shield.py      # Protects admin API endpoints
+│   ├── agent_relay.py       # Read-only PDP relay for agents
+│   ├── loop_guard.py        # Proxy loop detection (Via header)
+│   ├── request_id.py        # Request ID generation
+│   ├── sse_streaming.py     # SSE/streaming for LLM responses
+│   ├── policy_engine.py     # PolicyEngine + PolicyClientConfigurator
+│   ├── policy_loader.py     # YAML loading, hot reload
+│   ├── budget_tracker.py    # GCRA-based rate limiting
+│   ├── network_guard.py     # Access control + rate limiting
+│   ├── circuit_breaker.py   # Upstream failure protection
+│   ├── credential_guard.py  # Credential routing protection
+│   ├── pattern_scanner.py   # Content pattern detection
+│   ├── test_context.py      # X-Test-Context header enforcement
+│   ├── request_logger.py    # JSONL audit logging
+│   ├── metrics.py           # Per-domain statistics
+│   ├── admin_api.py         # REST control plane
+│   ├── flow_pruner.py       # TUI-only: prune old flows
+│   └── service_discovery.py # Client IP to project mapping
 ├── pdp/
 │   ├── __init__.py          # Public API exports
 │   ├── core.py              # PDPCore - main PDP implementation
 │   ├── client.py            # PolicyClient interface + implementations
 │   ├── schemas.py           # HttpEvent, PolicyDecision Pydantic models
+│   ├── tokens.py            # HMAC-signed readonly tokens
 │   └── app.py               # FastAPI HTTP adapter
 ├── config/
 │   ├── baseline.yaml        # Default policy
@@ -327,6 +362,9 @@ safeyolo/
 └── tests/
     ├── test_credential_guard.py
     ├── test_pattern_scanner.py
+    ├── test_test_context.py
+    ├── test_memory_monitor.py
+    ├── test_agent_relay.py
     └── test_integration.py
 ```
 
