@@ -101,12 +101,13 @@ def read_active_token(token_path: Path) -> str | None:
     """Read the active token from disk.
 
     Returns None if the file doesn't exist or is empty.
+    Reads directly without exists() check to avoid TOCTOU race.
     """
-    if not token_path.exists():
-        return None
     try:
         content = token_path.read_text().strip()
         return content if content else None
+    except FileNotFoundError:
+        return None
     except OSError:
         return None
 

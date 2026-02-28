@@ -21,12 +21,14 @@ Usage:
 import hmac
 import json
 import logging
+import re
 
 from mitmproxy import ctx, http
 
 log = logging.getLogger("safeyolo.agent-relay")
 
 RELAY_HOST = "_safeyolo.proxy.internal"
+_REQUEST_ID_PATTERN = re.compile(r"^req-[a-f0-9]{12}$")
 MAX_EXPLAIN_LINES = 10000
 
 
@@ -253,10 +255,10 @@ class AgentRelay:
         """GET /explain?request_id=X - All events for a request ID."""
         query = flow.request.query
         request_id = query.get("request_id", "")
-        if not request_id:
+        if not request_id or not _REQUEST_ID_PATTERN.match(request_id):
             self._respond(flow, 400, {
-                "error": "Missing request_id parameter",
-                "usage": "/explain?request_id=<id>",
+                "error": "Invalid or missing request_id",
+                "usage": "/explain?request_id=req-<12hex>",
             })
             return
 
@@ -270,11 +272,11 @@ class AgentRelay:
 
         events = []
         try:
-            # Read last MAX_EXPLAIN_LINES lines (bounded scan)
+            # Stream through file, retaining only last N lines (constant memory)
+            from collections import deque
+
             with open(log_path) as fh:
-                # Seek to approximate position for last N lines
-                lines = fh.readlines()
-                scan_lines = lines[-MAX_EXPLAIN_LINES:] if len(lines) > MAX_EXPLAIN_LINES else lines
+                scan_lines = deque(fh, maxlen=MAX_EXPLAIN_LINES)
 
             for line in scan_lines:
                 line = line.strip()

@@ -80,10 +80,11 @@ def create(
     payload = json.loads(base64.urlsafe_b64decode(payload_b64))
     exp = payload["exp"]
 
-    # Write active token file
+    # Write active token file (0600 — only owner can read)
     active_path = _get_active_token_path()
     active_path.parent.mkdir(parents=True, exist_ok=True)
     active_path.write_text(token_str)
+    active_path.chmod(0o600)
 
     expires_str = datetime.fromtimestamp(exp, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
     console.print(f"[green]Token created[/green] (expires: {expires_str})")
@@ -145,7 +146,9 @@ def show() -> None:
         console.print("[yellow]Token file exists but is malformed[/yellow]")
 
     console.print()
-    console.print(f"[dim]Token: {token_str}[/dim]")
+    masked = token_str[:12] + "..." + token_str[-6:]
+    console.print(f"[dim]Token: {masked}[/dim]")
+    console.print(f"[dim]Full token: cat {active_path}[/dim]")
 
 
 @token_app.command()

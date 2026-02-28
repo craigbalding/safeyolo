@@ -169,12 +169,26 @@ class TestEndpoints:
     def test_explain_with_request_id(self, relay, valid_token):
         """Test /explain returns 200 with request_id (log may not exist in test env)."""
         with _patch_active_token(valid_token):
-            flow = _make_relay_flow("/explain", token=valid_token, query="request_id=req-123")
+            flow = _make_relay_flow("/explain", token=valid_token, query="request_id=req-0a1b2c3d4e5f")
             relay.request(flow)
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
-            assert body["request_id"] == "req-123"
+            assert body["request_id"] == "req-0a1b2c3d4e5f"
             assert isinstance(body["events"], list)
+
+    def test_explain_invalid_request_id(self, relay, valid_token):
+        """Test /explain rejects malformed request_id."""
+        with _patch_active_token(valid_token):
+            flow = _make_relay_flow("/explain", token=valid_token, query="request_id=../../../etc/passwd")
+            relay.request(flow)
+            assert flow.response.status_code == 400
+
+    def test_explain_rejects_short_request_id(self, relay, valid_token):
+        """Test /explain rejects request_id that doesn't match expected format."""
+        with _patch_active_token(valid_token):
+            flow = _make_relay_flow("/explain", token=valid_token, query="request_id=req-123")
+            relay.request(flow)
+            assert flow.response.status_code == 400
 
 
 class TestMetadata:

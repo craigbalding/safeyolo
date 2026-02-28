@@ -19,6 +19,7 @@ Usage:
 """
 
 import logging
+import re
 import time
 
 from base import SecurityAddon
@@ -31,6 +32,8 @@ log = logging.getLogger("safeyolo.test-context")
 
 CONTEXT_HEADER = "X-Test-Context"
 REQUIRED_KEYS = {"run", "agent"}
+_SAFE_VALUE = re.compile(r"^[a-zA-Z0-9_\-.:]+$")
+_MAX_CONTEXT_PAIRS = 20
 
 
 def _parse_context_header(value: str) -> dict | None:
@@ -45,7 +48,7 @@ def _parse_context_header(value: str) -> dict | None:
         return None
 
     result = {}
-    for part in value.split(";"):
+    for part in value.split(";")[:_MAX_CONTEXT_PAIRS]:
         part = part.strip()
         if not part:
             continue
@@ -55,6 +58,8 @@ def _parse_context_header(value: str) -> dict | None:
         key = key.strip()
         val = val.strip()
         if not key or not val:
+            return None
+        if not _SAFE_VALUE.match(key) or not _SAFE_VALUE.match(val):
             return None
         result[key] = val
 
@@ -82,8 +87,9 @@ def _capture_body(content: bytes, max_head: int = 4096, tail_lines: int = 5) -> 
     if total_size <= max_head:
         return text
 
-    # Append truncation marker and tail
-    tail_text = content.decode("utf-8", errors="replace")
+    # Decode only the last 8KB for tail extraction (not the entire body)
+    tail_chunk = content[-8192:]
+    tail_text = tail_chunk.decode("utf-8", errors="replace")
     lines = tail_text.rstrip("\n").split("\n")
     tail = "\n".join(lines[-tail_lines:]) if len(lines) > tail_lines else ""
 
