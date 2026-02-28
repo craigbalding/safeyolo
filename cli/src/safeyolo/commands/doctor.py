@@ -167,10 +167,16 @@ def _check_mitmproxy_process() -> DiagResult:
         # Shell glob /proc/[0-9]*/cmdline and grep - works without pgrep/ps
         result = subprocess.run(
             [
-                "docker", "exec", name, "sh", "-c",
-                "for f in /proc/[0-9]*/cmdline; do "
-                "cat \"$f\" 2>/dev/null | tr '\\0' ' '; echo \" $f\"; "
-                "done | grep -E 'mitmdump|mitmproxy' | head -1",
+                "docker",
+                "exec",
+                name,
+                "sh",
+                "-c",
+                (
+                    "for f in /proc/[0-9]*/cmdline; do "
+                    + "cat \"$f\" 2>/dev/null | tr '\\0' ' '; echo \" $f\"; "
+                    + "done | grep -E 'mitmdump|mitmproxy' | head -1"
+                ),
             ],
             capture_output=True,
             text=True,
