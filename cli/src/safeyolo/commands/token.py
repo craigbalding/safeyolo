@@ -146,9 +146,7 @@ def show() -> None:
         console.print("[yellow]Token file exists but is malformed[/yellow]")
 
     console.print()
-    masked = token_str[:12] + "..." + token_str[-6:]
-    console.print(f"[dim]Token: {masked}[/dim]")
-    console.print(f"[dim]Full token: cat {active_path}[/dim]")
+    console.print(f"[dim]Token: {token_str}[/dim]")
 
 
 @token_app.command()
