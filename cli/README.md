@@ -144,28 +144,27 @@ safeyolo agent run myproject --fresh
 
 ### Token Management
 
-Manage readonly relay tokens for agent self-service diagnostics. Agents use these tokens to query proxy status, memory, and policy via the relay endpoint.
+Manage the readonly relay token for agent self-service diagnostics. Only one token exists at a time. Token survives proxy restarts and expires after the TTL (default: 1h).
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo token create` | Create a new readonly relay token |
-| `safeyolo token list` | List all active tokens |
-| `safeyolo token revoke <jti>` | Revoke a specific token |
-| `safeyolo token revoke --all` | Revoke all tokens |
+| `safeyolo token create` | Create a relay token (replaces any existing) |
+| `safeyolo token show` | Show current token status and expiry |
+| `safeyolo token revoke` | Delete the active token |
 
 ```bash
-# Create a token (default: 24h TTL)
+# Create a token (default: 1h TTL)
 safeyolo token create
 
 # Create a token with custom TTL
-safeyolo token create --ttl 7d
-safeyolo token create --ttl 1h
+safeyolo token create --ttl 4h
+safeyolo token create --ttl 30m
 
-# List active tokens
-safeyolo token list
+# Check token status
+safeyolo token show
 
-# Revoke all tokens
-safeyolo token revoke --all
+# Revoke (delete) the token
+safeyolo token revoke
 ```
 
 ### Certificate Management

@@ -5,11 +5,11 @@ Token format: <base64_payload>.<hmac_signature>
   Payload: {"scope": "readonly", "exp": unix_timestamp, "jti": hex_id}
   Signature: HMAC-SHA256 with admin token as key
 
-Rotating the admin token automatically invalidates all relay tokens.
+Single-token model: only one token exists at a time, stored in a plain file.
+Validation checks signature, expiry, AND exact match against the on-disk token.
+Token survives restarts and expires after TTL (default: 1h).
 
-Used by:
-  - CLI (safeyolo token create) to generate tokens
-  - agent_relay addon to validate tokens on each request
+Rotating the admin token automatically invalidates all relay tokens.
 
 No external dependencies (stdlib only).
 """
@@ -20,14 +20,17 @@ import hmac
 import json
 import secrets
 import time
+from pathlib import Path
+
+DEFAULT_TTL_SECONDS = 3600  # 1 hour
 
 
-def create_readonly_token(admin_token: str, ttl_seconds: int = 86400) -> str:
+def create_readonly_token(admin_token: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str:
     """Create a readonly relay token signed with the admin token.
 
     Args:
         admin_token: The SafeYolo admin API token (used as HMAC key)
-        ttl_seconds: Token time-to-live in seconds (default: 24h)
+        ttl_seconds: Token time-to-live in seconds (default: 1h)
 
     Returns:
         Token string in format: <base64_payload>.<hex_signature>
@@ -50,7 +53,7 @@ def create_readonly_token(admin_token: str, ttl_seconds: int = 86400) -> str:
 
 
 def validate_readonly_token(token: str, admin_token: str) -> dict | None:
-    """Validate a readonly relay token.
+    """Validate a readonly relay token (signature + expiry only).
 
     Args:
         token: Token string to validate
@@ -92,3 +95,28 @@ def validate_readonly_token(token: str, admin_token: str) -> dict | None:
         return None
 
     return payload
+
+
+def read_active_token(token_path: Path) -> str | None:
+    """Read the active token from disk.
+
+    Returns None if the file doesn't exist or is empty.
+    """
+    if not token_path.exists():
+        return None
+    try:
+        content = token_path.read_text().strip()
+        return content if content else None
+    except OSError:
+        return None
+
+
+def delete_token_file(token_path: Path) -> bool:
+    """Delete the token file. Returns True if a file was removed."""
+    try:
+        if token_path.exists():
+            token_path.unlink()
+            return True
+    except OSError:
+        pass
+    return False

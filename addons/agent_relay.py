@@ -18,6 +18,7 @@ Usage:
     mitmdump -s addons/agent_relay.py --set admin_api_token=<token>
 """
 
+import hmac
 import json
 import logging
 
@@ -79,11 +80,20 @@ class AgentRelay:
 
         bearer_token = auth_header[7:]
 
-        from pdp.tokens import validate_readonly_token
+        from pathlib import Path
 
+        from pdp.tokens import read_active_token, validate_readonly_token
+
+        # Check signature + expiry
         payload = validate_readonly_token(bearer_token, admin_token)
         if payload is None:
             self._respond(flow, 401, {"error": "Invalid or expired token"})
+            return
+
+        # Must match the current on-disk token (deleted on restart = instant revocation)
+        active_token = read_active_token(Path("/safeyolo/data/readonly_token"))
+        if active_token is None or not hmac.compare_digest(bearer_token, active_token):
+            self._respond(flow, 401, {"error": "Token revoked or expired"})
             return
 
         # Route to handler

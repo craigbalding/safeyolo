@@ -1,12 +1,15 @@
-"""Token management commands for agent relay access."""
+"""Token management commands for agent relay access.
 
+Single-token model: one token at a time, stored as a plain file.
+Creating a new token replaces the old one. Token is deleted on start/stop.
+"""
+
+import base64
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from ..config import get_admin_token, get_data_dir
 
@@ -14,41 +17,20 @@ console = Console()
 
 token_app = typer.Typer(
     name="token",
-    help="Manage readonly relay tokens for agent self-service.",
+    help="Manage readonly relay token for agent self-service.",
     no_args_is_help=True,
 )
 
-
-def _get_tokens_path() -> Path:
-    """Get path to readonly tokens registry."""
-    return get_data_dir() / "readonly_tokens.json"
+DEFAULT_TTL = "1h"
 
 
-def _get_active_token_path() -> Path:
+def _get_active_token_path():
     """Get path to active token file (mounted into agent containers)."""
     return get_data_dir() / "readonly_token"
 
 
-def _load_tokens() -> list[dict]:
-    """Load token registry from disk."""
-    path = _get_tokens_path()
-    if not path.exists():
-        return []
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def _save_tokens(tokens: list[dict]) -> None:
-    """Save token registry to disk."""
-    path = _get_tokens_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(tokens, indent=2))
-
-
 def _parse_ttl(ttl_str: str) -> int:
-    """Parse TTL string like '24h', '7d', '3600' into seconds."""
+    """Parse TTL string like '1h', '7d', '3600' into seconds."""
     ttl_str = ttl_str.strip().lower()
     if ttl_str.endswith("d"):
         return int(ttl_str[:-1]) * 86400
@@ -61,18 +43,20 @@ def _parse_ttl(ttl_str: str) -> int:
 
 @token_app.command()
 def create(
-    ttl: str = typer.Option("24h", "--ttl", help="Token lifetime (e.g., 24h, 7d, 3600)"),
+    ttl: str = typer.Option(DEFAULT_TTL, "--ttl", help="Token lifetime (e.g., 1h, 4h, 30m)"),
 ) -> None:
-    """Create a new readonly relay token.
+    """Create a readonly relay token.
 
-    The token is saved to the registry and written to the active token file
-    that agent containers mount. Agents use it via $SAFEYOLO_READONLY_TOKEN.
+    Replaces any existing token. The token is written to a file that agent
+    containers mount. Agents use it via $SAFEYOLO_READONLY_TOKEN.
+
+    Token survives proxy restarts but expires after the TTL (default: 1h).
 
     Examples:
 
-        safeyolo token create              # 24h token (default)
-        safeyolo token create --ttl 7d     # 7 day token
-        safeyolo token create --ttl 1h     # 1 hour token
+        safeyolo token create              # 1h token (default)
+        safeyolo token create --ttl 4h     # 4 hour token
+        safeyolo token create --ttl 30m    # 30 minute token
     """
     admin_token = get_admin_token()
     if not admin_token:
@@ -84,143 +68,101 @@ def create(
         ttl_seconds = _parse_ttl(ttl)
     except ValueError:
         console.print(f"[red]Error:[/red] Invalid TTL format: {ttl}")
-        console.print("Use: 24h, 7d, 3600, etc.")
+        console.print("Use: 1h, 4h, 30m, 3600, etc.")
         raise typer.Exit(1)
 
     from safeyolo.commands._token_ops import create_readonly_token
 
     token_str = create_readonly_token(admin_token, ttl_seconds)
 
-    # Extract JTI from token for registry
-    import base64
-
+    # Extract expiry for display
     payload_b64 = token_str.split(".")[0]
     payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-    jti = payload["jti"]
     exp = payload["exp"]
 
-    # Save to registry
-    tokens = _load_tokens()
-    tokens.append({
-        "jti": jti,
-        "created": datetime.now(UTC).isoformat(),
-        "expires": datetime.fromtimestamp(exp, tz=UTC).isoformat(),
-        "ttl": ttl,
-        "status": "active",
-    })
-    _save_tokens(tokens)
-
-    # Write active token file for agent containers
+    # Write active token file
     active_path = _get_active_token_path()
     active_path.parent.mkdir(parents=True, exist_ok=True)
     active_path.write_text(token_str)
 
-    console.print(f"[green]Token created[/green] (JTI: {jti})")
-    console.print(f"  Expires: {datetime.fromtimestamp(exp, tz=UTC).strftime('%Y-%m-%d %H:%M UTC')}")
+    expires_str = datetime.fromtimestamp(exp, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
+    console.print(f"[green]Token created[/green] (expires: {expires_str})")
     console.print(f"  Written to: {active_path}")
     console.print()
     console.print(f"[dim]Token: {token_str}[/dim]")
     console.print()
-    console.print("Agents will pick up the token on next container start.")
+    console.print("[dim]Token survives restarts. Expires after TTL or use: safeyolo token revoke[/dim]")
 
 
-@token_app.command(name="list")
-def list_tokens() -> None:
-    """List all readonly relay tokens.
-
-    Shows token ID, creation time, expiry, and status.
+@token_app.command(name="show")
+def show() -> None:
+    """Show the current relay token status.
 
     Examples:
 
-        safeyolo token list
+        safeyolo token show
     """
-    tokens = _load_tokens()
-    if not tokens:
-        console.print("[dim]No tokens found. Create one with:[/dim] safeyolo token create")
+    admin_token = get_admin_token()
+    active_path = _get_active_token_path()
+
+    if not active_path.exists():
+        console.print("[dim]No active token.[/dim] Create one with: safeyolo token create")
         return
 
-    table = Table(title="Readonly Relay Tokens")
-    table.add_column("JTI", style="dim")
-    table.add_column("Created")
-    table.add_column("Expires")
-    table.add_column("TTL")
-    table.add_column("Status")
+    token_str = active_path.read_text().strip()
+    if not token_str:
+        console.print("[dim]No active token.[/dim] Create one with: safeyolo token create")
+        return
 
-    now = datetime.now(UTC)
-    for token_entry in tokens:
-        status = token_entry.get("status", "unknown")
-        expires_str = token_entry.get("expires", "")
+    # Decode to show expiry
+    try:
+        payload_b64 = token_str.split(".")[0]
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        exp = payload.get("exp", 0)
+        exp_dt = datetime.fromtimestamp(exp, tz=UTC)
+        now = datetime.now(UTC)
 
-        # Check if expired
-        if status == "active" and expires_str:
-            try:
-                exp_dt = datetime.fromisoformat(expires_str)
-                if now > exp_dt:
-                    status = "expired"
-            except ValueError:
-                pass
+        if now > exp_dt:
+            console.print("[yellow]Token expired[/yellow]")
+            console.print(f"  Expired: {exp_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+        else:
+            remaining = exp_dt - now
+            minutes = int(remaining.total_seconds() // 60)
+            console.print("[green]Token active[/green]")
+            console.print(f"  Expires: {exp_dt.strftime('%Y-%m-%d %H:%M UTC')} ({minutes}m remaining)")
 
-        style = {
-            "active": "green",
-            "revoked": "red",
-            "expired": "yellow",
-        }.get(status, "dim")
+        # Validate signature if admin token available
+        if admin_token:
+            from safeyolo.commands._token_ops import validate_readonly_token
 
-        table.add_row(
-            token_entry.get("jti", "?"),
-            token_entry.get("created", "")[:19],
-            expires_str[:19],
-            token_entry.get("ttl", "?"),
-            f"[{style}]{status}[/{style}]",
-        )
+            valid = validate_readonly_token(token_str, admin_token)
+            if valid is None:
+                console.print("  Signature: [red]invalid[/red]")
+            else:
+                console.print("  Signature: [green]valid[/green]")
 
-    console.print(table)
+    except (ValueError, json.JSONDecodeError, IndexError):
+        console.print("[yellow]Token file exists but is malformed[/yellow]")
+
+    console.print()
+    console.print(f"[dim]Token: {token_str}[/dim]")
 
 
 @token_app.command()
-def revoke(
-    jti: str = typer.Argument(None, help="Token JTI to revoke (or --all)"),
-    all_tokens: bool = typer.Option(False, "--all", help="Revoke all tokens"),
-) -> None:
-    """Revoke a readonly relay token.
+def revoke() -> None:
+    """Delete the active relay token.
 
-    Revoked tokens are rejected by the relay addon. Use --all to revoke
-    all tokens at once.
+    The agent loses relay access immediately.
 
     Examples:
 
-        safeyolo token revoke abc123        # Revoke specific token
-        safeyolo token revoke --all         # Revoke all tokens
+        safeyolo token revoke
     """
-    if not jti and not all_tokens:
-        console.print("[red]Error:[/red] Specify a JTI or use --all")
-        raise typer.Exit(1)
-
-    tokens = _load_tokens()
-    if not tokens:
-        console.print("[dim]No tokens to revoke.[/dim]")
-        return
-
-    revoked_count = 0
-    for token_entry in tokens:
-        if all_tokens or token_entry.get("jti") == jti:
-            if token_entry.get("status") != "revoked":
-                token_entry["status"] = "revoked"
-                revoked_count += 1
-
-    if revoked_count == 0:
-        if jti:
-            console.print(f"[yellow]Token {jti} not found or already revoked.[/yellow]")
-        else:
-            console.print("[dim]No active tokens to revoke.[/dim]")
-        return
-
-    _save_tokens(tokens)
-
-    # Clear the active token file
     active_path = _get_active_token_path()
-    if active_path.exists():
-        active_path.unlink()
 
-    console.print(f"[green]Revoked {revoked_count} token(s).[/green]")
-    console.print("[dim]Agents will lose relay access on next request.[/dim]")
+    if not active_path.exists():
+        console.print("[dim]No active token to revoke.[/dim]")
+        return
+
+    active_path.unlink()
+    console.print("[green]Token revoked.[/green]")

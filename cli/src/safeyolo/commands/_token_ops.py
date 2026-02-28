@@ -19,7 +19,7 @@ except ImportError:
     import secrets
     import time
 
-    def create_readonly_token(admin_token: str, ttl_seconds: int = 86400) -> str:
+    def create_readonly_token(admin_token: str, ttl_seconds: int = 3600) -> str:
         """Create a readonly relay token signed with the admin token."""
         payload = {
             "scope": "readonly",
