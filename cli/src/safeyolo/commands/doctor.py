@@ -158,8 +158,13 @@ def _check_mitmproxy_process() -> DiagResult:
                     status="pass",
                     message="Running in TUI mode (PID 1)",
                 )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return DiagResult(
+            name="mitmproxy process",
+            status="fail",
+            message=f"Unable to inspect container process: {type(exc).__name__}",
+            remediation="Ensure Docker is installed, the Docker daemon is running, and the SafeYolo container is accessible.",
+        )
 
     # TUI mode: mitmproxy runs under tmux, not as PID 1.
     # Scan /proc/*/cmdline for any mitmproxy/mitmdump process.
