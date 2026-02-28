@@ -21,6 +21,7 @@ import json
 import secrets
 import time
 from pathlib import Path
+import logging
 
 DEFAULT_TTL_SECONDS = 3600  # 1 hour
 
@@ -119,5 +120,6 @@ def delete_token_file(token_path: Path) -> bool:
             token_path.unlink()
             return True
     except OSError:
-        pass
+        # Best-effort cleanup: log and report failure via False return.
+        logging.debug("Failed to delete token file %s", token_path, exc_info=True)
     return False
