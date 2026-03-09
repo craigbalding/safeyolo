@@ -9,12 +9,12 @@ from . import __version__
 from .commands.admin import check, mode, policies, test
 from .commands.agent import agent_app
 from .commands.cert import cert_app
-from .commands.mount import mount_app
 from .commands.demo import demo
 from .commands.doctor import doctor
 from .commands.init import init
 from .commands.lifecycle import build, start, status, stop, sync
 from .commands.logs import logs
+from .commands.mount import mount_app
 from .commands.sandbox import sandbox_app
 from .commands.setup import setup_app
 from .commands.tmux import tmux_app

@@ -34,7 +34,7 @@ import logging
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
@@ -49,7 +49,7 @@ from .schemas import (
 log = logging.getLogger("safeyolo.pdp.client")
 
 
-class UnavailableMode(str, Enum):
+class UnavailableMode(StrEnum):
     """What to do when PDP is unavailable."""
     DENY = "deny"   # Fail closed (default, recommended)
     ALLOW = "allow"  # Fail open (dangerous, dev only)

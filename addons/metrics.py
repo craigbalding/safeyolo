@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 
 from mitmproxy import http
+from utils import sanitize_for_log
 
 log = logging.getLogger("safeyolo.metrics")
 
@@ -237,26 +238,30 @@ class MetricsCollector:
             lines.append("# HELP safeyolo_blocks_by_source Blocked requests by addon source")
             lines.append("# TYPE safeyolo_blocks_by_source counter")
             for source, count in sorted(blocks_by_source.items()):
-                lines.append(f'safeyolo_blocks_by_source{{source="{source}"}} {count}')
+                safe_source = sanitize_for_log(source, max_len=64)
+                lines.append(f'safeyolo_blocks_by_source{{source="{safe_source}"}} {count}')
 
         # Per-domain metrics
         lines.append("")
         lines.append("# HELP safeyolo_domain_requests_total Requests per domain")
         lines.append("# TYPE safeyolo_domain_requests_total counter")
         for domain, stats in domain_stats_copy.items():
-            lines.append(f'safeyolo_domain_requests_total{{domain="{domain}"}} {stats.requests}')
+            safe_domain = sanitize_for_log(domain, max_len=253)
+            lines.append(f'safeyolo_domain_requests_total{{domain="{safe_domain}"}} {stats.requests}')
 
         lines.append("")
         lines.append("# HELP safeyolo_domain_success_rate Success rate per domain")
         lines.append("# TYPE safeyolo_domain_success_rate gauge")
         for domain, stats in domain_stats_copy.items():
-            lines.append(f'safeyolo_domain_success_rate{{domain="{domain}"}} {stats.success_rate:.3f}')
+            safe_domain = sanitize_for_log(domain, max_len=253)
+            lines.append(f'safeyolo_domain_success_rate{{domain="{safe_domain}"}} {stats.success_rate:.3f}')
 
         lines.append("")
         lines.append("# HELP safeyolo_domain_latency_avg_ms Average latency per domain")
         lines.append("# TYPE safeyolo_domain_latency_avg_ms gauge")
         for domain, stats in domain_stats_copy.items():
-            lines.append(f'safeyolo_domain_latency_avg_ms{{domain="{domain}"}} {stats.avg_latency_ms:.1f}')
+            safe_domain = sanitize_for_log(domain, max_len=253)
+            lines.append(f'safeyolo_domain_latency_avg_ms{{domain="{safe_domain}"}} {stats.avg_latency_ms:.1f}')
 
         return "\n".join(lines) + "\n"
 

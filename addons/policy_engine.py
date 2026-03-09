@@ -933,7 +933,7 @@ class PolicyEngine:
                 save_roundtrip(baseline_path, data)
                 return
         except Exception as e:
-            log.warning(f"Round-trip save failed, falling back to full rewrite: {e}")
+            log.warning("Round-trip save failed, falling back to full rewrite: %s", e)
 
         # Fallback: full rewrite without comment preservation
         self._save_baseline_plain()
@@ -960,7 +960,7 @@ class PolicyEngine:
                 save_roundtrip(baseline_path, original)
                 return
         except Exception as e:
-            log.warning(f"Round-trip save failed, falling back to full rewrite: {e}")
+            log.warning("Round-trip save failed, falling back to full rewrite: %s", e)
 
         # Fallback: full rewrite without comment preservation
         self._save_baseline_plain()
