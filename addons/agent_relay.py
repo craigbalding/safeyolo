@@ -107,6 +107,7 @@ class AgentRelay:
             "/config": self._handle_config,
             "/explain": self._handle_explain,
             "/memory": self._handle_memory,
+            "/circuits": self._handle_circuits,
         }
 
         handler = handlers.get(path)
@@ -190,6 +191,14 @@ class AgentRelay:
             log.debug(f"Addon lookup failed: {type(exc).__name__}: {exc}")
 
         return None
+
+    def _handle_circuits(self, flow: http.HTTPFlow):
+        """GET /circuits - Circuit breaker state per domain."""
+        cb = self._find_addon("circuit-breaker")
+        if not cb:
+            self._respond(flow, 503, {"error": "circuit-breaker addon not loaded"})
+            return
+        self._respond(flow, 200, cb.get_stats())
 
     def _handle_memory(self, flow: http.HTTPFlow):
         """GET /memory - Process memory and connection state."""
