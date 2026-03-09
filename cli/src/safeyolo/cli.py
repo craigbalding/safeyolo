@@ -9,6 +9,7 @@ from . import __version__
 from .commands.admin import check, mode, policies, test
 from .commands.agent import agent_app
 from .commands.cert import cert_app
+from .commands.mount import mount_app
 from .commands.demo import demo
 from .commands.doctor import doctor
 from .commands.init import init
@@ -78,6 +79,7 @@ app.command()(test)
 # Register subcommand groups
 app.add_typer(agent_app, name="agent")
 app.add_typer(cert_app, name="cert")
+app.add_typer(mount_app, name="mount")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(setup_app, name="setup")
 app.add_typer(tmux_app, name="tmux")

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -18,6 +19,7 @@ from ..discovery import get_compose_network_name, regenerate_services
 from ..docker import is_running, wait_for_healthy
 from ..docker import start as docker_start
 from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
+from .mount import is_path_protected
 
 log = logging.getLogger("safeyolo.agent")
 console = Console()
@@ -153,6 +155,7 @@ def _run_agent(
     dangerously_allow_unowned: bool = False,
     agent_args: list[str] | None = None,
     skip_default_args: bool = False,
+    extra_mounts: list[str] | None = None,
 ) -> int:
     """Run an agent container. Returns exit code.
 
@@ -161,6 +164,7 @@ def _run_agent(
     Args:
         agent_args: Extra arguments to pass to the agent CLI (after --)
         skip_default_args: If True, ignore user_default_args even if no agent_args
+        extra_mounts: Transient mount specs (host:container[:ro]) for this run only
     """
     agent_dir = get_agents_dir() / name
     compose_file = agent_dir / "docker-compose.yml"
@@ -196,10 +200,22 @@ def _run_agent(
     # Run the agent container
     console.print(f"Starting {name}...\n")
 
+    # Build compose env: override USER_DIR/USER_DIRNAME for volume interpolation
+    compose_env = os.environ.copy()
+    if folder_override:
+        folder_path = Path(folder_override).expanduser().resolve()
+        if not folder_path.is_dir():
+            console.print(f"[red]Folder not found: {folder_path}[/red]")
+            raise typer.Exit(1)
+        _check_project_ownership(folder_path, dangerously_allow_unowned)
+        compose_env["USER_DIR"] = str(folder_path)
+        compose_env["USER_DIRNAME"] = folder_path.name
+
     # Build image quietly (only shows output on actual build, not cache hits)
     build_result = subprocess.run(
         ["docker", "compose", "--progress=quiet", "-f", str(compose_file), "build"],
         cwd=agent_dir,
+        env=compose_env,
     )
     if build_result.returncode != 0:
         console.print("[red]Failed to build agent image.[/red]")
@@ -210,16 +226,16 @@ def _run_agent(
 
     # Run with inherited stdin/stdout for interactive use
     cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm"]
-    if folder_override:
-        folder_path = Path(folder_override).expanduser().resolve()
-        if not folder_path.is_dir():
-            console.print(f"[red]Folder not found: {folder_path}[/red]")
-            raise typer.Exit(1)
-        _check_project_ownership(folder_path, dangerously_allow_unowned)
-        cmd.extend(["-e", f"USER_DIR={folder_path}"])
-        cmd.extend(["-e", f"USER_DIRNAME={folder_path.name}"])
     if yolo:
         cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
+
+    # Combine persistent mounts (from metadata) with transient mounts (from --mount)
+    all_mounts = list(metadata.get("mounts", []))
+    if extra_mounts:
+        all_mounts.extend(extra_mounts)
+    for mount in all_mounts:
+        cmd.extend(["-v", mount])
+
     cmd.append(service_name)
 
     # Add agent-specific args (passthrough or defaults)
@@ -233,7 +249,7 @@ def _run_agent(
             cmd.append(binary)
         cmd.extend(metadata["user_default_args"])
 
-    result = subprocess.run(cmd, cwd=agent_dir)
+    result = subprocess.run(cmd, cwd=agent_dir, env=compose_env)
     return result.returncode
 
 
@@ -246,6 +262,55 @@ def _parse_user_default_args(value: str | None) -> list[str] | None:
     except ValueError:
         # If shlex fails, fall back to simple split
         return value.split()
+
+
+def _parse_mount(mount_spec: str) -> str:
+    """Validate and normalize a mount spec (host:container[:ro]).
+
+    Returns normalized string with resolved host path.
+
+    Raises:
+        typer.Exit: If mount spec is invalid or host path doesn't exist.
+    """
+    parts = mount_spec.split(":")
+    if len(parts) < 2 or len(parts) > 3:
+        console.print(
+            f"[red]Invalid mount format:[/red] {mount_spec}\n"
+            "Expected: /host/path:/container/path[:ro]"
+        )
+        raise typer.Exit(1)
+
+    host_path = Path(parts[0]).expanduser().resolve()
+    container_path = parts[1]
+
+    if not container_path.startswith("/"):
+        console.print(f"[red]Container path must be absolute:[/red] {container_path}")
+        raise typer.Exit(1)
+
+    if not host_path.exists():
+        console.print(f"[red]Host path not found:[/red] {host_path}")
+        raise typer.Exit(1)
+
+    is_ro = len(parts) == 3 and parts[2] == "ro"
+
+    if len(parts) == 3 and not is_ro:
+        console.print(f"[red]Invalid mount option:[/red] {parts[2]} (only 'ro' supported)")
+        raise typer.Exit(1)
+
+    # Enforce protected paths
+    protected_by = is_path_protected(str(host_path))
+    if protected_by and not is_ro:
+        console.print(
+            f"[red]Refused:[/red] {host_path} is under protected path {protected_by}\n"
+            f"Protected paths must be mounted read-only.\n"
+            f"Use: {host_path}:{container_path}:ro"
+        )
+        raise typer.Exit(1)
+
+    if is_ro:
+        return f"{host_path}:{container_path}:ro"
+
+    return f"{host_path}:{container_path}"
 
 
 @agent_app.command()
@@ -282,6 +347,11 @@ def add(
         "--user-default-args",
         help="Default args to pass to agent CLI (e.g., '--continue')",
     ),
+    mount: list[str] = typer.Option(
+        [],
+        "--mount", "-m",
+        help="Extra folder to mount (host:container[:ro], repeatable)",
+    ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
         "--dangerously-allow-unowned",
@@ -298,7 +368,7 @@ def add(
         safeyolo agent add myproject claude-code .
         safeyolo agent add work claude-code ~/projects/myapp
         safeyolo agent add assistant openai-codex ~/code --no-run
-        safeyolo agent add boris claude-code . --user-default-args="--continue"
+        safeyolo agent add boris claude-code . --mount ~/data:/data --mount ~/refs:/refs:ro
     """
     # Validate instance name (hostname rules)
     _validate_instance_name(name)
@@ -393,11 +463,16 @@ def add(
         console.print(f"[red]Template error:[/red] {err}")
         raise typer.Exit(1)
 
+    # Validate and normalize mount specs
+    parsed_mounts = [_parse_mount(m) for m in mount]
+
     # Write metadata file
     metadata = {"template": template, "folder": folder_str}
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
+    if parsed_mounts:
+        metadata["mounts"] = parsed_mounts
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
 
     # Show created files
@@ -411,6 +486,10 @@ def add(
     ]
     if parsed_args:
         panel_lines.append(f"Default args: {' '.join(parsed_args)}")
+    if parsed_mounts:
+        panel_lines.append(f"Mounts: {len(parsed_mounts)}")
+        for m in parsed_mounts:
+            panel_lines.append(f"  {m}")
     panel_lines.extend([
         f"Network: {get_compose_network_name()}",
         "Proxy: http://safeyolo:8080 (Docker DNS)",
@@ -531,6 +610,11 @@ def run(
     fresh: bool = typer.Option(
         False, "--fresh", help="Ignore user_default_args, start fresh session"
     ),
+    mount: list[str] = typer.Option(
+        [],
+        "--mount", "-m",
+        help="Extra folder to mount (host:container[:ro], repeatable, one-off)",
+    ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
         "--dangerously-allow-unowned",
@@ -550,16 +634,23 @@ def run(
     If user_default_args is configured (via 'agent config'), those args
     are used by default. Use --fresh to ignore them.
 
+    Persistent mounts (from 'agent add --mount' or 'agent config --add-mount')
+    are always included. Use --mount/-m here for additional one-off mounts.
+
     Examples:
 
         safeyolo agent run myproject
         safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --yolo
+        safeyolo agent run myproject --mount ~/data:/data:ro
         safeyolo agent run myproject -- --continue
         safeyolo agent run myproject --fresh
     """
     # ctx.args contains everything after '--'
     agent_args = ctx.args if ctx.args else None
+
+    # Validate transient mount specs
+    parsed_mounts = [_parse_mount(m) for m in mount]
 
     exit_code = _run_agent(
         name,
@@ -568,6 +659,7 @@ def run(
         dangerously_allow_unowned=dangerously_allow_unowned,
         agent_args=agent_args,
         skip_default_args=fresh,
+        extra_mounts=parsed_mounts if parsed_mounts else None,
     )
     raise typer.Exit(exit_code)
 
@@ -624,6 +716,21 @@ def config(
         "--user-default-args",
         help="Set default args for agent CLI (use '' to clear)",
     ),
+    add_mount: list[str] = typer.Option(
+        [],
+        "--add-mount",
+        help="Add persistent mount (host:container[:ro], repeatable)",
+    ),
+    remove_mount: list[str] = typer.Option(
+        [],
+        "--remove-mount",
+        help="Remove persistent mount by container path (repeatable)",
+    ),
+    clear_mounts: bool = typer.Option(
+        False,
+        "--clear-mounts",
+        help="Remove all persistent mounts",
+    ),
     show: bool = typer.Option(
         False,
         "--show",
@@ -636,7 +743,10 @@ def config(
 
         safeyolo agent config boris --show
         safeyolo agent config boris --user-default-args="--continue"
-        safeyolo agent config boris --user-default-args=""
+        safeyolo agent config boris --add-mount ~/data:/data
+        safeyolo agent config boris --add-mount ~/refs:/refs:ro
+        safeyolo agent config boris --remove-mount /data
+        safeyolo agent config boris --clear-mounts
     """
     agent_dir = get_agents_dir() / name
     metadata_file = agent_dir / ".safeyolo.json"
@@ -651,7 +761,9 @@ def config(
         console.print(f"[red]Failed to read agent config:[/red] {type(err).__name__}: {err}")
         raise typer.Exit(1)
 
-    if show or user_default_args is None:
+    has_updates = user_default_args is not None or add_mount or remove_mount or clear_mounts
+
+    if show or not has_updates:
         # Show current config
         table = Table(title=f"Agent: {name}")
         table.add_column("Setting", style="bold")
@@ -663,23 +775,61 @@ def config(
             table.add_row("Default args", " ".join(current_args))
         else:
             table.add_row("Default args", "[dim]not set[/dim]")
+        current_mounts = metadata.get("mounts", [])
+        if current_mounts:
+            table.add_row("Mounts", "\n".join(current_mounts))
+        else:
+            table.add_row("Mounts", "[dim]none[/dim]")
         console.print(table)
         return
 
     # Update user_default_args
-    if user_default_args == "":
-        # Clear the setting
-        if "user_default_args" in metadata:
-            del metadata["user_default_args"]
-        console.print(f"[green]Cleared user_default_args for {name}[/green]")
-    else:
-        parsed_args = _parse_user_default_args(user_default_args)
-        if parsed_args:
-            metadata["user_default_args"] = parsed_args
-            console.print(f"[green]Set user_default_args for {name}:[/green] {' '.join(parsed_args)}")
+    if user_default_args is not None:
+        if user_default_args == "":
+            if "user_default_args" in metadata:
+                del metadata["user_default_args"]
+            console.print(f"[green]Cleared user_default_args for {name}[/green]")
         else:
-            console.print("[yellow]No args provided[/yellow]")
-            return
+            parsed_args = _parse_user_default_args(user_default_args)
+            if parsed_args:
+                metadata["user_default_args"] = parsed_args
+                console.print(f"[green]Set user_default_args for {name}:[/green] {' '.join(parsed_args)}")
+
+    # Handle mount updates
+    current_mounts = list(metadata.get("mounts", []))
+
+    if clear_mounts:
+        current_mounts = []
+        console.print(f"[green]Cleared all mounts for {name}[/green]")
+
+    for spec in remove_mount:
+        # Match by container path (the part after the first colon)
+        before = len(current_mounts)
+        current_mounts = [
+            m for m in current_mounts
+            if m.split(":")[1] != spec.rstrip("/")
+        ]
+        removed = before - len(current_mounts)
+        if removed:
+            console.print(f"[green]Removed mount for {spec}[/green]")
+        else:
+            console.print(f"[yellow]No mount found for container path: {spec}[/yellow]")
+
+    for spec in add_mount:
+        parsed = _parse_mount(spec)
+        # Check for duplicate container path
+        container_path = parsed.split(":")[1]
+        current_mounts = [
+            m for m in current_mounts
+            if m.split(":")[1] != container_path
+        ]
+        current_mounts.append(parsed)
+        console.print(f"[green]Added mount: {parsed}[/green]")
+
+    if current_mounts:
+        metadata["mounts"] = current_mounts
+    elif "mounts" in metadata:
+        del metadata["mounts"]
 
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
 
