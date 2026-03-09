@@ -1,10 +1,13 @@
 """
 Tests for circuit_breaker.py addon.
 
-Tests circuit state transitions, failure detection, and recovery.
+Tests circuit state transitions, failure detection, recovery,
+policy-driven settings, and cache staleness fixes.
 """
 
+import json
 import time
+from unittest.mock import MagicMock, patch
 
 
 class TestCircuitStates:
@@ -312,7 +315,6 @@ class TestCircuitBreakerStatePersistence:
         # Verify file exists and contains states (final save on stop)
         assert state_file.exists()
 
-        import json
         with open(state_file) as f:
             data = json.load(f)
 
@@ -387,7 +389,6 @@ class TestCircuitBreakerStatePersistence:
         state.stop_snapshots()
 
         # Verify state was saved
-        import json
         with open(state_file) as f:
             data = json.load(f)
 
@@ -463,7 +464,11 @@ class TestCircuitBreakerStatePersistence:
         state_obj.stop_snapshots()
 
     def test_state_persists_across_restart_integration(self, tmp_path):
-        """Integration test: State persists through simulated restart."""
+        """Integration test: State persists through simulated restart.
+
+        After the refactor, the second CB instance reconciles stale open circuits
+        rather than preserving them as-is.
+        """
         from circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
 
         state_file = tmp_path / "persist_test.json"
@@ -479,21 +484,314 @@ class TestCircuitBreakerStatePersistence:
         status1 = cb1.get_status("api.example.com")
         assert status1.state == CircuitState.OPEN
 
+        # Backdate opened_at so it's stale on reload
+        data = cb1._state.get("api.example.com")
+        data["opened_at"] = time.time() - 120  # 2 minutes ago
+        cb1._state.set("api.example.com", data)
+
         # Save and cleanup
         cb1._state._save_state()
         cb1.done()
 
-        # Second instance - should restore open circuit
+        # Second instance - should reconcile stale open circuit to HALF_OPEN
         cb2 = CircuitBreaker()
         cb2.failure_threshold = 2
+        cb2.timeout_seconds = 60  # 60s timeout, opened 2 min ago → stale
         cb2._state = InMemoryCircuitState(state_file=state_file)
+        cb2._reconcile_stale_circuits()
 
         status2 = cb2.get_status("api.example.com")
-        assert status2.state == CircuitState.OPEN
-        assert status2.failure_count == 2
+        # The circuit was opened long enough ago that reconciliation moves it to HALF_OPEN
+        assert status2.state == CircuitState.HALF_OPEN
 
         # Cleanup
         cb2.done()
+
+
+class TestPolicyLoading:
+    """Tests for policy-driven configuration loading."""
+
+    def test_settings_from_policy_override_defaults(self, circuit_breaker):
+        """Settings from policy override hardcoded defaults."""
+        sensor_config = {
+            "addons": {
+                "circuit_breaker": {
+                    "failure_threshold": 10,
+                    "success_threshold": 3,
+                    "timeout_seconds": 120,
+                    "half_open_max_requests": 5,
+                    "use_exponential_backoff": False,
+                    "max_timeout_seconds": 7200,
+                    "backoff_multiplier": 3.0,
+                    "jitter_factor": 0.5,
+                    "streak_decay_seconds": 1800,
+                    "excluded_domains": ["custom.internal"],
+                }
+            }
+        }
+
+        circuit_breaker._load_config_from_pdp(sensor_config)
+
+        assert circuit_breaker.failure_threshold == 10
+        assert circuit_breaker.success_threshold == 3
+        assert circuit_breaker.timeout_seconds == 120
+        assert circuit_breaker.half_open_max_requests == 5
+        assert circuit_breaker.use_exponential_backoff is False
+        assert circuit_breaker.max_timeout_seconds == 7200
+        assert circuit_breaker.backoff_multiplier == 3.0
+        assert circuit_breaker.jitter_factor == 0.5
+        assert circuit_breaker.streak_decay_seconds == 1800
+        # Excluded domains is additive
+        assert "custom.internal" in circuit_breaker._excluded_domains
+        assert "localhost" in circuit_breaker._excluded_domains  # hardcoded still there
+
+    def test_no_policy_client_uses_hardcoded_defaults(self, circuit_breaker):
+        """No PolicyClient available → hardcoded defaults work fine."""
+        # Simulate PDP not configured by patching import
+        with patch("circuit_breaker.CircuitBreaker._maybe_reload_config") as mock_reload:
+            # _maybe_reload_config would catch RuntimeError - simulate that it's a no-op
+            mock_reload.return_value = None
+
+            # Defaults should still be intact
+            assert circuit_breaker.failure_threshold == 5
+            assert circuit_breaker.success_threshold == 2
+            assert circuit_breaker.timeout_seconds == 60
+
+    def test_maybe_reload_config_skips_when_pdp_not_configured(self, circuit_breaker):
+        """_maybe_reload_config silently skips when PDP raises RuntimeError."""
+        mock_get = MagicMock(side_effect=RuntimeError("PolicyClient not configured"))
+
+        with patch("pdp.get_policy_client", mock_get):
+            # Should not raise
+            circuit_breaker._maybe_reload_config()
+
+        # Defaults unchanged
+        assert circuit_breaker.failure_threshold == 5
+
+    def test_policy_hash_prevents_redundant_reload(self, circuit_breaker):
+        """Policy hash prevents redundant reload when unchanged."""
+        mock_client = MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "hash123",
+            "addons": {
+                "circuit_breaker": {
+                    "failure_threshold": 10,
+                }
+            }
+        }
+
+        with patch("pdp.get_policy_client", return_value=mock_client):
+            # First call - should reload
+            circuit_breaker._maybe_reload_config()
+            assert circuit_breaker.failure_threshold == 10
+
+            # Change the attribute to detect if reload happens
+            circuit_breaker.failure_threshold = 99
+
+            # Second call with same hash - should NOT reload
+            circuit_breaker._maybe_reload_config()
+            assert circuit_breaker.failure_threshold == 99  # Unchanged
+
+            # Third call with new hash - should reload
+            mock_client.get_sensor_config.return_value = {
+                "policy_hash": "hash456",
+                "addons": {
+                    "circuit_breaker": {
+                        "failure_threshold": 20,
+                    }
+                }
+            }
+            circuit_breaker._maybe_reload_config()
+            assert circuit_breaker.failure_threshold == 20
+
+    def test_excluded_domains_additive(self, circuit_breaker):
+        """Policy excluded_domains extends hardcoded set, not replaces."""
+        original_excluded = circuit_breaker._excluded_domains.copy()
+
+        sensor_config = {
+            "addons": {
+                "circuit_breaker": {
+                    "excluded_domains": ["extra1.local", "extra2.local"],
+                }
+            }
+        }
+
+        circuit_breaker._load_config_from_pdp(sensor_config)
+
+        # Original domains still present
+        for domain in original_excluded:
+            assert domain in circuit_breaker._excluded_domains
+
+        # New domains added
+        assert "extra1.local" in circuit_breaker._excluded_domains
+        assert "extra2.local" in circuit_breaker._excluded_domains
+
+
+class TestCacheStaleness:
+    """Tests for cache staleness fixes."""
+
+    def test_stale_open_circuit_reconciled_to_half_open(self, tmp_path):
+        """Fix 1: Pre-write state with stale OPEN circuit (opened 2h ago),
+        verify reconciled to HALF_OPEN."""
+        from circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
+
+        state_file = tmp_path / "stale_state.json"
+        two_hours_ago = time.time() - 7200
+
+        # Write stale state to file
+        stale_data = {
+            "states": {
+                "stale.example.com": {
+                    "state": "open",
+                    "failure_count": 5,
+                    "failure_streak": 0,
+                    "opened_at": two_hours_ago,
+                    "last_failure_time": two_hours_ago,
+                }
+            },
+            "saved_at": two_hours_ago,
+        }
+        with open(state_file, "w") as f:
+            json.dump(stale_data, f)
+
+        cb = CircuitBreaker()
+        cb.timeout_seconds = 60  # 60s timeout, opened 2h ago → definitely stale
+        cb._state = InMemoryCircuitState(state_file=state_file)
+        cb._reconcile_stale_circuits()
+
+        status = cb.get_status("stale.example.com")
+        assert status.state == CircuitState.HALF_OPEN
+
+        cb.done()
+
+    def test_streak_decays_to_zero_after_inactivity(self, circuit_breaker):
+        """Fix 2: Build streak, fake last_failure_time far in past,
+        verify streak decays to 0."""
+        circuit_breaker.streak_decay_seconds = 60  # 1 minute decay
+
+        # Manually set up a domain with a streak and old failure time
+        circuit_breaker._state.set("decaying.com", {
+            "state": "closed",
+            "failure_count": 0,
+            "failure_streak": 5,
+            "last_failure_time": time.time() - 3600,  # 1 hour ago
+            "success_count": 0,
+        })
+
+        status = circuit_breaker.get_status("decaying.com")
+        assert status.failure_streak == 0  # Should have decayed
+
+    def test_streak_does_not_decay_if_recent(self, circuit_breaker):
+        """Streak should NOT decay if last failure was recent."""
+        circuit_breaker.streak_decay_seconds = 3600  # 1 hour decay
+
+        circuit_breaker._state.set("active.com", {
+            "state": "closed",
+            "failure_count": 0,
+            "failure_streak": 3,
+            "last_failure_time": time.time() - 60,  # 1 minute ago
+            "success_count": 0,
+        })
+
+        status = circuit_breaker.get_status("active.com")
+        assert status.failure_streak == 3  # Should NOT decay
+
+    def test_failure_streak_capped_to_1_on_load(self, tmp_path):
+        """Fix 3: Pre-write state with failure_streak: 8,
+        verify capped to 1 on load."""
+        from circuit_breaker import CircuitBreaker, InMemoryCircuitState
+
+        state_file = tmp_path / "high_streak.json"
+        now = time.time()
+
+        # Write state with high streak
+        data = {
+            "states": {
+                "streaky.com": {
+                    "state": "open",
+                    "failure_count": 10,
+                    "failure_streak": 8,
+                    "opened_at": now,  # Just opened, so won't transition
+                    "last_failure_time": now,
+                }
+            },
+            "saved_at": now,
+        }
+        with open(state_file, "w") as f:
+            json.dump(data, f)
+
+        cb = CircuitBreaker()
+        cb._state = InMemoryCircuitState(state_file=state_file)
+        cb._reconcile_stale_circuits()
+
+        # Streak should be capped to 1
+        raw_data = cb._state.get("streaky.com")
+        assert raw_data["failure_streak"] == 1
+
+        cb.done()
+
+    def test_reconcile_does_nothing_for_closed_circuits(self, tmp_path):
+        """Reconciliation should not change CLOSED circuits."""
+        from circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
+
+        state_file = tmp_path / "closed_state.json"
+
+        data = {
+            "states": {
+                "healthy.com": {
+                    "state": "closed",
+                    "failure_count": 1,
+                    "failure_streak": 0,
+                    "last_failure_time": time.time() - 100,
+                }
+            },
+            "saved_at": time.time(),
+        }
+        with open(state_file, "w") as f:
+            json.dump(data, f)
+
+        cb = CircuitBreaker()
+        cb._state = InMemoryCircuitState(state_file=state_file)
+        cb._reconcile_stale_circuits()
+
+        status = cb.get_status("healthy.com")
+        assert status.state == CircuitState.CLOSED
+        assert status.failure_count == 1
+
+        cb.done()
+
+    def test_reconcile_caps_streak_but_keeps_open_if_not_stale(self, tmp_path):
+        """If circuit is OPEN but not yet timed out, keep it OPEN but cap streak."""
+        from circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
+
+        state_file = tmp_path / "recent_open.json"
+        now = time.time()
+
+        data = {
+            "states": {
+                "recent.com": {
+                    "state": "open",
+                    "failure_count": 5,
+                    "failure_streak": 4,
+                    "opened_at": now,  # Just now, not stale
+                    "last_failure_time": now,
+                }
+            },
+            "saved_at": now,
+        }
+        with open(state_file, "w") as f:
+            json.dump(data, f)
+
+        cb = CircuitBreaker()
+        cb.timeout_seconds = 60
+        cb._state = InMemoryCircuitState(state_file=state_file)
+        cb._reconcile_stale_circuits()
+
+        raw_data = cb._state.get("recent.com")
+        assert raw_data["failure_streak"] == 1  # Capped
+        assert raw_data["state"] == "open"  # Still OPEN (not stale)
+
+        cb.done()
 
 
 class TestRequestIdPropagation:
@@ -501,7 +799,6 @@ class TestRequestIdPropagation:
 
     def test_log_event_includes_request_id(self, circuit_breaker, make_flow_with_request_id, tmp_path):
         """Verify _log_event includes request_id from flow metadata."""
-        import json
         from unittest.mock import patch
 
         log_path = tmp_path / "test.jsonl"
