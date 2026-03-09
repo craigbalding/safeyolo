@@ -145,7 +145,6 @@ class TestSaveRoundtrip:
         """Verify file is written atomically (no partial writes)."""
         from yaml_roundtrip import load_roundtrip, save_roundtrip
 
-        original_content = yaml_file.read_text()
         data = load_roundtrip(yaml_file)
         save_roundtrip(yaml_file, data)
 

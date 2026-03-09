@@ -762,7 +762,7 @@ class TestCacheStaleness:
 
     def test_reconcile_caps_streak_but_keeps_open_if_not_stale(self, tmp_path):
         """If circuit is OPEN but not yet timed out, keep it OPEN but cap streak."""
-        from circuit_breaker import CircuitBreaker, CircuitState, InMemoryCircuitState
+        from circuit_breaker import CircuitBreaker, InMemoryCircuitState
 
         state_file = tmp_path / "recent_open.json"
         now = time.time()
