@@ -309,6 +309,9 @@ class CredentialGuard(SecurityAddon):
 
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
+        if flow.response:
+            return
+
         # Reload rules if policy changed
         self._maybe_reload_rules()
 
@@ -370,7 +373,6 @@ class CredentialGuard(SecurityAddon):
 
             # Non-allow decision - record violation
             self._record_violation(rule_name, host)
-            flow.metadata["blocked_by"] = self.name
             flow.metadata["credential_fingerprint"] = context.get("fingerprint", f"hmac:{fp}")
 
             # Map effect to log reason
@@ -385,6 +387,7 @@ class CredentialGuard(SecurityAddon):
                 log_data["reason"] = context.get("reason", "policy_violation")
 
             if self.should_block():
+                flow.metadata["blocked_by"] = self.name
                 self.log_decision(flow, "block", **log_data)
                 # Use PDP's immediate_response if available
                 pdp_decision = context.get("decision")

@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 
 from mitmproxy import http
+from utils import sanitize_for_log
 
 log = logging.getLogger("safeyolo.metrics")
 
@@ -84,6 +85,13 @@ class MetricsCollector:
 
     name = "metrics"
 
+    _BLOCK_FIELD_MAP = {
+        "credential-guard": "blocked_credential",
+        "yara-scanner": "blocked_yara",
+        "pattern-scanner": "blocked_pattern",
+        "prompt-injection": "blocked_injection",
+    }
+
     def __init__(self):
         self._lock = threading.Lock()
         self._start_time = time.time()
@@ -94,6 +102,7 @@ class MetricsCollector:
         self.requests_success = 0
         self.requests_blocked = 0
         self.requests_error = 0
+        self._blocks_by_source: dict[str, int] = {}
 
     def _get_domain_stats(self, domain: str) -> DomainStats:
         with self._lock:
@@ -122,14 +131,13 @@ class MetricsCollector:
         blocked_by = flow.metadata.get("blocked_by")
         if blocked_by:
             self.requests_blocked += 1
-            if blocked_by == "credential-guard":
-                stats.blocked_credential += 1
-            elif blocked_by == "yara-scanner":
-                stats.blocked_yara += 1
-            elif blocked_by == "pattern-scanner":
-                stats.blocked_pattern += 1
-            elif blocked_by == "prompt-injection":
-                stats.blocked_injection += 1
+            # Map addon name to DomainStats field
+            field = self._BLOCK_FIELD_MAP.get(blocked_by)
+            if field:
+                setattr(stats, field, getattr(stats, field) + 1)
+            # Always track in per-source counter for complete visibility
+            with self._lock:
+                self._blocks_by_source[blocked_by] = self._blocks_by_source.get(blocked_by, 0) + 1
             return
 
         if not flow.response:
@@ -159,6 +167,7 @@ class MetricsCollector:
         # Copy under lock for thread safety
         with self._lock:
             domain_stats_copy = dict(self._domain_stats)
+            blocks_by_source = dict(self._blocks_by_source)
 
         # Sort domains by request count
         sorted_domains = sorted(
@@ -185,6 +194,7 @@ class MetricsCollector:
                 "requests_success": self.requests_success,
                 "requests_blocked": self.requests_blocked,
                 "requests_error": self.requests_error,
+                "blocks_by_source": blocks_by_source,
                 "success_rate": round(
                     self.requests_success / max(1, self.requests_total), 3
                 ),
@@ -204,6 +214,7 @@ class MetricsCollector:
         # Copy under lock for thread safety
         with self._lock:
             domain_stats_copy = dict(self._domain_stats)
+            blocks_by_source = dict(self._blocks_by_source)
 
         # Global metrics
         lines.append("# HELP safeyolo_uptime_seconds Proxy uptime")
@@ -222,24 +233,35 @@ class MetricsCollector:
         lines.append("# TYPE safeyolo_requests_blocked counter")
         lines.append(f"safeyolo_requests_blocked {self.requests_blocked}")
 
+        if blocks_by_source:
+            lines.append("")
+            lines.append("# HELP safeyolo_blocks_by_source Blocked requests by addon source")
+            lines.append("# TYPE safeyolo_blocks_by_source counter")
+            for source, count in sorted(blocks_by_source.items()):
+                safe_source = sanitize_for_log(source, max_len=64)
+                lines.append(f'safeyolo_blocks_by_source{{source="{safe_source}"}} {count}')
+
         # Per-domain metrics
         lines.append("")
         lines.append("# HELP safeyolo_domain_requests_total Requests per domain")
         lines.append("# TYPE safeyolo_domain_requests_total counter")
         for domain, stats in domain_stats_copy.items():
-            lines.append(f'safeyolo_domain_requests_total{{domain="{domain}"}} {stats.requests}')
+            safe_domain = sanitize_for_log(domain, max_len=253)
+            lines.append(f'safeyolo_domain_requests_total{{domain="{safe_domain}"}} {stats.requests}')
 
         lines.append("")
         lines.append("# HELP safeyolo_domain_success_rate Success rate per domain")
         lines.append("# TYPE safeyolo_domain_success_rate gauge")
         for domain, stats in domain_stats_copy.items():
-            lines.append(f'safeyolo_domain_success_rate{{domain="{domain}"}} {stats.success_rate:.3f}')
+            safe_domain = sanitize_for_log(domain, max_len=253)
+            lines.append(f'safeyolo_domain_success_rate{{domain="{safe_domain}"}} {stats.success_rate:.3f}')
 
         lines.append("")
         lines.append("# HELP safeyolo_domain_latency_avg_ms Average latency per domain")
         lines.append("# TYPE safeyolo_domain_latency_avg_ms gauge")
         for domain, stats in domain_stats_copy.items():
-            lines.append(f'safeyolo_domain_latency_avg_ms{{domain="{domain}"}} {stats.avg_latency_ms:.1f}')
+            safe_domain = sanitize_for_log(domain, max_len=253)
+            lines.append(f'safeyolo_domain_latency_avg_ms{{domain="{safe_domain}"}} {stats.avg_latency_ms:.1f}')
 
         return "\n".join(lines) + "\n"
 
@@ -247,10 +269,12 @@ class MetricsCollector:
         """Get basic stats for admin API."""
         with self._lock:
             domains_tracked = len(self._domain_stats)
+            blocks_by_source = dict(self._blocks_by_source)
         return {
             "requests_total": self.requests_total,
             "requests_success": self.requests_success,
             "requests_blocked": self.requests_blocked,
+            "blocks_by_source": blocks_by_source,
             "domains_tracked": domains_tracked,
         }
 

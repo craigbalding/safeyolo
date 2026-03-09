@@ -34,6 +34,7 @@ ADDON_MODULES = [
     "service_discovery",
     "sse_streaming",
     "utils",
+    "yaml_roundtrip",
 ]
 
 # Names that must be importable in each module (used at runtime)

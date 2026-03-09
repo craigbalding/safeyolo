@@ -24,9 +24,9 @@ class TestAdminShield:
 
     @pytest.fixture
     def mock_flow(self):
-        """Create mock HTTP flow."""
+        """Create mock HTTP flow targeting localhost admin port."""
         flow = MagicMock()
-        flow.request.host = "172.30.0.10"
+        flow.request.host = "127.0.0.1"
         flow.request.port = 9090
         flow.client_conn.peername = ("172.30.0.100", 54321)
         flow.metadata = {}
@@ -57,6 +57,19 @@ class TestAdminShield:
             shield.request(mock_flow)
 
             # Should NOT have set a response
+            assert mock_flow.response is None
+
+    def test_allows_remote_host_on_admin_port(self, shield, mock_flow):
+        """Test that remote hosts on admin port are not blocked."""
+        mock_flow.request.host = "172.30.0.10"
+        mock_flow.request.port = 9090
+
+        with patch("admin_shield.ctx") as mock_ctx:
+            mock_ctx.options.admin_port = 9090
+            mock_ctx.options.shield_extra_ports = ""
+
+            shield.request(mock_flow)
+
             assert mock_flow.response is None
 
     def test_blocks_extra_ports(self, shield, mock_flow):

@@ -600,7 +600,7 @@ def _build_bundle(results: list[DiagResult]) -> dict:
         if result.returncode == 0:
             docker_version = result.stdout.strip()
     except Exception:
-        pass
+        pass  # docker may not be installed or accessible; fall back to "unknown"
 
     import platform
 

@@ -419,9 +419,9 @@ class PDPCore:
             "policy_hash": self.policy_hash,
         }
 
-    def update_baseline(self, policy_data: dict) -> dict:
+    def replace_baseline(self, policy_data: dict) -> dict:
         """
-        Update the baseline policy.
+        Replace the baseline policy.
 
         Args:
             policy_data: New policy document
@@ -430,8 +430,8 @@ class PDPCore:
             Status dict with permission count
         """
         try:
-            result = self._engine.update_baseline(policy_data)
-            log.info("Baseline policy updated", extra={"permissions": result.get("permission_count", 0)})
+            result = self._engine.replace_baseline(policy_data)
+            log.info("Baseline policy replaced", extra={"permissions": result.get("permission_count", 0)})
             return {
                 "status": "ok",
                 "permission_count": result.get("permission_count", 0),
@@ -443,10 +443,10 @@ class PDPCore:
                 "error": "Invalid policy document",
             }
         except Exception as e:
-            log.error(f"Failed to update baseline: {type(e).__name__}: {e}")
+            log.error(f"Failed to replace baseline: {type(e).__name__}: {e}")
             return {
                 "status": "error",
-                "error": "Failed to update baseline policy",
+                "error": "Failed to replace baseline policy",
             }
 
     # -------------------------------------------------------------------------

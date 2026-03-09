@@ -15,7 +15,7 @@ Endpoints:
 
   Baseline Policy:
     - GET /v1/baseline - Get current baseline policy
-    - PUT /v1/baseline - Update baseline policy
+    - PUT /v1/baseline - Replace baseline policy
 
   Sensor Configuration:
     - GET /v1/sensor_config - Get credential rules and scan patterns
@@ -254,11 +254,11 @@ async def get_sensor_config() -> dict:
 
 
 @app.put("/v1/baseline")
-async def update_baseline(request: Request) -> dict:
+async def replace_baseline(request: Request) -> dict:
     """
-    Update the baseline policy.
+    Replace the baseline policy.
 
-    Accepts a policy document and updates the current baseline.
+    Accepts a policy document and replaces the current baseline.
     This persists the policy if a baseline path is configured.
 
     Body:
@@ -277,7 +277,7 @@ async def update_baseline(request: Request) -> dict:
     if policy_data is None:
         raise HTTPException(status_code=400, detail="Missing 'policy' field in request body")
 
-    result = pdp.update_baseline(policy_data)
+    result = pdp.replace_baseline(policy_data)
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("error"))
 

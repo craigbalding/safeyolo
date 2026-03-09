@@ -170,11 +170,7 @@ class AgentRelay:
         flow.metadata["blocked_by"] = self.name
 
     def _find_addon(self, addon_name: str):
-        """Find an addon by name in the mitmproxy addon chain.
-
-        Walks ctx.master.addons chain -> ScriptLoader -> scripts -> module addons.
-        Caches the result after first successful lookup.
-        """
+        """Find an addon by registered mitmproxy addon name."""
         # Check cache first
         cache = getattr(self, "_addon_cache", None)
         if cache is None:
@@ -185,16 +181,11 @@ class AgentRelay:
             return cache[addon_name]
 
         try:
-            addons_obj = ctx.master.addons
-            for chain_addon in addons_obj.chain:
-                if type(chain_addon).__name__ != "ScriptLoader":
-                    continue
-                for script in getattr(chain_addon, "addons", []):
-                    for module in getattr(script, "addons", []):
-                        for addon in getattr(module, "addons", []):
-                            if getattr(addon, "name", None) == addon_name:
-                                cache[addon_name] = addon
-                                return addon
+            addons_obj = getattr(getattr(ctx, "master", None), "addons", None)
+            addon = addons_obj.get(addon_name) if addons_obj else None
+            if addon is not None:
+                cache[addon_name] = addon
+                return addon
         except Exception as exc:
             log.debug(f"Addon lookup failed: {type(exc).__name__}: {exc}")
 
@@ -273,12 +264,18 @@ class AgentRelay:
             return
 
         events = []
+        truncated = False
         try:
             # Stream through file, retaining only last N lines (constant memory)
             from collections import deque
 
             with open(log_path) as fh:
-                scan_lines = deque(fh, maxlen=MAX_EXPLAIN_LINES)
+                total_lines = 0
+                scan_lines = deque(maxlen=MAX_EXPLAIN_LINES)
+                for line in fh:
+                    total_lines += 1
+                    scan_lines.append(line)
+                truncated = total_lines > MAX_EXPLAIN_LINES
 
             for line in scan_lines:
                 line = line.strip()
@@ -293,7 +290,11 @@ class AgentRelay:
         except Exception as exc:
             log.error(f"Explain search error: {type(exc).__name__}: {exc}")
 
-        self._respond(flow, 200, {"request_id": request_id, "events": events})
+        result = {"request_id": request_id, "events": events}
+        if truncated:
+            result["truncated"] = True
+            result["searched_lines"] = MAX_EXPLAIN_LINES
+        self._respond(flow, 200, result)
 
 
 addons = [AgentRelay()]

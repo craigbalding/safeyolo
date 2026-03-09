@@ -49,12 +49,21 @@ class AdminShield:
 
         return ports
 
+    _LOCAL_HOSTS = frozenset({
+        "localhost", "127.0.0.1", "::1", "0.0.0.0",
+        "host.docker.internal", "safeyolo",
+    })
+
+    def _is_local(self, host: str) -> bool:
+        """Check if host resolves to a local/container-internal address."""
+        return host.lower() in self._LOCAL_HOSTS or host.lower().endswith(".localhost")
+
     def request(self, flow: http.HTTPFlow):
-        """Block requests to admin API port."""
+        """Block requests to admin API port on local destinations."""
         blocked_ports = self._get_blocked_ports()
         request_port = flow.request.port
 
-        if request_port in blocked_ports:
+        if request_port in blocked_ports and self._is_local(flow.request.host):
             host = flow.request.host
             log.warning(
                 f"Blocked proxy request to admin port: {host}:{request_port} "

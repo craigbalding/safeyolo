@@ -372,6 +372,33 @@ class TestRenderTemplate:
         with pytest.raises(TemplateError, match="Unknown template"):
             render_template("nonexistent", output_dir, "/tmp/project")
 
+    def test_renders_guarded_agent_install_in_init_script(self, tmp_config_dir, tmp_path):
+        """Rendered init script should only install when the agent binary is missing."""
+        output_dir = tmp_path / "output"
+
+        render_template("openai-codex", output_dir, "/tmp/myproject")
+
+        init_script = (output_dir / "safeyolo-init.sh").read_text()
+
+        assert "{{ binary }}" not in init_script
+        assert "command -v codex >/dev/null 2>&1" in init_script
+        assert "Installing codex with mise..." in init_script
+        assert "timeout 120 bash -lc 'mise use -g npm:@openai/codex@latest'" in init_script
+        assert 'Warning: codex installation failed or timed out' in init_script
+
+    def test_renders_guarded_agent_install_in_claude_init_script(self, tmp_config_dir, tmp_path):
+        """Claude template should render the binary name in the guarded install block."""
+        output_dir = tmp_path / "output"
+
+        render_template("claude-code", output_dir, "/tmp/myproject")
+
+        init_script = (output_dir / "safeyolo-init.sh").read_text()
+
+        assert "command -v claude >/dev/null 2>&1" in init_script
+        assert "Installing claude with mise..." in init_script
+        assert "timeout 120 bash -lc 'mise use -g npm:@anthropic-ai/claude-code@latest'" in init_script
+        assert 'Warning: claude installation failed or timed out' in init_script
+
     def test_populates_template_variables(self, tmp_config_dir, tmp_path):
         """Template variables are correctly populated in output."""
         output_dir = tmp_path / "output"

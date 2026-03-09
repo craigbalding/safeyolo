@@ -1,4 +1,15 @@
-# SafeYolo Baseline Policy
+# =============================================================================
+# SafeYolo baseline policy
+#
+# This file is intended to be human-readable and human-editable.
+# Comments in this file are preserved when policy is updated incrementally
+# through local approval flows.
+#
+# Warning:
+# Full policy replacement via the admin API is machine-oriented and may rewrite
+# this file without preserving comments or layout. If you rely on comments as
+# operator guidance, keep a backed-up canonical copy or avoid full API rewrites.
+# =============================================================================
 #
 # Default protections for AI coding agents. This policy:
 # - Routes credentials to their correct hosts (OpenAI keys -> api.openai.com)
@@ -225,9 +236,80 @@ addons:
   credential_guard:
     enabled: true
     detection_level: standard  # standard | paranoid
+    entropy:
+      min_length: 20
+      min_charset_diversity: 0.5
+      min_shannon_entropy: 3.5
+    standard_auth_headers:
+    - authorization
+    - x-api-key
+    - api-key
+    - x-auth-token
+    - apikey
+    safe_headers:
+      exact_names:
+      - host
+      - content-type
+      - content-length
+      - accept
+      - accept-encoding
+      - accept-language
+      - connection
+      - upgrade
+      - cache-control
+      - pragma
+      - referer
+      - origin
+      - x-request-id
+      - x-trace-id
+      - x-correlation-id
+      - x-transaction-id
+      - x-session-id
+      - traceparent
+      - tracestate
+      - request-id
+      - correlation-id
+      - x-amzn-trace-id
+      - x-cloud-trace-context
+      - x-goog-request-id
+      - x-azure-request-id
+      - x-datadog-trace-id
+      - x-b3-traceid
+      - x-b3-spanid
+      - x-b3-parentspanid
+      - x-device-id
+      - x-client-id
+      - x-fingerprint
+      - x-timestamp
+      - x-nonce
+      - x-request-timestamp
+      - user-agent
+      - x-client-version
+      - x-app-version
+      patterns:
+      - pattern: ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$
+        description: UUID format
+      - pattern: ^[a-f0-9]{16,64}$
+        description: Hex trace ID
+      - pattern: ^[A-Za-z0-9+/]{16,32}={0,2}$
+        description: Short base64 session token
 
   circuit_breaker:
     enabled: true
+    failure_threshold: 5
+    success_threshold: 2
+    timeout_seconds: 60
+    half_open_max_requests: 3
+    use_exponential_backoff: true
+    max_timeout_seconds: 3600
+    backoff_multiplier: 2.0
+    jitter_factor: 0.3
+    streak_decay_seconds: 3600
+    excluded_domains:
+      - localhost
+      - "127.0.0.1"
+      - host.docker.internal
+      - api.anthropic.com
 
   test_context:
     target_hosts: []  # Add hosts to activate, remove to deactivate
@@ -242,6 +324,15 @@ addons:
     # Available: secrets, pii
     builtin_sets: []
     # Set pattern_block_request=true or pattern_block_response=true to enable blocking
+
+  request_logger:
+    enabled: true
+    quiet_hosts:
+      hosts:
+      - statsig.anthropic.com
+      paths:
+        api.anthropic.com:
+        - /api/event_logging/batch
 
 # =============================================================================
 # DOMAIN OVERRIDES

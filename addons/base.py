@@ -91,7 +91,12 @@ class SecurityAddon:
         if flow.response:
             return True
 
-        client = get_policy_client()
+        try:
+            client = get_policy_client()
+        except RuntimeError:
+            # PolicyClient not configured — default to not bypassed
+            return False
+
         domain = flow.request.host
 
         # Get client_id from ServiceDiscovery IP mapping
