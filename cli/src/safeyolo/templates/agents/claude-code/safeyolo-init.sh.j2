@@ -19,9 +19,19 @@ cat > '{{ instructions_path }}' << 'SAFEYOLO_INSTRUCTIONS'
 SAFEYOLO_INSTRUCTIONS
 {% endif %}
 
-# === Install agent if needed (as non-root) ===
-setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups \
-  bash -c 'mise use -g {{ mise_package }}@latest' 2>/dev/null || true
+# === Install agent only if the binary is missing ===
+# Guard: skip mise install (which resolves @latest over the network) when the
+# binary already exists – prevents hangs on container restart.
+# Command chain: setpriv drops privileges → timeout caps the install at 120s →
+# bash -lc sources login profile so mise shims are on PATH.
+if ! setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups \
+  bash -lc 'command -v {{ binary }} >/dev/null 2>&1'; then
+  echo "Installing {{ binary }} with mise..."
+  if ! setpriv --reuid="${SAFEYOLO_UID}" --regid="${SAFEYOLO_GID}" --init-groups \
+    timeout 120 bash -lc 'mise use -g {{ mise_package }}@latest'; then
+    echo "Warning: {{ binary }} installation failed or timed out" >&2
+  fi
+fi
 
 # === User init hook (runs as non-root, for custom tools/setup) ===
 if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
