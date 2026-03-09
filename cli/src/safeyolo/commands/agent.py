@@ -164,7 +164,7 @@ def _run_agent(
     Args:
         agent_args: Extra arguments to pass to the agent CLI (after --)
         skip_default_args: If True, ignore user_default_args even if no agent_args
-        extra_mounts: Transient mount specs (host:container[:ro]) for this run only
+        extra_mounts: Transient mount specs (/local/path:/container/path[:ro]) for this run only
     """
     agent_dir = get_agents_dir() / name
     compose_file = agent_dir / "docker-compose.yml"
@@ -265,7 +265,7 @@ def _parse_user_default_args(value: str | None) -> list[str] | None:
 
 
 def _parse_mount(mount_spec: str) -> str:
-    """Validate and normalize a mount spec (host:container[:ro]).
+    """Validate and normalize a mount spec (/local/path:/container/path[:ro]).
 
     Returns normalized string with resolved host path.
 
@@ -350,7 +350,7 @@ def add(
     mount: list[str] = typer.Option(
         [],
         "--mount", "-m",
-        help="Extra folder to mount (host:container[:ro], repeatable)",
+        help="Extra folder to mount (/local/path:/container/path[:ro], repeatable)",
     ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
@@ -613,7 +613,7 @@ def run(
     mount: list[str] = typer.Option(
         [],
         "--mount", "-m",
-        help="Extra folder to mount (host:container[:ro], repeatable, one-off)",
+        help="Extra folder to mount (/local/path:/container/path[:ro], repeatable, one-off)",
     ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
@@ -719,7 +719,7 @@ def config(
     add_mount: list[str] = typer.Option(
         [],
         "--add-mount",
-        help="Add persistent mount (host:container[:ro], repeatable)",
+        help="Add persistent mount (/local/path:/container/path[:ro], repeatable)",
     ),
     remove_mount: list[str] = typer.Option(
         [],
