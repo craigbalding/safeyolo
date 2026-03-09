@@ -84,6 +84,13 @@ class MetricsCollector:
 
     name = "metrics"
 
+    _BLOCK_FIELD_MAP = {
+        "credential-guard": "blocked_credential",
+        "yara-scanner": "blocked_yara",
+        "pattern-scanner": "blocked_pattern",
+        "prompt-injection": "blocked_injection",
+    }
+
     def __init__(self):
         self._lock = threading.Lock()
         self._start_time = time.time()
@@ -94,6 +101,7 @@ class MetricsCollector:
         self.requests_success = 0
         self.requests_blocked = 0
         self.requests_error = 0
+        self._blocks_by_source: dict[str, int] = {}
 
     def _get_domain_stats(self, domain: str) -> DomainStats:
         with self._lock:
@@ -122,14 +130,13 @@ class MetricsCollector:
         blocked_by = flow.metadata.get("blocked_by")
         if blocked_by:
             self.requests_blocked += 1
-            if blocked_by == "credential-guard":
-                stats.blocked_credential += 1
-            elif blocked_by == "yara-scanner":
-                stats.blocked_yara += 1
-            elif blocked_by == "pattern-scanner":
-                stats.blocked_pattern += 1
-            elif blocked_by == "prompt-injection":
-                stats.blocked_injection += 1
+            # Map addon name to DomainStats field
+            field = self._BLOCK_FIELD_MAP.get(blocked_by)
+            if field:
+                setattr(stats, field, getattr(stats, field) + 1)
+            # Always track in per-source counter for complete visibility
+            with self._lock:
+                self._blocks_by_source[blocked_by] = self._blocks_by_source.get(blocked_by, 0) + 1
             return
 
         if not flow.response:
@@ -247,10 +254,12 @@ class MetricsCollector:
         """Get basic stats for admin API."""
         with self._lock:
             domains_tracked = len(self._domain_stats)
+            blocks_by_source = dict(self._blocks_by_source)
         return {
             "requests_total": self.requests_total,
             "requests_success": self.requests_success,
             "requests_blocked": self.requests_blocked,
+            "blocks_by_source": blocks_by_source,
             "domains_tracked": domains_tracked,
         }
 

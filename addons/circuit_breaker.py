@@ -487,6 +487,9 @@ class CircuitBreaker(SecurityAddon):
         if not self.is_enabled():
             return
 
+        if flow.response:
+            return
+
         self._maybe_reload_config()
 
         domain = flow.request.host

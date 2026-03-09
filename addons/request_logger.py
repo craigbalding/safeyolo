@@ -144,7 +144,7 @@ class RequestLogger:
         request_id = flow.metadata.get("request_id")
 
         parsed = urlparse(flow.request.pretty_url)
-        host = parsed.netloc
+        host = parsed.hostname or parsed.netloc
         path = parsed.path
 
         # Check if this host/path should be quieted

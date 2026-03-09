@@ -264,12 +264,18 @@ class AgentRelay:
             return
 
         events = []
+        truncated = False
         try:
             # Stream through file, retaining only last N lines (constant memory)
             from collections import deque
 
             with open(log_path) as fh:
-                scan_lines = deque(fh, maxlen=MAX_EXPLAIN_LINES)
+                total_lines = 0
+                scan_lines = deque(maxlen=MAX_EXPLAIN_LINES)
+                for line in fh:
+                    total_lines += 1
+                    scan_lines.append(line)
+                truncated = total_lines > MAX_EXPLAIN_LINES
 
             for line in scan_lines:
                 line = line.strip()
@@ -284,7 +290,11 @@ class AgentRelay:
         except Exception as exc:
             log.error(f"Explain search error: {type(exc).__name__}: {exc}")
 
-        self._respond(flow, 200, {"request_id": request_id, "events": events})
+        result = {"request_id": request_id, "events": events}
+        if truncated:
+            result["truncated"] = True
+            result["searched_lines"] = MAX_EXPLAIN_LINES
+        self._respond(flow, 200, result)
 
 
 addons = [AgentRelay()]

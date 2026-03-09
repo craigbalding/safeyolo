@@ -172,19 +172,19 @@ class TestContext(SecurityAddon):
         if context is None:
             # Missing or malformed context
             reason = "missing_context" if not header_value else "malformed_context"
-            self.log_decision(
-                flow,
-                "block",
-                reason=reason,
-                host=flow.request.host,
-                path=flow.request.path,
-                method=flow.request.method,
-            )
 
             if self.should_block():
+                self.log_decision(
+                    flow,
+                    "block",
+                    reason=reason,
+                    host=flow.request.host,
+                    path=flow.request.path,
+                    method=flow.request.method,
+                )
                 body = {
                     "error": "Test context required",
-                    "type": "missing_context",
+                    "type": reason,
                     "destination": flow.request.host,
                     "action": "add_header",
                     "header": CONTEXT_HEADER,
@@ -194,6 +194,14 @@ class TestContext(SecurityAddon):
                 }
                 self.block(flow, 428, body)
             else:
+                self.log_decision(
+                    flow,
+                    "warn",
+                    reason=reason,
+                    host=flow.request.host,
+                    path=flow.request.path,
+                    method=flow.request.method,
+                )
                 self.warn(flow)
             return
 
