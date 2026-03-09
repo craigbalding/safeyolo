@@ -309,6 +309,9 @@ class CredentialGuard(SecurityAddon):
 
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
+        if flow.response:
+            return
+
         # Reload rules if policy changed
         self._maybe_reload_rules()
 

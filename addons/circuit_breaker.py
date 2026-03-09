@@ -487,7 +487,7 @@ class CircuitBreaker(SecurityAddon):
         if not self.is_enabled():
             return
 
-        if flow.response:
+        if self.is_bypassed(flow):
             return
 
         self._maybe_reload_config()

@@ -51,10 +51,11 @@ class AdminShield:
 
     _LOCAL_HOSTS = frozenset({
         "localhost", "127.0.0.1", "::1", "0.0.0.0",
+        "host.docker.internal", "safeyolo",
     })
 
     def _is_local(self, host: str) -> bool:
-        """Check if host resolves to a local address."""
+        """Check if host resolves to a local/container-internal address."""
         return host.lower() in self._LOCAL_HOSTS or host.lower().endswith(".localhost")
 
     def request(self, flow: http.HTTPFlow):

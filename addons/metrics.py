@@ -166,6 +166,7 @@ class MetricsCollector:
         # Copy under lock for thread safety
         with self._lock:
             domain_stats_copy = dict(self._domain_stats)
+            blocks_by_source = dict(self._blocks_by_source)
 
         # Sort domains by request count
         sorted_domains = sorted(
@@ -192,6 +193,7 @@ class MetricsCollector:
                 "requests_success": self.requests_success,
                 "requests_blocked": self.requests_blocked,
                 "requests_error": self.requests_error,
+                "blocks_by_source": blocks_by_source,
                 "success_rate": round(
                     self.requests_success / max(1, self.requests_total), 3
                 ),
@@ -211,6 +213,7 @@ class MetricsCollector:
         # Copy under lock for thread safety
         with self._lock:
             domain_stats_copy = dict(self._domain_stats)
+            blocks_by_source = dict(self._blocks_by_source)
 
         # Global metrics
         lines.append("# HELP safeyolo_uptime_seconds Proxy uptime")
@@ -228,6 +231,13 @@ class MetricsCollector:
         lines.append("# HELP safeyolo_requests_blocked Blocked requests")
         lines.append("# TYPE safeyolo_requests_blocked counter")
         lines.append(f"safeyolo_requests_blocked {self.requests_blocked}")
+
+        if blocks_by_source:
+            lines.append("")
+            lines.append("# HELP safeyolo_blocks_by_source Blocked requests by addon source")
+            lines.append("# TYPE safeyolo_blocks_by_source counter")
+            for source, count in sorted(blocks_by_source.items()):
+                lines.append(f'safeyolo_blocks_by_source{{source="{source}"}} {count}')
 
         # Per-domain metrics
         lines.append("")
