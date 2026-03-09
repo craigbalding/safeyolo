@@ -252,6 +252,7 @@ addons:
       - localhost
       - "127.0.0.1"
       - host.docker.internal
+      - api.anthropic.com
 
   test_context:
     target_hosts: []  # Add hosts to activate, remove to deactivate
