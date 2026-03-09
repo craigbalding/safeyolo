@@ -1,4 +1,15 @@
-# SafeYolo Baseline Policy
+# =============================================================================
+# SafeYolo baseline policy
+#
+# This file is intended to be human-readable and human-editable.
+# Comments in this file are preserved when policy is updated incrementally
+# through local approval flows.
+#
+# Warning:
+# Full policy replacement via the admin API is machine-oriented and may rewrite
+# this file without preserving comments or layout. If you rely on comments as
+# operator guidance, keep a backed-up canonical copy or avoid full API rewrites.
+# =============================================================================
 #
 # Default protections for AI coding agents. This policy:
 # - Routes credentials to their correct hosts (OpenAI keys -> api.openai.com)
@@ -228,6 +239,19 @@ addons:
 
   circuit_breaker:
     enabled: true
+    failure_threshold: 5
+    success_threshold: 2
+    timeout_seconds: 60
+    half_open_max_requests: 3
+    use_exponential_backoff: true
+    max_timeout_seconds: 3600
+    backoff_multiplier: 2.0
+    jitter_factor: 0.3
+    streak_decay_seconds: 3600
+    excluded_domains:
+      - localhost
+      - "127.0.0.1"
+      - host.docker.internal
 
   test_context:
     target_hosts: []  # Add hosts to activate, remove to deactivate

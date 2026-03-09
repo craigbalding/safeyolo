@@ -813,7 +813,7 @@ class PolicyEngine:
 
         # Save to file if path exists
         if self._loader.baseline_path:
-            self._save_baseline()
+            self._save_baseline_incremental(new_permission)
 
         log.info(f"Added credential approval: {destination} accepts {cred_ids}")
         write_event(
@@ -829,8 +829,8 @@ class PolicyEngine:
             "permission_count": len(baseline.permissions),
         }
 
-    def update_baseline(self, policy_data: dict[str, Any]) -> dict[str, Any]:
-        """Update baseline policy from dict.
+    def replace_baseline(self, policy_data: dict[str, Any]) -> dict[str, Any]:
+        """Replace baseline policy from dict.
 
         Args:
             policy_data: Policy data to validate and apply
@@ -847,9 +847,9 @@ class PolicyEngine:
 
         # Save to file if path exists
         if self._loader.baseline_path:
-            self._save_baseline()
+            self._save_baseline_full()
 
-        log.info(f"Updated baseline policy: {len(new_policy.permissions)} permissions")
+        log.info(f"Replaced baseline policy: {len(new_policy.permissions)} permissions")
         write_event(
             "ops.policy_update",
             addon="policy-engine",
@@ -901,13 +901,75 @@ class PolicyEngine:
             "permission_count": len(new_policy.permissions),
         }
 
-    def _save_baseline(self) -> None:
-        """Save baseline policy to file (atomic write).
+    def _save_baseline_incremental(self, new_permission: Permission) -> None:
+        """Save baseline with a new permission inserted, preserving comments.
 
-        Note: This rewrites the entire file from the Pydantic model, which
-        means any comments or custom formatting in the original YAML are lost.
-        If comment preservation becomes important, consider ruamel.yaml's
-        round-trip mode instead of pyyaml.
+        Loads the original file with ruamel.yaml round-trip mode, inserts the
+        new permission at position 0 in the permissions list, and writes back.
+        Falls back to full rewrite if the original file can't be loaded.
+
+        Args:
+            new_permission: The permission to insert at the top of the list
+        """
+        baseline_path = self._loader.baseline_path
+        if not baseline_path:
+            return
+
+        try:
+            from yaml_roundtrip import load_roundtrip, save_roundtrip
+
+            if baseline_path.exists():
+                data = load_roundtrip(baseline_path)
+
+                # Build the new permission dict
+                perm_dict = new_permission.model_dump(exclude_none=True)
+
+                # Insert at position 0 for highest priority
+                if "permissions" in data:
+                    data["permissions"].insert(0, perm_dict)
+                else:
+                    data["permissions"] = [perm_dict]
+
+                save_roundtrip(baseline_path, data)
+                return
+        except Exception as e:
+            log.warning(f"Round-trip save failed, falling back to full rewrite: {e}")
+
+        # Fallback: full rewrite without comment preservation
+        self._save_baseline_plain()
+
+    def _save_baseline_full(self) -> None:
+        """Save full baseline policy, preserving comments where possible.
+
+        If the original file exists, loads it with ruamel.yaml and merges the
+        current policy data into it, preserving section banners and comments
+        on unchanged keys. Falls back to plain dump if round-trip fails.
+        """
+        baseline_path = self._loader.baseline_path
+        if not baseline_path:
+            return
+
+        try:
+            from yaml_roundtrip import load_roundtrip, merge_into_roundtrip, save_roundtrip
+
+            if baseline_path.exists():
+                original = load_roundtrip(baseline_path)
+                baseline = self._loader.baseline
+                new_data = baseline.model_dump(exclude_none=True)
+                merge_into_roundtrip(original, new_data)
+                save_roundtrip(baseline_path, original)
+                return
+        except Exception as e:
+            log.warning(f"Round-trip save failed, falling back to full rewrite: {e}")
+
+        # Fallback: full rewrite without comment preservation
+        self._save_baseline_plain()
+
+    def _save_baseline_plain(self) -> None:
+        """Save baseline policy as plain YAML (no comment preservation).
+
+        Used as fallback when the original file doesn't exist or ruamel.yaml
+        round-trip fails.
         """
         baseline_path = self._loader.baseline_path
         if not baseline_path:
@@ -933,7 +995,7 @@ class PolicyEngine:
                 tmp_path = tmp.name
 
             shutil.move(tmp_path, baseline_path)
-            log.info(f"Saved baseline policy to {baseline_path}")
+            log.info(f"Saved baseline policy (plain) to {baseline_path}")
 
         except Exception as e:
             log.error(f"Failed to save baseline: {type(e).__name__}: {e}")

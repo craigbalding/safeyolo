@@ -192,13 +192,19 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | GET | `/plugins/{addon}/mode` | Get specific addon mode |
 | PUT | `/plugins/{addon}/mode` | Set specific addon mode |
 | GET | `/admin/policy/baseline` | Get baseline policy |
-| PUT | `/admin/policy/baseline` | Update baseline policy |
+| PUT | `/admin/policy/baseline` | Update baseline policy (see note below) |
 | POST | `/admin/policy/baseline/approve` | Add credential approval |
 | GET | `/admin/policy/task/{task_id}` | Get task-specific policy |
 | PUT | `/admin/policy/task/{task_id}` | Create/update task policy |
 | GET | `/admin/budgets` | Get budget usage stats |
 | POST | `/admin/budgets/reset` | Reset budget counters |
 | POST | `/admin/policy/validate` | Validate YAML policy content |
+
+> **Note on `PUT /admin/policy/baseline`:** Full baseline replacement is intended
+> for machine-to-machine automation. This operation may not preserve YAML comments,
+> layout, or human-authored formatting in baseline.yaml. Operators who use inline
+> comments as guidance should prefer incremental local updates or regenerate from
+> a canonical source.
 
 **Add an approval via API:**
 ```bash

@@ -531,7 +531,13 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json(result)
 
     def _handle_put_policy_baseline(self) -> None:
-        """PUT /admin/policy/baseline - Update baseline policy."""
+        """PUT /admin/policy/baseline - Replace baseline policy.
+
+        Full baseline replacement is intended for machine-to-machine automation.
+        This operation may not preserve YAML comments, layout, or human-authored
+        formatting in baseline.yaml. Operators who use inline comments as guidance
+        should prefer incremental local updates or regenerate from a canonical source.
+        """
         client = get_policy_client()
 
         data = self._read_json()
@@ -544,7 +550,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing 'policy' field in request body"}, 400)
             return
 
-        result = client.update_baseline(policy_data)
+        result = client.replace_baseline(policy_data)
 
         if result.get("status") == "error":
             self._send_json({"error": result.get("error")}, 400)

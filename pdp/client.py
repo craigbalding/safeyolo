@@ -254,8 +254,8 @@ class PolicyClient(ABC):
         pass
 
     @abstractmethod
-    def update_baseline(self, policy_data: dict) -> dict:
-        """Update baseline policy.
+    def replace_baseline(self, policy_data: dict) -> dict:
+        """Replace baseline policy.
 
         Args:
             policy_data: New policy document
@@ -367,9 +367,9 @@ class LocalPolicyClient(PolicyClient):
         """Reset budget counters."""
         return self._pdp.reset_budgets(resource)
 
-    def update_baseline(self, policy_data: dict) -> dict:
-        """Update baseline policy."""
-        return self._pdp.update_baseline(policy_data)
+    def replace_baseline(self, policy_data: dict) -> dict:
+        """Replace baseline policy."""
+        return self._pdp.replace_baseline(policy_data)
 
     def upsert_task_policy(self, task_id: str, policy_data: dict) -> dict:
         """Upsert a task policy."""
@@ -658,8 +658,8 @@ class HttpPolicyClient(PolicyClient):
             log.error(f"reset_budgets error: {type(e).__name__}: {e}")
             return {"error": str(e)}
 
-    def update_baseline(self, policy_data: dict) -> dict:
-        """Update baseline policy via HTTP."""
+    def replace_baseline(self, policy_data: dict) -> dict:
+        """Replace baseline policy via HTTP."""
         try:
             response = self._client.put(
                 "/v1/baseline",
@@ -670,7 +670,7 @@ class HttpPolicyClient(PolicyClient):
                 return response.json()
             return {"error": f"HTTP {response.status_code}"}
         except Exception as e:
-            log.error(f"update_baseline error: {type(e).__name__}: {e}")
+            log.error(f"replace_baseline error: {type(e).__name__}: {e}")
             return {"error": str(e)}
 
     def upsert_task_policy(self, task_id: str, policy_data: dict) -> dict:
