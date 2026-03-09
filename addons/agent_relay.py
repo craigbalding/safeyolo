@@ -170,11 +170,7 @@ class AgentRelay:
         flow.metadata["blocked_by"] = self.name
 
     def _find_addon(self, addon_name: str):
-        """Find an addon by name in the mitmproxy addon chain.
-
-        Walks ctx.master.addons chain -> ScriptLoader -> scripts -> module addons.
-        Caches the result after first successful lookup.
-        """
+        """Find an addon by registered mitmproxy addon name."""
         # Check cache first
         cache = getattr(self, "_addon_cache", None)
         if cache is None:
@@ -185,16 +181,11 @@ class AgentRelay:
             return cache[addon_name]
 
         try:
-            addons_obj = ctx.master.addons
-            for chain_addon in addons_obj.chain:
-                if type(chain_addon).__name__ != "ScriptLoader":
-                    continue
-                for script in getattr(chain_addon, "addons", []):
-                    for module in getattr(script, "addons", []):
-                        for addon in getattr(module, "addons", []):
-                            if getattr(addon, "name", None) == addon_name:
-                                cache[addon_name] = addon
-                                return addon
+            addons_obj = getattr(getattr(ctx, "master", None), "addons", None)
+            addon = addons_obj.get(addon_name) if addons_obj else None
+            if addon is not None:
+                cache[addon_name] = addon
+                return addon
         except Exception as exc:
             log.debug(f"Addon lookup failed: {type(exc).__name__}: {exc}")
 
