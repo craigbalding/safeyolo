@@ -23,6 +23,10 @@ console = Console()
 # Default status file location
 STATUS_FILE = Path.home() / ".cache" / "safeyolo" / "tmux_status.txt"
 
+# Interactive mode: how often to print status summaries
+STATUS_INTERVAL = 10  # seconds between status lines
+STATUS_BATCH = 10  # or after this many suppressed allow events
+
 
 def is_in_tmux() -> bool:
     """Check if we're running inside a tmux session."""
@@ -122,6 +126,18 @@ class RollingStats:
                     warnings += 1
 
         return requests, blocks, warnings
+
+    def window_allows_by_host(self) -> dict[str, int]:
+        """Get allow counts per host in the rolling window."""
+        now = time.time()
+        self._prune(now)
+        counts: dict[str, int] = {}
+        for _, event in self._events:
+            if (event.get("event", "").startswith("security.") and
+                    event.get("decision") == "allow"):
+                host = event.get("host", "unknown")
+                counts[host] = counts.get(host, 0) + 1
+        return counts
 
     def format_status_line(self) -> str:
         """Format a compact status line for tmux."""
@@ -470,6 +486,11 @@ def watch(
     # Track seen events to avoid duplicates
     seen_fingerprints: set[str] = set()
 
+    # Rolling stats for status summaries (reuses existing RollingStats)
+    stats = RollingStats()
+    last_status_time = time.time()
+    events_since_status = 0
+
     try:
         for event in tail_jsonl(log_path, follow=follow):
             event_type = event.get("event", "")
@@ -477,6 +498,9 @@ def watch(
             # Filter to security events if requested
             if security_only and not event_type.startswith("security."):
                 continue
+
+            # Track all events in rolling stats
+            stats.add_event(event)
 
             # Check for credential blocks needing approval
             # Fields are at root level, not nested under "data"
@@ -493,20 +517,71 @@ def watch(
                         continue
                     seen_fingerprints.add(dedup_key)
 
+                    # Show status context before prompting
+                    if events_since_status > 0:
+                        _print_interactive_status(stats)
+                        events_since_status = 0
+                        last_status_time = time.time()
+
                     if interactive and api:
-                        handle_approval(event, api)
+                        approved = handle_approval(event, api)
+                        if approved:
+                            stats.mark_resolved(fingerprint)
                     else:
                         # Just display the event
                         console.print(format_approval_request(event))
+                elif decision == "allow":
+                    # Suppress individual allow lines, aggregate in stats
+                    events_since_status += 1
+                    now = time.time()
+                    if (now - last_status_time >= STATUS_INTERVAL or
+                            events_since_status >= STATUS_BATCH):
+                        _print_interactive_status(stats)
+                        events_since_status = 0
+                        last_status_time = now
                 else:
-                    # Other security.credential events - show summary
+                    # Other credential_guard decisions (warn, etc)
                     _print_event_summary(event)
             else:
                 # Other events - show summary
                 _print_event_summary(event)
 
     except KeyboardInterrupt:
+        if events_since_status > 0:
+            _print_interactive_status(stats)
         console.print("\n[dim]Stopped watching.[/dim]")
+
+
+def _print_interactive_status(stats: RollingStats) -> None:
+    """Print a compact rolling-window status summary for interactive mode."""
+    win_req, win_block, win_warn = stats.window_counts()
+    win_allow = win_req - win_block - win_warn
+
+    parts = []
+    if win_allow > 0:
+        by_host = stats.window_allows_by_host()
+        if by_host:
+            top_host = max(by_host, key=by_host.get)
+            if len(by_host) == 1:
+                parts.append(f"[green]{win_allow} allowed[/green] [dim]→ {top_host}[/dim]")
+            else:
+                others = len(by_host) - 1
+                parts.append(f"[green]{win_allow} allowed[/green] [dim]→ {top_host} +{others} more[/dim]")
+        else:
+            parts.append(f"[green]{win_allow} allowed[/green]")
+    if win_block > 0:
+        parts.append(f"[red]{win_block} blocked[/red]")
+    if win_warn > 0:
+        parts.append(f"[yellow]{win_warn} warnings[/yellow]")
+    if stats.pending_approvals > 0:
+        parts.append(f"[bold red]{stats.pending_approvals} pending[/bold red]")
+
+    if not parts:
+        return
+
+    ts = datetime.now().strftime("%H:%M:%S")
+    status = " \u2502 ".join(parts)
+    console.print(f"[dim]{ts}[/dim] {status} [dim](5m window)[/dim]")
 
 
 def _print_event_summary(event: dict) -> None:
