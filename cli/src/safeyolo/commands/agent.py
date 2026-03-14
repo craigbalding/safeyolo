@@ -156,6 +156,7 @@ def _run_agent(
     agent_args: list[str] | None = None,
     skip_default_args: bool = False,
     extra_mounts: list[str] | None = None,
+    extra_ports: list[str] | None = None,
 ) -> int:
     """Run an agent container. Returns exit code.
 
@@ -165,6 +166,7 @@ def _run_agent(
         agent_args: Extra arguments to pass to the agent CLI (after --)
         skip_default_args: If True, ignore user_default_args even if no agent_args
         extra_mounts: Transient mount specs (/local/path:/container/path[:ro]) for this run only
+        extra_ports: Transient port specs (127.0.0.1:host:container) for this run only
     """
     agent_dir = get_agents_dir() / name
     compose_file = agent_dir / "docker-compose.yml"
@@ -235,6 +237,13 @@ def _run_agent(
         all_mounts.extend(extra_mounts)
     for mount in all_mounts:
         cmd.extend(["-v", mount])
+
+    # Combine persistent ports (from metadata) with transient ports (from --port)
+    all_ports = list(metadata.get("ports", []))
+    if extra_ports:
+        all_ports.extend(extra_ports)
+    for port in all_ports:
+        cmd.extend(["-p", port])
 
     cmd.append(service_name)
 
@@ -313,6 +322,58 @@ def _parse_mount(mount_spec: str) -> str:
     return f"{host_path}:{container_path}"
 
 
+_RESERVED_PORTS = {8080, 9090}
+
+
+def _parse_port(port_spec: str) -> str:
+    """Validate and normalize a port spec (host:container or bind:host:container).
+
+    Always normalizes to 127.0.0.1:host:container.
+
+    Raises:
+        typer.Exit: If port spec is invalid.
+    """
+    parts = port_spec.split(":")
+    if len(parts) == 2:
+        bind_addr = "127.0.0.1"
+        host_port_str, container_port_str = parts
+    elif len(parts) == 3:
+        bind_addr, host_port_str, container_port_str = parts
+    else:
+        console.print(
+            f"[red]Invalid port format:[/red] {port_spec}\n"
+            "Expected: host_port:container_port or 127.0.0.1:host_port:container_port"
+        )
+        raise typer.Exit(1)
+
+    if bind_addr != "127.0.0.1":
+        console.print(
+            f"[red]Only localhost bind address allowed:[/red] {bind_addr}\n"
+            "Use 127.0.0.1:host_port:container_port (or omit bind address)"
+        )
+        raise typer.Exit(1)
+
+    for label, val in [("host", host_port_str), ("container", container_port_str)]:
+        try:
+            port_int = int(val)
+        except ValueError:
+            console.print(f"[red]Invalid {label} port (not an integer):[/red] {val}")
+            raise typer.Exit(1)
+        if port_int < 1 or port_int > 65535:
+            console.print(f"[red]Invalid {label} port (must be 1-65535):[/red] {val}")
+            raise typer.Exit(1)
+
+    container_port = int(container_port_str)
+    if container_port in _RESERVED_PORTS:
+        console.print(
+            f"[red]Container port {container_port} is reserved[/red] "
+            f"(used by SafeYolo proxy/admin)"
+        )
+        raise typer.Exit(1)
+
+    return f"127.0.0.1:{host_port_str}:{container_port_str}"
+
+
 @agent_app.command()
 def add(
     name: str = typer.Argument(
@@ -351,6 +412,11 @@ def add(
         [],
         "--mount", "-m",
         help="Extra folder to mount (/local/path:/container/path[:ro], repeatable)",
+    ),
+    port: list[str] = typer.Option(
+        [],
+        "--port",
+        help="Expose container port to host (host_port:container_port, repeatable)",
     ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
@@ -466,6 +532,9 @@ def add(
     # Validate and normalize mount specs
     parsed_mounts = [_parse_mount(m) for m in mount]
 
+    # Validate and normalize port specs
+    parsed_ports = [_parse_port(p) for p in port]
+
     # Write metadata file
     metadata = {"template": template, "folder": folder_str}
     parsed_args = _parse_user_default_args(user_default_args)
@@ -473,6 +542,8 @@ def add(
         metadata["user_default_args"] = parsed_args
     if parsed_mounts:
         metadata["mounts"] = parsed_mounts
+    if parsed_ports:
+        metadata["ports"] = parsed_ports
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
 
     # Show created files
@@ -490,6 +561,10 @@ def add(
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
+    if parsed_ports:
+        panel_lines.append(f"Ports: {len(parsed_ports)}")
+        for p in parsed_ports:
+            panel_lines.append(f"  {p}")
     panel_lines.extend([
         f"Network: {get_compose_network_name()}",
         "Proxy: http://safeyolo:8080 (Docker DNS)",
@@ -615,6 +690,11 @@ def run(
         "--mount", "-m",
         help="Extra folder to mount (/local/path:/container/path[:ro], repeatable, one-off)",
     ),
+    port: list[str] = typer.Option(
+        [],
+        "--port",
+        help="Expose container port to host (host_port:container_port, repeatable, one-off)",
+    ),
     dangerously_allow_unowned: bool = typer.Option(
         False,
         "--dangerously-allow-unowned",
@@ -643,6 +723,7 @@ def run(
         safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --yolo
         safeyolo agent run myproject --mount ~/data:/data:ro
+        safeyolo agent run myproject --port 6080:6080
         safeyolo agent run myproject -- --continue
         safeyolo agent run myproject --fresh
     """
@@ -652,6 +733,9 @@ def run(
     # Validate transient mount specs
     parsed_mounts = [_parse_mount(m) for m in mount]
 
+    # Validate transient port specs
+    parsed_ports = [_parse_port(p) for p in port]
+
     exit_code = _run_agent(
         name,
         folder_override=folder,
@@ -660,6 +744,7 @@ def run(
         agent_args=agent_args,
         skip_default_args=fresh,
         extra_mounts=parsed_mounts if parsed_mounts else None,
+        extra_ports=parsed_ports if parsed_ports else None,
     )
     raise typer.Exit(exit_code)
 
@@ -731,6 +816,21 @@ def config(
         "--clear-mounts",
         help="Remove all persistent mounts",
     ),
+    add_port: list[str] = typer.Option(
+        [],
+        "--add-port",
+        help="Add persistent port mapping (host_port:container_port, repeatable)",
+    ),
+    remove_port: list[str] = typer.Option(
+        [],
+        "--remove-port",
+        help="Remove persistent port mapping by container port (repeatable)",
+    ),
+    clear_ports: bool = typer.Option(
+        False,
+        "--clear-ports",
+        help="Remove all persistent port mappings",
+    ),
     show: bool = typer.Option(
         False,
         "--show",
@@ -747,6 +847,9 @@ def config(
         safeyolo agent config boris --add-mount ~/refs:/refs:ro
         safeyolo agent config boris --remove-mount /data
         safeyolo agent config boris --clear-mounts
+        safeyolo agent config boris --add-port 6080:6080
+        safeyolo agent config boris --remove-port 6080
+        safeyolo agent config boris --clear-ports
     """
     agent_dir = get_agents_dir() / name
     metadata_file = agent_dir / ".safeyolo.json"
@@ -761,7 +864,11 @@ def config(
         console.print(f"[red]Failed to read agent config:[/red] {type(err).__name__}: {err}")
         raise typer.Exit(1)
 
-    has_updates = user_default_args is not None or add_mount or remove_mount or clear_mounts
+    has_updates = (
+        user_default_args is not None
+        or add_mount or remove_mount or clear_mounts
+        or add_port or remove_port or clear_ports
+    )
 
     if show or not has_updates:
         # Show current config
@@ -780,6 +887,11 @@ def config(
             table.add_row("Mounts", "\n".join(current_mounts))
         else:
             table.add_row("Mounts", "[dim]none[/dim]")
+        current_ports = metadata.get("ports", [])
+        if current_ports:
+            table.add_row("Ports", "\n".join(current_ports))
+        else:
+            table.add_row("Ports", "[dim]none[/dim]")
         console.print(table)
         return
 
@@ -830,6 +942,42 @@ def config(
         metadata["mounts"] = current_mounts
     elif "mounts" in metadata:
         del metadata["mounts"]
+
+    # Handle port updates
+    current_ports = list(metadata.get("ports", []))
+
+    if clear_ports:
+        current_ports = []
+        console.print(f"[green]Cleared all ports for {name}[/green]")
+
+    for spec in remove_port:
+        # Match by container port (last colon-separated part)
+        before = len(current_ports)
+        current_ports = [
+            p for p in current_ports
+            if p.rsplit(":", 1)[-1] != spec
+        ]
+        removed = before - len(current_ports)
+        if removed:
+            console.print(f"[green]Removed port mapping for container port {spec}[/green]")
+        else:
+            console.print(f"[yellow]No port mapping found for container port: {spec}[/yellow]")
+
+    for spec in add_port:
+        parsed = _parse_port(spec)
+        # Dedup by container port (last colon-separated part)
+        container_port = parsed.rsplit(":", 1)[-1]
+        current_ports = [
+            p for p in current_ports
+            if p.rsplit(":", 1)[-1] != container_port
+        ]
+        current_ports.append(parsed)
+        console.print(f"[green]Added port: {parsed}[/green]")
+
+    if current_ports:
+        metadata["ports"] = current_ports
+    elif "ports" in metadata:
+        del metadata["ports"]
 
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
 
