@@ -1,40 +1,13 @@
 """
-Tests for service_discovery.py - IP to client mapping with hot reload.
+Tests for service_discovery.py - DNS-based IP to client mapping.
 
-Tests dynamic service registry for client isolation.
+Tests automatic service discovery via Docker's embedded DNS.
 """
 
-import tempfile
+import socket
 import time
-from pathlib import Path
 from threading import Thread
-from unittest.mock import patch
-
-
-class TestServiceEntry:
-    """Tests for ServiceEntry dataclass."""
-
-    def test_creates_entry_with_ip(self):
-        """Test creating entry with exact IP."""
-        from service_discovery import ServiceEntry
-
-        entry = ServiceEntry(name="my-service", client="my-project", ip="10.0.0.5")
-        assert entry.name == "my-service"
-        assert entry.client == "my-project"
-        assert entry.ip == "10.0.0.5"
-        assert entry.ip_range is None
-
-    def test_creates_entry_with_range(self):
-        """Test creating entry with IP range."""
-        from service_discovery import ServiceEntry
-
-        entry = ServiceEntry(
-            name="services", client="multi-project", ip_range="10.0.0.0/24"
-        )
-        assert entry.name == "services"
-        assert entry.client == "multi-project"
-        assert entry.ip is None
-        assert entry.ip_range == "10.0.0.0/24"
+from unittest.mock import Mock, patch
 
 
 class TestServiceDiscovery:
@@ -47,12 +20,16 @@ class TestServiceDiscovery:
         discovery = ServiceDiscovery()
         assert discovery.name == "service-discovery"
 
-    def test_unknown_client_when_no_config(self):
-        """Test returns 'unknown' client when no config."""
+    def test_unknown_client_when_no_dns(self):
+        """Test returns 'unknown' when DNS can't resolve."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
-        client = discovery.get_client_for_ip("192.168.1.100")
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            client = discovery.get_client_for_ip("192.168.1.100")
+
         assert client == "unknown"
 
 
@@ -66,159 +43,173 @@ class TestServiceDiscoveryOptions:
         discovery = ServiceDiscovery()
         registered_options = []
 
-        # Mock loader that captures option registrations
         class MockLoader:
             def add_option(self, name, typespec, default, help):
-                registered_options.append({
-                    "name": name,
-                    "typespec": typespec,
-                    "default": default,
-                })
+                registered_options.append({"name": name})
 
         discovery.load(MockLoader())
 
         option_names = [opt["name"] for opt in registered_options]
         assert "discovery_network" in option_names
-        assert "discovery_watch" in option_names
-        assert "discovery_watch_interval" in option_names
-
-        # Verify defaults
-        watch_opt = next(o for o in registered_options if o["name"] == "discovery_watch")
-        assert watch_opt["default"] is True
-        assert watch_opt["typespec"] is bool
-
-        interval_opt = next(o for o in registered_options if o["name"] == "discovery_watch_interval")
-        assert interval_opt["default"] == 5
-        assert interval_opt["typespec"] is int
 
 
-class TestServiceDiscoveryLoading:
-    """Tests for config loading."""
+class TestServiceDiscoveryDNS:
+    """Tests for reverse DNS discovery."""
 
-    def test_loads_exact_ip_mapping(self):
-        """Test loading exact IP mappings from config."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  claude-agent:
-    client: my-project
-    ip: 10.0.0.5
-  other-agent:
-    client: other-project
-    ip: 10.0.0.10
-""")
-
-            discovery = ServiceDiscovery()
-            discovery._config_path = config_path
-
-            # Simulate loading via internal method
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            assert discovery.get_client_for_ip("10.0.0.5") == "my-project"
-            assert discovery.get_client_for_ip("10.0.0.10") == "other-project"
-            assert discovery.get_client_for_ip("10.0.0.99") == "unknown"
-
-    def test_loads_ip_range_mapping(self):
-        """Test loading IP range mappings from config."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  dev-agents:
-    client: development
-    ip_range: 10.0.1.0/24
-  prod-agents:
-    client: production
-    ip_range: 10.0.2.0/24
-""")
-
-            discovery = ServiceDiscovery()
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            assert discovery.get_client_for_ip("10.0.1.50") == "development"
-            assert discovery.get_client_for_ip("10.0.1.255") == "development"
-            assert discovery.get_client_for_ip("10.0.2.1") == "production"
-            assert discovery.get_client_for_ip("10.0.3.1") == "unknown"
-
-    def test_exact_ip_takes_precedence(self):
-        """Test exact IP match takes precedence over range."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  special-agent:
-    client: special
-    ip: 10.0.1.5
-  dev-agents:
-    client: development
-    ip_range: 10.0.1.0/24
-""")
-
-            discovery = ServiceDiscovery()
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            # Exact IP should match special, not the range
-            assert discovery.get_client_for_ip("10.0.1.5") == "special"
-            # Other IPs in range should match development
-            assert discovery.get_client_for_ip("10.0.1.10") == "development"
-
-    def test_handles_missing_config(self):
-        """Test graceful handling of missing config file."""
+    def test_dns_resolves_unknown_ip(self):
+        """Test reverse DNS resolves an unknown IP to a client name."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
 
-        with patch.object(discovery, '_find_config', return_value=None):
-            discovery._load_config()
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            client = discovery.get_client_for_ip("172.20.0.5")
 
-        # Should work but return unknown for everything
-        assert discovery.get_client_for_ip("10.0.0.5") == "unknown"
+        assert client == "boris"
 
-    def test_handles_invalid_ip_range(self):
-        """Test handling of invalid IP range in config."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  good-service:
-    client: valid
-    ip: 10.0.0.5
-  bad-service:
-    client: invalid
-    ip_range: not-a-valid-range
-""")
-
-            discovery = ServiceDiscovery()
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                # Should not raise, just log warning
-                discovery._load_config()
-
-            # Valid service should work
-            assert discovery.get_client_for_ip("10.0.0.5") == "valid"
-
-    def test_handles_invalid_client_ip(self):
-        """Test handling of invalid client IP."""
+    def test_dns_strips_network_suffix(self):
+        """Test network suffix is stripped from DNS result."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
-        # Should not raise, just return unknown
-        client = discovery.get_client_for_ip("not-an-ip")
+        discovery.network = "my_custom_network"
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("agent.my_custom_network", [], ["10.0.0.5"])
+            client = discovery.get_client_for_ip("10.0.0.5")
+
+        assert client == "agent"
+
+    def test_dns_result_is_cached(self):
+        """Test DNS result is cached and not re-queried on subsequent calls."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+
+            discovery.get_client_for_ip("172.20.0.5")
+            discovery.get_client_for_ip("172.20.0.5")
+            discovery.get_client_for_ip("172.20.0.5")
+
+            assert mock_dns.call_count == 1
+
+    def test_dns_cache_expires(self):
+        """Test DNS cache entry expires after TTL."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+
+            discovery.get_client_for_ip("172.20.0.5")
+            assert mock_dns.call_count == 1
+
+            # Expire the cache entry
+            with discovery._lock:
+                ip, (name, _) = next(iter(discovery._dns_cache.items()))
+                discovery._dns_cache[ip] = (name, time.time() - 1)
+
+            discovery.get_client_for_ip("172.20.0.5")
+            assert mock_dns.call_count == 2
+
+    def test_dns_failure_returns_unknown(self):
+        """Test DNS failure falls through to 'unknown'."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            client = discovery.get_client_for_ip("172.20.0.99")
+
         assert client == "unknown"
+
+    def test_dns_negative_cache_prevents_repeated_lookups(self):
+        """Test failed DNS lookups are cached to avoid hammering DNS."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+
+            discovery.get_client_for_ip("172.20.0.99")
+            discovery.get_client_for_ip("172.20.0.99")
+            discovery.get_client_for_ip("172.20.0.99")
+
+            assert mock_dns.call_count == 1
+
+    def test_dns_negative_cache_expires(self):
+        """Test negative cache entry expires and allows retry."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            discovery.get_client_for_ip("172.20.0.99")
+            assert mock_dns.call_count == 1
+
+            # Expire the negative cache entry
+            with discovery._lock:
+                discovery._dns_negative_cache["172.20.0.99"] = time.time() - 1
+
+            discovery.get_client_for_ip("172.20.0.99")
+            assert mock_dns.call_count == 2
+
+    def test_dns_skips_proxy_container(self):
+        """Test DNS resolution skips the 'safeyolo' proxy container."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.return_value = ("safeyolo.safeyolo_internal", [], ["172.20.0.2"])
+            client = discovery.get_client_for_ip("172.20.0.2")
+
+        assert client == "unknown"
+
+    def test_dns_handles_hostname_without_suffix(self):
+        """Test DNS works when hostname has no network suffix."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris", [], ["172.20.0.5"])
+            client = discovery.get_client_for_ip("172.20.0.5")
+
+        assert client == "boris"
+
+    def test_dns_cache_evicts_expired_at_capacity(self):
+        """Test DNS cache evicts expired entries when reaching max size."""
+        from service_discovery import DNS_CACHE_MAX_SIZE, ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        # Fill cache to capacity with expired entries
+        expired = time.time() - 1
+        with discovery._lock:
+            for i in range(DNS_CACHE_MAX_SIZE):
+                discovery._dns_cache[f"10.0.{i // 256}.{i % 256}"] = (f"agent-{i}", expired)
+
+        # New lookup should succeed (expired entries evicted)
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("new-agent.safeyolo_internal", [], ["172.20.0.99"])
+            client = discovery.get_client_for_ip("172.20.0.99")
+
+        assert client == "new-agent"
+        assert len(discovery._dns_cache) == 1
 
 
 class TestServiceDiscoveryStats:
@@ -228,381 +219,355 @@ class TestServiceDiscoveryStats:
         """Test get_stats returns proper structure."""
         from service_discovery import ServiceDiscovery
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  my-service:
-    client: my-project
-    ip: 10.0.0.5
-  my-range:
-    client: range-project
-    ip_range: 10.0.1.0/24
-""")
-
-            discovery = ServiceDiscovery()
-            discovery._config_path = config_path
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            stats = discovery.get_stats()
-
-            assert stats["services_count"] == 2
-            assert stats["ip_mappings"] == 1
-            assert stats["range_mappings"] == 1
-            assert "services" in stats
-            assert "my-service" in stats["services"]
-
-    def test_get_stats_includes_watch_status(self):
-        """Test stats include watching status and interval."""
-        from service_discovery import DEFAULT_WATCH_INTERVAL_SECONDS, ServiceDiscovery
-
         discovery = ServiceDiscovery()
         stats = discovery.get_stats()
 
-        # Before starting watcher
-        assert "watching" in stats
-        assert stats["watching"] is False
-        assert "watch_interval" in stats
-        assert stats["watch_interval"] == DEFAULT_WATCH_INTERVAL_SECONDS
+        assert "dns_cache_size" in stats
+        assert "dns_cached_clients" in stats
+        assert "dns_negative_cache_size" in stats
+        assert "unresolved_ips_count" in stats
+        assert "agents_seen" in stats
+        assert "agents" in stats
 
-    def test_get_stats_shows_watching_true_when_active(self):
-        """Test stats show watching=True when watcher is running."""
-        from service_discovery import ServiceDiscovery
-
-        discovery = ServiceDiscovery()
-        discovery._watch_interval = 1
-        discovery._start_watching()
-
-        try:
-            stats = discovery.get_stats()
-            assert stats["watching"] is True
-        finally:
-            discovery._stop_watching = True
-            discovery._watch_thread.join(timeout=2)
-
-
-class TestServiceDiscoveryReload:
-    """Tests for config reload."""
-
-    def test_reload_clears_and_reloads(self):
-        """Test reload clears existing data and reloads."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  old-service:
-    client: old
-    ip: 10.0.0.5
-""")
-
-            discovery = ServiceDiscovery()
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            assert discovery.get_client_for_ip("10.0.0.5") == "old"
-
-            # Update config
-            config_path.write_text("""
-services:
-  new-service:
-    client: new
-    ip: 10.0.0.10
-""")
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery.reload()
-
-            # Old mapping should be gone
-            assert discovery.get_client_for_ip("10.0.0.5") == "unknown"
-            # New mapping should work
-            assert discovery.get_client_for_ip("10.0.0.10") == "new"
-
-
-class TestServiceDiscoveryStaleDetection:
-    """Tests for stale file detection."""
-
-    def test_detects_stale_marker(self):
-        """Test that stale marker clears mappings."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""# SafeYolo stopped - services.yaml is stale
-services:
-  old-service:
-    client: old
-    ip: 10.0.0.5
-""")
-
-            discovery = ServiceDiscovery()
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            # Stale file should result in no mappings
-            assert discovery.get_client_for_ip("10.0.0.5") == "unknown"
-            assert discovery.get_stats()["services_count"] == 0
-
-
-class TestServiceDiscoveryFileWatching:
-    """Tests for file watching functionality."""
-
-    def test_check_file_changed_detects_modification(self):
-        """Test _check_file_changed detects when file is modified."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("services: {}")
-
-            discovery = ServiceDiscovery()
-            discovery._config_path = config_path
-            discovery._file_mtime = config_path.stat().st_mtime
-
-            # Initially no change
-            assert discovery._check_file_changed() is False
-
-            # Modify file
-            time.sleep(0.1)  # Ensure mtime difference
-            config_path.write_text("services:\n  new: {ip: 10.0.0.1}")
-
-            # Now should detect change
-            assert discovery._check_file_changed() is True
-
-    def test_check_file_changed_handles_deleted_file(self):
-        """Test _check_file_changed handles deleted config file."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("services:\n  test: {ip: 10.0.0.1}")
-
-            discovery = ServiceDiscovery()
-            discovery._config_path = config_path
-
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
-
-            assert discovery.get_stats()["services_count"] == 1
-
-            # Delete file
-            config_path.unlink()
-
-            # Check should handle missing file and clear mappings
-            discovery._check_file_changed()
-
-            # Services should be cleared
-            assert discovery.get_stats()["services_count"] == 0
-
-    def test_check_file_changed_handles_stat_oserror(self):
-        """Test _check_file_changed catches OSError during stat (e.g., permission denied)."""
-        from service_discovery import ServiceDiscovery
-
-        # Fake path that passes exists() but fails stat()
-        class PathThatFailsStat:
-            def exists(self):
-                return True
-            def stat(self):
-                raise OSError("Permission denied")
-
-        discovery = ServiceDiscovery()
-        discovery._config_path = PathThatFailsStat()
-
-        # Should catch OSError and return False (not raise)
-        result = discovery._check_file_changed()
-        assert result is False
-
-    def test_start_watching_creates_thread(self):
-        """Test _start_watching creates and starts a daemon thread."""
-        from service_discovery import ServiceDiscovery
-
-        discovery = ServiceDiscovery()
-        discovery._watch_interval = 1
-
-        assert discovery._watch_thread is None
-
-        discovery._start_watching()
-
-        assert discovery._watch_thread is not None
-        assert discovery._watch_thread.is_alive()
-        assert discovery._watch_thread.daemon is True
-        assert discovery._watch_thread.name == "discovery-watcher"
-
-        # Cleanup
-        discovery._stop_watching = True
-        discovery._watch_thread.join(timeout=2)
-
-    def test_done_stops_watch_thread(self):
-        """Test done() signals thread to stop and joins it."""
-        from service_discovery import ServiceDiscovery
-
-        discovery = ServiceDiscovery()
-        discovery._watch_interval = 1
-        discovery._start_watching()
-
-        assert discovery._watch_thread.is_alive()
-
-        # Call done() to cleanup - this joins the thread internally
-        discovery.done()
-
-        assert discovery._stop_watching is True
-        # Thread should have stopped - join again with timeout to verify
-        discovery._watch_thread.join(timeout=3)
-        assert not discovery._watch_thread.is_alive()
-
-
-class TestServiceDiscoveryUnknownIPs:
-    """Tests for unknown IP tracking."""
-
-    def test_logs_unknown_ip_once(self):
-        """Test unknown IPs are only logged once."""
+    def test_dns_stats_populated_after_lookup(self):
+        """Test get_stats includes DNS cache information after lookups."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
 
-        # First lookup should add to unknown set
-        discovery.get_client_for_ip("192.168.1.100")
-        assert "192.168.1.100" in discovery._unknown_ips
-
-        # Same IP shouldn't be re-added (set behavior)
-        initial_count = len(discovery._unknown_ips)
-        discovery.get_client_for_ip("192.168.1.100")
-        assert len(discovery._unknown_ips) == initial_count
-
-    def test_unknown_ips_in_stats(self):
-        """Test unknown IPs are included in stats."""
-        from service_discovery import ServiceDiscovery
-
-        discovery = ServiceDiscovery()
-        discovery.get_client_for_ip("192.168.1.100")
-        discovery.get_client_for_ip("192.168.1.101")
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.get_client_for_ip("172.20.0.5")
 
         stats = discovery.get_stats()
-        assert stats["unknown_ips_count"] == 2
-        assert "192.168.1.100" in stats["unknown_ips"]
+        assert stats["dns_cache_size"] == 1
+        assert "172.20.0.5" in stats["dns_cached_clients"]
+        assert stats["dns_cached_clients"]["172.20.0.5"] == "boris"
 
-    def test_unknown_ips_capped(self):
-        """Test unknown IPs set is capped to prevent memory growth."""
-        from service_discovery import MAX_UNKNOWN_IPS_TRACKED, ServiceDiscovery
+    def test_stats_include_agents_after_request(self):
+        """Test get_stats includes agent details after request() flows."""
+        from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
 
-        # Add more than the cap
-        for i in range(MAX_UNKNOWN_IPS_TRACKED + 100):
-            discovery.get_client_for_ip(f"10.0.{i // 256}.{i % 256}")
+        flow = Mock()
+        flow.client_conn.peername = ("172.20.0.5", 12345)
+        flow.metadata = {}
 
-        # Should be capped
-        assert len(discovery._unknown_ips) <= MAX_UNKNOWN_IPS_TRACKED
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.request(flow)
+
+        stats = discovery.get_stats()
+        assert stats["agents_seen"] == 1
+        assert "boris" in stats["agents"]
+        assert stats["agents"]["boris"]["ip"] == "172.20.0.5"
+        assert "last_seen" in stats["agents"]["boris"]
+        assert "idle_seconds" in stats["agents"]["boris"]
 
 
 class TestServiceDiscoveryThreadSafety:
     """Tests for thread safety."""
 
-    def test_concurrent_reads_during_reload(self):
-        """Test that reads are safe during config reload."""
+    def test_concurrent_dns_lookups(self):
+        """Test concurrent DNS lookups are thread-safe."""
         from service_discovery import ServiceDiscovery
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "services.yaml"
-            config_path.write_text("""
-services:
-  agent-1:
-    client: client-1
-    ip: 10.0.0.1
-""")
+        discovery = ServiceDiscovery()
+        errors = []
 
-            discovery = ServiceDiscovery()
+        def dns_side_effect(ip):
+            """Deterministic mock: derive hostname from IP."""
+            parts = ip.split(".")
+            thread_id, i = parts[2], parts[3]
+            return (f"agent-{thread_id}-{i}.safeyolo_internal", [], [ip])
 
-            with patch.object(discovery, '_find_config', return_value=config_path):
-                discovery._load_config()
+        def lookup(thread_id):
+            try:
+                for i in range(50):
+                    ip = f"172.20.{thread_id}.{i}"
+                    client = discovery.get_client_for_ip(ip)
+                    assert client == f"agent-{thread_id}-{i}"
+            except Exception as e:
+                errors.append(e)
 
-            results = []
-            errors = []
-
-            def reader():
-                try:
-                    for _ in range(100):
-                        client = discovery.get_client_for_ip("10.0.0.1")
-                        results.append(client)
-                except Exception as e:
-                    errors.append(e)
-
-            def writer():
-                try:
-                    for i in range(10):
-                        config_path.write_text(f"""
-services:
-  agent-{i}:
-    client: client-{i}
-    ip: 10.0.0.1
-""")
-                        with patch.object(discovery, '_find_config', return_value=config_path):
-                            discovery._load_config()
-                except Exception as e:
-                    errors.append(e)
-
-            # Start concurrent threads
-            threads = [Thread(target=reader) for _ in range(5)]
-            threads.append(Thread(target=writer))
-
+        # Patch once outside threads to avoid mock races
+        with patch("service_discovery.socket.gethostbyaddr", side_effect=dns_side_effect), \
+             patch("service_discovery.write_event"):
+            threads = [Thread(target=lookup, args=(t,)) for t in range(5)]
             for t in threads:
                 t.start()
             for t in threads:
                 t.join()
 
-            # No errors should occur
-            assert len(errors) == 0
-            # All results should be valid client IDs
-            assert all(r.startswith("client-") or r == "unknown" for r in results)
-
-    def test_concurrent_unknown_ip_tracking(self):
-        """Test that concurrent unknown IP lookups respect the cap strictly.
-
-        The race condition we're protecting against:
-        - Thread A: checks len < MAX, passes
-        - Thread B: checks len < MAX, passes (before A adds)
-        - Both threads add, potentially exceeding MAX
-
-        Without the lock, this could slightly exceed MAX_UNKNOWN_IPS_TRACKED.
-        With the lock, we should never exceed it.
-        """
-        from service_discovery import MAX_UNKNOWN_IPS_TRACKED, ServiceDiscovery
-
-        discovery = ServiceDiscovery()
-        errors = []
-
-        def lookup_unknown_ips(thread_id: int):
-            try:
-                for i in range(200):
-                    # Each thread uses different IPs to maximize contention
-                    discovery.get_client_for_ip(f"10.{thread_id}.{i // 256}.{i % 256}")
-            except Exception as e:
-                errors.append(e)
-
-        # Flood with more unique IPs than the cap allows
-        # 10 threads * 200 IPs = 2000 unique IPs, but cap is 1000
-        threads = [Thread(target=lookup_unknown_ips, args=(t,)) for t in range(10)]
-
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        # No exceptions
         assert len(errors) == 0
 
-        # Strict bound - must be exactly at cap, not over
-        # (Without lock, race could allow 1000+ entries)
-        assert len(discovery._unknown_ips) == MAX_UNKNOWN_IPS_TRACKED
 
-        # All entries should be valid IP strings
-        for ip in discovery._unknown_ips:
-            assert ip.startswith("10."), f"Invalid IP in set: {ip}"
+class TestServiceDiscoveryRequestHook:
+    """Tests for the request() hook that stamps flow.metadata['agent']."""
+
+    def test_request_stamps_agent_on_flow(self):
+        """Test request() stamps agent name on flow metadata."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        flow = Mock()
+        flow.client_conn.peername = ("172.20.0.5", 12345)
+        flow.metadata = {}
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.request(flow)
+
+        assert flow.metadata["agent"] == "boris"
+
+    def test_request_skips_unknown_client_ip(self):
+        """Test request() does not stamp agent when client IP is unknown."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        flow = Mock()
+        flow.client_conn.peername = None
+        flow.metadata = {}
+
+        discovery.request(flow)
+
+        assert "agent" not in flow.metadata
+
+    def test_request_uses_cached_agent(self):
+        """Test request() uses cached DNS result (no extra lookups)."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+
+            flow1 = Mock()
+            flow1.client_conn.peername = ("172.20.0.5", 12345)
+            flow1.metadata = {}
+            discovery.request(flow1)
+
+            flow2 = Mock()
+            flow2.client_conn.peername = ("172.20.0.5", 23456)
+            flow2.metadata = {}
+            discovery.request(flow2)
+
+            assert mock_dns.call_count == 1
+
+        assert flow1.metadata["agent"] == "boris"
+        assert flow2.metadata["agent"] == "boris"
+
+
+class TestServiceDiscoveryAgentEvent:
+    """Tests for agent.discovered event emission."""
+
+    def test_emits_agent_discovered_on_first_dns_resolution(self):
+        """Test write_event('agent.discovered') is called on first DNS hit."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event") as mock_event:
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.get_client_for_ip("172.20.0.5")
+
+            mock_event.assert_called_once_with(
+                "agent.discovered", agent="boris", ip="172.20.0.5"
+            )
+
+    def test_no_event_on_valid_cache_hit(self):
+        """Test no event emitted when result comes from non-expired cache."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event") as mock_event:
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.get_client_for_ip("172.20.0.5")
+            discovery.get_client_for_ip("172.20.0.5")
+
+            # Only one event on first resolution, not on cache hits
+            assert mock_event.call_count == 1
+
+    def test_no_event_on_cache_refresh(self):
+        """Test no event emitted when expired cache entry is re-resolved."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event") as mock_event:
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+
+            # First resolution — should emit event
+            discovery.get_client_for_ip("172.20.0.5")
+            assert mock_event.call_count == 1
+
+            # Expire the cache entry
+            with discovery._lock:
+                ip, (name, _) = next(iter(discovery._dns_cache.items()))
+                discovery._dns_cache[ip] = (name, time.time() - 1)
+
+            # Re-resolve after expiry — should NOT emit event
+            discovery.get_client_for_ip("172.20.0.5")
+            assert mock_event.call_count == 1
+
+
+class TestServiceDiscoveryLastSeen:
+    """Tests for last-seen timestamp tracking."""
+
+    def test_request_updates_last_seen(self):
+        """Test request() updates _last_seen for resolved agents."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        flow = Mock()
+        flow.client_conn.peername = ("172.20.0.5", 12345)
+        flow.metadata = {}
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.request(flow)
+
+        assert "boris" in discovery._last_seen
+        assert discovery._last_seen["boris"] <= time.time()
+
+    def test_last_seen_updates_on_each_request(self):
+        """Test last_seen timestamp advances with each flow."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+
+            flow1 = Mock()
+            flow1.client_conn.peername = ("172.20.0.5", 12345)
+            flow1.metadata = {}
+            discovery.request(flow1)
+            ts1 = discovery._last_seen["boris"]
+
+            flow2 = Mock()
+            flow2.client_conn.peername = ("172.20.0.5", 23456)
+            flow2.metadata = {}
+            discovery.request(flow2)
+            ts2 = discovery._last_seen["boris"]
+
+        assert ts2 >= ts1
+
+    def test_no_last_seen_for_unknown_agent(self):
+        """Test _last_seen is not updated for unresolved IPs."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        flow = Mock()
+        flow.client_conn.peername = ("192.168.1.100", 12345)
+        flow.metadata = {}
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            discovery.request(flow)
+
+        assert len(discovery._last_seen) == 0
+
+    def test_last_seen_tracks_multiple_agents(self):
+        """Test _last_seen tracks each agent independently."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            flow1 = Mock()
+            flow1.client_conn.peername = ("172.20.0.5", 12345)
+            flow1.metadata = {}
+            discovery.request(flow1)
+
+            mock_dns.return_value = ("claude.safeyolo_internal", [], ["172.20.0.6"])
+            flow2 = Mock()
+            flow2.client_conn.peername = ("172.20.0.6", 12345)
+            flow2.metadata = {}
+            discovery.request(flow2)
+
+        assert "boris" in discovery._last_seen
+        assert "claude" in discovery._last_seen
+
+
+class TestServiceDiscoveryGetAgents:
+    """Tests for get_agents() method."""
+
+    def test_get_agents_empty(self):
+        """Test get_agents returns empty when no agents discovered."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+        result = discovery.get_agents()
+
+        assert result["count"] == 0
+        assert result["agents"] == {}
+
+    def test_get_agents_after_request(self):
+        """Test get_agents returns agent with IP and last_seen."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        flow = Mock()
+        flow.client_conn.peername = ("172.20.0.5", 12345)
+        flow.metadata = {}
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.request(flow)
+
+        result = discovery.get_agents()
+        assert result["count"] == 1
+        assert "boris" in result["agents"]
+        agent = result["agents"]["boris"]
+        assert agent["ip"] == "172.20.0.5"
+        assert "last_seen" in agent
+        assert "idle_seconds" in agent
+        assert agent["idle_seconds"] >= 0
+
+    def test_get_agents_multiple(self):
+        """Test get_agents returns all discovered agents."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            flow1 = Mock()
+            flow1.client_conn.peername = ("172.20.0.5", 12345)
+            flow1.metadata = {}
+            discovery.request(flow1)
+
+            mock_dns.return_value = ("claude.safeyolo_internal", [], ["172.20.0.6"])
+            flow2 = Mock()
+            flow2.client_conn.peername = ("172.20.0.6", 12345)
+            flow2.metadata = {}
+            discovery.request(flow2)
+
+        result = discovery.get_agents()
+        assert result["count"] == 2
+        assert "boris" in result["agents"]
+        assert "claude" in result["agents"]
 
 
 class TestGetServiceDiscovery:
@@ -614,36 +579,3 @@ class TestGetServiceDiscovery:
 
         result = get_service_discovery()
         assert result is _discovery
-
-
-class TestCanonicalPath:
-    """Tests for canonical config path."""
-
-    def test_find_config_returns_canonical_path(self):
-        """Test _find_config returns only the canonical path."""
-        from service_discovery import ServiceDiscovery
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create file at non-canonical location
-            wrong_path = Path(tmpdir) / "wrong" / "services.yaml"
-            wrong_path.parent.mkdir(parents=True)
-            wrong_path.write_text("services: {}")
-
-            discovery = ServiceDiscovery()
-
-            # Should not find file at wrong location
-            result = discovery._find_config()
-
-            # Result should be None (canonical path /safeyolo/data/services.yaml won't exist in test)
-            assert result is None
-
-    def test_uses_canonical_path_when_exists(self):
-        """Test uses /safeyolo/data/services.yaml when it exists."""
-        from service_discovery import ServiceDiscovery
-
-        discovery = ServiceDiscovery()
-
-        # Mock the canonical path existing
-        with patch('pathlib.Path.exists', return_value=True):
-            result = discovery._find_config()
-            assert result == Path("/safeyolo/data/services.yaml")

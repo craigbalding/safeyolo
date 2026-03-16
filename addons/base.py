@@ -131,6 +131,7 @@ class SecurityAddon:
         write_event(
             event_type,
             request_id=flow.metadata.get("request_id"),
+            agent=flow.metadata.get("agent"),
             addon=self.name,
             decision=decision,
             **data,

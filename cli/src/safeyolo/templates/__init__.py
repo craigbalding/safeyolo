@@ -8,9 +8,9 @@ from jinja2 import Environment, FileSystemLoader
 
 from ..config import (
     CA_VOLUME_NAME,
+    COMPOSE_NETWORK_NAME,
     PROXY_CONTAINER_NAME,
 )
-from ..discovery import get_compose_network_name
 from .loader import AgentConfig, AgentConfigError, load_agent_config
 
 
@@ -127,7 +127,7 @@ def render_template(
     variables = {
         # Infrastructure
         "proxy_hostname": PROXY_CONTAINER_NAME,
-        "network_name": get_compose_network_name(),
+        "network_name": COMPOSE_NETWORK_NAME,
         "certs_volume": CA_VOLUME_NAME,
         "project_dir": project_dir,
         # Agent config (full object available)

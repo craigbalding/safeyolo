@@ -107,6 +107,7 @@ class AgentRelay:
             "/config": self._handle_config,
             "/explain": self._handle_explain,
             "/memory": self._handle_memory,
+            "/agents": self._handle_agents,
             "/circuits": self._handle_circuits,
         }
 
@@ -191,6 +192,14 @@ class AgentRelay:
             log.debug(f"Addon lookup failed: {type(exc).__name__}: {exc}")
 
         return None
+
+    def _handle_agents(self, flow: http.HTTPFlow):
+        """GET /agents - Discovered agents and last-seen timestamps."""
+        sd = self._find_addon("service-discovery")
+        if not sd:
+            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
+            return
+        self._respond(flow, 200, sd.get_agents())
 
     def _handle_circuits(self, flow: http.HTTPFlow):
         """GET /circuits - Circuit breaker state per domain."""

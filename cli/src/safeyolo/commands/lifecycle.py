@@ -3,6 +3,7 @@
 import os
 import secrets
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -17,12 +18,6 @@ from ..config import (
     get_config_dir,
     load_config,
     save_config,
-)
-from ..discovery import (
-    DiscoveryError,
-    clear_services,
-    regenerate_services,
-    validate_services,
 )
 from ..docker import (
     DOCKER_BUILD_TIMEOUT_SECONDS,
@@ -186,14 +181,6 @@ def start(
         else:
             console.print("[yellow]timeout (may still be starting)[/yellow]")
 
-    # Regenerate service mappings from actual Docker state
-    try:
-        path, count = regenerate_services()
-        if count > 0:
-            console.print(f"[green]Registered {count} service(s)[/green]")
-    except DiscoveryError as err:
-        console.print(f"[yellow]Warning: Could not update service mappings: {err}[/yellow]")
-
     # Show connection info
     if first_run:
         console.print(
@@ -231,9 +218,6 @@ def stop() -> None:
     try:
         docker_stop()
         console.print("[green]Stopped.[/green]")
-
-        # Mark service mappings as stale
-        clear_services()
 
     except DockerError as e:
         console.print(f"[red]Failed to stop:[/red] {e}")
@@ -273,6 +257,27 @@ def status() -> None:
 
     table.add_row("Container", "[green]running[/green]")
     table.add_row("Health", container_status.get("health", "unknown"))
+
+    # Uptime from container start time
+    started_at = container_status.get("started_at", "")
+    if started_at:
+        try:
+            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            delta = datetime.now(datetime.UTC) - started
+            total_seconds = int(delta.total_seconds())
+            days, remainder = divmod(total_seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes = remainder // 60
+            if days > 0:
+                uptime_str = f"{days}d {hours}h {minutes}m"
+            elif hours > 0:
+                uptime_str = f"{hours}h {minutes}m"
+            else:
+                uptime_str = f"{minutes}m"
+            table.add_row("Uptime", uptime_str)
+        except (ValueError, TypeError):
+            pass
+
     table.add_row("Proxy Port", str(config["proxy"]["port"]))
     table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
 
@@ -323,6 +328,57 @@ def status() -> None:
     except APIError:
         pass  # Already shown API unavailable above
 
+    # Agents section
+    try:
+        api = get_api()
+        stats = api.stats()
+        sd = stats.get("service-discovery", {})
+        agents = sd.get("agents", {})
+        if agents:
+            agent_table = Table(title="Agents", show_header=True)
+            agent_table.add_column("Name", style="bold")
+            agent_table.add_column("IP")
+            agent_table.add_column("Last Seen")
+            agent_table.add_column("Idle", justify="right")
+
+            for name, info in sorted(agents.items()):
+                ip = info.get("ip", "?")
+                idle = info.get("idle_seconds")
+                if idle is not None:
+                    idle_int = int(idle)
+                    if idle_int < 60:
+                        idle_str = f"{idle_int}s"
+                        style = "green"
+                    elif idle_int < 300:
+                        idle_str = f"{idle_int // 60}m {idle_int % 60}s"
+                        style = "green"
+                    elif idle_int < 3600:
+                        idle_str = f"{idle_int // 60}m"
+                        style = "yellow"
+                    else:
+                        idle_str = f"{idle_int // 3600}h {(idle_int % 3600) // 60}m"
+                        style = "dim"
+                else:
+                    idle_str = "?"
+                    style = "dim"
+
+                last_seen_str = ""
+                last_seen_ts = info.get("last_seen")
+                if last_seen_ts:
+                    try:
+                        dt = datetime.fromtimestamp(last_seen_ts, tz=datetime.UTC)
+                        last_seen_str = dt.strftime("%H:%M:%S")
+                    except (ValueError, OSError):
+                        last_seen_str = "?"
+
+                agent_table.add_row(name, ip, last_seen_str, f"[{style}]{idle_str}[/{style}]")
+
+            console.print()
+            console.print(agent_table)
+
+    except APIError:
+        pass
+
     # Memory section
     try:
         api = get_api()
@@ -336,14 +392,12 @@ def status() -> None:
             rss = mem.get("rss_mb", 0)
             peak = mem.get("rss_hwm_mb", 0)
             start = mem.get("rss_start_mb", 0)
-            uptime_h = mem.get("uptime_s", 0) / 3600
 
             rss_style = "green" if rss < 200 else "yellow" if rss < 400 else "red"
             mem_table.add_row(
                 "RSS",
                 f"[{rss_style}]{rss:.0f} MB[/{rss_style}] (started: {start:.0f} MB, peak: {peak:.0f} MB)",
             )
-            mem_table.add_row("Uptime", f"{uptime_h:.1f}h")
             mem_table.add_row("Total Flows", str(mem.get("total_flows", 0)))
 
             conns = mem.get("connections", [])
@@ -373,40 +427,6 @@ def status() -> None:
     except APIError:
         pass  # Already shown API unavailable above
 
-    # Validate service mappings
-    console.print()
-    issues = validate_services()
-    if not issues:
-        console.print("[green]Service mappings: valid[/green]")
-    else:
-        console.print("[yellow]Service mapping issues:[/yellow]")
-        for issue in issues:
-            console.print(f"  - {issue}")
-        console.print("\nRun [bold]safeyolo sync[/bold] to fix.")
-
-
-def sync() -> None:
-    """Regenerate service mappings from current Docker state.
-
-    Use this after manual docker-compose operations or to verify
-    the current mapping is accurate.
-
-    Examples:
-
-        safeyolo sync
-    """
-    if not is_running():
-        console.print("[yellow]SafeYolo is not running.[/yellow]")
-        console.print("Run [bold]safeyolo start[/bold] first.")
-        raise typer.Exit(1)
-
-    try:
-        path, count = regenerate_services()
-        console.print(f"[green]Synchronized {count} service(s)[/green]")
-        console.print(f"  Written to: {path}")
-    except DiscoveryError as err:
-        console.print(f"[red]Failed to sync:[/red] {err}")
-        raise typer.Exit(1)
 
 
 def build(

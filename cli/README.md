@@ -40,7 +40,6 @@ safeyolo doctor
 | `safeyolo stop` | Stop the proxy container |
 | `safeyolo status` | Show proxy status, addon stats, and memory usage |
 | `safeyolo build` | Build SafeYolo Docker image from source |
-| `safeyolo sync` | Regenerate service mappings from current Docker state |
 | `safeyolo check` | Verify setup is working correctly |
 | `safeyolo doctor` | Run 11-check diagnostic cascade (config, Docker, proxy, addons) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |

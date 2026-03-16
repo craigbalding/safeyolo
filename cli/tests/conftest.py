@@ -108,6 +108,10 @@ def mock_docker_running(mock_subprocess):
         if args[:2] == ["docker", "version"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="Docker 24.0", stderr="")
         if args[:2] == ["docker", "ps"]:
+            # Agent-specific name filter (exact match) — agent not running in tests
+            if any(a.startswith("name=^/") for a in args):
+                return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+            # SafeYolo proxy container check
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="abc123\n", stderr="")
         if args[:2] == ["docker", "inspect"]:
             return subprocess.CompletedProcess(

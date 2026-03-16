@@ -1,72 +1,48 @@
 """
-service_discovery.py - Dynamic service registry with hot reload
+service_discovery.py - Automatic service discovery via Docker DNS
 
 Maps container IPs to client IDs for per-client credential policies.
-Watches services.yaml for changes and automatically reloads.
+Uses Docker's embedded DNS to resolve container IPs to names on first
+request, with caching to avoid per-request DNS lookups.
 
-Canonical path: /safeyolo/data/services.yaml (in container)
-    - Mounted from ~/.safeyolo/data/ on host
-    - CLI writes via `safeyolo start` or `safeyolo sync`
-    - Users with custom tooling can edit the host file directly
-
-File format:
-    services:
-      agent-name:
-        ip: "172.20.0.3"
-        client: "agent-name"
+Resolution order:
+1. DNS cache hit (non-expired)
+2. Reverse DNS lookup via Docker embedded DNS
+3. Default: "unknown"
 """
 
 import logging
+import socket
 import time
-from dataclasses import dataclass
-from ipaddress import ip_address, ip_network
-from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock
 
-import yaml
-from mitmproxy import ctx
+from mitmproxy import ctx, http
+from utils import get_client_ip, write_event
 
 log = logging.getLogger("safeyolo.discovery")
 
-# Constants
-DEFAULT_WATCH_INTERVAL_SECONDS = 5
-THREAD_JOIN_TIMEOUT_SECONDS = 2
-MAX_UNKNOWN_IPS_TRACKED = 1000  # Prevent unbounded memory growth
-
-
-@dataclass
-class ServiceEntry:
-    """A registered service."""
-
-    name: str
-    client: str
-    ip: str | None = None
-    ip_range: str | None = None
+# DNS-based discovery constants
+DNS_CACHE_TTL_SECONDS = 300  # How long to trust a reverse DNS result
+DNS_NEGATIVE_CACHE_TTL_SECONDS = 60  # Cache failed lookups to avoid repeated slow queries
+DNS_CACHE_MAX_SIZE = 500  # Max cached DNS entries
 
 
 class ServiceDiscovery:
     """
-    Dynamic service registry with file watching.
+    Automatic service registry via Docker DNS.
 
-    Reads services.yaml to map client IPs to client IDs.
-    Automatically reloads when the file changes.
+    Resolves container IPs to client IDs using Docker's embedded DNS.
+    Results are cached to avoid per-request DNS lookups.
     """
 
     name = "service-discovery"
 
     def __init__(self):
         self.network = "safeyolo_internal"
-        self._services: dict[str, ServiceEntry] = {}  # name -> entry
-        self._ip_to_client: dict[str, str] = {}  # exact IP -> client
-        self._ranges: list[tuple] = []  # (ip_network, client)
-        self._last_load: float = 0
-        self._config_path: Path | None = None
-        self._file_mtime: float = 0
-        self._watch_thread: Thread | None = None
-        self._stop_watching = False
-        self._watch_interval: int = DEFAULT_WATCH_INTERVAL_SECONDS
-        self._unknown_ips: set[str] = set()  # Track unknown IPs for diagnostics
-        self._lock = Lock()  # Protects _services, _ip_to_client, _ranges during reload
+        self._dns_cache: dict[str, tuple[str, float]] = {}  # ip -> (client_name, expiry)
+        self._dns_negative_cache: dict[str, float] = {}  # ip -> expiry (failed lookups)
+        self._last_seen: dict[str, float] = {}  # agent_name -> epoch timestamp
+        self._lock = Lock()
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -74,19 +50,7 @@ class ServiceDiscovery:
             name="discovery_network",
             typespec=str,
             default="safeyolo_internal",
-            help="Docker network name (for documentation)",
-        )
-        loader.add_option(
-            name="discovery_watch",
-            typespec=bool,
-            default=True,
-            help="Watch services.yaml for changes and auto-reload",
-        )
-        loader.add_option(
-            name="discovery_watch_interval",
-            typespec=int,
-            default=DEFAULT_WATCH_INTERVAL_SECONDS,
-            help="Seconds between file change checks",
+            help="Docker network name for DNS suffix stripping",
         )
 
     def configure(self, updates):
@@ -94,240 +58,152 @@ class ServiceDiscovery:
         if "discovery_network" in updates:
             self.network = ctx.options.discovery_network
 
-        if "discovery_watch_interval" in updates:
-            self._watch_interval = ctx.options.discovery_watch_interval
-
-        # Load config on first configure
-        if self._last_load == 0:
-            self._load_config()
-
-        # Start file watcher if enabled and not already running
-        if ctx.options.discovery_watch and self._watch_thread is None:
-            self._start_watching()
-
     def done(self):
         """Cleanup on shutdown."""
-        self._stop_watching = True
-        if self._watch_thread:
-            self._watch_thread.join(timeout=THREAD_JOIN_TIMEOUT_SECONDS)
+        pass
 
-    def _start_watching(self):
-        """Start background thread to watch for config changes."""
-        interval = self._watch_interval
+    def _resolve_ip_via_dns(self, ip: str) -> str | None:
+        """Resolve an IP to a client name via Docker's embedded reverse DNS.
 
-        def watch_loop():
-            while not self._stop_watching:
-                time.sleep(interval)
-                if self._check_file_changed():
-                    log.info("services.yaml changed, reloading...")
-                    self._load_config()
-
-        self._watch_thread = Thread(target=watch_loop, daemon=True, name="discovery-watcher")
-        self._watch_thread.start()
-        log.info(f"Started watching services.yaml (interval={interval}s)")
-
-    def _check_file_changed(self) -> bool:
-        """Check if config file has been modified."""
-        if not self._config_path:
-            # Try to find config if we don't have one yet
-            new_path = self._find_config()
-            if new_path:
-                self._config_path = new_path
-                return True
-            return False
-
-        if not self._config_path.exists():
-            # File was deleted - clear mappings under lock
-            with self._lock:
-                if self._services:
-                    log.warning("services.yaml deleted, clearing mappings")
-                    self._services = {}
-                    self._ip_to_client = {}
-                    self._ranges = []
-            return False
-
-        try:
-            current_mtime = self._config_path.stat().st_mtime
-            if current_mtime > self._file_mtime:
-                self._file_mtime = current_mtime
-                return True
-        except OSError as err:
-            log.debug(f"Cannot stat config file: {type(err).__name__}: {err}")
-
-        return False
-
-    def _find_config(self) -> Path | None:
-        """Get canonical services.yaml path.
+        Docker's DNS returns "{container_name}.{network_name}" for containers
+        on user-defined networks. We strip the network suffix to get the
+        clean instance name.
 
         Returns:
-            /safeyolo/data/services.yaml if it exists, None otherwise.
-
-        Note:
-            This is the only supported location. The file is mounted from
-            ~/.safeyolo/data/services.yaml on the host. Users with custom
-            tooling should write to that host path.
+            Client name (e.g., "claude") or None if resolution fails.
         """
-        canonical_path = Path("/safeyolo/data/services.yaml")
-        if canonical_path.exists():
-            return canonical_path
-        return None
-
-    def _load_config(self):
-        """Load services from services.yaml.
-
-        Thread-safe: builds new dicts, then atomically swaps them under lock.
-        """
-        # Build new mappings in local variables (no lock needed yet)
-        new_services: dict[str, ServiceEntry] = {}
-        new_ip_to_client: dict[str, str] = {}
-        new_ranges: list[tuple] = []
-
-        # Use pre-set _config_path (e.g., for testing) or find one
-        config_path = self._config_path or self._find_config()
-        if not config_path:
-            log.debug("No services.yaml found - using 'unknown' client for all requests")
-            # Atomically clear under lock
-            with self._lock:
-                self._services = new_services
-                self._ip_to_client = new_ip_to_client
-                self._ranges = new_ranges
-            return
-
-        self._config_path = config_path
-
         try:
-            self._file_mtime = config_path.stat().st_mtime
-        except OSError as exc:
-            log.debug("Could not read mtime for %s: %s", config_path, exc)
+            hostname, _aliases, _addresses = socket.gethostbyaddr(ip)
+        except (socket.herror, socket.gaierror, OSError):
+            return None
 
-        try:
-            with open(config_path) as f:
-                content = f.read()
+        if not hostname:
+            return None
 
-            # Check for stale marker
-            if "stale" in content.lower() and "safeyolo stopped" in content.lower():
-                log.warning("services.yaml is marked as stale (SafeYolo was stopped)")
-                # Clear mappings - don't use stale data
-                with self._lock:
-                    self._services = new_services
-                    self._ip_to_client = new_ip_to_client
-                    self._ranges = new_ranges
-                return
+        # Docker returns "{container_name}.{network_name}" on user-defined networks
+        network_suffix = f".{self.network}"
+        if hostname.endswith(network_suffix):
+            hostname = hostname[: -len(network_suffix)]
 
-            config = yaml.safe_load(content) or {}
+        # Skip the proxy container itself
+        if hostname == "safeyolo":
+            return None
 
-            services = config.get("services", {})
-            for name, entry in services.items():
-                client = entry.get("client", name)
-
-                # Exact IP mapping
-                if "ip" in entry:
-                    ip = entry["ip"]
-                    new_ip_to_client[ip] = client
-                    new_services[name] = ServiceEntry(name=name, client=client, ip=ip)
-                    log.debug(f"Registered: {ip} -> {client}")
-
-                # IP range mapping
-                elif "ip_range" in entry:
-                    try:
-                        network = ip_network(entry["ip_range"], strict=False)
-                        new_ranges.append((network, client))
-                        new_services[name] = ServiceEntry(
-                            name=name, client=client, ip_range=entry["ip_range"]
-                        )
-                        log.debug(f"Registered: {entry['ip_range']} -> {client}")
-                    except ValueError as e:
-                        log.warning(f"Invalid IP range for {name}: {e}")
-
-            # Atomically swap in new mappings
-            with self._lock:
-                self._services = new_services
-                self._ip_to_client = new_ip_to_client
-                self._ranges = new_ranges
-
-            self._last_load = time.time()
-            log.info(f"Loaded {len(new_services)} services from {config_path}")
-
-        except Exception as e:
-            log.warning(f"Failed to load {config_path}: {type(e).__name__}: {e}")
-            # On error, keep existing mappings (don't clear)
+        return hostname
 
     def get_client_for_ip(self, ip: str) -> str:
         """Get client ID for an IP address.
 
-        Thread-safe: reads mappings under lock.
+        Thread-safe: reads cache under lock.
+
+        Resolution order:
+        1. DNS cache (non-expired)
+        2. Reverse DNS via Docker embedded DNS
+        3. "unknown"
 
         Returns:
-            Client ID if IP is mapped, otherwise "unknown".
+            Client ID if IP is resolved, otherwise "unknown".
             Policy should explicitly handle "unknown" principals.
         """
-        # Take a snapshot under lock to avoid races with reload
+        now = time.time()
+
+        # Take a snapshot under lock
         with self._lock:
-            ip_to_client = self._ip_to_client
-            ranges = self._ranges
+            dns_entry = self._dns_cache.get(ip)
+            dns_negative_expiry = self._dns_negative_cache.get(ip)
 
-        # Check exact IP match first (no lock needed - we have a snapshot)
-        if ip in ip_to_client:
-            return ip_to_client[ip]
+        # 1. Check DNS cache (non-expired)
+        if dns_entry is not None:
+            client_name, expiry = dns_entry
+            if now < expiry:
+                return client_name
+            # Expired — will re-resolve below
 
-        # Check IP ranges
-        try:
-            addr = ip_address(ip)
-            for network, client in ranges:
-                if addr in network:
-                    return client
-        except ValueError:
-            pass  # Invalid IP format, fall through to unknown
+        # 2. Reverse DNS lookup (skip if recently failed)
+        if dns_negative_expiry is None or now >= dns_negative_expiry:
+            resolved = self._resolve_ip_via_dns(ip)
+            if resolved:
+                expiry = now + DNS_CACHE_TTL_SECONDS
+                with self._lock:
+                    # Evict expired entries if at capacity
+                    if len(self._dns_cache) >= DNS_CACHE_MAX_SIZE:
+                        self._dns_cache = {
+                            k: v for k, v in self._dns_cache.items() if v[1] > now
+                        }
+                    self._dns_cache[ip] = (resolved, expiry)
+                if dns_entry is None:
+                    log.info(f"DNS discovery: {ip} -> {resolved}")
+                    write_event("agent.discovered", agent=resolved, ip=ip)
+                else:
+                    log.debug(f"DNS cache refresh: {ip} -> {resolved}")
+                return resolved
+            else:
+                # Cache the failure to avoid repeated lookups
+                with self._lock:
+                    self._dns_negative_cache[ip] = now + DNS_NEGATIVE_CACHE_TTL_SECONDS
 
-        # Unknown IP - log warning (but only once per IP to avoid spam)
-        # Thread-safe check-then-add under lock
-        should_log = False
-        with self._lock:
-            if ip not in self._unknown_ips:
-                # Prevent unbounded memory growth
-                if len(self._unknown_ips) < MAX_UNKNOWN_IPS_TRACKED:
-                    self._unknown_ips.add(ip)
-                should_log = True
-
-        if should_log:
-            log.warning(f"Unknown source IP: {ip} - using 'unknown' principal")
+        # 3. Unknown IP — negative cache already throttles retries to every 60s
+        log.warning(f"Unknown source IP: {ip} - using 'unknown' principal")
 
         return "unknown"
 
-    def reload(self):
-        """Reload configuration from disk (for admin API)."""
-        log.info("Manual reload triggered")
-        self._load_config()
+    def request(self, flow: http.HTTPFlow):
+        """Stamp agent identity on every flow for downstream addons/loggers."""
+        client_ip = get_client_ip(flow)
+        if client_ip != "unknown":
+            agent = self.get_client_for_ip(client_ip)
+            flow.metadata["agent"] = agent
+            if agent != "unknown":
+                with self._lock:
+                    self._last_seen[agent] = time.time()
+
+    def get_agents(self) -> dict:
+        """Get agent overview for relay /agents endpoint.
+
+        Returns per-agent info: IP, last seen timestamp, and seconds since
+        last activity. Thread-safe.
+        """
+        now = time.time()
+        with self._lock:
+            dns_cached = {ip: (name, exp) for ip, (name, exp) in self._dns_cache.items() if exp > now}
+            last_seen_snapshot = dict(self._last_seen)
+
+        # Build agent -> {ip, last_seen, idle_seconds}
+        # An agent may have multiple IPs (container restart), take the latest cache entry
+        agents: dict[str, dict] = {}
+        for ip, (name, _exp) in dns_cached.items():
+            if name not in agents:
+                agents[name] = {"ip": ip}
+            # If duplicate, keep whichever — both are valid
+        for name, ts in last_seen_snapshot.items():
+            entry = agents.setdefault(name, {})
+            entry["last_seen"] = ts
+            entry["idle_seconds"] = round(now - ts, 1)
+
+        return {
+            "agents": agents,
+            "count": len(agents),
+        }
 
     def get_stats(self) -> dict:
         """Get discovery statistics for admin API.
 
         Thread-safe: takes snapshot under lock.
+        Includes full agent details so `safeyolo status` can display them.
         """
-        # Snapshot under lock
+        agents_data = self.get_agents()
+        now = time.time()
         with self._lock:
-            services_snapshot = dict(self._services)
-            ip_count = len(self._ip_to_client)
-            range_count = len(self._ranges)
+            dns_cached = {ip: name for ip, (name, exp) in self._dns_cache.items() if exp > now}
+            dns_negative = {ip for ip, exp in self._dns_negative_cache.items() if exp > now}
 
         return {
-            "config_path": str(self._config_path) if self._config_path else None,
-            "services_count": len(services_snapshot),
-            "ip_mappings": ip_count,
-            "range_mappings": range_count,
-            "unknown_ips": list(self._unknown_ips)[:100],  # Limit output size
-            "unknown_ips_count": len(self._unknown_ips),
-            "last_load": self._last_load,
-            "watching": self._watch_thread is not None and self._watch_thread.is_alive(),
-            "watch_interval": self._watch_interval,
-            "services": {
-                name: {
-                    "client": entry.client,
-                    "ip": entry.ip,
-                    "ip_range": entry.ip_range,
-                }
-                for name, entry in services_snapshot.items()
-            },
+            "dns_cache_size": len(dns_cached),
+            "dns_cached_clients": dns_cached,
+            "dns_negative_cache_size": len(dns_negative),
+            "unresolved_ips_count": len(dns_negative),
+            "agents": agents_data["agents"],
+            "agents_seen": agents_data["count"],
         }
 
 

@@ -1,7 +1,7 @@
 """Tests for addons/agent_relay.py - read-only PDP relay."""
 
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from agent_relay import RELAY_HOST, AgentRelay
@@ -151,6 +151,30 @@ class TestEndpoints:
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["relay"] == "ok"
+
+    def test_agents_returns_discovery_data(self, relay, valid_token):
+        """Test /agents returns agent data from service-discovery addon."""
+        mock_sd = Mock()
+        mock_sd.get_agents.return_value = {
+            "agents": {"boris": {"ip": "172.20.0.5", "last_seen": 1000.0, "idle_seconds": 5.0}},
+            "count": 1,
+        }
+        with _patch_active_token(valid_token), \
+             patch.object(relay, "_find_addon", return_value=mock_sd):
+            flow = _make_relay_flow("/agents", token=valid_token)
+            relay.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body["count"] == 1
+            assert "boris" in body["agents"]
+
+    def test_agents_503_when_addon_missing(self, relay, valid_token):
+        """Test /agents returns 503 when service-discovery not loaded."""
+        with _patch_active_token(valid_token), \
+             patch.object(relay, "_find_addon", return_value=None):
+            flow = _make_relay_flow("/agents", token=valid_token)
+            relay.request(flow)
+            assert flow.response.status_code == 503
 
     def test_unknown_endpoint_returns_404(self, relay, valid_token):
         with _patch_active_token(valid_token):

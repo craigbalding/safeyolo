@@ -46,6 +46,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
+# Merge system CA bundle into certifi so mitmproxy trusts both certifi roots
+# and Debian system roots. Cross-signed chains (e.g. Cloudflare → SSL.com →
+# Comodo "AAA Certificate Services") may chain to roots present in only one
+# bundle. Merging both prevents upstream TLS failures when either bundle
+# drops a root the other still carries.
+RUN CERTIFI_BUNDLE=$(/.venv/bin/python3 -c "import certifi; print(certifi.where())") && \
+    cat /etc/ssl/certs/ca-certificates.crt >> "$CERTIFI_BUNDLE"
+
 # Add uv venv to PATH
 ENV PATH="/.venv/bin:$PATH"
 
@@ -80,7 +88,7 @@ COPY addons/pattern_scanner.py /app/addons/
 COPY addons/request_logger.py /app/addons/
 COPY addons/metrics.py /app/addons/
 COPY addons/admin_api.py /app/addons/
-# Optional
+# Agent identity (stamps flow.metadata["agent"] for all layers)
 COPY addons/service_discovery.py /app/addons/
 
 # Note: Configuration is mounted from host at runtime (~/.safeyolo/ -> /safeyolo/)
