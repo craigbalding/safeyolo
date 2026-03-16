@@ -156,6 +156,7 @@ class RequestLogger:
         write_event(
             "traffic.request",
             request_id=request_id,
+            agent=flow.metadata.get("agent"),
             method=flow.request.method,
             host=host,
             path=path,
@@ -187,6 +188,7 @@ class RequestLogger:
         # Build kwargs for write_event
         kwargs = {
             "request_id": request_id,
+            "agent": flow.metadata.get("agent"),
             "host": parsed.netloc,
             "path": parsed.path,
             "status": flow.response.status_code if flow.response else None,

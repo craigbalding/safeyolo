@@ -94,6 +94,19 @@ class TestWriteEvent:
 
         assert "doesn't match taxonomy" not in caplog.text
 
+    def test_agent_prefix_valid(self, temp_log, caplog):
+        """agent.* events are valid taxonomy."""
+        from utils import write_event
+
+        with patch("utils.AUDIT_LOG_PATH", temp_log):
+            write_event("agent.added", agent="myproject", template="claude-code")
+            write_event("agent.started", agent="myproject")
+            write_event("agent.stopped", agent="myproject", exit_code=0)
+            write_event("agent.removed", agent="myproject")
+            write_event("agent.config_changed", agent="myproject", changes=["mounts"])
+
+        assert "doesn't match taxonomy" not in caplog.text
+
     def test_invalid_prefix_warns(self, temp_log, caplog):
         """Invalid event prefix logs a warning but still writes."""
         import logging
@@ -230,6 +243,11 @@ class TestValidEventPrefixes:
         """admin. prefix is valid."""
         from utils import VALID_EVENT_PREFIXES
         assert "admin." in VALID_EVENT_PREFIXES
+
+    def test_contains_agent(self):
+        """agent. prefix is valid."""
+        from utils import VALID_EVENT_PREFIXES
+        assert "agent." in VALID_EVENT_PREFIXES
 
     def test_is_tuple(self):
         """VALID_EVENT_PREFIXES is a tuple (immutable)."""

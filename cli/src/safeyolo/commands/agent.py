@@ -14,10 +14,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from ..config import find_config_dir, get_agents_dir, load_config
-from ..discovery import get_compose_network_name, regenerate_services
+from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
 from ..docker import is_running, wait_for_healthy
 from ..docker import start as docker_start
+from ..events import write_event
 from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
 from .mount import is_path_protected
 
@@ -190,11 +190,6 @@ def _run_agent(
                 raise typer.Exit(1)
             console.print("[green]SafeYolo started.[/green]\n")
 
-            try:
-                regenerate_services()
-            except Exception as err:
-                log.debug(f"Service regeneration skipped: {type(err).__name__}: {err}")
-
         except Exception as err:
             console.print(f"[red]Failed to start SafeYolo:[/red] {type(err).__name__}: {err}")
             raise typer.Exit(1)
@@ -226,8 +221,29 @@ def _run_agent(
     # Get service name from instance name
     service_name = _get_service_name(name)
 
+    # Check if a container with this name is already running
+    check_running = subprocess.run(
+        ["docker", "ps", "-q", "-f", f"name=^/{name}$"],
+        capture_output=True,
+        text=True,
+    )
+    if check_running.stdout.strip():
+        console.print(f"[red]Agent '{name}' is already running.[/red]")
+        console.print(
+            f"To open a shell in it:  [bold]safeyolo agent shell {name}[/bold]\n"
+            f"To stop it first:       [bold]safeyolo agent stop {name}[/bold]\n"
+            f"To run another agent:   [bold]safeyolo agent add <new-name> <template> <folder>[/bold]"
+        )
+        raise typer.Exit(1)
+
+    # Clean up stale container from unclean shutdown (no-op if absent)
+    subprocess.run(
+        ["docker", "rm", name],
+        capture_output=True,
+    )
+
     # Run with inherited stdin/stdout for interactive use
-    cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm"]
+    cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "--name", name]
     if yolo:
         cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
 
@@ -258,7 +274,9 @@ def _run_agent(
             cmd.append(binary)
         cmd.extend(metadata["user_default_args"])
 
+    write_event("agent.started", agent=name)
     result = subprocess.run(cmd, cwd=agent_dir, env=compose_env)
+    write_event("agent.stopped", agent=name, exit_code=result.returncode)
     return result.returncode
 
 
@@ -566,10 +584,12 @@ def add(
         for p in parsed_ports:
             panel_lines.append(f"  {p}")
     panel_lines.extend([
-        f"Network: {get_compose_network_name()}",
+        f"Network: {COMPOSE_NETWORK_NAME}",
         "Proxy: http://safeyolo:8080 (Docker DNS)",
     ])
     console.print(Panel("\n".join(panel_lines), title="Success"))
+
+    write_event("agent.added", agent=name, template=template, folder=folder_str)
 
     # Auto-run unless --no-run
     if not no_run:
@@ -660,14 +680,9 @@ def remove(
         )
 
     shutil.rmtree(agent_dir)
+    write_event("agent.removed", agent=name, clean=clean)
     console.print(f"[green]Removed agent: {name}[/green]")
 
-    # Update service mappings if safeyolo is running
-    if is_running():
-        try:
-            regenerate_services()
-        except Exception as err:
-            log.debug(f"Service regeneration skipped: {type(err).__name__}: {err}")
 
 
 @agent_app.command(
@@ -791,6 +806,40 @@ def shell(
     result = subprocess.run(cmd, cwd=agent_dir)
 
     raise typer.Exit(result.returncode)
+
+
+@agent_app.command()
+def stop(
+    name: str = typer.Argument(..., help="Agent instance name to stop"),
+) -> None:
+    """Stop a running agent container.
+
+    Examples:
+
+        safeyolo agent stop myproject
+    """
+    agent_dir = get_agents_dir() / name
+    compose_file = agent_dir / "docker-compose.yml"
+
+    if not compose_file.exists():
+        console.print(f"[red]Agent not found: {name}[/red]")
+        raise typer.Exit(1)
+
+    # Check if actually running
+    check = subprocess.run(
+        ["docker", "ps", "-q", "-f", f"name=^/{name}$"],
+        capture_output=True,
+        text=True,
+    )
+    if not check.stdout.strip():
+        console.print(f"Agent '{name}' is not running.")
+        raise typer.Exit(0)
+
+    console.print(f"Stopping {name}...")
+    subprocess.run(["docker", "stop", name], capture_output=True)
+    subprocess.run(["docker", "rm", name], capture_output=True)
+    write_event("agent.stopped", agent=name, reason="user_request")
+    console.print(f"[green]Stopped {name}.[/green]")
 
 
 @agent_app.command()
@@ -980,6 +1029,16 @@ def config(
         del metadata["ports"]
 
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
+
+    # Build list of what changed for the event
+    changes = []
+    if user_default_args is not None:
+        changes.append("user_default_args")
+    if add_mount or remove_mount or clear_mounts:
+        changes.append("mounts")
+    if add_port or remove_port or clear_ports:
+        changes.append("ports")
+    write_event("agent.config_changed", agent=name, changes=changes)
 
 
 @agent_app.command(name="help")

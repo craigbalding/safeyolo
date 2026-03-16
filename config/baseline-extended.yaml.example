@@ -259,12 +259,11 @@ clients:
       network_guard:
         enabled: false
 
-  # Unknown principals (source IP not in services.yaml)
+  # Unknown principals (source IP not resolved via Docker DNS)
   # This happens when:
-  #   - A new container joined the network but 'safeyolo sync' wasn't run
+  #   - A request came from an IP that Docker DNS can't reverse-resolve
   #   - An external IP somehow reached the proxy
   # Policy: Allow with logging - don't break things, but make it visible
-  # Run 'safeyolo sync' to map the IP to a project
   "unknown":
     log_level: warning
     # Use default rate limits, don't bypass any security checks

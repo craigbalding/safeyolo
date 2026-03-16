@@ -237,7 +237,7 @@ class TestSecurityAddonLogging:
         addon = TestAddon()
 
         flow = Mock()
-        flow.metadata = {"request_id": "req-123"}
+        flow.metadata = {"request_id": "req-123", "agent": "boris"}
 
         with patch('base.write_event') as mock_write:
             addon.log_decision(flow, "block", reason="test", domain="example.com")
@@ -250,6 +250,7 @@ class TestSecurityAddonLogging:
 
             # Check kwargs
             assert call_args[1]["request_id"] == "req-123"
+            assert call_args[1]["agent"] == "boris"
             assert call_args[1]["addon"] == "test-addon"
             assert call_args[1]["decision"] == "block"
             assert call_args[1]["reason"] == "test"

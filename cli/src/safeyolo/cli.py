@@ -12,7 +12,7 @@ from .commands.cert import cert_app
 from .commands.demo import demo
 from .commands.doctor import doctor
 from .commands.init import init
-from .commands.lifecycle import build, start, status, stop, sync
+from .commands.lifecycle import build, start, status, stop
 from .commands.logs import logs
 from .commands.mount import mount_app
 from .commands.sandbox import sandbox_app
@@ -67,7 +67,6 @@ app.command()(start)
 app.command()(stop)
 app.command()(status)
 app.command()(build)
-app.command()(sync)
 app.command()(logs)
 app.command()(watch)
 app.command()(demo)

@@ -7,6 +7,7 @@
 services:
   {{ instance_name }}:
     build: .
+    container_name: {{ instance_name }}
     hostname: {{ instance_name }}
     # Starts as root to set up home dir ownership, then drops to SAFEYOLO_UID:SAFEYOLO_GID
     stdin_open: true

@@ -22,6 +22,12 @@ Event Taxonomy:
     admin.deny           - Credential denied
     admin.mode_change    - Mode toggled
     admin.auth_failure   - Failed auth attempt
+
+    agent.added          - Agent instance created
+    agent.started        - Agent container started
+    agent.stopped        - Agent container stopped
+    agent.removed        - Agent instance removed
+    agent.config_changed - Agent configuration updated
 """
 
 import fnmatch
@@ -149,7 +155,7 @@ def sanitize_for_log(value, max_len: int = 200) -> str:
 
 
 # Valid event prefixes for taxonomy validation
-VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.")
+VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.", "agent.")
 
 # Module-level logger for write_event errors
 _log = logging.getLogger("safeyolo.utils")
@@ -186,7 +192,7 @@ def write_event(event: str, **data) -> None:
 
     Args:
         event: Event type using taxonomy (e.g., "security.credential", "admin.approve")
-               Must start with: traffic., security., ops., or admin.
+               Must start with: traffic., security., ops., admin., or agent.
         **data: Event-specific fields. Common fields:
             - request_id: Correlation ID from flow.metadata
             - addon: Name of the addon emitting the event
@@ -204,7 +210,7 @@ def write_event(event: str, **data) -> None:
     """
     # Validate event taxonomy (warn but don't fail)
     if not event.startswith(VALID_EVENT_PREFIXES):
-        _log.warning(f"Event '{event}' doesn't match taxonomy (expected: traffic.*, security.*, ops.*, admin.*)")
+        _log.warning(f"Event '{event}' doesn't match taxonomy (expected: traffic.*, security.*, ops.*, admin.*, agent.*)")
 
     entry = {
         "ts": datetime.now(UTC).isoformat(),
