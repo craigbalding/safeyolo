@@ -13,13 +13,13 @@ from rich.table import Table
 
 from ..api import APIError, get_api
 from ..config import (
+    COMPOSE_NETWORK_NAME,
     DEFAULT_CONFIG,
     find_config_dir,
     get_config_dir,
     load_config,
     save_config,
 )
-from ..config import COMPOSE_NETWORK_NAME
 from ..docker import (
     DOCKER_BUILD_TIMEOUT_SECONDS,
     BuildError,

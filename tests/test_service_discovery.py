@@ -278,27 +278,29 @@ class TestServiceDiscoveryThreadSafety:
         discovery = ServiceDiscovery()
         errors = []
 
+        def dns_side_effect(ip):
+            """Deterministic mock: derive hostname from IP."""
+            parts = ip.split(".")
+            thread_id, i = parts[2], parts[3]
+            return (f"agent-{thread_id}-{i}.safeyolo_internal", [], [ip])
+
         def lookup(thread_id):
             try:
                 for i in range(50):
                     ip = f"172.20.{thread_id}.{i}"
-                    with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
-                         patch("service_discovery.write_event"):
-                        mock_dns.return_value = (
-                            f"agent-{thread_id}-{i}.safeyolo_internal",
-                            [],
-                            [ip],
-                        )
-                        client = discovery.get_client_for_ip(ip)
-                        assert client == f"agent-{thread_id}-{i}"
+                    client = discovery.get_client_for_ip(ip)
+                    assert client == f"agent-{thread_id}-{i}"
             except Exception as e:
                 errors.append(e)
 
-        threads = [Thread(target=lookup, args=(t,)) for t in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        # Patch once outside threads to avoid mock races
+        with patch("service_discovery.socket.gethostbyaddr", side_effect=dns_side_effect), \
+             patch("service_discovery.write_event"):
+            threads = [Thread(target=lookup, args=(t,)) for t in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
         assert len(errors) == 0
 
