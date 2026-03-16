@@ -3,7 +3,7 @@
 import os
 import secrets
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -13,7 +13,6 @@ from rich.table import Table
 
 from ..api import APIError, get_api
 from ..config import (
-    COMPOSE_NETWORK_NAME,
     DEFAULT_CONFIG,
     find_config_dir,
     get_config_dir,
@@ -264,7 +263,7 @@ def status() -> None:
     if started_at:
         try:
             started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-            delta = datetime.now(timezone.utc) - started
+            delta = datetime.now(datetime.UTC) - started
             total_seconds = int(delta.total_seconds())
             days, remainder = divmod(total_seconds, 86400)
             hours, remainder = divmod(remainder, 3600)
@@ -367,7 +366,7 @@ def status() -> None:
                 last_seen_ts = info.get("last_seen")
                 if last_seen_ts:
                     try:
-                        dt = datetime.fromtimestamp(last_seen_ts, tz=timezone.utc)
+                        dt = datetime.fromtimestamp(last_seen_ts, tz=datetime.UTC)
                         last_seen_str = dt.strftime("%H:%M:%S")
                     except (ValueError, OSError):
                         last_seen_str = "?"

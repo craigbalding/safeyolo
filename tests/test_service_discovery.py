@@ -101,7 +101,7 @@ class TestServiceDiscoveryDNS:
 
     def test_dns_cache_expires(self):
         """Test DNS cache entry expires after TTL."""
-        from service_discovery import DNS_CACHE_TTL_SECONDS, ServiceDiscovery
+        from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
 
