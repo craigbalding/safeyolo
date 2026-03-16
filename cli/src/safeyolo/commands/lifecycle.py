@@ -1,9 +1,9 @@
 """Container lifecycle commands: start, stop, status."""
 
+import datetime
 import os
 import secrets
 import shutil
-from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -262,8 +262,8 @@ def status() -> None:
     started_at = container_status.get("started_at", "")
     if started_at:
         try:
-            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-            delta = datetime.now(datetime.UTC) - started
+            started = datetime.datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            delta = datetime.datetime.now(datetime.UTC) - started
             total_seconds = int(delta.total_seconds())
             days, remainder = divmod(total_seconds, 86400)
             hours, remainder = divmod(remainder, 3600)
@@ -366,7 +366,7 @@ def status() -> None:
                 last_seen_ts = info.get("last_seen")
                 if last_seen_ts:
                     try:
-                        dt = datetime.fromtimestamp(last_seen_ts, tz=datetime.UTC)
+                        dt = datetime.datetime.fromtimestamp(last_seen_ts, tz=datetime.UTC)
                         last_seen_str = dt.strftime("%H:%M:%S")
                     except (ValueError, OSError):
                         last_seen_str = "?"
