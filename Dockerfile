@@ -85,6 +85,8 @@ COPY addons/circuit_breaker.py /app/addons/
 COPY addons/credential_guard.py /app/addons/
 COPY addons/pattern_scanner.py /app/addons/
 # Layer 3: Observability
+COPY addons/flow_store.py /app/addons/
+COPY addons/flow_recorder.py /app/addons/
 COPY addons/request_logger.py /app/addons/
 COPY addons/metrics.py /app/addons/
 COPY addons/admin_api.py /app/addons/
