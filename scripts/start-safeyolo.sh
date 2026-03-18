@@ -171,6 +171,7 @@ load_addon "/app/addons/credential_guard.py"
 load_addon "/app/addons/pattern_scanner.py"
 load_addon "/app/addons/test_context.py"
 # Layer 3: Observability
+load_addon "/app/addons/flow_recorder.py"
 load_addon "/app/addons/request_logger.py"
 load_addon "/app/addons/metrics.py"
 load_addon "/app/addons/admin_api.py"

@@ -18,11 +18,14 @@ Usage:
     mitmdump -s addons/agent_relay.py --set admin_api_token=<token>
 """
 
+import base64
 import hmac
 import json
 import logging
 import re
+import urllib.parse
 
+from flow_store import is_text_like_content_type
 from mitmproxy import ctx, http
 
 log = logging.getLogger("safeyolo.agent-relay")
@@ -63,8 +66,11 @@ class AgentRelay:
         path = flow.request.path.split("?")[0].rstrip("/") or "/"
         method = flow.request.method
 
-        # Only GET allowed
-        if method != "GET":
+        # Method validation: GET for most routes, POST/DELETE allowed for /api/flows/ prefix
+        if method not in ("GET", "POST", "DELETE"):
+            self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET", "POST", "DELETE"]})
+            return
+        if method in ("POST", "DELETE") and not path.startswith("/api/flows"):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
             return
 
@@ -111,11 +117,55 @@ class AgentRelay:
             "/circuits": self._handle_circuits,
         }
 
+        # POST handlers for flow store API
+        post_handlers = {
+            "/api/flows/search": self._handle_flow_search,
+            "/api/flows/endpoints": self._handle_flow_endpoints,
+            "/api/flows/body-search": self._handle_flow_body_search,
+            "/api/flows/diff": self._handle_flow_diff,
+            "/api/flows/request-body-search": self._handle_flow_request_body_search,
+        }
+
         handler = handlers.get(path)
+
+        # Check POST handlers
+        if handler is None and method == "POST":
+            handler = post_handlers.get(path)
+
+        # Check parameterized routes: /api/flows/{id}[/request-body|/response-body|/tag[/{name}]]
         if handler is None:
+            m = re.match(r"^/api/flows/(\d+)(/request-body|/response-body|/tag(?:/([^/]+))?)?$", path)
+            if m:
+                flow_id = int(m.group(1))
+                suffix = m.group(2)
+                tag_name = m.group(3)
+                if suffix == "/request-body":
+                    def handler(f, _fid=flow_id):
+                        self._handle_flow_request_body(f, _fid)
+                elif suffix == "/response-body":
+                    def handler(f, _fid=flow_id):
+                        self._handle_flow_response_body(f, _fid)
+                elif suffix is not None and suffix.startswith("/tag"):
+                    if method == "POST" and tag_name is None:
+                        def handler(f, _fid=flow_id):
+                            self._handle_flow_tag_add(f, _fid)
+                    elif method == "DELETE" and tag_name is not None:
+                        def handler(f, _fid=flow_id, _tn=tag_name):
+                            self._handle_flow_tag_delete(f, _fid, _tn)
+                    else:
+                        handler = None  # will fall through to 404
+                else:
+                    def handler(f, _fid=flow_id):
+                        self._handle_flow_detail(f, _fid)
+
+        if handler is None:
+            all_endpoints = list(handlers.keys()) + list(post_handlers.keys()) + [
+                "/api/flows/{id}", "/api/flows/{id}/request-body", "/api/flows/{id}/response-body",
+                "/api/flows/{id}/tag (POST)", "/api/flows/{id}/tag/{name} (DELETE)",
+            ]
             self._respond(flow, 404, {
                 "error": "Not Found",
-                "endpoints": list(handlers.keys()),
+                "endpoints": all_endpoints,
             })
             return
 
@@ -313,6 +363,193 @@ class AgentRelay:
             result["truncated"] = True
             result["searched_lines"] = MAX_EXPLAIN_LINES
         self._respond(flow, 200, result)
+
+    # ---- Flow Store API routes ----
+
+    def _read_json_body(self, flow: http.HTTPFlow) -> dict | None:
+        """Parse request body as JSON. Returns None on failure."""
+        content = flow.request.content
+        if not content:
+            return {}
+        try:
+            return json.loads(content)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+
+    def _get_flow_store(self):
+        """Get FlowStore from the flow-recorder addon."""
+        recorder = self._find_addon("flow-recorder")
+        if recorder is None or recorder.store is None:
+            return None
+        return recorder.store
+
+    def _handle_flow_search(self, flow: http.HTTPFlow):
+        """POST /api/flows/search - Search flows by filter criteria."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        results = store.search_flows(body)
+        self._respond(flow, 200, {"flows": results, "count": len(results)})
+
+    def _handle_flow_detail(self, flow: http.HTTPFlow, flow_id: int):
+        """GET /api/flows/{id} - Get flow metadata."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        result = store.get_flow(flow_id)
+        if result is None:
+            self._respond(flow, 404, {"error": "Flow not found"})
+            return
+        self._respond(flow, 200, result)
+
+    def _handle_flow_request_body(self, flow: http.HTTPFlow, flow_id: int):
+        """GET /api/flows/{id}/request-body - Get decompressed request body."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        result = store.get_request_body(flow_id)
+        if result is None:
+            self._respond(flow, 404, {"error": "Flow not found"})
+            return
+        # Convert body bytes to base64 for JSON transport
+        body_bytes = result.pop("body", b"")
+        result["body_base64"] = base64.b64encode(body_bytes).decode("ascii")
+        result["body_length"] = len(body_bytes)
+        # Try to include text representation for text-like content
+        ct = result.get("request_content_type", "")
+        if is_text_like_content_type(ct):
+            result["body_text"] = body_bytes.decode("utf-8", errors="replace")
+        self._respond(flow, 200, result)
+
+    def _handle_flow_response_body(self, flow: http.HTTPFlow, flow_id: int):
+        """GET /api/flows/{id}/response-body - Get decompressed response body."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        result = store.get_response_body(flow_id)
+        if result is None:
+            self._respond(flow, 404, {"error": "Flow not found"})
+            return
+        body_bytes = result.pop("body", b"")
+        result["body_base64"] = base64.b64encode(body_bytes).decode("ascii")
+        result["body_length"] = len(body_bytes)
+        ct = result.get("response_content_type", "")
+        if is_text_like_content_type(ct):
+            result["body_text"] = body_bytes.decode("utf-8", errors="replace")
+        self._respond(flow, 200, result)
+
+    def _handle_flow_endpoints(self, flow: http.HTTPFlow):
+        """POST /api/flows/endpoints - Get distinct endpoints with counts."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        results = store.get_endpoints(body)
+        self._respond(flow, 200, {"endpoints": results, "count": len(results)})
+
+    def _handle_flow_body_search(self, flow: http.HTTPFlow):
+        """POST /api/flows/body-search - Full-text search over response bodies."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        if not body.get("engagement_id"):
+            self._respond(flow, 400, {"error": "engagement_id required"})
+            return
+        if not body.get("query"):
+            self._respond(flow, 400, {"error": "query required"})
+            return
+        results = store.search_bodies(body)
+        self._respond(flow, 200, {"flows": results, "count": len(results)})
+
+
+    def _handle_flow_diff(self, flow: http.HTTPFlow):
+        """POST /api/flows/diff - Compare two flow response bodies."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        try:
+            id_a = int(body["flow_id_a"])
+            id_b = int(body["flow_id_b"])
+        except (KeyError, TypeError, ValueError):
+            self._respond(flow, 400, {"error": "flow_id_a and flow_id_b (integers) required"})
+            return
+        result = store.diff_flows(id_a, id_b)
+        if result is None:
+            self._respond(flow, 404, {"error": "One or both flows not found"})
+            return
+        self._respond(flow, 200, result)
+
+    def _handle_flow_request_body_search(self, flow: http.HTTPFlow):
+        """POST /api/flows/request-body-search - Full-text search over request bodies."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        if not body.get("engagement_id"):
+            self._respond(flow, 400, {"error": "engagement_id required"})
+            return
+        if not body.get("query"):
+            self._respond(flow, 400, {"error": "query required"})
+            return
+        results = store.search_request_bodies(body)
+        self._respond(flow, 200, {"flows": results, "count": len(results)})
+
+    def _handle_flow_tag_add(self, flow: http.HTTPFlow, flow_id: int):
+        """POST /api/flows/{id}/tag - Add or update a tag on a flow."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        tag = body.get("tag")
+        if not tag:
+            self._respond(flow, 400, {"error": "tag required"})
+            return
+        value = body.get("value", "")
+        result = store.tag_flow(flow_id, tag, value)
+        self._respond(flow, 200, result)
+
+    def _handle_flow_tag_delete(self, flow: http.HTTPFlow, flow_id: int, tag_name: str):
+        """DELETE /api/flows/{id}/tag/{name} - Remove a tag from a flow."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        tag = urllib.parse.unquote(tag_name)
+        deleted = store.untag_flow(flow_id, tag)
+        if not deleted:
+            self._respond(flow, 404, {"error": "Tag not found"})
+            return
+        self._respond(flow, 200, {"deleted": True, "flow_id": flow_id, "tag": tag})
 
 
 addons = [AgentRelay()]

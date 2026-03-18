@@ -20,6 +20,8 @@ ADDON_MODULES = [
     "credential_guard",
     "file_logging",
     "flow_pruner",
+    "flow_recorder",
+    "flow_store",
     "loop_guard",
     "memory_monitor",
     "metrics",
