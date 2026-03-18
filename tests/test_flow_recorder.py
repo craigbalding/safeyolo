@@ -1,8 +1,7 @@
 """Tests for addons/flow_recorder.py - mitmproxy flow recording addon."""
 
-import json
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from flow_recorder import FlowRecorder
