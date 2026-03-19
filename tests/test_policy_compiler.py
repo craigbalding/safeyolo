@@ -1,0 +1,718 @@
+"""
+Tests for policy_compiler.py - Host-centric to IAM policy compilation.
+"""
+
+import pytest
+
+
+class TestIsHostCentric:
+    """Tests for format detection."""
+
+    def test_detects_hosts_key(self):
+        from policy_compiler import is_host_centric
+
+        assert is_host_centric({"hosts": {}})
+        assert is_host_centric({"hosts": {"api.openai.com": {}}})
+
+    def test_rejects_iam_format(self):
+        from policy_compiler import is_host_centric
+
+        assert not is_host_centric({"permissions": []})
+        assert not is_host_centric({})
+
+
+class TestCompileCredentials:
+    """Tests for credential routing compilation."""
+
+    def test_single_credential(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"]},
+            }
+        }
+        result = compile_policy(raw)
+
+        perms = result["permissions"]
+        cred_perms = [p for p in perms if p["action"] == "credential:use"]
+        assert len(cred_perms) == 1
+        assert cred_perms[0]["resource"] == "api.openai.com/*"
+        assert cred_perms[0]["effect"] == "allow"
+        assert cred_perms[0]["condition"]["credential"] == ["openai:*"]
+
+    def test_multiple_hosts(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"]},
+                "api.anthropic.com": {"credentials": ["anthropic:*"]},
+            }
+        }
+        result = compile_policy(raw)
+
+        cred_perms = [p for p in result["permissions"] if p["action"] == "credential:use"]
+        assert len(cred_perms) == 2
+
+        resources = {p["resource"] for p in cred_perms}
+        assert "api.openai.com/*" in resources
+        assert "api.anthropic.com/*" in resources
+
+    def test_string_credential_converted_to_list(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"credentials": "openai:*"},
+            }
+        }
+        result = compile_policy(raw)
+        cred_perm = [p for p in result["permissions"] if p["action"] == "credential:use"][0]
+        assert cred_perm["condition"]["credential"] == ["openai:*"]
+
+
+class TestCompileRateLimits:
+    """Tests for rate limit compilation."""
+
+    def test_single_rate_limit(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"rate_limit": 3000},
+            }
+        }
+        result = compile_policy(raw)
+
+        budget_perms = [p for p in result["permissions"] if p["effect"] == "budget"]
+        assert len(budget_perms) == 1
+        assert budget_perms[0]["resource"] == "api.openai.com/*"
+        assert budget_perms[0]["budget"] == 3000
+
+    def test_host_with_both_creds_and_limit(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"], "rate_limit": 3000},
+            }
+        }
+        result = compile_policy(raw)
+
+        assert len(result["permissions"]) == 2
+        actions = {p["action"] for p in result["permissions"]}
+        assert "credential:use" in actions
+        assert "network:request" in actions
+
+
+class TestCompileWildcard:
+    """Tests for wildcard host handling."""
+
+    def test_unknown_credentials_prompt(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "*": {"unknown_credentials": "prompt", "rate_limit": 600},
+            }
+        }
+        result = compile_policy(raw)
+
+        cred_perms = [p for p in result["permissions"] if p["action"] == "credential:use"]
+        assert len(cred_perms) == 1
+        assert cred_perms[0]["resource"] == "*"
+        assert cred_perms[0]["effect"] == "prompt"
+
+        budget_perms = [p for p in result["permissions"] if p["effect"] == "budget"]
+        assert len(budget_perms) == 1
+        assert budget_perms[0]["resource"] == "*"
+        assert budget_perms[0]["budget"] == 600
+
+    def test_unknown_credentials_deny(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "*": {"unknown_credentials": "deny"},
+            }
+        }
+        result = compile_policy(raw)
+
+        cred_perms = [p for p in result["permissions"] if p["action"] == "credential:use"]
+        assert cred_perms[0]["effect"] == "deny"
+
+
+class TestCompileBypass:
+    """Tests for domain bypass compilation."""
+
+    def test_bypass_generates_domains(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "*.internal": {"bypass": ["pattern_scanner"]},
+            }
+        }
+        result = compile_policy(raw)
+
+        assert "domains" in result
+        assert "*.internal" in result["domains"]
+        assert result["domains"]["*.internal"]["bypass"] == ["pattern_scanner"]
+
+
+class TestCompileRawRules:
+    """Tests for IAM rule passthrough (escape hatch)."""
+
+    def test_raw_rules_passed_through(self):
+        from policy_compiler import compile_policy
+
+        raw_rule = {
+            "action": "credential:use",
+            "resource": "api.openai.com/v1/chat/*",
+            "effect": "allow",
+            "condition": {"credential": ["hmac:abc123"]},
+        }
+        raw = {
+            "hosts": {
+                "api.openai.com": {
+                    "credentials": ["openai:*"],
+                    "rules": [raw_rule],
+                },
+            }
+        }
+        result = compile_policy(raw)
+
+        # Should have credential perm + raw rule
+        assert any(p["resource"] == "api.openai.com/v1/chat/*" for p in result["permissions"])
+
+
+class TestCompileGlobalBudget:
+    """Tests for global budget compilation."""
+
+    def test_global_budget(self):
+        from policy_compiler import compile_policy
+
+        raw = {"hosts": {}, "global_budget": 12000}
+        result = compile_policy(raw)
+
+        assert result["budgets"] == {"network:request": 12000}
+
+    def test_budgets_passthrough(self):
+        from policy_compiler import compile_policy
+
+        raw = {"hosts": {}, "budgets": {"network:request": 5000}}
+        result = compile_policy(raw)
+
+        assert result["budgets"] == {"network:request": 5000}
+
+
+class TestCompileCredentialDetection:
+    """Tests for credential detection rule compilation."""
+
+    def test_explicit_allowed_hosts(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {},
+            "credentials": {
+                "openai": {
+                    "patterns": ["sk-proj-.*"],
+                    "headers": ["authorization"],
+                    "allowed_hosts": ["api.openai.com"],
+                }
+            },
+        }
+        result = compile_policy(raw)
+
+        rules = result["credential_rules"]
+        assert len(rules) == 1
+        assert rules[0]["name"] == "openai"
+        assert rules[0]["allowed_hosts"] == ["api.openai.com"]
+        assert rules[0]["header_names"] == ["authorization"]
+
+    def test_auto_derived_allowed_hosts(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"]},
+                "api.anthropic.com": {"credentials": ["anthropic:*"]},
+            },
+            "credentials": {
+                "openai": {"patterns": ["sk-proj-.*"]},
+                "anthropic": {"patterns": ["sk-ant-.*"]},
+            },
+        }
+        result = compile_policy(raw)
+
+        rules = {r["name"]: r for r in result["credential_rules"]}
+        assert rules["openai"]["allowed_hosts"] == ["api.openai.com"]
+        assert rules["anthropic"]["allowed_hosts"] == ["api.anthropic.com"]
+
+    def test_multi_host_credential(self):
+        """GitHub creds accepted at both github.com and api.github.com."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.github.com": {"credentials": ["github:*"]},
+                "github.com": {"credentials": ["github:*"]},
+            },
+            "credentials": {
+                "github": {"patterns": ["gh[ps]_.*"]},
+            },
+        }
+        result = compile_policy(raw)
+
+        rules = result["credential_rules"]
+        github_rule = rules[0]
+        assert set(github_rule["allowed_hosts"]) == {"api.github.com", "github.com"}
+
+
+class TestCompilePassthrough:
+    """Tests for sections that pass through unchanged."""
+
+    def test_required_passthrough(self):
+        from policy_compiler import compile_policy
+
+        raw = {"hosts": {}, "required": ["credential_guard", "network_guard"]}
+        result = compile_policy(raw)
+        assert result["required"] == ["credential_guard", "network_guard"]
+
+    def test_addons_passthrough(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {},
+            "addons": {
+                "credential_guard": {"enabled": True},
+            },
+        }
+        result = compile_policy(raw)
+        assert result["addons"]["credential_guard"]["enabled"] is True
+
+    def test_scan_patterns_passthrough(self):
+        from policy_compiler import compile_policy
+
+        raw = {"hosts": {}, "scan_patterns": []}
+        result = compile_policy(raw)
+        assert result["scan_patterns"] == []
+
+
+class TestFullPolicyCompilation:
+    """End-to-end tests with realistic policy."""
+
+    def test_realistic_policy(self):
+        """Test compilation of a realistic baseline policy."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "metadata": {"version": "2.0", "description": "Test"},
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"], "rate_limit": 3000},
+                "api.anthropic.com": {"credentials": ["anthropic:*"], "rate_limit": 3000},
+                "api.github.com": {"credentials": ["github:*"], "rate_limit": 300},
+                "github.com": {"credentials": ["github:*"]},
+                "pypi.org": {"rate_limit": 1200},
+                "*.internal": {"bypass": ["pattern_scanner"]},
+                "*": {"unknown_credentials": "prompt", "rate_limit": 600},
+            },
+            "global_budget": 12000,
+            "credentials": {
+                "openai": {"patterns": ["sk-proj-.*"]},
+                "anthropic": {"patterns": ["sk-ant-.*"]},
+                "github": {"patterns": ["gh[ps]_.*"]},
+            },
+            "required": ["credential_guard", "network_guard"],
+            "addons": {"credential_guard": {"enabled": True}},
+            "scan_patterns": [],
+        }
+
+        result = compile_policy(raw)
+
+        # Check structure
+        assert "permissions" in result
+        assert "budgets" in result
+        assert "credential_rules" in result
+        assert "domains" in result
+
+        # Check credential permissions
+        cred_perms = [p for p in result["permissions"] if p["action"] == "credential:use"]
+        assert len(cred_perms) == 5  # openai, anthropic, github x2, wildcard prompt
+
+        # Check budget permissions
+        budget_perms = [p for p in result["permissions"] if p["effect"] == "budget"]
+        assert len(budget_perms) == 5  # openai, anthropic, github, pypi, wildcard
+
+        # Check domains
+        assert "*.internal" in result["domains"]
+
+    def test_compiled_policy_validates(self):
+        """Compiled policy passes Pydantic UnifiedPolicy validation."""
+        from policy_compiler import compile_policy
+        from policy_engine import UnifiedPolicy
+
+        raw = {
+            "metadata": {"version": "2.0"},
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"], "rate_limit": 3000},
+                "*": {"unknown_credentials": "prompt", "rate_limit": 600},
+            },
+            "global_budget": 12000,
+            "credentials": {
+                "openai": {"patterns": ["sk-proj-.*"]},
+            },
+            "required": ["credential_guard"],
+            "addons": {"credential_guard": {"enabled": True}},
+            "scan_patterns": [],
+        }
+
+        compiled = compile_policy(raw)
+        policy = UnifiedPolicy.model_validate(compiled)
+
+        assert len(policy.permissions) == 4  # cred allow, cred prompt, budget x2
+        assert len(policy.credential_rules) == 1
+        assert policy.budgets["network:request"] == 12000
+
+    def test_loaded_via_policy_loader(self, tmp_path):
+        """Host-centric YAML loads correctly through PolicyLoader."""
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  api.openai.com:    { credentials: [openai:*], rate_limit: 3000 }
+  api.anthropic.com: { credentials: [anthropic:*], rate_limit: 3000 }
+  "*":               { unknown_credentials: prompt, rate_limit: 600 }
+
+global_budget: 12000
+
+credentials:
+  openai:    { patterns: ["sk-proj-.*"] }
+  anthropic: { patterns: ["sk-ant-.*"] }
+
+required: [credential_guard, network_guard]
+addons:
+  credential_guard: { enabled: true }
+  network_guard: { enabled: true }
+scan_patterns: []
+""")
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # Should have compiled to IAM permissions
+        assert len(policy.permissions) > 0
+
+        # Check credential routing works
+        cred_perms = [
+            p for p in policy.permissions
+            if p.action == "credential:use" and "openai" in str(p.resource)
+        ]
+        assert len(cred_perms) == 1
+        assert cred_perms[0].effect == "allow"
+
+    def test_engine_evaluates_compiled_policy(self, tmp_path):
+        """PolicyEngine correctly evaluates a compiled host-centric policy."""
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  api.openai.com:    { credentials: [openai:*], rate_limit: 3000 }
+  api.anthropic.com: { credentials: [anthropic:*], rate_limit: 3000 }
+  "*":               { unknown_credentials: prompt, rate_limit: 600 }
+
+global_budget: 12000
+required: [credential_guard]
+addons:
+  credential_guard: { enabled: true }
+scan_patterns: []
+""")
+
+        engine = PolicyEngine(baseline_path=baseline)
+
+        # Known credential to correct host → allow
+        decision = engine.evaluate_credential(
+            credential_type="openai",
+            destination="api.openai.com",
+            path="/v1/chat/completions",
+        )
+        assert decision.effect == "allow"
+
+        # Known credential to wrong host → prompt
+        decision = engine.evaluate_credential(
+            credential_type="openai",
+            destination="api.anthropic.com",
+            path="/v1/messages",
+        )
+        assert decision.effect == "prompt"
+
+        # Unknown credential → prompt
+        decision = engine.evaluate_credential(
+            credential_type="unknown",
+            destination="api.example.com",
+            path="/",
+        )
+        assert decision.effect == "prompt"
+
+        # Rate limiting works
+        decision = engine.evaluate_request(
+            host="api.openai.com",
+            path="/v1/chat/completions",
+        )
+        assert decision.effect == "allow"
+
+    def test_bypass_works_via_compiled_policy(self, tmp_path):
+        """Domain bypass compiles correctly and is evaluated."""
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  "*.internal": { bypass: [pattern_scanner] }
+
+required: [credential_guard]
+addons:
+  credential_guard: { enabled: true }
+  pattern_scanner: { enabled: true }
+scan_patterns: []
+""")
+
+        engine = PolicyEngine(baseline_path=baseline)
+
+        # pattern_scanner bypassed for internal domains
+        assert not engine.is_addon_enabled("pattern_scanner", domain="db.internal")
+
+        # pattern_scanner active for external domains
+        assert engine.is_addon_enabled("pattern_scanner", domain="api.openai.com")
+
+        # credential_guard active for internal (required)
+        assert engine.is_addon_enabled("credential_guard", domain="db.internal")
+
+
+class TestNoneAndEdgeCases:
+    """Tests for edge cases and defensive handling."""
+
+    def test_empty_hosts(self):
+        from policy_compiler import compile_policy
+
+        result = compile_policy({"hosts": {}})
+        assert result["permissions"] == []
+
+    def test_host_with_none_config(self):
+        from policy_compiler import compile_policy
+
+        result = compile_policy({"hosts": {"api.test.com": None}})
+        assert result["permissions"] == []
+
+    def test_host_with_empty_config(self):
+        from policy_compiler import compile_policy
+
+        result = compile_policy({"hosts": {"api.test.com": {}}})
+        assert result["permissions"] == []
+
+    def test_metadata_passthrough(self):
+        from policy_compiler import compile_policy
+
+        raw = {"hosts": {}, "metadata": {"version": "2.0", "description": "Test"}}
+        result = compile_policy(raw)
+        assert result["metadata"]["version"] == "2.0"
+
+
+class TestAddonFileSplit:
+    """Tests for loading addons.yaml as a sibling file."""
+
+    def test_addons_merged_from_sibling_file(self, tmp_path):
+        """Addons from sibling file are merged into policy."""
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  api.openai.com: { credentials: [openai:*], rate_limit: 3000 }
+  "*":            { unknown_credentials: prompt, rate_limit: 600 }
+required: [credential_guard]
+scan_patterns: []
+""")
+
+        addons = tmp_path / "addons.yaml"
+        addons.write_text("""
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: paranoid
+  pattern_scanner:
+    enabled: true
+""")
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # Addons should be loaded from sibling file
+        assert "credential_guard" in policy.addons
+        assert "pattern_scanner" in policy.addons
+
+    def test_baseline_addons_override_sibling(self, tmp_path):
+        """Addons in policy.yaml take precedence over addons.yaml."""
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  "*": { unknown_credentials: prompt, rate_limit: 600 }
+required: []
+scan_patterns: []
+addons:
+  credential_guard:
+    enabled: false
+""")
+
+        addons = tmp_path / "addons.yaml"
+        addons.write_text("""
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: paranoid
+  pattern_scanner:
+    enabled: true
+""")
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # policy.yaml overrides: credential_guard disabled
+        assert not policy.addons["credential_guard"].enabled
+        # pattern_scanner from addons.yaml still merged in
+        assert "pattern_scanner" in policy.addons
+
+    def test_works_without_addons_file(self, tmp_path):
+        """Policy loads fine when no addons.yaml sibling exists."""
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  api.openai.com: { credentials: [openai:*], rate_limit: 3000 }
+  "*":            { unknown_credentials: prompt, rate_limit: 600 }
+required: [credential_guard]
+addons:
+  credential_guard: { enabled: true }
+scan_patterns: []
+""")
+
+        # No addons.yaml file — should still work
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        assert len(policy.permissions) > 0
+        assert "credential_guard" in policy.addons
+
+    def test_engine_uses_split_files(self, tmp_path):
+        """PolicyEngine works correctly with split baseline + addons."""
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  api.openai.com: { credentials: [openai:*], rate_limit: 3000 }
+  "*.internal":   { bypass: [pattern_scanner] }
+  "*":            { unknown_credentials: prompt, rate_limit: 600 }
+required: [credential_guard]
+scan_patterns: []
+""")
+
+        addons = tmp_path / "addons.yaml"
+        addons.write_text("""
+addons:
+  credential_guard: { enabled: true }
+  pattern_scanner: { enabled: true }
+""")
+
+        engine = PolicyEngine(baseline_path=baseline)
+
+        # Credential evaluation works
+        decision = engine.evaluate_credential(
+            credential_type="openai",
+            destination="api.openai.com",
+            path="/v1/chat",
+        )
+        assert decision.effect == "allow"
+
+        # Addon config from addons.yaml is respected
+        assert engine.is_addon_enabled("pattern_scanner", domain="api.openai.com")
+        assert not engine.is_addon_enabled("pattern_scanner", domain="db.internal")
+
+    def test_non_addons_keys_merged_as_defaults(self, tmp_path):
+        """Non-addons keys in addons.yaml merge as defaults."""
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  "*": { unknown_credentials: prompt, rate_limit: 600 }
+scan_patterns: []
+""")
+
+        addons = tmp_path / "addons.yaml"
+        addons.write_text("""
+addons:
+  credential_guard: { enabled: true }
+required:
+  - credential_guard
+  - network_guard
+""")
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # 'required' not in baseline, so addons.yaml provides it
+        assert "credential_guard" in policy.required
+        assert "network_guard" in policy.required
+
+    def test_baseline_required_not_overridden(self, tmp_path):
+        """Keys already in policy.yaml are not overridden by addons.yaml."""
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  "*": { unknown_credentials: prompt, rate_limit: 600 }
+required: [credential_guard]
+scan_patterns: []
+""")
+
+        addons = tmp_path / "addons.yaml"
+        addons.write_text("""
+addons:
+  credential_guard: { enabled: true }
+required:
+  - credential_guard
+  - network_guard
+  - circuit_breaker
+""")
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # policy.yaml wins for non-addons keys
+        assert policy.required == ["credential_guard"]
+
+    def test_actual_config_files_load(self):
+        """The real config/policy.yaml + config/addons.yaml load correctly."""
+        from pathlib import Path
+
+        from policy_loader import PolicyLoader
+
+        baseline = Path(__file__).parent.parent / "config" / "policy.yaml"
+        if not baseline.exists():
+            pytest.skip("config/policy.yaml not found")
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # Should have permissions from hosts compilation
+        assert len(policy.permissions) > 0
+        # Should have addons from addons.yaml
+        assert "credential_guard" in policy.addons

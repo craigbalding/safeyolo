@@ -51,7 +51,7 @@ class TestCheckDocker:
 
 class TestCheckBaseline:
     def test_valid_baseline(self, tmp_config_dir):
-        baseline = tmp_config_dir / "baseline.yaml"
+        baseline = tmp_config_dir / "policy.yaml"
         baseline.write_text(yaml.dump({
             "metadata": {"version": "1.0"},
             "permissions": [
@@ -68,13 +68,13 @@ class TestCheckBaseline:
         assert "not found" in result.message
 
     def test_invalid_yaml(self, tmp_config_dir):
-        baseline = tmp_config_dir / "baseline.yaml"
+        baseline = tmp_config_dir / "policy.yaml"
         baseline.write_text("invalid: yaml: [broken")
         result = _check_baseline()
         assert result.status == "fail"
 
     def test_missing_permissions(self, tmp_config_dir):
-        baseline = tmp_config_dir / "baseline.yaml"
+        baseline = tmp_config_dir / "policy.yaml"
         baseline.write_text(yaml.dump({"metadata": {"version": "1.0"}}))
         result = _check_baseline()
         assert result.status == "warn"

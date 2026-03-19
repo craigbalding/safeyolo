@@ -42,8 +42,9 @@ from ..docker import (
 
 console = Console()
 
-# Path to bundled baseline.yaml in package
-BASELINE_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "baseline.yaml"
+# Path to bundled templates in package
+POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.yaml"
+ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
 
 
 def _bootstrap_config(config_dir: Path) -> None:
@@ -65,10 +66,15 @@ def _bootstrap_config(config_dir: Path) -> None:
     config = DEFAULT_CONFIG.copy()
     save_config(config)
 
-    # Copy baseline.yaml (policy file)
-    baseline_path = config_dir / "baseline.yaml"
-    if BASELINE_TEMPLATE_PATH.exists():
-        shutil.copy(BASELINE_TEMPLATE_PATH, baseline_path)
+    # Copy policy.yaml (policy file)
+    policy_path = config_dir / "policy.yaml"
+    if POLICY_TEMPLATE_PATH.exists():
+        shutil.copy(POLICY_TEMPLATE_PATH, policy_path)
+
+    # Copy addons.yaml (addon configuration)
+    addons_path = config_dir / "addons.yaml"
+    if ADDONS_TEMPLATE_PATH.exists():
+        shutil.copy(ADDONS_TEMPLATE_PATH, addons_path)
 
     # Write docker-compose.yml
     write_compose_file(sandbox=False)

@@ -401,7 +401,7 @@ class PDPCore:
         Returns configuration needed by sensors/addons:
         - credential_rules: For credential detection and routing
         - scan_patterns: For content scanning
-        - addons: Per-addon configuration from baseline.yaml
+        - addons: Per-addon configuration from policy.yaml
         - policy_hash: For cache invalidation
 
         Returns:

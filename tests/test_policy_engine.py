@@ -85,8 +85,8 @@ class TestPolicyEngine:
         """Create PolicyEngine with test baseline policy."""
         from policy_engine import PolicyEngine
 
-        # Create test baseline.yaml
-        baseline = tmp_path / "baseline.yaml"
+        # Create test policy.yaml
+        baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
 metadata:
   version: "1.0"
@@ -204,7 +204,7 @@ class TestAddCredentialApproval:
         """Create PolicyEngine with minimal baseline."""
         from policy_engine import PolicyEngine
 
-        baseline = tmp_path / "baseline.yaml"
+        baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
 metadata:
   version: "1.0"
@@ -292,7 +292,7 @@ class TestBudgetTracking:
         """Create PolicyEngine with budget config."""
         from policy_engine import PolicyEngine
 
-        baseline = tmp_path / "baseline.yaml"
+        baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
 metadata:
   version: "1.0"
@@ -354,7 +354,7 @@ class TestAddonConfiguration:
         """Create PolicyEngine with addon config."""
         from policy_engine import PolicyEngine
 
-        baseline = tmp_path / "baseline.yaml"
+        baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
 metadata:
   version: "1.0"

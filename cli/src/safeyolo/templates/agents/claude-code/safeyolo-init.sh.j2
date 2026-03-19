@@ -43,7 +43,7 @@ fi
 CMD="$1"
 shift
 
-# YOLO mode args (safeyolo agent run --yolo)
+# YOLO mode args (on by default, disable with --no-yolo)
 EXTRA_ARGS=""
 if [ -n "${SAFEYOLO_YOLO_MODE:-}" ]; then
   EXTRA_ARGS="{{ agent.run.auto_args_str }}"

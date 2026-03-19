@@ -124,8 +124,11 @@ safeyolo agent run myproject ~/other-project
 # Run with passthrough args to the agent CLI
 safeyolo agent run myproject -- --verbose
 
-# Run in yolo mode (auto-accept all prompts)
-safeyolo agent run myproject --yolo
+# Yolo mode is on by default (auto-accepts permission prompts)
+safeyolo agent run myproject
+
+# Disable yolo mode (requires manual approval of prompts)
+safeyolo agent run myproject --no-yolo
 
 # Fresh session (new container, no state from previous runs)
 safeyolo agent run myproject --fresh
@@ -200,7 +203,8 @@ Configuration is stored in `./safeyolo/` (project-specific) or `~/.safeyolo/` (g
 ```
 safeyolo/
 ├── config.yaml          # Main configuration
-├── baseline.yaml        # Policy file (permissions, credential rules)
+├── policy.yaml          # Host-centric policy (hosts, credentials, rate limits)
+├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── docker-compose.yml   # Generated compose file
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
@@ -224,22 +228,39 @@ modes:
   test_context: block
 ```
 
-### baseline.yaml
+### policy.yaml
 
-The policy file defines permissions, credential rules, and scan patterns. See the default `baseline.yaml` for full documentation. Key sections:
+Host-centric policy defining hosts, credentials, and rate limits:
 
 ```yaml
-# Credential patterns for routing protection
-credential_rules:
-  - name: openai
-    pattern: "sk-proj-[a-zA-Z0-9_-]{80,}"
-    allowed_hosts: ["api.openai.com"]
+hosts:
+  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
+  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
 
-# IAM-style permissions
-permissions:
-  - action: "network:request"
-    resource: "api.openai.com/*"
-    effect: allow
+global_budget: 12000
+
+credentials:
+  openai:
+    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
+    headers: [authorization, x-api-key]
+
+required: [credential_guard, network_guard, circuit_breaker]
+```
+
+### addons.yaml
+
+Addon tuning lives in a separate file, sibling to `policy.yaml`:
+
+```yaml
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: standard
+    entropy: { min_length: 20, min_charset_diversity: 0.5, min_shannon_entropy: 3.5 }
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
 ```
 
 ## Workflow

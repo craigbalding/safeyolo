@@ -44,79 +44,63 @@ SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision 
 
 ### UnifiedPolicy
 
-All security configuration lives in a single Pydantic-validated model (`UnifiedPolicy`):
+Security configuration is split across two files that are loaded into a single Pydantic-validated model (`UnifiedPolicy`):
 
 ```yaml
-# baseline.yaml
-metadata:
-  version: "1.0"
-  description: "Baseline security policy"
+# policy.yaml — host-centric policy
+hosts:
+  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
+  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
+  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
 
-permissions:
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: allow
-  - action: credential:use
-    resource: "api.openai.com/*"
-    effect: allow
-    condition:
-      credential: ["openai:*"]
+global_budget: 12000
 
-budgets:
-  openai-requests:
-    resource: "api.openai.com/*"
-    limit: 1000
-    window: 3600
+credentials:
+  openai:
+    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
+    headers: [authorization, x-api-key]
 
-credential_rules:
-  - name: openai
-    patterns:
-      - "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
-      - "sk-proj-[a-zA-Z0-9_-]{80,}"
-    allowed_hosts:
-      - api.openai.com
-    header_names:
-      - authorization
-      - x-api-key
+required: [credential_guard, network_guard, circuit_breaker]
+scan_patterns: []
+```
 
-scan_patterns:
-  - name: internal-ids
-    pattern: "PROJ-[0-9]{5}"
-    target: request
-    scope: [body, url]
-    action: block
-
+```yaml
+# addons.yaml — addon tuning (sibling to policy.yaml)
 addons:
   credential_guard:
     enabled: true
+    detection_level: standard
+    entropy: { min_length: 20, min_charset_diversity: 0.5, min_shannon_entropy: 3.5 }
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
   pattern_scanner:
-    builtin_sets: [secrets]
-
-clients:
-  "admin-*":
-    bypass: [pattern-scanner]
+    enabled: true
+    builtin_sets: []
 ```
+
+The host-centric format in `policy.yaml` compiles to IAM-style rules at load time. Each host entry can include `credentials`, `rate_limit`, `bypass`, and a `rules` escape hatch for full IAM expressiveness. `allowed_hosts` for credential rules are auto-derived from the `hosts` section.
 
 ### Policy Layers
 
 Policies are layered (baseline + task):
 
-1. **Baseline Policy**: Default rules loaded from `baseline.yaml`
+1. **Baseline Policy**: Default rules loaded from `policy.yaml`
 2. **Task Policy**: Optional per-task overrides (additive)
 
 The PolicyEngine merges these, with task policy extending baseline.
 
 ### Key Policy Sections
 
-| Section | Purpose |
-|---------|---------|
-| `permissions` | Allow/deny rules for actions on resources |
-| `budgets` | Rate limits with sliding windows |
-| `credential_rules` | Credential detection patterns + allowed destinations |
-| `scan_patterns` | Content scanning rules (URL, headers, body) |
-| `addons` | Per-addon configuration and enablement |
-| `clients` | Client-specific bypasses based on IP/identity |
-| `domains` | Domain-specific overrides |
+| File | Section | Purpose |
+|------|---------|---------|
+| `policy.yaml` | `hosts` | Per-host credentials, rate limits, bypass, rules |
+| `policy.yaml` | `global_budget` | Global rate limit cap across all hosts |
+| `policy.yaml` | `credentials` | Credential detection patterns and header names |
+| `policy.yaml` | `required` | Addons that must be active |
+| `policy.yaml` | `scan_patterns` | Content scanning rules (URL, headers, body) |
+| `addons.yaml` | `addons` | Per-addon configuration, enablement, tuning |
 
 ## PDP Architecture
 
@@ -179,7 +163,7 @@ Pure policy evaluation logic:
 
 Handles YAML loading and validation:
 
-- Loads baseline.yaml at startup
+- Loads policy.yaml at startup
 - Validates against UnifiedPolicy Pydantic model
 - Supports task policy upsert/delete
 - Computes policy hash for change detection
@@ -357,7 +341,8 @@ safeyolo/
 │   ├── tokens.py            # HMAC-signed readonly tokens
 │   └── app.py               # FastAPI HTTP adapter
 ├── config/
-│   ├── baseline.yaml        # Default policy
+│   ├── policy.yaml          # Host-centric policy (hosts, credentials, rate limits)
+│   ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 │   └── safe_headers.yaml    # Headers to skip in credential scanning
 └── tests/
     ├── test_credential_guard.py

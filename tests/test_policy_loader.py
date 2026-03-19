@@ -50,7 +50,7 @@ class TestPolicyLoaderBasics:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
             loader = PolicyLoader(baseline_path=path)
@@ -65,7 +65,7 @@ class TestPolicyLoaderFileLoading:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("""
 permissions:
   - action: "network:request"
@@ -104,7 +104,7 @@ permissions:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("not: valid: yaml: {{{")
 
             loader = PolicyLoader(baseline_path=path)
@@ -116,7 +116,7 @@ permissions:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("""
 permissions:
   - invalid_field: "should fail validation"
@@ -135,7 +135,7 @@ class TestPolicyLoaderTaskPolicy:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            baseline = Path(tmpdir) / "baseline.yaml"
+            baseline = Path(tmpdir) / "policy.yaml"
             baseline.write_text("permissions: []")
 
             task = Path(tmpdir) / "task.yaml"
@@ -158,7 +158,7 @@ permissions:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            baseline = Path(tmpdir) / "baseline.yaml"
+            baseline = Path(tmpdir) / "policy.yaml"
             baseline.write_text("permissions: []")
 
             task = Path(tmpdir) / "task.yaml"
@@ -180,7 +180,7 @@ class TestPolicyLoaderSpecificity:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("""
 permissions:
   - action: "network:request"
@@ -243,7 +243,7 @@ class TestPolicyLoaderReload:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            baseline = Path(tmpdir) / "baseline.yaml"
+            baseline = Path(tmpdir) / "policy.yaml"
             baseline.write_text("permissions: []")
 
             task = Path(tmpdir) / "task.yaml"
@@ -271,7 +271,7 @@ permissions:
         callback = Mock()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
             # Loader created to trigger callback
@@ -289,7 +289,7 @@ class TestPolicyLoaderWatcher:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
             loader = PolicyLoader(baseline_path=path)
@@ -307,7 +307,7 @@ class TestPolicyLoaderWatcher:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
             loader = PolicyLoader(baseline_path=path)
@@ -342,7 +342,7 @@ class TestPolicyLoaderProperties:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
             loader = PolicyLoader(baseline_path=path)
@@ -363,7 +363,7 @@ class TestPolicyLoaderProperties:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            baseline = Path(tmpdir) / "baseline.yaml"
+            baseline = Path(tmpdir) / "policy.yaml"
             baseline.write_text("permissions: []")
 
             task = Path(tmpdir) / "task.yaml"
@@ -390,7 +390,7 @@ class TestPolicyLoaderErrorPaths:
         assert os.geteuid() != 0, "Container running as root - security risk"
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("""
 permissions:
   - action: "network:request"
@@ -425,7 +425,7 @@ permissions:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             # Write binary data that's not valid YAML
             path.write_bytes(b"\x00\x01\x02\x03\x04\x05\xff\xfe")
 
@@ -456,7 +456,7 @@ permissions:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("""
 permissions:
   - action: "network:request"
@@ -482,7 +482,7 @@ permissions:
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "baseline.yaml"
+            path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
             loader = PolicyLoader(baseline_path=path)

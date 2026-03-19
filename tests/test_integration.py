@@ -28,7 +28,7 @@ def policy_context(tmp_path, policy_yaml: str):
     """
     reset_policy_client()
 
-    baseline = tmp_path / "baseline.yaml"
+    baseline = tmp_path / "policy.yaml"
     baseline.write_text(policy_yaml)
 
     config = PolicyClientConfig(baseline_path=baseline)

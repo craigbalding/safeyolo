@@ -17,8 +17,9 @@ from ..config import (
 )
 from ..docker import check_docker, write_compose_file
 
-# Path to bundled baseline.yaml in package
-BASELINE_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "baseline.yaml"
+# Path to bundled templates in package
+POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.yaml"
+ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
 
 console = Console()
 
@@ -115,16 +116,22 @@ def init(
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 
-    # Copy baseline.yaml (policy file)
-    baseline_path = config_dir / "baseline.yaml"
-    if BASELINE_TEMPLATE_PATH.exists():
-        shutil.copy(BASELINE_TEMPLATE_PATH, baseline_path)
-        console.print(f"  [green]Created[/green] {baseline_path}")
+    # Copy policy.yaml (policy file)
+    policy_path = config_dir / "policy.yaml"
+    if POLICY_TEMPLATE_PATH.exists():
+        shutil.copy(POLICY_TEMPLATE_PATH, policy_path)
+        console.print(f"  [green]Created[/green] {policy_path}")
     else:
         console.print(
-            f"  [red]Warning[/red]: Could not find baseline.yaml template at {BASELINE_TEMPLATE_PATH}"
+            f"  [red]Warning[/red]: Could not find policy.yaml template at {POLICY_TEMPLATE_PATH}"
         )
         console.print("    The proxy will fail to start without a policy file.")
+
+    # Copy addons.yaml (addon configuration)
+    addons_path = config_dir / "addons.yaml"
+    if ADDONS_TEMPLATE_PATH.exists():
+        shutil.copy(ADDONS_TEMPLATE_PATH, addons_path)
+        console.print(f"  [green]Created[/green] {addons_path}")
 
     # Write docker-compose.yml
     compose_path = write_compose_file(sandbox=sandbox)
@@ -153,7 +160,7 @@ def init(
             f"[green]SafeYolo initialized![/green]\n\n"
             f"Mode: {mode_label}\n"
             f"Configuration: {config_dir}\n"
-            f"Policy: {baseline_path}\n"
+            f"Policy: {policy_path}\n"
             f"Logs: {logs_dir}\n\n"
             f"{next_steps}",
             title="Success",

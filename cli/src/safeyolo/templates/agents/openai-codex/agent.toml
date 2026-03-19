@@ -11,7 +11,7 @@ binary = "codex"
 [run]
 command = "codex"
 args = []
-auto_args = ["--full-auto"]  # Only with: safeyolo agent run --yolo
+auto_args = ["--full-auto"]  # Default in yolo mode (disable with --no-yolo)
 help_arg = "--help"  # For: safeyolo agent help <name>
 
 [auth]

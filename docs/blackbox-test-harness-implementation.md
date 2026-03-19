@@ -21,7 +21,7 @@ Final structure:
 tests/blackbox/
 ├── docker-compose.yml          # Test orchestration
 ├── config/
-│   └── test-baseline.yaml      # Test-specific policy
+│   └── test-policy.yaml      # Test-specific policy
 ├── sinkhole/
 │   ├── Dockerfile
 │   ├── server.py               # Multi-host HTTP server
@@ -745,12 +745,12 @@ class TestRateLimiting:
         # First, reset budgets to ensure clean state
         admin_client.post("/admin/budgets/reset")
 
-        # The baseline.yaml has default budget of 600 req/min (10 rps)
+        # The policy.yaml has default budget of 600 req/min (10 rps)
         # Send requests rapidly to exhaust budget
         # Note: This test assumes a test-specific low budget configuration
 
         # For this test to work reliably, we need a test-specific budget
-        # configured in test-baseline.yaml with a very low limit
+        # configured in test-policy.yaml with a very low limit
 
         # Send many requests quickly
         responses = []
@@ -928,7 +928,7 @@ volumes:
 
 ### 1.5 Create Test Configuration
 
-**File:** `tests/blackbox/config/baseline.yaml`
+**File:** `tests/blackbox/config/policy.yaml`
 
 ```yaml
 # Test-specific baseline policy
@@ -1332,7 +1332,7 @@ test-blackbox-debug:
 - [ ] Implement runner/test_network_guard.py
 - [ ] Create runner/Dockerfile
 - [ ] Create docker-compose.yml
-- [ ] Create test-baseline.yaml
+- [ ] Create test-policy.yaml
 - [ ] Create run_tests.sh
 - [ ] Verify tests pass locally
 

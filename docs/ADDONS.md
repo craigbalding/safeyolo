@@ -29,7 +29,7 @@ Complete documentation for SafeYolo's mitmproxy addons.
 │  ┌───────────────────────────────────────┼───────────────┐  │
 │  │  ~/.safeyolo/                         │               │  │
 │  │    config.yaml    ┌───────────────────┴────────────┐  │  │
-│  │    baseline.yaml  │                                │  │  │
+│  │    policy.yaml  │                                │  │  │
 │  │    policies/      │  ┌──────────┐  ┌──────────┐    │  │  │
 │  │    logs/          │  │  Claude  │  │  Codex   │ ...│  │  │
 │  │                   │  └──────────┘  └──────────┘    │  │  │
@@ -62,6 +62,7 @@ Addons are loaded in this order (order matters for security):
 | 3 | request_logger | JSONL audit logging | Always on |
 | 3 | metrics | Per-domain statistics | Always on |
 | 3 | admin_api | REST API on :9090 | Always on |
+| 3 | flow_recorder | Record HTTP flows to SQLite for agent queryability | Always on |
 | TUI | flow_pruner | Prune old flows to prevent TUI memory growth | TUI-only |
 
 **Layers:**
@@ -74,7 +75,7 @@ Addons are loaded in this order (order matters for security):
 **Default behavior:**
 - `network_guard`, `credential_guard`, and `test_context` block by default (core protections)
 - `pattern_scanner` warns by default (higher false positive rate)
-- `test_context` is only active when `target_hosts` is non-empty in baseline.yaml
+- `test_context` is only active when `target_hosts` is non-empty in policy.yaml
 - Other addons are always active with no mode toggle
 
 ---
@@ -198,7 +199,7 @@ grep "req-abc123def456" logs/safeyolo.jsonl | jq
 
 ## policy_engine.py
 
-Unified policy engine using IAM-style vocabulary with **destination-first** credential routing. Handles credential authorization, rate limiting (budgets), and per-domain addon configuration.
+Unified policy engine with **host-centric** policy format. Handles credential authorization, rate limiting (budgets), and per-domain addon configuration. The host-centric format compiles to IAM-style rules at load time.
 
 **Architecture:** The policy system is split across addons and the PDP package:
 
@@ -215,67 +216,49 @@ Unified policy engine using IAM-style vocabulary with **destination-first** cred
 
 Addons use `get_policy_client()` to access the configured PolicyClient instance.
 
-**Configuration:** `config/baseline.yaml`
+**Configuration:** `config/policy.yaml` (hosts and credentials) + `config/addons.yaml` (addon tuning)
 
 ```yaml
-metadata:
-  version: "1.0"
-  description: "SafeYolo baseline policy"
+# policy.yaml — host-centric format
+hosts:
+  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
+  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
+  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
 
-permissions:
-  # Destination-first credential routing
-  # Resource = destination pattern, condition.credential = what can access it
-  - action: credential:use
-    resource: "api.openai.com/*"
-    effect: allow
-    condition:
-      credential: ["openai:*"]  # Type-based: any OpenAI key
+global_budget: 12000
 
-  - action: credential:use
-    resource: "api.anthropic.com/*"
-    effect: allow
-    condition:
-      credential: ["anthropic:*"]
+credentials:
+  openai:
+    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
+    headers: [authorization, x-api-key]
 
-  # HMAC-based approval for specific credential
-  - action: credential:use
-    resource: "api.custom.com/*"
-    effect: allow
-    condition:
-      credential: ["hmac:a1b2c3d4"]  # Specific credential fingerprint
-
-  # Unknown destinations require approval
-  - action: credential:use
-    resource: "*"
-    effect: prompt
-
-  # Rate limits (requests per minute)
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: budget
-    budget: 3000  # 50 rps
-
-budgets:
-  network:request: 12000  # Global cap
-
-required:
-  - credential_guard
-  - network_guard
-
-addons:
-  credential_guard: {enabled: true, detection_level: standard}
-  network_guard: {enabled: true}
-
-domains:
-  "*.internal":
-    bypass: [pattern_scanner, yara_scanner]
+required: [credential_guard, network_guard, circuit_breaker]
+scan_patterns: []
 ```
+
+```yaml
+# addons.yaml — addon tuning (sibling to policy.yaml)
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: standard
+    entropy: { min_length: 20, min_charset_diversity: 0.5, min_shannon_entropy: 3.5 }
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+  pattern_scanner:
+    enabled: true
+    builtin_sets: []
+```
+
+Each host entry can include: `credentials`, `rate_limit`, `bypass`, `rules` (IAM escape hatch). The wildcard `"*"` sets defaults. `allowed_hosts` for credential rules are auto-derived from the `hosts` section.
 
 **Credential condition formats:**
 - `openai:*` - type-based matching (any credential of that type)
 - `hmac:a1b2c3d4` - HMAC-based matching (specific credential fingerprint)
 
-**Policy effects:**
+**Policy effects** (internal IAM model):
 - `allow` - permit immediately
 - `deny` - block immediately
 - `prompt` - trigger human approval workflow
@@ -288,12 +271,12 @@ domains:
 - Per-domain and per-client overrides
 - Thread-safe with RLock
 
-**How credential routing works (destination-first):**
-1. Credential detected in request (pattern matching → type, HMAC fingerprint)
-2. PolicyEngine finds permission matching destination (`resource` pattern)
-3. Checks if credential matches `condition.credential` (type or HMAC)
-4. If match found with `effect: allow` → permit
-5. If no match → fall through to catch-all (typically `effect: prompt`)
+**How credential routing works (host-centric):**
+1. Credential detected in request (pattern matching -> type, HMAC fingerprint)
+2. PolicyEngine looks up the destination host in the `hosts` section
+3. Checks if credential matches the host's `credentials` list (type or HMAC)
+4. If match found -> permit
+5. If no match -> fall through to wildcard `"*"` entry (typically `unknown_credentials: prompt`)
 
 ---
 
@@ -331,36 +314,18 @@ Unified network policy addon combining access control, rate limiting, and homogl
 
 **Key design:** Single `PolicyEngine.evaluate_request()` call per request prevents double budget consumption.
 
-**Configuration:** Network policies are defined in `baseline.yaml` as permissions:
+**Configuration:** Network policies are defined in `policy.yaml` using the host-centric format:
 
 ```yaml
-permissions:
-  # Access control: allow/deny
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: allow
-    tier: explicit
+hosts:
+  api.openai.com:      { credentials: [openai:*],  rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*], rate_limit: 3000 }
+  "*":                 { unknown_credentials: prompt, rate_limit: 600 }
 
-  - action: network:request
-    resource: "malware.com/*"
-    effect: deny
-    tier: explicit
-
-  # Rate limiting: budget (requests per minute)
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: budget
-    budget: 3000  # 50 rps
-
-  # Default for all other domains
-  - action: network:request
-    resource: "*"
-    effect: budget
-    budget: 600  # 10 rps
-
-budgets:
-  network:request: 12000  # Global cap across all domains
+global_budget: 12000   # Global cap across all domains
 ```
+
+Each host's `rate_limit` controls requests per minute. The `global_budget` caps total traffic across all hosts. Hosts listed in `hosts:` are implicitly allowed; unlisted hosts fall through to the `"*"` wildcard.
 
 **Response when denied (403):**
 ```json
@@ -485,32 +450,29 @@ Core security addon. Ensures credentials only reach authorized hosts.
 
 ### Configuration
 
-**Credential patterns:** `config/baseline.yaml` (credential_rules section)
+**Credential patterns:** `config/policy.yaml` (credentials section)
 ```yaml
-credential_rules:
-  - name: openai
-    pattern: "sk-proj-[a-zA-Z0-9_-]{80,}"
-    allowed_hosts: ["api.openai.com"]
-  - name: anthropic
-    pattern: "sk-ant-api[a-zA-Z0-9-]{90,}"
-    allowed_hosts: ["api.anthropic.com"]
+credentials:
+  openai:
+    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
+    headers: [authorization, x-api-key]
+  anthropic:
+    patterns: ["sk-ant-api[a-zA-Z0-9-]{90,}"]
+    headers: [authorization, x-api-key]
 ```
 
-**Entropy settings:** `config/credential_guard.yaml`
+`allowed_hosts` are auto-derived from the `hosts` section -- any host with `credentials: [openai:*]` becomes an allowed host for the `openai` credential type.
+
+**Entropy settings:** `config/addons.yaml` (credential_guard section)
 ```yaml
-detection_level: standard  # patterns-only | standard | paranoid
-
-entropy:
-  min_length: 20
-  min_charset_diversity: 0.5
-  min_shannon_entropy: 3.5
-
-standard_auth_headers:
-  - authorization
-  - x-api-key
-  - api-key
-  - x-auth-token
-  - apikey
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: standard  # patterns-only | standard | paranoid
+    entropy:
+      min_length: 20
+      min_charset_diversity: 0.5
+      min_shannon_entropy: 3.5
 ```
 
 **Safe headers** (skipped in entropy analysis): `config/safe_headers.yaml`
@@ -564,25 +526,15 @@ Credential guard emits events to JSONL. The CLI handles the interactive workflow
 
 ### Policy-Based Approvals (Destination-First)
 
-Approvals are stored as permissions in `baseline.yaml` using destination-first schema:
+Approvals are stored in `policy.yaml` as host entries:
 
 ```yaml
-permissions:
+hosts:
   # Type-based: allow any custom-api credential to api.example.com
-  - action: credential:use
-    resource: "api.example.com/*"
-    effect: allow
-    tier: explicit
-    condition:
-      credential: ["custom-api:*"]
+  api.example.com:     { credentials: [custom-api:*], rate_limit: 600 }
 
   # HMAC-based: allow specific credential to api.example.com
-  - action: credential:use
-    resource: "api.example.com/*"
-    effect: allow
-    tier: explicit
-    condition:
-      credential: ["hmac:a1b2c3d4"]
+  api.example.com:     { credentials: [hmac:a1b2c3d4], rate_limit: 600 }
 ```
 
 **Credential condition formats:**
@@ -641,7 +593,7 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 
 **Default: Block mode** (428 soft-reject)
 
-**Activation:** Active when `target_hosts` is non-empty in baseline.yaml. No separate enable flag — add target hosts to activate, remove to deactivate.
+**Activation:** Active when `target_hosts` is non-empty in policy.yaml. No separate enable flag — add target hosts to activate, remove to deactivate.
 
 **How it works:**
 1. Requests to non-target hosts pass through untouched
@@ -654,7 +606,7 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 
 Required keys: `run`, `agent`. Optional: `test`, `phase`.
 
-**Configuration (baseline.yaml):**
+**Configuration (policy.yaml):**
 ```yaml
 addons:
   test_context:

@@ -52,25 +52,30 @@ def check() -> None:
             console.print("  [red]✗[/red]  Config file missing")
             all_ok = False
 
-    # 3. Check baseline.yaml (policy file) - CRITICAL
+    # 3. Check policy.yaml (policy file) - CRITICAL
     if config_dir:
-        baseline_path = config_dir / "baseline.yaml"
+        baseline_path = config_dir / "policy.yaml"
         if baseline_path.exists():
             try:
                 with open(baseline_path) as f:
                     policy = yaml.safe_load(f)
                 if policy and isinstance(policy, dict):
-                    if "permissions" in policy:
+                    if "hosts" in policy:
+                        host_count = len(policy.get("hosts", {}))
+                        console.print(
+                            f"  [green]✓[/green]  Policy file: policy.yaml ({host_count} hosts)"
+                        )
+                    elif "permissions" in policy:
                         perm_count = len(policy.get("permissions", []))
                         console.print(
-                            f"  [green]✓[/green]  Policy file: baseline.yaml ({perm_count} permissions)"
+                            f"  [green]✓[/green]  Policy file: policy.yaml ({perm_count} permissions)"
                         )
                     else:
                         console.print(
-                            "  [yellow]![/yellow]  Policy file: baseline.yaml (no permissions section)"
+                            "  [yellow]![/yellow]  Policy file: policy.yaml (no hosts or permissions section)"
                         )
                 else:
-                    console.print("  [yellow]![/yellow]  Policy file: baseline.yaml (empty or invalid)")
+                    console.print("  [yellow]![/yellow]  Policy file: policy.yaml (empty or invalid)")
             except yaml.YAMLError as e:
                 console.print(f"  [red]✗[/red]  Policy file: invalid YAML - {e}")
                 all_ok = False
@@ -78,7 +83,7 @@ def check() -> None:
                 console.print(f"  [red]✗[/red]  Policy file: error reading - {e}")
                 all_ok = False
         else:
-            console.print("  [red]✗[/red]  Policy file: baseline.yaml NOT FOUND")
+            console.print("  [red]✗[/red]  Policy file: policy.yaml NOT FOUND")
             console.print("        Run: [bold]safeyolo init[/bold] to create default policy")
             console.print("        [dim]The proxy will refuse to start without a policy file.[/dim]")
             all_ok = False

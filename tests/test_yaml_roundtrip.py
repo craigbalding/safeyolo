@@ -78,7 +78,7 @@ SAMPLE_BASELINE = textwrap.dedent("""\
 @pytest.fixture
 def yaml_file(tmp_path):
     """Create a temporary YAML file with comments."""
-    p = tmp_path / "baseline.yaml"
+    p = tmp_path / "policy.yaml"
     p.write_text(SAMPLE_BASELINE)
     return p
 
@@ -430,7 +430,7 @@ class TestFallbackBehavior:
             ],
         }
         content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
-        p = tmp_path / "new_baseline.yaml"
+        p = tmp_path / "new_policy.yaml"
         p.write_text(content)
 
         loaded = yaml.safe_load(p.read_text())
@@ -439,15 +439,15 @@ class TestFallbackBehavior:
 
 
 class TestRealBaseline:
-    """Acceptance test using the real baseline.yaml."""
+    """Acceptance test using the real policy.yaml."""
 
     @pytest.fixture
     def real_baseline(self, tmp_path):
-        """Copy real baseline.yaml to tmp."""
-        real = Path(__file__).parent.parent / "config" / "baseline.yaml"
+        """Copy real policy.yaml to tmp."""
+        real = Path(__file__).parent.parent / "config" / "policy.yaml"
         if not real.exists():
-            pytest.skip("config/baseline.yaml not found")
-        dest = tmp_path / "baseline.yaml"
+            pytest.skip("config/policy.yaml not found")
+        dest = tmp_path / "policy.yaml"
         dest.write_text(real.read_text())
         return dest
 
@@ -472,7 +472,7 @@ class TestRealBaseline:
         assert saved_comment_lines >= original_comment_lines
 
     def test_real_baseline_incremental_add(self, real_baseline):
-        """Add a credential approval to real baseline, verify comments survive."""
+        """Add a host entry to real policy, verify comments survive."""
         from yaml_roundtrip import load_roundtrip, save_roundtrip
 
         original_text = real_baseline.read_text()
@@ -481,22 +481,16 @@ class TestRealBaseline:
         )
 
         data = load_roundtrip(real_baseline)
-        original_perms = len(data["permissions"])
 
-        new_perm = {
-            "action": "credential:use",
-            "resource": "api.example.com/*",
-            "effect": "allow",
-            "tier": "explicit",
-            "condition": {"credential": ["hmac:testfingerprint"]},
-        }
-        data["permissions"].insert(0, new_perm)
+        # Policy uses host-centric format — add a new host entry
+        original_hosts = len(data["hosts"])
+        data["hosts"]["api.example.com"] = {"credentials": ["hmac:testfingerprint"]}
         save_roundtrip(real_baseline, data)
 
-        # Verify new permission added
+        # Verify new host added
         data2 = load_roundtrip(real_baseline)
-        assert len(data2["permissions"]) == original_perms + 1
-        assert data2["permissions"][0]["resource"] == "api.example.com/*"
+        assert len(data2["hosts"]) == original_hosts + 1
+        assert "api.example.com" in data2["hosts"]
 
         # Verify comments survived
         saved_text = real_baseline.read_text()

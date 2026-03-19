@@ -9,7 +9,7 @@ with full context for post-analysis.
 Requests to non-target hosts pass through untouched.
 
 Design:
-- Active when target_hosts is non-empty in baseline.yaml (no separate enable flag)
+- Active when target_hosts is non-empty in policy.yaml (no separate enable flag)
 - Soft-reject (428) for missing/malformed context headers on target hosts
 - Logs structured events for request and response with parsed context
 - Body capture: first 4KB head + tail lines for truncated bodies
@@ -148,7 +148,7 @@ class TestContext(SecurityAddon):
     def request(self, flow: http.HTTPFlow):
         """Check requests to target hosts for context header.
 
-        Active when target_hosts is non-empty in baseline.yaml.
+        Active when target_hosts is non-empty in policy.yaml.
         No separate enable flag - add target hosts to activate, remove to deactivate.
         """
         if flow.response:

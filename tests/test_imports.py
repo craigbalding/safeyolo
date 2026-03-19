@@ -28,6 +28,7 @@ ADDON_MODULES = [
     "network_guard",
     "pattern_scanner",
     "test_context",
+    "policy_compiler",
     "policy_engine",
     "policy_loader",
     "request_id",
@@ -335,7 +336,7 @@ class TestPolicyClientRegistry:
         reset_policy_client()
 
         # Create a minimal baseline policy
-        baseline_path = tmp_path / "baseline.yaml"
+        baseline_path = tmp_path / "policy.yaml"
         baseline_path.write_text("""
 metadata:
   version: "1.0"
@@ -378,7 +379,7 @@ permissions:
 
         reset_policy_client()
 
-        baseline_path = tmp_path / "baseline.yaml"
+        baseline_path = tmp_path / "policy.yaml"
         baseline_path.write_text("""
 metadata:
   version: "1.0"

@@ -246,7 +246,7 @@ def generate_compose(sandbox: bool = True, dev: bool = False) -> str:
         # User (non-root execution)
         "uid": os.getuid(),
         "gid": os.getgid(),
-        # SafeYolo home (contains data/, baseline.yaml)
+        # SafeYolo home (contains data/, policy.yaml)
         "config_dir": config_dir,
         # Logs go to XDG state directory
         "logs_dir": get_logs_dir(),
