@@ -578,7 +578,7 @@ class HttpPolicyClient(PolicyClient):
     def get_baseline(self) -> dict | None:
         """Get current baseline policy via HTTP."""
         try:
-            response = self._client.get("/v1/baseline", timeout=2.0)
+            response = self._client.get("/v1/policy", timeout=2.0)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("policy")
@@ -590,7 +590,7 @@ class HttpPolicyClient(PolicyClient):
     def get_baseline_path(self) -> str | None:
         """Get path to baseline policy file via HTTP."""
         try:
-            response = self._client.get("/v1/baseline", timeout=2.0)
+            response = self._client.get("/v1/policy", timeout=2.0)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("path")
@@ -662,7 +662,7 @@ class HttpPolicyClient(PolicyClient):
         """Replace baseline policy via HTTP."""
         try:
             response = self._client.put(
-                "/v1/baseline",
+                "/v1/policy",
                 json={"policy": policy_data},
                 timeout=5.0,
             )

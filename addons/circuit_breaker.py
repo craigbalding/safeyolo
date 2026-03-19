@@ -9,7 +9,7 @@ States:
 - OPEN: Service unhealthy, requests fail fast (503)
 - HALF_OPEN: Testing recovery, limited requests allowed
 
-Settings are read from config/baseline.yaml under addons.circuit_breaker
+Settings are read from config/policy.yaml under addons.circuit_breaker
 and hot-reload when the file changes (via the policy engine).
 
 Based on: https://martinfowler.com/bliki/CircuitBreaker.html
@@ -142,7 +142,7 @@ class CircuitBreaker(SecurityAddon):
     Tracks failures per domain and opens circuit when threshold is reached.
     Automatically recovers after timeout period.
 
-    Settings are loaded from baseline.yaml via the policy engine and
+    Settings are loaded from policy.yaml via the policy engine and
     hot-reload when the file changes.
     """
 

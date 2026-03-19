@@ -535,7 +535,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         Full baseline replacement is intended for machine-to-machine automation.
         This operation may not preserve YAML comments, layout, or human-authored
-        formatting in baseline.yaml. Operators who use inline comments as guidance
+        formatting in policy.yaml. Operators who use inline comments as guidance
         should prefer incremental local updates or regenerate from a canonical source.
         """
         client = get_policy_client()

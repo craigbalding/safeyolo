@@ -104,7 +104,7 @@ def policy_engine_initialized(tmp_path):
     reset_policy_client()
 
     # Create test baseline
-    baseline = tmp_path / "baseline.yaml"
+    baseline = tmp_path / "policy.yaml"
     baseline.write_text("""
 metadata:
   version: "1.0"
@@ -199,7 +199,7 @@ def network_guard(tmp_path):
     reset_policy_client()
 
     # Create permissive baseline for network_guard tests
-    baseline = tmp_path / "baseline.yaml"
+    baseline = tmp_path / "policy.yaml"
     baseline.write_text("""
 metadata:
   version: "1.0"

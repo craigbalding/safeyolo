@@ -322,7 +322,7 @@ def _check_ca_cert() -> DiagResult:
 
 
 def _check_baseline() -> DiagResult:
-    """Check if baseline.yaml is valid."""
+    """Check if policy.yaml is valid."""
     config_dir = find_config_dir()
     if not config_dir:
         return DiagResult(
@@ -330,12 +330,12 @@ def _check_baseline() -> DiagResult:
             status="skip",
             message="Config directory not found",
         )
-    baseline_path = config_dir / "baseline.yaml"
+    baseline_path = config_dir / "policy.yaml"
     if not baseline_path.exists():
         return DiagResult(
             name="Baseline policy",
             status="fail",
-            message="baseline.yaml not found",
+            message="policy.yaml not found",
             remediation="safeyolo init",
         )
     try:
@@ -348,11 +348,19 @@ def _check_baseline() -> DiagResult:
                 message="Invalid YAML (not a mapping)",
                 remediation="safeyolo init",
             )
+        if "hosts" in data:
+            # Host-centric format
+            host_count = len(data.get("hosts", {}))
+            return DiagResult(
+                name="Baseline policy",
+                status="pass",
+                message=f"Valid ({host_count} hosts)",
+            )
         if "permissions" not in data:
             return DiagResult(
                 name="Baseline policy",
                 status="warn",
-                message="No 'permissions' key in baseline.yaml",
+                message="No 'permissions' or 'hosts' key in policy.yaml",
             )
         perm_count = len(data.get("permissions", []))
         return DiagResult(
@@ -365,7 +373,7 @@ def _check_baseline() -> DiagResult:
             name="Baseline policy",
             status="fail",
             message=f"YAML parse error: {exc}",
-            remediation="Fix syntax in baseline.yaml or run: safeyolo init",
+            remediation="Fix syntax in policy.yaml or run: safeyolo init",
         )
 
 

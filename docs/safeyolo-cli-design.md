@@ -20,7 +20,7 @@ SafeYolo CLI is a host-side command-line tool that provides a friendly interface
 │  ┌────────────────┐       ┌──────────────────────────────┐  │
 │  │  safeyolo CLI  │◄─────►│  ~/.safeyolo/ (or ./safeyolo)│  │
 │  │                │       │    config.yaml                │  │
-│  │  Commands:     │       │    baseline.yaml              │  │
+│  │  Commands:     │       │    policy.yaml              │  │
 │  │  - init        │       │    policies/                  │  │
 │  │  - start/stop  │       │    logs/                      │  │
 │  │  - watch       │       └──────────────────────────────┘  │
@@ -45,7 +45,7 @@ SafeYolo CLI is a host-side command-line tool that provides a friendly interface
 │  │  └─────────────────────────────────────────────────┘ │  │
 │  │                                                       │  │
 │  │  Mounted volumes:                                     │  │
-│  │  - /config (baseline.yaml)                            │  │
+│  │  - /config (policy.yaml)                            │  │
 │  │  - /logs (safeyolo.jsonl)                             │  │
 │  │  - /certs (mitmproxy CA)                              │  │
 │  │  - /data (hmac_secret, policies/)                     │  │
@@ -243,7 +243,8 @@ The `token_hmac` serves as the approval token - it's deterministic for the same 
 ~/.safeyolo/                    # Global config (fallback)
 ./safeyolo/                     # Project-specific (preferred)
 ├── config.yaml                 # Main configuration
-├── baseline.yaml               # Policy file (permissions, credential rules)
+├── policy.yaml                 # Host-centric policy (hosts, credentials, rate limits)
+├── addons.yaml                 # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── policies/                   # Approved credentials per project
 │   ├── default.yaml
 │   └── {project}.yaml
@@ -286,25 +287,42 @@ approval:
     - destination_mismatch   # Known credential, wrong host
 ```
 
-### baseline.yaml
+### policy.yaml
 
-Credential patterns and other policy rules are defined in `baseline.yaml`:
+Host-centric policy defining hosts, credentials, and rate limits:
 
 ```yaml
-# Credential patterns for routing protection
-credential_rules:
-  - name: openai
-    pattern: "sk-proj-[a-zA-Z0-9_-]{80,}"
-    allowed_hosts: ["api.openai.com"]
-  - name: anthropic
-    pattern: "sk-ant-api[a-zA-Z0-9-]{90,}"
-    allowed_hosts: ["api.anthropic.com"]
+hosts:
+  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
+  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
 
-# Entropy detection settings
-entropy_detection:
-  enabled: true
-  min_length: 20
-  min_shannon_entropy: 3.5
+global_budget: 12000
+
+credentials:
+  openai:
+    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
+    headers: [authorization, x-api-key]
+  anthropic:
+    patterns: ["sk-ant-api[a-zA-Z0-9-]{90,}"]
+    headers: [authorization, x-api-key]
+
+required: [credential_guard, network_guard, circuit_breaker]
+```
+
+### addons.yaml
+
+Addon tuning lives in a separate file, sibling to `policy.yaml`:
+
+```yaml
+addons:
+  credential_guard:
+    enabled: true
+    detection_level: standard
+    entropy: { min_length: 20, min_charset_diversity: 0.5, min_shannon_entropy: 3.5 }
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
 ```
 
 ## Distribution

@@ -14,8 +14,8 @@ Endpoints:
     - DELETE /v1/tasks/{task_id} - Delete task policy
 
   Baseline Policy:
-    - GET /v1/baseline - Get current baseline policy
-    - PUT /v1/baseline - Replace baseline policy
+    - GET /v1/policy - Get current baseline policy
+    - PUT /v1/policy - Replace baseline policy
 
   Sensor Configuration:
     - GET /v1/sensor_config - Get credential rules and scan patterns
@@ -61,7 +61,7 @@ log = logging.getLogger("safeyolo.pdp.app")
 async def lifespan(app: FastAPI):
     """Manage PDP lifecycle."""
     # Startup: Initialize PDPCore
-    baseline_path = os.environ.get("PDP_BASELINE_PATH")
+    baseline_path = os.environ.get("PDP_POLICY_PATH")
     budget_path = os.environ.get("PDP_BUDGET_STATE_PATH")
 
     get_pdp(
@@ -216,7 +216,7 @@ async def stats() -> dict:
 # Baseline Policy Endpoints
 # =============================================================================
 
-@app.get("/v1/baseline")
+@app.get("/v1/policy")
 async def get_baseline() -> dict:
     """
     Get the current baseline policy.
@@ -253,13 +253,13 @@ async def get_sensor_config() -> dict:
     return pdp.get_sensor_config()
 
 
-@app.put("/v1/baseline")
+@app.put("/v1/policy")
 async def replace_baseline(request: Request) -> dict:
     """
     Replace the baseline policy.
 
     Accepts a policy document and replaces the current baseline.
-    This persists the policy if a baseline path is configured.
+    This persists the policy if a policy file path is configured.
 
     Body:
         {"policy": { ... policy document ... }}

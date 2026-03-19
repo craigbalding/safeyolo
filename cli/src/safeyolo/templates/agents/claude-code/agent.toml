@@ -11,7 +11,7 @@ binary = "claude"
 [run]
 command = "claude"
 args = []
-auto_args = ["--dangerously-skip-permissions"]  # Only with: safeyolo agent run --yolo
+auto_args = ["--dangerously-skip-permissions"]  # Default in yolo mode (disable with --no-yolo)
 help_arg = "--help"  # For: safeyolo agent help <name>
 
 [auth]

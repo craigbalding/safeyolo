@@ -24,7 +24,7 @@ Usage (via PolicyClient - recommended):
         # block with decision.immediate_response
 
 The PolicyClientConfigurator addon configures the PolicyClient singleton
-using mitmproxy options (--set policy_baseline=/path/to/baseline.yaml).
+using mitmproxy options (--set policy_file=/path/to/policy.yaml).
 It must be loaded BEFORE any addon that calls get_policy_client().
 """
 
@@ -39,7 +39,7 @@ import yaml
 from budget_tracker import GCRABudgetTracker
 from policy_loader import PolicyLoader
 from pydantic import BaseModel, Field, model_validator
-from utils import matches_host_pattern, matches_resource_pattern, write_event
+from utils import matches_host_pattern, matches_resource_pattern, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.policy-engine")
 
@@ -805,8 +805,9 @@ class PolicyEngine:
         )
 
         # Add to baseline (at beginning for higher priority)
-        baseline = self._loader.baseline
-        baseline.permissions.insert(0, new_permission)
+        with self._loader._lock:
+            baseline = self._loader._baseline
+            baseline.permissions.insert(0, new_permission)
 
         # Re-sort and update
         self._loader.set_baseline(baseline)
@@ -815,7 +816,7 @@ class PolicyEngine:
         if self._loader.baseline_path:
             self._save_baseline_incremental(new_permission)
 
-        log.info(f"Added credential approval: {destination} accepts {cred_ids}")
+        log.info("Added credential approval: %s accepts %s", sanitize_for_log(destination), cred_ids)
         write_event(
             "admin.credential_approval_added",
             addon="policy-engine",
@@ -904,8 +905,10 @@ class PolicyEngine:
     def _save_baseline_incremental(self, new_permission: Permission) -> None:
         """Save baseline with a new permission inserted, preserving comments.
 
-        Loads the original file with ruamel.yaml round-trip mode, inserts the
-        new permission at position 0 in the permissions list, and writes back.
+        Handles both host-centric and IAM formats:
+        - Host-centric: adds to the hosts section
+        - IAM: inserts into the permissions list
+
         Falls back to full rewrite if the original file can't be loaded.
 
         Args:
@@ -921,14 +924,16 @@ class PolicyEngine:
             if baseline_path.exists():
                 data = load_roundtrip(baseline_path)
 
-                # Build the new permission dict
-                perm_dict = new_permission.model_dump(exclude_none=True)
-
-                # Insert at position 0 for highest priority
-                if "permissions" in data:
-                    data["permissions"].insert(0, perm_dict)
+                if "hosts" in data:
+                    # Host-centric format: add to hosts section
+                    self._save_host_centric_approval(data, new_permission)
                 else:
-                    data["permissions"] = [perm_dict]
+                    # IAM format: insert into permissions list
+                    perm_dict = new_permission.model_dump(exclude_none=True)
+                    if "permissions" in data:
+                        data["permissions"].insert(0, perm_dict)
+                    else:
+                        data["permissions"] = [perm_dict]
 
                 save_roundtrip(baseline_path, data)
                 return
@@ -937,6 +942,53 @@ class PolicyEngine:
 
         # Fallback: full rewrite without comment preservation
         self._save_baseline_plain()
+
+    def _save_host_centric_approval(self, data: dict, permission: Permission) -> None:
+        """Insert a credential approval into the hosts section of a host-centric file.
+
+        Extracts the host from the permission resource and adds/updates the
+        credentials list in the hosts section.
+
+        Args:
+            data: Round-trip loaded YAML data (CommentedMap)
+            permission: The credential:use permission to add
+        """
+        from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+        # Extract host from resource pattern (e.g., "api.example.com/*" → "api.example.com")
+        resource = permission.resource
+        host = resource.rstrip("/*") if resource.endswith("/*") else resource
+
+        hosts = data.get("hosts")
+        if hosts is None:
+            hosts = CommentedMap()
+            data["hosts"] = hosts
+
+        # Get or create host entry
+        if host in hosts and isinstance(hosts[host], dict):
+            host_config = hosts[host]
+        else:
+            host_config = CommentedMap()
+            hosts[host] = host_config
+
+        # Extract credential IDs from the permission condition
+        cred_ids = []
+        if permission.condition and permission.condition.credential:
+            creds = permission.condition.credential
+            if isinstance(creds, str):
+                cred_ids = [creds]
+            else:
+                cred_ids = list(creds)
+
+        # Add to existing credentials or create new list
+        existing = host_config.get("credentials")
+        if existing is None:
+            new_creds = CommentedSeq(cred_ids)
+            host_config["credentials"] = new_creds
+        else:
+            for cred in cred_ids:
+                if cred not in existing:
+                    existing.append(cred)
 
     def _save_baseline_full(self) -> None:
         """Save full baseline policy, preserving comments where possible.
@@ -1043,7 +1095,7 @@ class PolicyClientConfigurator:
     def load(self, loader):
         """Register mitmproxy options."""
         loader.add_option(
-            name="policy_baseline",
+            name="policy_file",
             typespec=Optional[str],
             default=None,
             help="Path to baseline policy YAML file",
@@ -1061,7 +1113,7 @@ class PolicyClientConfigurator:
 
         from pdp import PolicyClientConfig, configure_policy_client
 
-        baseline_path = ctx.options.policy_baseline
+        baseline_path = ctx.options.policy_file
         budget_path = ctx.options.policy_budget_state
 
         # Skip if nothing changed (smart reconfigure)
@@ -1103,7 +1155,7 @@ class PolicyClientConfigurator:
                 client = get_policy_client()
                 return client.get_stats()
             except Exception:
-                pass
+                log.debug("Failed to get policy stats", exc_info=True)
         return {}
 
 

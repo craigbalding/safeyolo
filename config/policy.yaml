@@ -1,0 +1,84 @@
+# SafeYolo baseline policy
+#
+# Host-centric format: everything about one host in one place.
+# Each entry can have: credentials, rate_limit, bypass, rules.
+#
+# Approved credentials are auto-added here by `safeyolo watch`.
+# Addon tuning (entropy, circuit breaker, etc.) lives in addons.yaml.
+
+metadata:
+  version: "2.0"
+  description: "SafeYolo baseline policy"
+
+# =============================================================================
+# HOSTS — credentials + rate limits + overrides, all in one place
+# =============================================================================
+
+hosts:
+  # ── LLM APIs ──────────────────────────────────────────────────
+  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
+  openrouter.ai:       { rate_limit: 3000 }
+
+  # ── Code hosting ──────────────────────────────────────────────
+  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
+  github.com:          { credentials: [github:*] }
+
+  # ── Google ────────────────────────────────────────────────────
+  "*.googleapis.com":  { rate_limit: 120 }
+
+  # ── Package registries ────────────────────────────────────────
+  pypi.org:               { rate_limit: 1200 }
+  files.pythonhosted.org: { rate_limit: 1200 }
+  registry.npmjs.org:     { rate_limit: 600 }
+
+  # ── Rust ──────────────────────────────────────────────────────
+  index.crates.io:     { rate_limit: 3000 }
+  static.crates.io:    { rate_limit: 1200 }
+  crates.io:           { rate_limit: 600 }
+
+  # ── Go ────────────────────────────────────────────────────────
+  proxy.golang.org:    { rate_limit: 300 }
+  sum.golang.org:      { rate_limit: 300 }
+
+  # ── Local ─────────────────────────────────────────────────────
+  host.docker.internal: { rate_limit: 12000 }
+
+  # ── Domain overrides ──────────────────────────────────────────
+  "*.internal":        { bypass: [pattern_scanner] }
+
+  # ── Defaults (wildcard) ───────────────────────────────────────
+  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
+
+global_budget: 12000   # total req/min across all domains
+
+# =============================================================================
+# CREDENTIAL DETECTION — how to recognize each credential type
+# =============================================================================
+# allowed_hosts auto-derived from hosts section above
+
+credentials:
+  openai:
+    patterns:
+      - "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+      - "sk-proj-[a-zA-Z0-9_-]{80,}"
+    headers: [authorization, x-api-key]
+  anthropic:
+    patterns:
+      - "sk-ant-api[a-zA-Z0-9_-]{90,}"
+    headers: [authorization, x-api-key]
+  github:
+    patterns:
+      - "gh[ps]_[a-zA-Z0-9]{36}"
+    headers: [authorization]
+
+# =============================================================================
+# REQUIRED ADDONS (cannot be disabled)
+# =============================================================================
+
+required:
+  - credential_guard
+  - network_guard
+  - circuit_breaker
+
+scan_patterns: []

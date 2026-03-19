@@ -33,7 +33,7 @@ SafeYolo is security software. This document outlines our security principles an
 
 **In practice:**
 - Credentials are fingerprinted via HMAC-SHA256 (`hmac_fingerprint()`). Only the fingerprint is stored/logged. ([`utils.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py))
-- Policy files use human-readable credential types (`openai`, `anthropic`), never raw tokens. (`~/.safeyolo/baseline.yaml`)
+- Policy files use human-readable credential types (`openai`, `anthropic`), never raw tokens. (`~/.safeyolo/policy.yaml`)
 - Log entries include fingerprint for correlation, never the credential itself.
 - HMAC secret uses atomic write with secure permissions (`O_CREAT|O_EXCL`, mode 0o600) via `load_hmac_secret()`. ([`utils.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py))
 - Admin API token files created with mode 0o600. ([`start-safeyolo.sh`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh))

@@ -79,7 +79,7 @@ services:
         target: /certs-public
         volume:
           nocopy: true
-      # SafeYolo home - config and data (baseline.yaml, data/*)
+      # SafeYolo home - config and data (policy.yaml, data/*)
       - ${HOME}/.safeyolo:/safeyolo
       # Logs go to XDG state directory
       - ${HOME}/.local/state/safeyolo:/app/logs

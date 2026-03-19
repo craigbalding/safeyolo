@@ -329,7 +329,7 @@ def demo(
     )
 
     console.print("\n[bold]Next steps:[/bold]")
-    console.print("  • Edit ~/.safeyolo/baseline.yaml to customize your policy")
+    console.print("  • Edit ~/.safeyolo/policy.yaml to customize your policy")
     console.print("  • Run 'safeyolo watch' during development to monitor traffic")
     console.print("  • See 'safeyolo --help' for all commands")
     console.print()

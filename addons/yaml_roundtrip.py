@@ -3,7 +3,7 @@ yaml_roundtrip.py - YAML round-trip load/save with comment preservation
 
 Uses ruamel.yaml to load and save YAML files while preserving comments,
 formatting, and key ordering. Only used for write paths where human-authored
-comments matter (e.g., baseline.yaml). Read paths stay on PyYAML for speed.
+comments matter (e.g., policy.yaml). Read paths stay on PyYAML for speed.
 """
 
 import logging
@@ -21,7 +21,7 @@ log = logging.getLogger("safeyolo.yaml-roundtrip")
 _yaml = YAML(typ="rt")
 _yaml.preserve_quotes = True
 _yaml.width = 4096  # Prevent line wrapping
-# Match baseline.yaml indentation: 2-space mapping, 4-space sequence (2 offset + 2 content)
+# Match policy.yaml indentation: 2-space mapping, 4-space sequence (2 offset + 2 content)
 _yaml.indent(mapping=2, sequence=4, offset=2)
 
 

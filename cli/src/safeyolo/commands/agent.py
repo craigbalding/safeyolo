@@ -695,7 +695,7 @@ def run(
         None, "--folder", "-f", help="Override folder to mount (default: from agent add)"
     ),
     yolo: bool = typer.Option(
-        False, "--yolo", help="Enable auto-accept mode (skips permission prompts)"
+        True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"
     ),
     fresh: bool = typer.Option(
         False, "--fresh", help="Ignore user_default_args, start fresh session"
@@ -719,7 +719,8 @@ def run(
     """Run an existing agent container.
 
     Starts SafeYolo if not running, then launches the agent container.
-    Use this as shorthand after initial 'agent add'.
+    Yolo mode is on by default (auto-accepts permission prompts).
+    Use --no-yolo to require manual approval.
 
     Pass agent-specific flags after '--':
 
@@ -736,7 +737,7 @@ def run(
 
         safeyolo agent run myproject
         safeyolo agent run myproject -f ~/other/folder
-        safeyolo agent run myproject --yolo
+        safeyolo agent run myproject --no-yolo
         safeyolo agent run myproject --mount ~/data:/data:ro
         safeyolo agent run myproject --port 6080:6080
         safeyolo agent run myproject -- --continue

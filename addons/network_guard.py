@@ -14,7 +14,7 @@ Load order: Layer 1 (after policy_engine, before credential_guard)
 Usage:
     mitmdump -s addons/network_guard.py ...
 
-Example baseline.yaml:
+Example policy.yaml:
 permissions:
   # Deny specific domains
   - action: network:request

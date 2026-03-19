@@ -3,6 +3,7 @@ policy_loader.py - Policy file loading, watching, and hot reload
 
 Handles:
 - Loading baseline and task policies from YAML/JSON
+- Host-centric policy compilation (hosts: → permissions:)
 - File watching with auto-reload
 - Thread-safe policy access
 
@@ -31,6 +32,7 @@ except ImportError:
     YAML_AVAILABLE = False
     yaml = None
 
+from policy_compiler import compile_policy, is_host_centric
 from utils import write_event
 
 log = logging.getLogger("safeyolo.policy-loader")
@@ -83,6 +85,7 @@ class PolicyLoader:
         # Thread safety
         self._lock = threading.RLock()
         self._last_baseline_mtime: float = 0
+        self._last_addons_mtime: float = 0
         self._last_task_mtime: float = 0
 
         # File watcher
@@ -112,8 +115,48 @@ class PolicyLoader:
             log.error(f"Failed to load {path}: {type(e).__name__}: {e}")
             return None
 
+    def _addons_path(self) -> Path | None:
+        """Get path to sibling addons.yaml (if it exists)."""
+        if not self._baseline_path:
+            return None
+        addons_path = self._baseline_path.parent / "addons.yaml"
+        if addons_path.exists():
+            return addons_path
+        return None
+
+    def _merge_addons(self, raw: dict) -> dict:
+        """Merge sibling addons.yaml into the policy dict.
+
+        Keys from addons.yaml are merged as defaults — anything already
+        in policy.yaml takes precedence.
+        """
+        addons_path = self._addons_path()
+        if not addons_path:
+            return raw
+
+        addons_raw = self._load_file(addons_path)
+        if addons_raw is None:
+            return raw
+
+        # Merge each top-level key from addons.yaml as a default
+        for key, value in addons_raw.items():
+            if key not in raw:
+                raw[key] = value
+            elif key == "addons" and isinstance(raw[key], dict) and isinstance(value, dict):
+                # Deep merge: addons.yaml provides defaults, policy.yaml overrides
+                merged = dict(value)
+                merged.update(raw[key])
+                raw[key] = merged
+
+        log.info(f"Merged addon config from {addons_path}")
+        return raw
+
     def _load_baseline(self) -> bool:
-        """Load baseline policy from file."""
+        """Load baseline policy from file.
+
+        If a sibling addons.yaml exists, its contents are merged as defaults
+        before compilation and validation.
+        """
         if not self._baseline_path:
             return False
 
@@ -128,9 +171,19 @@ class PolicyLoader:
             return False
 
         try:
+            # Merge sibling addons.yaml if present
+            raw = self._merge_addons(raw)
+
+            # Compile host-centric format → IAM format if needed
+            if is_host_centric(raw):
+                raw = compile_policy(raw)
+
             with self._lock:
                 self._baseline = self._UnifiedPolicy.model_validate(raw)
                 self._last_baseline_mtime = self._baseline_path.stat().st_mtime
+                addons_path = self._addons_path()
+                if addons_path:
+                    self._last_addons_mtime = addons_path.stat().st_mtime
 
                 # Sort permissions by specificity (most specific first)
                 self._baseline.permissions.sort(
@@ -220,11 +273,22 @@ class PolicyLoader:
             while not self._watcher_stop.is_set():
                 try:
                     # Check baseline
+                    reload_baseline = False
                     if self._baseline_path and self._baseline_path.exists():
                         mtime = self._baseline_path.stat().st_mtime
                         if mtime > self._last_baseline_mtime:
-                            log.info("Baseline policy changed, reloading...")
-                            self._load_baseline()
+                            reload_baseline = True
+
+                    # Check addons.yaml (triggers baseline reload since it merges in)
+                    addons_path = self._addons_path()
+                    if addons_path:
+                        mtime = addons_path.stat().st_mtime
+                        if mtime > self._last_addons_mtime:
+                            reload_baseline = True
+
+                    if reload_baseline:
+                        log.info("Policy changed, reloading...")
+                        self._load_baseline()
 
                     # Check task policy
                     if self._task_policy_path and self._task_policy_path.exists():

@@ -2,7 +2,7 @@
 """
 Generate HMAC fingerprint for a credential.
 
-Use this to pre-approve credentials in baseline.yaml without going through the
+Use this to pre-approve credentials in policy.yaml without going through the
 interactive approval flow. The fingerprint format matches what SafeYolo uses
 internally and what appears in `safeyolo watch` when credentials are blocked.
 

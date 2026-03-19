@@ -6,9 +6,11 @@ destinations. Body/URL scanning for arbitrary patterns is handled by
 pattern_scanner.py.
 """
 
+import logging
 import math
-import re
 from dataclasses import dataclass
+
+log = logging.getLogger("safeyolo.credentials")
 
 # =============================================================================
 # Entropy Functions
@@ -101,7 +103,15 @@ class CredentialRule:
     def __post_init__(self):
         if self.header_names is None:
             self.header_names = ["authorization", "x-api-key"]
-        self._compiled = [re.compile(p) for p in self.patterns]
+        from detection.patterns import compile_pattern
+
+        self._compiled = []
+        for p in self.patterns:
+            compiled = compile_pattern(p)
+            if compiled is not None:
+                self._compiled.append(compiled)
+            else:
+                log.warning("Skipping invalid credential pattern for %s: %s", self.name, p[:60])
 
     def matches(self, value: str) -> str | None:
         """Check if value matches any pattern, return matched portion."""

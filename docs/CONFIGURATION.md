@@ -7,7 +7,8 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ```
 ~/.safeyolo/
 ├── config.yaml          # Proxy settings
-├── baseline.yaml        # Policy: credentials, rate limits, addon config
+├── policy.yaml          # Policy: hosts, credentials, rate limits
+├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── certs/               # CA certificate for HTTPS inspection
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── policies/            # Per-project approval policies
@@ -36,57 +37,56 @@ modes:
   test_context: block
 ```
 
-## baseline.yaml
+## policy.yaml
 
-Unified policy using IAM-style vocabulary with **destination-first** credential routing:
+Host-centric policy format. Everything about one host lives in one place:
 
 ```yaml
-permissions:
-  # Destination-first: what credentials can access each endpoint
-  - action: credential:use
-    resource: "api.openai.com/*"      # destination pattern
-    effect: allow
-    condition:
-      credential: ["openai:*"]        # credential types allowed
+hosts:
+  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
+  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
+  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
+  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
 
-  - action: credential:use
-    resource: "api.anthropic.com/*"
-    effect: allow
-    condition:
-      credential: ["anthropic:*"]
+global_budget: 12000
 
-  # HMAC-based approval for specific unknown credentials
-  - action: credential:use
-    resource: "api.custom.com/*"
-    effect: allow
-    condition:
-      credential: ["hmac:a1b2c3d4"]   # specific credential fingerprint
+credentials:
+  openai:
+    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
+    headers: [authorization, x-api-key]
 
-  # Unknown destinations require approval
-  - action: credential:use
-    resource: "*"
-    effect: prompt
+required: [credential_guard, network_guard, circuit_breaker]
+scan_patterns: []
+```
 
-  # Rate limits (requests per minute)
-  - action: network:request
-    resource: "api.openai.com/*"
-    effect: budget
-    budget: 3000  # 50 rps
+Each host entry can include:
+- `credentials` - credential types allowed (e.g. `[openai:*]`, `[hmac:a1b2c3d4]`)
+- `rate_limit` - requests per minute for this host
+- `bypass` - addons to skip for this host
+- `rules` - escape hatch for full IAM expressiveness when needed
 
-required:
-  - credential_guard
-  - network_guard
-  - circuit_breaker
+The wildcard `"*"` entry sets defaults for unlisted hosts. `unknown_credentials: prompt` triggers human approval for unrecognized credentials.
 
+`allowed_hosts` for credential rules are auto-derived from the `hosts` section -- you don't need to specify them separately.
+
+> **Note:** The host-centric format compiles to IAM-style rules at load time. The IAM format remains the internal evaluation model.
+
+## addons.yaml
+
+Addon tuning lives in a separate file, sibling to `policy.yaml`:
+
+```yaml
 addons:
-  credential_guard: {enabled: true}
-  network_guard: {enabled: true}
-  test_context:
-    target_hosts: []  # Add hosts to activate
-
-domains:
-  "*.internal":
-    bypass: [pattern_scanner]
+  credential_guard:
+    enabled: true
+    detection_level: standard
+    entropy: { min_length: 20, min_charset_diversity: 0.5, min_shannon_entropy: 3.5 }
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+  pattern_scanner:
+    enabled: true
+    builtin_sets: []
 ```
 
 ### Credential Condition Formats
