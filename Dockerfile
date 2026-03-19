@@ -68,7 +68,9 @@ COPY addons/__init__.py /app/addons/
 COPY addons/base.py /app/addons/
 COPY addons/utils.py /app/addons/
 COPY addons/budget_tracker.py /app/addons/
+COPY addons/policy_compiler.py /app/addons/
 COPY addons/policy_loader.py /app/addons/
+COPY addons/yaml_roundtrip.py /app/addons/
 COPY addons/sensor_utils.py /app/addons/
 # Detection module (pure detection logic, no mitmproxy deps)
 COPY addons/detection/ /app/addons/detection/

@@ -1,6 +1,7 @@
 """
 policy_compiler.py - Compile host-centric policy YAML to IAM permission rules.
 
+
 Converts the user-friendly host-centric format:
 
     hosts:
