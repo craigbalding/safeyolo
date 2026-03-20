@@ -14,6 +14,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ..agents_store import load_agent as _store_load_agent
+from ..agents_store import load_all_agents, migrate_from_json, remove_agent as _store_remove_agent, save_agent
 from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
 from ..docker import is_running, wait_for_healthy
 from ..docker import start as docker_start
@@ -126,13 +128,14 @@ def _validate_instance_name(name: str) -> None:
 
 
 def _load_agent_metadata(name: str) -> dict:
-    """Load agent metadata from .safeyolo.json."""
-    metadata_file = get_agents_dir() / name / ".safeyolo.json"
-    if metadata_file.exists():
-        try:
-            return json.loads(metadata_file.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {}
+    """Load agent metadata from agents.yaml, migrating from .safeyolo.json if needed."""
+    metadata = _store_load_agent(name)
+    if metadata:
+        return metadata
+    # Fallback: migrate legacy .safeyolo.json
+    json_file = get_agents_dir() / name / ".safeyolo.json"
+    if json_file.exists():
+        return migrate_from_json(name)
     return {}
 
 
@@ -490,43 +493,34 @@ def add(
 
     # Instance directory = instance name
     agent_dir = get_agents_dir() / name
-    metadata_file = agent_dir / ".safeyolo.json"
 
     # Check if agent already exists
+    existing = _load_agent_metadata(name)
     if agent_dir.exists():
-        # Load existing metadata to check if config matches
-        if metadata_file.exists():
-            try:
-                existing = json.loads(metadata_file.read_text())
-                existing_template = existing.get("template")
-                existing_folder = existing.get("folder")
+        if existing:
+            existing_template = existing.get("template")
+            existing_folder = existing.get("folder")
 
-                if existing_template == template and existing_folder == folder_str:
-                    # Same config - idempotent, just run
-                    console.print(f"Agent '{name}' already configured.")
-                    if not no_run:
-                        exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)
-                        raise typer.Exit(exit_code)
-                    return
-                else:
-                    # Different config
-                    if not force:
-                        console.print(
-                            f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
-                            f"  Current:  {existing_template} → {existing_folder}\n"
-                            f"  Requested: {template} → {folder_str}\n"
-                            "Use --force to overwrite, or 'safeyolo agent run' to run existing."
-                        )
-                        raise typer.Exit(1)
-                    # With --force, continue to overwrite below
-            except (json.JSONDecodeError, OSError):
-                # Corrupted metadata, treat as needing --force
+            if existing_template == template and existing_folder == folder_str:
+                # Same config - idempotent, just run
+                console.print(f"Agent '{name}' already configured.")
+                if not no_run:
+                    exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)
+                    raise typer.Exit(exit_code)
+                return
+            else:
+                # Different config
                 if not force:
-                    console.print(f"[yellow]Agent '{name}' exists but metadata is corrupted.[/yellow]")
-                    console.print("Use --force to overwrite")
+                    console.print(
+                        f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
+                        f"  Current:  {existing_template} → {existing_folder}\n"
+                        f"  Requested: {template} → {folder_str}\n"
+                        "Use --force to overwrite, or 'safeyolo agent run' to run existing."
+                    )
                     raise typer.Exit(1)
+                # With --force, continue to overwrite below
         else:
-            # No metadata file, treat as needing --force
+            # No metadata, treat as needing --force
             if not force:
                 console.print(f"[yellow]Agent '{name}' already exists[/yellow]")
                 console.print("Use --force to overwrite")
@@ -553,7 +547,7 @@ def add(
     # Validate and normalize port specs
     parsed_ports = [_parse_port(p) for p in port]
 
-    # Write metadata file
+    # Write metadata to agents.yaml
     metadata = {"template": template, "folder": folder_str}
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
@@ -562,7 +556,7 @@ def add(
         metadata["mounts"] = parsed_mounts
     if parsed_ports:
         metadata["ports"] = parsed_ports
-    metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
+    save_agent(name, metadata)
 
     # Show created files
     for filepath in files:
@@ -614,28 +608,29 @@ def list_agents() -> None:
 
     # Show instances
     agents_dir = get_agents_dir()
+    all_agents = load_all_agents()
+
     if agents_dir.exists():
         instances = [
             d for d in agents_dir.iterdir()
             if d.is_dir() and (d / "docker-compose.yml").exists()
         ]
+        # Auto-migrate any legacy .safeyolo.json files
+        for inst_dir in instances:
+            if inst_dir.name not in all_agents and (inst_dir / ".safeyolo.json").exists():
+                migrate_from_json(inst_dir.name, inst_dir)
+        # Re-read after migration
+        all_agents = load_all_agents()
+
         if instances:
             table = Table(title="Configured Agents")
             table.add_column("Name", style="bold")
             table.add_column("Template")
             table.add_column("Folder")
             for inst_dir in sorted(instances, key=lambda d: d.name):
-                # Read metadata
-                metadata_file = inst_dir / ".safeyolo.json"
-                if metadata_file.exists():
-                    try:
-                        metadata = json.loads(metadata_file.read_text())
-                        template = metadata.get("template", "?")
-                        folder = metadata.get("folder", "?")
-                    except (json.JSONDecodeError, OSError):
-                        template, folder = "?", "?"
-                else:
-                    template, folder = "?", "?"
+                metadata = all_agents.get(inst_dir.name, {})
+                template = metadata.get("template", "?")
+                folder = metadata.get("folder", "?")
                 table.add_row(inst_dir.name, template, folder)
             console.print(table)
         else:
@@ -680,6 +675,7 @@ def remove(
         )
 
     shutil.rmtree(agent_dir)
+    _store_remove_agent(name)
     write_event("agent.removed", agent=name, clean=clean)
     console.print(f"[green]Removed agent: {name}[/green]")
 
@@ -901,17 +897,9 @@ def config(
         safeyolo agent config boris --remove-port 6080
         safeyolo agent config boris --clear-ports
     """
-    agent_dir = get_agents_dir() / name
-    metadata_file = agent_dir / ".safeyolo.json"
-
-    if not metadata_file.exists():
+    metadata = _load_agent_metadata(name)
+    if not metadata:
         console.print(f"[red]Agent not found: {name}[/red]")
-        raise typer.Exit(1)
-
-    try:
-        metadata = json.loads(metadata_file.read_text())
-    except (json.JSONDecodeError, OSError) as err:
-        console.print(f"[red]Failed to read agent config:[/red] {type(err).__name__}: {err}")
         raise typer.Exit(1)
 
     has_updates = (
@@ -1029,7 +1017,7 @@ def config(
     elif "ports" in metadata:
         del metadata["ports"]
 
-    metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
+    save_agent(name, metadata)
 
     # Build list of what changed for the event
     changes = []

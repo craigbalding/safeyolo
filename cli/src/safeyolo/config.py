@@ -108,6 +108,11 @@ def get_agents_dir() -> Path:
     return get_config_dir() / "agents"
 
 
+def get_agents_yaml_path() -> Path:
+    """Get path to agents.yaml (machine-managed agent metadata)."""
+    return get_config_dir() / "agents.yaml"
+
+
 def get_admin_token_path() -> Path:
     """Get path to admin token file."""
     return get_data_dir() / "admin_token"

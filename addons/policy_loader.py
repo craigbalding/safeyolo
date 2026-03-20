@@ -86,6 +86,7 @@ class PolicyLoader:
         self._lock = threading.RLock()
         self._last_baseline_mtime: float = 0
         self._last_addons_mtime: float = 0
+        self._last_agents_mtime: float = 0
         self._last_task_mtime: float = 0
 
         # File watcher
@@ -151,6 +152,35 @@ class PolicyLoader:
         log.info(f"Merged addon config from {addons_path}")
         return raw
 
+    def _agents_path(self) -> Path | None:
+        """Get path to sibling agents.yaml (if it exists)."""
+        if not self._baseline_path:
+            return None
+        agents_path = self._baseline_path.parent / "agents.yaml"
+        if agents_path.exists():
+            return agents_path
+        return None
+
+    def _merge_agents(self, raw: dict) -> dict:
+        """Merge sibling agents.yaml into the policy dict.
+
+        agents.yaml is authoritative for the 'agents' key — if agents.yaml
+        exists and 'agents' is not already in policy.yaml, merge it in.
+        """
+        agents_path = self._agents_path()
+        if not agents_path:
+            return raw
+
+        agents_raw = self._load_file(agents_path)
+        if agents_raw is None:
+            return raw
+
+        if "agents" not in raw:
+            raw["agents"] = agents_raw
+
+        log.info(f"Merged agents config from {agents_path}")
+        return raw
+
     def _load_baseline(self) -> bool:
         """Load baseline policy from file.
 
@@ -174,6 +204,9 @@ class PolicyLoader:
             # Merge sibling addons.yaml if present
             raw = self._merge_addons(raw)
 
+            # Merge sibling agents.yaml if present
+            raw = self._merge_agents(raw)
+
             # Compile host-centric format → IAM format if needed
             if is_host_centric(raw):
                 raw = compile_policy(raw)
@@ -184,6 +217,9 @@ class PolicyLoader:
                 addons_path = self._addons_path()
                 if addons_path:
                     self._last_addons_mtime = addons_path.stat().st_mtime
+                agents_path = self._agents_path()
+                if agents_path:
+                    self._last_agents_mtime = agents_path.stat().st_mtime
 
                 # Sort permissions by specificity (most specific first)
                 self._baseline.permissions.sort(
@@ -284,6 +320,13 @@ class PolicyLoader:
                     if addons_path:
                         mtime = addons_path.stat().st_mtime
                         if mtime > self._last_addons_mtime:
+                            reload_baseline = True
+
+                    # Check agents.yaml (triggers baseline reload since it merges in)
+                    agents_path = self._agents_path()
+                    if agents_path:
+                        mtime = agents_path.stat().st_mtime
+                        if mtime > self._last_agents_mtime:
                             reload_baseline = True
 
                     if reload_baseline:
