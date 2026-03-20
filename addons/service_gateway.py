@@ -25,7 +25,7 @@ Usage:
 import logging
 import secrets
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from mitmproxy import ctx, http
@@ -305,12 +305,12 @@ class ServiceGateway:
 
         # Strip sgw_ token and inject real credential
         del flow.request.headers["Authorization"]
+        injected_header = "Authorization"
         if role.auth.type == "bearer":
             flow.request.headers["Authorization"] = f"{role.auth.scheme} {cred.value}"
-            injected_header = "Authorization"
         elif role.auth.type == "api_key":
-            flow.request.headers[role.auth.header] = cred.value
             injected_header = role.auth.header
+            flow.request.headers[role.auth.header] = cred.value
 
         # Stamp metadata
         flow.metadata["gateway_service"] = service.name

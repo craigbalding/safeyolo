@@ -1,16 +1,17 @@
 """Tests for cli/src/safeyolo/commands/_oauth2_flow.py — OAuth2 authorization code flow."""
 
 import http.server
+
+# Add CLI source to path for direct imports
+import sys
 import threading
 import urllib.parse
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
-# Add CLI source to path for direct imports
-import sys
-from pathlib import Path
 cli_src = Path(__file__).parent.parent / "cli" / "src"
 sys.path.insert(0, str(cli_src))
 
@@ -265,6 +266,9 @@ class TestOAuth2Flow:
         params = urllib.parse.parse_qs(parsed.query)
         assert params["access_type"] == ["offline"]
         assert params["prompt"] == ["consent"]
+
+
+typer = pytest.importorskip("typer", reason="CLI dependency not available in addons test env")
 
 
 class TestScopeExpansion:

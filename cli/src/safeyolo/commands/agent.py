@@ -1087,7 +1087,7 @@ def _load_policy_hosts() -> dict:
         if raw and isinstance(raw, dict):
             return raw.get("hosts", {})
     except (OSError, yaml.YAMLError):
-        pass
+        pass  # Best-effort: missing or invalid policy is not fatal here
     return {}
 
 

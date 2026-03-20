@@ -18,7 +18,7 @@ Usage:
 import base64
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -238,7 +238,6 @@ class Vault:
                 return
             try:
                 raw = self._path.read_bytes()
-                salt = raw[:_KDF_SALT_LEN]
                 plaintext = self._fernet.decrypt(raw[_KDF_SALT_LEN:])
                 data = yaml.safe_load(plaintext.decode()) or {}
                 self._credentials = {}

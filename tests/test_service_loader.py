@@ -1,12 +1,10 @@
 """Tests for addons/service_loader.py — Service definition loader."""
 
 import pytest
-
 from service_loader import (
     AuthConfig,
     RouteRule,
     ServiceDefinition,
-    ServiceRole,
     ServiceRegistry,
 )
 

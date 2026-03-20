@@ -3,7 +3,6 @@
 import threading
 
 import pytest
-
 from vault import Vault, VaultCredential
 
 
@@ -144,7 +143,6 @@ class TestVault:
         v.unlock("pass")
         v.store(VaultCredential(name="x", type="bearer", value="y"))
         # File should be 0600
-        import stat
         mode = vault_path.stat().st_mode & 0o777
         assert mode == 0o600
 
