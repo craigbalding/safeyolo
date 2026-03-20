@@ -133,8 +133,7 @@ class RollingStats:
         self._prune(now)
         counts: dict[str, int] = {}
         for _, event in self._events:
-            if (event.get("event", "").startswith("security.") and
-                    event.get("decision") == "allow"):
+            if event.get("event", "").startswith("security.") and event.get("decision") == "allow":
                 host = event.get("host", "unknown")
                 counts[host] = counts.get(host, 0) + 1
         return counts
@@ -269,7 +268,9 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
     # Get user input
     while True:
         try:
-            response = console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+            response = (
+                console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+            )
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Interrupted[/dim]")
             return False
@@ -534,8 +535,7 @@ def watch(
                     # Suppress individual allow lines, aggregate in stats
                     events_since_status += 1
                     now = time.time()
-                    if (now - last_status_time >= STATUS_INTERVAL or
-                            events_since_status >= STATUS_BATCH):
+                    if now - last_status_time >= STATUS_INTERVAL or events_since_status >= STATUS_BATCH:
                         _print_interactive_status(stats)
                         events_since_status = 0
                         last_status_time = now

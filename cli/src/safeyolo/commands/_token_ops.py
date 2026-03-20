@@ -59,4 +59,5 @@ except ImportError:
             return None
         return payload
 
+
 __all__ = ["create_readonly_token", "validate_readonly_token"]

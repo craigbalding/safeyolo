@@ -37,6 +37,7 @@ The last argument (`~/code`) is where your project files live on the host - the 
 - **Human-in-the-loop** - credentials to new destinations require one-time approval
 - **Rate limiting** - prevent runaway loops from harming your IP reputation
 - **Audit trail** - every request logged with decisions and correlation
+- **Service gateway** - agents access external APIs (Gmail, Slack, etc.) without seeing real credentials
 
 ## Multiple Agents
 
@@ -82,6 +83,18 @@ $ safeyolo watch
 
 **Try it yourself:** Run `safeyolo demo` for a guided tour of the security features. Run `safeyolo watch` in a second terminal to see approvals appear in real-time.
 
+## Service Gateway
+
+Agents can call external APIs (Gmail, Slack, etc.) without ever seeing the real credentials. SafeYolo stores tokens in its vault and injects them at the proxy layer.
+
+```bash
+# Authorize an agent to access Gmail (stores credential in vault)
+safeyolo agent authorize boris gmail --role readonly --token-env GMAIL_TOKEN
+
+# See the merged policy
+safeyolo policy show --section agents
+```
+
 ---
 
 ## Try Mode (Evaluation Only)
@@ -119,7 +132,7 @@ SafeYolo is a TLS-intercepting proxy. It can only protect credentials it can see
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.10+
 - Docker
 
 ## Status

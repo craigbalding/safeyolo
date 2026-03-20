@@ -52,12 +52,16 @@ class TestCheckDocker:
 class TestCheckBaseline:
     def test_valid_baseline(self, tmp_config_dir):
         baseline = tmp_config_dir / "policy.yaml"
-        baseline.write_text(yaml.dump({
-            "metadata": {"version": "1.0"},
-            "permissions": [
-                {"action": "network:request", "resource": "*", "effect": "allow"},
-            ],
-        }))
+        baseline.write_text(
+            yaml.dump(
+                {
+                    "metadata": {"version": "1.0"},
+                    "permissions": [
+                        {"action": "network:request", "resource": "*", "effect": "allow"},
+                    ],
+                }
+            )
+        )
         result = _check_baseline()
         assert result.status == "pass"
         assert "1 permissions" in result.message
@@ -98,7 +102,7 @@ class TestCheckCrashLogs:
         log_file.write_text(
             "2024-01-01 INFO normal\n"
             "Traceback (most recent call last):\n"
-            "  File \"foo.py\", line 1\n"
+            '  File "foo.py", line 1\n'
             "SyntaxError: invalid syntax\n"
         )
         result = _check_crash_logs()
@@ -142,9 +146,7 @@ class TestRunChecks:
     def test_cascade_skips(self, tmp_config_dir, monkeypatch):
         """When Docker is unavailable, downstream checks are skipped."""
         monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
-        )
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
         monkeypatch.setattr("subprocess.run", mock_run)
         results = _run_checks()
         names = {r.name: r.status for r in results}
@@ -177,9 +179,10 @@ class TestRunChecks:
 
 class TestBuildBundle:
     def test_bundle_structure(self, monkeypatch):
-        monkeypatch.setattr("subprocess.run", MagicMock(
-            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="27.0", stderr="")
-        ))
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="27.0", stderr="")),
+        )
         results = [
             DiagResult(name="test1", status="pass", message="ok"),
             DiagResult(name="test2", status="fail", message="bad", detail="traceback here"),
@@ -196,9 +199,7 @@ class TestDoctorCLI:
     def test_doctor_runs(self, cli_runner, tmp_config_dir, monkeypatch):
         """Smoke test that doctor command runs without crashing."""
         monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
-        )
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
         monkeypatch.setattr("subprocess.run", mock_run)
 
         from safeyolo.cli import app
@@ -210,9 +211,7 @@ class TestDoctorCLI:
     def test_doctor_json(self, cli_runner, tmp_config_dir, monkeypatch):
         """Test --json flag writes bundle file."""
         monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
-        )
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
         monkeypatch.setattr("subprocess.run", mock_run)
 
         from safeyolo.cli import app

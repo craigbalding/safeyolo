@@ -38,12 +38,14 @@ def _generate_admin_token(config_dir: Path) -> str:
 def init(
     force: bool = typer.Option(
         False,
-        "--force", "-f",
+        "--force",
+        "-f",
         help="Overwrite existing configuration",
     ),
     interactive: bool = typer.Option(
         True,
-        "--interactive/--no-interactive", "-i",
+        "--interactive/--no-interactive",
+        "-i",
         help="Run interactive setup wizard",
     ),
     try_mode: bool = typer.Option(
@@ -75,9 +77,7 @@ def init(
 
     # Check for existing config
     if config_path.exists() and not force:
-        console.print(
-            f"[yellow]Configuration already exists at {config_dir}[/yellow]"
-        )
+        console.print(f"[yellow]Configuration already exists at {config_dir}[/yellow]")
         console.print("Use --force to overwrite")
         raise typer.Exit(1)
 
@@ -122,9 +122,7 @@ def init(
         shutil.copy(POLICY_TEMPLATE_PATH, policy_path)
         console.print(f"  [green]Created[/green] {policy_path}")
     else:
-        console.print(
-            f"  [red]Warning[/red]: Could not find policy.yaml template at {POLICY_TEMPLATE_PATH}"
-        )
+        console.print(f"  [red]Warning[/red]: Could not find policy.yaml template at {POLICY_TEMPLATE_PATH}")
         console.print("    The proxy will fail to start without a policy file.")
 
     # Copy addons.yaml (addon configuration)

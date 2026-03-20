@@ -83,12 +83,14 @@ def _bootstrap_config(config_dir: Path) -> None:
 def start(
     build: bool = typer.Option(
         False,
-        "--build", "-b",
+        "--build",
+        "-b",
         help="Rebuild image before starting",
     ),
     pull: bool = typer.Option(
         False,
-        "--pull", "-p",
+        "--pull",
+        "-p",
         help="Pull latest image before starting",
     ),
     wait: bool = typer.Option(
@@ -236,8 +238,7 @@ def status() -> None:
     config_dir = find_config_dir()
     if not config_dir:
         console.print(
-            "[yellow]No SafeYolo configuration found.[/yellow]\n"
-            "Run [bold]safeyolo init[/bold] to get started."
+            "[yellow]No SafeYolo configuration found.[/yellow]\nRun [bold]safeyolo init[/bold] to get started."
         )
         raise typer.Exit(1)
 
@@ -249,8 +250,7 @@ def status() -> None:
     if not container_status or container_status["status"] != "running":
         console.print(
             Panel(
-                "[yellow]SafeYolo is not running[/yellow]\n\n"
-                "Run [bold]safeyolo start[/bold] to start the proxy.",
+                "[yellow]SafeYolo is not running[/yellow]\n\nRun [bold]safeyolo start[/bold] to start the proxy.",
                 title="Status",
             )
         )
@@ -434,11 +434,11 @@ def status() -> None:
         pass  # Already shown API unavailable above
 
 
-
 def build(
     tag: str = typer.Option(
         "safeyolo:latest",
-        "--tag", "-t",
+        "--tag",
+        "-t",
         help="Image tag to build",
     ),
     no_cache: bool = typer.Option(

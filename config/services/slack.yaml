@@ -1,5 +1,6 @@
 name: slack
 description: "Slack Web API — channel reading and message posting"
+default_host: slack.com
 
 roles:
   reader:

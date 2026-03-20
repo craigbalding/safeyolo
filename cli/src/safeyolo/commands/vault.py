@@ -23,6 +23,7 @@ vault_app = typer.Typer(
 
 def _get_data_dir() -> Path:
     from ..config import get_data_dir
+
     return get_data_dir()
 
 
@@ -58,6 +59,7 @@ def _load_vault():
     Returns (Vault, VaultCredential) tuple.
     """
     import sys
+
     addons_dir = Path(__file__).parent.parent.parent.parent.parent / "addons"
     sys.path.insert(0, str(addons_dir))
     from vault import Vault, VaultCredential
@@ -73,7 +75,9 @@ def _load_vault():
 def add(
     name: str = typer.Argument(..., help="Credential name (e.g., gmail-oauth2)"),
     credential_type: str = typer.Option(
-        "bearer", "--type", "-t",
+        "bearer",
+        "--type",
+        "-t",
         help="Credential type: oauth2, api_key, or bearer",
     ),
 ) -> None:
@@ -91,6 +95,7 @@ def add(
         raise typer.Exit(1)
 
     import getpass
+
     value = getpass.getpass("Credential value: ")
     if not value:
         console.print("[red]Error:[/red] Empty credential value")
@@ -192,20 +197,25 @@ def oauth2(
     client_secret: str = typer.Option(..., "--client-secret", help="OAuth2 client secret"),
     scopes: list[str] = typer.Option(..., "--scope", "-s", help="OAuth2 scopes (repeatable)"),
     provider: str = typer.Option(
-        None, "--provider", "-p",
+        None,
+        "--provider",
+        "-p",
         help="Provider preset (google) — sets auth/token URLs automatically",
     ),
     auth_url: str = typer.Option(
-        None, "--auth-url",
+        None,
+        "--auth-url",
         help="Authorization endpoint URL (auto-set by --provider)",
     ),
     token_url: str = typer.Option(
-        None, "--token-url",
+        None,
+        "--token-url",
         help="Token endpoint URL (auto-set by --provider)",
     ),
     port: int = typer.Option(0, "--port", help="Localhost callback port (0 = auto)"),
     no_browser: bool = typer.Option(
-        False, "--no-browser",
+        False,
+        "--no-browser",
         help="Manual mode: print URL, paste back the code (for headless servers)",
     ),
 ) -> None:
@@ -261,7 +271,7 @@ def oauth2(
 
     try:
         if no_browser:
-            console.print(f"Mode:       manual (no browser)")
+            console.print("Mode:       manual (no browser)")
             token_data = run_oauth2_flow_manual(
                 client_id=client_id,
                 client_secret=client_secret,

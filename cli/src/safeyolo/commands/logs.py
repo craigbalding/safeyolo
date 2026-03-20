@@ -121,6 +121,7 @@ def tail_file(path: Path, follow: bool = False):
     if follow:
         # Use tail -f approach
         import subprocess
+
         process = subprocess.Popen(
             ["tail", "-f", str(path)],
             stdout=subprocess.PIPE,
@@ -141,7 +142,8 @@ def tail_file(path: Path, follow: bool = False):
 def logs(
     follow: bool = typer.Option(
         False,
-        "--follow", "-f",
+        "--follow",
+        "-f",
         help="Follow log output (like tail -f)",
     ),
     raw: bool = typer.Option(
@@ -151,17 +153,20 @@ def logs(
     ),
     security: bool = typer.Option(
         False,
-        "--security", "-s",
+        "--security",
+        "-s",
         help="Show only security.* events",
     ),
     request_id: str = typer.Option(
         None,
-        "--request-id", "-r",
+        "--request-id",
+        "-r",
         help="Filter to specific request ID",
     ),
     tail: int = typer.Option(
         None,
-        "--tail", "-n",
+        "--tail",
+        "-n",
         help="Show last N lines",
     ),
 ) -> None:
@@ -169,10 +174,7 @@ def logs(
 
     config_dir = find_config_dir()
     if not config_dir:
-        console.print(
-            "[red]No SafeYolo configuration found.[/red]\n"
-            "Run [bold]safeyolo init[/bold] first."
-        )
+        console.print("[red]No SafeYolo configuration found.[/red]\nRun [bold]safeyolo init[/bold] first.")
         raise typer.Exit(1)
 
     log_path = get_logs_dir() / "safeyolo.jsonl"

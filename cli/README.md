@@ -44,7 +44,7 @@ safeyolo doctor
 | `safeyolo doctor` | Run 11-check diagnostic cascade (config, Docker, proxy, addons) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |
 
-**Aliases:** `safeyolo up` = `start`, `safeyolo down` = `stop`
+**Aliases:** `safeyolo up` (start with `--pull` and `--wait` only), `safeyolo down` = `stop`
 
 **Start options:**
 
@@ -99,7 +99,8 @@ Sandbox Mode runs AI agents in isolated Docker containers with all traffic route
 | Command | Description |
 |---------|-------------|
 | `safeyolo agent add <name> <template> <folder>` | Add an agent and run it |
-| `safeyolo agent run <name> [folder]` | Run an existing agent |
+| `safeyolo agent run <name> [-f folder]` | Run an existing agent |
+| `safeyolo agent stop <name>` | Stop a running agent |
 | `safeyolo agent list` | List templates and configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
 | `safeyolo agent config <name>` | View or update agent configuration |
@@ -119,7 +120,7 @@ safeyolo agent add myproject claude-code ~/code
 safeyolo agent run myproject
 
 # Or run with a different folder
-safeyolo agent run myproject ~/other-project
+safeyolo agent run myproject -f ~/other-project
 
 # Run with passthrough args to the agent CLI
 safeyolo agent run myproject -- --verbose
@@ -143,6 +144,81 @@ safeyolo agent run myproject --fresh
 - `add` is idempotent: running it twice just runs the existing agent
 - Use `--no-run` with `add` to create config without running
 - Use `--ephemeral` with `add` for throwaway containers
+
+### Service Gateway
+
+Authorize agents to access external services through the gateway. Services are defined in YAML under `services/` and describe a host, available roles, and route patterns.
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo agent authorize <agent> <service>` | Authorize an agent to use a service |
+| `safeyolo agent revoke <agent> <service>` | Revoke service access for an agent |
+| `safeyolo services list` | List available service definitions |
+| `safeyolo services show <name>` | Show service details (host, roles, routes) |
+
+**Example flow:**
+
+```bash
+# List available services
+safeyolo services list
+
+# Authorize the agent to use the github service
+safeyolo agent authorize myproject github
+
+# Verify the policy was updated
+safeyolo policy show --section hosts
+
+# Revoke access when no longer needed
+safeyolo agent revoke myproject github
+```
+
+### Vault Management
+
+Store and manage credentials used by service gateway integrations.
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo vault add <name>` | Store a credential (value prompted securely) |
+| `safeyolo vault list` | List stored credentials (never shows values) |
+| `safeyolo vault remove <name>` | Remove a credential |
+| `safeyolo vault oauth2 <name> --provider google ...` | Run OAuth2 browser consent flow |
+
+```bash
+# Add a credential
+safeyolo vault add github-token
+
+# List stored credentials
+safeyolo vault list
+
+# Remove a credential
+safeyolo vault remove github-token
+
+# OAuth2 flow (opens browser for consent)
+safeyolo vault oauth2 google-creds --provider google --client-id <id> --client-secret <secret> --scope gmail.readonly
+```
+
+**Note:** The vault is encrypted at rest. An encryption key is auto-generated at `~/.safeyolo/data/vault.key` on first use.
+
+### Policy Inspection
+
+Inspect the merged policy that the proxy enforces at runtime.
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo policy show` | Show merged policy (policy.yaml + addons.yaml + agents.yaml) |
+| `safeyolo policy show --compiled` | Show compiled IAM format |
+| `safeyolo policy show --section hosts` | Filter output to one section |
+
+```bash
+# View full merged policy
+safeyolo policy show
+
+# View only the hosts section
+safeyolo policy show --section hosts
+
+# View compiled IAM representation
+safeyolo policy show --compiled
+```
 
 ### Token Management
 
@@ -205,11 +281,15 @@ safeyolo/
 ├── config.yaml          # Main configuration
 ├── policy.yaml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
+├── agents.yaml          # Machine-managed agent metadata (services, roles, credentials)
 ├── docker-compose.yml   # Generated compose file
+├── services/            # User service definitions (one YAML per service)
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
 ├── policies/            # Approved credentials
 └── data/                # Runtime data (admin token, HMAC secret, relay tokens)
+    ├── vault.yaml.enc   # Encrypted credential vault
+    └── vault.key        # Vault encryption key (auto-generated)
 ```
 
 ### config.yaml

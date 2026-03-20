@@ -61,11 +61,13 @@ def _wait_for_enter(message: str = "Press Enter to continue...") -> None:
 def _show_step(step: int, total: int, title: str, description: str) -> None:
     """Display a step header."""
     console.print()
-    console.print(Panel(
-        f"[bold]{title}[/bold]\n\n{description}",
-        title=f"[cyan]Step {step}/{total}[/cyan]",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold]{title}[/bold]\n\n{description}",
+            title=f"[cyan]Step {step}/{total}[/cyan]",
+            border_style="cyan",
+        )
+    )
 
 
 def _show_request(method: str, url: str, headers: dict[str, str] | None = None) -> None:
@@ -147,13 +149,15 @@ def demo(
         # In terminal 2:
         safeyolo demo
     """
-    console.print(Panel(
-        "[bold]SafeYolo Security Demo[/bold]\n\n"
-        "This guided tour demonstrates SafeYolo's security features.\n\n"
-        "[yellow]Recommended:[/yellow] Run [bold]safeyolo watch[/bold] in another terminal\n"
-        "to see approval prompts and observe cause-and-effect.",
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            "[bold]SafeYolo Security Demo[/bold]\n\n"
+            "This guided tour demonstrates SafeYolo's security features.\n\n"
+            "[yellow]Recommended:[/yellow] Run [bold]safeyolo watch[/bold] in another terminal\n"
+            "to see approval prompts and observe cause-and-effect.",
+            border_style="blue",
+        )
+    )
 
     if not auto:
         _wait_for_enter("Press Enter to start the demo...")
@@ -167,10 +171,12 @@ def demo(
     demo_anthropic_key_alt = _get_demo_anthropic_key()  # Different key for step 5
 
     # Step 1: Plain request
-    _show_step(1, total_steps,
+    _show_step(
+        1,
+        total_steps,
         "Plain Request (No Credentials)",
         "Requests without sensitive credentials pass through normally.\n"
-        "SafeYolo only intervenes when it detects credential patterns."
+        "SafeYolo only intervenes when it detects credential patterns.",
     )
     _show_request("GET", "https://httpbin.org/get")
 
@@ -186,16 +192,14 @@ def demo(
         time.sleep(delay)
 
     # Step 2: Pre-approved credential
-    _show_step(2, total_steps,
+    _show_step(
+        2,
+        total_steps,
         "Pre-Approved Credential",
         "The baseline policy pre-approves certain credential+destination pairs.\n"
-        "Anthropic keys to api.anthropic.com are allowed by default."
+        "Anthropic keys to api.anthropic.com are allowed by default.",
     )
-    _show_request(
-        "POST",
-        "https://api.anthropic.com/v1/messages",
-        {"Authorization": f"Bearer {demo_anthropic_key}"}
-    )
+    _show_request("POST", "https://api.anthropic.com/v1/messages", {"Authorization": f"Bearer {demo_anthropic_key}"})
 
     if not auto:
         _wait_for_enter("Press Enter to send request...")
@@ -203,8 +207,7 @@ def demo(
     status, _, body = _make_request(
         "POST",
         "https://api.anthropic.com/v1/messages",
-        {"Authorization": f"Bearer {demo_anthropic_key}",
-         "Content-Type": "application/json"},
+        {"Authorization": f"Bearer {demo_anthropic_key}", "Content-Type": "application/json"},
     )
     # Will get 400/401 from Anthropic (invalid key) but that means it passed through
     _show_result(status, "ALLOWED - baseline permits anthropic keys to api.anthropic.com", upstream_ok=True)
@@ -215,17 +218,15 @@ def demo(
         time.sleep(delay)
 
     # Step 3: Credential leakage attempt
-    _show_step(3, total_steps,
+    _show_step(
+        3,
+        total_steps,
         "Credential Leakage Attempt",
         "When a credential is sent to an [bold]unexpected destination[/bold],\n"
         "SafeYolo blocks the request and requires operator approval.\n\n"
-        "[yellow]Watch your 'safeyolo watch' terminal for the approval prompt![/yellow]"
+        "[yellow]Watch your 'safeyolo watch' terminal for the approval prompt![/yellow]",
     )
-    _show_request(
-        "GET",
-        "https://httpbin.org/headers",
-        {"Authorization": f"Bearer {demo_anthropic_key}"}
-    )
+    _show_request("GET", "https://httpbin.org/headers", {"Authorization": f"Bearer {demo_anthropic_key}"})
 
     if not auto:
         _wait_for_enter("Press Enter to send request (will be blocked)...")
@@ -247,11 +248,13 @@ def demo(
         time.sleep(delay)
 
     # Step 4: Approval flow
-    _show_step(4, total_steps,
+    _show_step(
+        4,
+        total_steps,
         "Approval Flow",
         "Now [bold]approve[/bold] the credential in 'safeyolo watch' (press 'a').\n"
         "Then we'll retry the same request - it should be allowed.\n\n"
-        "[yellow]Go to your watch terminal and approve the pending request.[/yellow]"
+        "[yellow]Go to your watch terminal and approve the pending request.[/yellow]",
     )
 
     if not auto:
@@ -261,11 +264,7 @@ def demo(
         time.sleep(delay)
 
     console.print("\nRetrying the same request...")
-    _show_request(
-        "GET",
-        "https://httpbin.org/headers",
-        {"Authorization": f"Bearer {demo_anthropic_key}"}
-    )
+    _show_request("GET", "https://httpbin.org/headers", {"Authorization": f"Bearer {demo_anthropic_key}"})
 
     status, _, body = _make_request(
         "GET",
@@ -289,16 +288,14 @@ def demo(
         time.sleep(delay)
 
     # Step 5: Different credential (still blocked)
-    _show_step(5, total_steps,
+    _show_step(
+        5,
+        total_steps,
         "Different Credential (New Fingerprint)",
         "Approvals are per-credential-fingerprint, not per-type.\n"
-        "A [bold]different[/bold] Anthropic key to the same destination is still blocked."
+        "A [bold]different[/bold] Anthropic key to the same destination is still blocked.",
     )
-    _show_request(
-        "GET",
-        "https://httpbin.org/headers",
-        {"Authorization": f"Bearer {demo_anthropic_key_alt}"}
-    )
+    _show_request("GET", "https://httpbin.org/headers", {"Authorization": f"Bearer {demo_anthropic_key_alt}"})
 
     if not auto:
         _wait_for_enter("Press Enter to send request...")
@@ -319,13 +316,15 @@ def demo(
         time.sleep(delay)
 
     # Step 6: Summary
-    _show_step(6, total_steps,
+    _show_step(
+        6,
+        total_steps,
         "Demo Complete!",
         "You've seen SafeYolo's core security features:\n\n"
         "  • [green]Allow[/green] - Plain requests and pre-approved credentials pass through\n"
         "  • [yellow]Block[/yellow] - Credential leakage attempts require approval\n"
         "  • [cyan]Approve[/cyan] - Operators can approve credentials for specific destinations\n"
-        "  • [dim]Per-fingerprint[/dim] - Each unique credential needs separate approval"
+        "  • [dim]Per-fingerprint[/dim] - Each unique credential needs separate approval",
     )
 
     console.print("\n[bold]Next steps:[/bold]")

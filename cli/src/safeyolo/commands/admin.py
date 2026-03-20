@@ -62,14 +62,10 @@ def check() -> None:
                 if policy and isinstance(policy, dict):
                     if "hosts" in policy:
                         host_count = len(policy.get("hosts", {}))
-                        console.print(
-                            f"  [green]✓[/green]  Policy file: policy.yaml ({host_count} hosts)"
-                        )
+                        console.print(f"  [green]✓[/green]  Policy file: policy.yaml ({host_count} hosts)")
                     elif "permissions" in policy:
                         perm_count = len(policy.get("permissions", []))
-                        console.print(
-                            f"  [green]✓[/green]  Policy file: policy.yaml ({perm_count} permissions)"
-                        )
+                        console.print(f"  [green]✓[/green]  Policy file: policy.yaml ({perm_count} permissions)")
                     else:
                         console.print(
                             "  [yellow]![/yellow]  Policy file: policy.yaml (no hosts or permissions section)"
@@ -396,17 +392,20 @@ def test(
     ),
     method: str = typer.Option(
         "GET",
-        "--method", "-X",
+        "--method",
+        "-X",
         help="HTTP method to use",
     ),
     header: list[str] = typer.Option(
         [],
-        "--header", "-H",
+        "--header",
+        "-H",
         help="Add header (can be repeated)",
     ),
     show_headers: bool = typer.Option(
         False,
-        "--headers", "-i",
+        "--headers",
+        "-i",
         help="Show response headers",
     ),
 ) -> None:

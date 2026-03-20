@@ -114,9 +114,7 @@ class TestAdminAPIModes:
 
     def test_get_modes(self, tmp_config_dir, mock_httpx):
         """Gets all addon modes."""
-        mock_httpx["response"].json.return_value = {
-            "modes": {"credential-guard": "block", "rate-limiter": "warn"}
-        }
+        mock_httpx["response"].json.return_value = {"modes": {"credential-guard": "block", "rate-limiter": "warn"}}
 
         api = AdminAPI(token="test")
         result = api.get_modes()

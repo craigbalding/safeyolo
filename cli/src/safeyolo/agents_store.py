@@ -32,8 +32,8 @@ def load_all_agents() -> dict[str, dict]:
         if not isinstance(data, dict):
             return {}
         return data
-    except Exception as e:
-        log.warning(f"Failed to read {path}: {e}")
+    except (OSError, yaml.YAMLError) as e:
+        log.warning("Failed to read %s: %s", path, type(e).__name__)
         return {}
 
 
@@ -95,6 +95,6 @@ def migrate_from_json(name: str, agent_dir: Path | None = None) -> dict:
         return {}
 
     save_agent(name, metadata)
-    json_file.unlink()
-    log.info(f"Migrated {name} from .safeyolo.json to agents.yaml")
+    json_file.unlink(missing_ok=True)
+    log.info("Migrated agent from .safeyolo.json to agents.yaml")
     return metadata

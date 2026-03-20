@@ -33,11 +33,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 
     # Write minimal config
     (config_dir / "config.yaml").write_text(
-        "version: 1\n"
-        "proxy:\n"
-        "  port: 8080\n"
-        "  admin_port: 9090\n"
-        "  container_name: safeyolo-test\n"
+        "version: 1\nproxy:\n  port: 8080\n  admin_port: 9090\n  container_name: safeyolo-test\n"
     )
 
     # Set environment variables - accessor functions check these at call time
@@ -51,9 +47,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 def mock_subprocess(monkeypatch):
     """Mock subprocess.run for docker commands."""
     mock_run = MagicMock()
-    mock_run.return_value = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr=""
-    )
+    mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     monkeypatch.setattr("subprocess.run", mock_run)
     return mock_run
 
@@ -129,10 +123,28 @@ def mock_docker_running(mock_subprocess):
 def sample_log_events():
     """Sample JSONL log events for testing."""
     return [
-        {"ts": "2024-01-01T12:00:00Z", "event": "traffic.request", "host": "api.openai.com", "method": "POST", "path": "/v1/chat"},
+        {
+            "ts": "2024-01-01T12:00:00Z",
+            "event": "traffic.request",
+            "host": "api.openai.com",
+            "method": "POST",
+            "path": "/v1/chat",
+        },
         {"ts": "2024-01-01T12:00:01Z", "event": "traffic.response", "status": 200, "latency_ms": 150},
-        {"ts": "2024-01-01T12:00:02Z", "event": "security.credential", "decision": "block", "host": "httpbin.org", "rule": "openai"},
-        {"ts": "2024-01-01T12:00:03Z", "event": "security.ratelimit", "decision": "warn", "domain": "api.openai.com", "wait_ms": 500},
+        {
+            "ts": "2024-01-01T12:00:02Z",
+            "event": "security.credential",
+            "decision": "block",
+            "host": "httpbin.org",
+            "rule": "openai",
+        },
+        {
+            "ts": "2024-01-01T12:00:03Z",
+            "event": "security.ratelimit",
+            "decision": "warn",
+            "domain": "api.openai.com",
+            "wait_ms": 500,
+        },
     ]
 
 
@@ -140,6 +152,7 @@ def sample_log_events():
 def write_log_file(tmp_config_dir, sample_log_events):
     """Write sample log events to JSONL file."""
     from safeyolo.config import get_logs_dir
+
     logs_dir = get_logs_dir()
     log_file = logs_dir / "safeyolo.jsonl"
     with open(log_file, "w") as f:

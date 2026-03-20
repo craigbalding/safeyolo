@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from utils import sanitize_for_log
 
 log = logging.getLogger("safeyolo.service-loader")
 
@@ -28,6 +29,7 @@ log = logging.getLogger("safeyolo.service-loader")
 @dataclass
 class RouteRule:
     """A route rule within a role."""
+
     effect: str  # "allow" or "deny"
     methods: list[str] = field(default_factory=lambda: ["*"])
     path: str = "/*"
@@ -47,6 +49,7 @@ class RouteRule:
 @dataclass
 class AuthConfig:
     """Authentication configuration for a service role."""
+
     type: str  # "bearer", "api_key"
     header: str = "Authorization"
     scheme: str = "Bearer"
@@ -65,6 +68,7 @@ class AuthConfig:
 @dataclass
 class ServiceRole:
     """A named access profile within a service."""
+
     name: str
     auth: AuthConfig
     routes: list[RouteRule] = field(default_factory=list)
@@ -85,9 +89,11 @@ class ServiceRole:
 @dataclass
 class ServiceDefinition:
     """A complete service definition (one per YAML file)."""
+
     name: str
     roles: dict[str, ServiceRole] = field(default_factory=dict)
     description: str = ""
+    default_host: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> "ServiceDefinition":
@@ -98,6 +104,7 @@ class ServiceDefinition:
             name=d["name"],
             roles=roles,
             description=d.get("description", ""),
+            default_host=d.get("default_host", ""),
         )
 
 
@@ -131,9 +138,9 @@ class ServiceRegistry:
                         service = ServiceDefinition.from_dict(raw)
                         self._services[service.name] = service
                         self._last_mtimes[str(yaml_file)] = yaml_file.stat().st_mtime
-                        log.info(f"Loaded service: {service.name}")
-                    except Exception as e:
-                        log.warning(f"Skipping {yaml_file.name}: {type(e).__name__}: {e}")
+                        log.info("Loaded service: %s", sanitize_for_log(service.name))
+                    except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError) as e:
+                        log.warning("Skipping %s: %s", yaml_file.name, sanitize_for_log(str(e)))
 
             log.info(f"Service registry: {len(self._services)} services loaded")
 
@@ -159,13 +166,11 @@ class ServiceRegistry:
                     if self._has_changes():
                         log.info("Service definitions changed, reloading...")
                         self.load()
-                except Exception as e:
-                    log.warning(f"Service watcher error: {type(e).__name__}: {e}")
+                except (OSError, yaml.YAMLError) as e:
+                    log.warning("Service watcher error: %s", sanitize_for_log(str(e)))
                 self._watcher_stop.wait(timeout=2.0)
 
-        self._watcher_thread = threading.Thread(
-            target=watch_loop, daemon=True, name="service-watcher"
-        )
+        self._watcher_thread = threading.Thread(target=watch_loop, daemon=True, name="service-watcher")
         self._watcher_thread.start()
         log.info("Started service file watcher")
 

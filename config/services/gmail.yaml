@@ -1,5 +1,6 @@
 name: gmail
 description: "Gmail API — email read/send via Google OAuth2"
+default_host: gmail.googleapis.com
 
 roles:
   readonly:

@@ -110,6 +110,7 @@ def show() -> None:
         # Show fingerprint
         try:
             import hashlib
+
             content = ca_cert.read_bytes()
             sha256 = hashlib.sha256(content).hexdigest()[:16]
             console.print(f"  SHA256:    {sha256}...")

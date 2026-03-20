@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
@@ -72,6 +73,7 @@ class PolicyLoader:
         """
         # Import here to avoid circular imports
         from policy_engine import UnifiedPolicy
+
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path
@@ -222,9 +224,7 @@ class PolicyLoader:
                     self._last_agents_mtime = agents_path.stat().st_mtime
 
                 # Sort permissions by specificity (most specific first)
-                self._baseline.permissions.sort(
-                    key=lambda p: _specificity_score(p.resource), reverse=True
-                )
+                self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
             log.info(
                 f"Loaded baseline policy: {len(self._baseline.permissions)} permissions, "
@@ -269,13 +269,9 @@ class PolicyLoader:
                 self._last_task_mtime = path.stat().st_mtime
 
                 # Sort permissions
-                self._task_policy.permissions.sort(
-                    key=lambda p: _specificity_score(p.resource), reverse=True
-                )
+                self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
-            log.info(
-                f"Loaded task policy: {len(self._task_policy.permissions)} permissions"
-            )
+            log.info(f"Loaded task policy: {len(self._task_policy.permissions)} permissions")
             write_event(
                 "ops.policy_reload",
                 addon="policy-loader",
@@ -345,9 +341,7 @@ class PolicyLoader:
 
                 self._watcher_stop.wait(timeout=2.0)
 
-        self._watcher_thread = threading.Thread(
-            target=watch_loop, daemon=True, name="policy-watcher"
-        )
+        self._watcher_thread = threading.Thread(target=watch_loop, daemon=True, name="policy-watcher")
         self._watcher_thread.start()
         log.info("Started policy file watcher")
 
@@ -385,17 +379,13 @@ class PolicyLoader:
         """Set baseline policy directly (for updates via API)."""
         with self._lock:
             self._baseline = policy
-            self._baseline.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+            self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
     def set_task_policy(self, policy: "UnifiedPolicy") -> None:
         """Set task policy directly (for updates via API)."""
         with self._lock:
             self._task_policy = policy
-            self._task_policy.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+            self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
     def reload(self) -> bool:
         """Force reload of all policies."""
