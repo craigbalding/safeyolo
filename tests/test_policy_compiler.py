@@ -929,7 +929,6 @@ scan_patterns: []
 
     def test_agents_yaml_change_triggers_reload(self, tmp_path):
         """Modifying agents.yaml triggers a baseline reload."""
-        import time
         import yaml
         from policy_loader import PolicyLoader
 

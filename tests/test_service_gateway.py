@@ -1,22 +1,15 @@
 """Tests for addons/service_gateway.py — Service Gateway addon."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from service_gateway import SGW_TOKEN_PREFIX, ServiceGateway, TokenBinding, mint_gateway_token
+from service_gateway import SGW_TOKEN_PREFIX, ServiceGateway, mint_gateway_token
 from service_loader import (
-    AuthConfig,
     RouteRule,
-    ServiceDefinition,
-    ServiceRole,
-    ServiceRegistry,
     init_service_registry,
 )
 from vault import Vault, VaultCredential
-
 
 # --- Fixtures ---
 
