@@ -16,9 +16,11 @@ from .commands.lifecycle import build, start, status, stop
 from .commands.logs import logs
 from .commands.mount import mount_app
 from .commands.sandbox import sandbox_app
+from .commands.services import services_app
 from .commands.setup import setup_app
 from .commands.tmux import tmux_app
 from .commands.token import token_app
+from .commands.vault import vault_app
 from .commands.watch import watch
 
 console = Console()
@@ -83,6 +85,8 @@ app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(setup_app, name="setup")
 app.add_typer(tmux_app, name="tmux")
 app.add_typer(token_app, name="token")
+app.add_typer(vault_app, name="vault")
+app.add_typer(services_app, name="services")
 
 
 # Convenience aliases

@@ -115,6 +115,7 @@ class AgentRelay:
             "/memory": self._handle_memory,
             "/agents": self._handle_agents,
             "/circuits": self._handle_circuits,
+            "/gateway/services": self._handle_gateway_services,
         }
 
         # POST handlers for flow store API
@@ -242,6 +243,38 @@ class AgentRelay:
             log.debug(f"Addon lookup failed: {type(exc).__name__}: {exc}")
 
         return None
+
+    def _handle_gateway_services(self, flow: http.HTTPFlow):
+        """GET /gateway/services - Get this agent's service bindings.
+
+        Resolves the calling agent via service_discovery (client IP → agent name),
+        then returns that agent's service bindings (host + token) from the gateway.
+        """
+        # Resolve caller identity via service_discovery
+        sd = self._find_addon("service-discovery")
+        if not sd:
+            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
+            return
+
+        from utils import get_client_ip
+        client_ip = get_client_ip(flow)
+        agent_name = sd.get_client_for_ip(client_ip)
+        if not agent_name or agent_name == "default":
+            self._respond(flow, 403, {"error": "Could not identify agent", "client_ip": client_ip})
+            return
+
+        gw = self._find_addon("service-gateway")
+        if not gw:
+            self._respond(flow, 503, {"error": "service-gateway addon not loaded"})
+            return
+
+        all_services = gw.get_agent_services()
+        agent_services = all_services.get(agent_name, {})
+
+        self._respond(flow, 200, {
+            "agent": agent_name,
+            "services": agent_services,
+        })
 
     def _handle_agents(self, flow: http.HTTPFlow):
         """GET /agents - Discovered agents and last-seen timestamps."""

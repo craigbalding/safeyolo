@@ -155,7 +155,7 @@ def sanitize_for_log(value, max_len: int = 200) -> str:
 
 
 # Valid event prefixes for taxonomy validation
-VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.", "agent.")
+VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.", "agent.", "broker.")
 
 # Module-level logger for write_event errors
 _log = logging.getLogger("safeyolo.utils")

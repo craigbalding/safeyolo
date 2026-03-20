@@ -1,0 +1,29 @@
+name: gmail
+description: "Gmail API — email read/send via Google OAuth2"
+
+roles:
+  readonly:
+    auth:
+      type: bearer
+      scheme: Bearer
+      refresh_on_401: true
+    routes:
+      - effect: deny
+        methods: ["*"]
+        path: "/gmail/v1/users/me/settings/**"
+      - effect: allow
+        methods: [GET]
+        path: "/gmail/v1/users/me/**"
+
+  sender:
+    auth:
+      type: bearer
+      scheme: Bearer
+      refresh_on_401: true
+    routes:
+      - effect: deny
+        methods: ["*"]
+        path: "/gmail/v1/users/me/settings/**"
+      - effect: allow
+        methods: [GET, POST]
+        path: "/gmail/v1/users/me/**"

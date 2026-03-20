@@ -195,6 +195,14 @@ class PolicyClient(ABC):
         """
         pass
 
+    def get_gateway_config(self) -> dict | None:
+        """Get gateway config (agents/tokens) from compiled policy.
+
+        Returns:
+            Gateway config dict, or None
+        """
+        return None
+
     @abstractmethod
     def get_task_policy(self, task_id: str) -> dict | None:
         """Get task policy by ID.
@@ -341,6 +349,10 @@ class LocalPolicyClient(PolicyClient):
     def get_baseline_path(self) -> str | None:
         """Get path to baseline policy file."""
         return self._pdp.get_baseline_path()
+
+    def get_gateway_config(self) -> dict | None:
+        """Get gateway config from compiled policy."""
+        return self._pdp.get_gateway_config()
 
     def get_task_policy(self, task_id: str) -> dict | None:
         """Get task policy by ID."""

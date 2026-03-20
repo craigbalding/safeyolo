@@ -82,3 +82,24 @@ required:
   - circuit_breaker
 
 scan_patterns: []
+
+# =============================================================================
+# SERVICE GATEWAY (optional) — expose curated API surfaces to agents
+# =============================================================================
+# Services reference definitions in config/services/*.yaml
+# Agents get gateway tokens (sgw_) that map to vault credentials.
+#
+# agents:
+#   research-agent:
+#     services:
+#       gmail:
+#         role: readonly
+#         token: gmail-oauth2       # vault credential name
+#       slack:
+#         role: poster
+#         token: slack-bot
+#   data-agent:
+#     services:
+#       minifuse:
+#         role: reader
+#         token: minifuse-key

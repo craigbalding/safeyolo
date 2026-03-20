@@ -124,9 +124,13 @@ class FlowRecorder:
         query_string = flow.request.query.to_dict() if flow.request.query else None
         query_str = json.dumps(query_string) if query_string else None
 
-        # Request info
+        # Request info — redact gateway-injected credential header
+        redact = None
+        injected = flow.metadata.get("gateway_injected_header")
+        if injected:
+            redact = {injected}
         req_ct = flow.request.headers.get("content-type", "")
-        req_headers = headers_to_json(flow.request.headers)
+        req_headers = headers_to_json(flow.request.headers, redact_headers=redact)
         req_body = flow.request.content or b""
 
         # Response info

@@ -35,8 +35,11 @@ ADDON_MODULES = [
     "request_logger",
     "sensor_utils",
     "service_discovery",
+    "service_gateway",
+    "service_loader",
     "sse_streaming",
     "utils",
+    "vault",
     "yaml_roundtrip",
 ]
 

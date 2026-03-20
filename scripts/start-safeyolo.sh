@@ -120,6 +120,9 @@ fi
 #   7. sse_streaming      - SSE/streaming support for LLM responses
 #   8. policy_engine      - Unified policy evaluation (other addons query this)
 #
+# Layer 0.5: Service Gateway (between policy_engine and network_guard)
+#   8.5 service_gateway - Credential injection for agents (sgw_ tokens)
+#
 # Layer 1: Network Policy (single evaluation for access + rate limiting)
 #   9. network_guard   - Access control + rate limiting (deny→403, budget→429)
 #  10. circuit_breaker - Fail-fast for unhealthy upstreams
@@ -163,6 +166,8 @@ load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/service_discovery.py"
 load_addon "/app/addons/sse_streaming.py"
 load_addon "/app/addons/policy_engine.py"
+# Layer 0.5: Service Gateway
+load_addon "/app/addons/service_gateway.py"
 # Layer 1: Network Policy
 load_addon "/app/addons/network_guard.py"
 load_addon "/app/addons/circuit_breaker.py"
@@ -271,6 +276,15 @@ if [ -f "/app/addons/test_context.py" ]; then
     fi
 fi
 echo ""
+
+# Service Gateway — auto-enable when vault key exists
+if [ -f "${CONFIG_DIR}/data/vault.key" ] && [ -f "${CONFIG_DIR}/data/vault.yaml.enc" ]; then
+    echo "Service gateway: ENABLED (vault found)"
+    MITM_OPTS="${MITM_OPTS} --set gateway_enabled=true"
+    MITM_OPTS="${MITM_OPTS} --set gateway_services_dir=${CONFIG_DIR}/services"
+    MITM_OPTS="${MITM_OPTS} --set gateway_vault_path=${CONFIG_DIR}/data/vault.yaml.enc"
+    MITM_OPTS="${MITM_OPTS} --set gateway_vault_key=${CONFIG_DIR}/data/vault.key"
+fi
 
 # Add rate limit config if file exists
 if [ -f "${CONFIG_DIR}/rate_limits.json" ]; then

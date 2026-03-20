@@ -218,6 +218,9 @@ class UnifiedPolicy(BaseModel):
     domains: dict[str, DomainOverride] = Field(default_factory=dict)
     clients: dict[str, DomainOverride] = Field(default_factory=dict)
 
+    # Service gateway: agent-to-service token bindings (compiled from agents: section)
+    gateway: dict = Field(default_factory=dict)
+
 
 # =============================================================================
 # Decision Types

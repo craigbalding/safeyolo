@@ -177,13 +177,15 @@ def extract_preview(body: bytes, content_type: str, max_chars: int = 8192) -> st
     return text
 
 
-def headers_to_json(headers) -> str:
+def headers_to_json(headers, redact_headers: set[str] | None = None) -> str:
     """Convert mitmproxy Headers to JSON string.
 
     Preserves duplicate header names as list of [name, value] pairs.
+    Headers named in redact_headers have their values replaced with [REDACTED].
     """
     if headers is None:
         return "[]"
+    redact_lower = {h.lower() for h in redact_headers} if redact_headers else set()
     pairs = [[name, value] for name, value in headers.fields]
     # Headers.fields returns (bytes, bytes) tuples
     decoded = []
@@ -192,6 +194,9 @@ def headers_to_json(headers) -> str:
             name = name.decode("utf-8", errors="replace")
         if isinstance(value, bytes):
             value = value.decode("utf-8", errors="replace")
+        if name.lower() in redact_lower:
+            suffix = value[-4:] if len(value) >= 4 else "?"
+            value = f"[GATEWAY:...{suffix}]"
         decoded.append([name, value])
     return json.dumps(decoded)
 
