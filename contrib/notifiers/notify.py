@@ -37,12 +37,11 @@ def tail_jsonl(path: Path):
 
 def send_notification(event: dict):
     """Send notification for a credential block event."""
-    data = event.get("data", {})
-    rule = data.get("rule", "unknown")
-    host = data.get("host", "unknown")
-    reason = data.get("reason", "blocked")
-    fingerprint = data.get("fingerprint", "")
-    project = data.get("project_id", "default")
+    rule = event.get("rule", "unknown")
+    host = event.get("host", "unknown")
+    reason = event.get("reason", "blocked")
+    fingerprint = event.get("fingerprint", "")
+    project = event.get("project_id", "default")
 
     title = f"Credential Blocked: {rule}"
     message = f"{rule} -> {host}\nReason: {reason}"
@@ -86,8 +85,8 @@ def main():
     print()
 
     for event in tail_jsonl(LOG_PATH):
-        if event.get("event") == "security.credential":
-            if event.get("data", {}).get("decision") == "block":
+        if event.get("event") == "security.credential_guard":
+            if event.get("decision") == "block":
                 send_notification(event)
 
 

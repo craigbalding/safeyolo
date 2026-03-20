@@ -1,6 +1,6 @@
 """Agent management commands."""
 
-import json
+import getpass
 import logging
 import os
 import re
@@ -10,15 +10,21 @@ import subprocess
 from pathlib import Path
 
 import typer
+import yaml
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from ..agents_store import load_agent as _store_load_agent
+from ..agents_store import load_all_agents, migrate_from_json, save_agent
+from ..agents_store import remove_agent as _store_remove_agent
 from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
 from ..docker import is_running, wait_for_healthy
 from ..docker import start as docker_start
 from ..events import write_event
 from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
+from ._service_discovery import find_service
 from .mount import is_path_protected
 
 log = logging.getLogger("safeyolo.agent")
@@ -79,21 +85,17 @@ agent_app = typer.Typer(
 def _check_project_ownership(project_path: Path, allow_unowned: bool) -> None:
     """Check that user owns the project directory."""
     import os
+
     try:
         stat_info = project_path.stat()
         if stat_info.st_uid != os.getuid():
             if allow_unowned:
-                console.print(
-                    f"[yellow]Warning: You don't own {project_path}[/yellow]"
-                )
+                console.print(f"[yellow]Warning: You don't own {project_path}[/yellow]")
             else:
-                console.print(
-                    f"[red]You don't own {project_path}[/red]\n"
-                    "Use --dangerously-allow-unowned to override."
-                )
+                console.print(f"[red]You don't own {project_path}[/red]\nUse --dangerously-allow-unowned to override.")
                 raise typer.Exit(1)
     except OSError as err:
-        console.print(f"[red]Cannot access {project_path}:[/red] {err}")
+        console.print(f"[red]Cannot access {escape(str(project_path))}:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
 
@@ -106,7 +108,7 @@ def _get_service_name(instance_name: str) -> str:
 
 
 # RFC 1123 hostname: lowercase alphanumeric, hyphens allowed (not at start/end), max 63 chars
-HOSTNAME_PATTERN = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _validate_instance_name(name: str) -> None:
@@ -119,20 +121,21 @@ def _validate_instance_name(name: str) -> None:
         raise typer.Exit(1)
     if not HOSTNAME_PATTERN.match(name):
         console.print(
-            f"[red]Invalid instance name: {name}[/red]\n"
+            f"[red]Invalid instance name: {escape(name)}[/red]\n"
             "Must be lowercase alphanumeric with hyphens (not at start/end)."
         )
         raise typer.Exit(1)
 
 
 def _load_agent_metadata(name: str) -> dict:
-    """Load agent metadata from .safeyolo.json."""
-    metadata_file = get_agents_dir() / name / ".safeyolo.json"
-    if metadata_file.exists():
-        try:
-            return json.loads(metadata_file.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {}
+    """Load agent metadata from agents.yaml, migrating from .safeyolo.json if needed."""
+    metadata = _store_load_agent(name)
+    if metadata:
+        return metadata
+    # Fallback: migrate legacy .safeyolo.json
+    json_file = get_agents_dir() / name / ".safeyolo.json"
+    if json_file.exists():
+        return migrate_from_json(name)
     return {}
 
 
@@ -168,11 +171,13 @@ def _run_agent(
         extra_mounts: Transient mount specs (/local/path:/container/path[:ro]) for this run only
         extra_ports: Transient port specs (127.0.0.1:host:container) for this run only
     """
+    _validate_instance_name(name)
+
     agent_dir = get_agents_dir() / name
     compose_file = agent_dir / "docker-compose.yml"
 
     if not compose_file.exists():
-        console.print(f"[red]Agent not found: {name}[/red]")
+        console.print(f"[red]Agent not found: {escape(name)}[/red]")
         console.print("Run [bold]safeyolo agent add <name> <template> <folder>[/bold] first.")
         raise typer.Exit(1)
 
@@ -191,7 +196,7 @@ def _run_agent(
             console.print("[green]SafeYolo started.[/green]\n")
 
         except Exception as err:
-            console.print(f"[red]Failed to start SafeYolo:[/red] {type(err).__name__}: {err}")
+            console.print(f"[red]Failed to start SafeYolo:[/red] {escape(str(err))}")
             raise typer.Exit(1)
 
     # Run the agent container
@@ -302,8 +307,7 @@ def _parse_mount(mount_spec: str) -> str:
     parts = mount_spec.split(":")
     if len(parts) < 2 or len(parts) > 3:
         console.print(
-            f"[red]Invalid mount format:[/red] {mount_spec}\n"
-            "Expected: /host/path:/container/path[:ro]"
+            f"[red]Invalid mount format:[/red] {escape(mount_spec)}\nExpected: /host/path:/container/path[:ro]"
         )
         raise typer.Exit(1)
 
@@ -311,7 +315,7 @@ def _parse_mount(mount_spec: str) -> str:
     container_path = parts[1]
 
     if not container_path.startswith("/"):
-        console.print(f"[red]Container path must be absolute:[/red] {container_path}")
+        console.print(f"[red]Container path must be absolute:[/red] {escape(container_path)}")
         raise typer.Exit(1)
 
     if not host_path.exists():
@@ -321,7 +325,7 @@ def _parse_mount(mount_spec: str) -> str:
     is_ro = len(parts) == 3 and parts[2] == "ro"
 
     if len(parts) == 3 and not is_ro:
-        console.print(f"[red]Invalid mount option:[/red] {parts[2]} (only 'ro' supported)")
+        console.print(f"[red]Invalid mount option:[/red] {escape(parts[2])} (only 'ro' supported)")
         raise typer.Exit(1)
 
     # Enforce protected paths
@@ -359,14 +363,14 @@ def _parse_port(port_spec: str) -> str:
         bind_addr, host_port_str, container_port_str = parts
     else:
         console.print(
-            f"[red]Invalid port format:[/red] {port_spec}\n"
+            f"[red]Invalid port format:[/red] {escape(port_spec)}\n"
             "Expected: host_port:container_port or 127.0.0.1:host_port:container_port"
         )
         raise typer.Exit(1)
 
     if bind_addr != "127.0.0.1":
         console.print(
-            f"[red]Only localhost bind address allowed:[/red] {bind_addr}\n"
+            f"[red]Only localhost bind address allowed:[/red] {escape(bind_addr)}\n"
             "Use 127.0.0.1:host_port:container_port (or omit bind address)"
         )
         raise typer.Exit(1)
@@ -375,18 +379,15 @@ def _parse_port(port_spec: str) -> str:
         try:
             port_int = int(val)
         except ValueError:
-            console.print(f"[red]Invalid {label} port (not an integer):[/red] {val}")
+            console.print(f"[red]Invalid {label} port (not an integer):[/red] {escape(val)}")
             raise typer.Exit(1)
         if port_int < 1 or port_int > 65535:
-            console.print(f"[red]Invalid {label} port (must be 1-65535):[/red] {val}")
+            console.print(f"[red]Invalid {label} port (must be 1-65535):[/red] {escape(val)}")
             raise typer.Exit(1)
 
     container_port = int(container_port_str)
     if container_port in _RESERVED_PORTS:
-        console.print(
-            f"[red]Container port {container_port} is reserved[/red] "
-            f"(used by SafeYolo proxy/admin)"
-        )
+        console.print(f"[red]Container port {container_port} is reserved[/red] (used by SafeYolo proxy/admin)")
         raise typer.Exit(1)
 
     return f"127.0.0.1:{host_port_str}:{container_port_str}"
@@ -408,7 +409,8 @@ def add(
     ),
     force: bool = typer.Option(
         False,
-        "--force", "-f",
+        "--force",
+        "-f",
         help="Overwrite existing agent configuration",
     ),
     no_run: bool = typer.Option(
@@ -428,7 +430,8 @@ def add(
     ),
     mount: list[str] = typer.Option(
         [],
-        "--mount", "-m",
+        "--mount",
+        "-m",
         help="Extra folder to mount (/local/path:/container/path[:ro], repeatable)",
     ),
     port: list[str] = typer.Option(
@@ -459,10 +462,7 @@ def add(
 
     config_dir = find_config_dir()
     if not config_dir:
-        console.print(
-            "[red]No SafeYolo configuration found.[/red]\n"
-            "Run [bold]safeyolo init --sandbox[/bold] first."
-        )
+        console.print("[red]No SafeYolo configuration found.[/red]\nRun [bold]safeyolo init[/bold] first.")
         raise typer.Exit(1)
 
     config = load_config()
@@ -470,7 +470,7 @@ def add(
         console.print(
             "[yellow]Warning: SafeYolo is not in Sandbox Mode.[/yellow]\n"
             "Agent containers may be able to bypass the proxy.\n"
-            "Run [bold]safeyolo init --sandbox[/bold] to enable network isolation.\n"
+            "Run [bold]safeyolo init[/bold] to enable network isolation (sandbox is the default).\n"
         )
 
     # Validate folder early
@@ -485,48 +485,39 @@ def add(
     try:
         get_agent_config(template)
     except TemplateError as err:
-        console.print(f"[red]Template error:[/red] {err}")
+        console.print(f"[red]Template error:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
     # Instance directory = instance name
     agent_dir = get_agents_dir() / name
-    metadata_file = agent_dir / ".safeyolo.json"
 
     # Check if agent already exists
+    existing = _load_agent_metadata(name)
     if agent_dir.exists():
-        # Load existing metadata to check if config matches
-        if metadata_file.exists():
-            try:
-                existing = json.loads(metadata_file.read_text())
-                existing_template = existing.get("template")
-                existing_folder = existing.get("folder")
+        if existing:
+            existing_template = existing.get("template")
+            existing_folder = existing.get("folder")
 
-                if existing_template == template and existing_folder == folder_str:
-                    # Same config - idempotent, just run
-                    console.print(f"Agent '{name}' already configured.")
-                    if not no_run:
-                        exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)
-                        raise typer.Exit(exit_code)
-                    return
-                else:
-                    # Different config
-                    if not force:
-                        console.print(
-                            f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
-                            f"  Current:  {existing_template} → {existing_folder}\n"
-                            f"  Requested: {template} → {folder_str}\n"
-                            "Use --force to overwrite, or 'safeyolo agent run' to run existing."
-                        )
-                        raise typer.Exit(1)
-                    # With --force, continue to overwrite below
-            except (json.JSONDecodeError, OSError):
-                # Corrupted metadata, treat as needing --force
+            if existing_template == template and existing_folder == folder_str:
+                # Same config - idempotent, just run
+                console.print(f"Agent '{name}' already configured.")
+                if not no_run:
+                    exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)
+                    raise typer.Exit(exit_code)
+                return
+            else:
+                # Different config
                 if not force:
-                    console.print(f"[yellow]Agent '{name}' exists but metadata is corrupted.[/yellow]")
-                    console.print("Use --force to overwrite")
+                    console.print(
+                        f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
+                        f"  Current:  {existing_template} → {existing_folder}\n"
+                        f"  Requested: {template} → {folder_str}\n"
+                        "Use --force to overwrite, or 'safeyolo agent run' to run existing."
+                    )
                     raise typer.Exit(1)
+                # With --force, continue to overwrite below
         else:
-            # No metadata file, treat as needing --force
+            # No metadata, treat as needing --force
             if not force:
                 console.print(f"[yellow]Agent '{name}' already exists[/yellow]")
                 console.print("Use --force to overwrite")
@@ -544,7 +535,7 @@ def add(
             instance_name=name,
         )
     except TemplateError as err:
-        console.print(f"[red]Template error:[/red] {err}")
+        console.print(f"[red]Template error:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
     # Validate and normalize mount specs
@@ -553,7 +544,7 @@ def add(
     # Validate and normalize port specs
     parsed_ports = [_parse_port(p) for p in port]
 
-    # Write metadata file
+    # Write metadata to agents.yaml
     metadata = {"template": template, "folder": folder_str}
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
@@ -562,7 +553,7 @@ def add(
         metadata["mounts"] = parsed_mounts
     if parsed_ports:
         metadata["ports"] = parsed_ports
-    metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
+    save_agent(name, metadata)
 
     # Show created files
     for filepath in files:
@@ -583,10 +574,12 @@ def add(
         panel_lines.append(f"Ports: {len(parsed_ports)}")
         for p in parsed_ports:
             panel_lines.append(f"  {p}")
-    panel_lines.extend([
-        f"Network: {COMPOSE_NETWORK_NAME}",
-        "Proxy: http://safeyolo:8080 (Docker DNS)",
-    ])
+    panel_lines.extend(
+        [
+            f"Network: {COMPOSE_NETWORK_NAME}",
+            "Proxy: http://safeyolo:8080 (Docker DNS)",
+        ]
+    )
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     write_event("agent.added", agent=name, template=template, folder=folder_str)
@@ -614,28 +607,26 @@ def list_agents() -> None:
 
     # Show instances
     agents_dir = get_agents_dir()
+    all_agents = load_all_agents()
+
     if agents_dir.exists():
-        instances = [
-            d for d in agents_dir.iterdir()
-            if d.is_dir() and (d / "docker-compose.yml").exists()
-        ]
+        instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()]
+        # Auto-migrate any legacy .safeyolo.json files
+        for inst_dir in instances:
+            if inst_dir.name not in all_agents and (inst_dir / ".safeyolo.json").exists():
+                migrate_from_json(inst_dir.name, inst_dir)
+        # Re-read after migration
+        all_agents = load_all_agents()
+
         if instances:
             table = Table(title="Configured Agents")
             table.add_column("Name", style="bold")
             table.add_column("Template")
             table.add_column("Folder")
             for inst_dir in sorted(instances, key=lambda d: d.name):
-                # Read metadata
-                metadata_file = inst_dir / ".safeyolo.json"
-                if metadata_file.exists():
-                    try:
-                        metadata = json.loads(metadata_file.read_text())
-                        template = metadata.get("template", "?")
-                        folder = metadata.get("folder", "?")
-                    except (json.JSONDecodeError, OSError):
-                        template, folder = "?", "?"
-                else:
-                    template, folder = "?", "?"
+                metadata = all_agents.get(inst_dir.name, {})
+                template = metadata.get("template", "?")
+                folder = metadata.get("folder", "?")
                 table.add_row(inst_dir.name, template, folder)
             console.print(table)
         else:
@@ -647,9 +638,7 @@ def list_agents() -> None:
 @agent_app.command()
 def remove(
     name: str = typer.Argument(..., help="Agent instance name to remove"),
-    clean: bool = typer.Option(
-        False, "--clean", help="Also stop containers and remove images/volumes"
-    ),
+    clean: bool = typer.Option(False, "--clean", help="Also stop containers and remove images/volumes"),
 ) -> None:
     """Remove an agent configuration.
 
@@ -660,6 +649,8 @@ def remove(
         safeyolo agent remove claude-code
         safeyolo agent remove claude-code --clean  # Also remove containers/images
     """
+    _validate_instance_name(name)
+
     config_dir = find_config_dir()
     if not config_dir:
         console.print("[red]No SafeYolo configuration found.[/red]")
@@ -667,7 +658,7 @@ def remove(
 
     agent_dir = get_agents_dir() / name
     if not agent_dir.exists():
-        console.print(f"[yellow]Agent not found: {name}[/yellow]")
+        console.print(f"[yellow]Agent not found: {escape(name)}[/yellow]")
         raise typer.Exit(1)
 
     if clean:
@@ -680,29 +671,22 @@ def remove(
         )
 
     shutil.rmtree(agent_dir)
+    _store_remove_agent(name)
     write_event("agent.removed", agent=name, clean=clean)
     console.print(f"[green]Removed agent: {name}[/green]")
 
 
-
-@agent_app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
+@agent_app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def run(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
-    folder: str = typer.Option(
-        None, "--folder", "-f", help="Override folder to mount (default: from agent add)"
-    ),
-    yolo: bool = typer.Option(
-        True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"
-    ),
-    fresh: bool = typer.Option(
-        False, "--fresh", help="Ignore user_default_args, start fresh session"
-    ),
+    folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
+    yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
+    fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
     mount: list[str] = typer.Option(
         [],
-        "--mount", "-m",
+        "--mount",
+        "-m",
         help="Extra folder to mount (/local/path:/container/path[:ro], repeatable, one-off)",
     ),
     port: list[str] = typer.Option(
@@ -783,6 +767,8 @@ def shell(
         safeyolo agent shell myproject
         safeyolo agent shell myproject --root
     """
+    _validate_instance_name(name)
+
     config_dir = find_config_dir()
     if not config_dir:
         console.print("[red]No SafeYolo configuration found.[/red]")
@@ -792,7 +778,7 @@ def shell(
     compose_file = agent_dir / "docker-compose.yml"
 
     if not compose_file.exists():
-        console.print(f"[red]Agent not found: {name}[/red]")
+        console.print(f"[red]Agent not found: {escape(name)}[/red]")
         raise typer.Exit(1)
 
     # Get service name from instance name
@@ -819,11 +805,13 @@ def stop(
 
         safeyolo agent stop myproject
     """
+    _validate_instance_name(name)
+
     agent_dir = get_agents_dir() / name
     compose_file = agent_dir / "docker-compose.yml"
 
     if not compose_file.exists():
-        console.print(f"[red]Agent not found: {name}[/red]")
+        console.print(f"[red]Agent not found: {escape(name)}[/red]")
         raise typer.Exit(1)
 
     # Check if actually running
@@ -901,23 +889,21 @@ def config(
         safeyolo agent config boris --remove-port 6080
         safeyolo agent config boris --clear-ports
     """
-    agent_dir = get_agents_dir() / name
-    metadata_file = agent_dir / ".safeyolo.json"
+    _validate_instance_name(name)
 
-    if not metadata_file.exists():
-        console.print(f"[red]Agent not found: {name}[/red]")
-        raise typer.Exit(1)
-
-    try:
-        metadata = json.loads(metadata_file.read_text())
-    except (json.JSONDecodeError, OSError) as err:
-        console.print(f"[red]Failed to read agent config:[/red] {type(err).__name__}: {err}")
+    metadata = _load_agent_metadata(name)
+    if not metadata:
+        console.print(f"[red]Agent not found: {escape(name)}[/red]")
         raise typer.Exit(1)
 
     has_updates = (
         user_default_args is not None
-        or add_mount or remove_mount or clear_mounts
-        or add_port or remove_port or clear_ports
+        or add_mount
+        or remove_mount
+        or clear_mounts
+        or add_port
+        or remove_port
+        or clear_ports
     )
 
     if show or not has_updates:
@@ -967,10 +953,7 @@ def config(
     for spec in remove_mount:
         # Match by container path (the part after the first colon)
         before = len(current_mounts)
-        current_mounts = [
-            m for m in current_mounts
-            if m.split(":")[1] != spec.rstrip("/")
-        ]
+        current_mounts = [m for m in current_mounts if m.split(":")[1] != spec.rstrip("/")]
         removed = before - len(current_mounts)
         if removed:
             console.print(f"[green]Removed mount for {spec}[/green]")
@@ -981,10 +964,7 @@ def config(
         parsed = _parse_mount(spec)
         # Check for duplicate container path
         container_path = parsed.split(":")[1]
-        current_mounts = [
-            m for m in current_mounts
-            if m.split(":")[1] != container_path
-        ]
+        current_mounts = [m for m in current_mounts if m.split(":")[1] != container_path]
         current_mounts.append(parsed)
         console.print(f"[green]Added mount: {parsed}[/green]")
 
@@ -1003,10 +983,7 @@ def config(
     for spec in remove_port:
         # Match by container port (last colon-separated part)
         before = len(current_ports)
-        current_ports = [
-            p for p in current_ports
-            if p.rsplit(":", 1)[-1] != spec
-        ]
+        current_ports = [p for p in current_ports if p.rsplit(":", 1)[-1] != spec]
         removed = before - len(current_ports)
         if removed:
             console.print(f"[green]Removed port mapping for container port {spec}[/green]")
@@ -1017,10 +994,7 @@ def config(
         parsed = _parse_port(spec)
         # Dedup by container port (last colon-separated part)
         container_port = parsed.rsplit(":", 1)[-1]
-        current_ports = [
-            p for p in current_ports
-            if p.rsplit(":", 1)[-1] != container_port
-        ]
+        current_ports = [p for p in current_ports if p.rsplit(":", 1)[-1] != container_port]
         current_ports.append(parsed)
         console.print(f"[green]Added port: {parsed}[/green]")
 
@@ -1029,7 +1003,7 @@ def config(
     elif "ports" in metadata:
         del metadata["ports"]
 
-    metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
+    save_agent(name, metadata)
 
     # Build list of what changed for the event
     changes = []
@@ -1055,6 +1029,8 @@ def agent_help(
 
         safeyolo agent help boris
     """
+    _validate_instance_name(name)
+
     # Use passthrough with --help (or configured help_arg)
     metadata = _load_agent_metadata(name)
     template_name = metadata.get("template")
@@ -1076,3 +1052,270 @@ def agent_help(
     console.print(f"\n[dim]To experiment with flags: safeyolo agent shell {name}[/dim]")
 
     raise typer.Exit(exit_code)
+
+
+def _load_vault():
+    """Import Vault class and return an unlocked vault instance.
+
+    Returns (Vault, VaultCredential) tuple.
+    """
+    from .vault import _load_vault as vault_loader
+
+    return vault_loader()
+
+
+def _auto_credential_name(service_name: str, existing_names: list[str]) -> str:
+    """Generate a unique credential name like {service}-cred, {service}-cred-2, etc."""
+    base = f"{service_name}-cred"
+    if base not in existing_names:
+        return base
+    n = 2
+    while f"{base}-{n}" in existing_names:
+        n += 1
+    return f"{base}-{n}"
+
+
+def _load_policy_hosts() -> dict:
+    """Load hosts section from policy.yaml."""
+    from ..config import _get_config_dir_path
+
+    policy_path = _get_config_dir_path() / "policy.yaml"
+    if not policy_path.exists():
+        return {}
+    try:
+        raw = yaml.safe_load(policy_path.read_text())
+        if raw and isinstance(raw, dict):
+            return raw.get("hosts", {})
+    except (OSError, yaml.YAMLError):
+        pass  # Best-effort: missing or invalid policy is not fatal here
+    return {}
+
+
+@agent_app.command()
+def authorize(
+    agent_name: str = typer.Argument(..., help="Agent instance name"),
+    service_name: str = typer.Argument(..., help="Service to authorize"),
+    role: str = typer.Option(None, "--role", "-r", help="Role within the service"),
+    token: str = typer.Option(None, "--token", help="Credential value (inline)"),
+    token_file: Path = typer.Option(None, "--token-file", help="Read credential from file"),
+    token_env: str = typer.Option(None, "--token-env", help="Read credential from environment variable"),
+    credential_name: str = typer.Option(None, "--credential-name", "-n", help="Reuse existing vault credential"),
+) -> None:
+    """Authorize an agent to use a service.
+
+    Resolves the service, picks a role, stores the credential, and updates
+    agents.yaml. One command takes an agent from "no access" to "authorized."
+
+    Examples:
+
+        safeyolo agent authorize boris gmail --role readonly --token-env GMAIL_TOKEN
+        safeyolo agent authorize boris slack --token-file ~/slack.key
+        safeyolo agent authorize boris gmail --credential-name gmail-oauth2
+    """
+    # 1. Validate agent exists
+    _validate_instance_name(agent_name)
+
+    metadata = _load_agent_metadata(agent_name)
+    if not metadata:
+        console.print(f"[red]Error:[/red] Agent '{escape(agent_name)}' not found")
+        raise typer.Exit(1)
+
+    # 2. Resolve service
+    svc = find_service(service_name)
+    if not svc:
+        console.print(f"[red]Error:[/red] Service '{escape(service_name)}' not found")
+        raise typer.Exit(1)
+
+    roles = svc.get("roles", {})
+    if not roles:
+        console.print(f"[red]Error:[/red] Service '{escape(service_name)}' has no roles defined")
+        raise typer.Exit(1)
+
+    # 3. Resolve role
+    role_names = list(roles.keys())
+    if role:
+        if role not in roles:
+            console.print(f"[red]Error:[/red] Role '{escape(role)}' not found in {escape(service_name)}")
+            console.print(f"Available roles: {', '.join(escape(r) for r in role_names)}")
+            raise typer.Exit(1)
+        selected_role = role
+    elif len(role_names) == 1:
+        selected_role = role_names[0]
+        console.print(f"Auto-selected role: [cyan]{escape(selected_role)}[/cyan]")
+    else:
+        console.print("Available roles:")
+        for i, rn in enumerate(role_names, 1):
+            console.print(f"  \\[{i}] {escape(rn)}")
+        choice = input("Select role [1]: ").strip()
+        if not choice:
+            choice = "1"
+        try:
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(role_names):
+                raise ValueError
+            selected_role = role_names[idx]
+        except ValueError:
+            console.print("[red]Error:[/red] Invalid selection")
+            raise typer.Exit(1)
+
+    role_config = roles[selected_role]
+    auth_type = role_config.get("auth", {}).get("type", "bearer")
+
+    # 4. Resolve credential
+    vault = None
+    VaultCredential = None
+    cred_name = None
+
+    if credential_name:
+        # Reuse existing vault entry
+        vault, VaultCredential = _load_vault()
+        existing = vault.get(credential_name)
+        if not existing:
+            console.print(f"[red]Error:[/red] Credential '{escape(credential_name)}' not found in vault")
+            names = vault.list_names()
+            if names:
+                console.print(f"Available: {', '.join(escape(n) for n in names)}")
+            raise typer.Exit(1)
+        cred_name = credential_name
+    elif token or token_file or token_env:
+        # Store new credential in vault
+        if token:
+            cred_value = token
+        elif token_file:
+            if not token_file.exists():
+                console.print(f"[red]Error:[/red] File not found: {token_file}")
+                raise typer.Exit(1)
+            cred_value = token_file.read_text().strip()
+        else:
+            cred_value = os.environ.get(token_env, "")
+            if not cred_value:
+                console.print(f"[red]Error:[/red] Environment variable '{escape(token_env)}' is empty or not set")
+                raise typer.Exit(1)
+
+        vault, VaultCredential = _load_vault()
+        existing_names = vault.list_names()
+        cred_name = _auto_credential_name(service_name, existing_names)
+        cred = VaultCredential(name=cred_name, type=auth_type, value=cred_value)
+        vault.store(cred)
+        console.print(f"[green]Stored credential:[/green] {escape(cred_name)} (type={escape(auth_type)})")
+    else:
+        # Interactive flow
+        vault, VaultCredential = _load_vault()
+        existing_names = vault.list_names()
+        matching = [n for n in existing_names if n.startswith(f"{service_name}-")]
+
+        if matching:
+            console.print("Existing credentials:")
+            for i, n in enumerate(matching, 1):
+                console.print(f"  \\[{i}] {escape(n)}")
+            console.print(f"  \\[{len(matching) + 1}] Paste new")
+            choice = input("Select [1]: ").strip()
+            if not choice:
+                choice = "1"
+            try:
+                idx = int(choice) - 1
+                if idx < 0 or idx > len(matching):
+                    raise ValueError
+                if idx < len(matching):
+                    cred_name = matching[idx]
+                else:
+                    # Paste new
+                    cred_value = getpass.getpass("Credential value: ")
+                    if not cred_value:
+                        console.print("[red]Error:[/red] Empty credential value")
+                        raise typer.Exit(1)
+                    cred_name = _auto_credential_name(service_name, existing_names)
+                    cred = VaultCredential(name=cred_name, type=auth_type, value=cred_value)
+                    vault.store(cred)
+                    console.print(f"[green]Stored credential:[/green] {escape(cred_name)} (type={escape(auth_type)})")
+            except ValueError:
+                console.print("[red]Error:[/red] Invalid selection")
+                raise typer.Exit(1)
+        else:
+            cred_value = getpass.getpass("Credential value: ")
+            if not cred_value:
+                console.print("[red]Error:[/red] Empty credential value")
+                raise typer.Exit(1)
+            cred_name = _auto_credential_name(service_name, existing_names)
+            cred = VaultCredential(name=cred_name, type=auth_type, value=cred_value)
+            vault.store(cred)
+            console.print(f"[green]Stored credential:[/green] {escape(cred_name)} (type={escape(auth_type)})")
+
+    # 6. Write to agents.yaml
+    services = metadata.setdefault("services", {})
+    services[service_name] = {"role": selected_role, "token": cred_name}
+    save_agent(agent_name, metadata)
+
+    esc_agent = escape(agent_name)
+    esc_svc = escape(service_name)
+    esc_role = escape(selected_role)
+    esc_cred = escape(cred_name)
+
+    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (role={esc_role}, credential={esc_cred})")
+
+    # 7. Check policy.yaml for host binding
+    default_host = svc.get("default_host", "")
+    if default_host:
+        esc_host = escape(default_host)
+        hosts = _load_policy_hosts()
+        host_config = hosts.get(default_host)
+        if isinstance(host_config, dict) and host_config.get("service") == service_name:
+            console.print(f"[green]Host binding found:[/green] {esc_host}")
+        elif host_config is not None:
+            console.print("\n[yellow]Final step:[/yellow] Add service binding to existing host entry in policy.yaml:")
+            console.print(f"    [bold]{esc_host}: {{ service: {esc_svc}, ... }}[/bold]")
+        else:
+            console.print("\n[yellow]Final step:[/yellow] Add host binding to policy.yaml:")
+            console.print(f"    [bold]{esc_host}: {{ service: {esc_svc} }}[/bold]")
+    else:
+        console.print(f"\n[yellow]Final step:[/yellow] Add a host binding for '{esc_svc}' in policy.yaml")
+        console.print("  This service has no default_host, so you'll need to map the target host manually:")
+        console.print(f"    [bold]your-host.example.com: {{ service: {esc_svc} }}[/bold]")
+
+
+@agent_app.command()
+def revoke(
+    agent_name: str = typer.Argument(..., help="Agent instance name"),
+    service_name: str = typer.Argument(..., help="Service to revoke"),
+) -> None:
+    """Revoke an agent's access to a service.
+
+    Removes the service binding from agents.yaml. The vault credential
+    is preserved (print reminder to remove manually).
+
+    Examples:
+
+        safeyolo agent revoke boris gmail
+    """
+    # 1. Load agent metadata
+    _validate_instance_name(agent_name)
+
+    metadata = _load_agent_metadata(agent_name)
+    if not metadata:
+        console.print(f"[red]Error:[/red] Agent '{escape(agent_name)}' not found")
+        raise typer.Exit(1)
+
+    services = metadata.get("services", {})
+    if service_name not in services:
+        console.print(f"[red]Error:[/red] Agent '{escape(agent_name)}' is not authorized for '{escape(service_name)}'")
+        raise typer.Exit(1)
+
+    # 2. Note credential name before removing
+    service_entry = services[service_name]
+    cred_name = service_entry.get("token", "") if isinstance(service_entry, dict) else ""
+
+    # 3. Remove service entry
+    del services[service_name]
+    if not services:
+        del metadata["services"]
+    save_agent(agent_name, metadata)
+
+    # 4. Confirm
+    console.print(f"[green]Revoked:[/green] {escape(agent_name)} → {escape(service_name)}")
+
+    # 5. Credential reminder
+    if cred_name:
+        console.print(
+            f"Credential '{escape(cred_name)}' still in vault. "
+            f"To remove: [bold]safeyolo vault remove {escape(cred_name)}[/bold]"
+        )

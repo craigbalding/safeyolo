@@ -10,6 +10,7 @@ CURRENT_SCHEMA_VERSION = 1
 @dataclass
 class InstallConfig:
     """Agent installation configuration."""
+
     mise: str  # e.g., "npm:@openai/codex"
     binary: str  # e.g., "codex"
 
@@ -17,6 +18,7 @@ class InstallConfig:
 @dataclass
 class RunConfig:
     """Agent run configuration."""
+
     command: str  # e.g., "codex"
     args: list[str] = field(default_factory=list)  # Always included
     auto_args: list[str] = field(default_factory=list)  # Only with --auto flag
@@ -32,12 +34,13 @@ class RunConfig:
     @property
     def auto_args_str(self) -> str:
         """Return auto_args as space-separated string."""
-        return ' '.join(self.auto_args) if self.auto_args else ''
+        return " ".join(self.auto_args) if self.auto_args else ""
 
 
 @dataclass
 class AuthConfig:
     """Agent authentication configuration."""
+
     env_var: str  # e.g., "OPENAI_API_KEY"
     oauth_file: str  # e.g., ".codex/auth.json" (relative to $HOME)
     setup_hint: str  # e.g., "Run: codex login --device-auth"
@@ -46,6 +49,7 @@ class AuthConfig:
 @dataclass
 class HostConfig:
     """Host directories/files to mount."""
+
     config_dirs: list[str] = field(default_factory=list)  # e.g., [".codex"]
     config_files: list[str] = field(default_factory=list)  # e.g., [".claude.json"]
 
@@ -53,6 +57,7 @@ class HostConfig:
 @dataclass
 class DockerConfig:
     """Docker escape hatch for custom configuration."""
+
     env: dict[str, str] = field(default_factory=dict)
     capabilities: list[str] = field(default_factory=list)
     sysctls: dict[str, str] = field(default_factory=dict)
@@ -67,6 +72,7 @@ class InstructionsConfig:
     - system_file: Write to a system-level file (e.g., /etc/claude-code/CLAUDE.md)
     - cli_arg: Pass as CLI argument to run command
     """
+
     content: str = ""  # The actual instructions
     injection_type: str = "system_file"  # "system_file" or "cli_arg"
     path: str | None = None  # For system_file: e.g., "/etc/claude-code/CLAUDE.md"
@@ -76,6 +82,7 @@ class InstructionsConfig:
 @dataclass
 class AgentConfig:
     """Complete agent configuration."""
+
     name: str
     description: str
     install: InstallConfig
@@ -89,6 +96,7 @@ class AgentConfig:
 
 class AgentConfigError(Exception):
     """Error loading agent configuration."""
+
     pass
 
 

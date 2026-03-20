@@ -1,6 +1,5 @@
 """Tests for safeyolo token commands."""
 
-
 import pytest
 from typer.testing import CliRunner
 

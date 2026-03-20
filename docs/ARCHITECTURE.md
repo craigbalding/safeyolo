@@ -44,7 +44,13 @@ SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision 
 
 ### UnifiedPolicy
 
-Security configuration is split across two files that are loaded into a single Pydantic-validated model (`UnifiedPolicy`):
+Security configuration is split across three sibling files that are loaded into a single Pydantic-validated model (`UnifiedPolicy`):
+
+- `policy.yaml` -- human-owned host-centric policy
+- `addons.yaml` -- addon tuning (merged as defaults)
+- `agents.yaml` -- machine-managed agent-to-service bindings (merged at load time)
+
+All three are merged by PolicyLoader before compilation.
 
 ```yaml
 # policy.yaml — host-centric policy
@@ -300,6 +306,27 @@ This is called at the start of each `request()` hook, ensuring rules stay in syn
 | `/v1/approvals/credentials` | POST | Add credential approval |
 | `/v1/budgets` | GET | Get budget usage stats |
 | `/health` | GET | Health check |
+
+## Service Gateway
+
+The service gateway enables agents to access external APIs without seeing real credentials:
+
+```
+Agent Container                    SafeYolo Proxy                    External API
+    |                                  |                                 |
+    |-- Authorization: sgw_xxx ------->|                                 |
+    |                                  |-- strip sgw_ token             |
+    |                                  |-- vault lookup -> real cred     |
+    |                                  |-- inject Authorization: Bearer real_cred -->|
+    |                                  |<-- response --------------------|
+    |<-- response (cred redacted) ----|                                 |
+```
+
+Key components:
+- `service_gateway.py` -- mitmproxy addon, credential injection
+- `service_loader.py` -- loads service YAML definitions, hot-reload watcher
+- `vault.py` -- encrypted credential store (Fernet encryption)
+- `policy_compiler.py` -- compiles `agents:` section into gateway token map
 
 ## File Structure
 

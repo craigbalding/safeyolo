@@ -492,6 +492,199 @@ scan_patterns: []
         assert engine.is_addon_enabled("credential_guard", domain="db.internal")
 
 
+class TestCompileGateway:
+    """Tests for services/agents gateway compilation."""
+
+    def test_compile_gateway_with_agents(self):
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "research-agent": {
+                    "services": {
+                        "gmail": {"role": "readonly", "token": "gmail-cred"},
+                        "slack": {"role": "poster", "token": "slack-cred"},
+                    },
+                },
+            },
+        }
+        gateway = compile_gateway(raw)
+        assert "token_map" in gateway
+        assert "agent_env" in gateway
+        assert len(gateway["token_map"]) == 2
+        assert "research-agent" in gateway["agent_env"]
+        assert "gmail" in gateway["agent_env"]["research-agent"]
+        assert "slack" in gateway["agent_env"]["research-agent"]
+
+    def test_compile_gateway_token_format(self):
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "agent-1": {
+                    "services": {"minifuse": {"role": "reader", "token": "mf-key"}},
+                },
+            },
+        }
+        gateway = compile_gateway(raw)
+        token = list(gateway["token_map"].keys())[0]
+        assert token.startswith("sgw_")
+        assert len(token) == 4 + 64
+
+    def test_compile_gateway_token_binding(self):
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "my-agent": {
+                    "services": {"gmail": {"role": "readonly", "token": "gmail-cred"}},
+                },
+            },
+        }
+        gateway = compile_gateway(raw)
+        binding = list(gateway["token_map"].values())[0]
+        assert binding["agent"] == "my-agent"
+        assert binding["service"] == "gmail"
+        assert binding["role"] == "readonly"
+        assert binding["token"] == "gmail-cred"
+
+    def test_compile_gateway_multiple_agents(self):
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "a1": {"services": {"gmail": {"role": "readonly", "token": "g"}}},
+                "a2": {"services": {
+                    "slack": {"role": "poster", "token": "s"},
+                    "minifuse": {"role": "reader", "token": "m"},
+                }},
+            },
+        }
+        gateway = compile_gateway(raw)
+        assert len(gateway["token_map"]) == 3
+        assert "a1" in gateway["agent_env"]
+        assert "a2" in gateway["agent_env"]
+
+    def test_compile_gateway_empty_agents(self):
+        from policy_compiler import compile_gateway
+
+        gateway = compile_gateway({"agents": {}})
+        assert gateway["token_map"] == {}
+        assert gateway["agent_env"] == {}
+        assert gateway["host_map"] == {}
+
+    def test_compile_gateway_no_agents(self):
+        from policy_compiler import compile_gateway
+
+        gateway = compile_gateway({})
+        assert gateway["token_map"] == {}
+        assert gateway["agent_env"] == {}
+        assert gateway["host_map"] == {}
+
+    def test_mint_gateway_token_uniqueness(self):
+        from policy_compiler import mint_gateway_token
+
+        tokens = {mint_gateway_token() for _ in range(100)}
+        assert len(tokens) == 100
+
+    def test_compile_policy_with_agents_section(self):
+        """compile_policy stores gateway config in result['gateway']."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {"*": {"unknown_credentials": "prompt", "rate_limit": 600}},
+            "agents": {
+                "test-agent": {
+                    "services": {"gmail": {"role": "readonly", "token": "g"}},
+                },
+            },
+        }
+        result = compile_policy(raw)
+        assert "gateway" in result
+        assert len(result["gateway"]["token_map"]) == 1
+
+    def test_legacy_string_format(self):
+        """Legacy format: minifuse: reader (no token) still compiles."""
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "agent": {"services": {"minifuse": "reader"}},
+            },
+        }
+        gateway = compile_gateway(raw)
+        binding = list(gateway["token_map"].values())[0]
+        assert binding["role"] == "reader"
+        assert binding["token"] == ""
+
+    def test_host_map_extraction(self):
+        """Policy hosts with service: key produce host_map in gateway result."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.minifuse.io": {"service": "minifuse", "rate_limit": 300},
+                "gmail.googleapis.com": {"service": "gmail", "credentials": ["google:*"]},
+                "pypi.org": {"rate_limit": 1200},  # no service key
+            },
+            "agents": {
+                "test-agent": {
+                    "services": {"minifuse": {"role": "reader", "token": "mf"}},
+                },
+            },
+        }
+        result = compile_policy(raw)
+        host_map = result["gateway"]["host_map"]
+        assert host_map["api.minifuse.io"] == "minifuse"
+        assert host_map["gmail.googleapis.com"] == "gmail"
+        assert "pypi.org" not in host_map
+
+    def test_host_map_empty_without_service(self):
+        """Hosts without service: key produce empty host_map."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.openai.com": {"credentials": ["openai:*"], "rate_limit": 3000},
+                "pypi.org": {"rate_limit": 1200},
+            },
+            "agents": {
+                "agent": {
+                    "services": {"gmail": {"role": "readonly", "token": "g"}},
+                },
+            },
+        }
+        result = compile_policy(raw)
+        assert result["gateway"]["host_map"] == {}
+
+    def test_host_map_passed_through_compile_gateway(self):
+        """compile_gateway includes host_map when passed explicitly."""
+        from policy_compiler import compile_gateway
+
+        host_map = {"api.minifuse.io": "minifuse"}
+        raw = {
+            "agents": {
+                "agent": {
+                    "services": {"minifuse": {"role": "reader", "token": "mf"}},
+                },
+            },
+        }
+        gateway = compile_gateway(raw, host_map=host_map)
+        assert gateway["host_map"] == {"api.minifuse.io": "minifuse"}
+
+    def test_host_map_without_agents(self):
+        """host_map stored in gateway even when no agents section exists."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "api.minifuse.io": {"service": "minifuse"},
+            },
+        }
+        result = compile_policy(raw)
+        assert result["gateway"]["host_map"] == {"api.minifuse.io": "minifuse"}
+
+
 class TestNoneAndEdgeCases:
     """Tests for edge cases and defensive handling."""
 
@@ -698,6 +891,76 @@ required:
 
         # policy.yaml wins for non-addons keys
         assert policy.required == ["credential_guard"]
+
+    def test_agents_merged_from_sibling_file(self, tmp_path):
+        """agents.yaml content is merged into policy under 'agents' key."""
+        import yaml
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  api.openai.com: { credentials: [openai:*], rate_limit: 3000 }
+  "*":            { unknown_credentials: prompt, rate_limit: 600 }
+required: [credential_guard]
+addons:
+  credential_guard: { enabled: true }
+scan_patterns: []
+""")
+
+        agents = tmp_path / "agents.yaml"
+        agents.write_text(yaml.dump({
+            "boris": {
+                "template": "claude-code",
+                "folder": "/tmp/proj",
+                "services": {
+                    "gmail": {"role": "readonly", "token": "g"},
+                },
+            },
+        }))
+
+        loader = PolicyLoader(baseline_path=baseline)
+        policy = loader.baseline
+
+        # Policy should have compiled with agents section (gateway)
+        assert len(policy.permissions) > 0
+        assert hasattr(policy, "gateway")
+        assert len(policy.gateway.get("token_map", {})) == 1
+
+    def test_agents_yaml_change_triggers_reload(self, tmp_path):
+        """Modifying agents.yaml triggers a baseline reload."""
+        import yaml
+        from policy_loader import PolicyLoader
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  "*": { unknown_credentials: prompt, rate_limit: 600 }
+required: []
+addons:
+  credential_guard: { enabled: true }
+scan_patterns: []
+""")
+
+        loader = PolicyLoader(baseline_path=baseline)
+
+        # No agents.yaml yet — gateway should be empty
+        assert loader.baseline.gateway.get("token_map", {}) == {}
+
+        # Create agents.yaml
+        agents = tmp_path / "agents.yaml"
+        agents.write_text(yaml.dump({
+            "boris": {
+                "services": {
+                    "gmail": {"role": "readonly", "token": "g"},
+                },
+            },
+        }))
+
+        # Simulate watcher: force reload since agents.yaml now exists
+        loader._load_baseline()
+
+        assert len(loader.baseline.gateway.get("token_map", {})) == 1
 
     def test_actual_config_files_load(self):
         """The real config/policy.yaml + config/addons.yaml load correctly."""

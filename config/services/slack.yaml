@@ -1,0 +1,37 @@
+name: slack
+description: "Slack Web API — channel reading and message posting"
+default_host: slack.com
+
+roles:
+  reader:
+    auth:
+      type: bearer
+      scheme: Bearer
+    routes:
+      - effect: allow
+        methods: [POST]
+        path: "/api/conversations.list"
+      - effect: allow
+        methods: [POST]
+        path: "/api/conversations.history"
+      - effect: allow
+        methods: [POST]
+        path: "/api/users.list"
+
+  poster:
+    auth:
+      type: bearer
+      scheme: Bearer
+    routes:
+      - effect: allow
+        methods: [POST]
+        path: "/api/conversations.list"
+      - effect: allow
+        methods: [POST]
+        path: "/api/conversations.history"
+      - effect: allow
+        methods: [POST]
+        path: "/api/users.list"
+      - effect: allow
+        methods: [POST]
+        path: "/api/chat.postMessage"

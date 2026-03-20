@@ -24,6 +24,8 @@ The IAM format is the internal evaluation model.
 """
 
 import logging
+import secrets
+from pathlib import Path
 from typing import Any
 
 from utils import sanitize_for_log
@@ -56,6 +58,7 @@ def compile_policy(raw: dict) -> dict:
 
     permissions: list[dict] = []
     domains: dict[str, Any] = {}
+    host_map: dict[str, str] = {}
 
     # --- Compile hosts → permissions + domains ---
     hosts = raw.get("hosts", {})
@@ -106,6 +109,10 @@ def compile_policy(raw: dict) -> dict:
         if "addons" in config:
             domains.setdefault(host_pattern, {})["addons"] = config["addons"]
 
+        # Service binding (host → service name for gateway)
+        if "service" in config:
+            host_map[host_pattern] = config["service"]
+
         # Raw IAM rules passthrough (escape hatch)
         if "rules" in config:
             for rule in config["rules"]:
@@ -138,11 +145,14 @@ def compile_policy(raw: dict) -> dict:
         if key in raw:
             result[key] = raw[key]
 
-    # Services section (future: gateway addons) - store for later
-    if "services" in raw:
-        result.setdefault("metadata", {})
-        if isinstance(result["metadata"], dict):
-            result["metadata"]["_services"] = raw["services"]
+    # Services + agents section → gateway token map
+    if "services" in raw or "agents" in raw:
+        services_dir = raw.get("_services_dir")
+        gateway = compile_gateway(raw, services_dir, host_map)
+        result["gateway"] = gateway
+    elif host_map:
+        # host_map exists but no agents — still store it for gateway
+        result["gateway"] = {"token_map": {}, "agent_env": {}, "host_map": host_map}
 
     log.info(
         f"Compiled host-centric policy: {len(hosts)} hosts → "
@@ -245,6 +255,88 @@ def _compile_credentials(
         rules.append(rule)
 
     return rules
+
+
+def mint_gateway_token() -> str:
+    """Generate a new gateway token (sgw_ prefix + 64 hex chars)."""
+    return f"sgw_{secrets.token_hex(32)}"
+
+
+def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map: dict[str, str] | None = None) -> dict:
+    """Compile gateway configuration from services/agents sections.
+
+    Reads agents section, resolves service references, mints tokens.
+
+    Policy format:
+        agents:
+          agent-name:
+            services:
+              service-name:
+                role: role-name
+                token: vault-credential-name
+
+    Args:
+        raw: Parsed policy YAML dict
+        services_dir: Path to service definitions directory
+
+    Returns:
+        Dict with token_map and agent_env:
+        {
+            "token_map": {sgw_token: {"agent": ..., "service": ..., "role": ..., "token": ...}},
+            "agent_env": {agent_name: {ENV_VAR: token}},
+        }
+    """
+    agents = raw.get("agents", {})
+    if not agents:
+        return {"token_map": {}, "agent_env": {}, "host_map": host_map or {}}
+
+    token_map: dict[str, dict[str, str]] = {}
+    agent_env: dict[str, dict[str, str]] = {}
+
+    for agent_name, agent_config in agents.items():
+        if not isinstance(agent_config, dict):
+            log.warning("Skipping agent %s: config is not a dict", sanitize_for_log(agent_name))
+            continue
+
+        agent_services = agent_config.get("services", {})
+        if not isinstance(agent_services, dict):
+            log.warning("Skipping agent %s: services is not a dict", sanitize_for_log(agent_name))
+            continue
+
+        agent_env[agent_name] = {}
+        for service_name, service_config in agent_services.items():
+            # Accept both dict format and legacy string format
+            if isinstance(service_config, str):
+                # Legacy: minifuse: reader (no vault token specified)
+                role_name = service_config
+                vault_token = ""
+            elif isinstance(service_config, dict):
+                role_name = service_config.get("role", "")
+                vault_token = service_config.get("token", "")
+            else:
+                log.warning("Skipping service %s for agent %s: invalid config",
+                            sanitize_for_log(service_name), sanitize_for_log(agent_name))
+                continue
+
+            if not role_name:
+                log.warning("Skipping service %s for agent %s: no role specified",
+                            sanitize_for_log(service_name), sanitize_for_log(agent_name))
+                continue
+
+            sgw_token = mint_gateway_token()
+            token_map[sgw_token] = {
+                "agent": agent_name,
+                "service": service_name,
+                "role": role_name,
+                "token": vault_token,
+            }
+            agent_env[agent_name][service_name] = sgw_token
+
+    log.info(
+        f"Compiled gateway: {len(agents)} agents, "
+        f"{len(token_map)} tokens minted"
+    )
+    return {"token_map": token_map, "agent_env": agent_env, "host_map": host_map or {}}
 
 
 def decompile_approval(destination: str, cred_ids: list[str]) -> dict:

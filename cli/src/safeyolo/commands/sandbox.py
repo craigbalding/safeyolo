@@ -23,17 +23,20 @@ sandbox_app = typer.Typer(
 def setup(
     template: str = typer.Option(
         "claude-code",
-        "--template", "-t",
+        "--template",
+        "-t",
         help="Agent template to use",
     ),
     output: Path = typer.Option(
         None,
-        "--output", "-o",
+        "--output",
+        "-o",
         help="Output directory (default: ./<template-name>)",
     ),
     force: bool = typer.Option(
         False,
-        "--force", "-f",
+        "--force",
+        "-f",
         help="Overwrite existing files",
     ),
 ) -> None:
@@ -64,10 +67,7 @@ def setup(
     # Ensure SafeYolo is configured (but doesn't need to be running)
     config_dir = find_config_dir()
     if not config_dir:
-        console.print(
-            "[yellow]SafeYolo not configured yet.[/yellow]\n"
-            "Run [bold]safeyolo start[/bold] first to set up."
-        )
+        console.print("[yellow]SafeYolo not configured yet.[/yellow]\nRun [bold]safeyolo start[/bold] first to set up.")
         raise typer.Exit(1)
 
     # Render template

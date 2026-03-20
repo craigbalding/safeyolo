@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
@@ -72,6 +73,7 @@ class PolicyLoader:
         """
         # Import here to avoid circular imports
         from policy_engine import UnifiedPolicy
+
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path
@@ -86,6 +88,7 @@ class PolicyLoader:
         self._lock = threading.RLock()
         self._last_baseline_mtime: float = 0
         self._last_addons_mtime: float = 0
+        self._last_agents_mtime: float = 0
         self._last_task_mtime: float = 0
 
         # File watcher
@@ -151,6 +154,35 @@ class PolicyLoader:
         log.info(f"Merged addon config from {addons_path}")
         return raw
 
+    def _agents_path(self) -> Path | None:
+        """Get path to sibling agents.yaml (if it exists)."""
+        if not self._baseline_path:
+            return None
+        agents_path = self._baseline_path.parent / "agents.yaml"
+        if agents_path.exists():
+            return agents_path
+        return None
+
+    def _merge_agents(self, raw: dict) -> dict:
+        """Merge sibling agents.yaml into the policy dict.
+
+        agents.yaml is authoritative for the 'agents' key — if agents.yaml
+        exists and 'agents' is not already in policy.yaml, merge it in.
+        """
+        agents_path = self._agents_path()
+        if not agents_path:
+            return raw
+
+        agents_raw = self._load_file(agents_path)
+        if agents_raw is None:
+            return raw
+
+        if "agents" not in raw:
+            raw["agents"] = agents_raw
+
+        log.info(f"Merged agents config from {agents_path}")
+        return raw
+
     def _load_baseline(self) -> bool:
         """Load baseline policy from file.
 
@@ -174,6 +206,9 @@ class PolicyLoader:
             # Merge sibling addons.yaml if present
             raw = self._merge_addons(raw)
 
+            # Merge sibling agents.yaml if present
+            raw = self._merge_agents(raw)
+
             # Compile host-centric format → IAM format if needed
             if is_host_centric(raw):
                 raw = compile_policy(raw)
@@ -184,11 +219,12 @@ class PolicyLoader:
                 addons_path = self._addons_path()
                 if addons_path:
                     self._last_addons_mtime = addons_path.stat().st_mtime
+                agents_path = self._agents_path()
+                if agents_path:
+                    self._last_agents_mtime = agents_path.stat().st_mtime
 
                 # Sort permissions by specificity (most specific first)
-                self._baseline.permissions.sort(
-                    key=lambda p: _specificity_score(p.resource), reverse=True
-                )
+                self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
             log.info(
                 f"Loaded baseline policy: {len(self._baseline.permissions)} permissions, "
@@ -233,13 +269,9 @@ class PolicyLoader:
                 self._last_task_mtime = path.stat().st_mtime
 
                 # Sort permissions
-                self._task_policy.permissions.sort(
-                    key=lambda p: _specificity_score(p.resource), reverse=True
-                )
+                self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
-            log.info(
-                f"Loaded task policy: {len(self._task_policy.permissions)} permissions"
-            )
+            log.info(f"Loaded task policy: {len(self._task_policy.permissions)} permissions")
             write_event(
                 "ops.policy_reload",
                 addon="policy-loader",
@@ -286,6 +318,13 @@ class PolicyLoader:
                         if mtime > self._last_addons_mtime:
                             reload_baseline = True
 
+                    # Check agents.yaml (triggers baseline reload since it merges in)
+                    agents_path = self._agents_path()
+                    if agents_path:
+                        mtime = agents_path.stat().st_mtime
+                        if mtime > self._last_agents_mtime:
+                            reload_baseline = True
+
                     if reload_baseline:
                         log.info("Policy changed, reloading...")
                         self._load_baseline()
@@ -302,9 +341,7 @@ class PolicyLoader:
 
                 self._watcher_stop.wait(timeout=2.0)
 
-        self._watcher_thread = threading.Thread(
-            target=watch_loop, daemon=True, name="policy-watcher"
-        )
+        self._watcher_thread = threading.Thread(target=watch_loop, daemon=True, name="policy-watcher")
         self._watcher_thread.start()
         log.info("Started policy file watcher")
 
@@ -342,17 +379,13 @@ class PolicyLoader:
         """Set baseline policy directly (for updates via API)."""
         with self._lock:
             self._baseline = policy
-            self._baseline.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+            self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
     def set_task_policy(self, policy: "UnifiedPolicy") -> None:
         """Set task policy directly (for updates via API)."""
         with self._lock:
             self._task_policy = policy
-            self._task_policy.permissions.sort(
-                key=lambda p: _specificity_score(p.resource), reverse=True
-            )
+            self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
     def reload(self) -> bool:
         """Force reload of all policies."""

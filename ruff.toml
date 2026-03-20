@@ -27,6 +27,7 @@ ignore = [
 
 [lint.per-file-ignores]
 "tests/*" = ["B", "E501"]  # Relax rules for tests
+"tests/test_oauth2_flow.py" = ["B", "E402", "E501"]  # sys.path hack before CLI imports
 "cli/tests/*" = ["B", "E501"]
 
 [lint.isort]

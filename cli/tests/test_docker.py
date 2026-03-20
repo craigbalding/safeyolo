@@ -69,16 +69,12 @@ class TestIsRunning:
 
     def test_running_container(self, tmp_config_dir, mock_subprocess):
         """Returns True if container running."""
-        mock_subprocess.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="abc123\n", stderr=""
-        )
+        mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="abc123\n", stderr="")
         assert is_running() is True
 
     def test_not_running(self, tmp_config_dir, mock_subprocess):
         """Returns False if container not running."""
-        mock_subprocess.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
+        mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         assert is_running() is False
 
 
@@ -236,9 +232,7 @@ class TestStart:
 
     def test_raises_if_docker_unavailable(self, tmp_config_dir, mock_subprocess):
         """Raises DockerError if Docker not available."""
-        mock_subprocess.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr=""
-        )
+        mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
         with pytest.raises(DockerError, match="Docker is not available"):
             start()
 
@@ -251,9 +245,7 @@ class TestStop:
         # First write compose file
         write_compose_file()
 
-        mock_subprocess.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
+        mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         stop()
 
         calls = mock_subprocess.call_args_list
@@ -262,9 +254,7 @@ class TestStop:
 
     def test_stops_directly_without_compose(self, tmp_config_dir, mock_subprocess):
         """Falls back to docker stop if no compose file."""
-        mock_subprocess.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
+        mock_subprocess.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         stop()
 
         calls = mock_subprocess.call_args_list
@@ -327,8 +317,7 @@ class TestComposeSecurityProperties:
         for svc_name, svc in parsed.get("services", {}).items():
             for port in svc.get("ports", []):
                 port_str = str(port)
-                assert port_str.startswith("127.0.0.1:"), \
-                    f"Service {svc_name} port not localhost-bound: {port}"
+                assert port_str.startswith("127.0.0.1:"), f"Service {svc_name} port not localhost-bound: {port}"
 
     def test_all_ports_localhost_bound_try(self, tmp_config_dir):
         """Try mode: all ports must be 127.0.0.1 bound."""
@@ -338,8 +327,7 @@ class TestComposeSecurityProperties:
         for svc_name, svc in parsed.get("services", {}).items():
             for port in svc.get("ports", []):
                 port_str = str(port)
-                assert port_str.startswith("127.0.0.1:"), \
-                    f"Service {svc_name} port not localhost-bound: {port}"
+                assert port_str.startswith("127.0.0.1:"), f"Service {svc_name} port not localhost-bound: {port}"
 
     def test_sandbox_has_internal_network(self, tmp_config_dir):
         """Sandbox mode must create internal network with no gateway."""
@@ -351,8 +339,7 @@ class TestComposeSecurityProperties:
         internal_net = networks.get("internal")
 
         assert internal_net is not None, "Sandbox mode missing internal network"
-        assert internal_net.get("internal") is True, \
-            "Internal network not marked as internal (no gateway isolation)"
+        assert internal_net.get("internal") is True, "Internal network not marked as internal (no gateway isolation)"
 
     def test_try_mode_no_internal_network(self, tmp_config_dir):
         """Try mode should not create internal network."""
@@ -360,8 +347,7 @@ class TestComposeSecurityProperties:
         parsed = yaml.safe_load(content)
 
         networks = parsed.get("networks", {})
-        assert "safeyolo_internal" not in networks, \
-            "Try mode should not have internal network"
+        assert "safeyolo_internal" not in networks, "Try mode should not have internal network"
 
     def test_safeyolo_runs_nonroot(self, tmp_config_dir):
         """Safeyolo service must have non-root user directive."""
@@ -373,8 +359,7 @@ class TestComposeSecurityProperties:
             assert user is not None, f"No user directive (sandbox={sandbox})"
 
             uid = str(user).split(":")[0]
-            assert uid not in ("0", "root"), \
-                f"Runs as root (sandbox={sandbox}): {user}"
+            assert uid not in ("0", "root"), f"Runs as root (sandbox={sandbox}): {user}"
 
     def test_private_volume_only_safeyolo(self, tmp_config_dir):
         """Private cert volume should only be mounted by safeyolo/certs-init."""
@@ -390,8 +375,7 @@ class TestComposeSecurityProperties:
 
                 volumes = svc.get("volumes", [])
                 for vol in volumes:
-                    assert "certs-private" not in str(vol), \
-                        f"Service {svc_name} has access to private certs!"
+                    assert "certs-private" not in str(vol), f"Service {svc_name} has access to private certs!"
 
     def test_public_ca_volume_exists_sandbox(self, tmp_config_dir):
         """Sandbox mode should define public CA volume."""
@@ -399,9 +383,7 @@ class TestComposeSecurityProperties:
         parsed = yaml.safe_load(content)
 
         volumes = parsed.get("volumes", {})
-        has_ca_volume = "safeyolo-ca" in volumes or any(
-            "ca" in str(v).lower() for v in volumes
-        )
+        has_ca_volume = "safeyolo-ca" in volumes or any("ca" in str(v).lower() for v in volumes)
         assert has_ca_volume, "Sandbox mode missing public CA volume"
 
     def test_sandbox_safeyolo_on_both_networks(self, tmp_config_dir):
@@ -411,10 +393,8 @@ class TestComposeSecurityProperties:
 
         safeyolo_networks = parsed["services"]["safeyolo"].get("networks", {})
         # Network is named "internal" in compose; Docker Compose prefixes with project name at runtime
-        assert "internal" in safeyolo_networks, \
-            "Safeyolo not on internal network"
-        assert "default" in safeyolo_networks, \
-            "Safeyolo not on default network (no internet access)"
+        assert "internal" in safeyolo_networks, "Safeyolo not on internal network"
+        assert "default" in safeyolo_networks, "Safeyolo not on default network (no internet access)"
 
     def test_certs_init_runs_as_root(self, tmp_config_dir):
         """Certs-init must run as root to set permissions."""

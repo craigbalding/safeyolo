@@ -152,9 +152,11 @@ class TestStatusCommand:
 
     def test_shows_container_status(self, cli_runner, tmp_config_dir, mock_docker_running, mock_httpx):
         """Shows container status when running."""
+
         # Mock the API responses - stats() and get_modes() are called
         def mock_json():
             return {"credential-guard": {"mode": "block"}}
+
         mock_httpx["response"].json = mock_json
 
         result = cli_runner.invoke(app, ["status"])
@@ -181,9 +183,7 @@ class TestModeCommand:
 
     def test_shows_specific_addon_mode(self, cli_runner, tmp_config_dir, mock_httpx):
         """Shows mode for specific addon."""
-        mock_httpx["response"].json.return_value = {
-            "modes": {"credential-guard": "block"}
-        }
+        mock_httpx["response"].json.return_value = {"modes": {"credential-guard": "block"}}
 
         result = cli_runner.invoke(app, ["mode", "credential-guard"])
         assert result.exit_code == 0

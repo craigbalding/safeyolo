@@ -94,6 +94,12 @@ COPY addons/metrics.py /app/addons/
 COPY addons/admin_api.py /app/addons/
 # Agent identity (stamps flow.metadata["agent"] for all layers)
 COPY addons/service_discovery.py /app/addons/
+# Layer 0.5: Service Gateway (credential injection for agents)
+COPY addons/vault.py /app/addons/
+COPY addons/service_loader.py /app/addons/
+COPY addons/service_gateway.py /app/addons/
+# Builtin service definitions (user overrides via /safeyolo/services/)
+COPY config/services/ /app/services/
 
 # Note: Configuration is mounted from host at runtime (~/.safeyolo/ -> /safeyolo/)
 # No baked-in config - 'safeyolo init' creates the config directory

@@ -390,6 +390,13 @@ class PDPCore:
             return None
         return baseline.model_dump()
 
+    def get_gateway_config(self) -> dict | None:
+        """Get gateway config (agents/tokens) from compiled policy."""
+        baseline = self._engine.get_baseline()
+        if baseline is None:
+            return None
+        return baseline.gateway or None
+
     def get_baseline_path(self) -> str | None:
         """Get the path to the baseline policy file."""
         path = self._engine.baseline_path

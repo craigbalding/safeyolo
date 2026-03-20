@@ -1,11 +1,11 @@
 """Tests for agent port mapping features."""
 
-import json
 from unittest.mock import patch
 
 import pytest
 import typer
 
+from safeyolo.agents_store import load_agent, save_agent
 from safeyolo.cli import app
 from safeyolo.commands.agent import _parse_port
 
@@ -77,14 +77,14 @@ class TestParsePort:
 
 
 def _setup_agent(config_dir, name="test-agent", template="claude-code", ports=None):
-    """Helper to create a minimal agent directory with metadata."""
+    """Helper to create a minimal agent directory with metadata in agents.yaml."""
     agent_dir = config_dir / "agents" / name
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "docker-compose.yml").write_text("version: '3'\n")
     metadata = {"template": template, "folder": "/tmp/project"}
     if ports:
         metadata["ports"] = ports
-    (agent_dir / ".safeyolo.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    save_agent(name, metadata)
     return agent_dir
 
 
@@ -92,13 +92,13 @@ class TestAgentConfigPorts:
     """CLI integration tests for port config operations."""
 
     def test_add_port_stores_in_metadata(self, cli_runner, tmp_config_dir):
-        """--add-port stores normalized port in .safeyolo.json."""
+        """--add-port stores normalized port in agents.yaml."""
         _setup_agent(tmp_config_dir, "test-agent")
         result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--add-port", "6080:6080"])
         assert result.exit_code == 0
         assert "Added port" in result.output
 
-        metadata = json.loads((tmp_config_dir / "agents" / "test-agent" / ".safeyolo.json").read_text())
+        metadata = load_agent("test-agent")
         assert metadata["ports"] == ["127.0.0.1:6080:6080"]
 
     def test_add_port_deduplicates_by_container_port(self, cli_runner, tmp_config_dir):
@@ -107,7 +107,7 @@ class TestAgentConfigPorts:
         result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--add-port", "7070:6080"])
         assert result.exit_code == 0
 
-        metadata = json.loads((tmp_config_dir / "agents" / "test-agent" / ".safeyolo.json").read_text())
+        metadata = load_agent("test-agent")
         assert metadata["ports"] == ["127.0.0.1:7070:6080"]
 
     def test_remove_port_by_container_port(self, cli_runner, tmp_config_dir):
@@ -117,7 +117,7 @@ class TestAgentConfigPorts:
         assert result.exit_code == 0
         assert "Removed port" in result.output
 
-        metadata = json.loads((tmp_config_dir / "agents" / "test-agent" / ".safeyolo.json").read_text())
+        metadata = load_agent("test-agent")
         assert "ports" not in metadata
 
     def test_remove_port_warns_if_not_found(self, cli_runner, tmp_config_dir):
@@ -134,7 +134,7 @@ class TestAgentConfigPorts:
         assert result.exit_code == 0
         assert "Cleared all ports" in result.output
 
-        metadata = json.loads((tmp_config_dir / "agents" / "test-agent" / ".safeyolo.json").read_text())
+        metadata = load_agent("test-agent")
         assert "ports" not in metadata
 
     def test_show_displays_ports(self, cli_runner, tmp_config_dir):
@@ -158,7 +158,7 @@ class TestAgentRunPorts:
     def test_port_flag_produces_dash_p(self, cli_runner, tmp_config_dir, mock_docker_running):
         """--port flag adds -p to docker command."""
         _setup_agent(tmp_config_dir, "test-agent")
-        result = cli_runner.invoke(app, ["agent", "run", "test-agent", "--port", "6080:6080"])
+        cli_runner.invoke(app, ["agent", "run", "test-agent", "--port", "6080:6080"])
 
         # Find the docker compose run call
         for call in mock_docker_running.call_args_list:
@@ -173,7 +173,7 @@ class TestAgentRunPorts:
     def test_merges_metadata_and_transient_ports(self, cli_runner, tmp_config_dir, mock_docker_running):
         """Metadata ports and --port flags are both included."""
         _setup_agent(tmp_config_dir, "test-agent", ports=["127.0.0.1:6080:6080"])
-        result = cli_runner.invoke(app, ["agent", "run", "test-agent", "--port", "8888:3000"])
+        cli_runner.invoke(app, ["agent", "run", "test-agent", "--port", "8888:3000"])
 
         for call in mock_docker_running.call_args_list:
             args = call[0][0] if call[0] else call.kwargs.get("args", [])
@@ -193,7 +193,7 @@ class TestAgentAddPorts:
     """Tests for --port in agent add command."""
 
     def test_port_stores_in_metadata(self, cli_runner, tmp_config_dir, mock_docker_running):
-        """--port on agent add stores ports in metadata."""
+        """--port on agent add stores ports in agents.yaml."""
         agent_dir = tmp_config_dir / "agents" / "test-add"
 
         def fake_render(**kwargs):
@@ -202,23 +202,30 @@ class TestAgentAddPorts:
             compose_file.write_text("version: '3'\n")
             return [str(compose_file)]
 
-        with patch("safeyolo.commands.agent.render_template", side_effect=fake_render), \
-             patch("safeyolo.commands.agent.get_agent_config"), \
-             patch("safeyolo.commands.agent._check_project_ownership"), \
-             patch("safeyolo.commands.agent._ensure_host_config"):
-
+        with (
+            patch("safeyolo.commands.agent.render_template", side_effect=fake_render),
+            patch("safeyolo.commands.agent.get_agent_config"),
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent._ensure_host_config"),
+        ):
             # Create the folder the agent points to
             folder = tmp_config_dir / "project"
             folder.mkdir(exist_ok=True)
 
-            result = cli_runner.invoke(app, [
-                "agent", "add", "test-add", "claude-code", str(folder),
-                "--port", "6080:6080",
-                "--no-run",
-            ])
+            result = cli_runner.invoke(
+                app,
+                [
+                    "agent",
+                    "add",
+                    "test-add",
+                    "claude-code",
+                    str(folder),
+                    "--port",
+                    "6080:6080",
+                    "--no-run",
+                ],
+            )
             assert result.exit_code == 0, result.output
 
-            metadata_file = agent_dir / ".safeyolo.json"
-            assert metadata_file.exists()
-            metadata = json.loads(metadata_file.read_text())
+            metadata = load_agent("test-add")
             assert metadata["ports"] == ["127.0.0.1:6080:6080"]

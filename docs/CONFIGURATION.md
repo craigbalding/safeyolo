@@ -9,11 +9,15 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ├── config.yaml          # Proxy settings
 ├── policy.yaml          # Policy: hosts, credentials, rate limits
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
+├── agents.yaml          # Machine-managed agent metadata (services, roles, vault references)
+├── services/            # User service definitions (override builtin services)
 ├── certs/               # CA certificate for HTTPS inspection
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── policies/            # Per-project approval policies
 ├── agents/              # Agent container configurations
-└── data/                # Admin token, HMAC secret, relay tokens
+├── data/                # Admin token, HMAC secret, relay tokens
+│   ├── vault.yaml.enc   # Encrypted credential vault
+│   └── vault.key        # Vault encryption key (auto-generated, 0600 permissions)
 ```
 
 ## config.yaml
@@ -71,6 +75,8 @@ The wildcard `"*"` entry sets defaults for unlisted hosts. `unknown_credentials:
 
 > **Note:** The host-centric format compiles to IAM-style rules at load time. The IAM format remains the internal evaluation model.
 
+> **Tip:** Run `safeyolo policy show` to see the fully merged policy as the PDP sees it. This includes policy.yaml, addons.yaml, and agents.yaml merged together.
+
 ## addons.yaml
 
 Addon tuning lives in a separate file, sibling to `policy.yaml`:
@@ -88,6 +94,65 @@ addons:
     enabled: true
     builtin_sets: []
 ```
+
+## agents.yaml
+
+Machine-managed agent metadata, written by the CLI (`safeyolo agent authorize` / `safeyolo agent revoke`). Lives alongside `policy.yaml` and is merged at load time.
+
+```yaml
+# Machine-managed by CLI (safeyolo agent authorize/revoke)
+# Lives alongside policy.yaml — merged at load time
+boris:
+  template: claude-code
+  folder: /home/user/my-project
+  services:
+    gmail: { role: readonly, token: gmail-cred }
+  mounts:
+    - /home/user/data:/data:ro
+  ports:
+    - 127.0.0.1:6080:6080
+```
+
+Notes:
+- The CLI writes `agents.yaml`; it never touches `policy.yaml`.
+- The policy loader merges all sibling files (`policy.yaml` + `addons.yaml` + `agents.yaml`) at load time.
+- If you want to hand-manage agents, move the section into `policy.yaml` and delete `agents.yaml`.
+- `safeyolo policy show` displays the merged result.
+
+## Service Definitions
+
+Service definitions describe APIs: auth methods, route whitelists per role. They are used by the service gateway to enforce per-agent access control.
+
+- Builtin services ship with SafeYolo (gmail, slack, etc.) in `config/services/`.
+- User overrides go in `~/.safeyolo/services/`.
+- The `service:` field in `policy.yaml` host entries links a host to a service definition.
+
+Example service YAML:
+
+```yaml
+name: gmail
+description: Gmail API
+default_host: gmail.googleapis.com
+roles:
+  readonly:
+    auth: { type: bearer, refresh_on_401: true }
+    routes:
+      - { effect: allow, methods: [GET], path: "/*" }
+      - { effect: deny, methods: [POST, PUT, DELETE, PATCH], path: "/*" }
+  sender:
+    auth: { type: bearer, refresh_on_401: true }
+    routes:
+      - { effect: allow, path: "/*" }
+```
+
+## Vault
+
+Encrypted credential store for the service gateway. Credentials are stored encrypted at rest and referenced by name in `agents.yaml` service bindings.
+
+- Key auto-generated at `~/.safeyolo/data/vault.key` (0600 permissions).
+- Credentials stored in `~/.safeyolo/data/vault.yaml.enc`.
+- Managed via CLI: `safeyolo vault add`, `safeyolo vault list`, `safeyolo vault remove`, `safeyolo vault oauth2`.
+- Referenced by name in agents.yaml service bindings (the `token:` field).
 
 ### Credential Condition Formats
 

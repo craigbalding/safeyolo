@@ -1,0 +1,21 @@
+name: minifuse
+description: "MiniFuse API — read-only data access"
+
+roles:
+  reader:
+    auth:
+      type: api_key
+      header: X-Auth-Token
+    routes:
+      - effect: allow
+        methods: [GET]
+        path: "/v1/feeds"
+      - effect: allow
+        methods: [GET]
+        path: "/v1/feeds/*"
+      - effect: allow
+        methods: [GET]
+        path: "/v1/entries"
+      - effect: allow
+        methods: [GET]
+        path: "/v1/categories"

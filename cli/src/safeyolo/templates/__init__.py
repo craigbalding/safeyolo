@@ -16,6 +16,7 @@ from .loader import AgentConfig, AgentConfigError, load_agent_config
 
 class TemplateError(Exception):
     """Template operation failed."""
+
     pass
 
 
@@ -25,6 +26,7 @@ TEMPLATES_DIR = Path(__file__).parent / "agents"
 @dataclass
 class HostConfigStatus:
     """Status of detected host config files/directories."""
+
     found_dirs: list[str] = field(default_factory=list)
     found_files: list[str] = field(default_factory=list)
 
@@ -81,9 +83,7 @@ def get_agent_config(template_name: str) -> AgentConfig:
     template_dir = TEMPLATES_DIR / template_name
     if not template_dir.exists():
         available = ", ".join(get_available_templates().keys())
-        raise TemplateError(
-            f"Unknown template: {template_name}. Available: {available}"
-        )
+        raise TemplateError(f"Unknown template: {template_name}. Available: {available}")
 
     try:
         return load_agent_config(template_dir)
@@ -157,10 +157,7 @@ def render_template(
     # Generate .env file with host UID/GID and user's folder
     user_dirname = Path(project_dir).name
     env_content = (
-        f"SAFEYOLO_UID={os.getuid()}\n"
-        f"SAFEYOLO_GID={os.getgid()}\n"
-        f"USER_DIR={project_dir}\n"
-        f"USER_DIRNAME={user_dirname}\n"
+        f"SAFEYOLO_UID={os.getuid()}\nSAFEYOLO_GID={os.getgid()}\nUSER_DIR={project_dir}\nUSER_DIRNAME={user_dirname}\n"
     )
     env_path = output_dir / ".env"
     env_path.write_text(env_content)

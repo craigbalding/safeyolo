@@ -384,7 +384,7 @@ class TestRenderTemplate:
         assert "command -v codex >/dev/null 2>&1" in init_script
         assert "Installing codex with mise..." in init_script
         assert "timeout 120 bash -lc 'mise use -g npm:@openai/codex@latest'" in init_script
-        assert 'Warning: codex installation failed or timed out' in init_script
+        assert "Warning: codex installation failed or timed out" in init_script
 
     def test_renders_guarded_agent_install_in_claude_init_script(self, tmp_config_dir, tmp_path):
         """Claude template should render the binary name in the guarded install block."""
@@ -397,7 +397,7 @@ class TestRenderTemplate:
         assert "command -v claude >/dev/null 2>&1" in init_script
         assert "Installing claude with mise..." in init_script
         assert "timeout 120 bash -lc 'mise use -g npm:@anthropic-ai/claude-code@latest'" in init_script
-        assert 'Warning: claude installation failed or timed out' in init_script
+        assert "Warning: claude installation failed or timed out" in init_script
 
     def test_populates_template_variables(self, tmp_config_dir, tmp_path):
         """Template variables are correctly populated in output."""
@@ -413,10 +413,8 @@ class TestRenderTemplate:
         assert "{%" not in compose_content, "Unrendered Jinja2 block found"
 
         # Verify specific substitutions happened
-        assert "HTTP_PROXY=http://safeyolo:8080" in compose_content, \
-            "proxy_hostname not substituted"
-        assert "claude-code:" in compose_content, \
-            "instance_name not substituted in service definition"
+        assert "HTTP_PROXY=http://safeyolo:8080" in compose_content, "proxy_hostname not substituted"
+        assert "claude-code:" in compose_content, "instance_name not substituted in service definition"
 
 
 # =============================================================================
@@ -498,8 +496,6 @@ class TestRealAgentTomlFiles:
             config = get_agent_config(template_name)
 
             for arg in config.run.auto_args:
-                assert arg.startswith("-"), \
-                    f"{template_name}: auto_arg '{arg}' should be a CLI flag (start with -)"
+                assert arg.startswith("-"), f"{template_name}: auto_arg '{arg}' should be a CLI flag (start with -)"
                 # Flags shouldn't be empty or just dashes
-                assert len(arg.strip("-")) > 0, \
-                    f"{template_name}: auto_arg '{arg}' is empty"
+                assert len(arg.strip("-")) > 0, f"{template_name}: auto_arg '{arg}' is empty"

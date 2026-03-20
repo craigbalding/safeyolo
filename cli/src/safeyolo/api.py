@@ -70,8 +70,7 @@ class AdminAPI:
             )
         except httpx.ReadError:
             raise APIError(
-                f"Connection lost while reading response from {self.base_url}. "
-                f"Check 'docker logs safeyolo' for errors."
+                f"Connection lost while reading response from {self.base_url}. Check 'docker logs safeyolo' for errors."
             )
         except httpx.TimeoutException:
             raise APIError(

@@ -172,8 +172,10 @@ def get_container_status() -> dict | None:
     name = get_container_name()
     result = _run(
         [
-            "docker", "inspect",
-            "-f", "{{.State.Status}}|{{.State.Health.Status}}|{{.State.StartedAt}}",
+            "docker",
+            "inspect",
+            "-f",
+            "{{.State.Status}}|{{.State.Health.Status}}|{{.State.StartedAt}}",
             name,
         ],
         check=False,

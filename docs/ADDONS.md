@@ -58,6 +58,7 @@ Addons are loaded in this order (order matters for security):
 | 1 | circuit_breaker | Fail-fast for unhealthy upstreams | Always on |
 | 2 | credential_guard | Block credentials to wrong hosts | **Block** |
 | 2 | pattern_scanner | Regex scanning for secrets | Warn |
+| 2 | service_gateway | Credential injection for agent→service routing | Always on |
 | 2 | test_context | Require X-Test-Context header on target hosts | **Block** |
 | 3 | request_logger | JSONL audit logging | Always on |
 | 3 | metrics | Per-domain statistics | Always on |
@@ -584,6 +585,35 @@ Fast regex scanning for secrets and suspicious patterns.
 --set pattern_block_input=false   # Block matching requests
 --set pattern_block_output=false  # Block matching responses
 ```
+
+---
+
+## service_gateway.py
+
+### service_gateway
+
+**Purpose:** Routes agent requests to external services through the gateway, injecting real credentials from the vault so agents never see secrets.
+
+**How it works:**
+1. Policy compiler processes the `agents:` section and mints gateway tokens (`sgw_` prefix)
+2. Agent containers receive gateway tokens as environment variables
+3. When an agent makes a request with a gateway token in the Authorization header, service_gateway:
+   - Strips the `sgw_` token
+   - Looks up the real credential from the vault
+   - Injects the real credential using the service's auth config (bearer, API key, etc.)
+   - Forwards the request to the target host
+4. Flow store redacts injected credentials as `[GATEWAY:...last4]`
+
+**Service definitions** describe external APIs (auth methods, route whitelists per role). Builtins ship for common APIs (gmail, slack). Users can add custom service YAMLs in `~/.safeyolo/services/`.
+
+**Vault** stores encrypted credentials referenced by agents.yaml service bindings. Auto-refreshes OAuth2 tokens when `refresh_on_401: true`.
+
+**Hot-reload:** Service definitions are watched for changes (2s poll). Vault requires proxy restart.
+
+**Related CLI:**
+- `safeyolo agent authorize <agent> <service>` -- wire an agent to a service
+- `safeyolo services list/show` -- inspect service definitions
+- `safeyolo vault add/list/remove/oauth2` -- manage credentials
 
 ---
 
