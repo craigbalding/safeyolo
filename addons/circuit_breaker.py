@@ -28,7 +28,9 @@ from typing import Optional
 
 from base import SecurityAddon
 from mitmproxy import ctx, http
-from utils import BackgroundWorker, atomic_write_json, make_block_response, sanitize_for_log
+from utils import BackgroundWorker, atomic_write_json, make_block_response, sanitize_for_log, write_event
+
+from audit_schema import Decision, EventKind, Severity
 
 log = logging.getLogger("safeyolo.circuit-breaker")
 
@@ -302,12 +304,17 @@ class CircuitBreaker(SecurityAddon):
         flow.response = make_block_response(status, body, self.name, extra_headers)
 
     def _log_circuit_event(self, event: str, domain: str, flow: http.HTTPFlow | None = None, **extra):
-        """Log circuit breaker event."""
-        self.log_decision(
-            flow if flow else type("Flow", (), {"metadata": {}})(),
-            event,
-            domain=domain,
-            **extra,
+        """Log circuit breaker state transition as ops event."""
+        write_event(
+            f"ops.circuit_breaker.{event}",
+            kind=EventKind.OPS,
+            severity=Severity.MEDIUM,
+            summary=f"Circuit {event} for {sanitize_for_log(domain)}",
+            host=domain,
+            addon=self.name,
+            request_id=flow.metadata.get("request_id") if flow else None,
+            agent=flow.metadata.get("agent") if flow else None,
+            details=extra if extra else None,
         )
 
     def get_status(self, domain: str) -> CircuitStatus:
@@ -505,8 +512,10 @@ class CircuitBreaker(SecurityAddon):
             retry_after = int(status.time_until_half_open or self.timeout_seconds)
             self.log_decision(
                 flow,
-                "block",
-                domain=domain,
+                Decision.DENY,
+                severity=Severity.HIGH,
+                summary=f"Circuit breaker open for {sanitize_for_log(domain)} ({status.failure_count} failures)",
+                host=domain,
                 circuit_state=status.state.value,
                 failure_count=status.failure_count,
                 retry_after=retry_after,

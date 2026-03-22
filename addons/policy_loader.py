@@ -36,6 +36,8 @@ except ImportError:
 from policy_compiler import compile_policy, is_host_centric
 from utils import write_event
 
+from audit_schema import EventKind, Severity
+
 log = logging.getLogger("safeyolo.policy-loader")
 
 
@@ -196,9 +198,11 @@ class PolicyLoader:
         if raw is None:
             write_event(
                 "ops.policy_error",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary="Baseline policy file not found or invalid",
                 addon="policy-loader",
-                policy_type="baseline",
-                error="File not found or invalid",
+                details={"policy_type": "baseline", "error": "File not found or invalid"},
             )
             return False
 
@@ -232,9 +236,11 @@ class PolicyLoader:
             )
             write_event(
                 "ops.policy_reload",
+                kind=EventKind.OPS,
+                severity=Severity.MEDIUM,
+                summary=f"Baseline policy reloaded: {len(self._baseline.permissions)} permissions",
                 addon="policy-loader",
-                policy_type="baseline",
-                permissions_count=len(self._baseline.permissions),
+                details={"policy_type": "baseline", "permissions_count": len(self._baseline.permissions)},
             )
 
             if self._on_reload:
@@ -246,9 +252,11 @@ class PolicyLoader:
             log.error(f"Failed to validate baseline policy: {type(e).__name__}: {e}")
             write_event(
                 "ops.policy_error",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=f"Baseline policy validation failed: {type(e).__name__}",
                 addon="policy-loader",
-                policy_type="baseline",
-                error=str(e),
+                details={"policy_type": "baseline", "error": str(e)},
             )
             return False
 
@@ -274,10 +282,15 @@ class PolicyLoader:
             log.info(f"Loaded task policy: {len(self._task_policy.permissions)} permissions")
             write_event(
                 "ops.policy_reload",
+                kind=EventKind.OPS,
+                severity=Severity.MEDIUM,
+                summary=f"Task policy reloaded: {len(self._task_policy.permissions)} permissions",
                 addon="policy-loader",
-                policy_type="task",
-                task_id=self._task_policy.metadata.task_id,
-                permissions_count=len(self._task_policy.permissions),
+                details={
+                    "policy_type": "task",
+                    "task_id": self._task_policy.metadata.task_id,
+                    "permissions_count": len(self._task_policy.permissions),
+                },
             )
 
             if self._on_reload:

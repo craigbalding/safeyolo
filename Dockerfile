@@ -59,6 +59,9 @@ ENV PATH="/.venv/bin:$PATH"
 
 WORKDIR /app
 
+# Copy shared audit schema (imported by addons and CLI)
+COPY audit_schema.py /app/audit_schema.py
+
 # Copy PDP (Policy Decision Point) library
 COPY pdp/ /app/pdp/
 RUN chmod -R 644 /app/pdp/*.py && chmod 755 /app/pdp

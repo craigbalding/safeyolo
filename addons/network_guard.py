@@ -47,7 +47,9 @@ except ImportError:
     confusables = None
 
 from base import SecurityAddon
-from utils import get_client_ip
+from utils import get_client_ip, sanitize_for_log
+
+from audit_schema import Decision, Severity
 
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -195,7 +197,13 @@ class NetworkGuard(SecurityAddon):
 
         if self.should_block():
             log.warning(f"BLOCKED: {method} {domain}{path} from {client} - {reason}")
-            self.log_decision(flow, "block", domain=domain, reason=reason, attack_type="homoglyph")
+            self.log_decision(
+                flow, Decision.DENY,
+                severity=Severity.CRITICAL,
+                summary=f"Homoglyph attack: {sanitize_for_log(domain)}",
+                host=domain,
+                reason=reason, attack_type="homoglyph",
+            )
             self.block(
                 flow,
                 403,
@@ -209,7 +217,13 @@ class NetworkGuard(SecurityAddon):
             )
         else:
             log.warning(f"WARN: {method} {domain}{path} from {client} - {reason}")
-            self.log_decision(flow, "warn", domain=domain, reason=reason, attack_type="homoglyph")
+            self.log_decision(
+                flow, Decision.WARN,
+                severity=Severity.CRITICAL,
+                summary=f"Homoglyph attack (warn): {sanitize_for_log(domain)}",
+                host=domain,
+                reason=reason, attack_type="homoglyph",
+            )
             self.warn(flow)
 
     def _handle_deny(self, flow, domain, path, method, reason):
@@ -219,7 +233,13 @@ class NetworkGuard(SecurityAddon):
 
         if self.should_block():
             log.warning(f"BLOCKED: {method} {domain}{path} from {client} - access denied")
-            self.log_decision(flow, "block", domain=domain, reason=reason, decision_type="access_denied")
+            self.log_decision(
+                flow, Decision.DENY,
+                severity=Severity.HIGH,
+                summary=f"Access denied to {sanitize_for_log(domain)}",
+                host=domain,
+                reason=reason, decision_type="access_denied",
+            )
             self.block(
                 flow,
                 403,
@@ -232,7 +252,13 @@ class NetworkGuard(SecurityAddon):
             )
         else:
             log.warning(f"WARN: {method} {domain}{path} from {client} - would be denied")
-            self.log_decision(flow, "warn", domain=domain, reason=reason, decision_type="access_denied")
+            self.log_decision(
+                flow, Decision.WARN,
+                severity=Severity.HIGH,
+                summary=f"Access would be denied to {sanitize_for_log(domain)}",
+                host=domain,
+                reason=reason, decision_type="access_denied",
+            )
             self.warn(flow)
 
     def _handle_rate_limit(self, flow, domain, path, method, reason):
@@ -242,7 +268,13 @@ class NetworkGuard(SecurityAddon):
 
         if self.should_block():
             log.warning(f"BLOCKED: {method} {domain}{path} from {client} - budget exceeded")
-            self.log_decision(flow, "block", domain=domain, reason=reason, decision_type="rate_limited")
+            self.log_decision(
+                flow, Decision.BUDGET_EXCEEDED,
+                severity=Severity.MEDIUM,
+                summary=f"Rate limit exceeded for {sanitize_for_log(domain)}",
+                host=domain,
+                reason=reason, decision_type="rate_limited",
+            )
             self.block(
                 flow,
                 429,
@@ -259,7 +291,13 @@ class NetworkGuard(SecurityAddon):
             )
         else:
             log.warning(f"WARN: {method} {domain}{path} from {client} - budget exceeded")
-            self.log_decision(flow, "warn", domain=domain, reason=reason, decision_type="rate_limited")
+            self.log_decision(
+                flow, Decision.WARN,
+                severity=Severity.MEDIUM,
+                summary=f"Rate limit would be exceeded for {sanitize_for_log(domain)}",
+                host=domain,
+                reason=reason, decision_type="rate_limited",
+            )
             self.warn(flow)
 
     def get_stats(self) -> dict:

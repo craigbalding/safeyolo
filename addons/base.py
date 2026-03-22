@@ -34,6 +34,7 @@ from mitmproxy import http
 from service_discovery import get_service_discovery
 from utils import get_client_ip, get_option_safe, make_block_response, write_event
 
+from audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from pdp import get_policy_client
 
 
@@ -115,26 +116,39 @@ class SecurityAddon:
     def log_decision(
         self,
         flow: http.HTTPFlow,
-        decision: str,
-        **data: Any,
+        decision: Decision,
+        *,
+        severity: Severity,
+        summary: str,
+        host: str | None = None,
+        approval: ApprovalRequest | None = None,
+        **details: Any,
     ) -> None:
         """Log security decision to audit log.
 
         Args:
             flow: HTTP flow for request_id correlation
-            decision: Decision type (e.g., "block", "warn", "allow")
-            **data: Additional fields (domain, reason, etc.)
+            decision: Decision enum value
+            severity: Event severity
+            summary: Human-readable one-liner
+            host: Destination hostname
+            approval: Approval request metadata
+            **details: Additional addon-specific fields
         """
-        # Convert name to event type: "rate-limiter" -> "security.ratelimit"
         event_type = f"security.{self._option_prefix()}"
 
         write_event(
             event_type,
+            kind=EventKind.SECURITY,
+            severity=severity,
+            summary=summary,
+            decision=decision,
+            host=host,
             request_id=flow.metadata.get("request_id"),
             agent=flow.metadata.get("agent"),
             addon=self.name,
-            decision=decision,
-            **data,
+            approval=approval,
+            details=details if details else None,
         )
 
     def block(

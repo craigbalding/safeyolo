@@ -30,6 +30,8 @@ Event Taxonomy:
     agent.config_changed - Agent configuration updated
 """
 
+from __future__ import annotations
+
 import fnmatch
 import hashlib
 import hmac
@@ -45,7 +47,10 @@ import unicodedata
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from audit_schema import ApprovalRequest, Decision, EventKind, Severity
 
 import yaml
 from mitmproxy import http
@@ -155,7 +160,7 @@ def sanitize_for_log(value, max_len: int = 200) -> str:
 
 
 # Valid event prefixes for taxonomy validation
-VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.", "agent.", "broker.")
+VALID_EVENT_PREFIXES = ("traffic.", "security.", "ops.", "admin.", "agent.", "gateway.")
 
 # Module-level logger for write_event errors
 _log = logging.getLogger("safeyolo.utils")
@@ -184,39 +189,70 @@ def _rotate_jsonl_if_needed() -> None:
         AUDIT_LOG_PATH.rename(AUDIT_LOG_PATH.with_suffix(".jsonl.1"))
 
 
-def write_event(event: str, **data) -> None:
+def write_event(
+    event: str,
+    *,
+    kind: EventKind,
+    severity: Severity,
+    summary: str,
+    decision: Decision | None = None,
+    host: str | None = None,
+    request_id: str | None = None,
+    agent: str | None = None,
+    addon: str | None = None,
+    approval: ApprovalRequest | None = None,
+    details: dict | None = None,
+) -> None:
     """
-    Write an event to the central JSONL audit log.
+    Write a structured event to the central JSONL audit log.
 
-    Primary logging function for all SafeYolo events. Writes to AUDIT_LOG_PATH.
+    Constructs an AuditEvent, validates, and writes to AUDIT_LOG_PATH.
 
     Args:
-        event: Event type using taxonomy (e.g., "security.credential", "admin.approve")
-               Must start with: traffic., security., ops., admin., or agent.
-        **data: Event-specific fields. Common fields:
-            - request_id: Correlation ID from flow.metadata
-            - addon: Name of the addon emitting the event
-            - decision: For security events - "allow", "block", or "warn"
-
-    Example:
-        write_event("security.credential",
-            request_id="req-abc123",
-            addon="credential-guard",
-            decision="block",
-            rule="openai",
-            host="httpbin.org",
-            reason="destination_mismatch"
-        )
+        event: Event type using taxonomy (e.g., "security.credential_guard")
+        kind: Top-level event category
+        severity: Event severity for rendering
+        summary: Human-readable one-liner
+        decision: Security/gateway decision outcome
+        host: Destination hostname
+        request_id: Correlation ID from flow.metadata
+        agent: Agent identity
+        addon: Name of the addon emitting the event
+        approval: Approval request metadata
+        details: Addon-specific fields not in the spine
     """
+    from audit_schema import AuditEvent
+
     # Validate event taxonomy (warn but don't fail)
     if not event.startswith(VALID_EVENT_PREFIXES):
-        _log.warning(f"Event '{event}' doesn't match taxonomy (expected: traffic.*, security.*, ops.*, admin.*, agent.*)")
+        _log.warning(f"Event '{event}' doesn't match taxonomy (expected: traffic.*, security.*, ops.*, admin.*, agent.*, gateway.*)")
 
-    entry = {
-        "ts": datetime.now(UTC).isoformat(),
-        "event": event,
-        **data,
-    }
+    try:
+        audit_event = AuditEvent(
+            event=event,
+            kind=kind,
+            severity=severity,
+            summary=summary,
+            decision=decision,
+            host=host,
+            request_id=request_id,
+            agent=agent,
+            addon=addon,
+            approval=approval,
+            details=details or {},
+        )
+        entry = audit_event.to_jsonl()
+    except Exception as e:
+        _log.error(f"Event validation failed for '{event}': {type(e).__name__}: {e}")
+        # Fallback: write unvalidated entry so events are never silently lost
+        entry = {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": event,
+            "kind": kind.value if hasattr(kind, "value") else str(kind),
+            "severity": severity.value if hasattr(severity, "value") else str(severity),
+            "summary": summary,
+        }
+
     try:
         AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         _rotate_jsonl_if_needed()
@@ -226,29 +262,6 @@ def write_event(event: str, **data) -> None:
         # Fallback to stderr if log write fails
         print(f"[safeyolo] Event log write failed: {type(e).__name__}: {e}", file=sys.stderr)
         print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr)
-
-
-def write_audit_event(event: str, **data) -> None:
-    """
-    Write an operational/audit event to the central JSONL log.
-
-    DEPRECATED: Use write_event() with taxonomy prefix instead.
-    This function is kept for backward compatibility but auto-prefixes
-    events with "ops." if they don't already have a taxonomy prefix.
-
-    Args:
-        event: Event type (e.g., "config_reload" -> "ops.config_reload")
-        **data: Additional fields (addon, config, error, etc.)
-
-    Example:
-        write_audit_event("config_reload", addon="request-logger", config="quiet_hosts", rules=2)
-        # Writes: {"event": "ops.config_reload", ...}
-    """
-    # Auto-prefix with ops. if no taxonomy prefix
-    if not event.startswith(VALID_EVENT_PREFIXES):
-        event = f"ops.{event}"
-
-    write_event(event, **data)
 
 
 def make_block_response(

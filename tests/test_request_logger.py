@@ -114,9 +114,9 @@ class TestRequestLoggerLogging:
 
             assert entry["event"] == "traffic.request"
             assert entry["request_id"] == "test-123"
-            assert entry["method"] == "GET"
             assert entry["host"] == "api.example.com"
-            assert entry["path"] == "/v1/data"
+            assert entry["details"]["method"] == "GET"
+            assert entry["details"]["path"] == "/v1/data"
             assert addon.requests_total == 1
 
     def test_logs_response_to_file(self):
@@ -145,8 +145,8 @@ class TestRequestLoggerLogging:
 
             assert entry["event"] == "traffic.response"
             assert entry["request_id"] == "test-456"
-            assert entry["status"] == 200
-            assert "ms" in entry
+            assert entry["details"]["status"] == 200
+            assert "ms" in entry["details"]
             assert addon.responses_total == 1
 
     def test_logs_block_with_details(self):
@@ -174,8 +174,8 @@ class TestRequestLoggerLogging:
             with open(log_path) as f:
                 entry = json.loads(f.readline())
 
-            assert entry["blocked_by"] == "credential-guard"
-            assert entry["credential_fingerprint"] == "hmac:abc123"
+            assert entry["details"]["blocked_by"] == "credential-guard"
+            assert entry["details"]["credential_fingerprint"] == "hmac:abc123"
             assert addon.blocks_total == 1
 
 
@@ -254,7 +254,7 @@ class TestRequestLoggerQuiet:
             assert log_path.exists()
             with open(log_path) as f:
                 entry = json.loads(f.readline())
-            assert entry["blocked_by"] == "network-guard"
+            assert entry["details"]["blocked_by"] == "network-guard"
             assert addon.blocks_total == 1
 
 

@@ -22,7 +22,7 @@ from ..agents_store import remove_agent as _store_remove_agent
 from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
 from ..docker import is_running, wait_for_healthy
 from ..docker import start as docker_start
-from ..events import write_event
+from ..events import EventKind, Severity, write_event
 from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
 from ._service_discovery import find_service
 from .mount import is_path_protected
@@ -279,9 +279,9 @@ def _run_agent(
             cmd.append(binary)
         cmd.extend(metadata["user_default_args"])
 
-    write_event("agent.started", agent=name)
+    write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     result = subprocess.run(cmd, cwd=agent_dir, env=compose_env)
-    write_event("agent.stopped", agent=name, exit_code=result.returncode)
+    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {result.returncode})", agent=name, details={"exit_code": result.returncode})
     return result.returncode
 
 
@@ -582,7 +582,7 @@ def add(
     )
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
-    write_event("agent.added", agent=name, template=template, folder=folder_str)
+    write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})
 
     # Auto-run unless --no-run
     if not no_run:
@@ -672,7 +672,7 @@ def remove(
 
     shutil.rmtree(agent_dir)
     _store_remove_agent(name)
-    write_event("agent.removed", agent=name, clean=clean)
+    write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name, details={"clean": clean})
     console.print(f"[green]Removed agent: {name}[/green]")
 
 
@@ -827,7 +827,7 @@ def stop(
     console.print(f"Stopping {name}...")
     subprocess.run(["docker", "stop", name], capture_output=True)
     subprocess.run(["docker", "rm", name], capture_output=True)
-    write_event("agent.stopped", agent=name, reason="user_request")
+    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 
 
@@ -1013,7 +1013,7 @@ def config(
         changes.append("mounts")
     if add_port or remove_port or clear_ports:
         changes.append("ports")
-    write_event("agent.config_changed", agent=name, changes=changes)
+    write_event("agent.config_changed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} config changed: {', '.join(changes)}", agent=name, details={"changes": changes})
 
 
 @agent_app.command(name="help")

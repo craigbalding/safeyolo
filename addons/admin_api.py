@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from mitmproxy import ctx
 from utils import sanitize_for_log, write_event
 
+from audit_schema import EventKind, Severity
 from pdp import get_policy_client
 
 log = logging.getLogger("safeyolo.admin")
@@ -82,10 +83,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         client_ip = self._get_client_ip()
         write_event("admin.auth_failure",
+            kind=EventKind.ADMIN,
+            severity=Severity.HIGH,
+            summary=f"Auth failure from {_sanitize_log(client_ip)} on {_sanitize_log(self.path)}",
             addon="admin-api",
-            client_ip=client_ip,
-            path=self.path,
-            reason="invalid_or_missing_token"
+            details={"client_ip": client_ip, "path": self.path, "reason": "invalid_or_missing_token"},
         )
         self._send_json({
             "error": "Unauthorized",
@@ -371,12 +373,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         client_ip = self._get_client_ip()
-        write_event("admin.baseline_approval_added",
+        write_event("admin.approval_added",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Baseline approval added: {_sanitize_log(cred_id)} -> {_sanitize_log(destination)}",
             addon="admin-api",
-            client_ip=client_ip,
-            destination=destination,
-            cred_id=cred_id,
-            tier=tier
+            details={"client_ip": client_ip, "destination": destination, "cred_id": cred_id, "tier": tier},
         )
         safe_cred_id = _sanitize_log(cred_id)
         safe_destination = _sanitize_log(destination)
@@ -409,12 +411,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         client_ip = self._get_client_ip()
-        write_event("admin.credential_denial",
+        write_event("admin.denial",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Credential denied: {_sanitize_log(cred_id)} -> {_sanitize_log(destination)}",
             addon="admin-api",
-            client_ip=client_ip,
-            destination=destination,
-            cred_id=cred_id,
-            reason=reason
+            details={"client_ip": client_ip, "destination": destination, "cred_id": cred_id, "reason": reason},
         )
         safe_cred_id = _sanitize_log(cred_id)
         safe_destination = _sanitize_log(destination)
@@ -442,12 +444,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         client_ip = self._get_client_ip()
-        write_event("admin.budgets_reset",
-            addon="admin-api",
-            client_ip=client_ip,
-            resource=resource
-        )
         safe_resource = _sanitize_log(resource) if resource else "all"
+        write_event("admin.budgets_reset",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Budget counters reset: {safe_resource}",
+            addon="admin-api",
+            details={"client_ip": client_ip, "resource": resource},
+        )
         log.info(f"Budget counters reset: {safe_resource}")
         self._send_json(result)
 
@@ -493,11 +497,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         results = self._set_all_modes(mode)
         client_ip = self._get_client_ip()
         write_event("admin.mode_change",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"All addons mode changed to {mode}",
             addon="admin-api",
-            client_ip=client_ip,
-            target_addon="all",
-            old_modes=old_modes,
-            new_mode=mode
+            details={"client_ip": client_ip, "target_addon": "all", "old_modes": old_modes, "new_mode": mode},
         )
         self._send_json({"status": "updated", "mode": mode, "results": results})
 
@@ -522,11 +526,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         else:
             client_ip = self._get_client_ip()
             write_event("admin.mode_change",
+                kind=EventKind.ADMIN,
+                severity=Severity.MEDIUM,
+                summary=f"{_sanitize_log(addon_name)} mode changed to {mode}",
                 addon="admin-api",
-                client_ip=client_ip,
-                target_addon=addon_name,
-                old_mode=old_mode_value,
-                new_mode=mode
+                details={"client_ip": client_ip, "target_addon": addon_name, "old_mode": old_mode_value, "new_mode": mode},
             )
             self._send_json(result)
 
@@ -558,9 +562,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         client_ip = self._get_client_ip()
         write_event("admin.baseline_update",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Baseline policy updated: {result.get('permission_count', 0)} permissions",
             addon="admin-api",
-            client_ip=client_ip,
-            permission_count=result.get("permission_count", 0)
+            details={"client_ip": client_ip, "permission_count": result.get("permission_count", 0)},
         )
         log.info(f"Baseline policy updated: {result.get('permission_count', 0)} permissions")
 
@@ -599,10 +605,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         client_ip = self._get_client_ip()
         write_event("admin.task_policy_update",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Task policy '{_sanitize_log(task_id)}' updated: {permission_count} permissions",
             addon="admin-api",
-            client_ip=client_ip,
-            task_id=task_id,
-            permission_count=permission_count
+            details={"client_ip": client_ip, "task_id": task_id, "permission_count": permission_count},
         )
         log.info(f"Task policy '{_sanitize_log(task_id)}' updated: {permission_count} permissions")
 

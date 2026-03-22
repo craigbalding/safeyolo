@@ -9,24 +9,55 @@ import logging
 import sys
 from datetime import UTC, datetime
 
+from .audit_schema import AuditEvent, EventKind, Severity  # noqa: F401 - re-exported
 from .config import get_logs_dir
 
 log = logging.getLogger("safeyolo.events")
 
 
-def write_event(event: str, **data) -> None:
-    """Write an event to the JSONL audit log.
+def write_event(
+    event: str,
+    *,
+    kind: EventKind,
+    severity: Severity,
+    summary: str,
+    agent: str | None = None,
+    addon: str | None = None,
+    details: dict | None = None,
+) -> None:
+    """Write a structured event to the JSONL audit log.
 
     Args:
         event: Event type using taxonomy (e.g., "agent.started")
-        **data: Event-specific fields
+        kind: Top-level event category
+        severity: Event severity
+        summary: Human-readable one-liner
+        agent: Agent identity
+        addon: Emitting addon/component
+        details: Additional fields
     """
     log_path = get_logs_dir(create=True) / "safeyolo.jsonl"
-    entry = {
-        "ts": datetime.now(UTC).isoformat(),
-        "event": event,
-        **data,
-    }
+    try:
+        audit_event = AuditEvent(
+            event=event,
+            kind=kind,
+            severity=severity,
+            summary=summary,
+            agent=agent,
+            addon=addon,
+            details=details or {},
+        )
+        entry = audit_event.to_jsonl()
+    except Exception as e:
+        log.warning(f"Event validation failed: {type(e).__name__}: {e}")
+        entry = {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": event,
+            "kind": kind.value if hasattr(kind, "value") else str(kind),
+            "severity": severity.value if hasattr(severity, "value") else str(severity),
+            "summary": summary,
+        }
+
     try:
         with open(log_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
