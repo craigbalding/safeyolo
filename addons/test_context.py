@@ -24,8 +24,9 @@ import time
 
 from base import SecurityAddon
 from mitmproxy import http
-from utils import matches_host_pattern, write_event
+from utils import matches_host_pattern, sanitize_for_log, write_event
 
+from audit_schema import Decision, EventKind, Severity
 from pdp import get_policy_client
 
 log = logging.getLogger("safeyolo.test-context")
@@ -176,9 +177,11 @@ class TestContext(SecurityAddon):
             if self.should_block():
                 self.log_decision(
                     flow,
-                    "block",
-                    reason=reason,
+                    Decision.DENY,
+                    severity=Severity.HIGH,
+                    summary=f"Test context {reason} for {sanitize_for_log(flow.request.host)}",
                     host=flow.request.host,
+                    reason=reason,
                     path=flow.request.path,
                     method=flow.request.method,
                 )
@@ -196,9 +199,11 @@ class TestContext(SecurityAddon):
             else:
                 self.log_decision(
                     flow,
-                    "warn",
-                    reason=reason,
+                    Decision.WARN,
+                    severity=Severity.HIGH,
+                    summary=f"Test context {reason} for {sanitize_for_log(flow.request.host)} (warn)",
                     host=flow.request.host,
+                    reason=reason,
                     path=flow.request.path,
                     method=flow.request.method,
                 )
@@ -214,14 +219,19 @@ class TestContext(SecurityAddon):
 
         write_event(
             "security.test_context",
+            kind=EventKind.SECURITY,
+            severity=Severity.LOW,
+            summary=f"Test context request: {flow.request.method} {sanitize_for_log(flow.request.host)}{sanitize_for_log(flow.request.path)}",
+            host=flow.request.host,
             request_id=flow.metadata.get("request_id"),
             addon=self.name,
-            phase="request",
-            method=flow.request.method,
-            host=flow.request.host,
-            path=flow.request.path,
-            context=context,
-            request_body_snippet=request_body[:512] if request_body else "",
+            details={
+                "phase": "request",
+                "method": flow.request.method,
+                "path": flow.request.path,
+                "context": context,
+                "request_body_snippet": request_body[:512] if request_body else "",
+            },
         )
 
         self.stats.allowed += 1
@@ -239,16 +249,21 @@ class TestContext(SecurityAddon):
 
         write_event(
             "security.test_context",
+            kind=EventKind.SECURITY,
+            severity=Severity.LOW,
+            summary=f"Test context response: {flow.response.status_code if flow.response else 0} {sanitize_for_log(flow.request.host)}{sanitize_for_log(flow.request.path)}",
+            host=flow.request.host,
             request_id=flow.metadata.get("request_id"),
             addon=self.name,
-            phase="response",
-            method=flow.request.method,
-            host=flow.request.host,
-            path=flow.request.path,
-            context=context,
-            status_code=flow.response.status_code if flow.response else 0,
-            response_body_snippet=response_body[:512] if response_body else "",
-            duration_ms=duration_ms,
+            details={
+                "phase": "response",
+                "method": flow.request.method,
+                "path": flow.request.path,
+                "context": context,
+                "status_code": flow.response.status_code if flow.response else 0,
+                "response_body_snippet": response_body[:512] if response_body else "",
+                "duration_ms": duration_ms,
+            },
         )
 
     def get_stats(self) -> dict:

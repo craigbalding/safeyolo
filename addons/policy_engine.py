@@ -41,6 +41,8 @@ from policy_loader import PolicyLoader
 from pydantic import BaseModel, Field, model_validator
 from utils import matches_host_pattern, matches_resource_pattern, sanitize_for_log, write_event
 
+from audit_schema import EventKind, Severity
+
 log = logging.getLogger("safeyolo.policy-engine")
 
 
@@ -764,12 +766,18 @@ class PolicyEngine:
         if resource:
             self._budget_tracker.reset(resource)
             log.info(f"Reset policy budget for: {resource}")
-            write_event("admin.budget_reset", addon="policy-engine", resource=resource)
+            write_event("admin.budget_reset",
+                kind=EventKind.ADMIN, severity=Severity.MEDIUM,
+                summary=f"Budget reset for {sanitize_for_log(resource)}",
+                addon="policy-engine", details={"resource": resource})
             return {"status": "reset", "resource": resource}
         else:
             self._budget_tracker.reset_all()
             log.info("Reset all policy budgets")
-            write_event("admin.budget_reset", addon="policy-engine", resource="all")
+            write_event("admin.budget_reset",
+                kind=EventKind.ADMIN, severity=Severity.MEDIUM,
+                summary="All budgets reset",
+                addon="policy-engine", details={"resource": "all"})
             return {"status": "reset", "resource": "all"}
 
     # -------------------------------------------------------------------------
@@ -821,11 +829,12 @@ class PolicyEngine:
 
         log.info("Added credential approval: %s accepts %s", sanitize_for_log(destination), cred_ids)
         write_event(
-            "admin.credential_approval_added",
+            "admin.approval_added",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Credential approval added: {sanitize_for_log(destination)} accepts {cred_ids}",
             addon="policy-engine",
-            destination=destination,
-            cred_id=cred_ids,
-            tier=tier,
+            details={"destination": destination, "cred_id": cred_ids, "tier": tier},
         )
 
         return {
@@ -856,9 +865,11 @@ class PolicyEngine:
         log.info(f"Replaced baseline policy: {len(new_policy.permissions)} permissions")
         write_event(
             "ops.policy_update",
+            kind=EventKind.OPS,
+            severity=Severity.MEDIUM,
+            summary=f"Baseline policy replaced: {len(new_policy.permissions)} permissions",
             addon="policy-engine",
-            policy_type="baseline",
-            permissions_count=len(new_policy.permissions),
+            details={"policy_type": "baseline", "permissions_count": len(new_policy.permissions)},
         )
 
         return {
@@ -893,10 +904,11 @@ class PolicyEngine:
         log.info(f"Set task policy '{task_id}': {len(new_policy.permissions)} permissions")
         write_event(
             "ops.policy_update",
+            kind=EventKind.OPS,
+            severity=Severity.MEDIUM,
+            summary=f"Task policy '{sanitize_for_log(task_id)}' set: {len(new_policy.permissions)} permissions",
             addon="policy-engine",
-            policy_type="task",
-            task_id=task_id,
-            permissions_count=len(new_policy.permissions),
+            details={"policy_type": "task", "task_id": task_id, "permissions_count": len(new_policy.permissions)},
         )
 
         return {

@@ -73,22 +73,22 @@ class RollingStats:
     def add_event(self, event: dict) -> None:
         """Record an event and update stats."""
         now = time.time()
-        event_type = event.get("event", "")
+        kind = event.get("kind", "")
 
-        # Track all security events
-        if event_type.startswith("security."):
+        # Track security and gateway events
+        if kind in ("security", "gateway"):
             self._events.append((now, event))
             self.total_requests += 1
 
             decision = event.get("decision", "")
-            if decision == "block":
+            if decision in ("deny", "require_approval", "budget_exceeded"):
                 self.total_blocks += 1
-                # Track pending approvals by fingerprint
-                reason = event.get("reason", "")
-                if reason in ("requires_approval", "destination_mismatch"):
-                    fingerprint = event.get("fingerprint", "")
-                    if fingerprint and fingerprint not in self._pending_fingerprints:
-                        self._pending_fingerprints.add(fingerprint)
+                # Track pending approvals via approval field
+                approval = event.get("approval", {})
+                if approval and approval.get("required"):
+                    dedup_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
+                    if dedup_key and dedup_key not in self._pending_fingerprints:
+                        self._pending_fingerprints.add(dedup_key)
                         self.pending_approvals += 1
             elif decision == "warn":
                 self.total_warnings += 1
@@ -96,10 +96,10 @@ class RollingStats:
         # Prune old events
         self._prune(now)
 
-    def mark_resolved(self, fingerprint: str) -> None:
+    def mark_resolved(self, dedup_key: str) -> None:
         """Mark a pending approval as resolved."""
-        if fingerprint in self._pending_fingerprints:
-            self._pending_fingerprints.discard(fingerprint)
+        if dedup_key in self._pending_fingerprints:
+            self._pending_fingerprints.discard(dedup_key)
             self.pending_approvals = max(0, self.pending_approvals - 1)
 
     def _prune(self, now: float) -> None:
@@ -117,10 +117,11 @@ class RollingStats:
         blocks = 0
         warnings = 0
         for _, event in self._events:
-            if event.get("event", "").startswith("security."):
+            kind = event.get("kind", "")
+            if kind in ("security", "gateway"):
                 requests += 1
                 decision = event.get("decision", "")
-                if decision == "block":
+                if decision in ("deny", "require_approval", "budget_exceeded"):
                     blocks += 1
                 elif decision == "warn":
                     warnings += 1
@@ -133,7 +134,8 @@ class RollingStats:
         self._prune(now)
         counts: dict[str, int] = {}
         for _, event in self._events:
-            if event.get("event", "").startswith("security.") and event.get("decision") == "allow":
+            kind = event.get("kind", "")
+            if kind in ("security", "gateway") and event.get("decision") == "allow":
                 host = event.get("host", "unknown")
                 counts[host] = counts.get(host, 0) + 1
         return counts
@@ -205,14 +207,16 @@ def tail_jsonl(path: Path, follow: bool = True):
 
 def format_approval_request(event: dict) -> Panel:
     """Format a credential approval request as a Rich panel."""
-    # Fields are at root level, not nested under "data"
-    rule = event.get("rule", "unknown")
+    # Use spine fields from audit event envelope
+    approval = event.get("approval", {})
+    details = event.get("details", {})
     host = event.get("host", "unknown")
-    fingerprint = event.get("fingerprint", "unknown")
-    client_ip = event.get("client_ip", "")
-    reason = event.get("reason", "")
-    confidence = event.get("confidence", "")
-    location = event.get("location", "")
+    rule = details.get("rule", approval.get("approval_type", "unknown"))
+    fingerprint = approval.get("key", details.get("fingerprint", "unknown"))
+    client_ip = details.get("client_ip", "")
+    reason = details.get("reason", "")
+    confidence = details.get("confidence", "")
+    location = details.get("location", "")
     ts = event.get("ts", "")
 
     # Format timestamp
@@ -257,9 +261,10 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
 
     Returns True if approved, False if denied/skipped.
     """
-    # Fields are at root level, not nested under "data"
-    fingerprint = event.get("fingerprint", "")
-    host = event.get("host", "")
+    approval = event.get("approval", {})
+    details = event.get("details", {})
+    fingerprint = approval.get("key", details.get("fingerprint", ""))
+    host = event.get("host", approval.get("target", ""))
 
     # Show the request
     console.print()
@@ -398,30 +403,20 @@ def watch_tmux(log_path: Path, interval: int, toasts: bool = True) -> None:
 
 def _maybe_toast(event: dict, toasted: set[str]) -> None:
     """Send a tmux toast if this event needs attention."""
-    event_type = event.get("event", "")
-
-    # Only toast for credential blocks needing approval
-    if event_type != "security.credential_guard":
+    # Use approval field to detect events needing attention
+    approval = event.get("approval", {})
+    if not approval or not approval.get("required"):
         return
 
-    decision = event.get("decision", "")
-    reason = event.get("reason", "")
-
-    if decision != "block" or reason not in ("requires_approval", "destination_mismatch"):
-        return
-
-    # Deduplicate by fingerprint+host
-    fingerprint = event.get("fingerprint", "")
-    host = event.get("host", "unknown")
-    dedup_key = f"{fingerprint}:{host}"
-
+    # Deduplicate by key:target
+    dedup_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
     if dedup_key in toasted:
         return
     toasted.add(dedup_key)
 
-    # Build toast message
-    rule = event.get("rule", "credential")
-    message = f"SafeYolo: {rule} blocked for {host} (approval needed)"
+    # Build toast message from summary
+    summary = event.get("summary", "Credential blocked")
+    message = f"SafeYolo: {summary}"
 
     if tmux_toast(message):
         console.print(f"[dim]Toast sent:[/dim] {message}")
@@ -494,54 +489,46 @@ def watch(
 
     try:
         for event in tail_jsonl(log_path, follow=follow):
-            event_type = event.get("event", "")
+            kind = event.get("kind", "")
 
-            # Filter to security events if requested
-            if security_only and not event_type.startswith("security."):
+            # Filter to security/gateway events if requested
+            if security_only and kind not in ("security", "gateway"):
                 continue
 
             # Track all events in rolling stats
             stats.add_event(event)
 
-            # Check for credential blocks needing approval
-            # Fields are at root level, not nested under "data"
-            if event_type == "security.credential_guard":
-                decision = event.get("decision", "")
-                reason = event.get("reason", "")
-                fingerprint = event.get("fingerprint", "")
+            # Check for events needing approval via approval field
+            approval = event.get("approval", {})
+            decision = event.get("decision", "")
 
-                # Only prompt for blocks that need approval
-                if decision == "block" and reason in ("requires_approval", "destination_mismatch"):
-                    # Deduplicate by fingerprint+host
-                    dedup_key = f"{fingerprint}:{event.get('host', '')}"
-                    if dedup_key in seen_fingerprints:
-                        continue
-                    seen_fingerprints.add(dedup_key)
+            if approval and approval.get("required"):
+                # Deduplicate by key:target
+                dedup_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
+                if dedup_key in seen_fingerprints:
+                    continue
+                seen_fingerprints.add(dedup_key)
 
-                    # Show status context before prompting
-                    if events_since_status > 0:
-                        _print_interactive_status(stats)
-                        events_since_status = 0
-                        last_status_time = time.time()
+                # Show status context before prompting
+                if events_since_status > 0:
+                    _print_interactive_status(stats)
+                    events_since_status = 0
+                    last_status_time = time.time()
 
-                    if interactive and api:
-                        approved = handle_approval(event, api)
-                        if approved:
-                            stats.mark_resolved(fingerprint)
-                    else:
-                        # Just display the event
-                        console.print(format_approval_request(event))
-                elif decision == "allow":
-                    # Suppress individual allow lines, aggregate in stats
-                    events_since_status += 1
-                    now = time.time()
-                    if now - last_status_time >= STATUS_INTERVAL or events_since_status >= STATUS_BATCH:
-                        _print_interactive_status(stats)
-                        events_since_status = 0
-                        last_status_time = now
+                if interactive and api:
+                    approved = handle_approval(event, api)
+                    if approved:
+                        stats.mark_resolved(dedup_key)
                 else:
-                    # Other credential_guard decisions (warn, etc)
-                    _print_event_summary(event)
+                    console.print(format_approval_request(event))
+            elif decision == "allow":
+                # Suppress individual allow lines, aggregate in stats
+                events_since_status += 1
+                now = time.time()
+                if now - last_status_time >= STATUS_INTERVAL or events_since_status >= STATUS_BATCH:
+                    _print_interactive_status(stats)
+                    events_since_status = 0
+                    last_status_time = now
             else:
                 # Other events - show summary
                 _print_event_summary(event)
@@ -588,6 +575,7 @@ def _print_event_summary(event: dict) -> None:
     """Print a one-line summary of an event."""
     event_type = event.get("event", "unknown")
     ts = event.get("ts", "")
+    severity = event.get("severity", "")
 
     # Format timestamp
     timestamp_str = ""
@@ -598,26 +586,28 @@ def _print_event_summary(event: dict) -> None:
         except (ValueError, AttributeError):
             timestamp_str = ts[:19]
 
-    # Color based on event type - fields are at root level
-    if event_type.startswith("security."):
+    # Color based on severity and kind
+    if severity in ("critical", "high"):
         decision = event.get("decision", "")
-        if decision == "block":
+        if decision in ("deny", "require_approval", "budget_exceeded"):
             style = "red"
         elif decision == "warn":
             style = "yellow"
         else:
             style = "cyan"
-    elif event_type.startswith("admin."):
+    elif event.get("kind") == "admin":
         style = "magenta"
     else:
         style = "dim"
 
-    # Build summary - fields are at root level
-    summary_parts = []
-    for key in ("decision", "rule", "host", "reason", "status", "addon"):
-        if key in event:
-            summary_parts.append(f"{key}={event[key]}")
-
-    summary = " ".join(summary_parts[:4])  # Limit to 4 parts
+    # Use summary field from event envelope
+    summary = event.get("summary", "")
+    if not summary:
+        # Fallback for legacy events
+        summary_parts = []
+        for key in ("decision", "host", "addon"):
+            if key in event:
+                summary_parts.append(f"{key}={event[key]}")
+        summary = " ".join(summary_parts[:4])
 
     console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {summary}")

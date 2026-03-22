@@ -22,7 +22,9 @@ import time
 from dataclasses import dataclass
 
 from mitmproxy import connection, http
-from utils import write_event
+from utils import sanitize_for_log, write_event
+
+from audit_schema import EventKind, Severity
 
 log = logging.getLogger("safeyolo.memory-monitor")
 
@@ -86,8 +88,11 @@ class MemoryMonitor:
         self._last_event_time = time.time()
         write_event(
             "ops.startup",
+            kind=EventKind.OPS,
+            severity=Severity.LOW,
+            summary=f"Memory monitor started (baseline RSS: {self._rss_start_kb // 1024} MB)",
             addon=self.name,
-            rss_start_mb=round(self._rss_start_kb / 1024, 1),
+            details={"rss_start_mb": round(self._rss_start_kb / 1024, 1)},
         )
         log.info(f"Memory monitor active (baseline RSS: {self._rss_start_kb // 1024} MB)")
 
@@ -103,14 +108,20 @@ class MemoryMonitor:
         info = self._connections.pop(client.id, None)
         if info and info.flow_count > 0:
             lifetime = int(time.time() - info.started)
+            domain = info.domain or "(unknown)"
             write_event(
                 "ops.memory.conn_closed",
+                kind=EventKind.OPS,
+                severity=Severity.LOW,
+                summary=f"Connection closed: {sanitize_for_log(domain)} ({info.flow_count} flows, {lifetime}s)",
+                host=domain if info.domain else None,
                 addon=self.name,
-                domain=info.domain or "(unknown)",
-                flow_count=info.flow_count,
-                lifetime_s=lifetime,
-                bytes_sent=info.bytes_sent,
-                bytes_received=info.bytes_received,
+                details={
+                    "flow_count": info.flow_count,
+                    "lifetime_s": lifetime,
+                    "bytes_sent": info.bytes_sent,
+                    "bytes_received": info.bytes_received,
+                },
             )
 
     def request(self, flow: http.HTTPFlow):
@@ -166,10 +177,15 @@ class MemoryMonitor:
             lifetime = int(time.time() - info.started)
             write_event(
                 "ops.memory.ws_closed",
+                kind=EventKind.OPS,
+                severity=Severity.LOW,
+                summary=f"WebSocket closed: {sanitize_for_log(info.domain)} ({info.message_count} msgs, {lifetime}s)",
+                host=info.domain,
                 addon=self.name,
-                domain=info.domain,
-                message_count=info.message_count,
-                lifetime_s=lifetime,
+                details={
+                    "message_count": info.message_count,
+                    "lifetime_s": lifetime,
+                },
             )
 
     def _emit_periodic_event(self, now: float):
@@ -181,23 +197,29 @@ class MemoryMonitor:
             reverse=True,
         )[:10]
 
+        rss_mb = round(rss_kb / 1024, 1)
         write_event(
             "ops.memory",
+            kind=EventKind.OPS,
+            severity=Severity.LOW,
+            summary=f"RSS {rss_mb}MB, {len(self._connections)} conns, {self._total_flows} flows",
             addon=self.name,
-            rss_mb=round(rss_kb / 1024, 1),
-            rss_hwm_mb=round(peak_kb / 1024, 1),
-            rss_start_mb=round(self._rss_start_kb / 1024, 1),
-            active_connections=len(self._connections),
-            active_websockets=len(self._ws_sessions),
-            total_flows=self._total_flows,
-            top_connections=[
-                {
-                    "domain": conn.domain or "(unknown)",
-                    "flows": conn.flow_count,
-                    "age_s": int(now - conn.started),
-                }
-                for conn in top_connections
-            ],
+            details={
+                "rss_mb": rss_mb,
+                "rss_hwm_mb": round(peak_kb / 1024, 1),
+                "rss_start_mb": round(self._rss_start_kb / 1024, 1),
+                "active_connections": len(self._connections),
+                "active_websockets": len(self._ws_sessions),
+                "total_flows": self._total_flows,
+                "top_connections": [
+                    {
+                        "domain": conn.domain or "(unknown)",
+                        "flows": conn.flow_count,
+                        "age_s": int(now - conn.started),
+                    }
+                    for conn in top_connections
+                ],
+            },
         )
 
     def get_stats(self) -> dict:

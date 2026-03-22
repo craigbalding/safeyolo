@@ -30,8 +30,10 @@ from pathlib import Path
 
 from mitmproxy import ctx, http
 from service_loader import get_service_registry
-from utils import make_block_response, matches_resource_pattern, write_event
+from utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
 from vault import get_vault
+
+from audit_schema import Decision, EventKind, Severity
 
 log = logging.getLogger("safeyolo.service-gateway")
 
@@ -320,15 +322,16 @@ class ServiceGateway:
 
         # Log allow event
         write_event(
-            "broker.allow",
-            request_id=flow.metadata.get("request_id"),
-            addon=self.name,
-            agent=binding.agent,
-            service=service.name,
-            role=role.name,
+            "gateway.allow",
+            kind=EventKind.GATEWAY,
+            severity=Severity.LOW,
+            summary=f"Gateway injected {service.name}/{role.name} for {binding.agent}",
+            decision=Decision.ALLOW,
             host=flow.request.host,
-            method=method,
-            path=path,
+            request_id=flow.metadata.get("request_id"),
+            agent=binding.agent,
+            addon=self.name,
+            details={"service": service.name, "role": role.name, "method": method, "path": path},
         )
 
         self.stats.injected += 1
@@ -388,13 +391,16 @@ class ServiceGateway:
         flow.metadata["blocked_by"] = self.name
 
         write_event(
-            "broker.deny",
-            request_id=flow.metadata.get("request_id"),
-            addon=self.name,
-            agent=flow.metadata.get("agent"),
+            "gateway.deny",
+            kind=EventKind.GATEWAY,
+            severity=Severity.HIGH,
+            summary=f"Gateway denied: {sanitize_for_log(reason)}",
+            decision=Decision.DENY,
             host=flow.request.host,
-            reason=reason,
-            code=code,
+            request_id=flow.metadata.get("request_id"),
+            agent=flow.metadata.get("agent"),
+            addon=self.name,
+            details={"reason": reason, "code": code},
         )
 
     def mint_tokens(self, agent_bindings: dict[str, dict[str, dict[str, str]]]) -> dict[str, dict[str, str]]:

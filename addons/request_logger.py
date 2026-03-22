@@ -21,8 +21,9 @@ from mitmproxy import http
 
 # Add parent to path for pdp imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import write_event
+from utils import sanitize_for_log, write_event
 
+from audit_schema import EventKind, Severity
 from pdp import get_policy_client
 
 log = logging.getLogger("safeyolo.request-logger")
@@ -155,13 +156,18 @@ class RequestLogger:
 
         write_event(
             "traffic.request",
+            kind=EventKind.TRAFFIC,
+            severity=Severity.LOW,
+            summary=f"{flow.request.method} {sanitize_for_log(host)}{sanitize_for_log(path)}",
+            host=host,
             request_id=request_id,
             agent=flow.metadata.get("agent"),
-            method=flow.request.method,
-            host=host,
-            path=path,
-            size=len(flow.request.content or b""),
-            client=flow.client_conn.peername[0] if flow.client_conn.peername else None,
+            details={
+                "method": flow.request.method,
+                "path": path,
+                "size": len(flow.request.content or b""),
+                "client": flow.client_conn.peername[0] if flow.client_conn.peername else None,
+            },
         )
 
     def response(self, flow: http.HTTPFlow):
@@ -185,11 +191,8 @@ class RequestLogger:
 
         parsed = urlparse(flow.request.pretty_url)
 
-        # Build kwargs for write_event
-        kwargs = {
-            "request_id": request_id,
-            "agent": flow.metadata.get("agent"),
-            "host": parsed.netloc,
+        # Build details for write_event
+        resp_details = {
             "path": parsed.path,
             "status": flow.response.status_code if flow.response else None,
             "size": len(flow.response.content or b"") if flow.response else 0,
@@ -198,13 +201,24 @@ class RequestLogger:
 
         # Add block details if applicable
         if blocked_by:
-            kwargs["blocked_by"] = blocked_by
-            # Include credential fingerprint from credguard if available
+            resp_details["blocked_by"] = blocked_by
             fingerprint = flow.metadata.get("credential_fingerprint")
             if fingerprint:
-                kwargs["credential_fingerprint"] = fingerprint
+                resp_details["credential_fingerprint"] = fingerprint
 
-        write_event("traffic.response", **kwargs)
+        status_code = flow.response.status_code if flow.response else 0
+        sev = Severity.HIGH if blocked_by else Severity.LOW
+
+        write_event(
+            "traffic.response",
+            kind=EventKind.TRAFFIC,
+            severity=sev,
+            summary=f"{status_code} {sanitize_for_log(parsed.netloc)}{sanitize_for_log(parsed.path)}" + (f" [blocked by {blocked_by}]" if blocked_by else ""),
+            host=parsed.netloc,
+            request_id=request_id,
+            agent=flow.metadata.get("agent"),
+            details=resp_details,
+        )
 
     def get_stats(self) -> dict:
         """Get logger statistics."""

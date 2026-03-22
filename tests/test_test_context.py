@@ -341,9 +341,10 @@ class TestTestContextAddon:
 
         mock_write.assert_called_once()
         call_kwargs = mock_write.call_args
-        assert call_kwargs[1]["phase"] == "response"
-        assert call_kwargs[1]["status_code"] == 200
-        assert call_kwargs[1]["context"]["run"] == "sec1"
+        details = call_kwargs[1]["details"]
+        assert details["phase"] == "response"
+        assert details["status_code"] == 200
+        assert details["context"]["run"] == "sec1"
 
     def test_response_skipped_without_context(self):
         """Response phase is a no-op if request didn't set context."""
@@ -375,11 +376,12 @@ class TestTestContextAddon:
         mock_write.assert_called_once()
         args, kwargs = mock_write.call_args
         assert args[0] == "security.test_context"
-        assert kwargs["phase"] == "request"
-        assert kwargs["method"] == "POST"
+        details = kwargs["details"]
+        assert details["phase"] == "request"
+        assert details["method"] == "POST"
         assert kwargs["host"] == "target.example.com"
-        assert kwargs["path"] == "/v1/entries/42"
-        assert kwargs["context"]["agent"] == "idor"
+        assert details["path"] == "/v1/entries/42"
+        assert details["context"]["agent"] == "idor"
 
     def test_config_reload_updates_target_hosts(self):
         """Config reload from PDP updates target hosts list."""
@@ -486,4 +488,4 @@ class TestTestContextAddon:
             addon.response(flow)
 
         call_kwargs = mock_write.call_args[1]
-        assert call_kwargs["duration_ms"] == 250
+        assert call_kwargs["details"]["duration_ms"] == 250

@@ -231,6 +231,8 @@ class TestSecurityAddonLogging:
         """Test log_decision() calls write_event with correct params."""
         from base import SecurityAddon
 
+        from audit_schema import Decision, EventKind, Severity
+
         class TestAddon(SecurityAddon):
             name = "test-addon"
 
@@ -240,7 +242,13 @@ class TestSecurityAddonLogging:
         flow.metadata = {"request_id": "req-123", "agent": "boris"}
 
         with patch('base.write_event') as mock_write:
-            addon.log_decision(flow, "block", reason="test", domain="example.com")
+            addon.log_decision(
+                flow, Decision.DENY,
+                severity=Severity.HIGH,
+                summary="Blocked for test",
+                host="example.com",
+                reason="test",
+            )
 
             mock_write.assert_called_once()
             call_args = mock_write.call_args
@@ -249,9 +257,11 @@ class TestSecurityAddonLogging:
             assert call_args[0][0] == "security.test_addon"
 
             # Check kwargs
+            assert call_args[1]["kind"] == EventKind.SECURITY
+            assert call_args[1]["severity"] == Severity.HIGH
+            assert call_args[1]["summary"] == "Blocked for test"
             assert call_args[1]["request_id"] == "req-123"
             assert call_args[1]["agent"] == "boris"
             assert call_args[1]["addon"] == "test-addon"
-            assert call_args[1]["decision"] == "block"
-            assert call_args[1]["reason"] == "test"
-            assert call_args[1]["domain"] == "example.com"
+            assert call_args[1]["decision"] == Decision.DENY
+            assert call_args[1]["host"] == "example.com"
