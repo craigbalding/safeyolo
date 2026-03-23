@@ -17,7 +17,9 @@ import time
 from threading import Lock
 
 from mitmproxy import ctx, http
-from utils import get_client_ip, write_event
+from utils import get_client_ip, sanitize_for_log, write_event
+
+from audit_schema import EventKind, Severity
 
 log = logging.getLogger("safeyolo.discovery")
 
@@ -133,7 +135,15 @@ class ServiceDiscovery:
                     self._dns_cache[ip] = (resolved, expiry)
                 if dns_entry is None:
                     log.info(f"DNS discovery: {ip} -> {resolved}")
-                    write_event("agent.discovered", agent=resolved, ip=ip)
+                    write_event(
+                        "agent.discovered",
+                        kind=EventKind.AGENT,
+                        severity=Severity.LOW,
+                        summary=f"Discovered agent {sanitize_for_log(resolved)} at {ip}",
+                        agent=resolved,
+                        addon="service-discovery",
+                        details={"ip": ip},
+                    )
                 else:
                     log.debug(f"DNS cache refresh: {ip} -> {resolved}")
                 return resolved

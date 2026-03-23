@@ -36,7 +36,9 @@ from detection.patterns import (
     load_patterns_from_config,
 )
 from mitmproxy import ctx, http
-from utils import make_block_response
+from utils import make_block_response, sanitize_for_log
+
+from audit_schema import Decision, Severity
 
 log = logging.getLogger("safeyolo.pattern-scanner")
 
@@ -246,16 +248,21 @@ class PatternScanner(SecurityAddon):
             "direction": "request",
             "rule_name": rule.name,
             "rule_id": rule.rule_id,
-            "action": rule.action,
-            "severity": rule.severity,
+            "pattern_action": rule.action,
+            "pattern_severity": rule.severity,
             "location": location,
-            "host": flow.request.host,
             "path": flow.request.path,
         }
 
         if rule.should_block and ctx.options.pattern_block_request:
             log.warning(f"BLOCKED: Pattern '{rule.name}' matched in {location} -> {flow.request.host}{flow.request.path}")
-            self.log_decision(flow, "block", **match_fields)
+            self.log_decision(
+                flow, Decision.DENY,
+                severity=Severity.HIGH,
+                summary=f"Pattern '{rule.name}' blocked in request {location} to {sanitize_for_log(flow.request.host)}",
+                host=flow.request.host,
+                **match_fields,
+            )
             self.block(flow, 403, {
                 "error": "Request blocked by pattern policy",
                 "rule": rule.name,
@@ -264,7 +271,13 @@ class PatternScanner(SecurityAddon):
             })
         else:
             log.info(f"MATCH: Pattern '{rule.name}' matched in {location} -> {flow.request.host}{flow.request.path}")
-            self.log_decision(flow, "log", **match_fields)
+            self.log_decision(
+                flow, Decision.LOG,
+                severity=Severity.MEDIUM,
+                summary=f"Pattern '{rule.name}' matched in request {location} to {sanitize_for_log(flow.request.host)}",
+                host=flow.request.host,
+                **match_fields,
+            )
 
     def response(self, flow: http.HTTPFlow):
         """Scan response for user-defined patterns."""
@@ -288,16 +301,21 @@ class PatternScanner(SecurityAddon):
             "direction": "response",
             "rule_name": rule.name,
             "rule_id": rule.rule_id,
-            "action": rule.action,
-            "severity": rule.severity,
+            "pattern_action": rule.action,
+            "pattern_severity": rule.severity,
             "location": location,
-            "host": flow.request.host,
             "path": flow.request.path,
         }
 
         if rule.should_block and ctx.options.pattern_block_response:
             log.warning(f"BLOCKED: Pattern '{rule.name}' matched in {location} <- {flow.request.host}{flow.request.path}")
-            self.log_decision(flow, "block", **match_fields)
+            self.log_decision(
+                flow, Decision.DENY,
+                severity=Severity.HIGH,
+                summary=f"Pattern '{rule.name}' blocked in response {location} from {sanitize_for_log(flow.request.host)}",
+                host=flow.request.host,
+                **match_fields,
+            )
             self.block(flow, 502, {
                 "error": "Response blocked by pattern policy",
                 "rule": rule.name,
@@ -306,7 +324,13 @@ class PatternScanner(SecurityAddon):
             })
         else:
             log.info(f"MATCH: Pattern '{rule.name}' matched in {location} <- {flow.request.host}{flow.request.path}")
-            self.log_decision(flow, "log", **match_fields)
+            self.log_decision(
+                flow, Decision.LOG,
+                severity=Severity.MEDIUM,
+                summary=f"Pattern '{rule.name}' matched in response {location} from {sanitize_for_log(flow.request.host)}",
+                host=flow.request.host,
+                **match_fields,
+            )
 
     def get_stats(self) -> dict:
         """Get scanner statistics."""

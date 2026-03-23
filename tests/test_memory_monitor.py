@@ -362,9 +362,10 @@ class TestPeriodicEvent:
             calls = [c for c in mock_write.call_args_list if c[0][0] == "ops.memory"]
             assert len(calls) == 1
             kwargs = calls[0][1]
-            assert "rss_mb" in kwargs
-            assert "active_connections" in kwargs
-            assert "total_flows" in kwargs
+            details = kwargs.get("details", {})
+            assert "rss_mb" in details
+            assert "active_connections" in details
+            assert "total_flows" in details
 
     def test_no_periodic_event_before_60s(self):
         """ops.memory event is NOT written before 60s threshold."""

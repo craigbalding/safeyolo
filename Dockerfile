@@ -59,6 +59,9 @@ ENV PATH="/.venv/bin:$PATH"
 
 WORKDIR /app
 
+# Copy shared audit schema (imported by addons and CLI)
+COPY audit_schema.py /app/audit_schema.py
+
 # Copy PDP (Policy Decision Point) library
 COPY pdp/ /app/pdp/
 RUN chmod -R 644 /app/pdp/*.py && chmod 755 /app/pdp
@@ -77,6 +80,7 @@ COPY addons/detection/ /app/addons/detection/
 # Copy addons in load order (see scripts/start-safeyolo.sh)
 # Layer 0: Infrastructure
 COPY addons/admin_shield.py /app/addons/
+COPY addons/agent_relay.py /app/addons/
 COPY addons/request_id.py /app/addons/
 COPY addons/sse_streaming.py /app/addons/
 COPY addons/policy_engine.py /app/addons/

@@ -36,6 +36,8 @@ except ImportError:
 from policy_compiler import compile_policy, is_host_centric
 from utils import write_event
 
+from audit_schema import EventKind, Severity
+
 log = logging.getLogger("safeyolo.policy-loader")
 
 
@@ -77,7 +79,9 @@ class PolicyLoader:
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path
-        self._on_reload = on_reload
+        self._on_reload_callbacks: list[Callable[[], None]] = []
+        if on_reload:
+            self._on_reload_callbacks.append(on_reload)
 
         # Policies
         self._baseline: UnifiedPolicy = UnifiedPolicy()
@@ -196,9 +200,11 @@ class PolicyLoader:
         if raw is None:
             write_event(
                 "ops.policy_error",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary="Baseline policy file not found or invalid",
                 addon="policy-loader",
-                policy_type="baseline",
-                error="File not found or invalid",
+                details={"policy_type": "baseline", "error": "File not found or invalid"},
             )
             return False
 
@@ -232,13 +238,18 @@ class PolicyLoader:
             )
             write_event(
                 "ops.policy_reload",
+                kind=EventKind.OPS,
+                severity=Severity.MEDIUM,
+                summary=f"Baseline policy reloaded: {len(self._baseline.permissions)} permissions",
                 addon="policy-loader",
-                policy_type="baseline",
-                permissions_count=len(self._baseline.permissions),
+                details={"policy_type": "baseline", "permissions_count": len(self._baseline.permissions)},
             )
 
-            if self._on_reload:
-                self._on_reload()
+            for cb in self._on_reload_callbacks:
+                try:
+                    cb()
+                except Exception as e:
+                    log.warning("Reload callback error: %s", e)
 
             return True
 
@@ -246,9 +257,11 @@ class PolicyLoader:
             log.error(f"Failed to validate baseline policy: {type(e).__name__}: {e}")
             write_event(
                 "ops.policy_error",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=f"Baseline policy validation failed: {type(e).__name__}",
                 addon="policy-loader",
-                policy_type="baseline",
-                error=str(e),
+                details={"policy_type": "baseline", "error": str(e)},
             )
             return False
 
@@ -274,14 +287,22 @@ class PolicyLoader:
             log.info(f"Loaded task policy: {len(self._task_policy.permissions)} permissions")
             write_event(
                 "ops.policy_reload",
+                kind=EventKind.OPS,
+                severity=Severity.MEDIUM,
+                summary=f"Task policy reloaded: {len(self._task_policy.permissions)} permissions",
                 addon="policy-loader",
-                policy_type="task",
-                task_id=self._task_policy.metadata.task_id,
-                permissions_count=len(self._task_policy.permissions),
+                details={
+                    "policy_type": "task",
+                    "task_id": self._task_policy.metadata.task_id,
+                    "permissions_count": len(self._task_policy.permissions),
+                },
             )
 
-            if self._on_reload:
-                self._on_reload()
+            for cb in self._on_reload_callbacks:
+                try:
+                    cb()
+                except Exception as e:
+                    log.warning("Reload callback error: %s", e)
 
             return True
 
@@ -295,6 +316,10 @@ class PolicyLoader:
             self._task_policy = None
             self._task_policy_path = None
             log.info("Cleared task policy")
+
+    def add_reload_callback(self, callback: Callable[[], None]) -> None:
+        """Register a callback to run after policy reloads."""
+        self._on_reload_callbacks.append(callback)
 
     def start_watcher(self) -> None:
         """Start background file watcher."""

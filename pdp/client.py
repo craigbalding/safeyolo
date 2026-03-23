@@ -354,6 +354,10 @@ class LocalPolicyClient(PolicyClient):
         """Get gateway config from compiled policy."""
         return self._pdp.get_gateway_config()
 
+    def add_reload_callback(self, callback) -> None:
+        """Register a callback to run after policy reloads."""
+        self._pdp.add_reload_callback(callback)
+
     def get_task_policy(self, task_id: str) -> dict | None:
         """Get task policy by ID."""
         return self._pdp.get_task_policy(task_id)

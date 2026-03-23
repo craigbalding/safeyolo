@@ -33,15 +33,15 @@ def list_services() -> None:
     table = Table(title="Service Definitions")
     table.add_column("Name", style="cyan")
     table.add_column("Host", style="green")
-    table.add_column("Roles", style="yellow")
+    table.add_column("Capabilities", style="yellow")
     table.add_column("Description")
 
     for svc in services:
-        identities = ", ".join(svc.get("roles", {}).keys())
+        caps = ", ".join(svc.get("capabilities", {}).keys())
         table.add_row(
             svc["name"],
             svc.get("default_host", ""),
-            identities,
+            caps,
             svc.get("description", ""),
         )
 
@@ -73,23 +73,55 @@ def show(
     console.print(f"  Host: {escape(svc.get('default_host', ''))}")
     if svc.get("description"):
         console.print(f"  Description: {escape(svc['description'])}")
-    console.print()
 
-    roles = svc.get("roles", {})
-    for role_name, role_config in roles.items():
-        console.print(f"  [yellow]Role: {escape(role_name)}[/yellow]")
-        auth = role_config.get("auth", {})
-        console.print(f"    Auth: type={escape(auth.get('type', '?'))}")
+    auth = svc.get("auth", {})
+    if auth:
+        console.print(f"  Auth: type={escape(auth.get('type', '?'))}")
         if auth.get("refresh_on_401"):
             console.print("    Auto-refresh: yes")
+    console.print()
 
-        routes = role_config.get("routes", [])
+    capabilities = svc.get("capabilities", {})
+    for cap_name, cap_config in capabilities.items():
+        console.print(f"  [yellow]Capability: {escape(cap_name)}[/yellow]")
+        desc = cap_config.get("description", "")
+        if desc:
+            console.print(f"    {escape(desc)}")
+        scopes = cap_config.get("scopes", [])
+        if scopes:
+            console.print(f"    Scopes: {', '.join(escape(s) for s in scopes)}")
+
+        routes = cap_config.get("routes", [])
         if routes:
             console.print("    Routes:")
             for route in routes:
-                effect = route.get("effect", "?")
                 methods = route.get("methods", ["*"])
                 path = route.get("path", "/*")
-                color = "red" if effect == "deny" else "green"
-                console.print(f"      [{color}]{escape(effect)}[/{color}] {escape(','.join(methods))} {escape(path)}")
+                console.print(f"      [green]{escape(','.join(methods))}[/green] {escape(path)}")
+        console.print()
+
+    risky = svc.get("risky_routes", [])
+    if risky:
+        console.print("  [red bold]Risky Routes:[/red bold]")
+        for entry in risky:
+            if "group" in entry:
+                console.print(f"    [red]Group: {escape(entry['group'])}[/red]")
+                if entry.get("description"):
+                    console.print(f"      {escape(entry['description'])}")
+                tactics = entry.get("tactics", [])
+                if tactics:
+                    console.print(f"      Tactics: {', '.join(escape(t) for t in tactics)}")
+                for route in entry.get("routes", []):
+                    methods = route.get("methods", ["*"])
+                    path = route.get("path", "/*")
+                    console.print(f"        {escape(','.join(methods))} {escape(path)}")
+            else:
+                methods = entry.get("methods", ["*"])
+                path = entry.get("path", "/*")
+                tactics = entry.get("tactics", [])
+                console.print(f"    [red]{escape(','.join(methods))} {escape(path)}[/red]")
+                if entry.get("description"):
+                    console.print(f"      {escape(entry['description'])}")
+                if tactics:
+                    console.print(f"      Tactics: {', '.join(escape(t) for t in tactics)}")
         console.print()

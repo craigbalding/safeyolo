@@ -24,6 +24,8 @@ import logging
 from mitmproxy import http
 from utils import sanitize_for_log, write_event
 
+from audit_schema import Decision, EventKind, Severity
+
 log = logging.getLogger("safeyolo.loop-guard")
 
 
@@ -43,12 +45,14 @@ class LoopGuard:
             port = flow.request.port
             log.warning(f"Loop detected: {sanitize_for_log(host)}:{port} (via: {sanitize_for_log(via)})")
             write_event(
-                "security.loop",
-                addon="loop-guard",
-                action="block",
+                "security.loop_guard",
+                kind=EventKind.SECURITY,
+                severity=Severity.HIGH,
+                summary=f"Loop detected for {sanitize_for_log(host)}:{port}",
+                decision=Decision.DENY,
                 host=host,
-                port=port,
-                via=via,
+                addon="loop-guard",
+                details={"port": port, "via": via},
             )
             flow.response = http.Response.make(
                 508,

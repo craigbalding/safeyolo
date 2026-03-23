@@ -121,6 +121,10 @@ class PDPCore:
             }
         )
 
+    def add_reload_callback(self, callback) -> None:
+        """Register a callback to run after policy reloads."""
+        self._engine.add_reload_callback(callback)
+
     @property
     def policy_hash(self) -> str:
         """Compute hash of current policy for cache invalidation."""
@@ -179,6 +183,18 @@ class PDPCore:
                     required_checks=required_checks,
                 )
 
+        # Gateway risky route evaluation
+        if "gateway_risky_route" in required_checks:
+            gateway_decision = self._evaluate_gateway(event)
+            if gateway_decision.effect != "allow":
+                return self._build_decision(
+                    event_id=event_id,
+                    policy_hash=policy_hash,
+                    legacy_decision=gateway_decision,
+                    required_checks=required_checks,
+                    event=event,
+                )
+
         # Second: network policy (rate limiting)
         if "rate_limit" in required_checks:
             network_decision = self._evaluate_network(event)
@@ -223,9 +239,9 @@ class PDPCore:
             checks.append("credential_detection")
             checks.append("credential_validation")
 
-        # Check if body inspection is needed (based on host/policy)
-        # For v1, we don't do body inspection in PDP
-        # checks.append("body_inspection")
+        # Gateway risky route check
+        if event.context and event.context.gateway_risky_route:
+            checks.append("gateway_risky_route")
 
         return checks
 
@@ -239,6 +255,21 @@ class PDPCore:
             destination=event.http.host,
             path=event.http.path,
             credential_hmac=fingerprint,
+        )
+
+    def _evaluate_gateway(self, event: HttpEvent) -> LegacyDecision:
+        """Evaluate gateway risky route against risk appetite policy."""
+        ctx = event.context
+        risky = ctx.gateway_risky_route or {}
+        return self._engine.evaluate_risky_route(
+            service=ctx.gateway_service or "",
+            agent=event.principal.principal_id.removeprefix("agent:"),
+            account=ctx.gateway_account or "agent",
+            tactics=risky.get("tactics", []),
+            enables=risky.get("enables", []),
+            irreversible=risky.get("irreversible", False),
+            method=event.http.method,
+            path=event.http.path,
         )
 
     def _evaluate_network(self, event: HttpEvent) -> LegacyDecision:
@@ -255,6 +286,7 @@ class PDPCore:
         policy_hash: str,
         legacy_decision: LegacyDecision,
         required_checks: list[str],
+        event: HttpEvent | None = None,
     ) -> PolicyDecision:
         """Convert legacy PolicyDecision to new schema."""
         # Map legacy effect to new Effect enum
@@ -289,6 +321,7 @@ class PDPCore:
                 effect=effect,
                 reason=legacy_decision.reason,
                 reason_codes=reason_codes,
+                event=event,
             )
 
         return PolicyDecision(
@@ -326,6 +359,9 @@ class PDPCore:
             codes.append("BUDGET_EXCEEDED")
             codes.append("RATE_LIMITED")
 
+        if "risky route" in decision.reason.lower() or "risk appetite" in decision.reason.lower():
+            codes.append("GATEWAY_RISKY_ROUTE")
+
         return codes
 
     def _build_immediate_response(
@@ -334,6 +370,7 @@ class PDPCore:
         effect: Effect,
         reason: str,
         reason_codes: list[str],
+        event: HttpEvent | None = None,
     ) -> ImmediateResponseBlock:
         """Build HTTP response for non-allow decisions."""
         status_code_map = {
@@ -348,12 +385,24 @@ class PDPCore:
         if effect == Effect.BUDGET_EXCEEDED:
             headers["retry-after"] = "60"
 
-        body = {
+        body: dict = {
             "error": effect.value.replace("_", " ").title(),
             "event_id": event_id,
             "reason": reason,
             "reason_codes": reason_codes,
         }
+
+        # Enrich gateway risky route responses with reflection and route signals
+        if "GATEWAY_RISKY_ROUTE" in reason_codes and event and event.context:
+            ctx = event.context
+            risky = ctx.gateway_risky_route or {}
+            body["reflection"] = {
+                "service": ctx.gateway_service,
+                "capability": ctx.gateway_capability,
+                "account": ctx.gateway_account,
+                "question": "Does this action align with your task? Check the security signals below before requesting access.",
+            }
+            body["risky_route"] = risky
 
         return ImmediateResponseBlock(
             status_code=status_code,

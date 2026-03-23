@@ -118,13 +118,14 @@ class AgentRelay:
             "/gateway/services": self._handle_gateway_services,
         }
 
-        # POST handlers for flow store API
+        # POST handlers for flow store API and gateway
         post_handlers = {
             "/api/flows/search": self._handle_flow_search,
             "/api/flows/endpoints": self._handle_flow_endpoints,
             "/api/flows/body-search": self._handle_flow_body_search,
             "/api/flows/diff": self._handle_flow_diff,
             "/api/flows/request-body-search": self._handle_flow_request_body_search,
+            "/gateway/request-access": self._handle_gateway_request_access,
         }
 
         handler = handlers.get(path)
@@ -245,10 +246,11 @@ class AgentRelay:
         return None
 
     def _handle_gateway_services(self, flow: http.HTTPFlow):
-        """GET /gateway/services - Get this agent's service bindings.
+        """GET /gateway/services - Get this agent's authorized + available services.
 
         Resolves the calling agent via service_discovery (client IP → agent name),
-        then returns that agent's service bindings (host + token) from the gateway.
+        then returns authorized services (with capability, account, host, token) and
+        available services (all services with their capabilities).
         """
         # Resolve caller identity via service_discovery
         sd = self._find_addon("service-discovery")
@@ -271,9 +273,87 @@ class AgentRelay:
         all_services = gw.get_agent_services()
         agent_services = all_services.get(agent_name, {})
 
+        # Build available services list from registry
+        available = []
+        from service_loader import get_service_registry
+        registry = get_service_registry()
+        if registry:
+            authorized_names = set(agent_services.keys())
+            for svc in registry.list_services():
+                if svc.name not in authorized_names:
+                    caps = [
+                        {"name": name, "description": cap.description}
+                        for name, cap in svc.capabilities.items()
+                    ]
+                    available.append({
+                        "name": svc.name,
+                        "description": svc.description,
+                        "capabilities": caps,
+                    })
+
         self._respond(flow, 200, {
             "agent": agent_name,
-            "services": agent_services,
+            "authorized": agent_services,
+            "available": available,
+        })
+
+    def _handle_gateway_request_access(self, flow: http.HTTPFlow):
+        """POST /gateway/request-access - Agent requests access to a service capability.
+
+        Body: {"service": "gmail", "capability": "read_and_send", "reason": "Need to read inbox"}
+        """
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+
+        service_name = body.get("service")
+        capability = body.get("capability")
+        reason = body.get("reason", "")
+
+        if not service_name or not capability:
+            self._respond(flow, 400, {"error": "service and capability are required"})
+            return
+
+        # Resolve caller identity
+        sd = self._find_addon("service-discovery")
+        if not sd:
+            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
+            return
+
+        from utils import get_client_ip
+        client_ip = get_client_ip(flow)
+        agent_name = sd.get_client_for_ip(client_ip)
+        if not agent_name or agent_name == "default":
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+
+        # Validate service and capability exist
+        from service_loader import get_service_registry
+        registry = get_service_registry()
+        if not registry:
+            self._respond(flow, 503, {"error": "Service registry not available"})
+            return
+
+        svc = registry.get_service(service_name)
+        if not svc:
+            self._respond(flow, 404, {"error": f"Service '{service_name}' not found"})
+            return
+
+        if capability not in svc.capabilities:
+            self._respond(flow, 404, {"error": f"Capability '{capability}' not found in service '{service_name}'"})
+            return
+
+        # Log the request (watch will pick it up)
+        log.info(f"Access request: agent={agent_name} service={service_name} capability={capability}")
+
+        self._respond(flow, 202, {
+            "status": "pending",
+            "agent": agent_name,
+            "service": service_name,
+            "capability": capability,
+            "reason": reason,
+            "message": "Access request submitted. Operator will review in watch.",
         })
 
     def _handle_agents(self, flow: http.HTTPFlow):

@@ -537,7 +537,7 @@ class TestCompileGateway:
         raw = {
             "agents": {
                 "my-agent": {
-                    "services": {"gmail": {"role": "readonly", "token": "gmail-cred"}},
+                    "services": {"gmail": {"capability": "search_headers", "token": "gmail-cred", "account": "operator"}},
                 },
             },
         }
@@ -545,8 +545,25 @@ class TestCompileGateway:
         binding = list(gateway["token_map"].values())[0]
         assert binding["agent"] == "my-agent"
         assert binding["service"] == "gmail"
-        assert binding["role"] == "readonly"
+        assert binding["capability"] == "search_headers"
         assert binding["token"] == "gmail-cred"
+        assert binding["account"] == "operator"
+
+    def test_compile_gateway_role_compat(self):
+        """Legacy role field is accepted as capability."""
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "my-agent": {
+                    "services": {"gmail": {"role": "readonly", "token": "gmail-cred"}},
+                },
+            },
+        }
+        gateway = compile_gateway(raw)
+        binding = list(gateway["token_map"].values())[0]
+        assert binding["capability"] == "readonly"
+        assert binding["account"] == "agent"  # default
 
     def test_compile_gateway_multiple_agents(self):
         from policy_compiler import compile_gateway
@@ -614,7 +631,7 @@ class TestCompileGateway:
         }
         gateway = compile_gateway(raw)
         binding = list(gateway["token_map"].values())[0]
-        assert binding["role"] == "reader"
+        assert binding["capability"] == "reader"
         assert binding["token"] == ""
 
     def test_host_map_extraction(self):
@@ -979,3 +996,114 @@ scan_patterns: []
         assert len(policy.permissions) > 0
         # Should have addons from addons.yaml
         assert "credential_guard" in policy.addons
+
+
+class TestCompileRiskAppetite:
+    """Tests for gateway.risk_appetite compilation."""
+
+    def test_risk_appetite_compiles_to_permissions(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {},
+            "gateway": {
+                "risk_appetite": [
+                    {"tactics": ["collection"], "account": "agent", "decision": "allow"},
+                    {"tactics": ["exfiltration"], "decision": "require_approval"},
+                    {"irreversible": True, "decision": "deny"},
+                ],
+            },
+        }
+        result = compile_policy(raw)
+        gateway_perms = [p for p in result["permissions"] if p["action"] == "gateway:risky_route"]
+        assert len(gateway_perms) == 3
+
+        # Check decision mapping
+        assert gateway_perms[0]["effect"] == "allow"
+        assert gateway_perms[0]["condition"]["tactics"] == ["collection"]
+        assert gateway_perms[0]["condition"]["account"] == "agent"
+
+        assert gateway_perms[1]["effect"] == "prompt"
+        assert gateway_perms[1]["condition"]["tactics"] == ["exfiltration"]
+
+        assert gateway_perms[2]["effect"] == "deny"
+        assert gateway_perms[2]["condition"]["irreversible"] is True
+
+    def test_risk_appetite_agent_and_service(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {},
+            "gateway": {
+                "risk_appetite": [
+                    {"agent": "boris", "service": "github", "tactics": ["privilege_escalation"], "decision": "allow"},
+                ],
+            },
+        }
+        result = compile_policy(raw)
+        gateway_perms = [p for p in result["permissions"] if p["action"] == "gateway:risky_route"]
+        assert len(gateway_perms) == 1
+        cond = gateway_perms[0]["condition"]
+        assert cond["agent"] == "boris"
+        assert cond["service"] == "github"
+
+    def test_risk_appetite_default_decision(self):
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {},
+            "gateway": {
+                "risk_appetite": [
+                    {"tactics": ["impact"]},  # no decision → default require_approval
+                ],
+            },
+        }
+        result = compile_policy(raw)
+        gateway_perms = [p for p in result["permissions"] if p["action"] == "gateway:risky_route"]
+        assert gateway_perms[0]["effect"] == "prompt"
+
+    def test_risk_appetite_validates_in_engine(self, tmp_path):
+        """Compiled risk appetite loads into PolicyEngine and evaluates."""
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+hosts:
+  "*": { unknown_credentials: prompt, rate_limit: 600 }
+
+gateway:
+  risk_appetite:
+    - tactics: [collection]
+      account: agent
+      decision: allow
+    - tactics: [exfiltration]
+      decision: require_approval
+
+required: []
+addons: {}
+scan_patterns: []
+""")
+
+        engine = PolicyEngine(baseline_path=baseline)
+        # collection for agent → allow
+        decision = engine.evaluate_risky_route(
+            service="gmail", agent="boris", account="agent",
+            tactics=["collection"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "allow"
+
+        # exfiltration → prompt
+        decision = engine.evaluate_risky_route(
+            service="gmail", agent="boris", account="agent",
+            tactics=["exfiltration"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "prompt"
+
+    def test_no_risk_appetite_section(self):
+        """No gateway.risk_appetite produces no gateway permissions."""
+        from policy_compiler import compile_policy
+
+        raw = {"hosts": {"*": {"rate_limit": 600}}}
+        result = compile_policy(raw)
+        gateway_perms = [p for p in result["permissions"] if p["action"] == "gateway:risky_route"]
+        assert gateway_perms == []

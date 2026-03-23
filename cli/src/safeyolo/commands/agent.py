@@ -22,7 +22,7 @@ from ..agents_store import remove_agent as _store_remove_agent
 from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
 from ..docker import is_running, wait_for_healthy
 from ..docker import start as docker_start
-from ..events import write_event
+from ..events import EventKind, Severity, write_event
 from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
 from ._service_discovery import find_service
 from .mount import is_path_protected
@@ -279,9 +279,9 @@ def _run_agent(
             cmd.append(binary)
         cmd.extend(metadata["user_default_args"])
 
-    write_event("agent.started", agent=name)
+    write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     result = subprocess.run(cmd, cwd=agent_dir, env=compose_env)
-    write_event("agent.stopped", agent=name, exit_code=result.returncode)
+    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {result.returncode})", agent=name, details={"exit_code": result.returncode})
     return result.returncode
 
 
@@ -582,7 +582,7 @@ def add(
     )
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
-    write_event("agent.added", agent=name, template=template, folder=folder_str)
+    write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})
 
     # Auto-run unless --no-run
     if not no_run:
@@ -672,7 +672,7 @@ def remove(
 
     shutil.rmtree(agent_dir)
     _store_remove_agent(name)
-    write_event("agent.removed", agent=name, clean=clean)
+    write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name, details={"clean": clean})
     console.print(f"[green]Removed agent: {name}[/green]")
 
 
@@ -827,7 +827,7 @@ def stop(
     console.print(f"Stopping {name}...")
     subprocess.run(["docker", "stop", name], capture_output=True)
     subprocess.run(["docker", "rm", name], capture_output=True)
-    write_event("agent.stopped", agent=name, reason="user_request")
+    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 
 
@@ -1013,7 +1013,7 @@ def config(
         changes.append("mounts")
     if add_port or remove_port or clear_ports:
         changes.append("ports")
-    write_event("agent.config_changed", agent=name, changes=changes)
+    write_event("agent.config_changed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} config changed: {', '.join(changes)}", agent=name, details={"changes": changes})
 
 
 @agent_app.command(name="help")
@@ -1095,7 +1095,7 @@ def _load_policy_hosts() -> dict:
 def authorize(
     agent_name: str = typer.Argument(..., help="Agent instance name"),
     service_name: str = typer.Argument(..., help="Service to authorize"),
-    role: str = typer.Option(None, "--role", "-r", help="Role within the service"),
+    role: str = typer.Option(None, "--role", "-r", "--capability", help="Capability within the service"),
     token: str = typer.Option(None, "--token", help="Credential value (inline)"),
     token_file: Path = typer.Option(None, "--token-file", help="Read credential from file"),
     token_env: str = typer.Option(None, "--token-env", help="Read credential from environment variable"),
@@ -1103,12 +1103,12 @@ def authorize(
 ) -> None:
     """Authorize an agent to use a service.
 
-    Resolves the service, picks a role, stores the credential, and updates
+    Resolves the service, picks a capability, stores the credential, and updates
     agents.yaml. One command takes an agent from "no access" to "authorized."
 
     Examples:
 
-        safeyolo agent authorize boris gmail --role readonly --token-env GMAIL_TOKEN
+        safeyolo agent authorize boris gmail --capability read_and_send --token-env GMAIL_TOKEN
         safeyolo agent authorize boris slack --token-file ~/slack.key
         safeyolo agent authorize boris gmail --credential-name gmail-oauth2
     """
@@ -1126,40 +1126,43 @@ def authorize(
         console.print(f"[red]Error:[/red] Service '{escape(service_name)}' not found")
         raise typer.Exit(1)
 
-    roles = svc.get("roles", {})
-    if not roles:
-        console.print(f"[red]Error:[/red] Service '{escape(service_name)}' has no roles defined")
+    capabilities = svc.get("capabilities", {})
+    if not capabilities:
+        console.print(f"[red]Error:[/red] Service '{escape(service_name)}' has no capabilities defined")
         raise typer.Exit(1)
 
-    # 3. Resolve role
-    role_names = list(roles.keys())
+    # 3. Resolve capability
+    cap_names = list(capabilities.keys())
     if role:
-        if role not in roles:
-            console.print(f"[red]Error:[/red] Role '{escape(role)}' not found in {escape(service_name)}")
-            console.print(f"Available roles: {', '.join(escape(r) for r in role_names)}")
+        if role not in capabilities:
+            console.print(f"[red]Error:[/red] Capability '{escape(role)}' not found in {escape(service_name)}")
+            console.print(f"Available capabilities: {', '.join(escape(c) for c in cap_names)}")
             raise typer.Exit(1)
         selected_role = role
-    elif len(role_names) == 1:
-        selected_role = role_names[0]
-        console.print(f"Auto-selected role: [cyan]{escape(selected_role)}[/cyan]")
+    elif len(cap_names) == 1:
+        selected_role = cap_names[0]
+        console.print(f"Auto-selected capability: [cyan]{escape(selected_role)}[/cyan]")
     else:
-        console.print("Available roles:")
-        for i, rn in enumerate(role_names, 1):
-            console.print(f"  \\[{i}] {escape(rn)}")
-        choice = input("Select role [1]: ").strip()
+        console.print("Available capabilities:")
+        for i, cn in enumerate(cap_names, 1):
+            desc = capabilities[cn].get("description", "")
+            desc_str = f" — {escape(desc)}" if desc else ""
+            console.print(f"  \\[{i}] {escape(cn)}{desc_str}")
+        choice = input("Select capability [1]: ").strip()
         if not choice:
             choice = "1"
         try:
             idx = int(choice) - 1
-            if idx < 0 or idx >= len(role_names):
+            if idx < 0 or idx >= len(cap_names):
                 raise ValueError
-            selected_role = role_names[idx]
+            selected_role = cap_names[idx]
         except ValueError:
             console.print("[red]Error:[/red] Invalid selection")
             raise typer.Exit(1)
 
-    role_config = roles[selected_role]
-    auth_type = role_config.get("auth", {}).get("type", "bearer")
+    # Auth type comes from service-level auth (v1 schema)
+    auth_config = svc.get("auth", {})
+    auth_type = auth_config.get("type", "bearer")
 
     # 4. Resolve credential
     vault = None
@@ -1243,15 +1246,15 @@ def authorize(
 
     # 6. Write to agents.yaml
     services = metadata.setdefault("services", {})
-    services[service_name] = {"role": selected_role, "token": cred_name}
+    services[service_name] = {"capability": selected_role, "token": cred_name}
     save_agent(agent_name, metadata)
 
     esc_agent = escape(agent_name)
     esc_svc = escape(service_name)
-    esc_role = escape(selected_role)
+    esc_cap = escape(selected_role)
     esc_cred = escape(cred_name)
 
-    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (role={esc_role}, credential={esc_cred})")
+    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
 
     # 7. Check policy.yaml for host binding
     default_host = svc.get("default_host", "")

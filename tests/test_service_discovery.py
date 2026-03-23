@@ -379,9 +379,11 @@ class TestServiceDiscoveryAgentEvent:
             mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
             discovery.get_client_for_ip("172.20.0.5")
 
-            mock_event.assert_called_once_with(
-                "agent.discovered", agent="boris", ip="172.20.0.5"
-            )
+            mock_event.assert_called_once()
+            call_args = mock_event.call_args
+            assert call_args[0][0] == "agent.discovered"
+            assert call_args[1]["agent"] == "boris"
+            assert call_args[1]["details"] == {"ip": "172.20.0.5"}
 
     def test_no_event_on_valid_cache_hit(self):
         """Test no event emitted when result comes from non-expired cache."""

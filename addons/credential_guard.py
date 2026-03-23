@@ -26,6 +26,8 @@ from detection import (
 )
 from mitmproxy import ctx, http
 
+from audit_schema import ApprovalRequest, Decision, Severity
+
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from sensor_utils import build_http_event_from_flow
@@ -34,6 +36,7 @@ from utils import (
     hmac_fingerprint,
     load_hmac_secret,
     make_block_response,
+    sanitize_for_log,
 )
 
 from pdp import (
@@ -359,36 +362,67 @@ class CredentialGuard(SecurityAddon):
                 principal_id=f"project:{project_id}",
             )
 
-            log_data = {
-                "rule": rule_name, "host": host, "location": f"header:{header}",
-                "fingerprint": context.get("fingerprint", f"hmac:{fp}"),
+            fingerprint_str = context.get("fingerprint", f"hmac:{fp}")
+            detail_fields = {
+                "rule": rule_name, "location": f"header:{header}",
+                "fingerprint": fingerprint_str,
                 "confidence": confidence, "tier": tier,
                 "project_id": project_id,
                 "reason_codes": context.get("reason_codes", []),
             }
 
             if effect == Effect.ALLOW:
-                self.log_decision(flow, "allow", **log_data)
+                self.log_decision(
+                    flow, Decision.ALLOW,
+                    severity=Severity.LOW,
+                    summary=f"Credential {rule_name} allowed to {sanitize_for_log(host)}",
+                    host=host,
+                    **detail_fields,
+                )
                 continue
 
             # Non-allow decision - record violation
             self._record_violation(rule_name, host)
-            flow.metadata["credential_fingerprint"] = context.get("fingerprint", f"hmac:{fp}")
+            flow.metadata["credential_fingerprint"] = fingerprint_str
 
-            # Map effect to log reason
+            # Map effect to log reason and Decision enum
             if effect == Effect.DENY:
-                log_data["reason"] = "destination_mismatch"
-                log_data["expected_hosts"] = context.get("expected_hosts", [])
+                detail_fields["reason"] = "destination_mismatch"
+                detail_fields["expected_hosts"] = context.get("expected_hosts", [])
+                audit_decision = Decision.DENY
             elif effect == Effect.REQUIRE_APPROVAL:
-                log_data["reason"] = "requires_approval"
+                detail_fields["reason"] = "requires_approval"
+                audit_decision = Decision.REQUIRE_APPROVAL
             elif effect == Effect.BUDGET_EXCEEDED:
-                log_data["reason"] = "budget_exceeded"
+                detail_fields["reason"] = "budget_exceeded"
+                audit_decision = Decision.BUDGET_EXCEEDED
             else:
-                log_data["reason"] = context.get("reason", "policy_violation")
+                detail_fields["reason"] = context.get("reason", "policy_violation")
+                audit_decision = Decision.DENY
+
+            # Build approval request for blocks needing human action
+            approval = None
+            if effect in (Effect.DENY, Effect.REQUIRE_APPROVAL):
+                approval = ApprovalRequest(
+                    required=True,
+                    approval_type="credential",
+                    key=fingerprint_str,
+                    target=host,
+                    scope_hint={"rule": rule_name, "expected_hosts": context.get("expected_hosts", [])},
+                )
+
+            reason_str = detail_fields.get("reason", "policy_violation")
 
             if self.should_block():
                 flow.metadata["blocked_by"] = self.name
-                self.log_decision(flow, "block", **log_data)
+                self.log_decision(
+                    flow, audit_decision,
+                    severity=Severity.CRITICAL,
+                    summary=f"Credential {rule_name} blocked to {sanitize_for_log(host)}: {reason_str}",
+                    host=host,
+                    approval=approval,
+                    **detail_fields,
+                )
                 # Use PDP's immediate_response if available
                 pdp_decision = context.get("decision")
                 if pdp_decision:
@@ -398,17 +432,24 @@ class CredentialGuard(SecurityAddon):
                     if effect == Effect.DENY:
                         flow.response = create_mismatch_response(
                             rule_name, host, context.get("expected_hosts", []),
-                            context.get("fingerprint", f"hmac:{fp}"), path,
+                            fingerprint_str, path,
                             context.get("suggested_url", "")
                         )
                     else:
                         flow.response = create_approval_response(
-                            rule_name, host, context.get("fingerprint", f"hmac:{fp}"),
+                            rule_name, host, fingerprint_str,
                             path, context.get("reason", "unknown")
                         )
                 return
             else:
-                self.log_decision(flow, "warn", **log_data)
+                self.log_decision(
+                    flow, Decision.WARN,
+                    severity=Severity.HIGH,
+                    summary=f"Credential {rule_name} would be blocked to {sanitize_for_log(host)}: {reason_str}",
+                    host=host,
+                    approval=approval,
+                    **detail_fields,
+                )
 
     def get_stats(self) -> dict:
         """Get stats for admin API."""

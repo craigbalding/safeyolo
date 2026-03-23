@@ -1,11 +1,12 @@
 """
-service_loader.py - Service definition loader for Service Gateway
+service_loader.py - Service definition loader for Service Gateway v2
 
 Loads service definitions from YAML files, provides a registry for
 looking up services by name.
 
 Service definitions describe external APIs: their authentication
-methods and route whitelists per role (access profile).
+methods, capabilities (named route sets), and risky routes (factual
+security signals for PDP evaluation).
 
 Usage:
     from service_loader import init_service_registry, get_service_registry
@@ -27,28 +28,8 @@ log = logging.getLogger("safeyolo.service-loader")
 
 
 @dataclass
-class RouteRule:
-    """A route rule within a role."""
-
-    effect: str  # "allow" or "deny"
-    methods: list[str] = field(default_factory=lambda: ["*"])
-    path: str = "/*"
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "RouteRule":
-        methods = d.get("methods", ["*"])
-        if isinstance(methods, str):
-            methods = [methods]
-        return cls(
-            effect=d["effect"],
-            methods=[m.upper() for m in methods],
-            path=d.get("path", "/*"),
-        )
-
-
-@dataclass
 class AuthConfig:
-    """Authentication configuration for a service role."""
+    """Authentication configuration for a service."""
 
     type: str  # "bearer", "api_key"
     header: str = "Authorization"
@@ -66,45 +47,181 @@ class AuthConfig:
 
 
 @dataclass
-class ServiceRole:
-    """A named access profile within a service."""
+class CapabilityRoute:
+    """A route within a capability (positive-list only, no effect field)."""
 
-    name: str
-    auth: AuthConfig
-    routes: list[RouteRule] = field(default_factory=list)
-    require_approval: bool = False
+    methods: list[str]
+    path: str
 
     @classmethod
-    def from_dict(cls, name: str, d: dict) -> "ServiceRole":
-        auth = AuthConfig.from_dict(d["auth"])
-        routes = [RouteRule.from_dict(r) for r in d.get("routes", [])]
+    def from_dict(cls, d: dict) -> "CapabilityRoute":
+        methods = d["methods"]
+        if isinstance(methods, str):
+            methods = [methods]
         return cls(
-            name=name,
-            auth=auth,
-            routes=routes,
-            require_approval=d.get("require_approval", False),
+            methods=[m.upper() for m in methods],
+            path=d["path"],
         )
 
 
 @dataclass
-class ServiceDefinition:
-    """A complete service definition (one per YAML file)."""
+class Capability:
+    """A named set of allowed routes within a service."""
 
     name: str
-    roles: dict[str, ServiceRole] = field(default_factory=dict)
+    description: str = ""
+    routes: list[CapabilityRoute] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, name: str, d: dict) -> "Capability":
+        routes = [CapabilityRoute.from_dict(r) for r in d.get("routes", [])]
+        return cls(
+            name=name,
+            description=d.get("description", ""),
+            routes=routes,
+            scopes=d.get("scopes", []),
+        )
+
+
+@dataclass
+class RiskyRoute:
+    """A single risky route with factual ATT&CK signals."""
+
+    path: str
+    methods: list[str] = field(default_factory=lambda: ["*"])
+    description: str = ""
+    tactics: list[str] = field(default_factory=list)
+    enables: list[str] = field(default_factory=list)
+    irreversible: bool = False
+    group: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict, group_defaults: dict | None = None) -> "RiskyRoute":
+        gd = group_defaults or {}
+
+        methods = d.get("methods", ["*"])
+        if isinstance(methods, str):
+            methods = [methods]
+
+        # Merge tactics: union of group + route
+        route_tactics = d.get("tactics", [])
+        group_tactics = gd.get("tactics", [])
+        tactics = list(dict.fromkeys(group_tactics + route_tactics))  # union, order preserved
+
+        # Merge enables: union of group + route
+        route_enables = d.get("enables", [])
+        group_enables = gd.get("enables", [])
+        enables = list(dict.fromkeys(group_enables + route_enables))
+
+        # irreversible: route overrides group if explicitly set
+        if "irreversible" in d:
+            irreversible = d["irreversible"]
+        else:
+            irreversible = gd.get("irreversible", False)
+
+        # description: route overrides group if present
+        description = d.get("description", gd.get("description", ""))
+
+        return cls(
+            path=d["path"],
+            methods=[m.upper() for m in methods],
+            description=description,
+            tactics=tactics,
+            enables=enables,
+            irreversible=irreversible,
+            group=gd.get("group"),
+        )
+
+
+@dataclass
+class RiskyRouteGroup:
+    """A group of related risky routes (for watch UX)."""
+
+    group: str
+    description: str = ""
+    tactics: list[str] = field(default_factory=list)
+    enables: list[str] = field(default_factory=list)
+    irreversible: bool = False
+    routes: list[RiskyRoute] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RiskyRouteGroup":
+        group_defaults = {
+            "group": d["group"],
+            "description": d.get("description", ""),
+            "tactics": d.get("tactics", []),
+            "enables": d.get("enables", []),
+            "irreversible": d.get("irreversible", False),
+        }
+        routes = [RiskyRoute.from_dict(r, group_defaults) for r in d.get("routes", [])]
+        return cls(
+            group=d["group"],
+            description=d.get("description", ""),
+            tactics=d.get("tactics", []),
+            enables=d.get("enables", []),
+            irreversible=d.get("irreversible", False),
+            routes=routes,
+        )
+
+
+def _parse_risky_routes(raw_list: list[dict]) -> tuple[list[RiskyRoute], list[RiskyRouteGroup]]:
+    """Parse risky_routes list into flat routes and groups."""
+    flat_routes: list[RiskyRoute] = []
+    groups: list[RiskyRouteGroup] = []
+
+    for entry in raw_list:
+        if "group" in entry:
+            grp = RiskyRouteGroup.from_dict(entry)
+            groups.append(grp)
+            flat_routes.extend(grp.routes)
+        else:
+            # Ungrouped route
+            flat_routes.append(RiskyRoute.from_dict(entry))
+
+    return flat_routes, groups
+
+
+@dataclass
+class ServiceDefinition:
+    """A complete service definition (one per YAML file, v2 schema)."""
+
+    name: str
+    schema_version: int = 1
     description: str = ""
     default_host: str = ""
+    auth: AuthConfig | None = None
+    capabilities: dict[str, Capability] = field(default_factory=dict)
+    risky_routes: list[RiskyRoute] = field(default_factory=list)
+    risky_route_groups: list[RiskyRouteGroup] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "ServiceDefinition":
-        roles = {}
-        for role_name, role_config in d.get("roles", {}).items():
-            roles[role_name] = ServiceRole.from_dict(role_name, role_config)
+        schema_version = d.get("schema_version")
+        if schema_version != 1:
+            raise ValueError(
+                f"Unsupported schema_version: {schema_version} (expected 1)"
+            )
+
+        auth = AuthConfig.from_dict(d["auth"]) if "auth" in d else None
+
+        capabilities = {}
+        for cap_name, cap_config in d.get("capabilities", {}).items():
+            capabilities[cap_name] = Capability.from_dict(cap_name, cap_config)
+
+        risky_routes, risky_route_groups = _parse_risky_routes(
+            d.get("risky_routes", [])
+        )
+
         return cls(
             name=d["name"],
-            roles=roles,
+            schema_version=1,
             description=d.get("description", ""),
             default_host=d.get("default_host", ""),
+            auth=auth,
+            capabilities=capabilities,
+            risky_routes=risky_routes,
+            risky_route_groups=risky_route_groups,
         )
 
 
