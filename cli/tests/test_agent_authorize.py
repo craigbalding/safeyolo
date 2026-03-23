@@ -12,13 +12,17 @@ from safeyolo.agents_store import load_agent, save_agent
 # ---------------------------------------------------------------------------
 
 
-def _write_service(config_dir: Path, name: str, roles: dict, default_host: str = "") -> None:
-    """Write a service YAML into the user services dir (takes priority)."""
+def _write_service(config_dir: Path, name: str, capabilities: dict, default_host: str = "", auth: dict | None = None) -> None:
+    """Write a v1 schema service YAML into the user services dir."""
     services_dir = config_dir / "services"
     services_dir.mkdir(exist_ok=True)
-    svc = {"name": name, "roles": roles}
+    svc = {"schema_version": 1, "name": name, "capabilities": capabilities}
     if default_host:
         svc["default_host"] = default_host
+    if auth:
+        svc["auth"] = auth
+    else:
+        svc["auth"] = {"type": "bearer"}
     (services_dir / f"{name}.yaml").write_text(yaml.dump(svc, sort_keys=False))
 
 
@@ -71,9 +75,7 @@ class TestServiceResolution:
         _write_service(
             tmp_config_dir,
             "testsvc",
-            {
-                "reader": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"reader": {"description": "Read-only", "routes": []}},
         )
         result = _invoke(
             cli_runner,
@@ -81,7 +83,7 @@ class TestServiceResolution:
                 "authorize",
                 "boris",
                 "testsvc",
-                "--role",
+                "--capability",
                 "reader",
                 "--token",
                 "tok123",
@@ -92,19 +94,17 @@ class TestServiceResolution:
 
 
 # ---------------------------------------------------------------------------
-# Role selection
+# Capability selection
 # ---------------------------------------------------------------------------
 
 
-class TestRoleSelection:
-    def test_single_role_auto_selected(self, cli_runner, tmp_config_dir):
+class TestCapabilitySelection:
+    def test_single_capability_auto_selected(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
         _write_service(
             tmp_config_dir,
             "onerole",
-            {
-                "only": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"only": {"description": "Only capability", "routes": []}},
         )
         result = _invoke(
             cli_runner,
@@ -117,18 +117,45 @@ class TestRoleSelection:
             ],
         )
         assert result.exit_code == 0
-        assert "Auto-selected role" in result.output
+        assert "Auto-selected capability" in result.output
         agent = load_agent("boris")
-        assert agent["services"]["onerole"]["role"] == "only"
+        assert agent["services"]["onerole"]["capability"] == "only"
 
-    def test_role_flag_works(self, cli_runner, tmp_config_dir):
+    def test_capability_flag_works(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
         _write_service(
             tmp_config_dir,
             "multi",
             {
-                "reader": {"auth": {"type": "bearer"}, "routes": []},
-                "writer": {"auth": {"type": "bearer"}, "routes": []},
+                "reader": {"description": "Read", "routes": []},
+                "writer": {"description": "Write", "routes": []},
+            },
+        )
+        result = _invoke(
+            cli_runner,
+            [
+                "authorize",
+                "boris",
+                "multi",
+                "--capability",
+                "writer",
+                "--token",
+                "x",
+            ],
+        )
+        assert result.exit_code == 0
+        agent = load_agent("boris")
+        assert agent["services"]["multi"]["capability"] == "writer"
+
+    def test_role_flag_alias_works(self, cli_runner, tmp_config_dir):
+        """--role still works as an alias for --capability."""
+        _create_agent(tmp_config_dir, "boris")
+        _write_service(
+            tmp_config_dir,
+            "multi",
+            {
+                "reader": {"description": "Read", "routes": []},
+                "writer": {"description": "Write", "routes": []},
             },
         )
         result = _invoke(
@@ -145,16 +172,16 @@ class TestRoleSelection:
         )
         assert result.exit_code == 0
         agent = load_agent("boris")
-        assert agent["services"]["multi"]["role"] == "writer"
+        assert agent["services"]["multi"]["capability"] == "writer"
 
-    def test_invalid_role_rejected(self, cli_runner, tmp_config_dir):
+    def test_invalid_capability_rejected(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
         _write_service(
             tmp_config_dir,
             "multi",
             {
-                "reader": {"auth": {"type": "bearer"}, "routes": []},
-                "writer": {"auth": {"type": "bearer"}, "routes": []},
+                "reader": {"description": "Read", "routes": []},
+                "writer": {"description": "Write", "routes": []},
             },
         )
         result = _invoke(
@@ -163,7 +190,7 @@ class TestRoleSelection:
                 "authorize",
                 "boris",
                 "multi",
-                "--role",
+                "--capability",
                 "admin",
                 "--token",
                 "x",
@@ -184,9 +211,8 @@ class TestCredentialFlow:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "api_key"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
+            auth={"type": "api_key"},
         )
         result = _invoke(
             cli_runner,
@@ -194,7 +220,7 @@ class TestCredentialFlow:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "my-secret",
@@ -217,9 +243,7 @@ class TestCredentialFlow:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         token_file = tmp_path / "token.txt"
         token_file.write_text("file-secret\n")
@@ -229,7 +253,7 @@ class TestCredentialFlow:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token-file",
                 str(token_file),
@@ -249,9 +273,7 @@ class TestCredentialFlow:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         monkeypatch.setenv("MY_TOKEN", "env-secret")
         result = _invoke(
@@ -260,7 +282,7 @@ class TestCredentialFlow:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token-env",
                 "MY_TOKEN",
@@ -280,9 +302,7 @@ class TestCredentialFlow:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         _store_vault_cred(tmp_config_dir, "my-existing-cred")
         result = _invoke(
@@ -291,7 +311,7 @@ class TestCredentialFlow:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--credential-name",
                 "my-existing-cred",
@@ -306,9 +326,7 @@ class TestCredentialFlow:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         result = _invoke(
             cli_runner,
@@ -316,7 +334,7 @@ class TestCredentialFlow:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--credential-name",
                 "ghost",
@@ -330,9 +348,7 @@ class TestCredentialFlow:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         # Store first credential with the base name
         _store_vault_cred(tmp_config_dir, "svc-cred")
@@ -343,7 +359,7 @@ class TestCredentialFlow:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "second",
@@ -373,9 +389,7 @@ class TestAgentsYamlWrites:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         _invoke(
             cli_runner,
@@ -383,29 +397,27 @@ class TestAgentsYamlWrites:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "x",
             ],
         )
         agent = load_agent("boris")
-        assert agent["services"]["svc"] == {"role": "r", "token": "svc-cred"}
+        assert agent["services"]["svc"] == {"capability": "r", "token": "svc-cred"}
 
     def test_existing_services_preserved(self, cli_runner, tmp_config_dir):
         _create_agent(
             tmp_config_dir,
             "boris",
             extra={
-                "services": {"old": {"role": "x", "token": "old-cred"}},
+                "services": {"old": {"capability": "x", "token": "old-cred"}},
             },
         )
         _write_service(
             tmp_config_dir,
             "new",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )
         _invoke(
             cli_runner,
@@ -413,7 +425,7 @@ class TestAgentsYamlWrites:
                 "authorize",
                 "boris",
                 "new",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "x",
@@ -428,15 +440,13 @@ class TestAgentsYamlWrites:
             tmp_config_dir,
             "boris",
             extra={
-                "services": {"svc": {"role": "old-role", "token": "old-cred"}},
+                "services": {"svc": {"capability": "old-cap", "token": "old-cred"}},
             },
         )
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "new-role": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"new-cap": {"description": "New", "routes": []}},
         )
         _invoke(
             cli_runner,
@@ -444,14 +454,14 @@ class TestAgentsYamlWrites:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
-                "new-role",
+                "--capability",
+                "new-cap",
                 "--token",
                 "x",
             ],
         )
         agent = load_agent("boris")
-        assert agent["services"]["svc"]["role"] == "new-role"
+        assert agent["services"]["svc"]["capability"] == "new-cap"
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +475,7 @@ class TestHostBindingCheck:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
             default_host="api.example.com",
         )
         _write_policy(
@@ -482,7 +490,7 @@ class TestHostBindingCheck:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "x",
@@ -496,9 +504,7 @@ class TestHostBindingCheck:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
             default_host="api.example.com",
         )
         _write_policy(
@@ -513,7 +519,7 @@ class TestHostBindingCheck:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "x",
@@ -528,9 +534,7 @@ class TestHostBindingCheck:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
             default_host="api.example.com",
         )
         _write_policy(tmp_config_dir, hosts={})
@@ -540,7 +544,7 @@ class TestHostBindingCheck:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "x",
@@ -556,9 +560,7 @@ class TestHostBindingCheck:
         _write_service(
             tmp_config_dir,
             "svc",
-            {
-                "r": {"auth": {"type": "bearer"}, "routes": []},
-            },
+            {"r": {"description": "Role", "routes": []}},
         )  # no default_host
         result = _invoke(
             cli_runner,
@@ -566,7 +568,7 @@ class TestHostBindingCheck:
                 "authorize",
                 "boris",
                 "svc",
-                "--role",
+                "--capability",
                 "r",
                 "--token",
                 "x",
@@ -587,7 +589,7 @@ class TestRevoke:
             tmp_config_dir,
             "boris",
             extra={
-                "services": {"svc": {"role": "r", "token": "svc-cred"}},
+                "services": {"svc": {"capability": "r", "token": "svc-cred"}},
             },
         )
         result = _invoke(cli_runner, ["revoke", "boris", "svc"])
@@ -612,7 +614,7 @@ class TestRevoke:
             tmp_config_dir,
             "boris",
             extra={
-                "services": {"svc": {"role": "r", "token": "svc-cred"}},
+                "services": {"svc": {"capability": "r", "token": "svc-cred"}},
             },
         )
         result = _invoke(cli_runner, ["revoke", "boris", "svc"])
@@ -625,8 +627,8 @@ class TestRevoke:
             "boris",
             extra={
                 "services": {
-                    "svc1": {"role": "r1", "token": "cred1"},
-                    "svc2": {"role": "r2", "token": "cred2"},
+                    "svc1": {"capability": "r1", "token": "cred1"},
+                    "svc2": {"capability": "r2", "token": "cred2"},
                 },
             },
         )

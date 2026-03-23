@@ -1,37 +1,49 @@
+schema_version: 1
 name: slack
 description: "Slack Web API — channel reading and message posting"
 default_host: slack.com
 
-roles:
-  reader:
-    auth:
-      type: bearer
-      scheme: Bearer
+auth:
+  type: bearer
+
+risky_routes:
+  - group: "Admin actions"
+    description: "Workspace administration — user and channel management"
+    tactics: [privilege_escalation]
     routes:
-      - effect: allow
+      - path: "/api/admin.*"
         methods: [POST]
+        description: "Admin API methods — broad workspace control"
+      - path: "/api/users.admin.*"
+        methods: [POST]
+        description: "User admin — deactivate, invite, change roles"
+
+  - path: "/api/files.upload"
+    methods: [POST]
+    description: "File upload — potential data exfiltration or malware delivery"
+    tactics: [exfiltration]
+
+capabilities:
+  reader:
+    description: "Read channels, messages, and user lists"
+    scopes: ["channels:read", "users:read"]
+    routes:
+      - methods: [POST]
         path: "/api/conversations.list"
-      - effect: allow
-        methods: [POST]
+      - methods: [POST]
         path: "/api/conversations.history"
-      - effect: allow
-        methods: [POST]
+      - methods: [POST]
         path: "/api/users.list"
 
   poster:
-    auth:
-      type: bearer
-      scheme: Bearer
+    description: "Read channels and post messages"
+    scopes: ["channels:read", "users:read", "chat:write"]
     routes:
-      - effect: allow
-        methods: [POST]
+      - methods: [POST]
         path: "/api/conversations.list"
-      - effect: allow
-        methods: [POST]
+      - methods: [POST]
         path: "/api/conversations.history"
-      - effect: allow
-        methods: [POST]
+      - methods: [POST]
         path: "/api/users.list"
-      - effect: allow
-        methods: [POST]
+      - methods: [POST]
         path: "/api/chat.postMessage"

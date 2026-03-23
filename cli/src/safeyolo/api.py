@@ -202,6 +202,62 @@ class AdminAPI:
         }
         return self._request("POST", "/admin/policy/baseline/deny", json=payload)
 
+    def add_gateway_grant(
+        self,
+        agent: str,
+        service: str,
+        method: str,
+        path: str,
+        lifetime: str = "once",
+    ) -> dict[str, Any]:
+        """Add a risky route grant via the admin API.
+
+        Args:
+            agent: Agent name (e.g., "claude")
+            service: Service name (e.g., "minifuse")
+            method: HTTP method (e.g., "DELETE")
+            path: Request path (e.g., "/v1/feeds/658")
+            lifetime: Grant scope ("once", "session", "remembered")
+        """
+        return self._request(
+            "POST",
+            "/admin/gateway/grant",
+            json={
+                "agent": agent,
+                "service": service,
+                "method": method,
+                "path": path,
+                "lifetime": lifetime,
+            },
+        )
+
+    def list_gateway_grants(self) -> dict[str, Any]:
+        """List active risky route grants."""
+        return self._request("GET", "/admin/gateway/grants")
+
+    def revoke_gateway_grant(self, grant_id: str) -> dict[str, Any]:
+        """Revoke a risky route grant."""
+        return self._request("DELETE", f"/admin/gateway/grants/{grant_id}")
+
+    def log_gateway_denial(
+        self,
+        agent: str,
+        service: str,
+        method: str,
+        path: str,
+        reason: str = "user_denied",
+    ) -> dict[str, Any]:
+        """Log a risky route denial event."""
+        return self._request(
+            "POST",
+            "/admin/policy/baseline/deny",
+            json={
+                "destination": f"gateway:{service}",
+                "cred_id": f"{agent}:{method}:{path}",
+                "reason": reason,
+            },
+        )
+
     def pending_approvals(self) -> list[dict[str, Any]]:
         """Get pending credential approval requests.
 

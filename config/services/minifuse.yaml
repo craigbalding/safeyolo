@@ -1,21 +1,62 @@
+schema_version: 1
 name: minifuse
 description: "MiniFuse API — read-only data access"
 
-roles:
-  reader:
-    auth:
-      type: api_key
-      header: X-Auth-Token
+auth:
+  type: api_key
+  header: X-Auth-Token
+
+risky_routes:
+  - group: "Feed management"
+    description: "Adding, modifying, or removing RSS feed subscriptions"
+    tactics: [impact]
     routes:
-      - effect: allow
-        methods: [GET]
+      - path: "/v1/feeds"
+        methods: [POST]
+        description: "Create feed — adds a new subscription"
+        irreversible: false
+      - path: "/v1/feeds/*"
+        methods: [PUT]
+        description: "Update feed — change URL, category, or crawl settings"
+        irreversible: false
+      - path: "/v1/feeds/*"
+        methods: [DELETE]
+        description: "Delete feed — permanently removes feed and all its entries"
+        irreversible: true
+
+capabilities:
+  reader:
+    description: "Read-only access to feeds, entries, and categories"
+    routes:
+      - methods: [GET]
         path: "/v1/feeds"
-      - effect: allow
-        methods: [GET]
+      - methods: [GET]
         path: "/v1/feeds/*"
-      - effect: allow
-        methods: [GET]
+      - methods: [GET]
         path: "/v1/entries"
-      - effect: allow
-        methods: [GET]
+      - methods: [GET]
+        path: "/v1/categories"
+
+  category_manager:
+    description: "Manage feeds in a specific category — list, add, update, remove"
+    routes:
+      - methods: [GET]
+        path: "/v1/categories/*/feeds"
+      - methods: [GET]
+        path: "/v1/categories/*/entries"
+      - methods: [POST]
+        path: "/v1/feeds"
+      - methods: [GET, PUT, DELETE]
+        path: "/v1/feeds/*"
+
+  writer:
+    description: "Full feed management — create, update, delete feeds"
+    routes:
+      - methods: [GET, POST, PUT, DELETE]
+        path: "/v1/feeds"
+      - methods: [GET, PUT, DELETE]
+        path: "/v1/feeds/*"
+      - methods: [GET]
+        path: "/v1/entries"
+      - methods: [GET]
         path: "/v1/categories"

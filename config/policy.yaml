@@ -84,7 +84,7 @@ required:
 scan_patterns: []
 
 # =============================================================================
-# SERVICE GATEWAY (optional) — expose curated API surfaces to agents
+# SERVICE GATEWAY — expose curated API surfaces to agents
 # =============================================================================
 # Services reference definitions in config/services/*.yaml
 # Agents get gateway tokens (sgw_) that map to vault credentials.
@@ -93,13 +93,35 @@ scan_patterns: []
 #   research-agent:
 #     services:
 #       gmail:
-#         role: readonly
+#         capability: read_and_send
 #         token: gmail-oauth2       # vault credential name
+#         account: operator         # whose account (agent/operator/custom)
 #       slack:
-#         role: poster
+#         capability: poster
 #         token: slack-bot
 #   data-agent:
 #     services:
 #       minifuse:
-#         role: reader
+#         capability: reader
 #         token: minifuse-key
+
+# =============================================================================
+# GATEWAY RISK APPETITE — how to handle risky routes
+# =============================================================================
+# Service YAMLs declare factual signals (tactics, enables, irreversible).
+# These rules express what the operator tolerates. Default (no match) = require approval.
+
+gateway:
+  risk_appetite:
+    # Agent's own account: collection is routine
+    - account: agent
+      tactics: [collection]
+      decision: allow
+
+    # Exfiltration always needs approval
+    - tactics: [exfiltration]
+      decision: require_approval
+
+    # Irreversible actions need approval
+    - irreversible: true
+      decision: require_approval

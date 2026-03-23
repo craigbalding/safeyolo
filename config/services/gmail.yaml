@@ -1,30 +1,90 @@
+schema_version: 1
 name: gmail
 description: "Gmail API — email read/send via Google OAuth2"
 default_host: gmail.googleapis.com
 
-roles:
-  readonly:
-    auth:
-      type: bearer
-      scheme: Bearer
-      refresh_on_401: true
-    routes:
-      - effect: deny
-        methods: ["*"]
-        path: "/gmail/v1/users/me/settings/**"
-      - effect: allow
-        methods: [GET]
-        path: "/gmail/v1/users/me/**"
+auth:
+  type: bearer
+  refresh_on_401: true
 
-  sender:
-    auth:
-      type: bearer
-      scheme: Bearer
-      refresh_on_401: true
+risky_routes:
+  - group: "Mail routing"
+    description: "Controls where email goes — persistent exfiltration vectors"
+    tactics: [exfiltration, persistence]
     routes:
-      - effect: deny
-        methods: ["*"]
-        path: "/gmail/v1/users/me/settings/**"
-      - effect: allow
-        methods: [GET, POST]
+      - path: "/gmail/v1/users/me/settings/filters/**"
+        description: "Mail filters — silent redirection, evidence hiding"
+        enables: [defense_evasion]
+      - path: "/gmail/v1/users/me/settings/forwardingAddresses/**"
+        methods: [POST, PUT]
+        description: "Forwarding — all incoming mail copied out"
+      - path: "/gmail/v1/users/me/settings/delegates/**"
+        methods: [POST, DELETE]
+        description: "Delegate access — another account gets full access"
+        enables: [lateral_movement]
+
+  - group: "Message content"
+    description: "Reading email exposes credentials, 2FA codes, confidential comms"
+    tactics: [collection]
+    enables: [credential_access]
+    routes:
+      - path: "/gmail/v1/users/me/messages/**"
+        methods: [GET]
+      - path: "/gmail/v1/users/me/threads/**"
+        methods: [GET]
+
+  - group: "Send as account owner"
+    description: "Sending email as the account owner — impersonation from a trusted address"
+    tactics: [impact]
+    irreversible: true
+    routes:
+      - path: "/gmail/v1/users/me/messages/send"
+        methods: [POST]
+      - path: "/gmail/v1/users/me/drafts/send"
+        methods: [POST]
+
+  - group: "Destructive actions"
+    description: "Data loss — may hide evidence of compromise"
+    tactics: [impact, defense_evasion]
+    irreversible: true
+    routes:
+      - path: "/gmail/v1/users/me/messages/*/trash"
+        methods: [POST]
+        description: "Trash — reversible but hides messages"
+        irreversible: false
+      - path: "/gmail/v1/users/me/messages/*/delete"
+        methods: [DELETE]
+        description: "Permanent delete — irreversible data loss"
+
+capabilities:
+  manage_labels:
+    description: "Create, update, and delete labels (no message content access)"
+    scopes: ["gmail.labels"]
+    routes:
+      - methods: [GET, POST, PUT, PATCH, DELETE]
+        path: "/gmail/v1/users/me/labels/**"
+
+  search_headers:
+    description: "Search message metadata (subject, from, date — no body access)"
+    scopes: ["gmail.metadata"]
+    routes:
+      - methods: [GET]
+        path: "/gmail/v1/users/me/messages"
+
+  read_and_send:
+    description: "Full read/write access to messages"
+    scopes: ["gmail.modify"]
+    routes:
+      - methods: [GET, POST]
+        path: "/gmail/v1/users/me/messages/**"
+      - methods: [GET]
+        path: "/gmail/v1/users/me/threads/**"
+      - methods: [POST]
+        path: "/gmail/v1/users/me/drafts/**"
+
+  full_access:
+    description: "Full access to all Gmail features"
+    scopes: ["https://mail.google.com/"]
+    routes:
+      - methods: [GET, POST, PUT, DELETE, PATCH]
         path: "/gmail/v1/users/me/**"

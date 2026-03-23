@@ -393,3 +393,199 @@ domains:
         """Test addon bypass for specific domain."""
         assert not engine.is_addon_enabled("network_guard", domain="db.internal")
         assert engine.is_addon_enabled("credential_guard", domain="db.internal")  # required
+
+
+class TestGatewayCondition:
+    """Tests for gateway-specific Condition fields."""
+
+    @pytest.fixture
+    def make_condition(self):
+        from policy_engine import Condition
+        return Condition
+
+    def test_tactics_any_match(self, make_condition):
+        cond = make_condition(tactics=["exfiltration", "persistence"])
+        assert cond.matches({"tactics": ["exfiltration"]})
+        assert cond.matches({"tactics": ["persistence", "impact"]})
+        assert not cond.matches({"tactics": ["collection"]})
+        assert not cond.matches({"tactics": []})
+
+    def test_enables_any_match(self, make_condition):
+        cond = make_condition(enables=["credential_access"])
+        assert cond.matches({"enables": ["credential_access", "lateral_movement"]})
+        assert not cond.matches({"enables": ["defense_evasion"]})
+        assert not cond.matches({"enables": []})
+
+    def test_irreversible_exact_match(self, make_condition):
+        cond = make_condition(irreversible=True)
+        assert cond.matches({"irreversible": True})
+        assert not cond.matches({"irreversible": False})
+        assert not cond.matches({})
+
+    def test_account_match(self, make_condition):
+        cond = make_condition(account="operator")
+        assert cond.matches({"account": "operator"})
+        assert not cond.matches({"account": "agent"})
+
+    def test_account_list_match(self, make_condition):
+        cond = make_condition(account=["operator", "team-support"])
+        assert cond.matches({"account": "operator"})
+        assert cond.matches({"account": "team-support"})
+        assert not cond.matches({"account": "agent"})
+
+    def test_agent_glob_match(self, make_condition):
+        cond = make_condition(agent="boris*")
+        assert cond.matches({"agent": "boris"})
+        assert cond.matches({"agent": "boris-2"})
+        assert not cond.matches({"agent": "alice"})
+
+    def test_service_glob_match(self, make_condition):
+        cond = make_condition(service="g*")
+        assert cond.matches({"service": "gmail"})
+        assert cond.matches({"service": "github"})
+        assert not cond.matches({"service": "slack"})
+
+    def test_none_conditions_always_match(self, make_condition):
+        """All None gateway conditions should match anything."""
+        cond = make_condition()
+        assert cond.matches({"tactics": ["exfiltration"], "account": "operator"})
+
+    def test_combined_conditions(self, make_condition):
+        """Multiple conditions must ALL match."""
+        cond = make_condition(tactics=["exfiltration"], account="operator")
+        assert cond.matches({"tactics": ["exfiltration"], "account": "operator"})
+        assert not cond.matches({"tactics": ["exfiltration"], "account": "agent"})
+        assert not cond.matches({"tactics": ["collection"], "account": "operator"})
+
+
+class TestRiskyRouteEvaluation:
+    """Tests for PolicyEngine.evaluate_risky_route()."""
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+  description: "Test policy with risk appetite"
+
+permissions:
+  # Allow collection for agent accounts
+  - action: gateway:risky_route
+    resource: "*"
+    effect: allow
+    tier: explicit
+    condition:
+      tactics: [collection]
+      account: agent
+
+  # Require approval for exfiltration
+  - action: gateway:risky_route
+    resource: "*"
+    effect: prompt
+    tier: explicit
+    condition:
+      tactics: [exfiltration]
+
+  # Deny irreversible actions on operator accounts
+  - action: gateway:risky_route
+    resource: "*"
+    effect: deny
+    tier: explicit
+    condition:
+      irreversible: true
+      account: operator
+
+  # Trust boris with github privilege_escalation
+  - action: gateway:risky_route
+    resource: "*"
+    effect: allow
+    tier: explicit
+    condition:
+      agent: boris
+      service: github
+      tactics: [privilege_escalation]
+
+  # Catch-all credential rule
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+    tier: explicit
+
+budgets: {}
+required: []
+addons: {}
+""")
+
+        return PolicyEngine(baseline_path=baseline)
+
+    def test_collection_allowed_for_agent(self, engine):
+        decision = engine.evaluate_risky_route(
+            service="gmail", agent="boris", account="agent",
+            tactics=["collection"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "allow"
+
+    def test_exfiltration_requires_approval(self, engine):
+        decision = engine.evaluate_risky_route(
+            service="gmail", agent="boris", account="agent",
+            tactics=["exfiltration", "persistence"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "prompt"
+
+    def test_irreversible_denied_for_operator(self, engine):
+        decision = engine.evaluate_risky_route(
+            service="gmail", agent="boris", account="operator",
+            tactics=["impact"], enables=[], irreversible=True,
+        )
+        assert decision.effect == "deny"
+
+    def test_agent_specific_allow(self, engine):
+        decision = engine.evaluate_risky_route(
+            service="github", agent="boris", account="agent",
+            tactics=["privilege_escalation"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "allow"
+
+    def test_agent_specific_no_match_other_agent(self, engine):
+        """Different agent doesn't match boris-specific rule, falls through."""
+        decision = engine.evaluate_risky_route(
+            service="github", agent="alice", account="agent",
+            tactics=["privilege_escalation"], enables=[], irreversible=False,
+        )
+        # No matching rule → default fail-safe (prompt)
+        assert decision.effect == "prompt"
+
+    def test_default_failsafe_prompt(self, engine):
+        """No matching risk appetite rule → require approval."""
+        decision = engine.evaluate_risky_route(
+            service="unknown", agent="unknown", account="custom",
+            tactics=["lateral_movement"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "prompt"
+
+    def test_no_risk_appetite_rules_failsafe(self, tmp_path):
+        """Engine with no gateway:risky_route permissions defaults to prompt."""
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "empty_policy.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: credential:use
+    resource: "*"
+    effect: prompt
+    tier: explicit
+budgets: {}
+required: []
+addons: {}
+""")
+        engine = PolicyEngine(baseline_path=baseline)
+        decision = engine.evaluate_risky_route(
+            service="gmail", agent="boris", account="agent",
+            tactics=["collection"], enables=[], irreversible=False,
+        )
+        assert decision.effect == "prompt"

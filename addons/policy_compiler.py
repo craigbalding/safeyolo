@@ -83,23 +83,27 @@ def compile_policy(raw: dict) -> dict:
             creds = config["credentials"]
             if isinstance(creds, str):
                 creds = [creds]
-            permissions.append({
-                "action": "credential:use",
-                "resource": resource,
-                "effect": "allow",
-                "tier": "explicit",
-                "condition": {"credential": creds},
-            })
+            permissions.append(
+                {
+                    "action": "credential:use",
+                    "resource": resource,
+                    "effect": "allow",
+                    "tier": "explicit",
+                    "condition": {"credential": creds},
+                }
+            )
 
         # Rate limiting
         if "rate_limit" in config:
-            permissions.append({
-                "action": "network:request",
-                "resource": resource,
-                "effect": "budget",
-                "budget": config["rate_limit"],
-                "tier": "explicit",
-            })
+            permissions.append(
+                {
+                    "action": "network:request",
+                    "resource": resource,
+                    "effect": "budget",
+                    "budget": config["rate_limit"],
+                    "tier": "explicit",
+                }
+            )
 
         # Domain bypass
         if "bypass" in config:
@@ -145,6 +149,11 @@ def compile_policy(raw: dict) -> dict:
         if key in raw:
             result[key] = raw[key]
 
+    # Risk appetite → gateway:risky_route permissions
+    gateway_section = raw.get("gateway", {})
+    if isinstance(gateway_section, dict) and "risk_appetite" in gateway_section:
+        _compile_risk_appetite(gateway_section["risk_appetite"], permissions)
+
     # Services + agents section → gateway token map
     if "services" in raw or "agents" in raw:
         services_dir = raw.get("_services_dir")
@@ -154,10 +163,11 @@ def compile_policy(raw: dict) -> dict:
         # host_map exists but no agents — still store it for gateway
         result["gateway"] = {"token_map": {}, "agent_env": {}, "host_map": host_map}
 
-    log.info(
-        f"Compiled host-centric policy: {len(hosts)} hosts → "
-        f"{len(permissions)} permissions"
-    )
+    # Pass through grant_ttl_seconds from gateway section
+    if isinstance(gateway_section, dict) and "grant_ttl_seconds" in gateway_section:
+        result.setdefault("gateway", {})["grant_ttl_seconds"] = gateway_section["grant_ttl_seconds"]
+
+    log.info(f"Compiled host-centric policy: {len(hosts)} hosts → {len(permissions)} permissions")
     return result
 
 
@@ -166,29 +176,35 @@ def _compile_wildcard(config: dict, permissions: list[dict]) -> None:
     # Unknown credentials handling
     unknown_creds = config.get("unknown_credentials", config.get("credentials"))
     if unknown_creds == "prompt":
-        permissions.append({
-            "action": "credential:use",
-            "resource": "*",
-            "effect": "prompt",
-            "tier": "explicit",
-        })
+        permissions.append(
+            {
+                "action": "credential:use",
+                "resource": "*",
+                "effect": "prompt",
+                "tier": "explicit",
+            }
+        )
     elif unknown_creds == "deny":
-        permissions.append({
-            "action": "credential:use",
-            "resource": "*",
-            "effect": "deny",
-            "tier": "explicit",
-        })
+        permissions.append(
+            {
+                "action": "credential:use",
+                "resource": "*",
+                "effect": "deny",
+                "tier": "explicit",
+            }
+        )
 
     # Default rate limit
     if "rate_limit" in config:
-        permissions.append({
-            "action": "network:request",
-            "resource": "*",
-            "effect": "budget",
-            "budget": config["rate_limit"],
-            "tier": "explicit",
-        })
+        permissions.append(
+            {
+                "action": "network:request",
+                "resource": "*",
+                "effect": "budget",
+                "budget": config["rate_limit"],
+                "tier": "explicit",
+            }
+        )
 
     # Raw rules passthrough
     if "rules" in config:
@@ -257,6 +273,48 @@ def _compile_credentials(
     return rules
 
 
+def _compile_risk_appetite(rules: list[dict], permissions: list[dict]) -> None:
+    """Compile gateway.risk_appetite rules into gateway:risky_route permissions.
+
+    Maps: decision: allow → effect: allow, decision: require_approval → effect: prompt,
+    decision: deny → effect: deny.
+    """
+    decision_map = {
+        "allow": "allow",
+        "require_approval": "prompt",
+        "deny": "deny",
+    }
+
+    for rule in rules:
+        decision = rule.get("decision", "require_approval")
+        effect = decision_map.get(decision, "prompt")
+
+        condition: dict[str, Any] = {}
+        if "tactics" in rule:
+            condition["tactics"] = rule["tactics"]
+        if "enables" in rule:
+            condition["enables"] = rule["enables"]
+        if "irreversible" in rule:
+            condition["irreversible"] = rule["irreversible"]
+        if "account" in rule:
+            condition["account"] = rule["account"]
+        if "agent" in rule:
+            condition["agent"] = rule["agent"]
+        if "service" in rule:
+            condition["service"] = rule["service"]
+
+        perm: dict[str, Any] = {
+            "action": "gateway:risky_route",
+            "resource": "*",
+            "effect": effect,
+            "tier": "explicit",
+        }
+        if condition:
+            perm["condition"] = condition
+
+        permissions.append(perm)
+
+
 def mint_gateway_token() -> str:
     """Generate a new gateway token (sgw_ prefix + 64 hex chars)."""
     return f"sgw_{secrets.token_hex(32)}"
@@ -272,8 +330,9 @@ def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map:
           agent-name:
             services:
               service-name:
-                role: role-name
+                capability: capability-name
                 token: vault-credential-name
+                account: agent  # optional persona
 
     Args:
         raw: Parsed policy YAML dict
@@ -282,8 +341,8 @@ def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map:
     Returns:
         Dict with token_map and agent_env:
         {
-            "token_map": {sgw_token: {"agent": ..., "service": ..., "role": ..., "token": ...}},
-            "agent_env": {agent_name: {ENV_VAR: token}},
+            "token_map": {sgw_token: {"agent": ..., "service": ..., "capability": ..., "token": ..., "account": ...}},
+            "agent_env": {agent_name: {service_name: token}},
         }
     """
     agents = raw.get("agents", {})
@@ -308,34 +367,41 @@ def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map:
             # Accept both dict format and legacy string format
             if isinstance(service_config, str):
                 # Legacy: minifuse: reader (no vault token specified)
-                role_name = service_config
+                capability_name = service_config
                 vault_token = ""
+                account = "agent"
             elif isinstance(service_config, dict):
-                role_name = service_config.get("role", "")
+                # v2: capability field (preferred), fall back to role for compat
+                capability_name = service_config.get("capability", service_config.get("role", ""))
                 vault_token = service_config.get("token", "")
+                account = service_config.get("account", "agent")
             else:
-                log.warning("Skipping service %s for agent %s: invalid config",
-                            sanitize_for_log(service_name), sanitize_for_log(agent_name))
+                log.warning(
+                    "Skipping service %s for agent %s: invalid config",
+                    sanitize_for_log(service_name),
+                    sanitize_for_log(agent_name),
+                )
                 continue
 
-            if not role_name:
-                log.warning("Skipping service %s for agent %s: no role specified",
-                            sanitize_for_log(service_name), sanitize_for_log(agent_name))
+            if not capability_name:
+                log.warning(
+                    "Skipping service %s for agent %s: no capability specified",
+                    sanitize_for_log(service_name),
+                    sanitize_for_log(agent_name),
+                )
                 continue
 
             sgw_token = mint_gateway_token()
             token_map[sgw_token] = {
                 "agent": agent_name,
                 "service": service_name,
-                "role": role_name,
+                "capability": capability_name,
                 "token": vault_token,
+                "account": account,
             }
             agent_env[agent_name][service_name] = sgw_token
 
-    log.info(
-        f"Compiled gateway: {len(agents)} agents, "
-        f"{len(token_map)} tokens minted"
-    )
+    log.info(f"Compiled gateway: {len(agents)} agents, {len(token_map)} tokens minted")
     return {"token_map": token_map, "agent_env": agent_env, "host_map": host_map or {}}
 
 

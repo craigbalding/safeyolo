@@ -169,6 +169,10 @@ class RollingStats:
 def tail_jsonl(path: Path, follow: bool = True):
     """Tail a JSONL file, yielding parsed events.
 
+    Handles log rotation and proxy restarts: if the file is replaced
+    (inode changes) or truncated, reopens from the beginning of the
+    new file.
+
     Args:
         path: Path to JSONL file
         follow: If True, keep watching for new lines
@@ -185,7 +189,11 @@ def tail_jsonl(path: Path, follow: bool = True):
         else:
             return
 
+    check_interval = 0  # counter for periodic stale-file checks
+
     with open(path) as f:
+        original_inode = os.fstat(f.fileno()).st_ino
+
         # Start from end for follow mode
         if follow:
             f.seek(0, 2)  # Seek to end
@@ -193,6 +201,7 @@ def tail_jsonl(path: Path, follow: bool = True):
         while True:
             line = f.readline()
             if line:
+                check_interval = 0
                 line = line.strip()
                 if line:
                     try:
@@ -201,8 +210,158 @@ def tail_jsonl(path: Path, follow: bool = True):
                         pass  # Skip malformed lines
             elif follow:
                 time.sleep(0.1)
+                check_interval += 1
+
+                # Every ~2 seconds of no data, check if the file was rotated
+                if check_interval >= 20:
+                    check_interval = 0
+                    try:
+                        if path.exists():
+                            current_inode = path.stat().st_ino
+                            if current_inode != original_inode:
+                                # File was rotated — reopen from start of new file
+                                console.print("[dim]Log rotated, reopening...[/dim]")
+                                f.close()
+                                # Re-enter with new file via recursive yield
+                                yield from _tail_reopened(path)
+                                return
+                        else:
+                            # File disappeared (proxy stopped) — wait for it
+                            console.print("[dim]Log file removed, waiting...[/dim]")
+                            while not path.exists():
+                                time.sleep(0.5)
+                            console.print("[dim]Log file reappeared, reopening...[/dim]")
+                            f.close()
+                            yield from _tail_reopened(path)
+                            return
+                    except OSError:
+                        pass  # stat failed, try again next cycle
             else:
                 break
+
+
+def _tail_reopened(path: Path):
+    """Reopen a rotated/recreated log file and tail from the beginning."""
+    with open(path) as f:
+        original_inode = os.fstat(f.fileno()).st_ino
+        check_interval = 0
+
+        while True:
+            line = f.readline()
+            if line:
+                check_interval = 0
+                line = line.strip()
+                if line:
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        pass
+            else:
+                time.sleep(0.1)
+                check_interval += 1
+                if check_interval >= 20:
+                    check_interval = 0
+                    try:
+                        if path.exists():
+                            current_inode = path.stat().st_ino
+                            if current_inode != original_inode:
+                                console.print("[dim]Log rotated again, reopening...[/dim]")
+                                f.close()
+                                yield from _tail_reopened(path)
+                                return
+                        else:
+                            while not path.exists():
+                                time.sleep(0.5)
+                            console.print("[dim]Log file reappeared, reopening...[/dim]")
+                            f.close()
+                            yield from _tail_reopened(path)
+                            return
+                    except OSError:
+                        pass
+
+
+def _risky_route_dedup_key(event: dict) -> str:
+    """Build dedup key for a risky route event: agent:service:method:path."""
+    details = event.get("details", {})
+    agent = event.get("agent", "")
+    service = details.get("service", "")
+    method = details.get("method", "")
+    path = details.get("path", details.get("risky_route", ""))
+    return f"gw:{agent}:{service}:{method}:{path}"
+
+
+def scan_pending_approvals(log_path: Path) -> list[dict]:
+    """Scan log backwards for unresolved approval requests since the operator last acted.
+
+    Reads the log from the end. Collects risky route blocks and credential
+    approval requests. Stops when it hits an operator action (grant added,
+    approval added, denial logged) — everything before that was already
+    handled. Returns unresolved events from after that point.
+    """
+    if not log_path.exists():
+        return []
+
+    # Operator action events — hitting one means the operator was engaged
+    OPERATOR_ACTIONS = {
+        "admin.gateway_grant",
+        "admin.gateway_grant_revoked",
+        "admin.approval_added",
+        "admin.denial",
+    }
+
+    # Read lines from file (we need to scan backwards, so read all then reverse)
+    # Bounded: only keep last 50K lines to avoid reading huge files
+    MAX_SCAN_LINES = 50_000
+    recent_lines: deque[str] = deque(maxlen=MAX_SCAN_LINES)
+    try:
+        with open(log_path) as f:
+            for line in f:
+                recent_lines.append(line)
+    except Exception as e:
+        console.print(f"[yellow]Warning:[/yellow] Failed to scan log for pending approvals: {e}")
+        return []
+
+    # Scan backwards: collect blocks, stop at first operator action
+    risky_blocks: dict[str, dict] = {}  # dedup_key -> event
+    credential_blocks: dict[str, dict] = {}  # dedup_key -> event
+
+    for line in reversed(recent_lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        event_type = event.get("event", "")
+
+        # Stop at the most recent operator action — everything before was handled
+        if event_type in OPERATOR_ACTIONS:
+            break
+
+        decision = event.get("decision", "")
+
+        # Collect risky route blocks
+        if event_type == "gateway.risky_route" and decision == "require_approval":
+            key = _risky_route_dedup_key(event)
+            if key not in risky_blocks:  # keep most recent (first seen in reverse)
+                risky_blocks[key] = event
+
+        # Collect credential approval requests
+        approval = event.get("approval", {})
+        if approval and approval.get("required"):
+            cred_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
+            if cred_key not in credential_blocks:
+                credential_blocks[cred_key] = event
+
+    # Return all collected (they're unresolved — no operator action after them)
+    pending = list(risky_blocks.values()) + list(credential_blocks.values())
+
+    # Sort by timestamp (oldest first) so prompts appear in chronological order
+    pending.sort(key=lambda e: e.get("ts", ""))
+
+    return pending
 
 
 def format_approval_request(event: dict) -> Panel:
@@ -224,7 +383,7 @@ def format_approval_request(event: dict) -> Panel:
     if ts:
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            timestamp_str = dt.strftime("%H:%M:%S")
+            timestamp_str = dt.astimezone().strftime("%H:%M:%S")
         except (ValueError, AttributeError):
             timestamp_str = ts[:19]  # Fallback to truncated string
 
@@ -254,6 +413,149 @@ def format_approval_request(event: dict) -> Panel:
         subtitle="[green][A]pprove[/green] | [red][D]eny[/red] | [dim][S]kip[/dim]",
         border_style="red",
     )
+
+
+def format_risky_route_approval(event: dict) -> Panel:
+    """Format a risky route approval request as a Rich panel."""
+    details = event.get("details", {})
+    ts = event.get("ts", "")
+
+    service = details.get("service", "unknown")
+    capability = details.get("capability", "")
+    method = details.get("method", "")
+    path = details.get("path", "")
+    risky_route_pattern = details.get("risky_route", "")
+    tactics = details.get("tactics", [])
+    enables = details.get("enables", [])
+    irreversible = details.get("irreversible", False)
+    description = details.get("description", "")
+    agent = event.get("agent", "unknown")
+
+    # Format timestamp
+    timestamp_str = ""
+    if ts:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            timestamp_str = dt.astimezone().strftime("%H:%M:%S")
+        except (ValueError, AttributeError):
+            timestamp_str = ts[:19]
+
+    # Build content table
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+
+    table.add_row("Agent", f"[bold]{agent}[/bold]")
+    table.add_row("Service", f"[cyan]{service}[/cyan]")
+    if capability:
+        table.add_row("Capability", capability)
+    display_path = path or risky_route_pattern
+    table.add_row("Route", f"[bold]{method} {display_path}[/bold]")
+    if description:
+        table.add_row("Description", description)
+    if tactics:
+        table.add_row("Tactics", ", ".join(tactics))
+    if enables:
+        table.add_row("Enables", ", ".join(enables))
+    if irreversible:
+        table.add_row("Irreversible", "[bold red]YES[/bold red]")
+
+    # Title with timestamp
+    border_style = "red" if irreversible else "yellow"
+    title = f"[bold {border_style}]Risky Route Blocked[/bold {border_style}] [dim]{timestamp_str}[/dim]"
+
+    if irreversible:
+        subtitle = "[yellow]Type YES to approve[/yellow] | [red][D]eny[/red] | [dim][S]kip[/dim]"
+    else:
+        subtitle = "[green][A]pprove once[/green] | [red][D]eny[/red] | [dim][S]kip[/dim]"
+
+    return Panel(
+        table,
+        title=title,
+        subtitle=subtitle,
+        border_style=border_style,
+    )
+
+
+def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
+    """Handle a risky route approval request interactively.
+
+    Returns True if approved, False if denied/skipped.
+    """
+    details = event.get("details", {})
+    agent = event.get("agent", "unknown")
+    service = details.get("service", "unknown")
+    method = details.get("method", "")
+    path = details.get("path", details.get("risky_route", ""))
+    irreversible = details.get("irreversible", False)
+
+    # Show the request
+    console.print()
+    console.print(format_risky_route_approval(event))
+
+    # Get user input
+    while True:
+        try:
+            if irreversible:
+                response = console.input(
+                    "[bold]Type YES to approve, [red]d[/red] to deny, [dim]s[/dim] to skip: [/bold]"
+                ).strip()
+            else:
+                response = (
+                    console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+                )
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Interrupted[/dim]")
+            return False
+
+        if irreversible:
+            if response == "YES":
+                pass  # Fall through to approve
+            elif response.lower() in ("d", "deny", "n", "no"):
+                try:
+                    api.log_gateway_denial(agent=agent, service=service, method=method, path=path)
+                except APIError as e:
+                    console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
+                console.print(f"[red]Denied[/red] - {service} {method} {path}")
+                return False
+            elif response.lower() in ("s", "skip", ""):
+                console.print("[dim]Skipped[/dim]")
+                return False
+            else:
+                console.print("[dim]Type YES (exact) to approve irreversible route, d to deny, s to skip[/dim]")
+                continue
+        else:
+            if response in ("a", "approve", "y", "yes"):
+                pass  # Fall through to approve
+            elif response in ("d", "deny", "n", "no"):
+                try:
+                    api.log_gateway_denial(agent=agent, service=service, method=method, path=path)
+                except APIError as e:
+                    console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
+                console.print(f"[red]Denied[/red] - {service} {method} {path}")
+                return False
+            elif response in ("s", "skip", ""):
+                console.print("[dim]Skipped[/dim]")
+                return False
+            else:
+                console.print("[dim]Invalid input. Use: a(pprove), d(eny), s(kip)[/dim]")
+                continue
+
+        # Approve — add grant
+        try:
+            result = api.add_gateway_grant(
+                agent=agent,
+                service=service,
+                method=method,
+                path=path,
+                lifetime="once",
+            )
+            grant_id = result.get("grant_id", "?")
+            console.print(f"[green]Approved[/green] - {service} {method} {path} (grant {grant_id})")
+            return True
+        except APIError as e:
+            console.print(f"[red]API Error:[/red] {e}")
+            return False
 
 
 def handle_approval(event: dict, api: AdminAPI) -> bool:
@@ -480,12 +782,40 @@ def watch(
     console.print()
 
     # Track seen events to avoid duplicates
+    # For risky routes: value is denial count (0=approved/first-seen, 1=denied-once, 2+=suppressed)
     seen_fingerprints: set[str] = set()
+    denied_counts: dict[str, int] = {}  # dedup_key -> denial count
 
     # Rolling stats for status summaries (reuses existing RollingStats)
     stats = RollingStats()
     last_status_time = time.time()
     events_since_status = 0
+
+    # Startup scan: find unresolved approval requests and prompt immediately
+    if interactive and api:
+        pending = scan_pending_approvals(log_path)
+        if pending:
+            console.print(f"[bold yellow]{len(pending)} pending approval(s) from before this session:[/bold yellow]")
+            console.print()
+            for event in pending:
+                event_type = event.get("event", "")
+                if event_type == "gateway.risky_route":
+                    key = _risky_route_dedup_key(event)
+                    if key not in seen_fingerprints:
+                        seen_fingerprints.add(key)
+                        approved = handle_risky_route_approval(event, api)
+                        if approved:
+                            stats.mark_resolved(key)
+                else:
+                    # Credential approval
+                    approval = event.get("approval", {})
+                    key = f"{approval.get('key', '')}:{approval.get('target', '')}"
+                    if key not in seen_fingerprints:
+                        seen_fingerprints.add(key)
+                        approved = handle_approval(event, api)
+                        if approved:
+                            stats.mark_resolved(key)
+            console.print()
 
     try:
         for event in tail_jsonl(log_path, follow=follow):
@@ -521,6 +851,32 @@ def watch(
                         stats.mark_resolved(dedup_key)
                 else:
                     console.print(format_approval_request(event))
+
+            elif event.get("event") == "gateway.risky_route" and decision == "require_approval":
+                # Risky route approval — dedup on agent:service:method:path
+                # First denial allows one re-prompt; second denial suppresses for session
+                dedup_key = _risky_route_dedup_key(event)
+                prior_denials = denied_counts.get(dedup_key, 0)
+                if dedup_key in seen_fingerprints and prior_denials >= 2:
+                    continue  # Denied twice — suppressed
+                seen_fingerprints.add(dedup_key)
+
+                # Show status context before prompting
+                if events_since_status > 0:
+                    _print_interactive_status(stats)
+                    events_since_status = 0
+                    last_status_time = time.time()
+
+                if interactive and api:
+                    approved = handle_risky_route_approval(event, api)
+                    if approved:
+                        stats.mark_resolved(dedup_key)
+                        denied_counts.pop(dedup_key, None)
+                    else:
+                        denied_counts[dedup_key] = prior_denials + 1
+                else:
+                    _print_event_summary(event)
+
             elif decision == "allow":
                 # Suppress individual allow lines, aggregate in stats
                 events_since_status += 1
@@ -582,7 +938,7 @@ def _print_event_summary(event: dict) -> None:
     if ts:
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            timestamp_str = dt.strftime("%H:%M:%S")
+            timestamp_str = dt.astimezone().strftime("%H:%M:%S")
         except (ValueError, AttributeError):
             timestamp_str = ts[:19]
 
@@ -610,4 +966,6 @@ def _print_event_summary(event: dict) -> None:
                 summary_parts.append(f"{key}={event[key]}")
         summary = " ".join(summary_parts[:4])
 
-    console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {summary}")
+    from rich.markup import escape
+
+    console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {escape(summary)}")

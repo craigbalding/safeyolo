@@ -52,9 +52,10 @@ services:
       - {{ config_dir }}:/safeyolo
       - {{ logs_dir }}:/app/logs
 {% if dev %}
-      # Dev mode: live-edit source from host
+      # Dev mode: addons/, pdp/, and services/ mounted from repo
       - {{ repo_root }}/addons:/app/addons
       - {{ repo_root }}/pdp:/app/pdp
+      - {{ repo_root }}/config/services:/app/services
 {% endif %}
     environment:
       - SAFEYOLO_BLOCK=true
