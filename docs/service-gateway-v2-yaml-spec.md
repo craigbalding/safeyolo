@@ -492,3 +492,42 @@ This requires a tokenisation engine in the gateway (mapping real → synthetic
 values, consistent hashing) and de-tokenisation support for outbound
 requests where the agent sends synthetic values back. Significant scope —
 planned for a future version.
+
+### Response assertions (post-hoc anomaly detection)
+
+Path-based capability matching controls which routes an agent can call but
+cannot enforce payload constraints (e.g., "only operate on category 137").
+Request-side validation is fragile — a prompt-injected agent can encode,
+obfuscate, or creatively chain requests to defeat inspection. But the
+**response** is authoritative: the upstream API reports what actually happened.
+
+A future `response_assertions` field on capabilities:
+
+```yaml
+capabilities:
+  category_manager:
+    description: "Manage feeds in category 137"
+    routes: [...]
+    response_assertions:
+      - path: "$.category_id"
+        equals: 137
+      - path: "$.category.id"
+        equals: 137
+```
+
+The gateway inspects the upstream response body (JSON path extraction),
+checks each assertion, and emits a `gateway.assertion_failed` security
+event on mismatch. The response still reaches the agent — the request
+already executed — but the operator sees the anomaly immediately in watch.
+
+This is detection, not prevention: assume clean requests under normal
+operation, flag deviations as a signal that something unexpected happened.
+The cost is low (JSON path check on responses already in memory) and the
+signal is high (a scoped agent returning data from category 914 when it
+was scoped to 137 is always worth investigating).
+
+Assertions are per-capability, not per-route. They express "what does a
+normal response look like for this capability" rather than trying to
+enumerate attack patterns. Combined with risky route signals, this gives
+two layers: static route signals catch known-dangerous operations before
+they execute, response assertions catch unexpected outcomes after.

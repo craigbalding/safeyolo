@@ -177,6 +177,11 @@ class ContextBlock(BaseModel):
     task_id: str | None = Field(None, description="Task ID for task-scoped policies")
     session_id: str | None = Field(None, description="Session ID for continuity")
     project_id: str | None = Field(None, description="Project ID if distinct from principal")
+    # Gateway context (v2):
+    gateway_service: str | None = Field(None, description="Service name for gateway requests")
+    gateway_capability: str | None = Field(None, description="Capability name for gateway requests")
+    gateway_account: str | None = Field(None, description="Account persona (agent/operator/custom)")
+    gateway_risky_route: dict | None = Field(None, description="Serialized risky route signals")
 
 
 class HttpEvent(BaseModel):

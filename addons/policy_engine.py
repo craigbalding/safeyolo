@@ -69,6 +69,13 @@ class Condition(BaseModel):
     method: str | list[str] | None = None
     path_prefix: str | None = None
     content_type: str | None = None
+    # For gateway:risky_route
+    tactics: list[str] | None = None       # ANY-match against route tactics
+    enables: list[str] | None = None       # ANY-match against route enables
+    irreversible: bool | None = None       # exact match
+    account: str | list[str] | None = None # persona match
+    agent: str | None = None               # glob match
+    service: str | None = None             # glob match
 
     def _matches_credential(self, context: dict[str, Any]) -> bool:
         """Check if credential condition matches."""
@@ -112,13 +119,61 @@ class Condition(BaseModel):
         ctx_ct = context.get("content_type", "")
         return self.content_type in ctx_ct
 
+    def _matches_tactics(self, context: dict[str, Any]) -> bool:
+        """Check if any condition tactic is in the route's tactics (ANY-match)."""
+        if self.tactics is None:
+            return True
+        ctx_tactics = context.get("tactics", [])
+        return bool(set(self.tactics) & set(ctx_tactics))
+
+    def _matches_enables(self, context: dict[str, Any]) -> bool:
+        """Check if any condition enables is in the route's enables (ANY-match)."""
+        if self.enables is None:
+            return True
+        ctx_enables = context.get("enables", [])
+        return bool(set(self.enables) & set(ctx_enables))
+
+    def _matches_irreversible(self, context: dict[str, Any]) -> bool:
+        """Check if irreversible condition matches exactly."""
+        if self.irreversible is None:
+            return True
+        return context.get("irreversible", False) == self.irreversible
+
+    def _matches_account(self, context: dict[str, Any]) -> bool:
+        """Check if account persona matches."""
+        if self.account is None:
+            return True
+        ctx_account = context.get("account", "")
+        accounts = [self.account] if isinstance(self.account, str) else self.account
+        return ctx_account in accounts
+
+    def _matches_agent(self, context: dict[str, Any]) -> bool:
+        """Check if agent matches (glob)."""
+        if self.agent is None:
+            return True
+        ctx_agent = context.get("agent", "")
+        return fnmatch.fnmatch(ctx_agent, self.agent)
+
+    def _matches_service(self, context: dict[str, Any]) -> bool:
+        """Check if service matches (glob)."""
+        if self.service is None:
+            return True
+        ctx_service = context.get("service", "")
+        return fnmatch.fnmatch(ctx_service, self.service)
+
     def matches(self, context: dict[str, Any]) -> bool:
         """Check if all specified conditions match the context."""
         return (
             self._matches_credential(context) and
             self._matches_method(context) and
             self._matches_path_prefix(context) and
-            self._matches_content_type(context)
+            self._matches_content_type(context) and
+            self._matches_tactics(context) and
+            self._matches_enables(context) and
+            self._matches_irreversible(context) and
+            self._matches_account(context) and
+            self._matches_agent(context) and
+            self._matches_service(context)
         )
 
 
@@ -133,7 +188,7 @@ class Permission(BaseModel):
       - resource = destination pattern (e.g., "api.openai.com/*")
       - effect = budget means rate limiting
     """
-    action: Literal["credential:use", "network:request", "file:read", "file:write", "subprocess:exec"]
+    action: Literal["credential:use", "network:request", "file:read", "file:write", "subprocess:exec", "gateway:risky_route"]
     resource: str  # glob pattern for destination: "api.openai.com/*", "*.example.com/*"
     effect: Literal["allow", "deny", "prompt", "budget"] = "allow"
     budget: int | None = None  # Required if effect=budget (requests per minute)
@@ -306,6 +361,10 @@ class PolicyEngine:
 
         # Stats
         self._evaluations = 0
+
+    def add_reload_callback(self, callback) -> None:
+        """Register a callback to run after policy reloads."""
+        self._loader.add_reload_callback(callback)
 
     # -------------------------------------------------------------------------
     # Policy Access (delegated to loader)
@@ -555,6 +614,49 @@ class PolicyEngine:
         return PolicyDecision(
             effect=permission.effect,
             permission=permission,
+        )
+
+    def evaluate_risky_route(
+        self,
+        service: str,
+        agent: str,
+        account: str,
+        tactics: list[str],
+        enables: list[str],
+        irreversible: bool,
+        method: str = "GET",
+        path: str = "/",
+    ) -> PolicyDecision:
+        """Evaluate a risky route against gateway risk appetite rules.
+
+        Default (no matching rule) → effect="prompt" (fail safe — require approval).
+        """
+        self._evaluations += 1
+
+        context = {
+            "service": service,
+            "agent": agent,
+            "account": account,
+            "tactics": tactics,
+            "enables": enables,
+            "irreversible": irreversible,
+            "method": method,
+            "path": path,
+        }
+
+        permission = self._find_matching_permission("gateway:risky_route", "*", context)
+
+        if permission is None:
+            # Default fail-safe: require approval
+            return PolicyDecision(
+                effect="prompt",
+                reason=f"Risky route requires approval (no matching risk appetite rule)",
+            )
+
+        return PolicyDecision(
+            effect=permission.effect,
+            permission=permission,
+            reason=f"Risk appetite rule matched: {permission.effect}",
         )
 
     def _get_global_budget(self, action: str) -> int | None:

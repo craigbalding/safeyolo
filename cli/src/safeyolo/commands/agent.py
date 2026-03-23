@@ -1095,7 +1095,7 @@ def _load_policy_hosts() -> dict:
 def authorize(
     agent_name: str = typer.Argument(..., help="Agent instance name"),
     service_name: str = typer.Argument(..., help="Service to authorize"),
-    role: str = typer.Option(None, "--role", "-r", help="Role within the service"),
+    role: str = typer.Option(None, "--role", "-r", "--capability", help="Capability within the service"),
     token: str = typer.Option(None, "--token", help="Credential value (inline)"),
     token_file: Path = typer.Option(None, "--token-file", help="Read credential from file"),
     token_env: str = typer.Option(None, "--token-env", help="Read credential from environment variable"),
@@ -1103,12 +1103,12 @@ def authorize(
 ) -> None:
     """Authorize an agent to use a service.
 
-    Resolves the service, picks a role, stores the credential, and updates
+    Resolves the service, picks a capability, stores the credential, and updates
     agents.yaml. One command takes an agent from "no access" to "authorized."
 
     Examples:
 
-        safeyolo agent authorize boris gmail --role readonly --token-env GMAIL_TOKEN
+        safeyolo agent authorize boris gmail --capability read_and_send --token-env GMAIL_TOKEN
         safeyolo agent authorize boris slack --token-file ~/slack.key
         safeyolo agent authorize boris gmail --credential-name gmail-oauth2
     """
@@ -1126,40 +1126,43 @@ def authorize(
         console.print(f"[red]Error:[/red] Service '{escape(service_name)}' not found")
         raise typer.Exit(1)
 
-    roles = svc.get("roles", {})
-    if not roles:
-        console.print(f"[red]Error:[/red] Service '{escape(service_name)}' has no roles defined")
+    capabilities = svc.get("capabilities", {})
+    if not capabilities:
+        console.print(f"[red]Error:[/red] Service '{escape(service_name)}' has no capabilities defined")
         raise typer.Exit(1)
 
-    # 3. Resolve role
-    role_names = list(roles.keys())
+    # 3. Resolve capability
+    cap_names = list(capabilities.keys())
     if role:
-        if role not in roles:
-            console.print(f"[red]Error:[/red] Role '{escape(role)}' not found in {escape(service_name)}")
-            console.print(f"Available roles: {', '.join(escape(r) for r in role_names)}")
+        if role not in capabilities:
+            console.print(f"[red]Error:[/red] Capability '{escape(role)}' not found in {escape(service_name)}")
+            console.print(f"Available capabilities: {', '.join(escape(c) for c in cap_names)}")
             raise typer.Exit(1)
         selected_role = role
-    elif len(role_names) == 1:
-        selected_role = role_names[0]
-        console.print(f"Auto-selected role: [cyan]{escape(selected_role)}[/cyan]")
+    elif len(cap_names) == 1:
+        selected_role = cap_names[0]
+        console.print(f"Auto-selected capability: [cyan]{escape(selected_role)}[/cyan]")
     else:
-        console.print("Available roles:")
-        for i, rn in enumerate(role_names, 1):
-            console.print(f"  \\[{i}] {escape(rn)}")
-        choice = input("Select role [1]: ").strip()
+        console.print("Available capabilities:")
+        for i, cn in enumerate(cap_names, 1):
+            desc = capabilities[cn].get("description", "")
+            desc_str = f" — {escape(desc)}" if desc else ""
+            console.print(f"  \\[{i}] {escape(cn)}{desc_str}")
+        choice = input("Select capability [1]: ").strip()
         if not choice:
             choice = "1"
         try:
             idx = int(choice) - 1
-            if idx < 0 or idx >= len(role_names):
+            if idx < 0 or idx >= len(cap_names):
                 raise ValueError
-            selected_role = role_names[idx]
+            selected_role = cap_names[idx]
         except ValueError:
             console.print("[red]Error:[/red] Invalid selection")
             raise typer.Exit(1)
 
-    role_config = roles[selected_role]
-    auth_type = role_config.get("auth", {}).get("type", "bearer")
+    # Auth type comes from service-level auth (v1 schema)
+    auth_config = svc.get("auth", {})
+    auth_type = auth_config.get("type", "bearer")
 
     # 4. Resolve credential
     vault = None
@@ -1243,15 +1246,15 @@ def authorize(
 
     # 6. Write to agents.yaml
     services = metadata.setdefault("services", {})
-    services[service_name] = {"role": selected_role, "token": cred_name}
+    services[service_name] = {"capability": selected_role, "token": cred_name}
     save_agent(agent_name, metadata)
 
     esc_agent = escape(agent_name)
     esc_svc = escape(service_name)
-    esc_role = escape(selected_role)
+    esc_cap = escape(selected_role)
     esc_cred = escape(cred_name)
 
-    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (role={esc_role}, credential={esc_cred})")
+    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
 
     # 7. Check policy.yaml for host binding
     default_host = svc.get("default_host", "")

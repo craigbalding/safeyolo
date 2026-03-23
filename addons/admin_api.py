@@ -40,7 +40,6 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     addons_with_stats: dict = {}  # name -> addon instance
     admin_token = None  # Bearer token for authentication (set by AdminAPI)
 
-
     # Addons that support mode switching: name -> list of option names
     # All options use consistent "block" semantics: True=block, False=warn
     MODE_SWITCHABLE = {
@@ -82,18 +81,22 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return True
 
         client_ip = self._get_client_ip()
-        write_event("admin.auth_failure",
+        write_event(
+            "admin.auth_failure",
             kind=EventKind.ADMIN,
             severity=Severity.HIGH,
             summary=f"Auth failure from {_sanitize_log(client_ip)} on {_sanitize_log(self.path)}",
             addon="admin-api",
             details={"client_ip": client_ip, "path": self.path, "reason": "invalid_or_missing_token"},
         )
-        self._send_json({
-            "error": "Unauthorized",
-            "message": "Missing or invalid Bearer token",
-            "hint": "Add header: Authorization: Bearer <token>"
-        }, 401)
+        self._send_json(
+            {
+                "error": "Unauthorized",
+                "message": "Missing or invalid Bearer token",
+                "hint": "Add header: Authorization: Bearer <token>",
+            },
+            401,
+        )
         return False
 
     def _get_client_ip(self) -> str:
@@ -150,7 +153,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return None
 
         option_names = self.MODE_SWITCHABLE[addon_name]
-        option_value = (mode == "block")
+        option_value = mode == "block"
 
         try:
             for option_name in option_names:
@@ -212,22 +215,26 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
             for addon in addons_obj.chain:
                 if type(addon).__name__ == "ScriptLoader":
-                    debug_info["script_loader_dir"] = [x for x in dir(addon) if not x.startswith('_')]
-                    for attr in ['addons', 'scripts', 'script_paths', 'loaded']:
+                    debug_info["script_loader_dir"] = [x for x in dir(addon) if not x.startswith("_")]
+                    for attr in ["addons", "scripts", "script_paths", "loaded"]:
                         if hasattr(addon, attr):
                             val = getattr(addon, attr)
-                            if hasattr(val, '__iter__') and not isinstance(val, str):
+                            if hasattr(val, "__iter__") and not isinstance(val, str):
                                 items = []
                                 for item in val:
                                     item_info = {"type": type(item).__name__}
-                                    if hasattr(item, 'addons'):
+                                    if hasattr(item, "addons"):
                                         item_info["addons"] = [
-                                            {"type": type(a).__name__, "name": getattr(a, "name", None), "has_stats": hasattr(a, "get_stats")}
+                                            {
+                                                "type": type(a).__name__,
+                                                "name": getattr(a, "name", None),
+                                                "has_stats": hasattr(a, "get_stats"),
+                                            }
                                             for a in item.addons
                                         ]
-                                    if hasattr(item, 'path'):
+                                    if hasattr(item, "path"):
                                         item_info["path"] = str(item.path)
-                                    if hasattr(item, 'name'):
+                                    if hasattr(item, "name"):
                                         item_info["name"] = item.name
                                     items.append(item_info)
                                 debug_info[f"scriptloader_{attr}"] = items
@@ -237,6 +244,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         except Exception as e:
             import traceback
+
             debug_info["error"] = f"{type(e).__name__}: {e}"
             debug_info["traceback"] = traceback.format_exc()
         self._send_json(debug_info)
@@ -261,10 +269,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if baseline is None:
             self._send_json({"error": "No baseline policy loaded"}, 404)
             return
-        self._send_json({
-            "baseline": baseline,
-            "path": client.get_baseline_path()
-        })
+        self._send_json({"baseline": baseline, "path": client.get_baseline_path()})
 
     def _handle_get_policy_task(self, task_id: str) -> None:
         """GET /admin/policy/task/{id} - Read task policy."""
@@ -276,10 +281,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if task_policy is None:
             self._send_json({"error": f"Task policy '{task_id}' not found"}, 404)
             return
-        self._send_json({
-            "task_id": task_id,
-            "policy": task_policy
-        })
+        self._send_json({"task_id": task_id, "policy": task_policy})
 
     def _handle_get_budgets(self) -> None:
         """GET /admin/budgets - Current budget usage."""
@@ -307,6 +309,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/modes": self._handle_get_modes,
             "/admin/policy/baseline": self._handle_get_policy_baseline,
             "/admin/budgets": self._handle_get_budgets,
+            "/admin/gateway/grants": self._handle_get_gateway_grants,
         }
 
         if path in static_handlers:
@@ -337,6 +340,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         try:
             import yaml
+
             yaml.safe_load(data["content"])
             self._send_json({"valid": True})
         except yaml.YAMLError as e:
@@ -362,18 +366,15 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing 'cred_id' field"}, 400)
             return
 
-        result = client.add_credential_approval(
-            destination=destination,
-            cred_id=cred_id,
-            tier=tier
-        )
+        result = client.add_credential_approval(destination=destination, cred_id=cred_id, tier=tier)
 
         if result.get("status") == "error":
             self._send_json({"error": result.get("error")}, 400)
             return
 
         client_ip = self._get_client_ip()
-        write_event("admin.approval_added",
+        write_event(
+            "admin.approval_added",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Baseline approval added: {_sanitize_log(cred_id)} -> {_sanitize_log(destination)}",
@@ -384,13 +385,15 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         safe_destination = _sanitize_log(destination)
         log.info(f"Baseline approval added: {safe_cred_id} -> {safe_destination}")
 
-        self._send_json({
-            "status": "added",
-            "destination": destination,
-            "cred_id": cred_id,
-            "tier": tier,
-            "permission_count": result.get("permission_count", 1)
-        })
+        self._send_json(
+            {
+                "status": "added",
+                "destination": destination,
+                "cred_id": cred_id,
+                "tier": tier,
+                "permission_count": result.get("permission_count", 1),
+            }
+        )
 
     def _handle_post_baseline_deny(self) -> None:
         """POST /admin/policy/baseline/deny - Log credential denial."""
@@ -411,7 +414,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         client_ip = self._get_client_ip()
-        write_event("admin.denial",
+        write_event(
+            "admin.denial",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Credential denied: {_sanitize_log(cred_id)} -> {_sanitize_log(destination)}",
@@ -420,14 +424,115 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         safe_cred_id = _sanitize_log(cred_id)
         safe_destination = _sanitize_log(destination)
-        log.info(f"Credential denied: {safe_cred_id} -> {safe_destination} ({reason})")
+        log.info(f"Credential denied: {safe_cred_id} -> {safe_destination} ({_sanitize_log(reason)})")
 
-        self._send_json({
-            "status": "logged",
-            "destination": destination,
-            "cred_id": cred_id,
-            "reason": reason,
-        })
+        self._send_json(
+            {
+                "status": "logged",
+                "destination": destination,
+                "cred_id": cred_id,
+                "reason": reason,
+            }
+        )
+
+    def _handle_post_gateway_grant(self) -> None:
+        """POST /admin/gateway/grant - Add a risky route grant."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        agent = data.get("agent")
+        service = data.get("service")
+        method = data.get("method")
+        path = data.get("path")
+        lifetime = data.get("lifetime", "once")
+
+        if not all([agent, service, method, path]):
+            self._send_json({"error": "missing required fields: agent, service, method, path"}, 400)
+            return
+
+        if lifetime not in ("once", "session", "remembered"):
+            # Allow integer seconds as session alias
+            if isinstance(lifetime, int):
+                lifetime = "session"
+            else:
+                self._send_json({"error": "lifetime must be 'once', 'session', or 'remembered'"}, 400)
+                return
+
+        # Find the service gateway addon
+        gateway = self.addons_with_stats.get("service-gateway")
+        if not gateway or not hasattr(gateway, "add_grant"):
+            self._send_json({"error": "service gateway not available"}, 503)
+            return
+
+        grant = gateway.add_grant(
+            agent=agent,
+            service=service,
+            method=method,
+            path=path,
+            scope=lifetime,
+        )
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.gateway_grant",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Gateway grant added: {_sanitize_log(agent)}/{_sanitize_log(service)} {_sanitize_log(method)} {_sanitize_log(path)}",
+            addon="admin-api",
+            details={
+                "client_ip": client_ip,
+                "grant_id": grant.grant_id,
+                "agent": agent,
+                "service": service,
+                "method": method,
+                "path": path,
+                "scope": lifetime,
+            },
+        )
+
+        self._send_json(
+            {
+                "grant_id": grant.grant_id,
+                "status": "granted",
+            }
+        )
+
+    def _handle_get_gateway_grants(self) -> None:
+        """GET /admin/gateway/grants - List active grants."""
+        gateway = self.addons_with_stats.get("service-gateway")
+        if not gateway or not hasattr(gateway, "list_grants"):
+            self._send_json({"error": "service gateway not available"}, 503)
+            return
+
+        grants = gateway.list_grants()
+        self._send_json({"grants": grants})
+
+    def _handle_delete_gateway_grant(self, grant_id: str) -> None:
+        """DELETE /admin/gateway/grants/{id} - Revoke a grant."""
+        if not grant_id:
+            self._send_json({"error": "missing grant_id"}, 400)
+            return
+
+        gateway = self.addons_with_stats.get("service-gateway")
+        if not gateway or not hasattr(gateway, "revoke_grant"):
+            self._send_json({"error": "service gateway not available"}, 503)
+            return
+
+        if gateway.revoke_grant(grant_id):
+            client_ip = self._get_client_ip()
+            write_event(
+                "admin.gateway_grant_revoked",
+                kind=EventKind.ADMIN,
+                severity=Severity.MEDIUM,
+                summary=f"Gateway grant revoked: {_sanitize_log(grant_id)}",
+                addon="admin-api",
+                details={"client_ip": client_ip, "grant_id": grant_id},
+            )
+            self._send_json({"status": "revoked", "grant_id": grant_id})
+        else:
+            self._send_json({"error": f"grant '{grant_id}' not found"}, 404)
 
     def _handle_post_budgets_reset(self) -> None:
         """POST /admin/budgets/reset - Reset budget counters."""
@@ -445,7 +550,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         client_ip = self._get_client_ip()
         safe_resource = _sanitize_log(resource) if resource else "all"
-        write_event("admin.budgets_reset",
+        write_event(
+            "admin.budgets_reset",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Budget counters reset: {safe_resource}",
@@ -469,6 +575,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/baseline/approve": self._handle_post_baseline_approve,
             "/admin/policy/baseline/deny": self._handle_post_baseline_deny,
             "/admin/budgets/reset": self._handle_post_budgets_reset,
+            "/admin/gateway/grant": self._handle_post_gateway_grant,
         }
 
         if path in static_handlers:
@@ -496,7 +603,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         old_modes = self._get_all_modes()
         results = self._set_all_modes(mode)
         client_ip = self._get_client_ip()
-        write_event("admin.mode_change",
+        write_event(
+            "admin.mode_change",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"All addons mode changed to {mode}",
@@ -525,12 +633,18 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"addon '{addon_name}' not found or doesn't support mode switching"}, 404)
         else:
             client_ip = self._get_client_ip()
-            write_event("admin.mode_change",
+            write_event(
+                "admin.mode_change",
                 kind=EventKind.ADMIN,
                 severity=Severity.MEDIUM,
                 summary=f"{_sanitize_log(addon_name)} mode changed to {mode}",
                 addon="admin-api",
-                details={"client_ip": client_ip, "target_addon": addon_name, "old_mode": old_mode_value, "new_mode": mode},
+                details={
+                    "client_ip": client_ip,
+                    "target_addon": addon_name,
+                    "old_mode": old_mode_value,
+                    "new_mode": mode,
+                },
             )
             self._send_json(result)
 
@@ -561,7 +675,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             return
 
         client_ip = self._get_client_ip()
-        write_event("admin.baseline_update",
+        write_event(
+            "admin.baseline_update",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Baseline policy updated: {result.get('permission_count', 0)} permissions",
@@ -570,11 +685,13 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         log.info(f"Baseline policy updated: {result.get('permission_count', 0)} permissions")
 
-        self._send_json({
-            "status": "updated",
-            "permission_count": result.get("permission_count", 0),
-            "message": "Baseline policy updated"
-        })
+        self._send_json(
+            {
+                "status": "updated",
+                "permission_count": result.get("permission_count", 0),
+                "message": "Baseline policy updated",
+            }
+        )
 
     def _handle_put_policy_task(self, task_id: str) -> None:
         """PUT /admin/policy/task/{id} - Create/update task policy."""
@@ -604,7 +721,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         permission_count = result.get("permissions", result.get("permission_count", 0))
 
         client_ip = self._get_client_ip()
-        write_event("admin.task_policy_update",
+        write_event(
+            "admin.task_policy_update",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Task policy '{_sanitize_log(task_id)}' updated: {permission_count} permissions",
@@ -613,12 +731,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         log.info(f"Task policy '{_sanitize_log(task_id)}' updated: {permission_count} permissions")
 
-        self._send_json({
-            "status": "updated",
-            "task_id": task_id,
-            "permission_count": permission_count,
-            "message": "Task policy updated"
-        })
+        self._send_json(
+            {
+                "status": "updated",
+                "task_id": task_id,
+                "permission_count": permission_count,
+                "message": "Task policy updated",
+            }
+        )
 
     def do_PUT(self):
         """Handle PUT requests."""
@@ -655,6 +775,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if not self._require_auth():
             return None
 
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # Parameterized routes
+        if path.startswith("/admin/gateway/grants/"):
+            grant_id = path[len("/admin/gateway/grants/") :]
+            return self._handle_delete_gateway_grant(grant_id)
+
         self._send_json({"error": "not found"}, 404)
         return None
 
@@ -690,24 +818,25 @@ class AdminAPI:
     def configure(self, updates):
         """Handle configuration updates."""
         # Start server with delay to ensure mitmproxy is fully initialized
-        if self.server is None and not hasattr(self, '_start_scheduled'):
+        if self.server is None and not hasattr(self, "_start_scheduled"):
             self._start_scheduled = True
 
             def delayed_start():
                 import time
+
                 # Wait for mitmproxy to fully initialize
                 for attempt in range(10):
                     time.sleep(1)
                     if self.server is not None:
                         return  # Already started
-                    if hasattr(ctx, 'options') and hasattr(ctx, 'master'):
+                    if hasattr(ctx, "options") and hasattr(ctx, "master"):
                         try:
                             self._start_server()
                             return
                         except Exception as e:
-                            log.error(f"Admin server start attempt {attempt+1} failed: {type(e).__name__}: {e}")
+                            log.error(f"Admin server start attempt {attempt + 1} failed: {type(e).__name__}: {e}")
                     else:
-                        log.debug(f"Admin server waiting for ctx (attempt {attempt+1})")
+                        log.debug(f"Admin server waiting for ctx (attempt {attempt + 1})")
                 log.error("Admin server failed to start after 10 attempts")
 
             threading.Thread(target=delayed_start, daemon=True).start()
@@ -750,6 +879,7 @@ class AdminAPI:
             import sys
             import time
             import traceback
+
             while True:
                 try:
                     print(f"[admin_api] Server thread starting on port {port}", file=sys.stderr, flush=True)
@@ -767,7 +897,11 @@ class AdminAPI:
                         self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
                         print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
                     except Exception as restart_err:
-                        print(f"[admin_api] Restart FAILED: {type(restart_err).__name__}: {restart_err}", file=sys.stderr, flush=True)
+                        print(
+                            f"[admin_api] Restart FAILED: {type(restart_err).__name__}: {restart_err}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                         traceback.print_exc(file=sys.stderr)
                         break
 
@@ -784,11 +918,11 @@ class AdminAPI:
         """Find and wire up other addons."""
         discovered = {}
 
-        if not hasattr(ctx, 'master') or ctx.master is None:
+        if not hasattr(ctx, "master") or ctx.master is None:
             log.debug("Admin API: ctx.master not available, skipping addon discovery")
             return
 
-        addons_obj = getattr(ctx.master, 'addons', None)
+        addons_obj = getattr(ctx.master, "addons", None)
         if not addons_obj:
             return
 

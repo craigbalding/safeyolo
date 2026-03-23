@@ -272,6 +272,70 @@ data to complete tasks without accessing sensitive content. A future
 `response_policy` field on capabilities with consistent tokenisation
 (same input → same synthetic output) and redaction. See [YAML Spec](service-gateway-v2-yaml-spec.md#future-schema-extensions).
 
+### Passive fallback refinement (v2.0.1)
+
+The v2.0 watch always prompts on risky route blocks. The intended design
+(§2 above) distinguishes:
+
+- **Agent submitted request-access with reason** → approval prompt
+- **Agent hit route without requesting access** → informational line only
+
+This requires tracking pending access requests in the gateway and
+correlating them with block events in watch. Deferred to v2.0.1 after
+the core approval loop is validated.
+
+### Blackbox test suite for gateway grants
+
+End-to-end tests using the existing blackbox infrastructure (Docker
+Compose, sinkhole, admin API). Requires a test-specific service
+definition with a sinkhole-aliased host (e.g. `gateway-test.sinkhole`
+added as a network alias on the sinkhole container).
+
+**Test service setup:**
+- Service `test-gateway-svc` with auth type `api_key`, header `X-Auth-Token`
+- Capabilities: `reader` (GET routes), `manager` (GET + POST + PUT + DELETE)
+- Risky routes: POST (non-irreversible, tactics: `impact`),
+  DELETE (irreversible, tactics: `impact`)
+- Agent binding in test policy, vault credential, risk appetite rules
+
+**Grant lifecycle:**
+1. List grants on startup → empty
+2. Add grant → appears in list
+3. Revoke grant → removed from list
+4. Revoke nonexistent grant → 404
+5. Add grant with missing fields → 400
+6. Add grant with invalid lifetime → 400
+7. List after multiple adds → correct count
+8. Revoke one of many → only that one removed
+
+**Grant bypass — core flow:**
+9. Risky route without grant → 428, sinkhole receives nothing
+10. Add once-grant via admin API → retry → credential injected, sinkhole confirms
+11. Once-grant consumed after 2xx → next attempt 428 again
+12. Once-grant survives non-2xx (upstream 404/500) → retry still passes
+
+**Scope variants:**
+13. Session grant survives multiple 2xx responses
+14. Remembered grant survives multiple 2xx responses
+
+**Grant specificity:**
+15. Grant for `/v1/items/123` does not cover `/v1/items/456`
+16. Grant for DELETE does not cover PUT on same path
+17. Grant for service A does not affect service B
+
+**Non-risky routes unaffected:**
+18. Safe GET route works with no grant
+19. Grant existence does not interfere with normal capability routing
+
+**Risk appetite interaction:**
+20. Non-irreversible risky route allowed by risk appetite → passes without grant
+21. Irreversible risky route blocked by risk appetite → 428, needs grant
+
+**State isolation:**
+22. Multiple grants coexist for different routes
+23. Consuming one grant does not affect others
+24. Grant for one agent does not cover another agent
+
 ### Posture dashboard
 
 `safeyolo status` shows per-service security posture:

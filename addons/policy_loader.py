@@ -79,7 +79,9 @@ class PolicyLoader:
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path
-        self._on_reload = on_reload
+        self._on_reload_callbacks: list[Callable[[], None]] = []
+        if on_reload:
+            self._on_reload_callbacks.append(on_reload)
 
         # Policies
         self._baseline: UnifiedPolicy = UnifiedPolicy()
@@ -243,8 +245,11 @@ class PolicyLoader:
                 details={"policy_type": "baseline", "permissions_count": len(self._baseline.permissions)},
             )
 
-            if self._on_reload:
-                self._on_reload()
+            for cb in self._on_reload_callbacks:
+                try:
+                    cb()
+                except Exception as e:
+                    log.warning("Reload callback error: %s", e)
 
             return True
 
@@ -293,8 +298,11 @@ class PolicyLoader:
                 },
             )
 
-            if self._on_reload:
-                self._on_reload()
+            for cb in self._on_reload_callbacks:
+                try:
+                    cb()
+                except Exception as e:
+                    log.warning("Reload callback error: %s", e)
 
             return True
 
@@ -308,6 +316,10 @@ class PolicyLoader:
             self._task_policy = None
             self._task_policy_path = None
             log.info("Cleared task policy")
+
+    def add_reload_callback(self, callback: Callable[[], None]) -> None:
+        """Register a callback to run after policy reloads."""
+        self._on_reload_callbacks.append(callback)
 
     def start_watcher(self) -> None:
         """Start background file watcher."""
