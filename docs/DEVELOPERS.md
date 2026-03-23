@@ -141,6 +141,13 @@ The simplest integration is tailing the JSONL log file. Every security decision 
 | `security.circuit` | Circuit breaker state change |
 | `traffic.request` | Request logged |
 | `traffic.response` | Response logged |
+| `gateway.allow` | Service gateway allowed a request (capability match) |
+| `gateway.deny` | Service gateway denied a request (no matching capability) |
+| `gateway.risky_route` | Request matched a risky route, PDP evaluated |
+| `gateway.grant_added` | Operator approved a grant for a risky route |
+| `gateway.grant_consumed` | Once-grant consumed after successful (2xx) response |
+| `gateway.grant_expired` | Grant expired (TTL exceeded) |
+| `gateway.grant_revoked` | Grant revoked by operator |
 | `admin.policy_write` | Policy file updated |
 | `admin.approval_added` | Approval rule added |
 | `admin.mode_change` | Addon mode changed |

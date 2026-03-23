@@ -9,7 +9,7 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ├── config.yaml          # Proxy settings
 ├── policy.yaml          # Policy: hosts, credentials, rate limits
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
-├── agents.yaml          # Machine-managed agent metadata (services, roles, vault references)
+├── agents.yaml          # Machine-managed agent metadata (services, capabilities, grants)
 ├── services/            # User service definitions (override builtin services)
 ├── certs/               # CA certificate for HTTPS inspection
 ├── logs/                # Audit logs (safeyolo.jsonl)
@@ -106,7 +106,16 @@ boris:
   template: claude-code
   folder: /home/user/my-project
   services:
-    gmail: { role: readonly, token: gmail-cred }
+    gmail: { capability: read_and_send, token: gmail-cred, account: operator }
+    minifuse: { capability: reader, token: minifuse-key }
+  grants:
+    - grant_id: grt_abc123
+      service: minifuse
+      method: DELETE
+      path: /v1/feeds/999
+      scope: once
+      created: 2026-03-23T17:52:04Z
+      expires: 2026-03-23T18:52:04Z
   mounts:
     - /home/user/data:/data:ro
   ports:
@@ -116,34 +125,50 @@ boris:
 Notes:
 - The CLI writes `agents.yaml`; it never touches `policy.yaml`.
 - The policy loader merges all sibling files (`policy.yaml` + `addons.yaml` + `agents.yaml`) at load time.
+- Service bindings use `capability:` (not `role:`). The `account:` field declares whose account the credential belongs to (`agent`, `operator`, or a custom label).
+- The `grants:` section tracks operator-approved one-time or session grants for risky routes. Once-grants are consumed after a successful (2xx) response. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in policy.yaml.
 - If you want to hand-manage agents, move the section into `policy.yaml` and delete `agents.yaml`.
 - `safeyolo policy show` displays the merged result.
 
 ## Service Definitions
 
-Service definitions describe APIs: auth methods, route whitelists per role. They are used by the service gateway to enforce per-agent access control.
+Service definitions describe APIs: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). They are used by the service gateway to enforce per-agent access control.
 
 - Builtin services ship with SafeYolo (gmail, slack, etc.) in `config/services/`.
 - User overrides go in `~/.safeyolo/services/`.
 - The `service:` field in `policy.yaml` host entries links a host to a service definition.
 
-Example service YAML:
+Example service YAML (v2 format):
 
 ```yaml
-name: gmail
-description: Gmail API
-default_host: gmail.googleapis.com
-roles:
-  readonly:
-    auth: { type: bearer, refresh_on_401: true }
+schema_version: 1
+name: minifuse
+auth:
+  type: api_key
+  header: X-Auth-Token
+capabilities:
+  reader:
+    description: "Read-only access to feeds and entries"
     routes:
-      - { effect: allow, methods: [GET], path: "/*" }
-      - { effect: deny, methods: [POST, PUT, DELETE, PATCH], path: "/*" }
-  sender:
-    auth: { type: bearer, refresh_on_401: true }
+      - methods: [GET]
+        path: "/v1/feeds"
+      - methods: [GET]
+        path: "/v1/feeds/*"
+risky_routes:
+  - group: "Feed management"
+    tactics: [impact]
     routes:
-      - { effect: allow, path: "/*" }
+      - path: "/v1/feeds/*"
+        methods: [DELETE]
+        description: "Delete feed — permanently removes feed and all its entries"
+        irreversible: true
 ```
+
+Key v2 changes from v1:
+- **Capabilities** replace roles. Capability routes are a positive list (no `effect: allow/deny`).
+- **Risky routes** replace deny rules. Tagged with ATT&CK `tactics`, `enables`, and `irreversible` signals.
+- **Auth** is defined at service level (not per-role).
+- **Risk appetite** rules in `policy.yaml` (`gateway:` section) determine which risky routes require operator approval based on tactics, account persona, and irreversibility.
 
 ## Vault
 
