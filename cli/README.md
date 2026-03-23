@@ -78,11 +78,13 @@ safeyolo doctor --fix       # Attempt to fix problems automatically
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo watch` | Monitor logs and handle approval requests interactively |
+| `safeyolo watch` | Monitor logs and handle credential + risky route approval requests interactively |
 | `safeyolo watch --log-only` | Display events without prompts |
 | `safeyolo watch --tmux` | Optimized for tmux status bar integration |
 | `safeyolo policies` | List approval policies |
 | `safeyolo policies <project>` | Show policy details |
+
+Watch handles both credential routing approvals and risky route grant approvals. On startup, it scans for pending approvals so nothing is missed. Route-based dedup prevents repeated prompts for the same route. Denied requests get a second-chance prompt before final rejection.
 
 ### Configuration
 
@@ -147,14 +149,14 @@ safeyolo agent run myproject --fresh
 
 ### Service Gateway
 
-Authorize agents to access external services through the gateway. Services are defined in YAML under `services/` and describe a host, available roles, and route patterns.
+Authorize agents to access external services through the gateway. Services are defined in YAML under `services/` and describe a host, available capabilities, risky routes (with ATT&CK tactics), and auth configuration.
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo agent authorize <agent> <service>` | Authorize an agent to use a service |
+| `safeyolo agent authorize <agent> <service>` | Authorize an agent to use a service (with `--capability`) |
 | `safeyolo agent revoke <agent> <service>` | Revoke service access for an agent |
 | `safeyolo services list` | List available service definitions |
-| `safeyolo services show <name>` | Show service details (host, roles, routes) |
+| `safeyolo services show <name>` | Show service details (host, capabilities, risky routes) |
 
 **Example flow:**
 
@@ -162,8 +164,8 @@ Authorize agents to access external services through the gateway. Services are d
 # List available services
 safeyolo services list
 
-# Authorize the agent to use the github service
-safeyolo agent authorize myproject github
+# Authorize the agent to use the github service with a specific capability
+safeyolo agent authorize myproject github --capability create_pr
 
 # Verify the policy was updated
 safeyolo policy show --section hosts
@@ -281,7 +283,7 @@ safeyolo/
 ├── config.yaml          # Main configuration
 ├── policy.yaml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
-├── agents.yaml          # Machine-managed agent metadata (services, roles, credentials)
+├── agents.yaml          # Machine-managed agent metadata (services, capabilities, grants)
 ├── docker-compose.yml   # Generated compose file
 ├── services/            # User service definitions (one YAML per service)
 ├── logs/                # Audit logs (safeyolo.jsonl)

@@ -62,12 +62,21 @@ If you've already authenticated on your host (via `claude` or `codex`), credenti
 
 ## Approval Workflow
 
-When SafeYolo blocks a credential heading to an unexpected destination:
+SafeYolo requires operator approval for two types of events:
+
+**Credential routing** — when a credential heads to an unexpected destination:
 
 1. Agent gets HTTP 428 with details
 2. You see the event in `safeyolo watch`
 3. Approve or deny interactively
 4. Approved credentials are remembered
+
+**Risky route approval** — when an agent calls a service gateway route tagged as risky (e.g., deleting data, modifying forwarding rules):
+
+1. Agent gets HTTP 428 with reflection prompt
+2. You see the route details, ATT&CK tactics, and risk signals in `safeyolo watch`
+3. Approve a one-time grant (consumed after a successful response) or deny
+4. Grant bypasses PDP for that specific method + path
 
 ```
 $ safeyolo watch
@@ -85,11 +94,11 @@ $ safeyolo watch
 
 ## Service Gateway
 
-Agents can call external APIs (Gmail, Slack, etc.) without ever seeing the real credentials. SafeYolo stores tokens in its vault and injects them at the proxy layer.
+Agents can call external APIs (Gmail, Slack, etc.) without ever seeing the real credentials. SafeYolo stores tokens in its vault and injects them at the proxy layer. Risky routes (tagged with ATT&CK tactics like `exfiltration` or `impact`) require operator approval via `safeyolo watch`.
 
 ```bash
-# Authorize an agent to access Gmail (stores credential in vault)
-safeyolo agent authorize boris gmail --role readonly --token-env GMAIL_TOKEN
+# Authorize an agent to access Gmail with a specific capability
+safeyolo agent authorize boris gmail --capability read_and_send --token-env GMAIL_TOKEN
 
 # See the merged policy
 safeyolo policy show --section agents
