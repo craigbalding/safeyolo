@@ -50,8 +50,10 @@ log = logging.getLogger("safeyolo.policy-engine")
 # Pydantic Models
 # =============================================================================
 
+
 class PolicyMetadata(BaseModel):
     """Policy file metadata."""
+
     version: str = "1.0"
     task_id: str | None = None
     description: str | None = None
@@ -63,6 +65,7 @@ class PolicyMetadata(BaseModel):
 
 class Condition(BaseModel):
     """Optional conditions for permission matching."""
+
     # For credential:use - what credentials can access this destination
     credential: str | list[str] | None = None  # e.g., ["openai:*", "hmac:a1b2c3"]
     # For network:request
@@ -70,12 +73,12 @@ class Condition(BaseModel):
     path_prefix: str | None = None
     content_type: str | None = None
     # For gateway:risky_route
-    tactics: list[str] | None = None       # ANY-match against route tactics
-    enables: list[str] | None = None       # ANY-match against route enables
-    irreversible: bool | None = None       # exact match
-    account: str | list[str] | None = None # persona match
-    agent: str | None = None               # glob match
-    service: str | None = None             # glob match
+    tactics: list[str] | None = None  # ANY-match against route tactics
+    enables: list[str] | None = None  # ANY-match against route enables
+    irreversible: bool | None = None  # exact match
+    account: str | list[str] | None = None  # persona match
+    agent: str | None = None  # glob match
+    service: str | None = None  # glob match
 
     def _matches_credential(self, context: dict[str, Any]) -> bool:
         """Check if credential condition matches."""
@@ -164,16 +167,16 @@ class Condition(BaseModel):
     def matches(self, context: dict[str, Any]) -> bool:
         """Check if all specified conditions match the context."""
         return (
-            self._matches_credential(context) and
-            self._matches_method(context) and
-            self._matches_path_prefix(context) and
-            self._matches_content_type(context) and
-            self._matches_tactics(context) and
-            self._matches_enables(context) and
-            self._matches_irreversible(context) and
-            self._matches_account(context) and
-            self._matches_agent(context) and
-            self._matches_service(context)
+            self._matches_credential(context)
+            and self._matches_method(context)
+            and self._matches_path_prefix(context)
+            and self._matches_content_type(context)
+            and self._matches_tactics(context)
+            and self._matches_enables(context)
+            and self._matches_irreversible(context)
+            and self._matches_account(context)
+            and self._matches_agent(context)
+            and self._matches_service(context)
         )
 
 
@@ -188,7 +191,10 @@ class Permission(BaseModel):
       - resource = destination pattern (e.g., "api.openai.com/*")
       - effect = budget means rate limiting
     """
-    action: Literal["credential:use", "network:request", "file:read", "file:write", "subprocess:exec", "gateway:risky_route"]
+
+    action: Literal[
+        "credential:use", "network:request", "file:read", "file:write", "subprocess:exec", "gateway:risky_route"
+    ]
     resource: str  # glob pattern for destination: "api.openai.com/*", "*.example.com/*"
     effect: Literal["allow", "deny", "prompt", "budget"] = "allow"
     budget: int | None = None  # Required if effect=budget (requests per minute)
@@ -209,12 +215,11 @@ class CredentialRule(BaseModel):
     Defines patterns for detecting credential types and where they can be routed.
     Used by credential_guard for detection and policy evaluation for routing.
     """
+
     name: str  # e.g., "openai", "anthropic", "github"
     patterns: list[str]  # Regex patterns for detection
     allowed_hosts: list[str]  # Where this credential can go
-    header_names: list[str] = Field(
-        default_factory=lambda: ["authorization", "x-api-key"]
-    )
+    header_names: list[str] = Field(default_factory=lambda: ["authorization", "x-api-key"])
     suggested_url: str = ""  # Hint for error messages
 
 
@@ -224,6 +229,7 @@ class ScanPattern(BaseModel):
     Defines patterns for detecting sensitive content in URLs, headers, or bodies.
     Used by pattern_scanner to block or log matching content.
     """
+
     name: str
     pattern: str  # Regex pattern
     target: Literal["request", "response", "both"] = "both"
@@ -236,6 +242,7 @@ class ScanPattern(BaseModel):
 
 class AddonConfig(BaseModel):
     """Configuration for a single addon."""
+
     enabled: bool = True
     settings: dict[str, Any] = Field(default_factory=dict)
 
@@ -245,6 +252,7 @@ class AddonConfig(BaseModel):
 
 class DomainOverride(BaseModel):
     """Domain or client-specific policy override."""
+
     bypass: list[str] = Field(default_factory=list)
     addons: dict[str, AddonConfig] = Field(default_factory=dict)
 
@@ -259,6 +267,7 @@ class UnifiedPolicy(BaseModel):
     - budgets: Global rate limit caps
     - addons: Addon-specific configuration
     """
+
     metadata: PolicyMetadata = Field(default_factory=PolicyMetadata)
     permissions: list[Permission] = Field(default_factory=list)
     budgets: dict[str, int] = Field(default_factory=dict)  # Global budget caps
@@ -283,9 +292,11 @@ class UnifiedPolicy(BaseModel):
 # Decision Types
 # =============================================================================
 
+
 @dataclass
 class PolicyDecision:
     """Result of policy evaluation."""
+
     effect: Literal["allow", "deny", "prompt", "budget_exceeded"]
     permission: Permission | None = None  # Matched permission (if any)
     reason: str = ""
@@ -295,6 +306,7 @@ class PolicyDecision:
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
 
 def _matches_pattern(value: str, pattern: str) -> bool:
     """Check if value matches pattern (supports glob wildcards)."""
@@ -330,6 +342,7 @@ def _specificity_score(pattern: str) -> int:
 # =============================================================================
 # Policy Engine
 # =============================================================================
+
 
 class PolicyEngine:
     """
@@ -517,9 +530,7 @@ class PolicyEngine:
         # Handle budget effect
         if permission.effect == "budget":
             budget_key = f"credential:use:{destination}:{credential_type}"
-            allowed, remaining = self._budget_tracker.check_and_consume(
-                budget_key, permission.budget
-            )
+            allowed, remaining = self._budget_tracker.check_and_consume(budget_key, permission.budget)
             if not allowed:
                 return PolicyDecision(
                     effect="budget_exceeded",
@@ -578,17 +589,13 @@ class PolicyEngine:
         # Handle budget effect
         if permission.effect == "budget":
             budget_key = f"network:request:{host}"
-            allowed, remaining = self._budget_tracker.check_and_consume(
-                budget_key, permission.budget
-            )
+            allowed, remaining = self._budget_tracker.check_and_consume(budget_key, permission.budget)
 
             # Also check global budget
             global_budget = self._get_global_budget("network:request")
             if global_budget:
                 global_key = "network:request:__global__"
-                global_allowed, _ = self._budget_tracker.check_and_consume(
-                    global_key, global_budget
-                )
+                global_allowed, _ = self._budget_tracker.check_and_consume(global_key, global_budget)
                 if not global_allowed:
                     return PolicyDecision(
                         effect="budget_exceeded",
@@ -650,7 +657,7 @@ class PolicyEngine:
             # Default fail-safe: require approval
             return PolicyDecision(
                 effect="prompt",
-                reason=f"Risky route requires approval (no matching risk appetite rule)",
+                reason="Risky route requires approval (no matching risk appetite rule)",
             )
 
         return PolicyDecision(
@@ -868,18 +875,26 @@ class PolicyEngine:
         if resource:
             self._budget_tracker.reset(resource)
             log.info(f"Reset policy budget for: {resource}")
-            write_event("admin.budget_reset",
-                kind=EventKind.ADMIN, severity=Severity.MEDIUM,
+            write_event(
+                "admin.budget_reset",
+                kind=EventKind.ADMIN,
+                severity=Severity.MEDIUM,
                 summary=f"Budget reset for {sanitize_for_log(resource)}",
-                addon="policy-engine", details={"resource": resource})
+                addon="policy-engine",
+                details={"resource": resource},
+            )
             return {"status": "reset", "resource": resource}
         else:
             self._budget_tracker.reset_all()
             log.info("Reset all policy budgets")
-            write_event("admin.budget_reset",
-                kind=EventKind.ADMIN, severity=Severity.MEDIUM,
+            write_event(
+                "admin.budget_reset",
+                kind=EventKind.ADMIN,
+                severity=Severity.MEDIUM,
                 summary="All budgets reset",
-                addon="policy-engine", details={"resource": "all"})
+                addon="policy-engine",
+                details={"resource": "all"},
+            )
             return {"status": "reset", "resource": "all"}
 
     # -------------------------------------------------------------------------
@@ -1157,9 +1172,7 @@ class PolicyEngine:
             )
 
             baseline_path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.yaml', dir=baseline_path.parent, delete=False
-            ) as tmp:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", dir=baseline_path.parent, delete=False) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
 
@@ -1194,6 +1207,7 @@ class PolicyEngine:
 #
 # This is the ONLY place PolicyClient should be configured in mitmproxy mode.
 # =============================================================================
+
 
 class PolicyClientConfigurator:
     """
@@ -1234,8 +1248,7 @@ class PolicyClientConfigurator:
         budget_path = ctx.options.policy_budget_state
 
         # Skip if nothing changed (smart reconfigure)
-        if (baseline_path == self._configured_baseline and
-            budget_path == self._configured_budget):
+        if baseline_path == self._configured_baseline and budget_path == self._configured_budget:
             return
 
         # Build config with paths from mitmproxy options
@@ -1255,12 +1268,13 @@ class PolicyClientConfigurator:
             extra={
                 "baseline_path": baseline_path,
                 "budget_state_path": budget_path,
-            }
+            },
         )
 
     def done(self):
         """Cleanup on shutdown."""
         from pdp import reset_policy_client
+
         reset_policy_client()
 
     def get_stats(self) -> dict:

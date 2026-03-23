@@ -2,7 +2,6 @@
 
 import pytest
 from service_loader import (
-    AuthConfig,
     Capability,
     CapabilityRoute,
     RiskyRoute,
@@ -108,21 +107,27 @@ class TestCapabilityRoute:
 
 class TestCapability:
     def test_from_dict_minimal(self):
-        cap = Capability.from_dict("reader", {
-            "description": "Read-only",
-            "routes": [{"methods": ["GET"], "path": "/v1/**"}],
-        })
+        cap = Capability.from_dict(
+            "reader",
+            {
+                "description": "Read-only",
+                "routes": [{"methods": ["GET"], "path": "/v1/**"}],
+            },
+        )
         assert cap.name == "reader"
         assert cap.description == "Read-only"
         assert len(cap.routes) == 1
         assert cap.scopes == []
 
     def test_from_dict_with_scopes(self):
-        cap = Capability.from_dict("writer", {
-            "description": "Write access",
-            "scopes": ["write", "admin"],
-            "routes": [{"methods": ["GET", "POST"], "path": "/v1/**"}],
-        })
+        cap = Capability.from_dict(
+            "writer",
+            {
+                "description": "Write access",
+                "scopes": ["write", "admin"],
+                "routes": [{"methods": ["GET", "POST"], "path": "/v1/**"}],
+            },
+        )
         assert cap.scopes == ["write", "admin"]
 
     def test_from_dict_no_routes(self):
@@ -132,14 +137,16 @@ class TestCapability:
 
 class TestRiskyRoute:
     def test_from_dict_standalone(self):
-        route = RiskyRoute.from_dict({
-            "path": "/api/delete/**",
-            "methods": ["DELETE"],
-            "description": "Delete endpoint",
-            "tactics": ["impact"],
-            "enables": ["defense_evasion"],
-            "irreversible": True,
-        })
+        route = RiskyRoute.from_dict(
+            {
+                "path": "/api/delete/**",
+                "methods": ["DELETE"],
+                "description": "Delete endpoint",
+                "tactics": ["impact"],
+                "enables": ["defense_evasion"],
+                "irreversible": True,
+            }
+        )
         assert route.path == "/api/delete/**"
         assert route.methods == ["DELETE"]
         assert route.tactics == ["impact"]
@@ -176,29 +183,38 @@ class TestRiskyRoute:
             "tactics": ["exfiltration", "persistence"],
             "enables": ["credential_access"],
         }
-        route = RiskyRoute.from_dict({
-            "path": "/api/test",
-            "tactics": ["impact"],
-            "enables": ["defense_evasion"],
-        }, group_defaults)
+        route = RiskyRoute.from_dict(
+            {
+                "path": "/api/test",
+                "tactics": ["impact"],
+                "enables": ["defense_evasion"],
+            },
+            group_defaults,
+        )
         # Union: group first, then route
         assert route.tactics == ["exfiltration", "persistence", "impact"]
         assert route.enables == ["credential_access", "defense_evasion"]
 
     def test_group_defaults_tactics_dedup(self):
         group_defaults = {"group": "G", "tactics": ["impact"]}
-        route = RiskyRoute.from_dict({
-            "path": "/api/test",
-            "tactics": ["impact", "collection"],
-        }, group_defaults)
+        route = RiskyRoute.from_dict(
+            {
+                "path": "/api/test",
+                "tactics": ["impact", "collection"],
+            },
+            group_defaults,
+        )
         assert route.tactics == ["impact", "collection"]
 
     def test_route_overrides_group_irreversible(self):
         group_defaults = {"group": "G", "irreversible": True}
-        route = RiskyRoute.from_dict({
-            "path": "/api/trash",
-            "irreversible": False,
-        }, group_defaults)
+        route = RiskyRoute.from_dict(
+            {
+                "path": "/api/trash",
+                "irreversible": False,
+            },
+            group_defaults,
+        )
         assert route.irreversible is False
 
     def test_route_inherits_group_irreversible_when_not_set(self):
@@ -208,10 +224,13 @@ class TestRiskyRoute:
 
     def test_route_overrides_group_description(self):
         group_defaults = {"group": "G", "description": "Group desc"}
-        route = RiskyRoute.from_dict({
-            "path": "/api/test",
-            "description": "Route desc",
-        }, group_defaults)
+        route = RiskyRoute.from_dict(
+            {
+                "path": "/api/test",
+                "description": "Route desc",
+            },
+            group_defaults,
+        )
         assert route.description == "Route desc"
 
     def test_route_inherits_group_description(self):
@@ -226,17 +245,19 @@ class TestRiskyRoute:
 
 class TestRiskyRouteGroup:
     def test_from_dict(self):
-        grp = RiskyRouteGroup.from_dict({
-            "group": "Mail routing",
-            "description": "Controls email routing",
-            "tactics": ["exfiltration", "persistence"],
-            "enables": ["defense_evasion"],
-            "irreversible": False,
-            "routes": [
-                {"path": "/settings/filters/**", "description": "Filters"},
-                {"path": "/settings/forwarding/**", "methods": ["POST"]},
-            ],
-        })
+        grp = RiskyRouteGroup.from_dict(
+            {
+                "group": "Mail routing",
+                "description": "Controls email routing",
+                "tactics": ["exfiltration", "persistence"],
+                "enables": ["defense_evasion"],
+                "irreversible": False,
+                "routes": [
+                    {"path": "/settings/filters/**", "description": "Filters"},
+                    {"path": "/settings/forwarding/**", "methods": ["POST"]},
+                ],
+            }
+        )
         assert grp.group == "Mail routing"
         assert grp.tactics == ["exfiltration", "persistence"]
         assert len(grp.routes) == 2
@@ -247,10 +268,12 @@ class TestRiskyRouteGroup:
         assert grp.routes[1].description == "Controls email routing"  # inherits
 
     def test_from_dict_minimal(self):
-        grp = RiskyRouteGroup.from_dict({
-            "group": "test",
-            "routes": [{"path": "/test"}],
-        })
+        grp = RiskyRouteGroup.from_dict(
+            {
+                "group": "test",
+                "routes": [{"path": "/test"}],
+            }
+        )
         assert grp.group == "test"
         assert grp.description == ""
         assert grp.tactics == []
@@ -261,19 +284,21 @@ class TestRiskyRouteGroup:
 
 class TestServiceDefinition:
     def test_from_dict_v2(self):
-        svc = ServiceDefinition.from_dict({
-            "schema_version": 1,
-            "name": "test",
-            "description": "Test service",
-            "default_host": "api.test.com",
-            "auth": {"type": "bearer"},
-            "capabilities": {
-                "reader": {
-                    "description": "Read-only",
-                    "routes": [{"methods": ["GET"], "path": "/v1/**"}],
+        svc = ServiceDefinition.from_dict(
+            {
+                "schema_version": 1,
+                "name": "test",
+                "description": "Test service",
+                "default_host": "api.test.com",
+                "auth": {"type": "bearer"},
+                "capabilities": {
+                    "reader": {
+                        "description": "Read-only",
+                        "routes": [{"methods": ["GET"], "path": "/v1/**"}],
+                    },
                 },
-            },
-        })
+            }
+        )
         assert svc.name == "test"
         assert svc.schema_version == 1
         assert svc.auth is not None
@@ -284,50 +309,58 @@ class TestServiceDefinition:
 
     def test_rejects_missing_schema_version(self):
         with pytest.raises(ValueError, match="schema_version"):
-            ServiceDefinition.from_dict({
-                "name": "test",
-                "auth": {"type": "bearer"},
-            })
+            ServiceDefinition.from_dict(
+                {
+                    "name": "test",
+                    "auth": {"type": "bearer"},
+                }
+            )
 
     def test_rejects_unknown_schema_version(self):
         with pytest.raises(ValueError, match="schema_version"):
-            ServiceDefinition.from_dict({
-                "schema_version": 99,
-                "name": "test",
-            })
+            ServiceDefinition.from_dict(
+                {
+                    "schema_version": 99,
+                    "name": "test",
+                }
+            )
 
     def test_from_dict_with_risky_routes(self):
-        svc = ServiceDefinition.from_dict({
-            "schema_version": 1,
-            "name": "test",
-            "auth": {"type": "bearer"},
-            "risky_routes": [
-                {
-                    "group": "Admin",
-                    "tactics": ["privilege_escalation"],
-                    "routes": [
-                        {"path": "/admin/**"},
-                        {"path": "/admin/delete", "methods": ["DELETE"]},
-                    ],
-                },
-                {
-                    "path": "/api/delete",
-                    "methods": ["DELETE"],
-                    "tactics": ["impact"],
-                    "irreversible": True,
-                },
-            ],
-        })
+        svc = ServiceDefinition.from_dict(
+            {
+                "schema_version": 1,
+                "name": "test",
+                "auth": {"type": "bearer"},
+                "risky_routes": [
+                    {
+                        "group": "Admin",
+                        "tactics": ["privilege_escalation"],
+                        "routes": [
+                            {"path": "/admin/**"},
+                            {"path": "/admin/delete", "methods": ["DELETE"]},
+                        ],
+                    },
+                    {
+                        "path": "/api/delete",
+                        "methods": ["DELETE"],
+                        "tactics": ["impact"],
+                        "irreversible": True,
+                    },
+                ],
+            }
+        )
         # Flat routes: 2 from group + 1 ungrouped
         assert len(svc.risky_routes) == 3
         assert len(svc.risky_route_groups) == 1
         assert svc.risky_route_groups[0].group == "Admin"
 
     def test_from_dict_minimal(self):
-        svc = ServiceDefinition.from_dict({
-            "schema_version": 1,
-            "name": "minimal",
-        })
+        svc = ServiceDefinition.from_dict(
+            {
+                "schema_version": 1,
+                "name": "minimal",
+            }
+        )
         assert svc.name == "minimal"
         assert svc.auth is None
         assert svc.capabilities == {}
