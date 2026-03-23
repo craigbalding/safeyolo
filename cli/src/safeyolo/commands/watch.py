@@ -207,7 +207,7 @@ def tail_jsonl(path: Path, follow: bool = True):
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError:
-                        pass  # Skip malformed lines
+                        continue  # Skip malformed lines
             elif follow:
                 time.sleep(0.1)
                 check_interval += 1
@@ -235,7 +235,7 @@ def tail_jsonl(path: Path, follow: bool = True):
                             yield from _tail_reopened(path)
                             return
                     except OSError:
-                        pass  # stat failed, try again next cycle
+                        continue  # stat failed, try again next cycle
             else:
                 break
 
@@ -255,7 +255,7 @@ def _tail_reopened(path: Path):
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError:
-                        pass
+                        continue  # Skip malformed log lines
             else:
                 time.sleep(0.1)
                 check_interval += 1
@@ -277,7 +277,7 @@ def _tail_reopened(path: Path):
                             yield from _tail_reopened(path)
                             return
                     except OSError:
-                        pass
+                        continue  # Transient stat error, retry next cycle
 
 
 def _risky_route_dedup_key(event: dict) -> str:
