@@ -282,7 +282,7 @@ def status() -> None:
                 uptime_str = f"{minutes}m"
             table.add_row("Uptime", uptime_str)
         except (ValueError, TypeError):
-            pass
+            table.add_row("Uptime", "?")
 
     table.add_row("Proxy Port", str(config["proxy"]["port"]))
     table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
@@ -383,7 +383,7 @@ def status() -> None:
             console.print(agent_table)
 
     except APIError:
-        pass
+        console.print("[dim]Agent info unavailable[/dim]")
 
     # Memory section
     try:
