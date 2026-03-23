@@ -149,6 +149,8 @@ Read-only PDP relay on virtual hostname `_safeyolo.proxy.internal` for agent sel
 | `/config` | Sensor config (credential rules, scan patterns) |
 | `/explain?host=X&cred=Y` | Explain what would happen for a request |
 | `/memory` | Memory and connection stats |
+| `/gateway/services` | Authorized capabilities and available services for the agent |
+| `/gateway/request-access` | Submit an access request for a risky route (POST, returns 202) |
 
 **Token management:**
 ```bash
@@ -592,26 +594,31 @@ Fast regex scanning for secrets and suspicious patterns.
 
 ### service_gateway
 
-**Purpose:** Routes agent requests to external services through the gateway, injecting real credentials from the vault so agents never see secrets.
+**Purpose:** Routes agent requests to external services through the gateway, injecting real credentials from the vault so agents never see secrets. Enforces capability-based access control and risky route approval via the PDP.
 
 **How it works:**
 1. Policy compiler processes the `agents:` section and mints gateway tokens (`sgw_` prefix)
 2. Agent containers receive gateway tokens as environment variables
 3. When an agent makes a request with a gateway token in the Authorization header, service_gateway:
    - Strips the `sgw_` token
-   - Looks up the real credential from the vault
-   - Injects the real credential using the service's auth config (bearer, API key, etc.)
+   - Looks up the agent's capability for this service
+   - Evaluates the request against capability routes (positive list — no deny rules)
+   - If the route matches a **risky route**, queries the PDP with ATT&CK tactics, enables, irreversible signals, and account persona
+   - PDP checks risk appetite rules in `policy.yaml` (`gateway:` section) and active grants
+   - If a matching **grant** exists (approved by operator via watch or admin API), the request bypasses PDP risk evaluation
+   - Looks up the real credential from the vault and injects it using the service's auth config (bearer, API key, etc.)
    - Forwards the request to the target host
-4. Flow store redacts injected credentials as `[GATEWAY:...last4]`
+4. **Once-grants** are consumed after a successful (2xx) response. Non-2xx responses (4xx, 5xx) do not consume the grant, allowing retry. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in policy.yaml.
+5. Flow store redacts injected credentials as `[GATEWAY:...last4]`
 
-**Service definitions** describe external APIs (auth methods, route whitelists per role). Builtins ship for common APIs (gmail, slack). Users can add custom service YAMLs in `~/.safeyolo/services/`.
+**Service definitions** describe external APIs using v2 format: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). Builtins ship for common APIs (gmail, slack, github). Users can add custom service YAMLs in `~/.safeyolo/services/`.
 
 **Vault** stores encrypted credentials referenced by agents.yaml service bindings. Auto-refreshes OAuth2 tokens when `refresh_on_401: true`.
 
 **Hot-reload:** Service definitions are watched for changes (2s poll). Vault requires proxy restart.
 
 **Related CLI:**
-- `safeyolo agent authorize <agent> <service>` -- wire an agent to a service
+- `safeyolo agent authorize <agent> <service> --capability <name>` -- wire an agent to a service
 - `safeyolo services list/show` -- inspect service definitions
 - `safeyolo vault add/list/remove/oauth2` -- manage credentials
 
@@ -695,6 +702,7 @@ JSONL structured logging with unified event taxonomy.
 |--------|-------------|
 | `traffic.*` | Request/response lifecycle |
 | `security.*` | Security addon decisions |
+| `gateway.*` | Service gateway decisions (risky routes, grants, capability checks) |
 | `admin.*` | Admin API actions |
 | `ops.*` | Operational events |
 
@@ -764,6 +772,9 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | PUT | `/admin/policy/task/{id}` | Create/update task policy |
 | GET | `/admin/budgets` | Current budget usage |
 | POST | `/admin/budgets/reset` | Reset budget counters |
+| POST | `/admin/grants` | Add a grant (operator approves a risky route for an agent) |
+| GET | `/admin/grants` | List active grants |
+| DELETE | `/admin/grants/{grant_id}` | Revoke a specific grant |
 | GET | `/debug/addons` | Debug: list loaded addons |
 
 ### Mode Switching
