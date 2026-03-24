@@ -1095,7 +1095,7 @@ def _load_policy_hosts() -> dict:
 def authorize(
     agent_name: str = typer.Argument(..., help="Agent instance name"),
     service_name: str = typer.Argument(..., help="Service to authorize"),
-    role: str = typer.Option(None, "--role", "-r", "--capability", help="Capability within the service"),
+    capability: str = typer.Option(None, "--capability", "-c", help="Capability within the service"),
     token: str = typer.Option(None, "--token", help="Credential value (inline)"),
     token_file: Path = typer.Option(None, "--token-file", help="Read credential from file"),
     token_env: str = typer.Option(None, "--token-env", help="Read credential from environment variable"),
@@ -1133,15 +1133,15 @@ def authorize(
 
     # 3. Resolve capability
     cap_names = list(capabilities.keys())
-    if role:
-        if role not in capabilities:
-            console.print(f"[red]Error:[/red] Capability '{escape(role)}' not found in {escape(service_name)}")
+    if capability:
+        if capability not in capabilities:
+            console.print(f"[red]Error:[/red] Capability '{escape(capability)}' not found in {escape(service_name)}")
             console.print(f"Available capabilities: {', '.join(escape(c) for c in cap_names)}")
             raise typer.Exit(1)
-        selected_role = role
+        selected_cap = capability
     elif len(cap_names) == 1:
-        selected_role = cap_names[0]
-        console.print(f"Auto-selected capability: [cyan]{escape(selected_role)}[/cyan]")
+        selected_cap = cap_names[0]
+        console.print(f"Auto-selected capability: [cyan]{escape(selected_cap)}[/cyan]")
     else:
         console.print("Available capabilities:")
         for i, cn in enumerate(cap_names, 1):
@@ -1155,7 +1155,7 @@ def authorize(
             idx = int(choice) - 1
             if idx < 0 or idx >= len(cap_names):
                 raise ValueError
-            selected_role = cap_names[idx]
+            selected_cap = cap_names[idx]
         except ValueError:
             console.print("[red]Error:[/red] Invalid selection")
             raise typer.Exit(1)
@@ -1246,12 +1246,12 @@ def authorize(
 
     # 6. Write to agents.yaml
     services = metadata.setdefault("services", {})
-    services[service_name] = {"capability": selected_role, "token": cred_name}
+    services[service_name] = {"capability": selected_cap, "token": cred_name}
     save_agent(agent_name, metadata)
 
     esc_agent = escape(agent_name)
     esc_svc = escape(service_name)
-    esc_cap = escape(selected_role)
+    esc_cap = escape(selected_cap)
     esc_cred = escape(cred_name)
 
     console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
@@ -1264,16 +1264,14 @@ def authorize(
         host_config = hosts.get(default_host)
         if isinstance(host_config, dict) and host_config.get("service") == service_name:
             console.print(f"[green]Host binding found:[/green] {esc_host}")
-        elif host_config is not None:
-            console.print("\n[yellow]Final step:[/yellow] Add service binding to existing host entry in policy.yaml:")
-            console.print(f"    [bold]{esc_host}: {{ service: {esc_svc}, ... }}[/bold]")
         else:
-            console.print("\n[yellow]Final step:[/yellow] Add host binding to policy.yaml:")
+            console.print("\n[yellow]Next step:[/yellow] Add to policy.yaml under hosts:")
             console.print(f"    [bold]{esc_host}: {{ service: {esc_svc} }}[/bold]")
+            console.print(f"\n  [dim]Verify with: safeyolo policy show --section hosts | grep {esc_svc}[/dim]")
     else:
-        console.print(f"\n[yellow]Final step:[/yellow] Add a host binding for '{esc_svc}' in policy.yaml")
-        console.print("  This service has no default_host, so you'll need to map the target host manually:")
-        console.print(f"    [bold]your-host.example.com: {{ service: {esc_svc} }}[/bold]")
+        console.print("\n[yellow]Next step:[/yellow] Map the service host in policy.yaml under hosts:")
+        console.print(f"    [bold]<your-host>: {{ service: {esc_svc} }}[/bold]")
+        console.print(f"\n  [dim]Verify with: safeyolo policy show --section hosts | grep {esc_svc}[/dim]")
 
 
 @agent_app.command()

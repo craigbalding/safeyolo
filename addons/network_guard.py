@@ -212,7 +212,9 @@ class NetworkGuard(SecurityAddon):
                     "domain": domain,
                     "reason": reason,
                     "attack_type": "homoglyph",
-                    "message": "This domain contains mixed-script characters that may indicate a spoofing attempt.",
+                    "type": "homoglyph_attack",
+                    "action": "abort",
+                    "reflection": "This domain contains mixed-script characters that may indicate a spoofing attack. Check the URL carefully — the domain may look similar to a legitimate one but use different character sets.",
                 },
             )
         else:
@@ -247,7 +249,9 @@ class NetworkGuard(SecurityAddon):
                     "error": "Access denied by proxy",
                     "domain": domain,
                     "reason": reason,
-                    "message": f"Network access to {domain} is not permitted.",
+                    "type": "access_denied",
+                    "action": "self_correct",
+                    "reflection": f"Network access to {sanitize_for_log(domain)} is not in the security policy. If you need this domain, ask the operator to add it to policy.yaml.",
                 },
             )
         else:
@@ -282,7 +286,9 @@ class NetworkGuard(SecurityAddon):
                     "error": "Rate limited by proxy",
                     "domain": domain,
                     "reason": reason,
-                    "message": f"Too many requests to {domain}. Please slow down.",
+                    "type": "rate_limit_exceeded",
+                    "action": "retry_with_backoff",
+                    "reflection": f"Too many requests to {sanitize_for_log(domain)}. Wait for the rate limit window to reset, then retry.",
                 },
                 {
                     "Retry-After": "60",

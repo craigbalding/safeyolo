@@ -147,33 +147,6 @@ class TestCapabilitySelection:
         agent = load_agent("boris")
         assert agent["services"]["multi"]["capability"] == "writer"
 
-    def test_role_flag_alias_works(self, cli_runner, tmp_config_dir):
-        """--role still works as an alias for --capability."""
-        _create_agent(tmp_config_dir, "boris")
-        _write_service(
-            tmp_config_dir,
-            "multi",
-            {
-                "reader": {"description": "Read", "routes": []},
-                "writer": {"description": "Write", "routes": []},
-            },
-        )
-        result = _invoke(
-            cli_runner,
-            [
-                "authorize",
-                "boris",
-                "multi",
-                "--role",
-                "writer",
-                "--token",
-                "x",
-            ],
-        )
-        assert result.exit_code == 0
-        agent = load_agent("boris")
-        assert agent["services"]["multi"]["capability"] == "writer"
-
     def test_invalid_capability_rejected(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
         _write_service(
@@ -526,7 +499,7 @@ class TestHostBindingCheck:
             ],
         )
         assert result.exit_code == 0
-        assert "Final step" in result.output
+        assert "Next step" in result.output
         assert "service: svc" in result.output
 
     def test_missing_host_warns_with_suggestion(self, cli_runner, tmp_config_dir):
@@ -551,7 +524,7 @@ class TestHostBindingCheck:
             ],
         )
         assert result.exit_code == 0
-        assert "Final step" in result.output
+        assert "Next step" in result.output
         assert "api.example.com" in result.output
         assert "service: svc" in result.output
 
@@ -575,7 +548,8 @@ class TestHostBindingCheck:
             ],
         )
         assert result.exit_code == 0
-        assert "no default_host" in result.output.lower()
+        assert "next step" in result.output.lower()
+        assert "<your-host>" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------

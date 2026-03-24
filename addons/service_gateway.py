@@ -322,33 +322,54 @@ class ServiceGateway:
             binding = self._token_map.get(token)
 
         if not binding:
-            self._deny(flow, 403, "Invalid gateway token", "INVALID_TOKEN")
+            self._deny(
+                flow, 403, "Invalid gateway token", "INVALID_TOKEN",
+                action="self_correct",
+                reflection="The gateway token is not recognized. Check that the agent is authorized and the token has not expired.",
+            )
             self.stats.denied_token += 1
             return
 
         # Validate agent matches (if service_discovery stamped flow.metadata["agent"])
         agent = flow.metadata.get("agent")
         if agent and agent != binding.agent:
-            self._deny(flow, 403, f"Token not authorized for agent '{agent}'", "AGENT_MISMATCH")
+            self._deny(
+                flow, 403, f"Token not authorized for agent '{agent}'", "AGENT_MISMATCH",
+                action="self_correct",
+                reflection=f"This token belongs to a different agent. Agent '{sanitize_for_log(agent)}' is not authorized to use it.",
+            )
             self.stats.denied_token += 1
             return
 
         # Get service
         registry = get_service_registry()
         if not registry:
-            self._deny(flow, 503, "Service registry not available", "REGISTRY_UNAVAILABLE")
+            self._deny(
+                flow, 503, "Service registry not available", "REGISTRY_UNAVAILABLE",
+                action="abort",
+                reflection="The service registry is not loaded. The proxy may still be starting up.",
+            )
             return
 
         service = registry.get_service(binding.service_name)
         if not service:
-            self._deny(flow, 403, f"Service '{binding.service_name}' not found", "SERVICE_NOT_FOUND")
+            self._deny(
+                flow, 403, f"Service '{binding.service_name}' not found", "SERVICE_NOT_FOUND",
+                action="self_correct",
+                reflection=f"Service '{sanitize_for_log(binding.service_name)}' is not in the service registry. Check the service name in agents.yaml.",
+            )
             self.stats.denied_token += 1
             return
 
         # Get capability
         capability = service.capabilities.get(binding.capability_name)
         if not capability:
-            self._deny(flow, 403, f"Capability '{binding.capability_name}' not found", "CAPABILITY_NOT_FOUND")
+            cap_names = ", ".join(service.capabilities.keys()) if service.capabilities else "none"
+            self._deny(
+                flow, 403, f"Capability '{binding.capability_name}' not found", "CAPABILITY_NOT_FOUND",
+                action="self_correct",
+                reflection=f"Capability '{sanitize_for_log(binding.capability_name)}' does not exist in service '{sanitize_for_log(binding.service_name)}'. Available: {sanitize_for_log(cap_names)}.",
+            )
             self.stats.denied_token += 1
             return
 
@@ -360,6 +381,8 @@ class ServiceGateway:
                 403,
                 f"Host '{flow.request.host}' is not mapped to service '{binding.service_name}'",
                 "HOST_MISMATCH",
+                action="self_correct",
+                reflection=f"Host '{sanitize_for_log(flow.request.host)}' is not mapped to service '{sanitize_for_log(binding.service_name)}' in policy.yaml. Add the host binding under the hosts section.",
             )
             self.stats.denied_token += 1
             return
@@ -374,6 +397,8 @@ class ServiceGateway:
                 403,
                 f"Route {method} {path} not in capability '{capability.name}'",
                 "ROUTE_DENIED",
+                action="self_correct",
+                reflection=f"Route {sanitize_for_log(method)} {sanitize_for_log(path)} is not allowed by capability '{sanitize_for_log(capability.name)}'. Check the service definition for allowed routes.",
             )
             self.stats.denied_route += 1
             return
@@ -397,12 +422,20 @@ class ServiceGateway:
         # 3. Inject credential using service.auth
         vault = get_vault()
         if not vault:
-            self._deny(flow, 503, "Vault not available", "VAULT_UNAVAILABLE")
+            self._deny(
+                flow, 503, "Vault not available", "VAULT_UNAVAILABLE",
+                action="abort",
+                reflection="The credential vault is not loaded. The proxy may still be starting up.",
+            )
             return
 
         cred = vault.get(binding.vault_token)
         if not cred:
-            self._deny(flow, 503, "Credential not found in vault", "CREDENTIAL_NOT_FOUND")
+            self._deny(
+                flow, 503, "Credential not found in vault", "CREDENTIAL_NOT_FOUND",
+                action="self_correct",
+                reflection=f"Credential '{sanitize_for_log(binding.vault_token)}' is not in the vault. Re-run `safeyolo agent authorize` to store it.",
+            )
             return
 
         # Auto-refresh OAuth2 if expired
@@ -411,7 +444,11 @@ class ServiceGateway:
                 self.stats.refreshed += 1
                 cred = vault.get(binding.vault_token)
                 if not cred:
-                    self._deny(flow, 503, "Credential lost after refresh", "CREDENTIAL_NOT_FOUND")
+                    self._deny(
+                        flow, 503, "Credential lost after refresh", "CREDENTIAL_NOT_FOUND",
+                        action="abort",
+                        reflection="The credential was lost during OAuth2 token refresh. Re-run `safeyolo agent authorize` to restore it.",
+                    )
                     return
 
         # Strip sgw_ token and inject real credential
@@ -832,13 +869,20 @@ class ServiceGateway:
             if decision.immediate_response:
                 body = decision.immediate_response.body_json
                 body["addon"] = self.name
+                body.setdefault("type", "gateway_risky_route")
+                body.setdefault("action", "wait_for_approval")
+                body.setdefault("reflection", "This route is flagged as risky. An operator must approve it via `safeyolo watch` before it can proceed.")
                 flow.response = make_block_response(
                     decision.immediate_response.status_code,
                     body,
                     self.name,
                 )
             else:
-                self._deny(flow, 428, "Risky route requires approval", "GATEWAY_RISKY_ROUTE")
+                self._deny(
+                    flow, 428, "Risky route requires approval", "GATEWAY_RISKY_ROUTE",
+                    action="wait_for_approval",
+                    reflection="This route is flagged as risky. An operator must approve it via `safeyolo watch` before it can proceed.",
+                )
 
             flow.metadata["blocked_by"] = self.name
 
@@ -878,7 +922,11 @@ class ServiceGateway:
         except Exception as e:
             log.error(f"Risky route PDP check failed: {type(e).__name__}: {e}")
             # Fail safe: deny on PDP error
-            self._deny(flow, 503, "Risky route check failed", "PDP_ERROR")
+            self._deny(
+                flow, 503, "Risky route check failed", "PDP_ERROR",
+                action="abort",
+                reflection="The policy engine failed while checking this risky route. The request was denied as a safety precaution.",
+            )
             return True  # non-None
 
     def _method_matches(self, method: str, allowed_methods: list[str]) -> bool:
@@ -887,11 +935,23 @@ class ServiceGateway:
             return True
         return method.upper() in [m.upper() for m in allowed_methods]
 
-    def _deny(self, flow: http.HTTPFlow, status: int, reason: str, code: str) -> None:
+    def _deny(
+        self,
+        flow: http.HTTPFlow,
+        status: int,
+        reason: str,
+        code: str,
+        *,
+        action: str = "abort",
+        reflection: str = "",
+    ) -> None:
         """Block request with standard JSON response."""
         body = {
             "error": reason,
+            "type": code.lower(),
             "reason_codes": [code],
+            "action": action,
+            "reflection": reflection or reason,
             "addon": self.name,
         }
         flow.response = make_block_response(status, body, self.name)

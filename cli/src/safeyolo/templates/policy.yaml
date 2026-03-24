@@ -47,6 +47,10 @@ hosts:
   # ── Domain overrides ──────────────────────────────────────────
   "*.internal":        { bypass: [pattern_scanner] }
 
+  # ── Service gateway (add after running `safeyolo agent authorize`) ──
+  # mail.google.com: { service: gmail }
+  # api.slack.com:   { service: slack }
+
   # ── Defaults (wildcard) ───────────────────────────────────────
   "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
 

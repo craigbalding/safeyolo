@@ -5,9 +5,14 @@
 # Policy (hosts, credentials, rate limits) lives in policy.yaml.
 
 addons:
+  # network_guard — blocks requests to domains not in policy.yaml.
+  # Change if you need to allow additional hosts.
   network_guard:
     enabled: true
 
+  # credential_guard — detects API keys in requests and blocks them from going
+  # to the wrong host. Tune entropy thresholds if getting false positives on
+  # legitimate high-entropy values.
   credential_guard:
     enabled: true
     detection_level: standard  # standard | paranoid
@@ -69,6 +74,8 @@ addons:
       - pattern: ^[A-Za-z0-9+/]{16,32}={0,2}$
         description: Short base64 session token
 
+  # circuit_breaker — stops sending requests to hosts that are failing repeatedly.
+  # Lower failure_threshold if you want faster failover.
   circuit_breaker:
     enabled: true
     failure_threshold: 5
@@ -86,13 +93,19 @@ addons:
       - host.docker.internal
       - api.anthropic.com
 
+  # test_context — requires X-Test-Context header for specified hosts.
+  # Only active if target_hosts is non-empty.
   test_context:
     target_hosts: []
 
+  # pattern_scanner — scans request/response bodies for secrets using regex.
+  # Add patterns to builtin_sets for custom scanning.
   pattern_scanner:
     enabled: true
     builtin_sets: []
 
+  # request_logger — writes JSONL audit log. Add high-frequency hosts to
+  # quiet_hosts to reduce log volume.
   request_logger:
     enabled: true
     quiet_hosts:
