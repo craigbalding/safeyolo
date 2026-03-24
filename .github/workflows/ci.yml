@@ -3,28 +3,8 @@ name: CI
 on:
   push:
     branches: [master, main]
-    paths:
-      - 'addons/**'
-      - 'pdp/**'
-      - 'cli/**'
-      - 'tests/**'
-      - 'config/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'ruff.toml'
-      - '.github/workflows/ci.yml'
   pull_request:
     branches: [master, main]
-    paths:
-      - 'addons/**'
-      - 'pdp/**'
-      - 'cli/**'
-      - 'tests/**'
-      - 'config/**'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'ruff.toml'
-      - '.github/workflows/ci.yml'
 
 # Cancel in-progress runs when a new commit is pushed to the same branch/PR.
 # Reduces runner minutes for iterative PR pushes.
