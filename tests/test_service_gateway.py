@@ -1153,3 +1153,99 @@ class TestGrantTTL:
         expires_dt = datetime.fromisoformat(grant.expires)
         delta = expires_dt - created_dt
         assert 119 <= delta.total_seconds() <= 121
+
+
+class TestRiskyRouteApprovalField:
+    """Verify risky route events include the approval field."""
+
+    def test_risky_route_event_has_approval(self, make_flow, gateway, tmp_path):
+        """gateway.risky_route events must include approval with correct type/key/target."""
+        from pdp.schemas import DecisionEventBlock, Effect, ImmediateResponseBlock
+        from pdp.schemas import PolicyDecision as SchemaDecision
+
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir(exist_ok=True)
+        (svc_dir / "test_svc.yaml").write_text("""
+schema_version: 1
+name: test_risky
+auth:
+  type: bearer
+capabilities:
+  full:
+    description: "Full"
+    routes:
+      - methods: ["*"]
+        path: "/api/**"
+risky_routes:
+  - path: "/api/admin/**"
+    methods: [POST]
+    tactics: [privilege_escalation]
+    description: "Admin endpoint"
+""")
+        registry = init_service_registry(svc_dir)
+
+        vault = MagicMock()
+        vault.get.return_value = VaultCredential(
+            name="test-cred",
+            type="bearer",
+            value="real-token",
+        )
+
+        gateway._host_map = {"api.test.com": "test_risky"}
+        env = gateway.mint_tokens(
+            {
+                "agent-1": {"test_risky": {"capability": "full", "token": "test-cred"}},
+            }
+        )
+        token = env["agent-1"]["test_risky"]
+
+        mock_decision = SchemaDecision(
+            version=1,
+            event=DecisionEventBlock(
+                event_id="evt-test",
+                policy_hash="sha256:abc",
+                engine_version="pdp-0.1.0",
+            ),
+            effect=Effect.REQUIRE_APPROVAL,
+            reason="Risky route requires approval",
+            reason_codes=["REQUIRE_APPROVAL", "GATEWAY_RISKY_ROUTE"],
+            immediate_response=ImmediateResponseBlock(
+                status_code=428,
+                headers={"content-type": "application/json"},
+                body_json={
+                    "error": "Require Approval",
+                    "reason_codes": ["GATEWAY_RISKY_ROUTE"],
+                    "reflection": {"service": "test_risky", "question": "Check signals"},
+                },
+            ),
+        )
+        mock_client = MagicMock()
+        mock_client.evaluate.return_value = mock_decision
+
+        flow = make_flow(
+            method="POST",
+            url="http://api.test.com/api/admin/users",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        flow.metadata["agent"] = "agent-1"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault):
+                    with patch("pdp.is_policy_client_configured", return_value=True):
+                        with patch("pdp.get_policy_client", return_value=mock_client):
+                            with patch("service_gateway.write_event") as mock_write:
+                                gateway.request(flow)
+
+        # Verify write_event was called with approval kwarg
+        mock_write.assert_called()
+        call_kwargs = mock_write.call_args
+        # write_event uses keyword-only args after the first positional
+        assert call_kwargs[0][0] == "gateway.risky_route"
+        approval = call_kwargs[1]["approval"]
+        assert approval is not None
+        assert approval.required is True
+        assert approval.approval_type == "gateway_route"
+        assert approval.key == "gw:agent-1:test_risky:POST:/api/admin/users"
+        assert approval.target == "test_risky"
+        assert approval.scope_hint == {"method": "POST", "path": "/api/admin/users"}

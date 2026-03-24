@@ -1,17 +1,22 @@
 """Watch command - monitor logs and handle approval requests."""
 
+from __future__ import annotations
+
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -27,6 +32,9 @@ STATUS_FILE = Path.home() / ".cache" / "safeyolo" / "tmux_status.txt"
 # Interactive mode: how often to print status summaries
 STATUS_INTERVAL = 10  # seconds between status lines
 STATUS_BATCH = 10  # or after this many suppressed allow events
+
+# Batch mode: how long to accumulate events before flushing
+BATCH_WINDOW = 2.0  # seconds
 
 
 def is_in_tmux() -> bool:
@@ -167,7 +175,7 @@ class RollingStats:
         return " ".join(parts)
 
 
-def tail_jsonl(path: Path, follow: bool = True):
+def tail_jsonl(path: Path, follow: bool = True, tick_interval: float = 0):
     """Tail a JSONL file, yielding parsed events.
 
     Handles log rotation and proxy restarts: if the file is replaced
@@ -177,9 +185,10 @@ def tail_jsonl(path: Path, follow: bool = True):
     Args:
         path: Path to JSONL file
         follow: If True, keep watching for new lines
+        tick_interval: If >0 and idle, yield None every tick_interval seconds
 
     Yields:
-        Parsed JSON objects from each line
+        Parsed JSON objects from each line, or None for tick events
     """
     if not path.exists():
         if follow:
@@ -191,6 +200,8 @@ def tail_jsonl(path: Path, follow: bool = True):
             return
 
     check_interval = 0  # counter for periodic stale-file checks
+    idle_cycles = 0  # counter for tick generation
+    tick_cycles = int(tick_interval / 0.1) if tick_interval > 0 else 0
 
     with open(path) as f:
         original_inode = os.fstat(f.fileno()).st_ino
@@ -203,6 +214,7 @@ def tail_jsonl(path: Path, follow: bool = True):
             line = f.readline()
             if line:
                 check_interval = 0
+                idle_cycles = 0
                 line = line.strip()
                 if line:
                     try:
@@ -212,6 +224,12 @@ def tail_jsonl(path: Path, follow: bool = True):
             elif follow:
                 time.sleep(0.1)
                 check_interval += 1
+                idle_cycles += 1
+
+                # Yield tick if configured and enough idle time has passed
+                if tick_cycles and idle_cycles >= tick_cycles:
+                    idle_cycles = 0
+                    yield None
 
                 # Every ~2 seconds of no data, check if the file was rotated
                 if check_interval >= 20:
@@ -291,24 +309,635 @@ def _risky_route_dedup_key(event: dict) -> str:
     return f"gw:{agent}:{service}:{method}:{path}"
 
 
-def scan_pending_approvals(log_path: Path) -> list[dict]:
-    """Scan log backwards for unresolved approval requests since the operator last acted.
+# ---------------------------------------------------------------------------
+# Batch approval infrastructure
+# ---------------------------------------------------------------------------
 
-    Reads the log from the end. Collects risky route blocks and credential
-    approval requests. Stops when it hits an operator action (grant added,
-    approval added, denial logged) — everything before that was already
-    handled. Returns unresolved events from after that point.
+
+@dataclass
+class BatchItem:
+    """A single pending approval in a batch."""
+
+    index: int  # 1-based display number
+    event: dict  # original event
+    dedup_key: str  # from approval.key:approval.target
+    approval_type: str  # from approval.approval_type
+    irreversible: bool  # from details.irreversible (False if absent)
+
+
+@dataclass
+class ApprovalDispatch:
+    """Per-approval-type handlers for approve/deny/format."""
+
+    approve: Callable[[dict, AdminAPI], str | None]  # returns grant_id/status or None
+    deny: Callable[[dict, AdminAPI], None]
+    format_row: Callable[[dict], tuple[str, str, str, str]]  # agent, action, risk, description
+    format_detail: Callable[[dict], Panel]  # full panel for review mode
+
+
+def _credential_approve(event: dict, api: AdminAPI) -> str | None:
+    approval = event.get("approval", {})
+    details = event.get("details", {})
+    fingerprint = approval.get("key", details.get("fingerprint", ""))
+    host = event.get("host", approval.get("target", ""))
+    result = api.add_approval(destination=host, cred_id=fingerprint)
+    return result.get("status", "ok")
+
+
+def _credential_deny(event: dict, api: AdminAPI) -> None:
+    approval = event.get("approval", {})
+    details = event.get("details", {})
+    fingerprint = approval.get("key", details.get("fingerprint", ""))
+    host = event.get("host", approval.get("target", ""))
+    api.log_denial(destination=host, cred_id=fingerprint, reason="user_denied")
+
+
+def _credential_format_row(event: dict) -> tuple[str, str, str, str]:
+    approval = event.get("approval", {})
+    details = event.get("details", {})
+    agent = event.get("agent", "\u2014")
+    rule = details.get("rule", approval.get("approval_type", "unknown"))
+    host = event.get("host", approval.get("target", "unknown"))
+    action = f"{rule} cred \u2192 {host}"
+    risk = "credential routing"
+    description = details.get("reason", "")
+    return (agent, action, risk, description)
+
+
+def _gateway_approve(event: dict, api: AdminAPI) -> str | None:
+    details = event.get("details", {})
+    agent = event.get("agent", "unknown")
+    service = details.get("service", "unknown")
+    method = details.get("method", "")
+    path = details.get("path", details.get("risky_route", ""))
+    result = api.add_gateway_grant(
+        agent=agent, service=service, method=method, path=path, lifetime="once",
+    )
+    return result.get("grant_id")
+
+
+def _gateway_deny(event: dict, api: AdminAPI) -> None:
+    details = event.get("details", {})
+    agent = event.get("agent", "unknown")
+    service = details.get("service", "unknown")
+    method = details.get("method", "")
+    path = details.get("path", details.get("risky_route", ""))
+    api.log_gateway_denial(agent=agent, service=service, method=method, path=path)
+
+
+def _gateway_format_row(event: dict) -> tuple[str, str, str, str]:
+    details = event.get("details", {})
+    agent = event.get("agent", "\u2014")
+    service = details.get("service", "unknown")
+    method = details.get("method", "")
+    path = details.get("path", "")
+    action = f"{service} {method} {path}"
+    # Build risk string from tactics
+    tactics = details.get("tactics", [])
+    risk_parts = [TACTIC_LABELS.get(t, t) for t in tactics] if tactics else []
+    risk = ", ".join(risk_parts) if risk_parts else "risky route"
+    description = details.get("description", "")
+    return (agent, action, risk, description)
+
+
+def _service_format_row(event: dict) -> tuple[str, str, str, str]:
+    approval = event.get("approval", {})
+    agent = event.get("agent", "\u2014")
+    target = approval.get("target", "?")
+    scope = approval.get("scope_hint", {})
+    capability = scope.get("capability", "")
+    action = f"{target}/{capability}" if capability else target
+    risk = "service access"
+    description = event.get("summary", "")
+    return (agent, action, risk, description)
+
+
+def _service_format_detail(event: dict) -> Panel:
+    """Format a service access request as a Rich panel."""
+
+    approval = event.get("approval", {})
+    scope = approval.get("scope_hint", {})
+    agent = event.get("agent", "unknown")
+    service = approval.get("target", "unknown")
+    capability = scope.get("capability", "")
+    reason = scope.get("reason", "") or event.get("summary", "")
+    ts = event.get("ts", "")
+
+    timestamp_str = ""
+    if ts:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            timestamp_str = dt.astimezone().strftime("%H:%M:%S")
+        except (ValueError, AttributeError):
+            timestamp_str = ts[:19]
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+
+    table.add_row("Agent", f"[bold]{escape(agent)}[/bold]")
+    table.add_row("Service", f"[cyan]{escape(service)}[/cyan]")
+    if capability:
+        table.add_row("Capability", escape(capability))
+    if reason:
+        table.add_row("Reason", escape(reason))
+
+    title = f"[bold yellow]Service Access Request[/bold yellow] [dim]{timestamp_str}[/dim]"
+
+    return Panel(
+        table,
+        title=title,
+        subtitle="[red][D]eny[/red] | [dim][L]ater[/dim]",
+        border_style="yellow",
+    )
+
+
+def _service_approve(event: dict, api: AdminAPI) -> str | None:
+    raise NotImplementedError(
+        "Service access cannot be approved from watch — "
+        "run `safeyolo agent authorize` on the host (requires credentials)"
+    )
+
+
+def _service_deny(event: dict, api: AdminAPI) -> None:
+    # Log the denial via the generic denial endpoint
+    approval = event.get("approval", {})
+    agent = event.get("agent", "unknown")
+    target = approval.get("target", "unknown")
+    api.log_denial(
+        destination=f"gateway:{target}",
+        cred_id=f"{agent}:service_access",
+        reason="user_denied",
+    )
+
+
+def _unsupported_approve(event: dict, api: AdminAPI) -> str | None:
+    raise NotImplementedError(
+        f"Cannot approve unknown approval_type {event.get('approval', {}).get('approval_type')!r} "
+        "in batch mode — use individual review (r<N>) instead"
+    )
+
+
+def _unsupported_deny(event: dict, api: AdminAPI) -> None:
+    raise NotImplementedError(
+        f"Cannot deny unknown approval_type {event.get('approval', {}).get('approval_type')!r} "
+        "in batch mode — use individual review (r<N>) instead"
+    )
+
+
+def _fallback_format_row(event: dict) -> tuple[str, str, str, str]:
+    approval = event.get("approval", {})
+    agent = event.get("agent", "\u2014")
+    action = f"{approval.get('approval_type', '?')} \u2192 {approval.get('target', '?')}"
+    risk = "unknown"
+    description = event.get("summary", "")
+    return (agent, action, risk, description)
+
+
+def _fallback_format_detail(event: dict) -> Panel:
+    """Generic detail panel for unknown approval types."""
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+    for key in ("event", "agent", "host", "summary"):
+        if event.get(key):
+            table.add_row(key.title(), str(event[key]))
+    approval = event.get("approval", {})
+    for key in ("approval_type", "key", "target"):
+        if approval.get(key):
+            table.add_row(f"approval.{key}", str(approval[key]))
+    return Panel(table, title="[bold]Unknown Approval Type[/bold]", border_style="yellow")
+
+
+FALLBACK_DISPATCH = ApprovalDispatch(
+    approve=_unsupported_approve,
+    deny=_unsupported_deny,
+    format_row=_fallback_format_row,
+    format_detail=_fallback_format_detail,
+)
+
+DISPATCH: dict[str, ApprovalDispatch] = {
+    "credential": ApprovalDispatch(
+        approve=_credential_approve,
+        deny=_credential_deny,
+        format_row=_credential_format_row,
+        format_detail=lambda event: format_approval_request(event),
+    ),
+    "gateway_route": ApprovalDispatch(
+        approve=_gateway_approve,
+        deny=_gateway_deny,
+        format_row=_gateway_format_row,
+        format_detail=lambda event: format_risky_route_approval(event),
+    ),
+    "service": ApprovalDispatch(
+        approve=_service_approve,
+        deny=_service_deny,
+        format_row=_service_format_row,
+        format_detail=_service_format_detail,
+    ),
+}
+
+
+def _dedup_key_from_approval(event: dict) -> str:
+    """Derive dedup key from the approval field on an event."""
+    approval = event.get("approval", {})
+    return f"{approval.get('key', '')}:{approval.get('target', '')}"
+
+
+def build_batch_items(events: list[dict]) -> list[BatchItem]:
+    """Convert raw events into BatchItems with 1-based indexing."""
+    items: list[BatchItem] = []
+    for i, event in enumerate(events, 1):
+        approval = event.get("approval", {})
+        details = event.get("details", {})
+        items.append(BatchItem(
+            index=i,
+            event=event,
+            dedup_key=_dedup_key_from_approval(event),
+            approval_type=approval.get("approval_type", "unknown"),
+            irreversible=details.get("irreversible", False),
+        ))
+    return items
+
+
+def _format_batch_table(items: list[BatchItem]) -> Panel:
+    """Render a batch approval table with risk signals."""
+    table = Table(show_header=True, box=None, padding=(0, 1))
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Agent", min_width=8)
+    table.add_column("Action", min_width=20)
+    table.add_column("Risk", min_width=12)
+
+    for item in items:
+        dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
+        agent, action, risk, description = dispatch.format_row(item.event)
+
+        # Append irreversible marker
+        risk_display = escape(risk)
+        if item.irreversible:
+            risk_display += "  [bold red]\u26a0 IRREVERSIBLE[/bold red]"
+
+        table.add_row(str(item.index), f"[bold]{escape(agent)}[/bold]", escape(action), risk_display)
+
+        # Description sub-row if present
+        if description:
+            table.add_row("", "", f"  [dim]\u2514 {escape(description)}[/dim]", "")
+
+    title = f"[bold yellow]{len(items)} pending approval(s)[/bold yellow]"
+    subtitle = "[green]a[/green]=approve all  [red]d[/red]=deny all  [dim]l[/dim]=later  [dim]#,#[/dim]=pick items  [dim]r#[/dim]=review item"
+
+    return Panel(table, title=title, subtitle=subtitle, border_style="yellow")
+
+
+_SELECTION_RE = re.compile(r"^r(\d+)$")
+
+
+def parse_selection(raw: str, max_index: int) -> str | tuple[str, int] | list[int]:
+    """Parse batch input into an action.
+
+    Returns:
+        "a" | "d" | "l" | ("review", int) | list[int]
+
+    Raises:
+        ValueError on invalid input.
+    """
+    raw = raw.strip().lower()
+
+    if raw in ("a", "approve", "y", "yes"):
+        return "a"
+    if raw in ("d", "deny", "n", "no"):
+        return "d"
+    if raw in ("l", "later", ""):
+        return "l"
+
+    # Review single item: r3
+    m = _SELECTION_RE.match(raw)
+    if m:
+        idx = int(m.group(1))
+        if idx < 1 or idx > max_index:
+            raise ValueError(f"Item {idx} out of range (1-{max_index})")
+        return ("review", idx)
+
+    # Selection: 1,3,5 or 1-3,5
+    indices: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            bounds = part.split("-", 1)
+            try:
+                lo, hi = int(bounds[0]), int(bounds[1])
+            except ValueError:
+                raise ValueError(f"Invalid range: {part!r}")
+            if lo > hi:
+                raise ValueError(f"Invalid range: {part!r}")
+            for i in range(lo, hi + 1):
+                indices.add(i)
+        else:
+            try:
+                indices.add(int(part))
+            except ValueError:
+                raise ValueError(f"Invalid input: {raw!r}")
+
+    if not indices:
+        raise ValueError(f"Invalid input: {raw!r}")
+
+    # Validate range
+    for idx in indices:
+        if idx < 1 or idx > max_index:
+            raise ValueError(f"Item {idx} out of range (1-{max_index})")
+
+    return sorted(indices)
+
+
+def handle_batch(
+    items: list[BatchItem],
+    api: AdminAPI,
+    stats: RollingStats,
+) -> None:
+    """Handle a batch of pending approvals interactively.
+
+    Single item: delegates to existing per-type handler.
+    Multi-item: shows batch table and processes selections.
+    """
+    if not items:
+        return
+
+    # Single item — delegate to existing handler (no UX change)
+    if len(items) == 1:
+        item = items[0]
+        approved = _prompt_single_item(item, api)
+        if approved:
+            stats.mark_resolved(item.dedup_key)
+        return
+
+    # Multi-item batch
+    console.print()
+    console.print(_format_batch_table(items))
+
+    while True:
+        try:
+            raw = console.input(
+                "[bold]Action ([green]a[/green]/[red]d[/red]/[dim]l[/dim]/select/review): [/bold]"
+            )
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Interrupted — all deferred[/dim]")
+            return
+
+        try:
+            action = parse_selection(raw, len(items))
+        except ValueError as e:
+            console.print(f"[dim]{e}[/dim]")
+            continue
+
+        if action == "a":
+            _batch_approve_all(items, api, stats)
+            return
+        elif action == "d":
+            _batch_deny_all(items, api, stats)
+            return
+        elif action == "l":
+            console.print(f"[dim]Deferred {len(items)} item(s)[/dim]")
+            return
+        elif isinstance(action, tuple) and action[0] == "review":
+            idx = action[1]
+            item = items[idx - 1]
+            dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
+            console.print()
+            console.print(dispatch.format_detail(item.event))
+            # Re-display batch table and re-prompt
+            console.print()
+            console.print(_format_batch_table(items))
+            continue
+        elif isinstance(action, list):
+            remaining = _batch_select(items, action, api, stats)
+            if not remaining:
+                return
+            # Re-number and re-display remaining items
+            for i, item in enumerate(remaining, 1):
+                item.index = i
+            items = remaining
+            console.print()
+            console.print(_format_batch_table(items))
+            continue
+
+
+def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
+    """Prompt for a single item using the appropriate per-type handler.
+
+    Returns True if approved.
+    """
+    dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
+
+    if item.approval_type == "gateway_route":
+        return handle_risky_route_approval(item.event, api)
+    elif item.approval_type == "credential":
+        return handle_approval(item.event, api)
+    elif item.approval_type == "service":
+        # Service access: can't approve from watch, show detail with CLI hint
+        console.print()
+        console.print(dispatch.format_detail(item.event))
+        while True:
+            try:
+                response = console.input(
+                    "[bold]Action ([red]d[/red]eny/[dim]l[/dim]ater): [/bold]"
+                ).lower().strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Interrupted[/dim]")
+                return False
+            if response in ("d", "deny", "n", "no"):
+                try:
+                    dispatch.deny(item.event, api)
+                except (APIError, NotImplementedError) as e:
+                    console.print(f"[yellow]Warning:[/yellow] {escape(str(e))}")
+                console.print("[red]Denied[/red]")
+                return False
+            elif response in ("l", "later", ""):
+                console.print("[dim]Deferred[/dim]")
+                return False
+            else:
+                console.print("[dim]Use d(eny) or l(ater)[/dim]")
+    else:
+        # Fallback: show detail and prompt a/d/l
+        console.print()
+        console.print(dispatch.format_detail(item.event))
+        while True:
+            try:
+                response = console.input(
+                    "[bold]Action ([green]a[/green]/[red]d[/red]/[dim]l[/dim]): [/bold]"
+                ).lower().strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Interrupted[/dim]")
+                return False
+            if response in ("a", "approve", "y", "yes"):
+                try:
+                    dispatch.approve(item.event, api)
+                    console.print("[green]Approved[/green]")
+                    return True
+                except (APIError, NotImplementedError) as e:
+                    console.print(f"[red]Error:[/red] {escape(str(e))}")
+                    return False
+            elif response in ("d", "deny", "n", "no"):
+                try:
+                    dispatch.deny(item.event, api)
+                except (APIError, NotImplementedError) as e:
+                    console.print(f"[yellow]Warning:[/yellow] {escape(str(e))}")
+                console.print("[red]Denied[/red]")
+                return False
+            elif response in ("l", "later", ""):
+                console.print("[dim]Deferred[/dim]")
+                return False
+            else:
+                console.print("[dim]Invalid input. Use: a(pprove), d(eny), l(ater)[/dim]")
+
+
+def _batch_approve_all(
+    items: list[BatchItem],
+    api: AdminAPI,
+    stats: RollingStats,
+) -> None:
+    """Approve all items; irreversible ones get individual confirmation."""
+    safe = [it for it in items if not it.irreversible]
+    dangerous = [it for it in items if it.irreversible]
+
+    # Approve safe items in bulk
+    approved_count = 0
+    for item in safe:
+        dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
+        try:
+            dispatch.approve(item.event, api)
+            stats.mark_resolved(item.dedup_key)
+            approved_count += 1
+        except (APIError, NotImplementedError) as e:
+            console.print(f"[red]Error approving #{item.index}:[/red] {escape(str(e))}")
+
+    if approved_count:
+        console.print(f"[green]Approved {approved_count} item(s)[/green]")
+
+    # Irreversible items get individual confirmation
+    if dangerous:
+        console.print(
+            f"\n[bold red]{len(dangerous)} irreversible item(s) require individual confirmation:[/bold red]"
+        )
+        for item in dangerous:
+            dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
+            console.print()
+            console.print(dispatch.format_detail(item.event))
+            while True:
+                try:
+                    response = console.input(
+                        "[bold]Type [yellow]yes[/yellow] to approve, "
+                        "[red]d[/red] to deny, [dim]l[/dim]ater: [/bold]"
+                    ).strip()
+                except (KeyboardInterrupt, EOFError):
+                    console.print("\n[dim]Remaining items deferred[/dim]")
+                    return
+                if response.lower() == "yes":
+                    try:
+                        dispatch.approve(item.event, api)
+                        stats.mark_resolved(item.dedup_key)
+                        console.print(f"[green]Approved #{item.index}[/green]")
+                    except (APIError, NotImplementedError) as e:
+                        console.print(f"[red]Error:[/red] {escape(str(e))}")
+                    break
+                elif response.lower() in ("d", "deny", "n", "no"):
+                    try:
+                        dispatch.deny(item.event, api)
+                        stats.mark_resolved(item.dedup_key)
+                    except (APIError, NotImplementedError) as e:
+                        console.print(f"[yellow]Warning:[/yellow] {escape(str(e))}")
+                    console.print(f"[red]Denied #{item.index}[/red]")
+                    break
+                elif response.lower() in ("l", "later", ""):
+                    console.print(f"[dim]Deferred #{item.index}[/dim]")
+                    break
+                else:
+                    console.print("[dim]Type yes to approve, d to deny, l for later[/dim]")
+
+
+def _batch_deny_all(
+    items: list[BatchItem],
+    api: AdminAPI,
+    stats: RollingStats,
+) -> None:
+    """Deny all items in the batch."""
+    denied_count = 0
+    for item in items:
+        dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
+        try:
+            dispatch.deny(item.event, api)
+            stats.mark_resolved(item.dedup_key)
+            denied_count += 1
+        except (APIError, NotImplementedError) as e:
+            console.print(f"[red]Error denying #{item.index}:[/red] {escape(str(e))}")
+    console.print(f"[red]Denied {denied_count} item(s)[/red]")
+
+
+def _batch_select(
+    items: list[BatchItem],
+    indices: list[int],
+    api: AdminAPI,
+    stats: RollingStats,
+) -> list[BatchItem]:
+    """Process selected items individually; return remaining items."""
+    selected = set(indices)
+
+    remaining: list[BatchItem] = []
+    for item in items:
+        if item.index not in selected:
+            remaining.append(item)
+            continue
+        approved = _prompt_single_item(item, api)
+        if approved:
+            stats.mark_resolved(item.dedup_key)
+
+    return remaining
+
+
+def _resolved_key_from_admin_event(event: dict) -> str | None:
+    """Extract the dedup key that an admin action resolved, if possible."""
+    event_type = event.get("event", "")
+    details = event.get("details", {})
+
+    if event_type in ("admin.approval_added", "admin.denial"):
+        # Credential resolution: details has destination + cred_id
+        cred_id = details.get("cred_id", "")
+        destination = details.get("destination", "")
+        if cred_id and destination:
+            # Gateway denials use destination="gateway:{service}", cred_id="{agent}:{method}:{path}"
+            if destination.startswith("gateway:"):
+                parts = cred_id.split(":", 2)
+                if len(parts) == 3:
+                    agent, method, path = parts
+                    service = destination.removeprefix("gateway:")
+                    return f"gw:{agent}:{service}:{method}:{path}:{service}"
+            return f"{cred_id}:{destination}"
+        return None
+
+    if event_type == "admin.gateway_grant":
+        agent = details.get("agent", "")
+        service = details.get("service", "")
+        method = details.get("method", "")
+        path = details.get("path", "")
+        if agent and service:
+            return f"gw:{agent}:{service}:{method}:{path}:{service}"
+        return None
+
+    return None
+
+
+def scan_pending_approvals(log_path: Path) -> list[dict]:
+    """Scan log backwards for unresolved approval requests.
+
+    All approval events are detected via the ``approval.required`` field.
+    Dedup key is always ``approval.key:approval.target``.
+
+    Operator actions (grants, approvals, denials) are tracked individually
+    so that selectively processing some items doesn't mask others.
     """
     if not log_path.exists():
         return []
-
-    # Operator action events — hitting one means the operator was engaged
-    OPERATOR_ACTIONS = {
-        "admin.gateway_grant",
-        "admin.gateway_grant_revoked",
-        "admin.approval_added",
-        "admin.denial",
-    }
 
     # Read lines from file (we need to scan backwards, so read all then reverse)
     # Bounded: only keep last 50K lines to avoid reading huge files
@@ -319,12 +948,12 @@ def scan_pending_approvals(log_path: Path) -> list[dict]:
             for line in f:
                 recent_lines.append(line)
     except Exception as e:
-        console.print(f"[yellow]Warning:[/yellow] Failed to scan log for pending approvals: {e}")
+        console.print(f"[yellow]Warning:[/yellow] Failed to scan log for pending approvals: {escape(str(e))}")
         return []
 
-    # Scan backwards: collect blocks, stop at first operator action
-    risky_blocks: dict[str, dict] = {}  # dedup_key -> event
-    credential_blocks: dict[str, dict] = {}  # dedup_key -> event
+    # Track which specific items have been resolved by operator actions
+    resolved_keys: set[str] = set()
+    pending_blocks: dict[str, dict] = {}  # dedup_key -> event
 
     for line in reversed(recent_lines):
         line = line.strip()
@@ -335,31 +964,20 @@ def scan_pending_approvals(log_path: Path) -> list[dict]:
         except json.JSONDecodeError:
             continue
 
-        event_type = event.get("event", "")
+        # Track individual resolutions instead of blanket stop
+        resolved_key = _resolved_key_from_admin_event(event)
+        if resolved_key:
+            resolved_keys.add(resolved_key)
 
-        # Stop at the most recent operator action — everything before was handled
-        if event_type in OPERATOR_ACTIONS:
-            break
-
-        decision = event.get("decision", "")
-
-        # Collect risky route blocks
-        if event_type == "gateway.risky_route" and decision == "require_approval":
-            key = _risky_route_dedup_key(event)
-            if key not in risky_blocks:  # keep most recent (first seen in reverse)
-                risky_blocks[key] = event
-
-        # Collect credential approval requests
+        # Collect all approval requests via the approval field
         approval = event.get("approval", {})
         if approval and approval.get("required"):
-            cred_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
-            if cred_key not in credential_blocks:
-                credential_blocks[cred_key] = event
-
-    # Return all collected (they're unresolved — no operator action after them)
-    pending = list(risky_blocks.values()) + list(credential_blocks.values())
+            key = _dedup_key_from_approval(event)
+            if key not in pending_blocks and key not in resolved_keys:
+                pending_blocks[key] = event
 
     # Sort by timestamp (oldest first) so prompts appear in chronological order
+    pending = list(pending_blocks.values())
     pending.sort(key=lambda e: e.get("ts", ""))
 
     return pending
@@ -393,17 +1011,17 @@ def format_approval_request(event: dict) -> Panel:
     table.add_column("Key", style="dim")
     table.add_column("Value")
 
-    table.add_row("Credential", f"[bold]{rule}[/bold]")
-    table.add_row("Destination", f"[cyan]{host}[/cyan]")
-    table.add_row("Credential ID", f"[dim]{fingerprint}[/dim] [dim italic](same ID = same key)[/dim]")
+    table.add_row("Credential", f"[bold]{escape(rule)}[/bold]")
+    table.add_row("Destination", f"[cyan]{escape(host)}[/cyan]")
+    table.add_row("Credential ID", f"[dim]{escape(fingerprint)}[/dim] [dim italic](same ID = same key)[/]")
     if client_ip:
-        table.add_row("Client", client_ip)
+        table.add_row("Client", escape(client_ip))
     if location:
-        table.add_row("Location", location)
+        table.add_row("Location", escape(location))
     if confidence:
-        table.add_row("Confidence", confidence)
+        table.add_row("Confidence", escape(confidence))
     if reason:
-        table.add_row("Reason", f"[yellow]{reason}[/yellow]")
+        table.add_row("Reason", f"[yellow]{escape(reason)}[/yellow]")
 
     # Title with timestamp
     title = f"[bold red]Credential Blocked[/bold red] [dim]{timestamp_str}[/dim]"
@@ -446,19 +1064,19 @@ def format_risky_route_approval(event: dict) -> Panel:
     table.add_column("Key", style="dim")
     table.add_column("Value")
 
-    table.add_row("Agent", f"[bold]{agent}[/bold]")
-    table.add_row("Service", f"[cyan]{service}[/cyan]")
+    table.add_row("Agent", f"[bold]{escape(agent)}[/bold]")
+    table.add_row("Service", f"[cyan]{escape(service)}[/cyan]")
     if capability:
-        table.add_row("Capability", capability)
+        table.add_row("Capability", escape(capability))
     display_path = path or risky_route_pattern
-    table.add_row("Route", f"[bold]{method} {display_path}[/bold]")
+    table.add_row("Route", f"[bold]{escape(method)} {escape(display_path)}[/bold]")
     if description:
-        table.add_row("Description", description)
+        table.add_row("Description", escape(description))
     if tactics:
-        labeled = ", ".join(f"{t} ({TACTIC_LABELS.get(t, t)})" for t in tactics)
+        labeled = ", ".join(f"{escape(t)} ({escape(TACTIC_LABELS.get(t, t))})" for t in tactics)
         table.add_row("Tactics", labeled)
     if enables:
-        labeled = ", ".join(f"{e} ({TACTIC_LABELS.get(e, e)})" for e in enables)
+        labeled = ", ".join(f"{escape(e)} ({escape(TACTIC_LABELS.get(e, e))})" for e in enables)
         table.add_row("Enables", labeled)
     if irreversible:
         table.add_row("Irreversible", "[bold red]Yes — cannot be undone[/bold red]")
@@ -793,38 +1411,58 @@ def watch(
     events_since_status = 0
     has_seen_events = False
 
-    # Startup scan: find unresolved approval requests and prompt immediately
+    # Startup scan: find unresolved approval requests and prompt as batch
     if interactive and api:
         pending = scan_pending_approvals(log_path)
         if pending:
             console.print(f"[bold yellow]{len(pending)} pending approval(s) from before this session:[/bold yellow]")
-            console.print()
-            for event in pending:
-                event_type = event.get("event", "")
-                if event_type == "gateway.risky_route":
-                    key = _risky_route_dedup_key(event)
-                    if key not in seen_fingerprints:
-                        seen_fingerprints.add(key)
-                        approved = handle_risky_route_approval(event, api)
-                        if approved:
-                            stats.mark_resolved(key)
-                else:
-                    # Credential approval
-                    approval = event.get("approval", {})
-                    key = f"{approval.get('key', '')}:{approval.get('target', '')}"
-                    if key not in seen_fingerprints:
-                        seen_fingerprints.add(key)
-                        approved = handle_approval(event, api)
-                        if approved:
-                            stats.mark_resolved(key)
+            items = build_batch_items(pending)
+            for item in items:
+                seen_fingerprints.add(item.dedup_key)
+            handle_batch(items, api, stats)
             console.print()
 
     # Print initial idle indicator if no events come quickly
     if not has_seen_events:
         console.print("[dim]Listening... no events yet[/dim]")
 
+    # Accumulation buffer for batch flushing
+    pending_batch: list[dict] = []
+    batch_deadline: float | None = None
+
+    def _flush_batch() -> None:
+        """Flush accumulated approval events as a batch."""
+        nonlocal pending_batch, batch_deadline
+        if not pending_batch:
+            return
+
+        if events_since_status > 0:
+            _print_interactive_status(stats)
+
+        if interactive and api:
+            items = build_batch_items(pending_batch)
+            for item in items:
+                seen_fingerprints.add(item.dedup_key)
+            handle_batch(items, api, stats)
+        else:
+            # Non-interactive: just display each one
+            for ev in pending_batch:
+                approval = ev.get("approval", {})
+                atype = approval.get("approval_type", "")
+                dispatch = DISPATCH.get(atype, FALLBACK_DISPATCH)
+                console.print(dispatch.format_detail(ev))
+
+        pending_batch = []
+        batch_deadline = None
+
     try:
-        for event in tail_jsonl(log_path, follow=follow):
+        for event in tail_jsonl(log_path, follow=follow, tick_interval=0.5):
+            # Tick event (None) — check if batch window expired
+            if event is None:
+                if batch_deadline is not None and time.time() >= batch_deadline:
+                    _flush_batch()
+                continue
+
             kind = event.get("kind", "")
 
             # Filter to security/gateway events if requested
@@ -843,7 +1481,7 @@ def watch(
 
             if approval and approval.get("required"):
                 # Deduplicate by key:target
-                dedup_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
+                dedup_key = _dedup_key_from_approval(event)
                 if dedup_key in seen_fingerprints:
                     ts = event.get("ts", "")
                     ts_str = ""
@@ -853,51 +1491,12 @@ def watch(
                             ts_str = dt.astimezone().strftime("%H:%M:%S")
                         except (ValueError, AttributeError):
                             ts_str = ts[:19]
-                    console.print(f"[dim]{ts_str} Suppressed duplicate: {dedup_key} (already prompted this session)[/dim]")
+                    console.print(f"[dim]{ts_str} Suppressed duplicate: {escape(dedup_key)} (already prompted this session)[/dim]")
                     continue
-                seen_fingerprints.add(dedup_key)
-
-                # Show status context before prompting
-                if events_since_status > 0:
-                    _print_interactive_status(stats)
-                    events_since_status = 0
-                    last_status_time = time.time()
-
-                if interactive and api:
-                    approved = handle_approval(event, api)
-                    if approved:
-                        stats.mark_resolved(dedup_key)
-                else:
-                    console.print(format_approval_request(event))
-
-            elif event.get("event") == "gateway.risky_route" and decision == "require_approval":
-                # Risky route approval — dedup on agent:service:method:path
-                dedup_key = _risky_route_dedup_key(event)
-                if dedup_key in seen_fingerprints:
-                    ts = event.get("ts", "")
-                    ts_str = ""
-                    if ts:
-                        try:
-                            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                            ts_str = dt.astimezone().strftime("%H:%M:%S")
-                        except (ValueError, AttributeError):
-                            ts_str = ts[:19]
-                    console.print(f"[dim]{ts_str} Suppressed duplicate: {dedup_key} (already prompted this session)[/dim]")
-                    continue
-                seen_fingerprints.add(dedup_key)
-
-                # Show status context before prompting
-                if events_since_status > 0:
-                    _print_interactive_status(stats)
-                    events_since_status = 0
-                    last_status_time = time.time()
-
-                if interactive and api:
-                    approved = handle_risky_route_approval(event, api)
-                    if approved:
-                        stats.mark_resolved(dedup_key)
-                else:
-                    _print_event_summary(event)
+                # Don't add to seen_fingerprints yet — that happens at flush
+                pending_batch.append(event)
+                if batch_deadline is None:
+                    batch_deadline = time.time() + BATCH_WINDOW
 
             elif decision == "allow":
                 # Suppress individual allow lines, aggregate in stats
@@ -907,12 +1506,21 @@ def watch(
                     _print_interactive_status(stats)
                     events_since_status = 0
                     last_status_time = now
+                # Check batch deadline on non-approval events too
+                if batch_deadline is not None and time.time() >= batch_deadline:
+                    _flush_batch()
             else:
                 # Other events - show summary
                 _print_event_summary(event)
+                # Check batch deadline
+                if batch_deadline is not None and time.time() >= batch_deadline:
+                    _flush_batch()
 
     except KeyboardInterrupt:
-        if events_since_status > 0:
+        # Flush any pending batch before exit
+        if pending_batch:
+            _flush_batch()
+        elif events_since_status > 0:
             _print_interactive_status(stats)
         console.print("\n[dim]Stopped watching.[/dim]")
 
@@ -987,7 +1595,5 @@ def _print_event_summary(event: dict) -> None:
             if key in event:
                 summary_parts.append(f"{key}={event[key]}")
         summary = " ".join(summary_parts[:4])
-
-    from rich.markup import escape
 
     console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {escape(summary)}")
