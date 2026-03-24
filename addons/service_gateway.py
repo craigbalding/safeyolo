@@ -36,7 +36,7 @@ from service_loader import get_service_registry
 from utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
 from vault import get_vault
 
-from audit_schema import Decision, EventKind, Severity
+from audit_schema import ApprovalRequest, Decision, EventKind, Severity
 
 log = logging.getLogger("safeyolo.service-gateway")
 
@@ -902,6 +902,16 @@ class ServiceGateway:
                 request_id=flow.metadata.get("request_id"),
                 agent=binding.agent,
                 addon=self.name,
+                approval=ApprovalRequest(
+                    required=True,
+                    approval_type="gateway_route",
+                    key=f"gw:{binding.agent}:{service.name}:{method}:{path}",
+                    target=service.name,
+                    scope_hint={
+                        "method": method,
+                        "path": path,
+                    },
+                ),
                 details={
                     "service": service.name,
                     "capability": capability.name,
