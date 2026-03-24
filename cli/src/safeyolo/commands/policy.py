@@ -125,6 +125,9 @@ def show(
 
     if compiled:
         result = _compile(result)
+        console.print("[dim]# Compiled IAM format (as evaluated by PDP)[/dim]")
+    else:
+        console.print("[dim]# Merged from: policy.yaml + addons.yaml + agents.yaml[/dim]")
 
     if section:
         if section not in result:

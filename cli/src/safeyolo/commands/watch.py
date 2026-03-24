@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from .._tactics import TACTIC_LABELS
 from ..api import AdminAPI, APIError, get_api
 from ..config import get_logs_dir
 
@@ -394,7 +395,7 @@ def format_approval_request(event: dict) -> Panel:
 
     table.add_row("Credential", f"[bold]{rule}[/bold]")
     table.add_row("Destination", f"[cyan]{host}[/cyan]")
-    table.add_row("Fingerprint", f"[dim]{fingerprint}[/dim]")
+    table.add_row("Credential ID", f"[dim]{fingerprint}[/dim] [dim italic](same ID = same key)[/dim]")
     if client_ip:
         table.add_row("Client", client_ip)
     if location:
@@ -410,7 +411,7 @@ def format_approval_request(event: dict) -> Panel:
     return Panel(
         table,
         title=title,
-        subtitle="[green][A]pprove[/green] | [red][D]eny[/red] | [dim][S]kip[/dim]",
+        subtitle="[green][A]pprove[/green] | [red][D]eny[/red] | [dim][L]ater[/dim]",
         border_style="red",
     )
 
@@ -454,20 +455,22 @@ def format_risky_route_approval(event: dict) -> Panel:
     if description:
         table.add_row("Description", description)
     if tactics:
-        table.add_row("Tactics", ", ".join(tactics))
+        labeled = ", ".join(f"{t} ({TACTIC_LABELS.get(t, t)})" for t in tactics)
+        table.add_row("Tactics", labeled)
     if enables:
-        table.add_row("Enables", ", ".join(enables))
+        labeled = ", ".join(f"{e} ({TACTIC_LABELS.get(e, e)})" for e in enables)
+        table.add_row("Enables", labeled)
     if irreversible:
-        table.add_row("Irreversible", "[bold red]YES[/bold red]")
+        table.add_row("Irreversible", "[bold red]Yes — cannot be undone[/bold red]")
 
     # Title with timestamp
     border_style = "red" if irreversible else "yellow"
     title = f"[bold {border_style}]Risky Route Blocked[/bold {border_style}] [dim]{timestamp_str}[/dim]"
 
     if irreversible:
-        subtitle = "[yellow]Type YES to approve[/yellow] | [red][D]eny[/red] | [dim][S]kip[/dim]"
+        subtitle = "[yellow]Type yes to approve[/yellow] | [red][D]eny[/red] | [dim][L]ater[/dim]"
     else:
-        subtitle = "[green][A]pprove once[/green] | [red][D]eny[/red] | [dim][S]kip[/dim]"
+        subtitle = "[green][A]pprove once[/green] | [red][D]eny[/red] | [dim][L]ater[/dim]"
 
     return Panel(
         table,
@@ -498,18 +501,18 @@ def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
         try:
             if irreversible:
                 response = console.input(
-                    "[bold]Type YES to approve, [red]d[/red] to deny, [dim]s[/dim] to skip: [/bold]"
+                    "[bold]Type yes to approve, [red]d[/red] to deny, [dim]l[/dim]ater: [/bold]"
                 ).strip()
             else:
                 response = (
-                    console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+                    console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]l[/dim]): [/bold]").lower().strip()
                 )
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Interrupted[/dim]")
             return False
 
         if irreversible:
-            if response == "YES":
+            if response.lower().strip() == "yes":
                 pass  # Fall through to approve
             elif response.lower() in ("d", "deny", "n", "no"):
                 try:
@@ -518,11 +521,11 @@ def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
                     console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
                 console.print(f"[red]Denied[/red] - {service} {method} {path}")
                 return False
-            elif response.lower() in ("s", "skip", ""):
-                console.print("[dim]Skipped[/dim]")
+            elif response.lower() in ("l", "later", ""):
+                console.print("[dim]Deferred — will re-prompt next session[/dim]")
                 return False
             else:
-                console.print("[dim]Type YES (exact) to approve irreversible route, d to deny, s to skip[/dim]")
+                console.print("[dim]Type yes to approve, d to deny, l for later[/dim]")
                 continue
         else:
             if response in ("a", "approve", "y", "yes"):
@@ -534,11 +537,11 @@ def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
                     console.print(f"[yellow]Warning: Could not log denial: {e}[/yellow]")
                 console.print(f"[red]Denied[/red] - {service} {method} {path}")
                 return False
-            elif response in ("s", "skip", ""):
-                console.print("[dim]Skipped[/dim]")
+            elif response in ("l", "later", ""):
+                console.print("[dim]Deferred — will re-prompt next session[/dim]")
                 return False
             else:
-                console.print("[dim]Invalid input. Use: a(pprove), d(eny), s(kip)[/dim]")
+                console.print("[dim]Invalid input. Use: a(pprove), d(eny), l(ater)[/dim]")
                 continue
 
         # Approve — add grant
@@ -576,7 +579,7 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
     while True:
         try:
             response = (
-                console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]s[/dim]): [/bold]").lower().strip()
+                console.input("[bold]Action ([green]a[/green]/[red]d[/red]/[dim]l[/dim]): [/bold]").lower().strip()
             )
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Interrupted[/dim]")
@@ -615,12 +618,12 @@ def handle_approval(event: dict, api: AdminAPI) -> bool:
             console.print(f"[red]Denied[/red] - {fingerprint[:16]}...")
             return False
 
-        elif response in ("s", "skip", ""):
-            console.print("[dim]Skipped[/dim]")
+        elif response in ("l", "later", ""):
+            console.print("[dim]Deferred — will re-prompt next session[/dim]")
             return False
 
         else:
-            console.print("[dim]Invalid input. Use: a(pprove), d(eny), s(kip)[/dim]")
+            console.print("[dim]Invalid input. Use: a(pprove), d(eny), l(ater)[/dim]")
 
 
 def write_status_file(stats: RollingStats, path: Path = STATUS_FILE) -> None:
@@ -782,14 +785,13 @@ def watch(
     console.print()
 
     # Track seen events to avoid duplicates
-    # For risky routes: value is denial count (0=approved/first-seen, 1=denied-once, 2+=suppressed)
     seen_fingerprints: set[str] = set()
-    denied_counts: dict[str, int] = {}  # dedup_key -> denial count
 
     # Rolling stats for status summaries (reuses existing RollingStats)
     stats = RollingStats()
     last_status_time = time.time()
     events_since_status = 0
+    has_seen_events = False
 
     # Startup scan: find unresolved approval requests and prompt immediately
     if interactive and api:
@@ -817,6 +819,10 @@ def watch(
                             stats.mark_resolved(key)
             console.print()
 
+    # Print initial idle indicator if no events come quickly
+    if not has_seen_events:
+        console.print("[dim]Listening... no events yet[/dim]")
+
     try:
         for event in tail_jsonl(log_path, follow=follow):
             kind = event.get("kind", "")
@@ -824,6 +830,9 @@ def watch(
             # Filter to security/gateway events if requested
             if security_only and kind not in ("security", "gateway"):
                 continue
+
+            if not has_seen_events:
+                has_seen_events = True
 
             # Track all events in rolling stats
             stats.add_event(event)
@@ -836,6 +845,15 @@ def watch(
                 # Deduplicate by key:target
                 dedup_key = f"{approval.get('key', '')}:{approval.get('target', '')}"
                 if dedup_key in seen_fingerprints:
+                    ts = event.get("ts", "")
+                    ts_str = ""
+                    if ts:
+                        try:
+                            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                            ts_str = dt.astimezone().strftime("%H:%M:%S")
+                        except (ValueError, AttributeError):
+                            ts_str = ts[:19]
+                    console.print(f"[dim]{ts_str} Suppressed duplicate: {dedup_key} (already prompted this session)[/dim]")
                     continue
                 seen_fingerprints.add(dedup_key)
 
@@ -854,11 +872,18 @@ def watch(
 
             elif event.get("event") == "gateway.risky_route" and decision == "require_approval":
                 # Risky route approval — dedup on agent:service:method:path
-                # First denial allows one re-prompt; second denial suppresses for session
                 dedup_key = _risky_route_dedup_key(event)
-                prior_denials = denied_counts.get(dedup_key, 0)
-                if dedup_key in seen_fingerprints and prior_denials >= 2:
-                    continue  # Denied twice — suppressed
+                if dedup_key in seen_fingerprints:
+                    ts = event.get("ts", "")
+                    ts_str = ""
+                    if ts:
+                        try:
+                            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                            ts_str = dt.astimezone().strftime("%H:%M:%S")
+                        except (ValueError, AttributeError):
+                            ts_str = ts[:19]
+                    console.print(f"[dim]{ts_str} Suppressed duplicate: {dedup_key} (already prompted this session)[/dim]")
+                    continue
                 seen_fingerprints.add(dedup_key)
 
                 # Show status context before prompting
@@ -871,9 +896,6 @@ def watch(
                     approved = handle_risky_route_approval(event, api)
                     if approved:
                         stats.mark_resolved(dedup_key)
-                        denied_counts.pop(dedup_key, None)
-                    else:
-                        denied_counts[dedup_key] = prior_denials + 1
                 else:
                     _print_event_summary(event)
 

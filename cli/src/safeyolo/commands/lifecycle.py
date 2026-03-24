@@ -308,6 +308,7 @@ def status() -> None:
         pending = api.pending_approvals()
         if pending:
             table.add_row("Pending Approvals", f"[yellow]{len(pending)}[/yellow]")
+            table.add_row("", "[dim]Run: safeyolo watch[/dim]")
 
     except APIError:
         table.add_row("", "")

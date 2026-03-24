@@ -5,6 +5,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from .._tactics import TACTIC_LABELS
 from ._service_discovery import _load_service_files
 
 console = Console()
@@ -82,6 +83,18 @@ def show(
     console.print()
 
     capabilities = svc.get("capabilities", {})
+
+    # Summary table of capabilities
+    if capabilities:
+        cap_table = Table(title="Capabilities", show_header=True)
+        cap_table.add_column("Name", style="yellow")
+        cap_table.add_column("Description")
+        cap_table.add_column("Routes", justify="right")
+        for cn, cc in capabilities.items():
+            cap_table.add_row(cn, cc.get("description", ""), str(len(cc.get("routes", []))))
+        console.print(cap_table)
+        console.print()
+
     for cap_name, cap_config in capabilities.items():
         console.print(f"  [yellow]Capability: {escape(cap_name)}[/yellow]")
         desc = cap_config.get("description", "")
@@ -110,7 +123,14 @@ def show(
                     console.print(f"      {escape(entry['description'])}")
                 tactics = entry.get("tactics", [])
                 if tactics:
-                    console.print(f"      Tactics: {', '.join(escape(t) for t in tactics)}")
+                    labeled = ", ".join(f"{t} ({TACTIC_LABELS.get(t, t)})" for t in tactics)
+                    console.print(f"      Tactics: {labeled}")
+                enables = entry.get("enables", [])
+                if enables:
+                    labeled = ", ".join(f"{e} ({TACTIC_LABELS.get(e, e)})" for e in enables)
+                    console.print(f"      Enables: {labeled}")
+                if entry.get("irreversible"):
+                    console.print("      [red]Irreversible: yes — cannot be undone[/red]")
                 for route in entry.get("routes", []):
                     methods = route.get("methods", ["*"])
                     path = route.get("path", "/*")
@@ -123,5 +143,12 @@ def show(
                 if entry.get("description"):
                     console.print(f"      {escape(entry['description'])}")
                 if tactics:
-                    console.print(f"      Tactics: {', '.join(escape(t) for t in tactics)}")
+                    labeled = ", ".join(f"{t} ({TACTIC_LABELS.get(t, t)})" for t in tactics)
+                    console.print(f"      Tactics: {labeled}")
+                enables = entry.get("enables", [])
+                if enables:
+                    labeled = ", ".join(f"{e} ({TACTIC_LABELS.get(e, e)})" for e in enables)
+                    console.print(f"      Enables: {labeled}")
+                if entry.get("irreversible"):
+                    console.print("      [red]Irreversible: yes — cannot be undone[/red]")
         console.print()

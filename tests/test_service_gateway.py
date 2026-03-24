@@ -305,6 +305,9 @@ class TestCredentialInjection:
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert "AGENT_MISMATCH" in body["reason_codes"]
+        assert body["type"] == "agent_mismatch"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
     def test_host_mismatch_denied(self, make_flow, configured_gateway):
         gw, env, registry, vault_obj = configured_gateway
@@ -323,6 +326,9 @@ class TestCredentialInjection:
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert "HOST_MISMATCH" in body["reason_codes"]
+        assert body["type"] == "host_mismatch"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
     def test_invalid_token_denied(self, make_flow, gateway):
         flow = make_flow(
@@ -337,6 +343,9 @@ class TestCredentialInjection:
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert "INVALID_TOKEN" in body["reason_codes"]
+        assert body["type"] == "invalid_token"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
     def test_route_not_in_capability_denied(self, make_flow, configured_gateway):
         """POST to a path not in the reader capability is denied."""
@@ -357,6 +366,9 @@ class TestCredentialInjection:
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert "ROUTE_DENIED" in body["reason_codes"]
+        assert body["type"] == "route_denied"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
     def test_capability_not_found_denied(self, make_flow, gateway, registry, vault_obj):
         """Token bound to nonexistent capability is denied."""
@@ -383,6 +395,9 @@ class TestCredentialInjection:
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert "CAPABILITY_NOT_FOUND" in body["reason_codes"]
+        assert body["type"] == "capability_not_found"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
 
 # --- Risky Route PDP Integration Tests ---
@@ -533,6 +548,9 @@ risky_routes:
         assert flow.response.status_code == 428
         body = json.loads(flow.response.content)
         assert "GATEWAY_RISKY_ROUTE" in body["reason_codes"]
+        assert body["type"] == "gateway_risky_route"
+        assert body["action"] == "wait_for_approval"
+        assert "reflection" in body
 
 
 # --- Token Minting Tests ---
@@ -728,6 +746,9 @@ class TestFullFlow:
         assert flow.response.status_code == 403
         body = json.loads(flow.response.content)
         assert "HOST_MISMATCH" in body["reason_codes"]
+        assert body["type"] == "host_mismatch"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
 
 # --- Grant Management Tests ---

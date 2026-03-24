@@ -1,5 +1,6 @@
 """Tests for network_guard addon (combined access control + rate limiting)."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -79,6 +80,10 @@ class TestNetworkGuard:
         assert flow.metadata.get("blocked_by") == "network-guard"
         assert addon.stats.blocked == 1
         assert addon.stats.allowed == 0
+        body = json.loads(flow.response.content)
+        assert body["type"] == "access_denied"
+        assert body["action"] == "self_correct"
+        assert "reflection" in body
 
     def test_blocks_rate_limited_request(self):
         """Test addon blocks requests with effect=budget_exceeded."""
@@ -117,6 +122,10 @@ class TestNetworkGuard:
         assert flow.metadata.get("blocked_by") == "network-guard"
         assert addon.stats.blocked == 1
         assert addon.rate_limited == 1
+        body = json.loads(flow.response.content)
+        assert body["type"] == "rate_limit_exceeded"
+        assert body["action"] == "retry_with_backoff"
+        assert "reflection" in body
 
     def test_allows_non_denied_request(self):
         """Test addon allows requests without effect=deny or budget_exceeded."""
@@ -454,4 +463,7 @@ class TestHomoglyphDetection:
         # Should be blocked
         assert flow.response is not None
         assert flow.response.status_code == 403
-        assert b"homoglyph" in flow.response.content.lower()
+        body = json.loads(flow.response.content)
+        assert body["type"] == "homoglyph_attack"
+        assert body["action"] == "abort"
+        assert "reflection" in body
