@@ -54,7 +54,7 @@ safeyolo/
 │   │   └── matching.py       # Host/resource matching, HMAC fingerprinting
 │   ├── admin_api.py          # REST API for runtime control
 │   ├── admin_shield.py       # Protects admin API endpoints
-│   ├── agent_relay.py        # Read-only PDP relay for agent self-service
+│   ├── agent_api.py          # Read-only PDP agent API for agent self-service
 │   ├── base.py               # Base addon class with shared functionality
 │   ├── budget_tracker.py     # GCRA-based rate limiting
 │   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
@@ -79,7 +79,7 @@ safeyolo/
 │   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
 │   ├── core.py               # PDPCore - policy evaluation engine
 │   ├── client.py             # PolicyClient interface (local/HTTP modes, incl. admin)
-│   ├── tokens.py             # HMAC-signed readonly tokens for agent relay
+│   ├── tokens.py             # HMAC-signed readonly tokens for agent API
 │   └── app.py                # FastAPI service (optional deployment)
 ├── cli/                      # safeyolo CLI (runs on host)
 │   ├── src/safeyolo/

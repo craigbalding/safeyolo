@@ -5,7 +5,7 @@ Pure Python module (not a mitmproxy addon). Stores one row per completed
 HTTP transaction with metadata, headers, and compressed request/response bodies.
 Supports full-text search over text-like response bodies via FTS5.
 
-Used by flow_recorder.py (the mitmproxy addon) and queried via agent_relay.py.
+Used by flow_recorder.py (the mitmproxy addon) and queried via agent_api.py.
 """
 
 import difflib

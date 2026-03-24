@@ -15,7 +15,7 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── policies/            # Per-project approval policies
 ├── agents/              # Agent container configurations
-├── data/                # Admin token, HMAC secret, relay tokens
+├── data/                # Admin token, HMAC secret, agent API tokens
 │   ├── vault.yaml.enc   # Encrypted credential vault
 │   └── vault.key        # Vault encryption key (auto-generated, 0600 permissions)
 ```

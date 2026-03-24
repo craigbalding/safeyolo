@@ -22,7 +22,7 @@ from mitmproxy import ctx, http
 
 log = logging.getLogger("safeyolo.flow-recorder")
 
-RELAY_HOST = "_safeyolo.proxy.internal"
+AGENT_API_HOST = "_safeyolo.proxy.internal"
 
 
 class FlowRecorder:
@@ -92,8 +92,8 @@ class FlowRecorder:
         # Must have test context (set by test_context.py for target hosts)
         if "ccapt_context" not in flow.metadata:
             return False
-        # Skip relay internal traffic
-        if flow.request.host == RELAY_HOST:
+        # Skip agent API internal traffic
+        if flow.request.host == AGENT_API_HOST:
             return False
         return True
 

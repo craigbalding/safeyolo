@@ -224,11 +224,11 @@ safeyolo policy show --compiled
 
 ### Token Management
 
-Manage the readonly relay token for agent self-service diagnostics. Only one token exists at a time. Token survives proxy restarts and expires after the TTL (default: 1h).
+Manage the readonly agent API token for agent self-service diagnostics. Only one token exists at a time. Token survives proxy restarts and expires after the TTL (default: 1h).
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo token create` | Create a relay token (replaces any existing) |
+| `safeyolo token create` | Create an agent API token (replaces any existing) |
 | `safeyolo token show` | Show current token status and expiry |
 | `safeyolo token revoke` | Delete the active token |
 
@@ -289,7 +289,7 @@ safeyolo/
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
 ├── policies/            # Approved credentials
-└── data/                # Runtime data (admin token, HMAC secret, relay tokens)
+└── data/                # Runtime data (admin token, HMAC secret, agent API tokens)
     ├── vault.yaml.enc   # Encrypted credential vault
     └── vault.key        # Vault encryption key (auto-generated)
 ```

@@ -1039,7 +1039,7 @@ class ServiceGateway:
         }
 
     def get_agent_services(self) -> dict[str, dict[str, dict]]:
-        """Return agent service bindings (host + token + capability + account). For relay /gateway/services."""
+        """Return agent service bindings (host + token + capability + account). For agent API /gateway/services."""
         # Build reverse map: service_name → host
         reverse_host_map: dict[str, str] = {}
         for host, service_name in self._host_map.items():

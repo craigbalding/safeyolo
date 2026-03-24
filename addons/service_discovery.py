@@ -168,7 +168,7 @@ class ServiceDiscovery:
                     self._last_seen[agent] = time.time()
 
     def get_agents(self) -> dict:
-        """Get agent overview for relay /agents endpoint.
+        """Get agent overview for agent API /agents endpoint.
 
         Returns per-agent info: IP, last seen timestamp, and seconds since
         last activity. Thread-safe.
