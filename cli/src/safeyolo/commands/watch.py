@@ -401,6 +401,8 @@ def _gateway_format_row(event: dict) -> tuple[str, str, str, str]:
 
 
 def _service_format_row(event: dict) -> tuple[str, str, str, str]:
+    # Unused in batch table (service items get special rendering),
+    # but kept for API compatibility with ApprovalDispatch.
     approval = event.get("approval", {})
     agent = event.get("agent", "\u2014")
     target = approval.get("target", "?")
@@ -435,28 +437,130 @@ def _service_format_detail(event: dict) -> Panel:
     table.add_column("Key", style="dim")
     table.add_column("Value")
 
-    table.add_row("Agent", f"[bold]{escape(agent)}[/bold]")
     table.add_row("Service", f"[cyan]{escape(service)}[/cyan]")
     if capability:
         table.add_row("Capability", escape(capability))
     if reason:
         table.add_row("Reason", escape(reason))
+    table.add_row("", "")
+    table.add_row("", "[dim]This will permanently bind a credential to this agent.[/dim]")
 
-    title = f"[bold yellow]Service Access Request[/bold yellow] [dim]{timestamp_str}[/dim]"
+    title = (
+        f"[bold yellow]{escape(agent)}[/bold yellow]"
+        f" requests authenticated access"
+        f" [dim]{timestamp_str}[/dim]"
+    )
 
     return Panel(
         table,
         title=title,
-        subtitle="[red][D]eny[/red] | [dim][L]ater[/dim]",
+        subtitle="[green][A]uthorize[/green] \u00b7 [red][D]eny[/red] \u00b7 [dim][L]ater[/dim]",
         border_style="yellow",
     )
 
 
 def _service_approve(event: dict, api: AdminAPI) -> str | None:
-    raise NotImplementedError(
-        "Service access cannot be approved from watch — "
-        "run `safeyolo agent authorize` on the host (requires credentials)"
+    approval = event.get("approval", {})
+    scope = approval.get("scope_hint", {})
+    agent = event.get("agent", "")
+    service = approval.get("target", "")
+    capability = scope.get("capability", "")
+
+    if not agent or not service:
+        raise NotImplementedError(
+            "Service access event missing agent or service — "
+            "run `safeyolo agent authorize` on the host instead"
+        )
+
+    try:
+        if not capability:
+            capability = console.input(
+                f"[bold]Capability for {escape(service)}:[/bold] "
+            ).strip()
+            if not capability:
+                raise NotImplementedError("Capability required")
+
+        # Credential flow: pick existing or create new
+        cred_name = _pick_or_create_credential(service)
+        if not cred_name:
+            raise NotImplementedError("Credential required")
+
+    except (KeyboardInterrupt, EOFError):
+        raise NotImplementedError("Interrupted")
+
+    result = api.authorize_service(
+        agent=agent,
+        service=service,
+        capability=capability,
+        credential=cred_name,
     )
+    return result.get("status", "authorized")
+
+
+def _pick_or_create_credential(service: str) -> str | None:
+    """Interactive credential selection: pick existing or create new.
+
+    Returns credential name, or None if cancelled.
+    """
+    from ._service_discovery import find_service
+    from .vault import _load_vault
+
+    try:
+        vault, VaultCredential = _load_vault()
+    except (OSError, ValueError) as e:
+        console.print(f"[red]Error loading vault:[/red] {e}")
+        return None
+
+    # Look up auth type from service definition
+    svc = find_service(service)
+    auth_type = "bearer"
+    if svc:
+        auth_type = svc.get("auth", {}).get("type", "bearer")
+
+    AUTH_TYPE_LABELS = {
+        "bearer": "Bearer token",
+        "api_key": "API key",
+        "oauth2": "OAuth2 token",
+    }
+    type_label = AUTH_TYPE_LABELS.get(auth_type, auth_type)
+
+    existing_names = vault.list_names()
+    matching = [n for n in existing_names if n.startswith(f"{service}-")]
+
+    if matching:
+        console.print()
+        for i, n in enumerate(matching, 1):
+            console.print(f"  [{i}] {escape(n)}")
+        console.print(f"  [{len(matching) + 1}] Enter new {type_label.lower()}")
+        choice = console.input(f"[bold]Select credential [1-{len(matching) + 1}]:[/bold] ").strip()
+        if not choice:
+            choice = "1"
+        try:
+            idx = int(choice) - 1
+            if idx < 0 or idx > len(matching):
+                raise ValueError
+            if idx < len(matching):
+                return matching[idx]
+        except ValueError:
+            console.print("[dim]Invalid selection[/dim]")
+            return None
+    # Fall through: no matching creds, or user chose "enter new"
+
+    cred_value = console.input(f"[bold]{type_label}:[/bold] ", password=True).strip()
+    if not cred_value:
+        console.print("[dim]No value provided — cancelled[/dim]")
+        return None
+
+    from .agent import _auto_credential_name
+
+    cred_name = _auto_credential_name(service, existing_names)
+    cred = VaultCredential(name=cred_name, type=auth_type, value=cred_value)
+    vault.store(cred)
+    console.print(
+        f"[green]Credential stored:[/green] {escape(cred_name)} in vault. "
+        f"To remove: [bold]safeyolo vault remove {escape(cred_name)}[/bold]"
+    )
+    return cred_name
 
 
 def _service_deny(event: dict, api: AdminAPI) -> None:
@@ -569,6 +673,29 @@ def _format_batch_table(items: list[BatchItem]) -> Panel:
     table.add_column("Risk", min_width=12)
 
     for item in items:
+        if item.approval_type == "service":
+            # Service auth items break the grid — visually distinct
+            approval = item.event.get("approval", {})
+            scope = approval.get("scope_hint", {})
+            agent = item.event.get("agent", "?")
+            service = approval.get("target", "?")
+            capability = scope.get("capability", "")
+            reason = scope.get("reason", "") or item.event.get("summary", "")
+
+            cap_str = f" ({escape(capability)})" if capability else ""
+            line = (
+                f"[bold]{escape(agent)}[/bold] requests "
+                f"[bold yellow]authenticated access[/bold yellow] to "
+                f"[cyan]{escape(service)}[/cyan]{cap_str}"
+            )
+
+            table.add_row("", "", "", "", end_section=True)
+            table.add_row(f"[bold yellow]{item.index}[/bold yellow]", line, "", "")
+            if reason:
+                table.add_row("", f'  [dim]"{escape(reason)}"[/dim]', "", "")
+            table.add_row("", "", "", "", end_section=True)
+            continue
+
         dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
         agent, action, risk, description = dispatch.format_row(item.event)
 
@@ -703,10 +830,15 @@ def handle_batch(
         elif isinstance(action, tuple) and action[0] == "review":
             idx = action[1]
             item = items[idx - 1]
-            dispatch = DISPATCH.get(item.approval_type, FALLBACK_DISPATCH)
-            console.print()
-            console.print(dispatch.format_detail(item.event))
-            # Re-display batch table and re-prompt
+            approved = _prompt_single_item(item, api)
+            if approved:
+                stats.mark_resolved(item.dedup_key)
+            # Remove handled item, re-number remaining
+            items = [it for it in items if it is not item]
+            if not items:
+                return
+            for i, it in enumerate(items, 1):
+                it.index = i
             console.print()
             console.print(_format_batch_table(items))
             continue
@@ -735,18 +867,25 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
     elif item.approval_type == "credential":
         return handle_approval(item.event, api)
     elif item.approval_type == "service":
-        # Service access: can't approve from watch, show detail with CLI hint
         console.print()
         console.print(dispatch.format_detail(item.event))
         while True:
             try:
                 response = console.input(
-                    "[bold]Action ([red]d[/red]eny/[dim]l[/dim]ater): [/bold]"
+                    "[bold][green]a[/green]uthorize / [red]d[/red]eny / [dim]l[/dim]ater: [/bold]"
                 ).lower().strip()
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[dim]Interrupted[/dim]")
                 return False
-            if response in ("d", "deny", "n", "no"):
+            if response in ("a", "authorize", "y", "yes"):
+                try:
+                    dispatch.approve(item.event, api)
+                    console.print("[green]Authorized[/green]")
+                    return True
+                except (APIError, NotImplementedError) as e:
+                    console.print(f"[red]Error:[/red] {escape(str(e))}")
+                    return False
+            elif response in ("d", "deny", "n", "no"):
                 try:
                     dispatch.deny(item.event, api)
                 except (APIError, NotImplementedError) as e:
@@ -757,7 +896,7 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
                 console.print("[dim]Deferred[/dim]")
                 return False
             else:
-                console.print("[dim]Use d(eny) or l(ater)[/dim]")
+                console.print("[dim]Invalid input. Use: a(uthorize), d(eny), l(ater)[/dim]")
     else:
         # Fallback: show detail and prompt a/d/l
         console.print()
@@ -922,6 +1061,13 @@ def _resolved_key_from_admin_event(event: dict) -> str | None:
         path = details.get("path", "")
         if agent and service:
             return f"gw:{agent}:{service}:{method}:{path}:{service}"
+        return None
+
+    if event_type in ("admin.agent_service_authorized", "admin.agent_service_revoked"):
+        agent = details.get("agent", "")
+        service = details.get("service", "")
+        if agent and service:
+            return f"{agent}:{service}:{service}"
         return None
 
     return None

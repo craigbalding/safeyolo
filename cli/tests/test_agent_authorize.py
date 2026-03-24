@@ -591,9 +591,22 @@ class TestRevoke:
                 "services": {"svc": {"capability": "r", "token": "svc-cred"}},
             },
         )
+        _store_vault_cred(tmp_config_dir, "svc-cred")
         result = _invoke(cli_runner, ["revoke", "boris", "svc"])
         assert "svc-cred" in result.output
         assert "vault remove" in result.output
+
+    def test_no_reminder_when_credential_not_in_vault(self, cli_runner, tmp_config_dir):
+        _create_agent(
+            tmp_config_dir,
+            "boris",
+            extra={
+                "services": {"svc": {"capability": "r", "token": "ghost-cred"}},
+            },
+        )
+        result = _invoke(cli_runner, ["revoke", "boris", "svc"])
+        assert "Revoked" in result.output
+        assert "vault remove" not in result.output
 
     def test_preserves_other_services(self, cli_runner, tmp_config_dir):
         _create_agent(

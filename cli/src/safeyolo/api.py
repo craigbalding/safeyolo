@@ -258,6 +258,47 @@ class AdminAPI:
             },
         )
 
+    def authorize_service(
+        self,
+        agent: str,
+        service: str,
+        capability: str,
+        credential: str,
+    ) -> dict[str, Any]:
+        """Authorize an agent to use a service.
+
+        Args:
+            agent: Agent name (e.g., "boris")
+            service: Service name (e.g., "gmail")
+            capability: Capability name (e.g., "readonly")
+            credential: Vault credential name (e.g., "gmail-oauth2")
+        """
+        return self._request(
+            "POST",
+            f"/admin/agents/{agent}/services",
+            json={
+                "service": service,
+                "capability": capability,
+                "credential": credential,
+            },
+        )
+
+    def revoke_service(
+        self,
+        agent: str,
+        service: str,
+    ) -> dict[str, Any]:
+        """Revoke an agent's access to a service.
+
+        Args:
+            agent: Agent name (e.g., "boris")
+            service: Service name (e.g., "gmail")
+        """
+        return self._request(
+            "DELETE",
+            f"/admin/agents/{agent}/services/{service}",
+        )
+
     def pending_approvals(self) -> list[dict[str, Any]]:
         """Get pending credential approval requests.
 

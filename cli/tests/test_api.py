@@ -219,6 +219,76 @@ class TestAPIError:
         assert err.status_code is None
 
 
+class TestAdminAPIAgentService:
+    """Tests for authorize_service and revoke_service methods."""
+
+    def test_authorize_service_sends_correct_post(self, tmp_config_dir, mock_httpx):
+        """authorize_service sends POST to correct path with payload."""
+        mock_httpx["response"].json.return_value = {
+            "status": "authorized",
+            "agent": "boris",
+            "service": "gmail",
+            "capability": "readonly",
+        }
+
+        api = AdminAPI(token="test")
+        result = api.authorize_service(
+            agent="boris",
+            service="gmail",
+            capability="readonly",
+            credential="gmail-oauth2",
+        )
+
+        assert result["status"] == "authorized"
+        call_args = mock_httpx["client"].request.call_args
+        assert call_args[0] == ("POST", "http://localhost:9090/admin/agents/boris/services")
+        assert call_args[1]["json"] == {
+            "service": "gmail",
+            "capability": "readonly",
+            "credential": "gmail-oauth2",
+        }
+
+    def test_revoke_service_sends_correct_delete(self, tmp_config_dir, mock_httpx):
+        """revoke_service sends DELETE to parameterized path."""
+        mock_httpx["response"].json.return_value = {
+            "status": "revoked",
+            "agent": "boris",
+            "service": "gmail",
+            "credential": "gmail-oauth2",
+        }
+
+        api = AdminAPI(token="test")
+        result = api.revoke_service(agent="boris", service="gmail")
+
+        assert result["status"] == "revoked"
+        assert result["credential"] == "gmail-oauth2"
+        call_args = mock_httpx["client"].request.call_args
+        assert call_args[0] == ("DELETE", "http://localhost:9090/admin/agents/boris/services/gmail")
+
+    def test_authorize_service_raises_on_404(self, tmp_config_dir, mock_httpx):
+        """authorize_service raises APIError on 404."""
+        mock_httpx["response"].status_code = 404
+        mock_httpx["response"].text = '{"error": "agent not found"}'
+
+        api = AdminAPI(token="test")
+        with pytest.raises(APIError):
+            api.authorize_service(
+                agent="noone",
+                service="gmail",
+                capability="readonly",
+                credential="gmail-key",
+            )
+
+    def test_revoke_service_raises_on_404(self, tmp_config_dir, mock_httpx):
+        """revoke_service raises APIError on 404."""
+        mock_httpx["response"].status_code = 404
+        mock_httpx["response"].text = '{"error": "not found"}'
+
+        api = AdminAPI(token="test")
+        with pytest.raises(APIError):
+            api.revoke_service(agent="boris", service="nope")
+
+
 class TestGetAPI:
     """Tests for get_api() helper."""
 

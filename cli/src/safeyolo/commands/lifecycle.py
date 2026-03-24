@@ -15,6 +15,7 @@ from ..api import APIError, get_api
 from ..config import (
     DEFAULT_CONFIG,
     find_config_dir,
+    get_admin_token,
     get_config_dir,
     load_config,
     save_config,
@@ -168,7 +169,7 @@ def start(
             raise typer.Exit(1)
 
     if dev:
-        console.print("[bold]Dev mode:[/bold] addons/ and pdp/ mounted from repo")
+        console.print("[bold]Dev mode:[/bold] addons/, pdp/, and logs mounted from repo")
 
     try:
         docker_start(detach=True, pull=pull, dev=dev)
@@ -188,6 +189,10 @@ def start(
                 console.print("  CA certificate copied to host")
         else:
             console.print("[yellow]timeout (may still be starting)[/yellow]")
+
+    # Dev mode: ensure a readonly relay token exists for agent self-service
+    if dev:
+        _ensure_relay_token()
 
     # Show connection info
     if first_run:
@@ -212,6 +217,26 @@ def start(
                 title="Started",
             )
         )
+
+
+def _ensure_relay_token() -> None:
+    """Create a readonly relay token if one doesn't exist."""
+    from .token import _get_active_token_path
+
+    token_path = _get_active_token_path()
+    if token_path.exists() and token_path.read_text().strip():
+        return
+
+    try:
+        from ._token_ops import create_readonly_token
+
+        token_str = create_readonly_token(get_admin_token(), 3600)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token_str)
+        token_path.chmod(0o600)
+        console.print("  Relay token created (1h TTL)")
+    except (OSError, ValueError, TypeError) as e:
+        console.print(f"  [dim]Relay token: {e}[/dim]")
 
 
 def stop() -> None:

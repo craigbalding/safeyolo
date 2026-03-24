@@ -27,6 +27,9 @@ import urllib.parse
 
 from flow_store import is_text_like_content_type
 from mitmproxy import ctx, http
+from utils import sanitize_for_log, write_event
+
+from audit_schema import ApprovalRequest, Decision, EventKind, Severity
 
 log = logging.getLogger("safeyolo.agent-relay")
 
@@ -70,7 +73,7 @@ class AgentRelay:
         if method not in ("GET", "POST", "DELETE"):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET", "POST", "DELETE"]})
             return
-        if method in ("POST", "DELETE") and not path.startswith("/api/flows"):
+        if method in ("POST", "DELETE") and not (path.startswith("/api/flows") or path.startswith("/gateway/")):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
             return
 
@@ -340,12 +343,41 @@ class AgentRelay:
             self._respond(flow, 404, {"error": f"Service '{service_name}' not found"})
             return
 
-        if capability not in svc.capabilities:
+        cap_obj = svc.capabilities.get(capability)
+        if not cap_obj:
             self._respond(flow, 404, {"error": f"Capability '{capability}' not found in service '{service_name}'"})
             return
 
-        # Log the request (watch will pick it up)
-        log.info(f"Access request: agent={agent_name} service={service_name} capability={capability}")
+        write_event(
+            "gateway.request_access",
+            kind=EventKind.GATEWAY,
+            severity=Severity.CRITICAL,
+            summary=f"{agent_name} requests {service_name}/{capability}: {reason}" if reason else f"{agent_name} requests {service_name}/{capability}",
+            decision=Decision.REQUIRE_APPROVAL,
+            host=svc.default_host or "",
+            agent=agent_name,
+            addon=self.name,
+            approval=ApprovalRequest(
+                required=True,
+                approval_type="service",
+                key=f"{agent_name}:{service_name}",
+                target=service_name,
+                scope_hint={
+                    "service": service_name,
+                    "capability": capability,
+                    "description": svc.description,
+                    "capability_description": cap_obj.description,
+                    "reason": reason,
+                    "proposed_lifetime": "session",
+                },
+            ),
+        )
+        log.info(
+            "Access request: agent=%s service=%s capability=%s",
+            sanitize_for_log(agent_name),
+            sanitize_for_log(service_name),
+            sanitize_for_log(capability),
+        )
 
         self._respond(flow, 202, {
             "status": "pending",

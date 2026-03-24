@@ -430,8 +430,8 @@ class TestHandleBatch:
         mock_cred.assert_called_once()
         mock_gw.assert_called_once()
 
-    def test_review_shows_detail_and_reprompts(self):
-        """Review shows detail panel then re-displays batch table."""
+    def test_review_prompts_action_on_item(self):
+        """Review opens item for action, then returns to remaining batch."""
         api = self._make_api()
         stats = RollingStats()
         events = [
@@ -441,13 +441,33 @@ class TestHandleBatch:
         items = build_batch_items(events)
 
         with patch("safeyolo.commands.watch.console") as mock_console:
-            # First: review item 2, second: later (exit)
-            mock_console.input.side_effect = ["r2", "l"]
-            handle_batch(items, api, stats)
+            with patch("safeyolo.commands.watch.handle_approval", return_value=True) as mock_handler:
+                # Review item 1 (credential) → handled by handle_approval, then later for rest
+                mock_console.input.side_effect = ["r1", "l"]
+                handle_batch(items, api, stats)
 
-        # No API calls from review
-        api.add_approval.assert_not_called()
-        api.add_gateway_grant.assert_not_called()
+        mock_handler.assert_called_once_with(events[0], api)
+
+    def test_review_removes_acted_item_from_batch(self):
+        """After review+action, the item is removed from the batch."""
+        api = self._make_api()
+        stats = RollingStats()
+        events = [
+            _credential_event(ts="2026-03-24T10:00:00Z"),
+            _gateway_event(ts="2026-03-24T10:00:01Z"),
+            _credential_event(key="hmac:other", target="other.com", ts="2026-03-24T10:00:02Z"),
+        ]
+        items = build_batch_items(events)
+
+        with patch("safeyolo.commands.watch.console") as mock_console:
+            with patch("safeyolo.commands.watch.handle_approval", return_value=False):
+                # Review item 1 (denied/deferred), then approve all remaining
+                mock_console.input.side_effect = ["r1", "a"]
+                handle_batch(items, api, stats)
+
+        # Item 1 was handled via review, items 2+3 via approve-all
+        api.add_gateway_grant.assert_called_once()  # item 2
+        api.add_approval.assert_called_once()  # item 3
 
     def test_api_error_continues(self):
         """API error on one item doesn't abort the batch."""

@@ -115,12 +115,16 @@ class TestCheckCrashLogs:
 
 
 class TestCheckLogHealth:
-    def test_healthy_logs(self, tmp_config_dir):
+    def test_healthy_logs(self, tmp_config_dir, monkeypatch):
+        from collections import namedtuple
+
         from safeyolo.config import get_logs_dir
 
         logs_dir = get_logs_dir()
         jsonl = logs_dir / "safeyolo.jsonl"
         jsonl.write_text('{"event": "test"}\n' * 10)
+        DiskUsage = namedtuple("usage", ["total", "used", "free"])
+        monkeypatch.setattr("shutil.disk_usage", lambda path: DiskUsage(100e9, 50e9, 50e9))
         result = _check_log_health()
         assert result.status == "pass"
 
