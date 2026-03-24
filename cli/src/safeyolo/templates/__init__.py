@@ -10,6 +10,7 @@ from ..config import (
     CA_VOLUME_NAME,
     COMPOSE_NETWORK_NAME,
     PROXY_CONTAINER_NAME,
+    get_config_dir,
 )
 from .loader import AgentConfig, AgentConfigError, load_agent_config
 
@@ -152,6 +153,8 @@ def render_template(
         "instructions_type": agent_config.instructions.injection_type,
         "instructions_path": agent_config.instructions.path,
         "instructions_arg": agent_config.instructions.arg_name,
+        # Agent token file path (bind-mounted into container)
+        "agent_token_path": str(get_config_dir() / "data" / "agent_token"),
     }
 
     # Generate .env file with host UID/GID and user's folder

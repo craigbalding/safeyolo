@@ -20,7 +20,6 @@ from .commands.sandbox import sandbox_app
 from .commands.services import services_app
 from .commands.setup import setup_app
 from .commands.tmux import tmux_app
-from .commands.token import token_app
 from .commands.vault import vault_app
 from .commands.watch import watch
 
@@ -87,7 +86,6 @@ app.add_typer(policy_app, name="policy")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(setup_app, name="setup")
 app.add_typer(tmux_app, name="tmux")
-app.add_typer(token_app, name="token")
 app.add_typer(vault_app, name="vault")
 app.add_typer(services_app, name="services")
 

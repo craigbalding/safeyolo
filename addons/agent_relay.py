@@ -78,12 +78,6 @@ class AgentRelay:
             return
 
         # Validate token
-        admin_token = self._get_admin_token()
-        if not admin_token:
-            log.warning("Agent relay: no admin token configured")
-            self._respond(flow, 503, {"error": "Relay not configured"})
-            return
-
         auth_header = flow.request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
             self._respond(flow, 401, {"error": "Authorization required", "hint": "Bearer <token>"})
@@ -93,18 +87,25 @@ class AgentRelay:
 
         from pathlib import Path
 
-        from pdp.tokens import read_active_token, validate_readonly_token
+        from pdp.tokens import read_active_token
 
-        # Check signature + expiry
-        payload = validate_readonly_token(bearer_token, admin_token)
-        if payload is None:
-            self._respond(flow, 401, {"error": "Invalid or expired token"})
+        active_token = read_active_token(Path("/safeyolo/data/agent_token"))
+        if active_token is None:
+            self._respond(flow, 503, {"error": "Agent token not configured"})
             return
-
-        # Must match the current on-disk token (deleted on restart = instant revocation)
-        active_token = read_active_token(Path("/safeyolo/data/readonly_token"))
-        if active_token is None or not hmac.compare_digest(bearer_token, active_token):
-            self._respond(flow, 401, {"error": "Token revoked or expired"})
+        if not hmac.compare_digest(bearer_token, active_token):
+            from utils import get_client_ip
+            client_ip = get_client_ip(flow)
+            write_event(
+                "security.agent_auth_failed",
+                kind=EventKind.SECURITY,
+                severity=Severity.HIGH,
+                summary=f"Agent API auth failed from {sanitize_for_log(client_ip)}",
+                addon="agent-relay",
+                decision=Decision.DENY,
+                details={"client_ip": client_ip, "path": sanitize_for_log(path)},
+            )
+            self._respond(flow, 401, {"error": "Invalid agent token"})
             return
 
         # Route to handler
@@ -179,29 +180,6 @@ class AgentRelay:
         except Exception as exc:
             log.error(f"Relay handler error: {type(exc).__name__}: {exc}")
             self._respond(flow, 500, {"error": f"Internal error: {type(exc).__name__}"})
-
-    def _get_admin_token(self) -> str | None:
-        """Get admin token from mitmproxy options, env var, or file."""
-        # Try mitmproxy option first (set by admin_api addon)
-        try:
-            token = ctx.options.admin_api_token
-            if token:
-                return token
-        except AttributeError as exc:
-            # ctx.options may not have admin_api_token (addon not loaded or option renamed);
-            # fall back to environment / file-based token sources.
-            log.debug(f"admin_api_token option not available on ctx.options: {exc}")
-        # Fallback to environment / file
-        import os
-        from pathlib import Path
-
-        token = os.environ.get("ADMIN_API_TOKEN", "")
-        if token:
-            return token
-        token_path = Path("/safeyolo/data/admin_token")
-        if token_path.exists():
-            return token_path.read_text().strip()
-        return None
 
     def _get_policy_client(self):
         """Get PolicyClient, returning None if not configured."""

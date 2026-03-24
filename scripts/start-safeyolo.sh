@@ -335,6 +335,11 @@ if [ ! -f "$ADMIN_TOKEN_FILE" ] && [ -z "${ADMIN_API_TOKEN}" ]; then
     echo "===================================="
 fi
 
+# Generate agent relay token (always regenerated on start)
+AGENT_TOKEN_FILE="${CONFIG_DIR}/data/agent_token"
+python3 -c "import secrets; print(secrets.token_hex(32))" > "$AGENT_TOKEN_FILE"
+chmod 600 "$AGENT_TOKEN_FILE"
+
 # Load token for mitmproxy options
 if [ -f "$ADMIN_TOKEN_FILE" ]; then
     ADMIN_TOKEN=$(cat "$ADMIN_TOKEN_FILE")
