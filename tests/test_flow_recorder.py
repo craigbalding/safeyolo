@@ -73,8 +73,8 @@ class TestScopeGate:
         assert recorder._stats["skipped"] == 1
         assert recorder._stats["recorded"] == 0
 
-    def test_relay_requests_skipped(self, recorder):
-        """Requests to relay host are not recorded."""
+    def test_agent_api_requests_skipped(self, recorder):
+        """Requests to agent API host are not recorded."""
         flow = _make_test_flow()
         flow.request.host = "_safeyolo.proxy.internal"
         recorder.response(flow)

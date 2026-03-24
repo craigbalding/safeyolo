@@ -49,7 +49,7 @@ Addons are loaded in this order (order matters for security):
 | 0 | file_logging | Structured JSONL file logging setup | Always on |
 | 0 | memory_monitor | Process memory and connection tracking | Always on |
 | 0 | admin_shield | Block proxy access to admin API | Always on |
-| 0 | agent_relay | Read-only PDP relay for agent self-service | Always on |
+| 0 | agent_api | Read-only PDP agent API for agent self-service | Always on |
 | 0 | loop_guard | Detect and break proxy loops (Via header) | Always on |
 | 0 | request_id | Request ID for event correlation | Always on |
 | 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
@@ -124,9 +124,9 @@ Tracks process memory and active connection/WebSocket state for OOM diagnostics.
 
 ---
 
-## agent_relay.py
+## agent_api.py
 
-Read-only PDP relay on virtual hostname `_safeyolo.proxy.internal` for agent self-service diagnostics.
+Read-only PDP agent API on virtual hostname `_safeyolo.proxy.internal` for agent self-service diagnostics.
 
 **Always active** (infrastructure, not a security sensor)
 
@@ -134,7 +134,7 @@ Read-only PDP relay on virtual hostname `_safeyolo.proxy.internal` for agent sel
 - Intercepts requests to `_safeyolo.proxy.internal` (virtual hostname, doesn't resolve)
 - Validates HMAC-signed readonly bearer tokens
 - Returns PDP data as synthetic HTTP responses (never touches the network)
-- Sets `flow.metadata["blocked_by"]` so downstream addons skip relay requests
+- Sets `flow.metadata["blocked_by"]` so downstream addons skip agent API requests
 
 **Important:** Agents must use `http://` (not `https://`) since the virtual hostname doesn't resolve and CONNECT tunnels would fail.
 

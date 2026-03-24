@@ -1,5 +1,5 @@
 """
-agent_relay.py - Read-only PDP query relay for agent self-service
+agent_api.py - Read-only PDP query API for agent self-service
 
 Intercepts requests to virtual hostname _safeyolo.proxy.internal,
 validates readonly bearer token, and returns PDP data as synthetic responses.
@@ -8,14 +8,14 @@ The request never goes upstream.
 Loading order: Layer 0, after admin_shield, before loop_guard.
 This ensures:
   - admin_shield already blocked port 9090 access
-  - network_guard/credential_guard don't see relay requests
+  - network_guard/credential_guard don't see agent API requests
   - Sets flow.response + flow.metadata["blocked_by"] so downstream addons skip
 
 Does NOT inherit SecurityAddon - this is an internal service endpoint,
 not a security sensor. Follows the simpler AdminShield/LoopGuard pattern.
 
 Usage:
-    mitmdump -s addons/agent_relay.py --set admin_api_token=<token>
+    mitmdump -s addons/agent_api.py --set admin_api_token=<token>
 """
 
 import base64
@@ -31,41 +31,41 @@ from utils import sanitize_for_log, write_event
 
 from audit_schema import ApprovalRequest, Decision, EventKind, Severity
 
-log = logging.getLogger("safeyolo.agent-relay")
+log = logging.getLogger("safeyolo.agent-api")
 
-RELAY_HOST = "_safeyolo.proxy.internal"
+AGENT_API_HOST = "_safeyolo.proxy.internal"
 _REQUEST_ID_PATTERN = re.compile(r"^req-[a-f0-9]{12}$")
 MAX_EXPLAIN_LINES = 10000
 
 
-class AgentRelay:
-    """Read-only PDP relay accessible through the proxy via virtual hostname."""
+class AgentAPI:
+    """Read-only PDP API accessible through the proxy via virtual hostname."""
 
-    name = "agent-relay"
+    name = "agent-api"
 
     def load(self, loader):
         loader.add_option(
-            name="agent_relay_enabled",
+            name="agent_api_enabled",
             typespec=bool,
             default=True,
-            help="Enable agent relay endpoint on _safeyolo.proxy.internal",
+            help="Enable agent API endpoint on _safeyolo.proxy.internal",
         )
 
     def running(self):
-        if ctx.options.agent_relay_enabled:
-            log.info(f"Agent relay active on {RELAY_HOST}")
+        if ctx.options.agent_api_enabled:
+            log.info(f"Agent API active on {AGENT_API_HOST}")
         else:
-            log.info("Agent relay disabled")
+            log.info("Agent API disabled")
 
     def request(self, flow: http.HTTPFlow):
-        """Intercept requests to the relay virtual host."""
-        if not ctx.options.agent_relay_enabled:
+        """Intercept requests to the agent API virtual host."""
+        if not ctx.options.agent_api_enabled:
             return
 
-        if flow.request.host != RELAY_HOST:
+        if flow.request.host != AGENT_API_HOST:
             return
 
-        # This is a relay request - handle it entirely here
+        # This is an agent API request - handle it entirely here
         path = flow.request.path.split("?")[0].rstrip("/") or "/"
         method = flow.request.method
 
@@ -101,7 +101,7 @@ class AgentRelay:
                 kind=EventKind.SECURITY,
                 severity=Severity.HIGH,
                 summary=f"Agent API auth failed from {sanitize_for_log(client_ip)}",
-                addon="agent-relay",
+                addon="agent-api",
                 decision=Decision.DENY,
                 details={"client_ip": client_ip, "path": sanitize_for_log(path)},
             )
@@ -178,7 +178,7 @@ class AgentRelay:
         try:
             handler(flow)
         except Exception as exc:
-            log.error(f"Relay handler error: {type(exc).__name__}: {exc}")
+            log.error(f"Agent API handler error: {type(exc).__name__}: {exc}")
             self._respond(flow, 500, {"error": f"Internal error: {type(exc).__name__}"})
 
     def _get_policy_client(self):
@@ -199,7 +199,7 @@ class AgentRelay:
             json.dumps(body).encode(),
             {
                 "Content-Type": "application/json",
-                "X-SafeYolo-Relay": "true",
+                "X-SafeYolo-Agent-API": "true",
             },
         )
         flow.metadata["blocked_by"] = self.name
@@ -391,11 +391,11 @@ class AgentRelay:
         self._respond(flow, 200, monitor.get_stats())
 
     def _handle_health(self, flow: http.HTTPFlow):
-        """GET /health - PDP health + relay alive."""
+        """GET /health - PDP health + agent API alive."""
         client = self._get_policy_client()
         pdp_healthy = client.health_check() if client else False
         self._respond(flow, 200, {
-            "relay": "ok",
+            "agent_api": "ok",
             "pdp": "ok" if pdp_healthy else "unavailable",
         })
 
@@ -675,4 +675,4 @@ class AgentRelay:
         self._respond(flow, 200, {"deleted": True, "flow_id": flow_id, "tag": tag})
 
 
-addons = [AgentRelay()]
+addons = [AgentAPI()]

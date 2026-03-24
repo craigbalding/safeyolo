@@ -1,5 +1,5 @@
 """
-tokens.py - Agent token utilities for relay access
+tokens.py - Agent token utilities for agent API access
 
 Simple opaque token model: proxy generates a random token on startup,
 writes it to disk, agent containers read it from a bind mount.

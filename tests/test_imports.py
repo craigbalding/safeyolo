@@ -13,7 +13,7 @@ from pathlib import Path
 ADDON_MODULES = [
     "admin_api",
     "admin_shield",
-    "agent_relay",
+    "agent_api",
     "base",
     "budget_tracker",
     "circuit_breaker",

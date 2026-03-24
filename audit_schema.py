@@ -2,7 +2,7 @@
 audit_schema.py - Shared audit event contract for SafeYolo
 
 Defines the structured envelope that any PEP (Policy Enforcement Point) must
-produce and that consumers (watch, alerting, relay) can rely on.
+produce and that consumers (watch, alerting, agent API) can rely on.
 
 This is a leaf module: depends only on pydantic + stdlib.
 Importable by addons, CLI, and any future PEP.

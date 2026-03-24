@@ -113,7 +113,7 @@ fi
 #   0. file_logging       - Structured JSONL file logging setup
 #   1. memory_monitor     - Process memory + connection tracking
 #   2. admin_shield       - Block proxy access to admin API (security gate)
-#   3. agent_relay        - Read-only PDP relay for agent self-service
+#   3. agent_api          - Read-only PDP agent API for agent self-service
 #   4. loop_guard         - Detect and break proxy loops (Via header)
 #   5. request_id         - Assign unique ID for event correlation
 #   6. service_discovery  - Map container IPs to agent names (stamps flow.metadata["agent"])
@@ -160,7 +160,7 @@ echo "Loading addons:"
 load_addon "/app/addons/file_logging.py"
 load_addon "/app/addons/memory_monitor.py"
 load_addon "/app/addons/admin_shield.py"
-load_addon "/app/addons/agent_relay.py"
+load_addon "/app/addons/agent_api.py"
 load_addon "/app/addons/loop_guard.py"
 load_addon "/app/addons/request_id.py"
 load_addon "/app/addons/service_discovery.py"
@@ -335,7 +335,7 @@ if [ ! -f "$ADMIN_TOKEN_FILE" ] && [ -z "${ADMIN_API_TOKEN}" ]; then
     echo "===================================="
 fi
 
-# Generate agent relay token (always regenerated on start)
+# Generate agent API token (always regenerated on start)
 AGENT_TOKEN_FILE="${CONFIG_DIR}/data/agent_token"
 python3 -c "import secrets; print(secrets.token_hex(32))" > "$AGENT_TOKEN_FILE"
 chmod 600 "$AGENT_TOKEN_FILE"

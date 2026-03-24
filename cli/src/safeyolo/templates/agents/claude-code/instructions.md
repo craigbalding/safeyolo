@@ -37,7 +37,7 @@ You are operating inside a security sandbox. These rules are non-negotiable:
 
 ## Self-Service Diagnostics Setup
 
-The agent relay token is bind-mounted at `/app/agent_token` — always current, even
+The agent API token is bind-mounted at `/app/agent_token` — always current, even
 after proxy restarts. No setup needed.
 
 Verify access:
@@ -50,9 +50,9 @@ curl -s http://_safeyolo.proxy.internal/health \
 The token gives you read-only access to proxy diagnostics (memory, budgets, policy).
 Without it, you can only troubleshoot from error responses.
 
-## Using the Relay (IMPORTANT)
+## Using the Agent API (IMPORTANT)
 
-The relay uses a **virtual hostname** intercepted by the proxy. Two critical rules:
+The agent API uses a **virtual hostname** intercepted by the proxy. Two critical rules:
 
 1. **Use `http://`, never `https://`** - HTTPS requires a CONNECT tunnel which fails
    for the virtual hostname. Plain HTTP works because the proxy sees the Host header
@@ -70,11 +70,11 @@ curl -s https://_safeyolo.proxy.internal/memory \
   -H "Authorization: Bearer $(cat /app/agent_token)"
 ```
 
-## Relay Endpoints
+## Agent API Endpoints
 
 | Endpoint | Returns | Use when |
 |----------|---------|----------|
-| `GET /health` | PDP + relay health | Checking if policy engine is alive |
+| `GET /health` | PDP + agent API health | Checking if policy engine is alive |
 | `GET /status` | PDP stats (eval counts, policy hash) | Understanding proxy load |
 | `GET /policy` | Current baseline policy | Checking what's allowed |
 | `GET /budgets` | Budget usage per domain | Debugging 429 rate limits |
@@ -83,7 +83,7 @@ curl -s https://_safeyolo.proxy.internal/memory \
 | `GET /memory` | Process RSS, connections, WebSockets | Investigating memory/OOM issues |
 
 These endpoints are read-only. You cannot modify policy, approve credentials,
-or change modes through the relay.
+or change modes through the agent API.
 
 ## Reading Block Responses
 
@@ -123,7 +123,7 @@ Use this decision tree when a request is blocked:
 
 **429 + X-Blocked-By: network-guard**
 - Rate limit exceeded for this domain
-- If you have a relay token, check `/budgets` to see remaining quota
+- If you have an agent API token, check `/budgets` to see remaining quota
 - Fix: Wait for the rate limit window to reset, or ask user to adjust budget in policy
 
 **428 + X-Blocked-By: credential-guard**

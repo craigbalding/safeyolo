@@ -199,7 +199,7 @@ Addons process requests in order (defined in `scripts/start-safeyolo.sh`):
 1. `file_logging` - Structured JSONL file logging setup
 2. `memory_monitor` - Process memory and connection tracking
 3. `admin_shield` - Blocks proxy access to admin API
-4. `agent_relay` - Read-only PDP relay for agent self-service
+4. `agent_api` - Read-only PDP agent API for agent self-service
 5. `loop_guard` - Detects and breaks proxy loops (Via header)
 6. `request_id` - Assigns unique ID to each request
 7. `sse_streaming` - SSE/streaming support for LLM responses
@@ -343,7 +343,7 @@ safeyolo/
 │   ├── file_logging.py      # Structured JSONL file logging setup
 │   ├── memory_monitor.py    # Process memory + connection tracking
 │   ├── admin_shield.py      # Protects admin API endpoints
-│   ├── agent_relay.py       # Read-only PDP relay for agents
+│   ├── agent_api.py         # Read-only PDP agent API for agents
 │   ├── loop_guard.py        # Proxy loop detection (Via header)
 │   ├── request_id.py        # Request ID generation
 │   ├── sse_streaming.py     # SSE/streaming for LLM responses
@@ -376,7 +376,7 @@ safeyolo/
     ├── test_pattern_scanner.py
     ├── test_test_context.py
     ├── test_memory_monitor.py
-    ├── test_agent_relay.py
+    ├── test_agent_api.py
     └── test_integration.py
 ```
 

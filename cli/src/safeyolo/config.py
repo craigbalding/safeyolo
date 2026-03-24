@@ -119,7 +119,7 @@ def get_admin_token_path() -> Path:
 
 
 def get_agent_token_path() -> Path:
-    """Get path to agent relay token file."""
+    """Get path to agent API token file."""
     return get_data_dir() / "agent_token"
 
 

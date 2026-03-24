@@ -20,7 +20,7 @@ The implementation is staged. Each stage is independently shippable.
    capability route matching + risky route detection in
    `service_gateway.py`.
 
-3. **Agent relay updates** — `GET /gateway/services` returns capabilities
+3. **Agent API updates** — `GET /gateway/services` returns capabilities
    (not roles). `POST /gateway/request-access` accepts `capability` field.
 
 4. **PDP risky route evaluation** — new `gateway.risky_route` event type.
@@ -65,7 +65,7 @@ The implementation is staged. Each stage is independently shippable.
 |------|--------|
 | `addons/service_loader.py` | New schema: `Capability`, `RiskyRoute`, `RiskyRouteGroup`, remove `effect` |
 | `addons/service_gateway.py` | Capability route matching, risky route detection → PDP, passive fallback |
-| `addons/agent_relay.py` | Return capabilities in `/gateway/services`, capability in request-access |
+| `addons/agent_api.py` | Return capabilities in `/gateway/services`, capability in request-access |
 | `addons/admin_api.py` | No changes expected |
 | `pdp/core.py` | Handle `gateway.risky_route` event type |
 | `pdp/schemas.py` | Risk appetite policy schema |
@@ -99,7 +99,7 @@ service_loader.py          (no deps — schema only)
      │
      ├──► service_gateway.py   (depends on loader)
      │         │
-     │         └──► agent_relay.py  (depends on gateway)
+     │         └──► agent_api.py  (depends on gateway)
      │
      └──► pdp/core.py + schemas    (depends on loader for types)
                │
