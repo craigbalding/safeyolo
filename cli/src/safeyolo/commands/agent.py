@@ -252,7 +252,7 @@ def _run_agent(
     if yolo:
         cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
 
-    # Dev mode: mount logs and readonly token so agent can read proxy events
+    # Dev mode: mount logs so agent can read proxy events
     proxy_compose = find_config_dir()
     if proxy_compose:
         proxy_compose_file = Path(proxy_compose) / "docker-compose.yml"
@@ -261,9 +261,6 @@ def _run_agent(
             logs_dir = get_logs_dir()
             if logs_dir.exists():
                 cmd.extend(["-v", f"{logs_dir}:/app/logs:ro"])
-            token_file = Path(proxy_compose) / "data" / "readonly_token"
-            if token_file.exists():
-                cmd.extend(["-v", f"{token_file}:/app/readonly_token:ro"])
 
     # Combine persistent mounts (from metadata) with transient mounts (from --mount)
     all_mounts = list(metadata.get("mounts", []))
@@ -511,8 +508,8 @@ def add(
             existing_template = existing.get("template")
             existing_folder = existing.get("folder")
 
-            if existing_template == template and existing_folder == folder_str:
-                # Same config - idempotent, just run
+            if existing_template == template and existing_folder == folder_str and not force:
+                # Same config, no --force - idempotent, just run
                 console.print(f"Agent '{name}' already configured.")
                 if not no_run:
                     exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)

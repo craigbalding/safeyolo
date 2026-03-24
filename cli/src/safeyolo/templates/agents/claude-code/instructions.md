@@ -37,17 +37,18 @@ You are operating inside a security sandbox. These rules are non-negotiable:
 
 ## Self-Service Diagnostics Setup
 
-At the **start of each session**, check if you have a readonly relay token:
+The agent relay token is bind-mounted at `/app/agent_token` — always current, even
+after proxy restarts. No setup needed.
 
-1. Check: `echo $SAFEYOLO_READONLY_TOKEN`
-2. If empty, ask the user to run on the host: `safeyolo token create`
-3. The user will give you the token value. Export it:
-   `export SAFEYOLO_READONLY_TOKEN='<token-from-user>'`
-4. Verify it works: `curl -s http://_safeyolo.proxy.internal/health -H "Authorization: Bearer $SAFEYOLO_READONLY_TOKEN"`
+Verify access:
+
+```bash
+curl -s http://_safeyolo.proxy.internal/health \
+  -H "Authorization: Bearer $(cat /app/agent_token)"
+```
 
 The token gives you read-only access to proxy diagnostics (memory, budgets, policy).
-Without it, you can only troubleshoot from error responses. Request it early - don't
-wait until something breaks.
+Without it, you can only troubleshoot from error responses.
 
 ## Using the Relay (IMPORTANT)
 
@@ -57,17 +58,16 @@ The relay uses a **virtual hostname** intercepted by the proxy. Two critical rul
    for the virtual hostname. Plain HTTP works because the proxy sees the Host header
    directly.
 
-2. **Inline the token directly** in the curl command. Do not use shell variables set
-   in a prior command - they won't persist across tool calls:
+2. **Read the token from the file** in each curl command:
 
 ```bash
-# CORRECT - token inlined, http:// scheme
+# CORRECT - token from file, http:// scheme
 curl -s http://_safeyolo.proxy.internal/memory \
-  -H "Authorization: Bearer eyJzY29w...full-token-here"
+  -H "Authorization: Bearer $(cat /app/agent_token)"
 
-# WRONG - https will 502, $VAR won't expand across tool calls
+# WRONG - https will 502
 curl -s https://_safeyolo.proxy.internal/memory \
-  -H "Authorization: Bearer $SAFEYOLO_READONLY_TOKEN"
+  -H "Authorization: Bearer $(cat /app/agent_token)"
 ```
 
 ## Relay Endpoints
@@ -179,6 +179,5 @@ on their host machine (not inside this container):
 | `safeyolo status` | See current container state and uptime |
 | `safeyolo mode` | View current addon modes (block vs warn) |
 | `safeyolo policies` | View current credential approval policies |
-| `safeyolo token create` | You need a readonly relay token for self-service diagnostics |
 
 Always explain WHY you're suggesting the command so the user understands the diagnostic logic.

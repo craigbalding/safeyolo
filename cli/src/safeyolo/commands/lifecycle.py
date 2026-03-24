@@ -15,7 +15,6 @@ from ..api import APIError, get_api
 from ..config import (
     DEFAULT_CONFIG,
     find_config_dir,
-    get_admin_token,
     get_config_dir,
     load_config,
     save_config,
@@ -62,6 +61,12 @@ def _bootstrap_config(config_dir: Path) -> None:
     token_path = config_dir / "data" / "admin_token"
     token_path.write_text(token)
     token_path.chmod(0o600)
+
+    # Create agent token placeholder (proxy overwrites on start;
+    # file must exist so Docker bind-mounts it as a file, not a directory)
+    agent_token_path = config_dir / "data" / "agent_token"
+    agent_token_path.touch()
+    agent_token_path.chmod(0o600)
 
     # Write config.yaml
     config = DEFAULT_CONFIG.copy()
@@ -190,10 +195,6 @@ def start(
         else:
             console.print("[yellow]timeout (may still be starting)[/yellow]")
 
-    # Dev mode: ensure a readonly relay token exists for agent self-service
-    if dev:
-        _ensure_relay_token()
-
     # Show connection info
     if first_run:
         console.print(
@@ -217,26 +218,6 @@ def start(
                 title="Started",
             )
         )
-
-
-def _ensure_relay_token() -> None:
-    """Create a readonly relay token if one doesn't exist."""
-    from .token import _get_active_token_path
-
-    token_path = _get_active_token_path()
-    if token_path.exists() and token_path.read_text().strip():
-        return
-
-    try:
-        from ._token_ops import create_readonly_token
-
-        token_str = create_readonly_token(get_admin_token(), 3600)
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(token_str)
-        token_path.chmod(0o600)
-        console.print("  Relay token created (1h TTL)")
-    except (OSError, ValueError, TypeError) as e:
-        console.print(f"  [dim]Relay token: {e}[/dim]")
 
 
 def stop() -> None:
