@@ -14,16 +14,18 @@ Usage:
 
 import json
 import logging
+import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
+import yaml
 from mitmproxy import ctx
 from utils import sanitize_for_log, write_event
 
 from audit_schema import EventKind, Severity
-from pdp import get_policy_client
+from pdp import get_policy_client, is_policy_client_configured
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -534,6 +536,165 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": f"grant '{grant_id}' not found"}, 404)
 
+    # =========================================================================
+    # Agent Service Authorization
+    # =========================================================================
+
+    @staticmethod
+    def _agents_yaml_mutate(mutate_fn):
+        """Read-modify-write agents.yaml with atomic rename.
+
+        Args:
+            mutate_fn: callable(raw_dict) -> result_value.
+                       May raise KeyError/ValueError for 404/400.
+
+        Returns:
+            Whatever mutate_fn returns.
+
+        Raises:
+            RuntimeError: if PDP/loader not available.
+            KeyError: propagated from mutate_fn (caller maps to 404).
+            ValueError: propagated from mutate_fn (caller maps to 400).
+        """
+        if not is_policy_client_configured():
+            raise RuntimeError("Policy client not configured")
+
+        client = get_policy_client()
+        # LocalPolicyClient → _pdp (PDPCore) → _engine (PolicyEngine) → _loader
+        pdp = getattr(client, "_pdp", None)
+        engine = getattr(pdp, "_engine", None) if pdp else None
+        loader = getattr(engine, "_loader", None) if engine else None
+        if not loader:
+            raise RuntimeError("Policy loader not available")
+
+        agents_path = getattr(loader, "_agents_path", lambda: None)()
+        if not agents_path:
+            raise RuntimeError("agents_path not available")
+
+        # Read
+        if agents_path.exists():
+            raw = yaml.safe_load(agents_path.read_text()) or {}
+        else:
+            raw = {}
+
+        # Mutate
+        result = mutate_fn(raw)
+
+        # Atomic write
+        tmp = agents_path.with_suffix(".tmp")
+        tmp.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
+        tmp.rename(agents_path)
+
+        return result
+
+    def _handle_post_agent_service(self, agent_name: str) -> None:
+        """POST /admin/agents/{name}/services - Authorize agent for a service."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        service = data.get("service")
+        capability = data.get("capability")
+        credential = data.get("credential")
+
+        if not service or not capability or not credential:
+            self._send_json({"error": "missing required fields: service, capability, credential"}, 400)
+            return
+
+        def mutate(raw):
+            if agent_name not in raw:
+                raise KeyError(agent_name)
+            agent_data = raw[agent_name]
+            services = agent_data.setdefault("services", {})
+            services[service] = {"capability": capability, "token": credential}
+
+        try:
+            self._agents_yaml_mutate(mutate)
+        except RuntimeError as e:
+            self._send_json({"error": str(e)}, 503)
+            return
+        except KeyError:
+            self._send_json({"error": f"agent '{agent_name}' not found"}, 404)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.agent_service_authorized",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Agent service authorized: {_sanitize_log(agent_name)} -> {_sanitize_log(service)}",
+            addon="admin-api",
+            details={
+                "client_ip": client_ip,
+                "agent": agent_name,
+                "service": service,
+                "capability": capability,
+                "credential": credential,
+            },
+        )
+        log.info(
+            f"Agent service authorized: {_sanitize_log(agent_name)} -> "
+            f"{_sanitize_log(service)} (capability={_sanitize_log(capability)})"
+        )
+
+        self._send_json({
+            "status": "authorized",
+            "agent": agent_name,
+            "service": service,
+            "capability": capability,
+        })
+
+    def _handle_delete_agent_service(self, agent_name: str, service_name: str) -> None:
+        """DELETE /admin/agents/{name}/services/{service} - Revoke agent service."""
+        credential = ""
+
+        def mutate(raw):
+            nonlocal credential
+            if agent_name not in raw:
+                raise KeyError(agent_name)
+            agent_data = raw[agent_name]
+            services = agent_data.get("services", {})
+            if service_name not in services:
+                raise KeyError(service_name)
+            entry = services[service_name]
+            credential = entry.get("token", "") if isinstance(entry, dict) else ""
+            del services[service_name]
+            if not services:
+                agent_data.pop("services", None)
+
+        try:
+            self._agents_yaml_mutate(mutate)
+        except RuntimeError as e:
+            self._send_json({"error": str(e)}, 503)
+            return
+        except KeyError:
+            self._send_json({"error": f"agent '{agent_name}' or service '{service_name}' not found"}, 404)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.agent_service_revoked",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Agent service revoked: {_sanitize_log(agent_name)} -> {_sanitize_log(service_name)}",
+            addon="admin-api",
+            details={
+                "client_ip": client_ip,
+                "agent": agent_name,
+                "service": service_name,
+                "credential": credential,
+            },
+        )
+        log.info(f"Agent service revoked: {_sanitize_log(agent_name)} -> {_sanitize_log(service_name)}")
+
+        self._send_json({
+            "status": "revoked",
+            "agent": agent_name,
+            "service": service_name,
+            "credential": credential,
+        })
+
     def _handle_post_budgets_reset(self) -> None:
         """POST /admin/budgets/reset - Reset budget counters."""
         client = get_policy_client()
@@ -580,6 +741,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         if path in static_handlers:
             return static_handlers[path]()
+
+        # Parameterized routes
+        m = re.match(r"^/admin/agents/([^/]+)/services$", path)
+        if m:
+            return self._handle_post_agent_service(m.group(1))
 
         self._send_json({"error": "not found"}, 404)
         return None
@@ -782,6 +948,10 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/admin/gateway/grants/"):
             grant_id = path[len("/admin/gateway/grants/") :]
             return self._handle_delete_gateway_grant(grant_id)
+
+        m = re.match(r"^/admin/agents/([^/]+)/services/([^/]+)$", path)
+        if m:
+            return self._handle_delete_agent_service(m.group(1), m.group(2))
 
         self._send_json({"error": "not found"}, 404)
         return None

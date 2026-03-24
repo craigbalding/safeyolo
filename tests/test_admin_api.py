@@ -390,6 +390,221 @@ class TestAdminAPIAuthentication:
         return handler._status
 
 
+class TestAgentServiceEndpoints:
+    """Tests for agent service authorization/revocation endpoints."""
+
+    TEST_TOKEN = "test-token-for-unit-tests"
+
+    @pytest.fixture
+    def handler_class(self):
+        """Get handler class with mocked dependencies."""
+        from admin_api import AdminRequestHandler
+
+        AdminRequestHandler.credential_guard = None
+        AdminRequestHandler.addons_with_stats = {}
+        AdminRequestHandler.admin_token = self.TEST_TOKEN
+
+        return AdminRequestHandler
+
+    @pytest.fixture
+    def agents_yaml(self, tmp_path):
+        """Create a mock agents.yaml with PDP wiring."""
+        agents_path = tmp_path / "agents.yaml"
+        agents_path.write_text(
+            "boris:\n  image: ghcr.io/test\n  services:\n    slack:\n      capability: chat\n      token: slack-key\n"
+        )
+        return agents_path
+
+    @pytest.fixture
+    def mock_pdp(self, agents_yaml):
+        """Mock PDP to return a loader with agents_path via client._pdp._engine._loader."""
+        mock_loader = MagicMock()
+        mock_loader._agents_path.return_value = agents_yaml
+
+        mock_engine = MagicMock()
+        mock_engine._loader = mock_loader
+
+        mock_pdp = MagicMock()
+        mock_pdp._engine = mock_engine
+
+        mock_client = MagicMock()
+        mock_client._pdp = mock_pdp
+
+        with (
+            patch("admin_api.is_policy_client_configured", return_value=True),
+            patch("admin_api.get_policy_client", return_value=mock_client),
+        ):
+            yield
+
+    def test_post_creates_binding(self, handler_class, mock_pdp, agents_yaml):
+        """POST creates service binding in agents.yaml."""
+        import yaml
+
+        body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-oauth2"})
+        handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
+
+        with patch("admin_api.write_event"):
+            handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert handler._status == 200
+        assert response["status"] == "authorized"
+        assert response["agent"] == "boris"
+        assert response["service"] == "gmail"
+        assert response["capability"] == "readonly"
+
+        # Verify agents.yaml was updated
+        raw = yaml.safe_load(agents_yaml.read_text())
+        assert raw["boris"]["services"]["gmail"] == {"capability": "readonly", "token": "gmail-oauth2"}
+        # Existing service preserved
+        assert raw["boris"]["services"]["slack"] == {"capability": "chat", "token": "slack-key"}
+
+    def test_post_missing_fields_returns_400(self, handler_class, mock_pdp):
+        """POST with missing fields returns 400."""
+        body = json.dumps({"service": "gmail"})
+        handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
+        handler.do_POST()
+
+        assert handler._status == 400
+        response = self._parse_response(handler)
+        assert "missing required fields" in response["error"]
+
+    def test_post_missing_body_returns_400(self, handler_class, mock_pdp):
+        """POST with no body returns 400."""
+        handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services")
+        handler.do_POST()
+
+        assert handler._status == 400
+
+    def test_post_nonexistent_agent_returns_404(self, handler_class, mock_pdp):
+        """POST to non-existent agent returns 404."""
+        body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
+        handler = self._create_handler(handler_class, "POST", "/admin/agents/noone/services", body=body)
+        handler.do_POST()
+
+        assert handler._status == 404
+        response = self._parse_response(handler)
+        assert "not found" in response["error"]
+
+    def test_delete_removes_binding(self, handler_class, mock_pdp, agents_yaml):
+        """DELETE removes service binding from agents.yaml."""
+        import yaml
+
+        handler = self._create_handler(handler_class, "DELETE", "/admin/agents/boris/services/slack")
+
+        with patch("admin_api.write_event"):
+            handler.do_DELETE()
+
+        response = self._parse_response(handler)
+        assert handler._status == 200
+        assert response["status"] == "revoked"
+        assert response["agent"] == "boris"
+        assert response["service"] == "slack"
+        assert response["credential"] == "slack-key"
+
+        # Verify agents.yaml was updated
+        raw = yaml.safe_load(agents_yaml.read_text())
+        assert "services" not in raw["boris"] or "slack" not in raw["boris"].get("services", {})
+
+    def test_delete_nonexistent_service_returns_404(self, handler_class, mock_pdp):
+        """DELETE non-existent service returns 404."""
+        handler = self._create_handler(handler_class, "DELETE", "/admin/agents/boris/services/nope")
+        handler.do_DELETE()
+
+        assert handler._status == 404
+
+    def test_delete_nonexistent_agent_returns_404(self, handler_class, mock_pdp):
+        """DELETE on non-existent agent returns 404."""
+        handler = self._create_handler(handler_class, "DELETE", "/admin/agents/noone/services/slack")
+        handler.do_DELETE()
+
+        assert handler._status == 404
+
+    def test_post_emits_audit_event(self, handler_class, mock_pdp):
+        """POST emits admin.agent_service_authorized audit event."""
+        body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
+        handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
+
+        with patch("admin_api.write_event") as mock_write:
+            handler.do_POST()
+
+        mock_write.assert_called_once()
+        call_args = mock_write.call_args
+        assert call_args[0][0] == "admin.agent_service_authorized"
+        assert call_args[1]["details"]["agent"] == "boris"
+        assert call_args[1]["details"]["service"] == "gmail"
+
+    def test_delete_emits_audit_event(self, handler_class, mock_pdp, agents_yaml):
+        """DELETE emits admin.agent_service_revoked audit event."""
+        handler = self._create_handler(handler_class, "DELETE", "/admin/agents/boris/services/slack")
+
+        with patch("admin_api.write_event") as mock_write:
+            handler.do_DELETE()
+
+        mock_write.assert_called_once()
+        call_args = mock_write.call_args
+        assert call_args[0][0] == "admin.agent_service_revoked"
+        assert call_args[1]["details"]["agent"] == "boris"
+        assert call_args[1]["details"]["service"] == "slack"
+
+    def test_atomic_write_uses_tmp_rename(self, handler_class, mock_pdp, agents_yaml):
+        """Verify atomic write pattern (tmp file renamed)."""
+        body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
+        handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
+
+        with patch("admin_api.write_event"):
+            handler.do_POST()
+
+        # tmp file should not exist after successful write
+        tmp = agents_yaml.with_suffix(".tmp")
+        assert not tmp.exists()
+        # Original should exist and be valid YAML
+        assert agents_yaml.exists()
+
+    # Helper methods
+
+    def _create_handler(self, handler_class, method, path, body=None, include_auth=True):
+        """Create a mock handler for testing."""
+        from io import BytesIO
+
+        test_token = self.TEST_TOKEN
+
+        class MockHandler(handler_class):
+            def __init__(self):
+                self.path = path
+                self.command = method
+                self.headers = {"Content-Length": str(len(body)) if body else "0"}
+                if include_auth:
+                    self.headers["Authorization"] = f"Bearer {test_token}"
+                self.rfile = BytesIO(body.encode() if body else b"")
+                self.wfile = BytesIO()
+                self._status = 200
+                self.client_address = ("127.0.0.1", 12345)
+
+            def send_response(self, code):
+                self._status = code
+
+            def send_header(self, name, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+            def log_message(self, *args):
+                pass
+
+        return MockHandler()
+
+    def _parse_response(self, handler):
+        """Parse JSON response from handler."""
+        handler.wfile.seek(0)
+        return json.loads(handler.wfile.read().decode())
+
+    def _get_status(self, handler):
+        """Get HTTP status from handler."""
+        return handler._status
+
+
 class TestAdminAPIAddon:
     """Tests for AdminAPI addon class."""
 

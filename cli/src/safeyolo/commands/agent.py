@@ -252,6 +252,19 @@ def _run_agent(
     if yolo:
         cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
 
+    # Dev mode: mount logs and readonly token so agent can read proxy events
+    proxy_compose = find_config_dir()
+    if proxy_compose:
+        proxy_compose_file = Path(proxy_compose) / "docker-compose.yml"
+        if proxy_compose_file.exists() and "/app/addons" in proxy_compose_file.read_text():
+            from ..config import get_logs_dir
+            logs_dir = get_logs_dir()
+            if logs_dir.exists():
+                cmd.extend(["-v", f"{logs_dir}:/app/logs:ro"])
+            token_file = Path(proxy_compose) / "data" / "readonly_token"
+            if token_file.exists():
+                cmd.extend(["-v", f"{token_file}:/app/readonly_token:ro"])
+
     # Combine persistent mounts (from metadata) with transient mounts (from --mount)
     all_mounts = list(metadata.get("mounts", []))
     if extra_mounts:
@@ -1244,10 +1257,22 @@ def authorize(
             vault.store(cred)
             console.print(f"[green]Stored credential:[/green] {escape(cred_name)} (type={escape(auth_type)})")
 
-    # 6. Write to agents.yaml
-    services = metadata.setdefault("services", {})
-    services[service_name] = {"capability": selected_cap, "token": cred_name}
-    save_agent(agent_name, metadata)
+    # 6. Write to agents.yaml (via admin API, with fallback to local write)
+    try:
+        from ..api import APIError, get_api
+
+        api = get_api()
+        api.authorize_service(
+            agent=agent_name,
+            service=service_name,
+            capability=selected_cap,
+            credential=cred_name,
+        )
+    except (APIError, OSError) as exc:
+        log.warning("Admin API unavailable (%s), falling back to local write", exc)
+        services = metadata.setdefault("services", {})
+        services[service_name] = {"capability": selected_cap, "token": cred_name}
+        save_agent(agent_name, metadata)
 
     esc_agent = escape(agent_name)
     esc_svc = escape(service_name)
@@ -1305,18 +1330,31 @@ def revoke(
     service_entry = services[service_name]
     cred_name = service_entry.get("token", "") if isinstance(service_entry, dict) else ""
 
-    # 3. Remove service entry
-    del services[service_name]
-    if not services:
-        del metadata["services"]
-    save_agent(agent_name, metadata)
+    # 3. Remove service entry (via admin API, with fallback to local write)
+    try:
+        from ..api import APIError, get_api
+
+        api = get_api()
+        result = api.revoke_service(agent=agent_name, service=service_name)
+        cred_name = result.get("credential", cred_name)
+    except (APIError, OSError) as exc:
+        log.warning("Admin API unavailable (%s), falling back to local write", exc)
+        del services[service_name]
+        if not services:
+            del metadata["services"]
+        save_agent(agent_name, metadata)
 
     # 4. Confirm
     console.print(f"[green]Revoked:[/green] {escape(agent_name)} → {escape(service_name)}")
 
-    # 5. Credential reminder
+    # 5. Credential reminder (only if it actually exists in vault)
     if cred_name:
-        console.print(
-            f"Credential '{escape(cred_name)}' still in vault. "
-            f"To remove: [bold]safeyolo vault remove {escape(cred_name)}[/bold]"
-        )
+        try:
+            vault, _ = _load_vault()
+            if vault.get(cred_name):
+                console.print(
+                    f"Credential '{escape(cred_name)}' still in vault. "
+                    f"To remove: [bold]safeyolo vault remove {escape(cred_name)}[/bold]"
+                )
+        except (OSError, ValueError):
+            pass  # Vault unavailable or locked — skip reminder

@@ -1249,3 +1249,109 @@ risky_routes:
         assert approval.key == "gw:agent-1:test_risky:POST:/api/admin/users"
         assert approval.target == "test_risky"
         assert approval.scope_hint == {"method": "POST", "path": "/api/admin/users"}
+
+
+# --- Grant persistence tests ---
+
+
+class TestGrantPersistence:
+    """Tests for _persist_grants and _load_grants_from_agents_yaml."""
+
+    @pytest.fixture
+    def agents_yaml(self, tmp_path):
+        """Create an empty agents.yaml."""
+        path = tmp_path / "agents.yaml"
+        path.write_text("claude:\n  template: claude-code\n")
+        return path
+
+    @pytest.fixture
+    def mock_pdp(self, agents_yaml):
+        """Mock PDP with correct client._pdp._engine._loader chain."""
+        mock_loader = MagicMock()
+        mock_loader._agents_path.return_value = agents_yaml
+
+        mock_engine = MagicMock()
+        mock_engine._loader = mock_loader
+
+        mock_pdp = MagicMock()
+        mock_pdp._engine = mock_engine
+
+        mock_client = MagicMock()
+        mock_client._pdp = mock_pdp
+
+        with (
+            patch("pdp.get_policy_client", return_value=mock_client),
+            patch("pdp.is_policy_client_configured", return_value=True),
+        ):
+            yield
+
+    def test_persist_writes_grants(self, gateway, mock_pdp, agents_yaml):
+        """Grants are written to agents.yaml."""
+        import yaml
+
+        grant = GrantEntry(
+            grant_id="g1",
+            agent="claude",
+            service="gmail",
+            method="POST",
+            path="/messages/send",
+            scope="remembered",
+        )
+        gateway._grants["g1"] = grant
+        gateway._persist_grants()
+
+        raw = yaml.safe_load(agents_yaml.read_text())
+        grants = raw["claude"]["grants"]
+        assert len(grants) == 1
+        assert grants[0]["grant_id"] == "g1"
+        assert grants[0]["service"] == "gmail"
+
+    def test_load_reads_remembered_grants(self, gateway, mock_pdp, agents_yaml):
+        """Remembered grants are loaded from agents.yaml."""
+        from datetime import timedelta
+
+        import yaml
+
+        # Use a recent timestamp so the grant isn't expired
+        now = datetime.now(UTC)
+        created = now.isoformat()
+        expires = (now + timedelta(hours=1)).isoformat()
+
+        raw = yaml.safe_load(agents_yaml.read_text())
+        raw["claude"]["grants"] = [
+            {
+                "grant_id": "g2",
+                "service": "gmail",
+                "method": "DELETE",
+                "path": "/messages/*",
+                "scope": "remembered",
+                "created": created,
+                "expires": expires,
+            },
+        ]
+        agents_yaml.write_text(yaml.dump(raw, default_flow_style=False))
+
+        gateway._load_grants_from_agents_yaml()
+        assert "g2" in gateway._grants
+        assert gateway._grants["g2"].service == "gmail"
+        assert gateway._grants["g2"].scope == "remembered"
+
+    def test_persist_then_load_roundtrip(self, gateway, mock_pdp, agents_yaml):
+        """Grants survive a persist → load cycle."""
+        grant = GrantEntry(
+            grant_id="g3",
+            agent="claude",
+            service="slack",
+            method="POST",
+            path="/chat.postMessage",
+            scope="remembered",
+        )
+        gateway._grants["g3"] = grant
+        gateway._persist_grants()
+
+        # Fresh gateway loads from disk
+        gw2 = ServiceGateway()
+        gw2._load_grants_from_agents_yaml()
+        assert "g3" in gw2._grants
+        assert gw2._grants["g3"].service == "slack"
+        assert gw2._grants["g3"].method == "POST"

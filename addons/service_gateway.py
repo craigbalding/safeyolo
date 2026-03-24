@@ -639,7 +639,9 @@ class ServiceGateway:
                 return
 
             client = get_policy_client()
-            loader = getattr(client, "_loader", None)
+            pdp = getattr(client, "_pdp", None)
+            engine = getattr(pdp, "_engine", None) if pdp else None
+            loader = getattr(engine, "_loader", None) if engine else None
             if not loader:
                 return
 
@@ -690,7 +692,9 @@ class ServiceGateway:
                 return
 
             client = get_policy_client()
-            loader = getattr(client, "_loader", None)
+            pdp = getattr(client, "_pdp", None)
+            engine = getattr(pdp, "_engine", None) if pdp else None
+            loader = getattr(engine, "_loader", None) if engine else None
             if not loader:
                 return
 
