@@ -1073,7 +1073,7 @@ def _resolved_key_from_admin_event(event: dict) -> str | None:
     return None
 
 
-def scan_pending_approvals(log_path: Path) -> list[dict]:
+def scan_pending_approvals(log_path: Path) -> tuple[list[dict], set[str]]:
     """Scan log backwards for unresolved approval requests.
 
     All approval events are detected via the ``approval.required`` field.
@@ -1081,9 +1081,14 @@ def scan_pending_approvals(log_path: Path) -> list[dict]:
 
     Operator actions (grants, approvals, denials) are tracked individually
     so that selectively processing some items doesn't mask others.
+
+    Returns:
+        (pending_events, resolved_keys) — the resolved keys are needed by the
+        caller to seed its live-event dedup set so that retries of credentials
+        already acted on don't re-prompt.
     """
     if not log_path.exists():
-        return []
+        return [], set()
 
     # Read lines from file (we need to scan backwards, so read all then reverse)
     # Bounded: only keep last 50K lines to avoid reading huge files
@@ -1095,11 +1100,14 @@ def scan_pending_approvals(log_path: Path) -> list[dict]:
                 recent_lines.append(line)
     except Exception as e:
         console.print(f"[yellow]Warning:[/yellow] Failed to scan log for pending approvals: {escape(str(e))}")
-        return []
+        return [], set()
 
-    # Track which specific items have been resolved by operator actions
+    # Two-pass scan: first collect all resolution keys, then filter approvals.
+    # This avoids a bug where a recent approval event (retry after denial) is
+    # encountered before its corresponding denial when scanning backwards,
+    # causing it to be incorrectly treated as pending.
+    parsed_events: list[dict] = []
     resolved_keys: set[str] = set()
-    pending_blocks: dict[str, dict] = {}  # dedup_key -> event
 
     for line in reversed(recent_lines):
         line = line.strip()
@@ -1109,13 +1117,15 @@ def scan_pending_approvals(log_path: Path) -> list[dict]:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        parsed_events.append(event)
 
-        # Track individual resolutions instead of blanket stop
         resolved_key = _resolved_key_from_admin_event(event)
         if resolved_key:
             resolved_keys.add(resolved_key)
 
-        # Collect all approval requests via the approval field
+    # Pass 2: collect unresolved approval requests (most-recent-first dedup)
+    pending_blocks: dict[str, dict] = {}  # dedup_key -> event
+    for event in parsed_events:
         approval = event.get("approval", {})
         if approval and approval.get("required"):
             key = _dedup_key_from_approval(event)
@@ -1126,7 +1136,7 @@ def scan_pending_approvals(log_path: Path) -> list[dict]:
     pending = list(pending_blocks.values())
     pending.sort(key=lambda e: e.get("ts", ""))
 
-    return pending
+    return pending, resolved_keys
 
 
 def format_approval_request(event: dict) -> Panel:
@@ -1557,9 +1567,12 @@ def watch(
     events_since_status = 0
     has_seen_events = False
 
-    # Startup scan: find unresolved approval requests and prompt as batch
+    # Startup scan: find unresolved approval requests and prompt as batch.
+    # Seed seen_fingerprints with resolved keys so that live retries of
+    # already-denied/approved credentials are suppressed immediately.
     if interactive and api:
-        pending = scan_pending_approvals(log_path)
+        pending, resolved_keys = scan_pending_approvals(log_path)
+        seen_fingerprints.update(resolved_keys)
         if pending:
             console.print(f"[bold yellow]{len(pending)} pending approval(s) from before this session:[/bold yellow]")
             items = build_batch_items(pending)

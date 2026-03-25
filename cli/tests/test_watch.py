@@ -499,10 +499,14 @@ class TestScanPendingApprovals:
     def test_empty_file(self, tmp_path):
         log = tmp_path / "test.jsonl"
         log.write_text("")
-        assert scan_pending_approvals(log) == []
+        pending, resolved = scan_pending_approvals(log)
+        assert pending == []
+        assert resolved == set()
 
     def test_missing_file(self, tmp_path):
-        assert scan_pending_approvals(tmp_path / "nope.jsonl") == []
+        pending, resolved = scan_pending_approvals(tmp_path / "nope.jsonl")
+        assert pending == []
+        assert resolved == set()
 
     def test_collects_approval_events(self, tmp_path):
         log = tmp_path / "test.jsonl"
@@ -511,7 +515,7 @@ class TestScanPendingApprovals:
             _gateway_event(ts="2026-03-24T10:00:01Z"),
         ]
         log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
-        pending = scan_pending_approvals(log)
+        pending, _ = scan_pending_approvals(log)
         assert len(pending) == 2
         # Sorted by timestamp
         assert pending[0]["ts"] == "2026-03-24T10:00:00Z"
@@ -528,7 +532,7 @@ class TestScanPendingApprovals:
              "details": {"destination": "httpbin.org", "cred_id": "hmac:old", "reason": "user_denied"}},
         ]
         log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
-        pending = scan_pending_approvals(log)
+        pending, _ = scan_pending_approvals(log)
         # hmac:old was denied, hmac:new is still pending
         assert len(pending) == 1
         assert pending[0]["approval"]["key"] == "hmac:new"
@@ -545,7 +549,7 @@ class TestScanPendingApprovals:
              "details": {"destination": "host1.com", "cred_id": "hmac:aaa", "reason": "user_denied"}},
         ]
         log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
-        pending = scan_pending_approvals(log)
+        pending, _ = scan_pending_approvals(log)
         assert len(pending) == 2
         keys = {p["approval"]["key"] for p in pending}
         assert keys == {"hmac:bbb", "hmac:ccc"}
@@ -557,15 +561,89 @@ class TestScanPendingApprovals:
             _credential_event(key="hmac:abc", ts="2026-03-24T10:00:05Z"),  # duplicate
         ]
         log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
-        pending = scan_pending_approvals(log)
+        pending, _ = scan_pending_approvals(log)
         assert len(pending) == 1
+
+    def test_denied_then_retried_not_reprompted(self, tmp_path):
+        """Denial followed by a retry of the same credential must not re-prompt.
+
+        Regression: the single-pass reverse scan added the retry event to
+        pending_blocks before encountering the denial, so the denial never
+        filtered it out.
+        """
+        log = tmp_path / "test.jsonl"
+        events = [
+            # 1) Original approval request
+            _credential_event(key="hmac:xyz", target="api.openai.com", ts="2026-03-24T09:00:00Z"),
+            # 2) Operator denies
+            {"event": "admin.denial", "ts": "2026-03-24T09:05:00Z",
+             "details": {"destination": "api.openai.com", "cred_id": "hmac:xyz", "reason": "user_denied"}},
+            # 3) Agent retries — same credential, same host
+            _credential_event(key="hmac:xyz", target="api.openai.com", ts="2026-03-24T09:06:00Z"),
+        ]
+        log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        pending, resolved = scan_pending_approvals(log)
+        assert pending == [], "denied credential should not re-appear after retry"
+        assert "hmac:xyz:api.openai.com" in resolved
+
+    def test_denied_one_does_not_suppress_different_key(self, tmp_path):
+        """Denying one credential must not suppress an unrelated pending request."""
+        log = tmp_path / "test.jsonl"
+        events = [
+            _credential_event(key="hmac:aaa", target="host1.com", ts="2026-03-24T09:00:00Z"),
+            _credential_event(key="hmac:bbb", target="host2.com", ts="2026-03-24T09:01:00Z"),
+            # Deny only aaa
+            {"event": "admin.denial", "ts": "2026-03-24T09:05:00Z",
+             "details": {"destination": "host1.com", "cred_id": "hmac:aaa", "reason": "user_denied"}},
+            # aaa retries
+            _credential_event(key="hmac:aaa", target="host1.com", ts="2026-03-24T09:06:00Z"),
+        ]
+        log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        pending, _ = scan_pending_approvals(log)
+        assert len(pending) == 1
+        assert pending[0]["approval"]["key"] == "hmac:bbb"
+
+    def test_approved_then_retried_not_reprompted(self, tmp_path):
+        """Same pattern but with approval instead of denial."""
+        log = tmp_path / "test.jsonl"
+        events = [
+            _credential_event(key="hmac:xyz", target="api.openai.com", ts="2026-03-24T09:00:00Z"),
+            {"event": "admin.approval_added", "ts": "2026-03-24T09:05:00Z",
+             "details": {"destination": "api.openai.com", "cred_id": "hmac:xyz"}},
+            # Retry after approval
+            _credential_event(key="hmac:xyz", target="api.openai.com", ts="2026-03-24T09:06:00Z"),
+        ]
+        log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        pending, _ = scan_pending_approvals(log)
+        assert pending == [], "approved credential should not re-appear after retry"
+
+    def test_resolved_keys_returned_for_live_dedup(self, tmp_path):
+        """Resolved keys are returned so callers can seed live-event dedup sets.
+
+        Regression: the watch loop's seen_fingerprints was never seeded with
+        resolved keys, so live retries of denied credentials were re-prompted.
+        """
+        log = tmp_path / "test.jsonl"
+        events = [
+            _credential_event(key="hmac:aaa", target="host1.com", ts="2026-03-24T09:00:00Z"),
+            _credential_event(key="hmac:bbb", target="host2.com", ts="2026-03-24T09:01:00Z"),
+            {"event": "admin.denial", "ts": "2026-03-24T09:05:00Z",
+             "details": {"destination": "host1.com", "cred_id": "hmac:aaa", "reason": "user_denied"}},
+            {"event": "admin.approval_added", "ts": "2026-03-24T09:06:00Z",
+             "details": {"destination": "host2.com", "cred_id": "hmac:bbb"}},
+        ]
+        log.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+        pending, resolved = scan_pending_approvals(log)
+        assert pending == []
+        assert "hmac:aaa:host1.com" in resolved
+        assert "hmac:bbb:host2.com" in resolved
 
     def test_unified_path_for_gateway_events(self, tmp_path):
         """Gateway events with approval field are collected via approval.required."""
         log = tmp_path / "test.jsonl"
         event = _gateway_event()
         log.write_text(json.dumps(event) + "\n")
-        pending = scan_pending_approvals(log)
+        pending, _ = scan_pending_approvals(log)
         assert len(pending) == 1
         assert pending[0]["approval"]["approval_type"] == "gateway_route"
 
