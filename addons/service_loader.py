@@ -17,7 +17,6 @@ Usage:
 """
 
 import logging
-import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path

@@ -643,7 +643,6 @@ def _contract_binding_format_detail(event: dict) -> Panel:
     agent = event.get("agent", "unknown")
     service = approval.get("target", "unknown")
     capability = scope.get("capability", "")
-    template = scope.get("template", "")
     bindings = scope.get("bindings", {})
     grantable_ops = scope.get("grantable_operations", [])
     ts = event.get("ts", "")
