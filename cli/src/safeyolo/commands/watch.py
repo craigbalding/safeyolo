@@ -1747,7 +1747,9 @@ def watch(
             kind = event.get("kind", "")
 
             # Filter to security/gateway events if requested
-            if security_only and kind not in ("security", "gateway"):
+            # Proxy lifecycle events always pass — essential context
+            event_type = event.get("event", "")
+            if security_only and kind not in ("security", "gateway") and event_type not in ("ops.proxy_start", "ops.proxy_stop"):
                 continue
 
             if not has_seen_events:
