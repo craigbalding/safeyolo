@@ -71,6 +71,88 @@ capabilities:
       - methods: [GET]
         path: "/gmail/v1/users/me/messages"
 
+  read_messages:
+    description: "Read-only access to messages and threads (no send, no modify)"
+    scopes: ["gmail.readonly"]
+    routes:
+      - methods: [GET]
+        path: "/gmail/v1/users/me/messages"
+      - methods: [GET]
+        path: "/gmail/v1/users/me/messages/*"
+      - methods: [GET]
+        path: "/gmail/v1/users/me/threads"
+      - methods: [GET]
+        path: "/gmail/v1/users/me/threads/*"
+
+    contract:
+      template: gmail.read_messages.v1
+
+      bindings:
+        approved_category:
+          source: agent
+          type: enum
+          options:
+            - CATEGORY_PROMOTIONS
+            - CATEGORY_SOCIAL
+            - CATEGORY_UPDATES
+            - CATEGORY_FORUMS
+            - CATEGORY_PERSONAL
+          visible_to_operator: true
+
+      state:
+        discovered_message_ids:
+          type: set
+          item_type: string
+          max_items: 1000
+
+      operations:
+        - name: list_messages
+          request:
+            method: GET
+            path: /gmail/v1/users/me/messages
+            transport:
+              require_no_body: true
+              allow_headers: [Accept, User-Agent]
+              deny_ambiguous_encoding: true
+            query:
+              allow:
+                labelIds:
+                  equals_var: approved_category
+                maxResults:
+                  integer_range: [1, 100]
+                pageToken:
+                  type: string
+              deny_unknown: true
+          response:
+            capture:
+              - jsonpath: "$.messages[*].id"
+                into: discovered_message_ids
+
+        - name: get_message
+          requires_enforcement: state_enforcement
+          request:
+            method: GET
+            path: "/gmail/v1/users/me/messages/{id}"
+            transport:
+              require_no_body: true
+              allow_headers: [Accept, User-Agent]
+              deny_ambiguous_encoding: true
+            path_params:
+              id:
+                in_state_set: discovered_message_ids
+          response:
+            validators:
+              - name: category_matches_binding
+                jsonpath: "$.labelIds[*]"
+                contains_var: approved_category
+
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+        state_capture: declared
+        state_enforcement: declared
+        response_validators: declared
+
   read_and_send:
     description: "Full read/write access to messages"
     scopes: ["gmail.modify"]

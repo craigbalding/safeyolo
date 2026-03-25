@@ -620,6 +620,115 @@ FALLBACK_DISPATCH = ApprovalDispatch(
     format_detail=_fallback_format_detail,
 )
 
+def _contract_binding_format_row(event: dict) -> tuple[str, str, str, str]:
+    approval = event.get("approval", {})
+    scope = approval.get("scope_hint", {})
+    agent = event.get("agent", "\u2014")
+    service = approval.get("target", "?")
+    capability = scope.get("capability", "")
+    bindings = scope.get("bindings", {})
+    binding_summary = ", ".join(f"{v}" for v in bindings.values()) if bindings else ""
+    action = f"{service}/{capability}" if capability else service
+    if binding_summary:
+        action += f" [{binding_summary}]"
+    risk = "contract binding"
+    description = ""
+    return (agent, action, risk, description)
+
+
+def _contract_binding_format_detail(event: dict) -> Panel:
+    """System-authored panel for contract binding approval. No agent reason text."""
+    approval = event.get("approval", {})
+    scope = approval.get("scope_hint", {})
+    agent = event.get("agent", "unknown")
+    service = approval.get("target", "unknown")
+    capability = scope.get("capability", "")
+    template = scope.get("template", "")
+    bindings = scope.get("bindings", {})
+    grantable_ops = scope.get("grantable_operations", [])
+    ts = event.get("ts", "")
+
+    timestamp_str = ""
+    if ts:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            timestamp_str = dt.astimezone().strftime("%H:%M:%S")
+        except (ValueError, AttributeError):
+            timestamp_str = ts[:19]
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+
+    table.add_row("Capability", escape(capability))
+    # Show binding values (scope)
+    binding_display = ", ".join(f"{v}" for v in bindings.values()) if bindings else "\u2014"
+    table.add_row("Scope", escape(binding_display))
+    # Show grantable operations
+    ops_display = ", ".join(grantable_ops) if grantable_ops else "\u2014"
+    table.add_row("Operations", escape(ops_display))
+    # Risk line
+    table.add_row("Risk", f"can {escape(', '.join(grantable_ops))} in scope")
+    table.add_row("Assessment", "within contract, no conflicts detected")
+
+    title = (
+        f"[bold yellow]{escape(agent)}[/bold yellow]"
+        f" requests {escape(capability)}"
+        f" ({escape(service)})"
+        f" [dim]{timestamp_str}[/dim]"
+    )
+
+    return Panel(
+        table,
+        title=title,
+        subtitle="[green][A]pprove[/green] \u00b7 [red][D]eny[/red] \u00b7 [dim][L]ater[/dim]",
+        border_style="yellow",
+    )
+
+
+def _contract_binding_approve(event: dict, api: AdminAPI) -> str | None:
+    approval = event.get("approval", {})
+    scope = approval.get("scope_hint", {})
+    agent = event.get("agent", "")
+    service = approval.get("target", "")
+    capability = scope.get("capability", "")
+    template = scope.get("template", "")
+    bindings = scope.get("bindings", {})
+    grantable_ops = scope.get("grantable_operations", [])
+
+    if not agent or not service or not capability:
+        raise NotImplementedError(
+            "Contract binding event missing agent, service, or capability"
+        )
+
+    # Approve the contract binding
+    result = api.approve_contract_binding(
+        agent=agent,
+        service=service,
+        capability=capability,
+        template=template,
+        bindings=bindings,
+        grantable_operations=grantable_ops,
+    )
+
+    # Contract binding and service authorization are separate concerns.
+    # If the agent isn't already authorized for this service, a separate
+    # "service" approval event will appear in watch for credential selection.
+
+    return result.get("status", "bound")
+
+
+def _contract_binding_deny(event: dict, api: AdminAPI) -> None:
+    approval = event.get("approval", {})
+    agent = event.get("agent", "unknown")
+    target = approval.get("target", "unknown")
+    api.log_denial(
+        destination=f"gateway:{target}",
+        cred_id=f"{agent}:contract_binding",
+        reason="user_denied",
+    )
+
+
 DISPATCH: dict[str, ApprovalDispatch] = {
     "credential": ApprovalDispatch(
         approve=_credential_approve,
@@ -638,6 +747,12 @@ DISPATCH: dict[str, ApprovalDispatch] = {
         deny=_service_deny,
         format_row=_service_format_row,
         format_detail=_service_format_detail,
+    ),
+    "contract_binding": ApprovalDispatch(
+        approve=_contract_binding_approve,
+        deny=_contract_binding_deny,
+        format_row=_contract_binding_format_row,
+        format_detail=_contract_binding_format_detail,
     ),
 }
 
@@ -866,7 +981,7 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
         return handle_risky_route_approval(item.event, api)
     elif item.approval_type == "credential":
         return handle_approval(item.event, api)
-    elif item.approval_type == "service":
+    elif item.approval_type in ("service", "contract_binding"):
         console.print()
         console.print(dispatch.format_detail(item.event))
         while True:
@@ -1068,6 +1183,14 @@ def _resolved_key_from_admin_event(event: dict) -> str | None:
         service = details.get("service", "")
         if agent and service:
             return f"{agent}:{service}:{service}"
+        return None
+
+    if event_type == "admin.contract_binding_approved":
+        agent = details.get("agent", "")
+        service = details.get("service", "")
+        capability = details.get("capability", "")
+        if agent and service and capability:
+            return f"{agent}:{service}:{capability}:{service}"
         return None
 
     return None
@@ -1755,4 +1878,6 @@ def _print_event_summary(event: dict) -> None:
                 summary_parts.append(f"{key}={event[key]}")
         summary = " ".join(summary_parts[:4])
 
-    console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {escape(summary)}")
+    agent = event.get("agent", "")
+    agent_prefix = f"[bold]{escape(agent)}[/bold] " if agent else ""
+    console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {agent_prefix}{escape(summary)}")

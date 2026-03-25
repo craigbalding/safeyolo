@@ -283,6 +283,38 @@ class AdminAPI:
             },
         )
 
+    def approve_contract_binding(
+        self,
+        agent: str,
+        service: str,
+        capability: str,
+        template: str,
+        bindings: dict[str, Any],
+        grantable_operations: list[str],
+    ) -> dict[str, Any]:
+        """Approve a contract binding for an agent/service/capability.
+
+        Args:
+            agent: Agent name
+            service: Service name
+            capability: Capability name
+            template: Contract template identifier
+            bindings: Bound variable values
+            grantable_operations: List of grantable operation names
+        """
+        return self._request(
+            "POST",
+            "/admin/gateway/contract-binding",
+            json={
+                "agent": agent,
+                "service": service,
+                "capability": capability,
+                "template": template,
+                "bindings": bindings,
+                "grantable_operations": grantable_operations,
+            },
+        )
+
     def revoke_service(
         self,
         agent: str,

@@ -101,6 +101,21 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         return False
 
+    # Set by AdminAPI._discover_addons() — reference to mitmproxy's addon manager
+    _addons_obj = None
+
+    def _get_addon(self, addon_name: str):
+        """Look up an addon by name — uses live addon manager to survive hot reloads."""
+        if self._addons_obj:
+            try:
+                addon = self._addons_obj.get(addon_name)
+                if addon is not None:
+                    return addon
+            except Exception:
+                pass
+        # Fall back to static cache
+        return self.addons_with_stats.get(addon_name)
+
     def _get_client_ip(self) -> str:
         """Get client IP for logging."""
         # Check X-Forwarded-For if behind proxy
@@ -462,8 +477,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "lifetime must be 'once', 'session', or 'remembered'"}, 400)
                 return
 
-        # Find the service gateway addon
-        gateway = self.addons_with_stats.get("service-gateway")
+        # Find the service gateway addon (live lookup to survive hot reloads)
+        gateway = self._get_addon("service-gateway")
         if not gateway or not hasattr(gateway, "add_grant"):
             self._send_json({"error": "service gateway not available"}, 503)
             return
@@ -503,7 +518,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_get_gateway_grants(self) -> None:
         """GET /admin/gateway/grants - List active grants."""
-        gateway = self.addons_with_stats.get("service-gateway")
+        gateway = self._get_addon("service-gateway")
         if not gateway or not hasattr(gateway, "list_grants"):
             self._send_json({"error": "service gateway not available"}, 503)
             return
@@ -517,7 +532,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "missing grant_id"}, 400)
             return
 
-        gateway = self.addons_with_stats.get("service-gateway")
+        gateway = self._get_addon("service-gateway")
         if not gateway or not hasattr(gateway, "revoke_grant"):
             self._send_json({"error": "service gateway not available"}, 503)
             return
@@ -695,6 +710,67 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "credential": credential,
         })
 
+    def _handle_post_contract_binding(self) -> None:
+        """POST /admin/gateway/contract-binding - Approve a contract binding."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        agent = data.get("agent")
+        service = data.get("service")
+        capability = data.get("capability")
+        template = data.get("template", "")
+        bindings = data.get("bindings", {})
+        grantable_operations = data.get("grantable_operations", [])
+
+        if not all([agent, service, capability]):
+            self._send_json({"error": "missing required fields: agent, service, capability"}, 400)
+            return
+
+        if not isinstance(bindings, dict) or not bindings:
+            self._send_json({"error": "bindings must be a non-empty object"}, 400)
+            return
+
+        # Find the service gateway addon (live lookup to survive hot reloads)
+        gateway = self._get_addon("service-gateway")
+        if not gateway or not hasattr(gateway, "add_contract_binding"):
+            self._send_json({"error": "service gateway not available"}, 503)
+            return
+
+        binding_state = gateway.add_contract_binding(
+            agent=agent,
+            service=service,
+            capability=capability,
+            template=template,
+            bound_values=bindings,
+            grantable_operations=grantable_operations,
+        )
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.contract_binding_approved",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Contract binding approved: {_sanitize_log(agent)}/{_sanitize_log(service)}/{_sanitize_log(capability)}",
+            addon="admin-api",
+            details={
+                "client_ip": client_ip,
+                "binding_id": binding_state.binding_id,
+                "agent": agent,
+                "service": service,
+                "capability": capability,
+                "template": template,
+                "bindings": bindings,
+                "grantable_operations": grantable_operations,
+            },
+        )
+
+        self._send_json({
+            "binding_id": binding_state.binding_id,
+            "status": "bound",
+        })
+
     def _handle_post_budgets_reset(self) -> None:
         """POST /admin/budgets/reset - Reset budget counters."""
         client = get_policy_client()
@@ -737,6 +813,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/baseline/deny": self._handle_post_baseline_deny,
             "/admin/budgets/reset": self._handle_post_budgets_reset,
             "/admin/gateway/grant": self._handle_post_gateway_grant,
+            "/admin/gateway/contract-binding": self._handle_post_contract_binding,
         }
 
         if path in static_handlers:
@@ -1110,6 +1187,7 @@ class AdminAPI:
                 log.debug(f"Admin API: found {addon_name} addon")
 
         AdminRequestHandler.addons_with_stats = discovered
+        AdminRequestHandler._addons_obj = addons_obj
         log.info(f"Admin API: discovered {len(discovered)} addons with stats")
 
     def done(self):

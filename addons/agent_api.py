@@ -130,6 +130,7 @@ class AgentAPI:
             "/api/flows/diff": self._handle_flow_diff,
             "/api/flows/request-body-search": self._handle_flow_request_body_search,
             "/gateway/request-access": self._handle_gateway_request_access,
+            "/gateway/submit-binding": self._handle_gateway_submit_binding,
         }
 
         handler = handlers.get(path)
@@ -205,22 +206,14 @@ class AgentAPI:
         flow.metadata["blocked_by"] = self.name
 
     def _find_addon(self, addon_name: str):
-        """Find an addon by registered mitmproxy addon name."""
-        # Check cache first
-        cache = getattr(self, "_addon_cache", None)
-        if cache is None:
-            self._addon_cache = {}
-            cache = self._addon_cache
+        """Find an addon by registered mitmproxy addon name.
 
-        if addon_name in cache:
-            return cache[addon_name]
-
+        Always looks up via ctx.master.addons to survive addon hot reloads.
+        """
         try:
             addons_obj = getattr(getattr(ctx, "master", None), "addons", None)
-            addon = addons_obj.get(addon_name) if addons_obj else None
-            if addon is not None:
-                cache[addon_name] = addon
-                return addon
+            if addons_obj:
+                return addons_obj.get(addon_name)
         except Exception as exc:
             log.debug(f"Addon lookup failed: {type(exc).__name__}: {exc}")
 
@@ -282,6 +275,11 @@ class AgentAPI:
         """POST /gateway/request-access - Agent requests access to a service capability.
 
         Body: {"service": "gmail", "capability": "read_and_send", "reason": "Need to read inbox"}
+
+        If the capability has a contract template:
+        - Not grantable → returns contract_not_enforceable
+        - Grantable → returns needs_contract_binding with template/bindings/operations
+        - No contract → existing 202 pending behavior
         """
         body = self._read_json_body(flow)
         if body is None:
@@ -326,6 +324,49 @@ class AgentAPI:
             self._respond(flow, 404, {"error": f"Capability '{capability}' not found in service '{service_name}'"})
             return
 
+        # Contract check: if capability has a contract, handle contract flow
+        if cap_obj.contract is not None:
+            contract = cap_obj.contract
+            if not contract.is_grantable:
+                self._respond(flow, 200, {
+                    "decision": "contract_not_enforceable",
+                    "service": service_name,
+                    "capability": capability,
+                    "missing_tiers": contract.ungrantable_tiers(),
+                })
+                return
+
+            # Grantable: return binding challenge
+            bindings_info = {}
+            for name, b in contract.bindings.items():
+                bindings_info[name] = {
+                    "source": b.source,
+                    "type": b.type,
+                    "visible_to_operator": b.visible_to_operator,
+                }
+                if b.options:
+                    bindings_info[name]["options"] = b.options
+                if b.pattern:
+                    bindings_info[name]["pattern"] = b.pattern
+                if b.required_if:
+                    bindings_info[name]["required_if"] = b.required_if
+
+            grantable_ops = [
+                {"name": op.name, "method": op.method, "path": op.path}
+                for op in contract.grantable_operations()
+            ]
+
+            self._respond(flow, 200, {
+                "decision": "needs_contract_binding",
+                "service": service_name,
+                "capability": capability,
+                "template": contract.template,
+                "bindings": bindings_info,
+                "grantable_operations": grantable_ops,
+            })
+            return
+
+        # No contract: existing behavior — write approval event
         write_event(
             "gateway.request_access",
             kind=EventKind.GATEWAY,
@@ -364,6 +405,179 @@ class AgentAPI:
             "capability": capability,
             "reason": reason,
             "message": "Access request submitted. Operator will review in watch.",
+        })
+
+    def _handle_gateway_submit_binding(self, flow: http.HTTPFlow):
+        """POST /gateway/submit-binding - Agent submits contract binding values.
+
+        Body: {"service": "gmail", "capability": "read_messages",
+               "bindings": {"approved_category": "CATEGORY_PROMOTIONS"},
+               "purpose_code": "summarise", "note": "optional audit note"}
+        """
+        body = self._read_json_body(flow)
+        if body is None:
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+
+        service_name = body.get("service")
+        capability = body.get("capability")
+        bindings = body.get("bindings", {})
+        purpose_code = body.get("purpose_code", "")
+        note = body.get("note", "")
+
+        if not service_name or not capability:
+            self._respond(flow, 400, {"error": "service and capability are required"})
+            return
+        if not isinstance(bindings, dict) or not bindings:
+            self._respond(flow, 400, {"error": "bindings must be a non-empty object"})
+            return
+
+        # Resolve caller
+        sd = self._find_addon("service-discovery")
+        if not sd:
+            self._respond(flow, 503, {"error": "service-discovery addon not loaded"})
+            return
+
+        from utils import get_client_ip
+        client_ip = get_client_ip(flow)
+        agent_name = sd.get_client_for_ip(client_ip)
+        if not agent_name or agent_name == "default":
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+
+        # Validate service/capability/contract
+        from service_loader import get_service_registry
+        registry = get_service_registry()
+        if not registry:
+            self._respond(flow, 503, {"error": "Service registry not available"})
+            return
+
+        svc = registry.get_service(service_name)
+        if not svc:
+            self._respond(flow, 404, {"error": f"Service '{service_name}' not found"})
+            return
+
+        cap_obj = svc.capabilities.get(capability)
+        if not cap_obj:
+            self._respond(flow, 404, {"error": f"Capability '{capability}' not found"})
+            return
+
+        if not cap_obj.contract:
+            self._respond(flow, 400, {"error": f"Capability '{capability}' has no contract"})
+            return
+
+        contract = cap_obj.contract
+        if not contract.is_grantable:
+            self._respond(flow, 200, {
+                "decision": "contract_not_enforceable",
+                "missing_tiers": contract.ungrantable_tiers(),
+            })
+            return
+
+        # Validate each binding value
+        import re as re_mod
+        errors = []
+        for var_name, var_def in contract.bindings.items():
+            value = bindings.get(var_name)
+
+            # Check required_if
+            if var_def.required_if:
+                required = all(
+                    bindings.get(k) == v for k, v in var_def.required_if.items()
+                )
+                if required and value is None:
+                    errors.append(f"'{var_name}' is required")
+                    continue
+
+            if value is None:
+                continue
+
+            if var_def.type == "enum":
+                if value not in var_def.options:
+                    errors.append(f"'{var_name}' must be one of: {', '.join(var_def.options)}")
+            elif var_def.type == "integer":
+                if not isinstance(value, int):
+                    try:
+                        int(value)
+                    except (ValueError, TypeError):
+                        errors.append(f"'{var_name}' must be an integer")
+            elif var_def.type == "boolean":
+                if not isinstance(value, bool):
+                    errors.append(f"'{var_name}' must be a boolean")
+            elif var_def.type == "string":
+                if not isinstance(value, str):
+                    errors.append(f"'{var_name}' must be a string")
+                elif var_def.pattern:
+                    if not re_mod.match(var_def.pattern, value):
+                        errors.append(f"'{var_name}' does not match pattern")
+            elif var_def.type == "string_list":
+                if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                    errors.append(f"'{var_name}' must be a list of strings")
+
+        # Check for unknown bindings
+        for var_name in bindings:
+            if var_name not in contract.bindings:
+                errors.append(f"Unknown binding variable '{var_name}'")
+
+        if errors:
+            self._respond(flow, 200, {
+                "decision": "denied_out_of_scope",
+                "errors": errors,
+            })
+            return
+
+        # Build grantable operations list
+        grantable_ops = [op.name for op in contract.grantable_operations()]
+
+        # Write approval event
+        scope_hint = {
+            "service": service_name,
+            "capability": capability,
+            "template": contract.template,
+            "bindings": bindings,
+            "grantable_operations": grantable_ops,
+        }
+        if purpose_code:
+            scope_hint["purpose_code"] = purpose_code
+
+        write_event(
+            "gateway.submit_binding",
+            kind=EventKind.GATEWAY,
+            severity=Severity.CRITICAL,
+            summary=f"{agent_name} submits contract binding for {service_name}/{capability}",
+            decision=Decision.REQUIRE_APPROVAL,
+            host=svc.default_host or "",
+            agent=agent_name,
+            addon=self.name,
+            approval=ApprovalRequest(
+                required=True,
+                approval_type="contract_binding",
+                key=f"{agent_name}:{service_name}:{capability}",
+                target=service_name,
+                scope_hint=scope_hint,
+            ),
+            details={
+                "bindings": bindings,
+                "purpose_code": purpose_code,
+                "note": note,
+            },
+        )
+
+        log.info(
+            "Binding submitted: agent=%s service=%s capability=%s bindings=%s",
+            sanitize_for_log(agent_name),
+            sanitize_for_log(service_name),
+            sanitize_for_log(capability),
+            sanitize_for_log(str(bindings)),
+        )
+
+        self._respond(flow, 202, {
+            "status": "pending",
+            "agent": agent_name,
+            "service": service_name,
+            "capability": capability,
+            "bindings": bindings,
+            "message": "Contract binding submitted. Operator will review in watch.",
         })
 
     def _handle_agents(self, flow: http.HTTPFlow):

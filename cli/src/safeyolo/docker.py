@@ -200,8 +200,8 @@ def generate_compose(sandbox: bool = True, dev: bool = False) -> str:
     Args:
         sandbox: If True (default), generate Sandbox Mode with network isolation.
                  If False, generate Try Mode for evaluation.
-        dev: If True, add volume mounts for addons/ and pdp/ from repo checkout
-             so local edits are reflected after container restart.
+        dev: If True, mount addons/ and pdp/ from repo checkout and enable
+             Compose watch to auto-restart on .py changes.
 
     Both modes:
     - Use localhost-only port bindings (127.0.0.1)
@@ -317,11 +317,22 @@ def start(detach: bool = True, pull: bool = False, auto_build: bool = True, dev:
     if pull:
         _run(["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "pull"])
 
-    args = ["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path), "up"]
-    if detach:
-        args.append("-d")
+    compose_args = ["docker", "compose", "-p", COMPOSE_PROJECT_NAME, "-f", str(compose_path)]
 
-    _run(args)
+    if dev:
+        # Start container detached, then launch watch in background
+        _run(compose_args + ["up", "-d"])
+        subprocess.Popen(
+            compose_args + ["watch"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        args = compose_args + ["up"]
+        if detach:
+            args.append("-d")
+        _run(args)
+
     return built
 
 

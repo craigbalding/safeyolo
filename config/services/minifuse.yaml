@@ -49,6 +49,126 @@ capabilities:
       - methods: [GET, PUT, DELETE]
         path: "/v1/feeds/*"
 
+    contract:
+      template: minifuse.category_manager.v1
+
+      bindings:
+        approved_category_id:
+          source: agent
+          type: integer
+          visible_to_operator: true
+
+      state:
+        discovered_feed_ids:
+          type: set
+          item_type: integer
+          max_items: 500
+
+      operations:
+        - name: list_feeds
+          request:
+            method: GET
+            path: "/v1/categories/{id}/feeds"
+            transport:
+              require_no_body: true
+              allow_headers: [Accept, User-Agent, X-Test-Context]
+              deny_ambiguous_encoding: true
+            path_params:
+              id:
+                equals_var: approved_category_id
+            query:
+              allow: {}
+              deny_unknown: true
+          response:
+            capture:
+              - jsonpath: "$[*].id"
+                into: discovered_feed_ids
+
+        - name: list_entries
+          request:
+            method: GET
+            path: "/v1/categories/{id}/entries"
+            transport:
+              require_no_body: true
+              allow_headers: [Accept, User-Agent, X-Test-Context]
+              deny_ambiguous_encoding: true
+            path_params:
+              id:
+                equals_var: approved_category_id
+            query:
+              allow:
+                status:
+                  type: string
+                limit:
+                  integer_range: [1, 100]
+                offset:
+                  integer_range: [0, 10000]
+                order:
+                  type: string
+                direction:
+                  type: string
+              deny_unknown: true
+
+        - name: create_feed
+          request:
+            method: POST
+            path: "/v1/feeds"
+            transport:
+              allow_headers: [Accept, User-Agent, Content-Type, X-Test-Context]
+              deny_ambiguous_encoding: true
+            body:
+              allow:
+                feed_url:
+                  type: string
+                category_id:
+                  equals_var: approved_category_id
+              deny_unknown: true
+
+        - name: get_feed
+          requires_enforcement: state_enforcement
+          request:
+            method: GET
+            path: "/v1/feeds/{id}"
+            transport:
+              require_no_body: true
+              allow_headers: [Accept, User-Agent, X-Test-Context]
+              deny_ambiguous_encoding: true
+            path_params:
+              id:
+                in_state_set: discovered_feed_ids
+
+        - name: update_feed
+          requires_enforcement: state_enforcement
+          request:
+            method: PUT
+            path: "/v1/feeds/{id}"
+            transport:
+              allow_headers: [Accept, User-Agent, Content-Type, X-Test-Context]
+              deny_ambiguous_encoding: true
+            path_params:
+              id:
+                in_state_set: discovered_feed_ids
+
+        - name: delete_feed
+          requires_enforcement: state_enforcement
+          request:
+            method: DELETE
+            path: "/v1/feeds/{id}"
+            transport:
+              require_no_body: true
+              allow_headers: [Accept, User-Agent, X-Test-Context]
+              deny_ambiguous_encoding: true
+            path_params:
+              id:
+                in_state_set: discovered_feed_ids
+
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+        state_capture: declared
+        state_enforcement: declared
+        response_validators: declared
+
   writer:
     description: "Full feed management — create, update, delete feeds"
     routes:

@@ -17,6 +17,7 @@ Usage:
 """
 
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +65,308 @@ class CapabilityRoute:
         )
 
 
+_VALID_BINDING_TYPES = {"string", "enum", "integer", "boolean", "string_list"}
+_VALID_ENFORCEMENT_VALUES = {"enforced", "declared"}
+_ENFORCEMENT_TIERS = [
+    "request_shape",
+    "transport_hygiene",
+    "state_capture",
+    "state_enforcement",
+    "response_validators",
+]
+
+
+@dataclass
+class ContractBinding:
+    """A named variable the agent proposes and the operator approves."""
+
+    name: str
+    source: str = "agent"
+    type: str = "string"
+    options: list[str] = field(default_factory=list)
+    pattern: str = ""
+    visible_to_operator: bool = True
+    required_if: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, name: str, d: dict) -> "ContractBinding":
+        binding_type = d.get("type", "string")
+        if binding_type not in _VALID_BINDING_TYPES:
+            raise ValueError(
+                f"Invalid binding type '{binding_type}' for '{name}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_BINDING_TYPES))}"
+            )
+        options = d.get("options", [])
+        if binding_type == "enum" and not options:
+            raise ValueError(
+                f"Enum binding '{name}' must have non-empty 'options'"
+            )
+        return cls(
+            name=name,
+            source=d.get("source", "agent"),
+            type=binding_type,
+            options=options,
+            pattern=d.get("pattern", ""),
+            visible_to_operator=d.get("visible_to_operator", True),
+            required_if=d.get("required_if", {}),
+        )
+
+
+@dataclass
+class TransportConstraint:
+    """HTTP transport-level constraints for an operation."""
+
+    require_no_body: bool = False
+    allow_headers: list[str] = field(default_factory=list)
+    deny_ambiguous_encoding: bool = False
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TransportConstraint":
+        return cls(
+            require_no_body=d.get("require_no_body", False),
+            allow_headers=d.get("allow_headers", []),
+            deny_ambiguous_encoding=d.get("deny_ambiguous_encoding", False),
+        )
+
+
+@dataclass
+class QueryConstraint:
+    """Constraint on a single query parameter."""
+
+    equals_var: str = ""
+    integer_range: list[int] = field(default_factory=list)
+    type: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "QueryConstraint":
+        return cls(
+            equals_var=d.get("equals_var", ""),
+            integer_range=d.get("integer_range", []),
+            type=d.get("type", ""),
+        )
+
+
+@dataclass
+class BodyConstraint:
+    """Constraint on a single body field."""
+
+    type: str = "string"
+    equals_var: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BodyConstraint":
+        return cls(
+            type=d.get("type", "string"),
+            equals_var=d.get("equals_var", ""),
+        )
+
+
+@dataclass
+class PathParamConstraint:
+    """Constraint on a path parameter."""
+
+    in_state_set: str = ""
+    equals_var: str = ""
+    type: str = "string"
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PathParamConstraint":
+        return cls(
+            in_state_set=d.get("in_state_set", ""),
+            equals_var=d.get("equals_var", ""),
+            type=d.get("type", "string"),
+        )
+
+
+@dataclass
+class ContractOperation:
+    """An allowed request shape within a contract."""
+
+    name: str
+    method: str = "GET"
+    path: str = ""
+    transport: TransportConstraint | None = None
+    query_allow: dict[str, QueryConstraint] = field(default_factory=dict)
+    query_deny_unknown: bool = True
+    body_allow: dict[str, BodyConstraint] = field(default_factory=dict)
+    body_deny_unknown: bool = True
+    path_params: dict[str, PathParamConstraint] = field(default_factory=dict)
+    requires_enforcement: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ContractOperation":
+        req = d.get("request", {})
+        transport = None
+        if "transport" in req:
+            transport = TransportConstraint.from_dict(req["transport"])
+
+        query_allow = {}
+        query_section = req.get("query", {})
+        for param_name, constraint in query_section.get("allow", {}).items():
+            query_allow[param_name] = QueryConstraint.from_dict(constraint)
+        query_deny_unknown = query_section.get("deny_unknown", True)
+
+        body_allow = {}
+        body_section = req.get("body", {})
+        for field_name, constraint in body_section.get("allow", {}).items():
+            body_allow[field_name] = BodyConstraint.from_dict(constraint)
+        body_deny_unknown = body_section.get("deny_unknown", True)
+
+        path_params = {}
+        for param_name, constraint in req.get("path_params", {}).items():
+            path_params[param_name] = PathParamConstraint.from_dict(constraint)
+
+        requires_enforcement = d.get("requires_enforcement", "")
+        if requires_enforcement and requires_enforcement not in _ENFORCEMENT_TIERS:
+            raise ValueError(
+                f"requires_enforcement '{requires_enforcement}' is not a valid tier. "
+                f"Must be one of: {', '.join(_ENFORCEMENT_TIERS)}"
+            )
+
+        return cls(
+            name=d["name"],
+            method=req.get("method", "GET"),
+            path=req.get("path", ""),
+            transport=transport,
+            query_allow=query_allow,
+            query_deny_unknown=query_deny_unknown,
+            body_allow=body_allow,
+            body_deny_unknown=body_deny_unknown,
+            path_params=path_params,
+            requires_enforcement=requires_enforcement,
+        )
+
+
+@dataclass
+class EnforcementStatus:
+    """Enforcement status for each tier."""
+
+    request_shape: str = "declared"
+    transport_hygiene: str = "declared"
+    state_capture: str = "declared"
+    state_enforcement: str = "declared"
+    response_validators: str = "declared"
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EnforcementStatus":
+        for key in _ENFORCEMENT_TIERS:
+            val = d.get(key, "declared")
+            if val not in _VALID_ENFORCEMENT_VALUES:
+                raise ValueError(
+                    f"Enforcement value '{val}' for '{key}' must be 'enforced' or 'declared'"
+                )
+        return cls(
+            request_shape=d.get("request_shape", "declared"),
+            transport_hygiene=d.get("transport_hygiene", "declared"),
+            state_capture=d.get("state_capture", "declared"),
+            state_enforcement=d.get("state_enforcement", "declared"),
+            response_validators=d.get("response_validators", "declared"),
+        )
+
+    def get_tier_status(self, tier: str) -> str:
+        return getattr(self, tier, "declared")
+
+
+@dataclass
+class ContractTemplate:
+    """Full contract template attached to a capability."""
+
+    template: str
+    bindings: dict[str, ContractBinding] = field(default_factory=dict)
+    operations: list[ContractOperation] = field(default_factory=list)
+    enforcement: EnforcementStatus = field(default_factory=EnforcementStatus)
+    state: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ContractTemplate":
+        bindings = {}
+        for name, bdef in d.get("bindings", {}).items():
+            bindings[name] = ContractBinding.from_dict(name, bdef)
+
+        operations = [ContractOperation.from_dict(op) for op in d.get("operations", [])]
+
+        enforcement = EnforcementStatus.from_dict(d.get("enforcement", {}))
+
+        return cls(
+            template=d.get("template", ""),
+            bindings=bindings,
+            operations=operations,
+            enforcement=enforcement,
+            state=d.get("state", {}),
+        )
+
+    def grantable_operations(self) -> list[ContractOperation]:
+        """Operations whose requires_enforcement tier is enforced (or absent → request_shape)."""
+        result = []
+        for op in self.operations:
+            tier = op.requires_enforcement or "request_shape"
+            if self.enforcement.get_tier_status(tier) == "enforced":
+                result.append(op)
+        return result
+
+    @property
+    def is_grantable(self) -> bool:
+        return len(self.grantable_operations()) > 0
+
+    def ungrantable_tiers(self) -> list[str]:
+        """Tier names blocking grantability for excluded operations."""
+        tiers: list[str] = []
+        seen: set[str] = set()
+        for op in self.operations:
+            tier = op.requires_enforcement or "request_shape"
+            if self.enforcement.get_tier_status(tier) != "enforced" and tier not in seen:
+                tiers.append(tier)
+                seen.add(tier)
+        return tiers
+
+    def match_operation(self, method: str, path: str) -> ContractOperation | None:
+        """Match request against grantable operations. Exact path > parameterized > glob."""
+        grantable = self.grantable_operations()
+        best: ContractOperation | None = None
+        best_specificity = -1
+
+        for op in grantable:
+            if op.method.upper() != method.upper():
+                continue
+            specificity = _path_match_specificity(path, op.path)
+            if specificity > best_specificity:
+                best = op
+                best_specificity = specificity
+
+        return best
+
+
+def _path_match_specificity(actual: str, template: str) -> int:
+    """Match actual path against template. Returns specificity score or -1 for no match.
+
+    Scores: 2 = exact match, 1 = parameterized match, 0 = glob match, -1 = no match.
+    """
+    actual_parts = [p for p in actual.strip("/").split("/") if p]
+    template_parts = [p for p in template.strip("/").split("/") if p]
+
+    if not template_parts and not actual_parts:
+        return 2
+
+    # Check segment by segment
+    has_param = False
+    for i, t_seg in enumerate(template_parts):
+        if t_seg == "*" or t_seg == "**":
+            # Glob: matches rest
+            return 0
+        if i >= len(actual_parts):
+            return -1
+        if t_seg.startswith("{") and t_seg.endswith("}"):
+            has_param = True
+            continue
+        if t_seg != actual_parts[i]:
+            return -1
+
+    if len(actual_parts) != len(template_parts):
+        return -1
+
+    return 1 if has_param else 2
+
+
 @dataclass
 class Capability:
     """A named set of allowed routes within a service."""
@@ -72,15 +375,20 @@ class Capability:
     description: str = ""
     routes: list[CapabilityRoute] = field(default_factory=list)
     scopes: list[str] = field(default_factory=list)
+    contract: ContractTemplate | None = None
 
     @classmethod
     def from_dict(cls, name: str, d: dict) -> "Capability":
         routes = [CapabilityRoute.from_dict(r) for r in d.get("routes", [])]
+        contract = None
+        if "contract" in d:
+            contract = ContractTemplate.from_dict(d["contract"])
         return cls(
             name=name,
             description=d.get("description", ""),
             routes=routes,
             scopes=d.get("scopes", []),
+            contract=contract,
         )
 
 

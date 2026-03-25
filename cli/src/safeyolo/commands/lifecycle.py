@@ -112,7 +112,7 @@ def start(
     dev: bool = typer.Option(
         False,
         "--dev",
-        help="Mount source code for live editing (requires repo checkout)",
+        help="Mount source code and auto-restart on changes (requires repo checkout)",
     ),
 ) -> None:
     """Start SafeYolo proxy container."""
@@ -174,7 +174,7 @@ def start(
             raise typer.Exit(1)
 
     if dev:
-        console.print("[bold]Dev mode:[/bold] addons/, pdp/, and logs mounted from repo")
+        console.print("[bold]Dev mode:[/bold] addons/ and pdp/ mounted from repo, auto-restart on changes")
 
     try:
         docker_start(detach=True, pull=pull, dev=dev)
