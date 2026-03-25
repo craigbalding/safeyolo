@@ -119,11 +119,32 @@ def configure_file_logging():
 
 
 class FileLoggingAddon:
-    """Addon to configure file logging at mitmproxy startup."""
+    """Addon to configure file logging at mitmproxy startup.
+
+    Also emits proxy lifecycle events (ops.proxy_start, ops.proxy_stop)
+    so operators see start/stop in watch output.
+    """
 
     def running(self):
         """Configure file logging when mitmproxy is fully started."""
         configure_file_logging()
+        dev = os.environ.get("SAFEYOLO_DEV") == "1"
+        mode = "dev" if dev else "production"
+        write_event(
+            "ops.proxy_start",
+            kind="ops",
+            severity="medium",
+            summary=f"SafeYolo proxy started ({mode})",
+        )
+
+    def done(self):
+        """Log proxy shutdown."""
+        write_event(
+            "ops.proxy_stop",
+            kind="ops",
+            severity="medium",
+            summary="SafeYolo proxy stopped",
+        )
 
 # =============================================================================
 # Log Sanitization
