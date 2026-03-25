@@ -24,13 +24,17 @@ Usage:
         --set gateway_vault_path=/safeyolo/data/vault.yaml.enc
 """
 
+import json as json_mod
 import logging
+import re
 import secrets
 import threading
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from detection.matching import normalize_path, reject_path_tricks
 from mitmproxy import ctx, http
 from service_loader import get_service_registry
 from utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
@@ -107,6 +111,25 @@ class GrantEntry:
         return matches_resource_pattern(path, self.path)
 
 
+@dataclass
+class ContractBindingState:
+    """An active contract binding for an agent/service/capability tuple."""
+
+    binding_id: str
+    agent: str
+    service: str
+    capability: str
+    template: str
+    bound_values: dict  # var_name -> resolved value
+    grantable_operations: list[str]
+    created: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+def _mint_binding_id() -> str:
+    """Generate a unique contract binding ID."""
+    return f"cbs_{secrets.token_hex(12)}"
+
+
 def _mint_grant_id() -> str:
     """Generate a unique grant ID."""
     return f"grt_{secrets.token_hex(12)}"
@@ -129,6 +152,36 @@ def mint_gateway_token() -> str:
     return f"{SGW_TOKEN_PREFIX}{secrets.token_hex(SGW_TOKEN_LEN // 2)}"
 
 
+@dataclass
+class CanonicalRequest:
+    """Parsed, validated, canonical representation of a contract-bound request."""
+
+    method: str
+    path: str  # normalised via yarl after raw rejection
+    query: dict[str, str]  # single value per key (duplicates already rejected)
+    body: dict | None  # strict-parsed JSON (duplicates already rejected), or None
+    content_type: str  # parsed media type, lowercase, no params
+    headers: dict[str, str]  # lowercase keys, single value per key
+
+
+def _parse_content_type(flow) -> str:
+    """Extract media type from Content-Type header, lowercase, no params."""
+    raw = flow.request.headers.get("content-type", "")
+    return raw.split(";")[0].strip().lower()
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
+    """object_pairs_hook that rejects duplicate JSON keys."""
+    seen: set[str] = set()
+    result = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key: {key}")
+        seen.add(key)
+        result[key] = value
+    return result
+
+
 class ServiceGateway:
     """Service Gateway addon - credential injection for agents (v2).
 
@@ -142,6 +195,7 @@ class ServiceGateway:
         self._token_map: dict[str, TokenBinding] = {}
         self._host_map: dict[str, str] = {}
         self._grants: dict[str, GrantEntry] = {}  # grant_id -> GrantEntry
+        self._contract_bindings: dict[tuple[str, str, str], ContractBindingState] = {}
         self._grant_ttl: int = DEFAULT_GRANT_TTL_SECONDS
         self._lock = threading.RLock()
         self.stats = GatewayStats()
@@ -182,10 +236,11 @@ class ServiceGateway:
         if "gateway_enabled" in updates or "gateway_vault_path" in updates:
             self._init_vault()
 
-        # Mint tokens and load grants when gateway enables
+        # Mint tokens, load grants and contract bindings when gateway enables
         if "gateway_enabled" in updates:
             self._mint_tokens_from_policy()
             self._load_grants_from_agents_yaml()
+            self._load_contract_bindings_from_agents_yaml()
             self._register_reload_callback()
 
     def _init_services(self):
@@ -403,6 +458,12 @@ class ServiceGateway:
             self.stats.denied_route += 1
             return
 
+        # 1.5. Contract enforcement (if capability has a bound contract)
+        if capability.contract and capability.contract.is_grantable:
+            cbs = self.get_contract_binding(binding.agent, service.name, capability.name)
+            if not self._enforce_contract(flow, cbs, service, capability, method, path):
+                return  # flow.response already set
+
         # 2. Risky route check (grant bypass → PDP)
         risky = self._match_risky_route(method, path, service.risky_routes)
         if risky:
@@ -451,14 +512,43 @@ class ServiceGateway:
                     )
                     return
 
-        # Strip sgw_ token and inject real credential
-        del flow.request.headers["Authorization"]
-        injected_header = "Authorization"
+        # Refuse to inject credentials over plaintext HTTP — redirect to HTTPS
+        if flow.request.scheme == "http":
+            https_url = "https://" + flow.request.url[len("http://"):]
+            flow.response = http.Response.make(
+                301,
+                b"",
+                {
+                    "Location": https_url,
+                    "X-SafeYolo-Reason": "credential-injection-requires-https",
+                },
+            )
+            log.warning(
+                f"Blocked credential injection over HTTP, redirecting to HTTPS: "
+                f"{sanitize_for_log(flow.request.host)}{sanitize_for_log(path)}"
+            )
+            write_event(
+                "gateway.https_redirect",
+                kind=EventKind.GATEWAY,
+                severity=Severity.HIGH,
+                summary=f"Gateway redirected HTTP→HTTPS: {service.name}{path}",
+                decision=Decision.DENY,
+                host=flow.request.host,
+                request_id=flow.metadata.get("request_id"),
+                agent=binding.agent,
+                addon=self.name,
+                details={"service": service.name, "path": path, "redirect": https_url},
+            )
+            return
+
+        # Strip sgw_ token and inject real credential (same header)
+        auth_header = service.auth.header if service.auth else "Authorization"
+        del flow.request.headers[auth_header]
+        injected_header = auth_header
         if service.auth and service.auth.type == "bearer":
-            flow.request.headers["Authorization"] = f"{service.auth.scheme} {cred.value}"
+            flow.request.headers[auth_header] = f"{service.auth.scheme} {cred.value}"
         elif service.auth and service.auth.type == "api_key":
-            injected_header = service.auth.header
-            flow.request.headers[service.auth.header] = cred.value
+            flow.request.headers[auth_header] = cred.value
 
         # Stamp metadata
         flow.metadata["gateway_service"] = service.name
@@ -746,6 +836,166 @@ class ServiceGateway:
         except Exception as e:
             log.warning(f"Failed to persist grants: {type(e).__name__}: {e}")
 
+    # =========================================================================
+    # Contract binding management
+    # =========================================================================
+
+    def add_contract_binding(
+        self,
+        agent: str,
+        service: str,
+        capability: str,
+        template: str,
+        bound_values: dict,
+        grantable_operations: list[str],
+    ) -> ContractBindingState:
+        """Create and store a contract binding. Replaces existing for same key."""
+        binding = ContractBindingState(
+            binding_id=_mint_binding_id(),
+            agent=agent,
+            service=service,
+            capability=capability,
+            template=template,
+            bound_values=bound_values,
+            grantable_operations=grantable_operations,
+        )
+        key = (agent, service, capability)
+        with self._lock:
+            self._contract_bindings[key] = binding
+
+        self._persist_contract_bindings()
+
+        log.info(
+            f"Contract binding added: {binding.binding_id} "
+            f"{sanitize_for_log(agent)}/{sanitize_for_log(service)}/{sanitize_for_log(capability)}"
+        )
+        return binding
+
+    def get_contract_binding(
+        self, agent: str, service: str, capability: str
+    ) -> ContractBindingState | None:
+        """Look up active contract binding."""
+        with self._lock:
+            return self._contract_bindings.get((agent, service, capability))
+
+    def revoke_contract_binding(self, binding_id: str) -> bool:
+        """Remove a contract binding by ID. Returns True if found."""
+        with self._lock:
+            for key, binding in self._contract_bindings.items():
+                if binding.binding_id == binding_id:
+                    del self._contract_bindings[key]
+                    log.info(f"Contract binding revoked: {sanitize_for_log(binding_id)}")
+                    self._persist_contract_bindings()
+                    return True
+        return False
+
+    def _load_contract_bindings_from_agents_yaml(self) -> None:
+        """Load persisted contract bindings from agents.yaml."""
+        try:
+            from pdp import get_policy_client, is_policy_client_configured
+
+            if not is_policy_client_configured():
+                return
+
+            client = get_policy_client()
+            pdp = getattr(client, "_pdp", None)
+            engine = getattr(pdp, "_engine", None) if pdp else None
+            loader = getattr(engine, "_loader", None) if engine else None
+            if not loader:
+                return
+
+            agents_path = getattr(loader, "_agents_path", lambda: None)()
+            if not agents_path or not agents_path.exists():
+                return
+
+            import yaml
+
+            raw = yaml.safe_load(agents_path.read_text()) or {}
+
+            with self._lock:
+                for agent_name, agent_data in raw.items():
+                    if not isinstance(agent_data, dict):
+                        continue
+                    for cb_data in agent_data.get("contract_bindings", []):
+                        binding = ContractBindingState(
+                            binding_id=cb_data.get("binding_id", _mint_binding_id()),
+                            agent=agent_name,
+                            service=cb_data["service"],
+                            capability=cb_data["capability"],
+                            template=cb_data.get("template", ""),
+                            bound_values=cb_data.get("bound_values", {}),
+                            grantable_operations=cb_data.get("grantable_operations", []),
+                            created=cb_data.get("created", datetime.now(UTC).isoformat()),
+                        )
+                        key = (agent_name, binding.service, binding.capability)
+                        self._contract_bindings[key] = binding
+
+            if self._contract_bindings:
+                log.info(f"Loaded {len(self._contract_bindings)} contract bindings from agents.yaml")
+
+        except Exception as e:
+            log.warning(f"Failed to load contract bindings from agents.yaml: {type(e).__name__}: {e}")
+
+    def _persist_contract_bindings(self) -> None:
+        """Write contract bindings to agents.yaml."""
+        try:
+            from pdp import get_policy_client, is_policy_client_configured
+
+            if not is_policy_client_configured():
+                return
+
+            client = get_policy_client()
+            pdp = getattr(client, "_pdp", None)
+            engine = getattr(pdp, "_engine", None) if pdp else None
+            loader = getattr(engine, "_loader", None) if engine else None
+            if not loader:
+                return
+
+            agents_path = getattr(loader, "_agents_path", lambda: None)()
+            if not agents_path:
+                return
+
+            import yaml
+
+            with self._lock:
+                if agents_path.exists():
+                    raw = yaml.safe_load(agents_path.read_text()) or {}
+                else:
+                    raw = {}
+
+                # Clear existing contract_bindings sections
+                for agent_data in raw.values():
+                    if isinstance(agent_data, dict) and "contract_bindings" in agent_data:
+                        del agent_data["contract_bindings"]
+
+                # Group by agent
+                bindings_by_agent: dict[str, list[dict]] = {}
+                for binding in self._contract_bindings.values():
+                    bindings_by_agent.setdefault(binding.agent, []).append(
+                        {
+                            "binding_id": binding.binding_id,
+                            "service": binding.service,
+                            "capability": binding.capability,
+                            "template": binding.template,
+                            "bound_values": binding.bound_values,
+                            "grantable_operations": binding.grantable_operations,
+                            "created": binding.created,
+                        }
+                    )
+
+                for agent_name, bindings in bindings_by_agent.items():
+                    if agent_name not in raw:
+                        raw[agent_name] = {}
+                    raw[agent_name]["contract_bindings"] = bindings
+
+                # Atomic write
+                tmp = agents_path.with_suffix(".tmp")
+                tmp.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
+                tmp.rename(agents_path)
+
+        except Exception as e:
+            log.warning(f"Failed to persist contract bindings: {type(e).__name__}: {e}")
+
     def response(self, flow: http.HTTPFlow):
         """Consume once-grants after successful upstream response."""
         if not ctx.options.gateway_enabled:
@@ -764,19 +1014,34 @@ class ServiceGateway:
                 self._consume_grant(grant)
 
     def _extract_sgw_token(self, flow: http.HTTPFlow) -> str | None:
-        """Extract sgw_ token from request headers."""
-        auth = flow.request.headers.get("authorization", "")
+        """Extract sgw_ token from the service-specific auth header.
 
-        # Check Bearer token
-        if auth.startswith("Bearer ") or auth.startswith("bearer "):
-            token = auth[7:].strip()
-            if token.startswith(SGW_TOKEN_PREFIX):
-                return token
+        Uses host → service → auth.header to know which header to read.
+        """
+        # Look up service by host
+        service_name = self._host_map.get(flow.request.host.lower())
+        if not service_name:
+            return None
 
-        # Check raw Authorization header
-        if auth.startswith(SGW_TOKEN_PREFIX):
-            return auth.strip()
+        # Get service definition for auth config
+        registry = get_service_registry()
+        if not registry:
+            return None
+        service = registry.get_service(service_name)
+        if not service or not service.auth:
+            return None
 
+        # Read from the service's auth header
+        auth_header = service.auth.header  # e.g. "Authorization", "X-Auth-Token"
+        value = flow.request.headers.get(auth_header, "")
+
+        # For bearer-type auth, strip the scheme prefix (e.g. "Bearer sgw_...")
+        if service.auth.type == "bearer" and " " in value:
+            value = value.split(" ", 1)[1]
+
+        value = value.strip()
+        if value.startswith(SGW_TOKEN_PREFIX):
+            return value
         return None
 
     def _evaluate_capability_routes(self, method, path, capability) -> bool:
@@ -943,6 +1208,375 @@ class ServiceGateway:
             )
             return True  # non-None
 
+    # =========================================================================
+    # Contract enforcement
+    # =========================================================================
+
+    # Headers implicitly allowed (proxy/transport layer)
+    _IMPLICIT_HEADERS = frozenset({
+        "host", "connection", "content-length", "content-type",
+        "transfer-encoding", "accept-encoding", "via", "proxy-connection",
+    })
+
+    def _enforce_contract(self, flow, binding_state, service, capability, method, path) -> bool:
+        """Enforce contract constraints. Returns True if allowed, False if denied.
+
+        Three-phase enforcement:
+          Phase 1: Raw rejection (on raw request, before any parsing)
+          Phase 2: Canonical parse (build CanonicalRequest)
+          Phase 3: Contract enforcement (on canonical object only)
+
+        When returning False, flow.response is already set.
+        """
+        contract = capability.contract
+        auth_header = service.auth.header.lower() if service.auth else "authorization"
+
+        # 1. Binding required
+        if not binding_state:
+            self._deny(
+                flow, 403,
+                f"Contract not bound for capability '{capability.name}'",
+                "CONTRACT_NOT_BOUND",
+                action="request_binding",
+                reflection=(
+                    f"Capability '{sanitize_for_log(capability.name)}' requires a contract binding. "
+                    "Submit a binding via /gateway/submit-binding before making requests."
+                ),
+            )
+            return False
+
+        # ── Phase 1: Raw rejection ──────────────────────────────────────
+        raw_path = flow.request.path.split("?", 1)[0]
+
+        # Path tricks (dot segments, encoded separators, double encoding, etc.)
+        trick = reject_path_tricks(raw_path)
+        if trick:
+            self._deny(
+                flow, 403,
+                f"Path trick detected: {sanitize_for_log(trick)}",
+                "TRANSPORT_PATH_TRICK",
+                action="self_correct",
+                reflection=f"The request path contains a bypass trick: {trick}.",
+            )
+            return False
+
+        # Duplicate headers (check raw tuples before mitmproxy folds them)
+        dup_header = self._reject_duplicate_headers(flow)
+        if dup_header:
+            self._deny(
+                flow, 403,
+                f"Duplicate header: {sanitize_for_log(dup_header)}",
+                "TRANSPORT_DUPLICATE_HEADER",
+                action="self_correct",
+                reflection=f"Header '{sanitize_for_log(dup_header)}' appears more than once.",
+            )
+            return False
+
+        # Query string raw checks (ambiguous encoding)
+        ambiguity = _check_ambiguous_encoding(flow)
+        if ambiguity:
+            self._deny(
+                flow, 403,
+                f"Ambiguous encoding detected: {ambiguity}",
+                "TRANSPORT_AMBIGUOUS_ENCODING",
+                action="self_correct",
+                reflection="The request contains ambiguous encoding that could be used to bypass contract constraints.",
+            )
+            return False
+
+        # ── Phase 2: Canonical parse ────────────────────────────────────
+        canonical_path = normalize_path(raw_path)
+
+        # Match operation (needs canonical path)
+        op = contract.match_operation(method, canonical_path)
+        if not op:
+            self._deny(
+                flow, 403,
+                f"Operation {method} {canonical_path} not grantable in contract",
+                "OPERATION_NOT_GRANTABLE",
+                action="self_correct",
+                reflection=(
+                    f"No grantable operation matches {sanitize_for_log(method)} {sanitize_for_log(canonical_path)} "
+                    f"in the bound contract for '{sanitize_for_log(capability.name)}'."
+                ),
+            )
+            return False
+
+        # Parse query
+        raw_qs = flow.request.url.split("?", 1)[1] if "?" in flow.request.url else ""
+        qs_params = urllib.parse.parse_qs(raw_qs, keep_blank_values=True)
+        canonical_query = {k: v[0] for k, v in qs_params.items()}
+
+        # Parse headers (de-duplication already rejected, safe to build dict)
+        canonical_headers: dict[str, str] = {}
+        if hasattr(flow.request.headers, "fields"):
+            for name_bytes, val_bytes in flow.request.headers.fields:
+                lower = name_bytes.decode("latin-1").lower()
+                canonical_headers[lower] = val_bytes.decode("latin-1")
+        else:
+            for name in flow.request.headers:
+                canonical_headers[name.lower()] = flow.request.headers[name]
+
+        # Parse content type
+        content_type = _parse_content_type(flow)
+
+        # Parse body (strict JSON with duplicate key rejection)
+        canonical_body = None
+        if method in ("POST", "PUT", "PATCH") and flow.request.content:
+            # Content-Type enforcement
+            if content_type != "application/json":
+                self._deny(
+                    flow, 403,
+                    f"Unexpected content type: {sanitize_for_log(content_type) or '(missing)'}",
+                    "TRANSPORT_CONTENT_TYPE",
+                    action="self_correct",
+                    reflection="This operation only accepts application/json.",
+                )
+                return False
+
+            try:
+                canonical_body = json_mod.loads(
+                    flow.request.content,
+                    object_pairs_hook=_reject_duplicate_json_keys,
+                )
+            except json_mod.JSONDecodeError:
+                self._deny(
+                    flow, 403,
+                    "Request body is not valid JSON",
+                    "CONTRACT_VIOLATION",
+                    action="self_correct",
+                    reflection="The request body must be valid JSON for contract enforcement.",
+                )
+                return False
+            except ValueError as e:
+                if "duplicate JSON key" in str(e):
+                    self._deny(
+                        flow, 403,
+                        f"Duplicate JSON key in request body: {sanitize_for_log(str(e))}",
+                        "TRANSPORT_DUPLICATE_JSON_KEY",
+                        action="self_correct",
+                        reflection="The request body contains duplicate JSON keys.",
+                    )
+                    return False
+                raise
+
+            if not isinstance(canonical_body, dict):
+                self._deny(
+                    flow, 403,
+                    "Request body must be a JSON object",
+                    "CONTRACT_VIOLATION",
+                    action="self_correct",
+                    reflection="The request body must be a JSON object.",
+                )
+                return False
+
+        # Cross-location field overlap
+        if canonical_body is not None and canonical_query:
+            overlap = set(canonical_query.keys()) & set(canonical_body.keys())
+            if overlap:
+                field_name = sorted(overlap)[0]
+                self._deny(
+                    flow, 403,
+                    f"Field '{sanitize_for_log(field_name)}' appears in both query and body",
+                    "TRANSPORT_CROSS_LOCATION",
+                    action="self_correct",
+                    reflection=f"Field '{sanitize_for_log(field_name)}' appears in both query string and request body.",
+                    field=field_name,
+                )
+                return False
+
+        canonical = CanonicalRequest(
+            method=method,
+            path=canonical_path,
+            query=canonical_query,
+            body=canonical_body,
+            content_type=content_type,
+            headers=canonical_headers,
+        )
+
+        # ── Phase 3: Contract enforcement (on canonical object) ─────────
+
+        # Transport: require_no_body
+        if op.transport and op.transport.require_no_body and flow.request.content:
+            self._deny(
+                flow, 403,
+                "Request body not allowed for this operation",
+                "TRANSPORT_BODY_DENIED",
+                action="self_correct",
+                reflection="This operation requires no request body.",
+            )
+            return False
+
+        # Transport: header allowlist (always runs — absent allow_headers = restrictive)
+        if not self._enforce_header_allowlist(flow, op, canonical, auth_header):
+            return False
+
+        # Query enforcement (runs if allow or deny_unknown is configured)
+        if op.query_allow is not None or op.query_deny_unknown:
+            if not self._enforce_query_canonical(flow, op, binding_state, canonical):
+                return False
+
+        # Body enforcement
+        if method in ("POST", "PUT", "PATCH") and (op.body_allow is not None or op.body_deny_unknown):
+            if not self._enforce_body_canonical(flow, op, binding_state, canonical):
+                return False
+
+        # Path param validation
+        if op.path_params:
+            params = _extract_path_params(canonical.path, op.path)
+            if params is None:
+                self._deny(
+                    flow, 403,
+                    f"Path does not match operation template '{op.path}'",
+                    "CONTRACT_VIOLATION",
+                    action="self_correct",
+                    reflection="Request path does not match the operation template.",
+                )
+                return False
+            for param_name, param_value in params.items():
+                constraint = op.path_params.get(param_name)
+                if not constraint:
+                    continue
+                if constraint.equals_var:
+                    expected = binding_state.bound_values.get(constraint.equals_var)
+                    if expected is not None and str(param_value) != str(expected):
+                        self._deny(
+                            flow, 403,
+                            f"Path parameter '{param_name}' does not match bound value",
+                            "CONTRACT_VIOLATION",
+                            action="self_correct",
+                            reflection=f"Path parameter '{sanitize_for_log(param_name)}' does not match the bound contract value.",
+                            field=param_name,
+                        )
+                        return False
+
+        return True
+
+    def _reject_duplicate_headers(self, flow) -> str | None:
+        """Check for duplicate headers in raw request. Returns duplicate name or None."""
+        if not hasattr(flow.request.headers, "fields"):
+            return None
+        seen: set[str] = set()
+        for name_bytes, _ in flow.request.headers.fields:
+            lower = name_bytes.decode("latin-1").lower()
+            if lower in seen:
+                return lower
+            seen.add(lower)
+        return None
+
+    def _enforce_header_allowlist(self, flow, op, canonical, service_auth_header) -> bool:
+        """Enforce header allowlist. Always runs — absent allow_headers = restrictive."""
+        implicit = self._IMPLICIT_HEADERS
+        if service_auth_header:
+            implicit = implicit | {service_auth_header}
+
+        allowed_set = implicit.copy()
+        if op.transport and op.transport.allow_headers:
+            allowed_set |= {h.lower() for h in op.transport.allow_headers}
+
+        for header_name in canonical.headers:
+            if header_name not in allowed_set:
+                self._deny(
+                    flow, 403,
+                    f"Header '{sanitize_for_log(header_name)}' not in allowlist",
+                    "TRANSPORT_HEADER_DENIED",
+                    action="self_correct",
+                    reflection=f"Header '{sanitize_for_log(header_name)}' is not permitted for this operation.",
+                )
+                return False
+        return True
+
+    def _enforce_query_canonical(self, flow, op, binding_state, canonical) -> bool:
+        """Enforce query parameter constraints using canonical request."""
+        for param_name, value in canonical.query.items():
+            constraint = op.query_allow.get(param_name)
+            if not constraint:
+                if op.query_deny_unknown:
+                    self._deny(
+                        flow, 403,
+                        f"Unknown query parameter '{sanitize_for_log(param_name)}'",
+                        "CONTRACT_VIOLATION",
+                        action="self_correct",
+                        reflection=f"Query parameter '{sanitize_for_log(param_name)}' is not allowed by the contract.",
+                        field=param_name,
+                    )
+                    return False
+                continue
+
+            if constraint.equals_var:
+                expected = binding_state.bound_values.get(constraint.equals_var, "")
+                if value != expected:
+                    self._deny(
+                        flow, 403,
+                        f"Query parameter '{sanitize_for_log(param_name)}' does not match bound value",
+                        "CONTRACT_VIOLATION",
+                        action="self_correct",
+                        reflection=f"Query parameter '{sanitize_for_log(param_name)}' does not match the bound contract value.",
+                        field=param_name,
+                    )
+                    return False
+            elif constraint.integer_range:
+                try:
+                    int_val = int(value)
+                except (ValueError, TypeError):
+                    self._deny(
+                        flow, 403,
+                        f"Query parameter '{sanitize_for_log(param_name)}' must be an integer",
+                        "CONTRACT_VIOLATION",
+                        action="self_correct",
+                        reflection=f"Query parameter '{sanitize_for_log(param_name)}' must be a valid integer.",
+                        field=param_name,
+                    )
+                    return False
+                lo, hi = constraint.integer_range[0], constraint.integer_range[1]
+                if int_val < lo or int_val > hi:
+                    self._deny(
+                        flow, 403,
+                        f"Query parameter '{sanitize_for_log(param_name)}' out of range",
+                        "CONTRACT_VIOLATION",
+                        action="self_correct",
+                        reflection=f"Query parameter '{sanitize_for_log(param_name)}' is outside the allowed range.",
+                        field=param_name,
+                    )
+                    return False
+        return True
+
+    def _enforce_body_canonical(self, flow, op, binding_state, canonical) -> bool:
+        """Enforce body field constraints using canonical request."""
+        body = canonical.body
+        if body is None:
+            return True
+
+        for field_name, value in body.items():
+            constraint = op.body_allow.get(field_name)
+            if not constraint:
+                if op.body_deny_unknown:
+                    self._deny(
+                        flow, 403,
+                        f"Unknown body field '{sanitize_for_log(field_name)}'",
+                        "CONTRACT_VIOLATION",
+                        action="self_correct",
+                        reflection=f"Body field '{sanitize_for_log(field_name)}' is not allowed by the contract.",
+                        field=field_name,
+                    )
+                    return False
+                continue
+
+            if constraint.equals_var:
+                expected = binding_state.bound_values.get(constraint.equals_var, "")
+                if value != expected:
+                    self._deny(
+                        flow, 403,
+                        f"Body field '{sanitize_for_log(field_name)}' does not match bound value",
+                        "CONTRACT_VIOLATION",
+                        action="self_correct",
+                        reflection=f"Body field '{sanitize_for_log(field_name)}' does not match the bound contract value.",
+                        field=field_name,
+                    )
+                    return False
+
+        return True
+
     def _method_matches(self, method: str, allowed_methods: list[str]) -> bool:
         """Check if HTTP method matches allowed methods list."""
         if "*" in allowed_methods:
@@ -958,6 +1592,7 @@ class ServiceGateway:
         *,
         action: str = "abort",
         reflection: str = "",
+        field: str = "",
     ) -> None:
         """Block request with standard JSON response."""
         body = {
@@ -968,20 +1603,26 @@ class ServiceGateway:
             "reflection": reflection or reason,
             "addon": self.name,
         }
+        if field:
+            body["field"] = field
         flow.response = make_block_response(status, body, self.name)
         flow.metadata["blocked_by"] = self.name
+
+        method = flow.request.method
+        path = flow.request.path.split("?")[0]
+        service = flow.metadata.get("gateway_service") or self._host_map.get(flow.request.host.lower(), flow.request.host)
 
         write_event(
             "gateway.deny",
             kind=EventKind.GATEWAY,
             severity=Severity.HIGH,
-            summary=f"Gateway denied: {sanitize_for_log(reason)}",
+            summary=f"Gateway denied {sanitize_for_log(method)} {sanitize_for_log(service)}{sanitize_for_log(path)}: {sanitize_for_log(reason)}",
             decision=Decision.DENY,
             host=flow.request.host,
             request_id=flow.metadata.get("request_id"),
             agent=flow.metadata.get("agent"),
             addon=self.name,
-            details={"reason": reason, "code": code},
+            details={"reason": reason, "code": code, "method": method, "path": path, "service": service},
         )
 
     def mint_tokens(self, agent_bindings: dict[str, dict[str, dict[str, str]]]) -> dict[str, dict[str, str]]:
@@ -1056,6 +1697,65 @@ class ServiceGateway:
                     "account": binding.account,
                 }
             return result
+
+
+def _check_ambiguous_encoding(flow) -> str | None:
+    """Check for ambiguous encoding in query string and headers. Returns description or None.
+
+    Path checks are handled by reject_path_tricks() in matching.py.
+    This function covers query-string and header-level ambiguity.
+    """
+    url = flow.request.url
+
+    if "?" in url:
+        qs = url.split("?", 1)[1]
+
+        # Duplicate query parameters
+        raw_keys = [p.split("=", 1)[0] for p in qs.split("&") if p]
+        if len(raw_keys) != len(set(raw_keys)):
+            return "duplicate query parameters"
+
+        # Double-encoded percent in query string: %25xx
+        if re.search(r"%25[0-9A-Fa-f]{2}", qs):
+            return "double-encoded percent in query string"
+
+        # Non-canonical percent encoding in query string
+        for m in re.finditer(r"%([0-9A-Fa-f]{2})", qs):
+            hex_part = m.group(1)
+            if hex_part != hex_part.upper():
+                return "non-canonical percent encoding in query string"
+
+        # Method override via _method query param
+        qs_params = urllib.parse.parse_qs(qs, keep_blank_values=True)
+        if "_method" in qs_params:
+            return "_method query parameter"
+
+    # Method override headers
+    override_headers = {"x-http-method-override", "x-method-override"}
+    for header_name in flow.request.headers:
+        if header_name.lower() in override_headers:
+            return f"method override header: {header_name}"
+
+    return None
+
+
+def _extract_path_params(actual_path: str, template_path: str) -> dict[str, str] | None:
+    """Extract path parameters from actual path using template. Returns dict or None."""
+    actual_parts = [p for p in actual_path.strip("/").split("/") if p]
+    template_parts = [p for p in template_path.strip("/").split("/") if p]
+
+    if len(actual_parts) != len(template_parts):
+        return None
+
+    params: dict[str, str] = {}
+    for actual_seg, tmpl_seg in zip(actual_parts, template_parts):
+        if tmpl_seg.startswith("{") and tmpl_seg.endswith("}"):
+            param_name = tmpl_seg[1:-1]
+            params[param_name] = actual_seg
+        elif actual_seg != tmpl_seg:
+            return None
+
+    return params
 
 
 addons = [ServiceGateway()]

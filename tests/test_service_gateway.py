@@ -130,33 +130,53 @@ def _mock_ctx():
 
 
 class TestTokenExtraction:
-    def test_bearer_sgw_token(self, make_flow, gateway):
+    """Token extraction uses host → service → auth.header to find the sgw_ token."""
+
+    def test_bearer_service_token(self, make_flow, gateway, registry):
+        """Bearer service: sgw_ token in Authorization header with Bearer prefix."""
+        gateway._host_map = {"gmail.googleapis.com": "gmail"}
         token = f"{SGW_TOKEN_PREFIX}{'a' * 64}"
-        flow = make_flow(headers={"authorization": f"Bearer {token}"})
+        flow = make_flow(
+            url="https://gmail.googleapis.com/test",
+            headers={"authorization": f"Bearer {token}"},
+        )
         result = gateway._extract_sgw_token(flow)
         assert result == token
 
-    def test_raw_sgw_token(self, make_flow, gateway):
+    def test_api_key_service_token(self, make_flow, gateway, registry):
+        """API key service: sgw_ token in service-specific header."""
+        gateway._host_map = {"api.minifuse.io": "minifuse"}
         token = f"{SGW_TOKEN_PREFIX}{'b' * 64}"
-        flow = make_flow(headers={"authorization": token})
+        flow = make_flow(
+            url="https://api.minifuse.io/test",
+            headers={"x-api-key": token},
+        )
         result = gateway._extract_sgw_token(flow)
         assert result == token
 
-    def test_non_sgw_ignored(self, make_flow, gateway):
-        flow = make_flow(headers={"authorization": "Bearer sk-openai-key"})
+    def test_non_sgw_value_ignored(self, make_flow, gateway, registry):
+        gateway._host_map = {"api.minifuse.io": "minifuse"}
+        flow = make_flow(
+            url="https://api.minifuse.io/test",
+            headers={"x-api-key": "not-a-gateway-token"},
+        )
         result = gateway._extract_sgw_token(flow)
         assert result is None
 
-    def test_no_auth_header(self, make_flow, gateway):
-        flow = make_flow()
-        result = gateway._extract_sgw_token(flow)
-        assert result is None
-
-    def test_case_insensitive_bearer(self, make_flow, gateway):
+    def test_unknown_host_ignored(self, make_flow, gateway):
         token = f"{SGW_TOKEN_PREFIX}{'c' * 64}"
-        flow = make_flow(headers={"authorization": f"bearer {token}"})
+        flow = make_flow(
+            url="https://unknown.example.com/test",
+            headers={"authorization": f"Bearer {token}"},
+        )
         result = gateway._extract_sgw_token(flow)
-        assert result == token
+        assert result is None
+
+    def test_no_auth_header(self, make_flow, gateway, registry):
+        gateway._host_map = {"gmail.googleapis.com": "gmail"}
+        flow = make_flow(url="https://gmail.googleapis.com/test")
+        result = gateway._extract_sgw_token(flow)
+        assert result is None
 
 
 # --- Capability Route Matching Tests ---
@@ -254,7 +274,7 @@ class TestCredentialInjection:
         gw, env, registry, vault_obj = configured_gateway
         token = env["test-agent"]["gmail"]
         flow = make_flow(
-            url="http://gmail.googleapis.com/gmail/v1/users/me/messages/123",
+            url="https://gmail.googleapis.com/gmail/v1/users/me/messages/123",
             headers={"authorization": f"Bearer {token}"},
         )
         flow.metadata["agent"] = "test-agent"
@@ -274,8 +294,8 @@ class TestCredentialInjection:
         gw, env, registry, vault_obj = configured_gateway
         token = env["test-agent"]["minifuse"]
         flow = make_flow(
-            url="http://api.minifuse.io/v1/feeds",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "test-agent"
 
@@ -289,12 +309,34 @@ class TestCredentialInjection:
         assert flow.metadata["gateway_service"] == "minifuse"
         assert flow.metadata["gateway_capability"] == "reader"
 
+    def test_http_redirects_to_https(self, make_flow, configured_gateway):
+        """Gateway refuses to inject credentials over HTTP — returns 301 to HTTPS."""
+        gw, env, registry, vault_obj = configured_gateway
+        token = env["test-agent"]["gmail"]
+        flow = make_flow(
+            url="http://gmail.googleapis.com/gmail/v1/users/me/messages/123",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    gw.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 301
+        location = flow.response.headers["Location"]
+        assert location == "https://gmail.googleapis.com/gmail/v1/users/me/messages/123"
+        # Credential must NOT have been injected
+        assert "ya29.real-token" not in str(flow.request.headers)
+
     def test_agent_mismatch_denied(self, make_flow, configured_gateway):
         gw, env, registry, vault_obj = configured_gateway
         token = env["test-agent"]["minifuse"]
         flow = make_flow(
-            url="http://api.minifuse.io/v1/feeds",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "other-agent"
 
@@ -309,12 +351,13 @@ class TestCredentialInjection:
         assert body["action"] == "self_correct"
         assert "reflection" in body
 
-    def test_host_mismatch_denied(self, make_flow, configured_gateway):
+    def test_unknown_host_passes_through(self, make_flow, configured_gateway):
+        """sgw_ token sent to unmapped host is not recognized — passes through as non-gateway traffic."""
         gw, env, registry, vault_obj = configured_gateway
         token = env["test-agent"]["minifuse"]
         flow = make_flow(
-            url="http://evil.example.com/v1/feeds",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://evil.example.com/v1/feeds",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "test-agent"
 
@@ -322,22 +365,20 @@ class TestCredentialInjection:
             with patch("service_gateway.get_service_registry", return_value=registry):
                 gw.request(flow)
 
-        assert flow.response is not None
-        assert flow.response.status_code == 403
-        body = json.loads(flow.response.content)
-        assert "HOST_MISMATCH" in body["reason_codes"]
-        assert body["type"] == "host_mismatch"
-        assert body["action"] == "self_correct"
-        assert "reflection" in body
+        # Not recognized as gateway request — no response set
+        assert flow.response is None
+        assert "gateway_service" not in flow.metadata
 
-    def test_invalid_token_denied(self, make_flow, gateway):
+    def test_invalid_token_denied(self, make_flow, gateway, registry):
+        gateway._host_map = {"api.minifuse.io": "minifuse"}
         flow = make_flow(
-            url="http://api.minifuse.io/v1/feeds",
-            headers={"authorization": f"Bearer sgw_{'x' * 64}"},
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": f"sgw_{'x' * 64}"},
         )
 
         with patch("service_gateway.ctx", _mock_ctx()):
-            gateway.request(flow)
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gateway.request(flow)
 
         assert flow.response is not None
         assert flow.response.status_code == 403
@@ -353,8 +394,8 @@ class TestCredentialInjection:
         token = env["test-agent"]["minifuse"]
         flow = make_flow(
             method="POST",
-            url="http://api.minifuse.io/v1/feeds",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "test-agent"
 
@@ -382,8 +423,8 @@ class TestCredentialInjection:
         )
         token = env["test-agent"]["minifuse"]
         flow = make_flow(
-            url="http://api.minifuse.io/v1/feeds",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "test-agent"
 
@@ -449,7 +490,7 @@ risky_routes:
 
         flow = make_flow(
             method="POST",
-            url="http://api.testrisky.com/api/admin/users",
+            url="https://api.testrisky.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
         flow.metadata["agent"] = "test-agent"
@@ -532,7 +573,7 @@ risky_routes:
 
         flow = make_flow(
             method="POST",
-            url="http://api.test.com/api/admin/users",
+            url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
         flow.metadata["agent"] = "agent-1"
@@ -699,8 +740,8 @@ class TestFullFlow:
         token = env["my-agent"]["minifuse"]
 
         flow = make_flow(
-            url="http://api.minifuse.io/v1/resources",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://api.minifuse.io/v1/resources",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "my-agent"
 
@@ -718,8 +759,8 @@ class TestFullFlow:
         assert flow.metadata["gateway_agent"] == "my-agent"
         assert gw.stats.injected == 1
 
-    def test_host_validated_via_host_map(self, make_flow, services_dir):
-        """Request to unmapped host gets HOST_MISMATCH even if service exists."""
+    def test_unmapped_host_passes_through(self, make_flow, services_dir):
+        """Request to unmapped host is not recognized as gateway traffic."""
         registry = init_service_registry(services_dir)
 
         gw = ServiceGateway()
@@ -733,8 +774,8 @@ class TestFullFlow:
         token = env["my-agent"]["minifuse"]
 
         flow = make_flow(
-            url="http://unmapped.example.com/v1/data",
-            headers={"authorization": f"Bearer {token}"},
+            url="https://unmapped.example.com/v1/data",
+            headers={"x-api-key": token},
         )
         flow.metadata["agent"] = "my-agent"
 
@@ -742,13 +783,9 @@ class TestFullFlow:
             with patch("service_gateway.get_service_registry", return_value=registry):
                 gw.request(flow)
 
-        assert flow.response is not None
-        assert flow.response.status_code == 403
-        body = json.loads(flow.response.content)
-        assert "HOST_MISMATCH" in body["reason_codes"]
-        assert body["type"] == "host_mismatch"
-        assert body["action"] == "self_correct"
-        assert "reflection" in body
+        # Not recognized as gateway request
+        assert flow.response is None
+        assert "gateway_service" not in flow.metadata
 
 
 # --- Grant Management Tests ---
@@ -911,7 +948,7 @@ risky_routes:
 
         flow = make_flow(
             method="DELETE",
-            url="http://api.test.com/api/admin/users",
+            url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
         flow.metadata["agent"] = "agent-1"
@@ -989,7 +1026,7 @@ risky_routes:
 
         flow = make_flow(
             method="DELETE",
-            url="http://api.test.com/api/admin/users",
+            url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
         flow.metadata["agent"] = "agent-1"
@@ -1224,7 +1261,7 @@ risky_routes:
 
         flow = make_flow(
             method="POST",
-            url="http://api.test.com/api/admin/users",
+            url="https://api.test.com/api/admin/users",
             headers={"authorization": f"Bearer {token}"},
         )
         flow.metadata["agent"] = "agent-1"
@@ -1355,3 +1392,464 @@ class TestGrantPersistence:
         assert "g3" in gw2._grants
         assert gw2._grants["g3"].service == "slack"
         assert gw2._grants["g3"].method == "POST"
+
+
+# =========================================================================
+# Contract Binding State
+# =========================================================================
+
+
+class TestContractBindingState:
+    def test_add_and_get(self):
+        gw = ServiceGateway()
+        binding = gw.add_contract_binding(
+            agent="claude",
+            service="gmail",
+            capability="read_messages",
+            template="gmail.read_messages.v1",
+            bound_values={"approved_category": "CATEGORY_PROMOTIONS"},
+            grantable_operations=["list_messages"],
+        )
+        assert binding.binding_id.startswith("cbs_")
+        assert binding.agent == "claude"
+        assert binding.bound_values["approved_category"] == "CATEGORY_PROMOTIONS"
+
+        # Retrieve
+        result = gw.get_contract_binding("claude", "gmail", "read_messages")
+        assert result is not None
+        assert result.binding_id == binding.binding_id
+
+    def test_get_missing_returns_none(self):
+        gw = ServiceGateway()
+        assert gw.get_contract_binding("claude", "gmail", "read_messages") is None
+
+    def test_replace_existing(self):
+        gw = ServiceGateway()
+        b1 = gw.add_contract_binding(
+            agent="claude", service="gmail", capability="read_messages",
+            template="v1", bound_values={"cat": "A"}, grantable_operations=["op1"],
+        )
+        b2 = gw.add_contract_binding(
+            agent="claude", service="gmail", capability="read_messages",
+            template="v1", bound_values={"cat": "B"}, grantable_operations=["op1"],
+        )
+        assert b1.binding_id != b2.binding_id
+        result = gw.get_contract_binding("claude", "gmail", "read_messages")
+        assert result.binding_id == b2.binding_id
+        assert result.bound_values["cat"] == "B"
+
+    def test_revoke(self):
+        gw = ServiceGateway()
+        binding = gw.add_contract_binding(
+            agent="claude", service="gmail", capability="read_messages",
+            template="v1", bound_values={}, grantable_operations=[],
+        )
+        assert gw.revoke_contract_binding(binding.binding_id) is True
+        assert gw.get_contract_binding("claude", "gmail", "read_messages") is None
+
+    def test_revoke_missing(self):
+        gw = ServiceGateway()
+        assert gw.revoke_contract_binding("cbs_nonexistent") is False
+
+    def test_different_agents_independent(self):
+        gw = ServiceGateway()
+        gw.add_contract_binding(
+            agent="claude", service="gmail", capability="read_messages",
+            template="v1", bound_values={"cat": "A"}, grantable_operations=[],
+        )
+        gw.add_contract_binding(
+            agent="boris", service="gmail", capability="read_messages",
+            template="v1", bound_values={"cat": "B"}, grantable_operations=[],
+        )
+        c = gw.get_contract_binding("claude", "gmail", "read_messages")
+        b = gw.get_contract_binding("boris", "gmail", "read_messages")
+        assert c.bound_values["cat"] == "A"
+        assert b.bound_values["cat"] == "B"
+
+
+# =========================================================================
+# End-to-end contract enforcement via request()
+# =========================================================================
+
+
+class TestContractEnforcementE2E:
+    """End-to-end tests exercising the gateway request() path with contracts."""
+
+    @pytest.fixture
+    def contract_services_dir(self, tmp_path):
+        """Create temp services dir with a contract-enabled service."""
+        svc_dir = tmp_path / "contract_services"
+        svc_dir.mkdir()
+        (svc_dir / "contractsvc.yaml").write_text("""
+schema_version: 1
+name: contractsvc
+default_host: api.contractsvc.com
+auth:
+  type: bearer
+capabilities:
+  read_items:
+    description: "Read items filtered by category"
+    routes:
+      - methods: [GET]
+        path: "/api/v1/items"
+      - methods: [GET]
+        path: "/api/v1/items/*"
+    contract:
+      template: contractsvc.read_items.v1
+      bindings:
+        approved_category:
+          source: agent
+          type: enum
+          options: [ELECTRONICS, BOOKS, CLOTHING]
+          visible_to_operator: true
+      operations:
+        - name: list_items
+          request:
+            method: GET
+            path: /api/v1/items
+            transport:
+              require_no_body: true
+              allow_headers: [Accept]
+              deny_ambiguous_encoding: true
+            query:
+              allow:
+                category:
+                  equals_var: approved_category
+                limit:
+                  integer_range: [1, 50]
+              deny_unknown: true
+        - name: get_item
+          requires_enforcement: state_enforcement
+          request:
+            method: GET
+            path: "/api/v1/items/{id}"
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+        state_capture: declared
+        state_enforcement: declared
+""")
+        return svc_dir
+
+    @pytest.fixture
+    def contract_registry(self, contract_services_dir):
+        return init_service_registry(contract_services_dir)
+
+    @pytest.fixture
+    def contract_vault(self, tmp_path):
+        vault_path = tmp_path / "contract_vault.yaml.enc"
+        v = Vault(vault_path)
+        v.unlock("test-pass")
+        v.store(VaultCredential(name="test-cred", type="oauth2", value="real-bearer-token"))
+        return v
+
+    @pytest.fixture
+    def gw_with_contract(self, contract_registry, contract_vault):
+        from service_gateway import TokenBinding
+        gw = ServiceGateway()
+        token = mint_gateway_token()
+        gw._token_map[token] = TokenBinding(
+            agent="testbot",
+            service_name="contractsvc",
+            capability_name="read_items",
+            vault_token="test-cred",
+        )
+        gw._host_map = {"api.contractsvc.com": "contractsvc"}
+        return gw, token, contract_registry, contract_vault
+
+    def _clean_flow(self, make_flow, token, url, **kwargs):
+        """Create a flow with only contract-compatible headers."""
+        flow = make_flow(url=url, headers={"authorization": f"Bearer {token}"}, **kwargs)
+        # Remove default tflow headers not in our contract allowlist
+        for h in list(flow.request.headers.keys()):
+            if h.lower() not in ("authorization", "accept", "host", "content-length"):
+                del flow.request.headers[h]
+        flow.metadata["agent"] = "testbot"
+        return flow
+
+    def test_bound_contract_allows_matching_request(self, make_flow, gw_with_contract):
+        gw, token, registry, vault_obj = gw_with_contract
+
+        gw.add_contract_binding(
+            agent="testbot", service="contractsvc", capability="read_items",
+            template="contractsvc.read_items.v1",
+            bound_values={"approved_category": "ELECTRONICS"},
+            grantable_operations=["list_items"],
+        )
+
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.contractsvc.com/api/v1/items?category=ELECTRONICS&limit=10",
+        )
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    gw.request(flow)
+
+        if flow.response is not None:
+            body = json.loads(flow.response.content)
+            pytest.fail(f"Expected no response but got {flow.response.status_code}: {body}")
+        assert flow.metadata.get("gateway_service") == "contractsvc"
+
+    def test_no_binding_denied(self, make_flow, gw_with_contract):
+        gw, token, registry, vault_obj = gw_with_contract
+
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.contractsvc.com/api/v1/items?category=ELECTRONICS",
+        )
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "CONTRACT_NOT_BOUND" in body["reason_codes"]
+
+    def test_wrong_binding_value_denied(self, make_flow, gw_with_contract):
+        gw, token, registry, vault_obj = gw_with_contract
+
+        gw.add_contract_binding(
+            agent="testbot", service="contractsvc", capability="read_items",
+            template="v1", bound_values={"approved_category": "ELECTRONICS"},
+            grantable_operations=["list_items"],
+        )
+
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.contractsvc.com/api/v1/items?category=BOOKS",
+        )
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "CONTRACT_VIOLATION" in body["reason_codes"]
+        assert body.get("field") == "category"
+
+    def test_unknown_query_param_denied(self, make_flow, gw_with_contract):
+        gw, token, registry, vault_obj = gw_with_contract
+
+        gw.add_contract_binding(
+            agent="testbot", service="contractsvc", capability="read_items",
+            template="v1", bound_values={"approved_category": "ELECTRONICS"},
+            grantable_operations=["list_items"],
+        )
+
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.contractsvc.com/api/v1/items?category=ELECTRONICS&q=secret",
+        )
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "CONTRACT_VIOLATION" in body["reason_codes"]
+        assert body.get("field") == "q"
+
+    def test_non_grantable_operation_denied(self, make_flow, gw_with_contract):
+        gw, token, registry, vault_obj = gw_with_contract
+
+        gw.add_contract_binding(
+            agent="testbot", service="contractsvc", capability="read_items",
+            template="v1", bound_values={"approved_category": "ELECTRONICS"},
+            grantable_operations=["list_items"],
+        )
+
+        # get_item requires state_enforcement (declared) — not grantable
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.contractsvc.com/api/v1/items/123",
+        )
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "OPERATION_NOT_GRANTABLE" in body["reason_codes"]
+
+
+# =========================================================================
+# Transport Hygiene E2E Tests
+# =========================================================================
+
+
+class TestTransportHygieneE2E:
+    """End-to-end tests for transport hygiene tightening via request()."""
+
+    @pytest.fixture
+    def contract_services_dir(self, tmp_path):
+        svc_dir = tmp_path / "hygiene_services"
+        svc_dir.mkdir()
+        (svc_dir / "hygienesvc.yaml").write_text("""
+schema_version: 1
+name: hygienesvc
+default_host: api.hygienesvc.com
+auth:
+  type: bearer
+capabilities:
+  reader:
+    description: "Read items"
+    routes:
+      - methods: [GET]
+        path: "/api/v1/items"
+      - methods: [GET]
+        path: "/api/v1/items/*"
+      - methods: [POST]
+        path: "/api/v1/items"
+    contract:
+      template: hygienesvc.reader.v1
+      bindings:
+        approved_category:
+          source: agent
+          type: enum
+          options: [A, B]
+      operations:
+        - name: list_items
+          request:
+            method: GET
+            path: /api/v1/items
+            transport:
+              require_no_body: true
+              allow_headers: [Accept]
+              deny_ambiguous_encoding: true
+            query:
+              allow:
+                category:
+                  equals_var: approved_category
+              deny_unknown: true
+        - name: create_item
+          request:
+            method: POST
+            path: /api/v1/items
+            body:
+              allow:
+                name:
+                  type: string
+              deny_unknown: true
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+""")
+        return svc_dir
+
+    @pytest.fixture
+    def contract_registry(self, contract_services_dir):
+        return init_service_registry(contract_services_dir)
+
+    @pytest.fixture
+    def contract_vault(self, tmp_path):
+        vault_path = tmp_path / "hygiene_vault.yaml.enc"
+        v = Vault(vault_path)
+        v.unlock("test-pass")
+        v.store(VaultCredential(name="test-cred", type="oauth2", value="real-bearer-token"))
+        return v
+
+    @pytest.fixture
+    def gw_with_contract(self, contract_registry, contract_vault):
+        from service_gateway import TokenBinding
+        gw = ServiceGateway()
+        token = mint_gateway_token()
+        gw._token_map[token] = TokenBinding(
+            agent="testbot",
+            service_name="hygienesvc",
+            capability_name="reader",
+            vault_token="test-cred",
+        )
+        gw._host_map = {"api.hygienesvc.com": "hygienesvc"}
+        gw.add_contract_binding(
+            agent="testbot", service="hygienesvc", capability="reader",
+            template="hygienesvc.reader.v1",
+            bound_values={"approved_category": "A"},
+            grantable_operations=["list_items", "create_item"],
+        )
+        return gw, token, contract_registry, contract_vault
+
+    def _clean_flow(self, make_flow, token, url, **kwargs):
+        flow = make_flow(url=url, headers={"authorization": f"Bearer {token}"}, **kwargs)
+        for h in list(flow.request.headers.keys()):
+            if h.lower() not in ("authorization", "accept", "host", "content-length", "content-type"):
+                del flow.request.headers[h]
+        flow.metadata["agent"] = "testbot"
+        return flow
+
+    def test_path_traversal_denied(self, make_flow, gw_with_contract):
+        """Request with /../ in path → denied at contract enforcement."""
+        gw, token, registry, vault_obj = gw_with_contract
+        # Use a path that resolves to a valid route after normalisation
+        # but contains dot segments that must be rejected before evaluation.
+        # /api/v1/items/../items resolves to /api/v1/items which matches.
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.hygienesvc.com/api/v1/items/../items?category=A",
+        )
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "TRANSPORT_PATH_TRICK" in body["reason_codes"]
+
+    def test_duplicate_header_denied(self, make_flow, gw_with_contract):
+        """Request with duplicate Accept header → denied."""
+        gw, token, registry, vault_obj = gw_with_contract
+        flow = make_flow(url="https://api.hygienesvc.com/api/v1/items?category=A")
+        # Manually set raw headers with duplicates
+        from mitmproxy.http import Headers
+        flow.request.headers = Headers(fields=[
+            (b"authorization", f"Bearer {token}".encode()),
+            (b"host", b"api.hygienesvc.com"),
+            (b"accept", b"text/html"),
+            (b"accept", b"application/json"),
+        ])
+        flow.metadata["agent"] = "testbot"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "TRANSPORT_DUPLICATE_HEADER" in body["reason_codes"]
+
+    def test_post_text_plain_denied(self, make_flow, gw_with_contract):
+        """POST with text/plain → denied."""
+        gw, token, registry, vault_obj = gw_with_contract
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.hygienesvc.com/api/v1/items",
+            method="POST",
+            content='{"name": "test"}',
+        )
+        flow.request.headers["content-type"] = "text/plain"
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    gw.request(flow)
+        assert flow.response is not None
+        body = json.loads(flow.response.content)
+        assert "TRANSPORT_CONTENT_TYPE" in body["reason_codes"]
+
+    def test_clean_request_passes(self, make_flow, gw_with_contract):
+        """Clean GET request with proper contract values → passes."""
+        gw, token, registry, vault_obj = gw_with_contract
+        flow = self._clean_flow(
+            make_flow, token,
+            url="https://api.hygienesvc.com/api/v1/items?category=A",
+        )
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault_obj):
+                    gw.request(flow)
+        if flow.response is not None:
+            body = json.loads(flow.response.content)
+            pytest.fail(f"Expected pass but got {flow.response.status_code}: {body}")
+        assert flow.metadata.get("gateway_service") == "hygienesvc"

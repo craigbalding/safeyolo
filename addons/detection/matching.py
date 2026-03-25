@@ -47,6 +47,42 @@ def normalize_path(path: str) -> str:
     return normalized.rstrip("/") or "/"
 
 
+def reject_path_tricks(raw_path: str) -> str | None:
+    """Check raw path for tricks BEFORE normalisation. Returns description or None.
+
+    Must run on the raw path string before yarl touches it, because yarl
+    silently resolves /../ and decodes %2F — we need to reject, not normalise.
+    """
+    # Split on '?' to get just the path portion
+    path_only = raw_path.split("?", 1)[0]
+
+    # Dot segments: any segment that is '.' or '..'
+    segments = path_only.split("/")
+    for seg in segments:
+        if seg in (".", ".."):
+            return f"dot segment '/{seg}/' in path"
+
+    # Encoded path separators: %2F, %2f, %5C, %5c
+    if re.search(r"%2[Ff]", path_only) or re.search(r"%5[Cc]", path_only):
+        return "encoded path separator in path"
+
+    # Double-encoded percent: %25 followed by two hex digits
+    if re.search(r"%25[0-9A-Fa-f]{2}", path_only):
+        return "double-encoded percent in path"
+
+    # Non-canonical percent encoding: lowercase hex digits (%2a instead of %2A)
+    for m in re.finditer(r"%([0-9A-Fa-f]{2})", path_only):
+        hex_part = m.group(1)
+        if hex_part != hex_part.upper():
+            return "non-canonical percent encoding in path"
+
+    # Empty segments (//)
+    if "//" in path_only:
+        return "empty path segment (//)"
+
+    return None
+
+
 def matches_host_pattern(host: str, pattern: str) -> bool:
     """Check if host matches pattern with secure wildcard handling.
 

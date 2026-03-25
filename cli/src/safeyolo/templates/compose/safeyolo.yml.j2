@@ -56,6 +56,14 @@ services:
       - {{ repo_root }}/addons:/app/addons
       - {{ repo_root }}/pdp:/app/pdp
       - {{ repo_root }}/config/services:/app/services
+    develop:
+      watch:
+        - action: restart
+          path: {{ repo_root }}/addons
+          target: /app/addons
+        - action: restart
+          path: {{ repo_root }}/pdp
+          target: /app/pdp
 {% endif %}
     environment:
       - SAFEYOLO_BLOCK=true
