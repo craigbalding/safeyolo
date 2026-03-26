@@ -18,6 +18,8 @@ SafeYolo is the trusted control point between the operator and the agent.
 
 It sits in the path between agents and external systems, enforcing scoped access, protecting credentials, and presenting decisions in plain English rather than infrastructure jargon.
 
+Built on the fantastic [mitmproxy](https://mitmproxy.org/) project.
+
 ## Quick Start
 
 ```bash
