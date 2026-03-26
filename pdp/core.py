@@ -52,13 +52,30 @@ ENGINE_VERSION = "pdp-0.1.0"
 
 
 # Log sanitization constants (mirrors addons/admin_api.py pattern)
-_SAFE_CATEGORIES = frozenset({
-    "Lu", "Ll", "Lt", "Lm", "Lo",              # Letters
-    "Nd", "Nl", "No",                           # Numbers
-    "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",  # Punctuation
-    "Sm", "Sc", "Sk", "So",                     # Symbols
-    "Zs",                                        # Space (not Zl/Zp line seps)
-})
+_SAFE_CATEGORIES = frozenset(
+    {
+        "Lu",
+        "Ll",
+        "Lt",
+        "Lm",
+        "Lo",  # Letters
+        "Nd",
+        "Nl",
+        "No",  # Numbers
+        "Pc",
+        "Pd",
+        "Ps",
+        "Pe",
+        "Pi",
+        "Pf",
+        "Po",  # Punctuation
+        "Sm",
+        "Sc",
+        "Sk",
+        "So",  # Symbols
+        "Zs",  # Space (not Zl/Zp line seps)
+    }
+)
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _BLOCKED_CODEPOINTS = frozenset(range(0x20)) | {0x7F, 0x2028, 0x2029}
 
@@ -73,9 +90,7 @@ def _sanitize_for_log(value, max_len: int = 200) -> str:
         return ""
     text = _ANSI_ESCAPE_RE.sub("?", str(value))
     sanitized = "".join(
-        c if (ord(c) not in _BLOCKED_CODEPOINTS and unicodedata.category(c) in _SAFE_CATEGORIES)
-        else "?"
-        for c in text
+        c if (ord(c) not in _BLOCKED_CODEPOINTS and unicodedata.category(c) in _SAFE_CATEGORIES) else "?" for c in text
     )
     sanitized = re.sub(r"\?+", "?", sanitized)
     return sanitized[:max_len] + "..." if len(sanitized) > max_len else sanitized
@@ -93,22 +108,27 @@ class PDPCore:
         self,
         baseline_path: Path | str | None = None,
         budget_state_path: Path | str | None = None,
+        services_dir: Path | str | None = None,
     ):
         """Initialize PDP with policy paths.
 
         Args:
             baseline_path: Path to baseline policy YAML (enables file watching)
             budget_state_path: Path to budget state JSON (enables persistence)
+            services_dir: Path to service definitions directory (for capability routes)
         """
         # Ensure paths are Path objects
         if baseline_path is not None and not isinstance(baseline_path, Path):
             baseline_path = Path(baseline_path)
         if budget_state_path is not None and not isinstance(budget_state_path, Path):
             budget_state_path = Path(budget_state_path)
+        if services_dir is not None and not isinstance(services_dir, Path):
+            services_dir = Path(services_dir)
 
         self._engine = PolicyEngine(
             baseline_path=baseline_path,
             budget_state_path=budget_state_path,
+            services_dir=services_dir,
         )
         self._lock = threading.RLock()
         self._task_policies: dict[str, dict] = {}  # task_id -> policy_data
@@ -118,7 +138,7 @@ class PDPCore:
             extra={
                 "baseline_path": str(baseline_path) if baseline_path else None,
                 "budget_state_path": str(budget_state_path) if budget_state_path else None,
-            }
+            },
         )
 
     def add_reload_callback(self, callback) -> None:
@@ -446,6 +466,53 @@ class PDPCore:
             return None
         return baseline.gateway or None
 
+    def evaluate_gateway_request(
+        self,
+        service: str,
+        capability: str,
+        agent: str,
+        method: str,
+        path: str,
+    ):
+        """Evaluate gateway request against compiled capability route permissions.
+
+        Delegates to PolicyEngine.evaluate_gateway_request() and converts
+        the legacy PolicyDecision to PDP schema PolicyDecision.
+
+        Returns deny on no match (fail safe).
+        """
+        from .schemas import ChecksBlock, DecisionEventBlock, Effect
+
+        legacy = self._engine.evaluate_gateway_request(
+            service=service,
+            capability=capability,
+            agent=agent,
+            method=method,
+            path=path,
+        )
+
+        effect_map = {
+            "allow": Effect.ALLOW,
+            "deny": Effect.DENY,
+            "prompt": Effect.REQUIRE_APPROVAL,
+        }
+        effect = effect_map.get(legacy.effect, Effect.DENY)
+
+        from .schemas import PolicyDecision as PDPDecision
+
+        return PDPDecision(
+            version=1,
+            event=DecisionEventBlock(
+                event_id="gateway-request",
+                policy_hash=self.policy_hash,
+                engine_version=ENGINE_VERSION,
+            ),
+            effect=effect,
+            reason=legacy.reason or f"Gateway request: {effect.value}",
+            reason_codes=["GATEWAY_REQUEST_ALLOWED"] if effect == Effect.ALLOW else ["GATEWAY_REQUEST_DENIED"],
+            checks=ChecksBlock(required=["gateway_request"]),
+        )
+
     def get_baseline_path(self) -> str | None:
         """Get the path to the baseline policy file."""
         path = self._engine.baseline_path
@@ -465,12 +532,8 @@ class PDPCore:
         """
         baseline = self._engine.get_baseline()
         return {
-            "credential_rules": [
-                r.model_dump() for r in self._engine.get_credential_rules()
-            ],
-            "scan_patterns": [
-                p.model_dump() for p in self._engine.get_scan_patterns()
-            ],
+            "credential_rules": [r.model_dump() for r in self._engine.get_credential_rules()],
+            "scan_patterns": [p.model_dump() for p in self._engine.get_scan_patterns()],
             "addons": {k: v.model_dump() for k, v in baseline.addons.items()} if baseline else {},
             "policy_hash": self.policy_hash,
         }
@@ -541,7 +604,7 @@ class PDPCore:
                     "destination": _sanitize_for_log(destination),
                     "cred_id": _sanitize_for_log(cred_id),
                     "tier": _sanitize_for_log(tier),
-                }
+                },
             )
             return {
                 "status": "ok",

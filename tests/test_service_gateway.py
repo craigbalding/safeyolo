@@ -451,11 +451,15 @@ class TestRiskyRoutePDP:
 
         from pdp.schemas import Effect
 
+        mock_route_decision = MagicMock()
+        mock_route_decision.effect = Effect.ALLOW
+
         mock_decision = MagicMock()
         mock_decision.effect = Effect.ALLOW
 
         mock_client = MagicMock()
         mock_client.evaluate.return_value = mock_decision
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
 
         # Create a service where risky routes overlap with capabilities
         svc_dir = registry._user_dir
@@ -568,8 +572,13 @@ risky_routes:
             ),
         )
 
+        # Route check must pass (ALLOW) so we reach the risky route check
+        mock_route_decision = MagicMock()
+        mock_route_decision.effect = Effect.ALLOW
+
         mock_client = MagicMock()
         mock_client.evaluate.return_value = mock_decision
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
 
         flow = make_flow(
             method="POST",
@@ -592,6 +601,117 @@ risky_routes:
         assert body["type"] == "gateway_risky_route"
         assert body["action"] == "wait_for_approval"
         assert "reflection" in body
+
+
+class TestPDPRouteCheck:
+    """Tests for PDP-delegated route check in the gateway."""
+
+    def test_route_check_calls_pdp(self, make_flow, gateway, tmp_path):
+        """Gateway delegates route check to PDP evaluate_gateway_request."""
+        from pdp.schemas import Effect
+
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir(exist_ok=True)
+        (svc_dir / "test_svc.yaml").write_text("""
+schema_version: 1
+name: test_svc
+auth:
+  type: bearer
+capabilities:
+  reader:
+    description: "Read-only"
+    routes:
+      - methods: [GET]
+        path: "/v1/**"
+""")
+        registry = init_service_registry(svc_dir)
+
+        vault = MagicMock()
+        vault.get.return_value = VaultCredential(
+            name="test-cred", type="bearer", value="real-token",
+        )
+
+        gateway._host_map = {"api.test.com": "test_svc"}
+        env = gateway.mint_tokens(
+            {"agent-1": {"test_svc": {"capability": "reader", "token": "test-cred"}}},
+        )
+        token = env["agent-1"]["test_svc"]
+
+        # PDP allows the route
+        mock_route_decision = MagicMock()
+        mock_route_decision.effect = Effect.ALLOW
+        mock_client = MagicMock()
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+
+        flow = make_flow(
+            url="https://api.test.com/v1/feeds",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        flow.metadata["agent"] = "agent-1"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault):
+                    with patch("pdp.is_policy_client_configured", return_value=True):
+                        with patch("pdp.get_policy_client", return_value=mock_client):
+                            gateway.request(flow)
+
+        # Route allowed → credential injected
+        assert flow.response is None
+        mock_client.evaluate_gateway_request.assert_called_once_with(
+            service="test_svc", capability="reader",
+            agent="agent-1", method="GET", path="/v1/feeds",
+        )
+
+    def test_route_check_deny_blocks_request(self, make_flow, gateway, tmp_path):
+        """PDP denying a route → 403 ROUTE_DENIED."""
+        from pdp.schemas import Effect
+
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir(exist_ok=True)
+        (svc_dir / "test_svc.yaml").write_text("""
+schema_version: 1
+name: test_svc
+auth:
+  type: bearer
+capabilities:
+  reader:
+    description: "Read-only"
+    routes:
+      - methods: [GET]
+        path: "/v1/**"
+""")
+        registry = init_service_registry(svc_dir)
+
+        gateway._host_map = {"api.test.com": "test_svc"}
+        env = gateway.mint_tokens(
+            {"agent-1": {"test_svc": {"capability": "reader", "token": "test-cred"}}},
+        )
+        token = env["agent-1"]["test_svc"]
+
+        # PDP denies the route
+        mock_route_decision = MagicMock()
+        mock_route_decision.effect = Effect.DENY
+        mock_client = MagicMock()
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+
+        flow = make_flow(
+            method="DELETE",
+            url="https://api.test.com/v1/feeds",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        flow.metadata["agent"] = "agent-1"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("pdp.is_policy_client_configured", return_value=True):
+                    with patch("pdp.get_policy_client", return_value=mock_client):
+                        gateway.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+        body = json.loads(flow.response.content)
+        assert "ROUTE_DENIED" in body["reason_codes"]
 
 
 # --- Token Minting Tests ---
@@ -1021,8 +1141,13 @@ risky_routes:
                 body_json={"error": "Require Approval", "reason_codes": ["GATEWAY_RISKY_ROUTE"]},
             ),
         )
+        # Route check must pass (ALLOW) so we reach the risky route check
+        mock_route_decision = MagicMock()
+        mock_route_decision.effect = Effect.ALLOW
+
         mock_client = MagicMock()
         mock_client.evaluate.return_value = mock_decision
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
 
         flow = make_flow(
             method="DELETE",
@@ -1256,8 +1381,13 @@ risky_routes:
                 },
             ),
         )
+        # Route check must pass (ALLOW) so we reach the risky route check
+        mock_route_decision = MagicMock()
+        mock_route_decision.effect = Effect.ALLOW
+
         mock_client = MagicMock()
         mock_client.evaluate.return_value = mock_decision
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
 
         flow = make_flow(
             method="POST",

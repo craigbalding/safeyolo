@@ -79,6 +79,7 @@ class Condition(BaseModel):
     account: str | list[str] | None = None  # persona match
     agent: str | None = None  # glob match
     service: str | None = None  # glob match
+    capability: str | None = None  # glob match
 
     def _matches_credential(self, context: dict[str, Any]) -> bool:
         """Check if credential condition matches."""
@@ -164,6 +165,13 @@ class Condition(BaseModel):
         ctx_service = context.get("service", "")
         return fnmatch.fnmatch(ctx_service, self.service)
 
+    def _matches_capability(self, context: dict[str, Any]) -> bool:
+        """Check if capability matches (glob)."""
+        if self.capability is None:
+            return True
+        ctx_capability = context.get("capability", "")
+        return fnmatch.fnmatch(ctx_capability, self.capability)
+
     def matches(self, context: dict[str, Any]) -> bool:
         """Check if all specified conditions match the context."""
         return (
@@ -177,6 +185,7 @@ class Condition(BaseModel):
             and self._matches_account(context)
             and self._matches_agent(context)
             and self._matches_service(context)
+            and self._matches_capability(context)
         )
 
 
@@ -193,7 +202,13 @@ class Permission(BaseModel):
     """
 
     action: Literal[
-        "credential:use", "network:request", "file:read", "file:write", "subprocess:exec", "gateway:risky_route"
+        "credential:use",
+        "network:request",
+        "file:read",
+        "file:write",
+        "subprocess:exec",
+        "gateway:risky_route",
+        "gateway:request",
     ]
     resource: str  # glob pattern for destination: "api.openai.com/*", "*.example.com/*"
     effect: Literal["allow", "deny", "prompt", "budget"] = "allow"
@@ -360,12 +375,13 @@ class PolicyEngine:
         self,
         baseline_path: Path | None = None,
         budget_state_path: Path | None = None,
+        services_dir: Path | None = None,
     ):
         # Budget tracking
         self._budget_tracker = GCRABudgetTracker(budget_state_path)
 
         # Policy loader handles file loading, watching, SIGHUP
-        self._loader = PolicyLoader(baseline_path)
+        self._loader = PolicyLoader(baseline_path, services_dir=services_dir)
         if baseline_path:
             self._loader.start_watcher()
 
@@ -664,6 +680,53 @@ class PolicyEngine:
             effect=permission.effect,
             permission=permission,
             reason=f"Risk appetite rule matched: {permission.effect}",
+        )
+
+    def evaluate_gateway_request(
+        self,
+        service: str,
+        capability: str,
+        agent: str,
+        method: str,
+        path: str,
+    ) -> PolicyDecision:
+        """Evaluate a gateway request against compiled capability route permissions.
+
+        Default (no matching rule) → effect="deny" (fail safe — unmatched route is forbidden).
+
+        Args:
+            service: Service name (e.g., "minifuse")
+            capability: Capability name (e.g., "reader", "category_manager")
+            agent: Agent name (e.g., "claude")
+            method: HTTP method (e.g., "GET")
+            path: Request path (e.g., "/v1/feeds")
+
+        Returns:
+            PolicyDecision with effect and details
+        """
+        self._evaluations += 1
+
+        resource = f"{service}:{path}"
+        context = {
+            "service": service,
+            "capability": capability,
+            "agent": agent,
+            "method": method,
+        }
+
+        permission = self._find_matching_permission("gateway:request", resource, context)
+
+        if permission is None:
+            # Default fail-safe: deny — an unmatched route is forbidden
+            return PolicyDecision(
+                effect="deny",
+                reason=f"No gateway:request permission for {sanitize_for_log(agent)}/{sanitize_for_log(service)}/{sanitize_for_log(capability)} {sanitize_for_log(method)} {sanitize_for_log(path)}",
+            )
+
+        return PolicyDecision(
+            effect=permission.effect,
+            permission=permission,
+            reason=f"Gateway request matched: {permission.effect}",
         )
 
     def _get_global_budget(self, action: str) -> int | None:
@@ -1222,6 +1285,7 @@ class PolicyClientConfigurator:
     def __init__(self):
         self._configured_baseline: str | None = None
         self._configured_budget: str | None = None
+        self._configured_services_dir: str | None = None
 
     def load(self, loader):
         """Register mitmproxy options."""
@@ -1239,7 +1303,13 @@ class PolicyClientConfigurator:
         )
 
     def configure(self, updates):
-        """Configure PolicyClient when options change."""
+        """Configure PolicyClient when options change.
+
+        Reconfigures on policy_file, policy_budget_state, or gateway_services_dir
+        changes. The gateway_services_dir option is registered by ServiceGateway
+        (loaded after us), so it may not be available on the first configure() call.
+        When it becomes available, we reconfigure to pick up the services dir.
+        """
         from mitmproxy import ctx
 
         from pdp import PolicyClientConfig, configure_policy_client
@@ -1247,8 +1317,28 @@ class PolicyClientConfigurator:
         baseline_path = ctx.options.policy_file
         budget_path = ctx.options.policy_budget_state
 
+        # Derive services_dir: prefer gateway_services_dir option, fall back to
+        # sibling "services" directory next to policy file
+        services_dir = None
+        try:
+            gw_svc_dir = ctx.options.gateway_services_dir
+            if gw_svc_dir and Path(gw_svc_dir).is_dir():
+                services_dir = Path(gw_svc_dir)
+        except (AttributeError, KeyError):
+            pass  # Option not registered yet (gateway addon loads after us)
+        if services_dir is None and baseline_path:
+            candidate = Path(baseline_path).parent / "services"
+            if candidate.is_dir():
+                services_dir = candidate
+
+        services_dir_str = str(services_dir) if services_dir else None
+
         # Skip if nothing changed (smart reconfigure)
-        if baseline_path == self._configured_baseline and budget_path == self._configured_budget:
+        if (
+            baseline_path == self._configured_baseline
+            and budget_path == self._configured_budget
+            and services_dir_str == self._configured_services_dir
+        ):
             return
 
         # Build config with paths from mitmproxy options
@@ -1256,12 +1346,14 @@ class PolicyClientConfigurator:
             mode="local",
             baseline_path=Path(baseline_path) if baseline_path else None,
             budget_state_path=Path(budget_path) if budget_path else None,
+            services_dir=services_dir,
         )
 
         configure_policy_client(config)
 
         self._configured_baseline = baseline_path
         self._configured_budget = budget_path
+        self._configured_services_dir = services_dir_str
 
         log.info(
             "PolicyClient configured",

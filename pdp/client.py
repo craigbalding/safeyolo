@@ -51,7 +51,8 @@ log = logging.getLogger("safeyolo.pdp.client")
 
 class UnavailableMode(StrEnum):
     """What to do when PDP is unavailable."""
-    DENY = "deny"   # Fail closed (default, recommended)
+
+    DENY = "deny"  # Fail closed (default, recommended)
     ALLOW = "allow"  # Fail open (dangerous, dev only)
     # CACHED = "cached"  # Use cached decision (future)
 
@@ -59,12 +60,14 @@ class UnavailableMode(StrEnum):
 @dataclass
 class PolicyClientConfig:
     """Configuration for PolicyClient."""
+
     # Mode: "local" (in-process) or "http" (remote service)
     mode: Literal["local", "http"] = "local"
 
     # For local mode: paths to policy files
     baseline_path: Path | None = None
     budget_state_path: Path | None = None
+    services_dir: Path | None = None
 
     # For http mode: PDP service endpoint
     endpoint: str = "http://127.0.0.1:8080"
@@ -203,6 +206,42 @@ class PolicyClient(ABC):
         """
         return None
 
+    def evaluate_gateway_request(
+        self,
+        service: str,
+        capability: str,
+        agent: str,
+        method: str,
+        path: str,
+    ) -> "PolicyDecision":
+        """Evaluate a gateway request against compiled capability route permissions.
+
+        Default implementation returns deny (fail safe).
+
+        Args:
+            service: Service name
+            capability: Capability name
+            agent: Agent name
+            method: HTTP method
+            path: Request path
+
+        Returns:
+            PolicyDecision (deny by default)
+        """
+        from .schemas import DecisionEventBlock
+
+        return PolicyDecision(
+            version=1,
+            event=DecisionEventBlock(
+                event_id="gateway-default",
+                policy_hash="none",
+                engine_version="default",
+            ),
+            effect=Effect.DENY,
+            reason="evaluate_gateway_request not implemented",
+            reason_codes=["NOT_IMPLEMENTED"],
+        )
+
     @abstractmethod
     def get_task_policy(self, task_id: str) -> dict | None:
         """Get task policy by ID.
@@ -301,6 +340,7 @@ class LocalPolicyClient(PolicyClient):
         self._pdp = PDPCore(
             baseline_path=config.baseline_path,
             budget_state_path=config.budget_state_path,
+            services_dir=config.services_dir,
         )
         log.info("LocalPolicyClient initialized")
 
@@ -353,6 +393,23 @@ class LocalPolicyClient(PolicyClient):
     def get_gateway_config(self) -> dict | None:
         """Get gateway config from compiled policy."""
         return self._pdp.get_gateway_config()
+
+    def evaluate_gateway_request(
+        self,
+        service: str,
+        capability: str,
+        agent: str,
+        method: str,
+        path: str,
+    ) -> PolicyDecision:
+        """Evaluate gateway request via PDPCore."""
+        return self._pdp.evaluate_gateway_request(
+            service=service,
+            capability=capability,
+            agent=agent,
+            method=method,
+            path=path,
+        )
 
     def add_reload_callback(self, callback) -> None:
         """Register a callback to run after policy reloads."""
@@ -431,10 +488,7 @@ class HttpPolicyClient(PolicyClient):
         try:
             import httpx
         except ImportError:
-            raise ImportError(
-                "httpx is required for HttpPolicyClient. "
-                "Install with: pip install httpx"
-            )
+            raise ImportError("httpx is required for HttpPolicyClient. Install with: pip install httpx")
 
         self._config = config
         self._endpoint = config.endpoint.rstrip("/")
@@ -460,7 +514,7 @@ class HttpPolicyClient(PolicyClient):
                 "endpoint": self._endpoint,
                 "timeout_ms": config.timeout_ms,
                 "max_inflight": config.max_inflight,
-            }
+            },
         )
 
     def evaluate(self, event: HttpEvent) -> PolicyDecision:
@@ -551,8 +605,7 @@ class HttpPolicyClient(PolicyClient):
                 2. Use local mode (PolicyClientConfig(mode="local"))
         """
         raise NotImplementedError(
-            "is_addon_enabled() not supported in HTTP mode. "
-            "Use local mode or implement /v1/addons/enabled endpoint."
+            "is_addon_enabled() not supported in HTTP mode. Use local mode or implement /v1/addons/enabled endpoint."
         )
 
     def get_stats(self) -> dict:
@@ -814,7 +867,7 @@ def configure_policy_client(config: PolicyClientConfig) -> None:
             extra={
                 "mode": config.mode,
                 "baseline_path": str(config.baseline_path) if config.baseline_path else None,
-            }
+            },
         )
 
 
@@ -833,10 +886,7 @@ def get_policy_client() -> PolicyClient:
     """
     with _client_lock:
         if _client_instance is None:
-            raise RuntimeError(
-                "PolicyClient not configured. "
-                "Ensure policy_engine addon is loaded before other addons."
-            )
+            raise RuntimeError("PolicyClient not configured. Ensure policy_engine addon is loaded before other addons.")
         return _client_instance
 
 
