@@ -589,3 +589,159 @@ addons: {}
             tactics=["collection"], enables=[], irreversible=False,
         )
         assert decision.effect == "prompt"
+
+
+class TestCapabilityCondition:
+    """Tests for capability condition matching on Condition model."""
+
+    @pytest.fixture
+    def make_condition(self):
+        from policy_engine import Condition
+        return Condition
+
+    def test_capability_exact_match(self, make_condition):
+        cond = make_condition(capability="reader")
+        assert cond.matches({"capability": "reader"})
+        assert not cond.matches({"capability": "writer"})
+
+    def test_capability_glob_match(self, make_condition):
+        cond = make_condition(capability="*_manager")
+        assert cond.matches({"capability": "category_manager"})
+        assert cond.matches({"capability": "feed_manager"})
+        assert not cond.matches({"capability": "reader"})
+
+    def test_capability_wildcard_all(self, make_condition):
+        cond = make_condition(capability="*")
+        assert cond.matches({"capability": "anything"})
+
+    def test_capability_none_matches_all(self, make_condition):
+        cond = make_condition()  # capability is None
+        assert cond.matches({"capability": "reader"})
+        assert cond.matches({})
+
+
+class TestGatewayRequestEvaluation:
+    """Tests for evaluate_gateway_request()."""
+
+    @pytest.fixture
+    def engine(self, tmp_path):
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "policy.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions:
+  - action: gateway:request
+    resource: "minifuse:/v1/feeds"
+    effect: allow
+    tier: explicit
+    condition:
+      agent: claude
+      capability: reader
+      method: [GET]
+
+  - action: gateway:request
+    resource: "minifuse:/v1/feeds/*"
+    effect: allow
+    tier: explicit
+    condition:
+      agent: claude
+      capability: reader
+      method: [GET]
+
+  - action: gateway:request
+    resource: "minifuse:/v1/categories/137/feeds"
+    effect: allow
+    tier: explicit
+    condition:
+      agent: claude
+      capability: category_manager
+      method: [GET]
+
+  - action: gateway:request
+    resource: "minifuse:/v1/feeds"
+    effect: allow
+    tier: explicit
+    condition:
+      agent: claude
+      capability: category_manager
+      method: [POST]
+
+  - action: gateway:request
+    resource: "minifuse:/v1/feeds"
+    effect: deny
+    tier: explicit
+    condition:
+      agent: blocked-agent
+      capability: reader
+      method: [GET]
+""")
+        return PolicyEngine(baseline_path=baseline)
+
+    def test_allow_on_match(self, engine):
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="reader",
+            agent="claude", method="GET", path="/v1/feeds",
+        )
+        assert decision.effect == "allow"
+
+    def test_deny_on_no_match(self, engine):
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="reader",
+            agent="claude", method="DELETE", path="/v1/feeds",
+        )
+        assert decision.effect == "deny"
+
+    def test_deny_wrong_capability(self, engine):
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="admin",
+            agent="claude", method="GET", path="/v1/feeds",
+        )
+        assert decision.effect == "deny"
+
+    def test_deny_wrong_agent(self, engine):
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="reader",
+            agent="unknown-agent", method="GET", path="/v1/feeds",
+        )
+        assert decision.effect == "deny"
+
+    def test_resolved_contract_path(self, engine):
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="category_manager",
+            agent="claude", method="GET", path="/v1/categories/137/feeds",
+        )
+        assert decision.effect == "allow"
+
+    def test_wildcard_path_match(self, engine):
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="reader",
+            agent="claude", method="GET", path="/v1/feeds/42",
+        )
+        assert decision.effect == "allow"
+
+    def test_operator_deny_override(self, engine):
+        """Explicit deny for a specific agent overrides defaults."""
+        decision = engine.evaluate_gateway_request(
+            service="minifuse", capability="reader",
+            agent="blocked-agent", method="GET", path="/v1/feeds",
+        )
+        assert decision.effect == "deny"
+
+    def test_default_deny_no_permissions(self, tmp_path):
+        """Engine with no gateway:request permissions denies everything."""
+        from policy_engine import PolicyEngine
+
+        baseline = tmp_path / "empty.yaml"
+        baseline.write_text("""
+metadata:
+  version: "1.0"
+permissions: []
+""")
+        engine = PolicyEngine(baseline_path=baseline)
+        decision = engine.evaluate_gateway_request(
+            service="any", capability="any",
+            agent="any", method="GET", path="/anything",
+        )
+        assert decision.effect == "deny"

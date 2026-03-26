@@ -406,10 +406,7 @@ scan_patterns: []
         assert len(policy.permissions) > 0
 
         # Check credential routing works
-        cred_perms = [
-            p for p in policy.permissions
-            if p.action == "credential:use" and "openai" in str(p.resource)
-        ]
+        cred_perms = [p for p in policy.permissions if p.action == "credential:use" and "openai" in str(p.resource)]
         assert len(cred_perms) == 1
         assert cred_perms[0].effect == "allow"
 
@@ -537,7 +534,9 @@ class TestCompileGateway:
         raw = {
             "agents": {
                 "my-agent": {
-                    "services": {"gmail": {"capability": "search_headers", "token": "gmail-cred", "account": "operator"}},
+                    "services": {
+                        "gmail": {"capability": "search_headers", "token": "gmail-cred", "account": "operator"}
+                    },
                 },
             },
         }
@@ -571,10 +570,12 @@ class TestCompileGateway:
         raw = {
             "agents": {
                 "a1": {"services": {"gmail": {"role": "readonly", "token": "g"}}},
-                "a2": {"services": {
-                    "slack": {"role": "poster", "token": "s"},
-                    "minifuse": {"role": "reader", "token": "m"},
-                }},
+                "a2": {
+                    "services": {
+                        "slack": {"role": "poster", "token": "s"},
+                        "minifuse": {"role": "reader", "token": "m"},
+                    }
+                },
             },
         }
         gateway = compile_gateway(raw)
@@ -926,15 +927,19 @@ scan_patterns: []
 """)
 
         agents = tmp_path / "agents.yaml"
-        agents.write_text(yaml.dump({
-            "boris": {
-                "template": "claude-code",
-                "folder": "/tmp/proj",
-                "services": {
-                    "gmail": {"role": "readonly", "token": "g"},
-                },
-            },
-        }))
+        agents.write_text(
+            yaml.dump(
+                {
+                    "boris": {
+                        "template": "claude-code",
+                        "folder": "/tmp/proj",
+                        "services": {
+                            "gmail": {"role": "readonly", "token": "g"},
+                        },
+                    },
+                }
+            )
+        )
 
         loader = PolicyLoader(baseline_path=baseline)
         policy = loader.baseline
@@ -966,13 +971,17 @@ scan_patterns: []
 
         # Create agents.yaml
         agents = tmp_path / "agents.yaml"
-        agents.write_text(yaml.dump({
-            "boris": {
-                "services": {
-                    "gmail": {"role": "readonly", "token": "g"},
-                },
-            },
-        }))
+        agents.write_text(
+            yaml.dump(
+                {
+                    "boris": {
+                        "services": {
+                            "gmail": {"role": "readonly", "token": "g"},
+                        },
+                    },
+                }
+            )
+        )
 
         # Simulate watcher: force reload since agents.yaml now exists
         loader._load_baseline()
@@ -1087,15 +1096,23 @@ scan_patterns: []
         engine = PolicyEngine(baseline_path=baseline)
         # collection for agent → allow
         decision = engine.evaluate_risky_route(
-            service="gmail", agent="boris", account="agent",
-            tactics=["collection"], enables=[], irreversible=False,
+            service="gmail",
+            agent="boris",
+            account="agent",
+            tactics=["collection"],
+            enables=[],
+            irreversible=False,
         )
         assert decision.effect == "allow"
 
         # exfiltration → prompt
         decision = engine.evaluate_risky_route(
-            service="gmail", agent="boris", account="agent",
-            tactics=["exfiltration"], enables=[], irreversible=False,
+            service="gmail",
+            agent="boris",
+            account="agent",
+            tactics=["exfiltration"],
+            enables=[],
+            irreversible=False,
         )
         assert decision.effect == "prompt"
 
@@ -1107,3 +1124,253 @@ scan_patterns: []
         result = compile_policy(raw)
         gateway_perms = [p for p in result["permissions"] if p["action"] == "gateway:risky_route"]
         assert gateway_perms == []
+
+
+class TestCompileCapabilityRoutes:
+    """Tests for capability route → gateway:request permission compilation."""
+
+    def _make_service_dir(self, tmp_path, service_yaml):
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir(exist_ok=True)
+        (svc_dir / "minifuse.yaml").write_text(service_yaml)
+        # Init registry so compiler can look up services
+        import service_loader
+        from service_loader import ServiceRegistry
+
+        registry = ServiceRegistry(svc_dir)
+        registry.load()
+        service_loader._registry = registry
+        return svc_dir
+
+    def test_compile_raw_routes_no_contract(self, tmp_path):
+        """Capability without contract emits raw routes as gateway:request."""
+        from policy_compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+auth:
+  type: api_key
+  header: X-API-Key
+capabilities:
+  reader:
+    description: "Read-only access"
+    routes:
+      - methods: [GET]
+        path: "/v1/feeds"
+      - methods: [GET]
+        path: "/v1/entries"
+""",
+        )
+        raw = {
+            "agents": {
+                "claude": {
+                    "services": {"minifuse": {"capability": "reader", "token": "mf-key"}},
+                },
+            },
+        }
+        permissions = []
+        compile_gateway(raw, services_dir=svc_dir, permissions=permissions)
+
+        gw_perms = [p for p in permissions if p["action"] == "gateway:request"]
+        assert len(gw_perms) == 2
+        resources = {p["resource"] for p in gw_perms}
+        assert "minifuse:/v1/feeds" in resources
+        assert "minifuse:/v1/entries" in resources
+        # Verify condition
+        for p in gw_perms:
+            assert p["condition"]["agent"] == "claude"
+            assert p["condition"]["capability"] == "reader"
+            assert p["condition"]["method"] == ["GET"]
+
+    def test_compile_resolved_operations_with_binding(self, tmp_path):
+        """Capability with contract + binding resolves operations."""
+        from policy_compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+auth:
+  type: api_key
+  header: X-API-Key
+capabilities:
+  category_manager:
+    description: "Manage one category"
+    routes:
+      - methods: [GET, POST]
+        path: "/v1/categories/*/feeds"
+    contract:
+      template: category_scope
+      bindings:
+        approved_category_id:
+          source: agent
+          type: integer
+      operations:
+        - name: list_feeds
+          request:
+            method: GET
+            path: /v1/categories/{id}/feeds
+            transport:
+              require_no_body: true
+            path_params:
+              id:
+                equals_var: approved_category_id
+            query:
+              deny_unknown: true
+        - name: create_feed
+          request:
+            method: POST
+            path: /v1/feeds
+            body:
+              deny_unknown: true
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+""",
+        )
+        raw = {
+            "agents": {
+                "claude": {
+                    "services": {"minifuse": {"capability": "category_manager", "token": "mf-key"}},
+                    "contract_bindings": [
+                        {
+                            "service": "minifuse",
+                            "capability": "category_manager",
+                            "template": "category_scope",
+                            "bound_values": {"approved_category_id": 137},
+                            "grantable_operations": ["list_feeds", "create_feed"],
+                        }
+                    ],
+                },
+            },
+        }
+        permissions = []
+        compile_gateway(raw, services_dir=svc_dir, permissions=permissions)
+
+        gw_perms = [p for p in permissions if p["action"] == "gateway:request"]
+        assert len(gw_perms) == 2
+        resources = {p["resource"] for p in gw_perms}
+        # list_feeds: /v1/categories/{id}/feeds → /v1/categories/137/feeds
+        assert "minifuse:/v1/categories/137/feeds" in resources
+        # create_feed: /v1/feeds (no path params to resolve)
+        assert "minifuse:/v1/feeds" in resources
+
+    def test_skip_unbound_contracted_capability(self, tmp_path):
+        """Capability with contract but no binding → no permissions emitted."""
+        from policy_compiler import compile_gateway
+
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+auth:
+  type: api_key
+  header: X-API-Key
+capabilities:
+  category_manager:
+    description: "Manage one category"
+    routes:
+      - methods: [GET]
+        path: "/v1/categories/*/feeds"
+    contract:
+      template: category_scope
+      bindings:
+        approved_category_id:
+          source: agent
+          type: integer
+      operations:
+        - name: list_feeds
+          request:
+            method: GET
+            path: /v1/categories/{id}/feeds
+            path_params:
+              id:
+                equals_var: approved_category_id
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+""",
+        )
+        raw = {
+            "agents": {
+                "claude": {
+                    "services": {"minifuse": {"capability": "category_manager", "token": "mf-key"}},
+                    # No contract_bindings → unbound
+                },
+            },
+        }
+        permissions = []
+        compile_gateway(raw, services_dir=svc_dir, permissions=permissions)
+
+        gw_perms = [p for p in permissions if p["action"] == "gateway:request"]
+        assert len(gw_perms) == 0
+
+    def test_service_not_found_graceful(self, tmp_path):
+        """Unknown service → warning, no permissions, no crash."""
+        from policy_compiler import compile_gateway
+
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir()
+        raw = {
+            "agents": {
+                "claude": {
+                    "services": {"nonexistent": {"capability": "reader", "token": "x"}},
+                },
+            },
+        }
+        permissions = []
+        compile_gateway(raw, services_dir=svc_dir, permissions=permissions)
+        assert permissions == []
+
+    def test_no_services_dir_graceful(self):
+        """No services_dir → no-op, no crash."""
+        from policy_compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "claude": {
+                    "services": {"minifuse": {"capability": "reader", "token": "x"}},
+                },
+            },
+        }
+        permissions = []
+        compile_gateway(raw, services_dir=None, permissions=permissions)
+        assert permissions == []
+
+    def test_compile_policy_includes_gateway_request_permissions(self, tmp_path):
+        """Full compile_policy flow includes gateway:request permissions."""
+        from policy_compiler import compile_policy
+
+        self._make_service_dir(
+            tmp_path,
+            """
+schema_version: 1
+name: minifuse
+auth:
+  type: api_key
+  header: X-API-Key
+capabilities:
+  reader:
+    description: "Read-only"
+    routes:
+      - methods: [GET]
+        path: "/v1/feeds"
+""",
+        )
+        raw = {
+            "hosts": {"api.minifuse.io": {"service": "minifuse"}},
+            "agents": {
+                "claude": {
+                    "services": {"minifuse": {"capability": "reader", "token": "mf-key"}},
+                },
+            },
+        }
+        result = compile_policy(raw)
+        gw_perms = [p for p in result["permissions"] if p["action"] == "gateway:request"]
+        assert len(gw_perms) == 1
+        assert gw_perms[0]["resource"] == "minifuse:/v1/feeds"

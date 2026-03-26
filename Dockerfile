@@ -79,8 +79,11 @@ COPY addons/sensor_utils.py /app/addons/
 COPY addons/detection/ /app/addons/detection/
 # Copy addons in load order (see scripts/start-safeyolo.sh)
 # Layer 0: Infrastructure
+COPY addons/file_logging.py /app/addons/
+COPY addons/memory_monitor.py /app/addons/
 COPY addons/admin_shield.py /app/addons/
 COPY addons/agent_api.py /app/addons/
+COPY addons/loop_guard.py /app/addons/
 COPY addons/request_id.py /app/addons/
 COPY addons/sse_streaming.py /app/addons/
 COPY addons/policy_engine.py /app/addons/
@@ -90,6 +93,7 @@ COPY addons/circuit_breaker.py /app/addons/
 # Layer 2: Security Inspection
 COPY addons/credential_guard.py /app/addons/
 COPY addons/pattern_scanner.py /app/addons/
+COPY addons/test_context.py /app/addons/
 # Layer 3: Observability
 COPY addons/flow_store.py /app/addons/
 COPY addons/flow_recorder.py /app/addons/

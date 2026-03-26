@@ -154,10 +154,9 @@ def compile_policy(raw: dict) -> dict:
     if isinstance(gateway_section, dict) and "risk_appetite" in gateway_section:
         _compile_risk_appetite(gateway_section["risk_appetite"], permissions)
 
-    # Services + agents section → gateway token map
+    # Services + agents section → gateway token map + capability route permissions
     if "services" in raw or "agents" in raw:
-        services_dir = raw.get("_services_dir")
-        gateway = compile_gateway(raw, services_dir, host_map)
+        gateway = compile_gateway(raw, host_map=host_map, permissions=permissions)
         result["gateway"] = gateway
     elif host_map:
         # host_map exists but no agents — still store it for gateway
@@ -320,10 +319,17 @@ def mint_gateway_token() -> str:
     return f"sgw_{secrets.token_hex(32)}"
 
 
-def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map: dict[str, str] | None = None) -> dict:
+def compile_gateway(
+    raw: dict,
+    services_dir: str | Path | None = None,
+    host_map: dict[str, str] | None = None,
+    permissions: list[dict] | None = None,
+) -> dict:
     """Compile gateway configuration from services/agents sections.
 
     Reads agents section, resolves service references, mints tokens.
+    When permissions list is provided, also compiles capability routes
+    into gateway:request permissions.
 
     Policy format:
         agents:
@@ -337,6 +343,8 @@ def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map:
     Args:
         raw: Parsed policy YAML dict
         services_dir: Path to service definitions directory
+        host_map: Host-to-service binding map
+        permissions: If provided, gateway:request permissions are appended here
 
     Returns:
         Dict with token_map and agent_env:
@@ -401,8 +409,167 @@ def compile_gateway(raw: dict, services_dir: str | Path | None = None, host_map:
             }
             agent_env[agent_name][service_name] = sgw_token
 
+    # Compile capability routes into gateway:request permissions
+    if permissions is not None:
+        _compile_capability_routes(token_map, agents, permissions)
+
     log.info(f"Compiled gateway: {len(agents)} agents, {len(token_map)} tokens minted")
     return {"token_map": token_map, "agent_env": agent_env, "host_map": host_map or {}}
+
+
+def _get_service_registry():
+    """Get the ServiceRegistry for compilation. Returns None if not initialized."""
+    from service_loader import get_service_registry
+
+    return get_service_registry()
+
+
+def _compile_capability_routes(
+    token_map: dict[str, dict],
+    agents_raw: dict,
+    permissions: list[dict],
+) -> None:
+    """Compile capability routes into gateway:request permissions.
+
+    Uses the ServiceRegistry singleton to look up service definitions.
+
+    For each agent/service/capability grant, resolves routes into permissions:
+    - No contract: emit raw capability routes
+    - Contract with binding: resolve operations using bound_values
+    - Contract without binding: skip (no permissions, PDP denies)
+
+    Args:
+        token_map: Compiled token map (agent → service bindings)
+        agents_raw: Raw agents section from policy
+        permissions: List to append gateway:request permissions to
+    """
+    registry = _get_service_registry()
+    if registry is None:
+        return
+
+    # Build set of (agent, service, capability) from token_map
+    agent_grants: dict[str, dict[str, str]] = {}  # agent → {service → capability}
+    for binding in token_map.values():
+        agent = binding["agent"]
+        service = binding["service"]
+        capability = binding["capability"]
+        agent_grants.setdefault(agent, {})[service] = capability
+
+    for agent_name, service_map in agent_grants.items():
+        # Get contract bindings for this agent from agents_raw
+        agent_data = agents_raw.get(agent_name, {})
+        if not isinstance(agent_data, dict):
+            continue
+
+        contract_bindings = agent_data.get("contract_bindings", [])
+
+        for service_name, capability_name in service_map.items():
+            service_def = registry.get_service(service_name)
+            if service_def is None:
+                continue
+
+            capability = service_def.capabilities.get(capability_name)
+            if capability is None:
+                log.warning(
+                    "Capability %s not found in service %s during compilation",
+                    sanitize_for_log(capability_name),
+                    sanitize_for_log(service_name),
+                )
+                continue
+
+            if capability.contract is None:
+                # Case 1: No contract — emit raw routes
+                for route in capability.routes:
+                    methods = route.methods if route.methods != ["*"] else ["*"]
+                    permissions.append(
+                        {
+                            "action": "gateway:request",
+                            "resource": f"{service_name}:{route.path}",
+                            "effect": "allow",
+                            "tier": "explicit",
+                            "condition": {
+                                "agent": agent_name,
+                                "capability": capability_name,
+                                "method": methods,
+                            },
+                        }
+                    )
+            else:
+                # Case 2/3: Contract — find matching binding
+                binding = _find_contract_binding(
+                    contract_bindings,
+                    service_name,
+                    capability_name,
+                    capability.contract.template,
+                )
+                if binding is None:
+                    # Case 3: No binding yet → no permissions emitted
+                    continue
+
+                # Case 2: Binding found — resolve grantable operations
+                bound_values = binding.get("bound_values", {})
+                for op_name in binding.get("grantable_operations", []):
+                    operation = _find_operation(capability.contract, op_name)
+                    if operation is None:
+                        continue
+                    resolved_path = _resolve_path(operation, bound_values)
+                    permissions.append(
+                        {
+                            "action": "gateway:request",
+                            "resource": f"{service_name}:{resolved_path}",
+                            "effect": "allow",
+                            "tier": "explicit",
+                            "condition": {
+                                "agent": agent_name,
+                                "capability": capability_name,
+                                "method": [operation.method.upper()],
+                            },
+                        }
+                    )
+
+
+def _find_contract_binding(bindings: list[dict], service: str, capability: str, template: str) -> dict | None:
+    """Find a matching contract binding for a service/capability/template."""
+    for b in bindings:
+        if b.get("service") == service and b.get("capability") == capability and b.get("template", "") == template:
+            return b
+    return None
+
+
+def _find_operation(contract, op_name: str):
+    """Find an operation by name in a contract template."""
+    for op in contract.operations:
+        if op.name == op_name:
+            return op
+    return None
+
+
+def _resolve_path(operation, bound_values: dict) -> str:
+    """Resolve path template parameters using bound values.
+
+    For each {param} in the operation path, looks up the param's equals_var
+    in path_params, then resolves the var from bound_values.
+
+    Example:
+        path: /v1/categories/{id}/feeds
+        path_params: {id: {equals_var: approved_category_id}}
+        bound_values: {approved_category_id: 137}
+        → /v1/categories/137/feeds
+    """
+    path = operation.path
+    if not operation.path_params:
+        return path
+
+    for param_name, constraint in operation.path_params.items():
+        placeholder = f"{{{param_name}}}"
+        if placeholder not in path:
+            continue
+
+        var_name = getattr(constraint, "equals_var", None)
+        if var_name and var_name in bound_values:
+            path = path.replace(placeholder, str(bound_values[var_name]))
+
+    return path
 
 
 def decompile_approval(destination: str, cred_ids: list[str]) -> dict:

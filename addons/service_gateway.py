@@ -232,6 +232,9 @@ class ServiceGateway:
 
         if "gateway_enabled" in updates or "gateway_services_dir" in updates:
             self._init_services()
+            # Registry now available — trigger policy reload so compiler can
+            # emit gateway:request permissions from capability routes
+            self._trigger_policy_reload()
 
         if "gateway_enabled" in updates or "gateway_vault_path" in updates:
             self._init_vault()
@@ -254,6 +257,24 @@ class ServiceGateway:
             log.info(f"Service registry loaded from {user_dir}")
         except Exception as e:
             log.error(f"Failed to load service registry: {type(e).__name__}: {e}")
+
+    def _trigger_policy_reload(self):
+        """Trigger a policy reload so the compiler can use the now-available registry."""
+        try:
+            from pdp import get_policy_client, is_policy_client_configured
+
+            if not is_policy_client_configured():
+                return
+            client = get_policy_client()
+            pdp = getattr(client, "_pdp", None)
+            engine = getattr(pdp, "_engine", None) if pdp else None
+            loader = getattr(engine, "_loader", None) if engine else None
+            if loader:
+                loader.reload()
+                gw_count = sum(1 for p in loader.baseline.permissions if p.action == "gateway:request")
+                log.info(f"Policy reloaded after service registry init ({gw_count} gateway:request permissions)")
+        except Exception as e:
+            log.error(f"Policy reload after registry init failed: {type(e).__name__}: {e}")
 
     def _init_vault(self):
         """Initialize vault from encrypted file, using auto-generated key file."""
@@ -378,7 +399,10 @@ class ServiceGateway:
 
         if not binding:
             self._deny(
-                flow, 403, "Invalid gateway token", "INVALID_TOKEN",
+                flow,
+                403,
+                "Invalid gateway token",
+                "INVALID_TOKEN",
                 action="self_correct",
                 reflection="The gateway token is not recognized. Check that the agent is authorized and the token has not expired.",
             )
@@ -389,7 +413,10 @@ class ServiceGateway:
         agent = flow.metadata.get("agent")
         if agent and agent != binding.agent:
             self._deny(
-                flow, 403, f"Token not authorized for agent '{agent}'", "AGENT_MISMATCH",
+                flow,
+                403,
+                f"Token not authorized for agent '{agent}'",
+                "AGENT_MISMATCH",
                 action="self_correct",
                 reflection=f"This token belongs to a different agent. Agent '{sanitize_for_log(agent)}' is not authorized to use it.",
             )
@@ -400,7 +427,10 @@ class ServiceGateway:
         registry = get_service_registry()
         if not registry:
             self._deny(
-                flow, 503, "Service registry not available", "REGISTRY_UNAVAILABLE",
+                flow,
+                503,
+                "Service registry not available",
+                "REGISTRY_UNAVAILABLE",
                 action="abort",
                 reflection="The service registry is not loaded. The proxy may still be starting up.",
             )
@@ -409,7 +439,10 @@ class ServiceGateway:
         service = registry.get_service(binding.service_name)
         if not service:
             self._deny(
-                flow, 403, f"Service '{binding.service_name}' not found", "SERVICE_NOT_FOUND",
+                flow,
+                403,
+                f"Service '{binding.service_name}' not found",
+                "SERVICE_NOT_FOUND",
                 action="self_correct",
                 reflection=f"Service '{sanitize_for_log(binding.service_name)}' is not in the service registry. Check the service name in agents.yaml.",
             )
@@ -421,7 +454,10 @@ class ServiceGateway:
         if not capability:
             cap_names = ", ".join(service.capabilities.keys()) if service.capabilities else "none"
             self._deny(
-                flow, 403, f"Capability '{binding.capability_name}' not found", "CAPABILITY_NOT_FOUND",
+                flow,
+                403,
+                f"Capability '{binding.capability_name}' not found",
+                "CAPABILITY_NOT_FOUND",
                 action="self_correct",
                 reflection=f"Capability '{sanitize_for_log(binding.capability_name)}' does not exist in service '{sanitize_for_log(binding.service_name)}'. Available: {sanitize_for_log(cap_names)}.",
             )
@@ -445,18 +481,44 @@ class ServiceGateway:
         path = flow.request.path.split("?")[0]  # Strip query string
         method = flow.request.method
 
-        # 1. Capability route check (positive list)
-        if not self._evaluate_capability_routes(method, path, capability):
-            self._deny(
-                flow,
-                403,
-                f"Route {method} {path} not in capability '{capability.name}'",
-                "ROUTE_DENIED",
-                action="self_correct",
-                reflection=f"Route {sanitize_for_log(method)} {sanitize_for_log(path)} is not allowed by capability '{sanitize_for_log(capability.name)}'. Check the service definition for allowed routes.",
+        # 1. Capability route check — delegate to PDP (compiled permissions)
+        from pdp import get_policy_client, is_policy_client_configured
+
+        if is_policy_client_configured():
+            client = get_policy_client()
+            route_decision = client.evaluate_gateway_request(
+                service=binding.service_name,
+                capability=binding.capability_name,
+                agent=binding.agent,
+                method=method,
+                path=path,
             )
-            self.stats.denied_route += 1
-            return
+            from pdp.schemas import Effect
+
+            if route_decision.effect != Effect.ALLOW:
+                self._deny(
+                    flow,
+                    403,
+                    f"Route {method} {path} not in capability '{capability.name}'",
+                    "ROUTE_DENIED",
+                    action="self_correct",
+                    reflection=f"Route {sanitize_for_log(method)} {sanitize_for_log(path)} is not allowed by capability '{sanitize_for_log(capability.name)}'. Check the service definition for allowed routes.",
+                )
+                self.stats.denied_route += 1
+                return
+        else:
+            # Fallback: local route check if PDP not configured
+            if not self._evaluate_capability_routes(method, path, capability):
+                self._deny(
+                    flow,
+                    403,
+                    f"Route {method} {path} not in capability '{capability.name}'",
+                    "ROUTE_DENIED",
+                    action="self_correct",
+                    reflection=f"Route {sanitize_for_log(method)} {sanitize_for_log(path)} is not allowed by capability '{sanitize_for_log(capability.name)}'. Check the service definition for allowed routes.",
+                )
+                self.stats.denied_route += 1
+                return
 
         # 1.5. Contract enforcement (if capability has a bound contract)
         if capability.contract and capability.contract.is_grantable:
@@ -484,7 +546,10 @@ class ServiceGateway:
         vault = get_vault()
         if not vault:
             self._deny(
-                flow, 503, "Vault not available", "VAULT_UNAVAILABLE",
+                flow,
+                503,
+                "Vault not available",
+                "VAULT_UNAVAILABLE",
                 action="abort",
                 reflection="The credential vault is not loaded. The proxy may still be starting up.",
             )
@@ -493,7 +558,10 @@ class ServiceGateway:
         cred = vault.get(binding.vault_token)
         if not cred:
             self._deny(
-                flow, 503, "Credential not found in vault", "CREDENTIAL_NOT_FOUND",
+                flow,
+                503,
+                "Credential not found in vault",
+                "CREDENTIAL_NOT_FOUND",
                 action="self_correct",
                 reflection=f"Credential '{sanitize_for_log(binding.vault_token)}' is not in the vault. Re-run `safeyolo agent authorize` to store it.",
             )
@@ -506,7 +574,10 @@ class ServiceGateway:
                 cred = vault.get(binding.vault_token)
                 if not cred:
                     self._deny(
-                        flow, 503, "Credential lost after refresh", "CREDENTIAL_NOT_FOUND",
+                        flow,
+                        503,
+                        "Credential lost after refresh",
+                        "CREDENTIAL_NOT_FOUND",
                         action="abort",
                         reflection="The credential was lost during OAuth2 token refresh. Re-run `safeyolo agent authorize` to restore it.",
                     )
@@ -514,7 +585,7 @@ class ServiceGateway:
 
         # Refuse to inject credentials over plaintext HTTP — redirect to HTTPS
         if flow.request.scheme == "http":
-            https_url = "https://" + flow.request.url[len("http://"):]
+            https_url = "https://" + flow.request.url[len("http://") :]
             flow.response = http.Response.make(
                 301,
                 b"",
@@ -871,9 +942,7 @@ class ServiceGateway:
         )
         return binding
 
-    def get_contract_binding(
-        self, agent: str, service: str, capability: str
-    ) -> ContractBindingState | None:
+    def get_contract_binding(self, agent: str, service: str, capability: str) -> ContractBindingState | None:
         """Look up active contract binding."""
         with self._lock:
             return self._contract_bindings.get((agent, service, capability))
@@ -1140,7 +1209,10 @@ class ServiceGateway:
                 body["addon"] = self.name
                 body.setdefault("type", "gateway_risky_route")
                 body.setdefault("action", "wait_for_approval")
-                body.setdefault("reflection", "This route is flagged as risky. An operator must approve it via `safeyolo watch` before it can proceed.")
+                body.setdefault(
+                    "reflection",
+                    "This route is flagged as risky. An operator must approve it via `safeyolo watch` before it can proceed.",
+                )
                 flow.response = make_block_response(
                     decision.immediate_response.status_code,
                     body,
@@ -1148,7 +1220,10 @@ class ServiceGateway:
                 )
             else:
                 self._deny(
-                    flow, 428, "Risky route requires approval", "GATEWAY_RISKY_ROUTE",
+                    flow,
+                    428,
+                    "Risky route requires approval",
+                    "GATEWAY_RISKY_ROUTE",
                     action="wait_for_approval",
                     reflection="This route is flagged as risky. An operator must approve it via `safeyolo watch` before it can proceed.",
                 )
@@ -1202,7 +1277,10 @@ class ServiceGateway:
             log.error(f"Risky route PDP check failed: {type(e).__name__}: {e}")
             # Fail safe: deny on PDP error
             self._deny(
-                flow, 503, "Risky route check failed", "PDP_ERROR",
+                flow,
+                503,
+                "Risky route check failed",
+                "PDP_ERROR",
                 action="abort",
                 reflection="The policy engine failed while checking this risky route. The request was denied as a safety precaution.",
             )
@@ -1213,10 +1291,18 @@ class ServiceGateway:
     # =========================================================================
 
     # Headers implicitly allowed (proxy/transport layer)
-    _IMPLICIT_HEADERS = frozenset({
-        "host", "connection", "content-length", "content-type",
-        "transfer-encoding", "accept-encoding", "via", "proxy-connection",
-    })
+    _IMPLICIT_HEADERS = frozenset(
+        {
+            "host",
+            "connection",
+            "content-length",
+            "content-type",
+            "transfer-encoding",
+            "accept-encoding",
+            "via",
+            "proxy-connection",
+        }
+    )
 
     def _enforce_contract(self, flow, binding_state, service, capability, method, path) -> bool:
         """Enforce contract constraints. Returns True if allowed, False if denied.
@@ -1234,7 +1320,8 @@ class ServiceGateway:
         # 1. Binding required
         if not binding_state:
             self._deny(
-                flow, 403,
+                flow,
+                403,
                 f"Contract not bound for capability '{capability.name}'",
                 "CONTRACT_NOT_BOUND",
                 action="request_binding",
@@ -1252,7 +1339,8 @@ class ServiceGateway:
         trick = reject_path_tricks(raw_path)
         if trick:
             self._deny(
-                flow, 403,
+                flow,
+                403,
                 f"Path trick detected: {sanitize_for_log(trick)}",
                 "TRANSPORT_PATH_TRICK",
                 action="self_correct",
@@ -1264,7 +1352,8 @@ class ServiceGateway:
         dup_header = self._reject_duplicate_headers(flow)
         if dup_header:
             self._deny(
-                flow, 403,
+                flow,
+                403,
                 f"Duplicate header: {sanitize_for_log(dup_header)}",
                 "TRANSPORT_DUPLICATE_HEADER",
                 action="self_correct",
@@ -1276,7 +1365,8 @@ class ServiceGateway:
         ambiguity = _check_ambiguous_encoding(flow)
         if ambiguity:
             self._deny(
-                flow, 403,
+                flow,
+                403,
                 f"Ambiguous encoding detected: {ambiguity}",
                 "TRANSPORT_AMBIGUOUS_ENCODING",
                 action="self_correct",
@@ -1291,7 +1381,8 @@ class ServiceGateway:
         op = contract.match_operation(method, canonical_path)
         if not op:
             self._deny(
-                flow, 403,
+                flow,
+                403,
                 f"Operation {method} {canonical_path} not grantable in contract",
                 "OPERATION_NOT_GRANTABLE",
                 action="self_correct",
@@ -1326,7 +1417,8 @@ class ServiceGateway:
             # Content-Type enforcement
             if content_type != "application/json":
                 self._deny(
-                    flow, 403,
+                    flow,
+                    403,
                     f"Unexpected content type: {sanitize_for_log(content_type) or '(missing)'}",
                     "TRANSPORT_CONTENT_TYPE",
                     action="self_correct",
@@ -1341,7 +1433,8 @@ class ServiceGateway:
                 )
             except json_mod.JSONDecodeError:
                 self._deny(
-                    flow, 403,
+                    flow,
+                    403,
                     "Request body is not valid JSON",
                     "CONTRACT_VIOLATION",
                     action="self_correct",
@@ -1351,7 +1444,8 @@ class ServiceGateway:
             except ValueError as e:
                 if "duplicate JSON key" in str(e):
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Duplicate JSON key in request body: {sanitize_for_log(str(e))}",
                         "TRANSPORT_DUPLICATE_JSON_KEY",
                         action="self_correct",
@@ -1362,7 +1456,8 @@ class ServiceGateway:
 
             if not isinstance(canonical_body, dict):
                 self._deny(
-                    flow, 403,
+                    flow,
+                    403,
                     "Request body must be a JSON object",
                     "CONTRACT_VIOLATION",
                     action="self_correct",
@@ -1376,7 +1471,8 @@ class ServiceGateway:
             if overlap:
                 field_name = sorted(overlap)[0]
                 self._deny(
-                    flow, 403,
+                    flow,
+                    403,
                     f"Field '{sanitize_for_log(field_name)}' appears in both query and body",
                     "TRANSPORT_CROSS_LOCATION",
                     action="self_correct",
@@ -1399,7 +1495,8 @@ class ServiceGateway:
         # Transport: require_no_body
         if op.transport and op.transport.require_no_body and flow.request.content:
             self._deny(
-                flow, 403,
+                flow,
+                403,
                 "Request body not allowed for this operation",
                 "TRANSPORT_BODY_DENIED",
                 action="self_correct",
@@ -1426,7 +1523,8 @@ class ServiceGateway:
             params = _extract_path_params(canonical.path, op.path)
             if params is None:
                 self._deny(
-                    flow, 403,
+                    flow,
+                    403,
                     f"Path does not match operation template '{op.path}'",
                     "CONTRACT_VIOLATION",
                     action="self_correct",
@@ -1441,7 +1539,8 @@ class ServiceGateway:
                     expected = binding_state.bound_values.get(constraint.equals_var)
                     if expected is not None and str(param_value) != str(expected):
                         self._deny(
-                            flow, 403,
+                            flow,
+                            403,
                             f"Path parameter '{param_name}' does not match bound value",
                             "CONTRACT_VIOLATION",
                             action="self_correct",
@@ -1477,7 +1576,8 @@ class ServiceGateway:
         for header_name in canonical.headers:
             if header_name not in allowed_set:
                 self._deny(
-                    flow, 403,
+                    flow,
+                    403,
                     f"Header '{sanitize_for_log(header_name)}' not in allowlist",
                     "TRANSPORT_HEADER_DENIED",
                     action="self_correct",
@@ -1493,7 +1593,8 @@ class ServiceGateway:
             if not constraint:
                 if op.query_deny_unknown:
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Unknown query parameter '{sanitize_for_log(param_name)}'",
                         "CONTRACT_VIOLATION",
                         action="self_correct",
@@ -1507,7 +1608,8 @@ class ServiceGateway:
                 expected = binding_state.bound_values.get(constraint.equals_var, "")
                 if value != expected:
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Query parameter '{sanitize_for_log(param_name)}' does not match bound value",
                         "CONTRACT_VIOLATION",
                         action="self_correct",
@@ -1520,7 +1622,8 @@ class ServiceGateway:
                     int_val = int(value)
                 except (ValueError, TypeError):
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Query parameter '{sanitize_for_log(param_name)}' must be an integer",
                         "CONTRACT_VIOLATION",
                         action="self_correct",
@@ -1531,7 +1634,8 @@ class ServiceGateway:
                 lo, hi = constraint.integer_range[0], constraint.integer_range[1]
                 if int_val < lo or int_val > hi:
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Query parameter '{sanitize_for_log(param_name)}' out of range",
                         "CONTRACT_VIOLATION",
                         action="self_correct",
@@ -1552,7 +1656,8 @@ class ServiceGateway:
             if not constraint:
                 if op.body_deny_unknown:
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Unknown body field '{sanitize_for_log(field_name)}'",
                         "CONTRACT_VIOLATION",
                         action="self_correct",
@@ -1566,7 +1671,8 @@ class ServiceGateway:
                 expected = binding_state.bound_values.get(constraint.equals_var, "")
                 if value != expected:
                     self._deny(
-                        flow, 403,
+                        flow,
+                        403,
                         f"Body field '{sanitize_for_log(field_name)}' does not match bound value",
                         "CONTRACT_VIOLATION",
                         action="self_correct",
@@ -1610,7 +1716,9 @@ class ServiceGateway:
 
         method = flow.request.method
         path = flow.request.path.split("?")[0]
-        service = flow.metadata.get("gateway_service") or self._host_map.get(flow.request.host.lower(), flow.request.host)
+        service = flow.metadata.get("gateway_service") or self._host_map.get(
+            flow.request.host.lower(), flow.request.host
+        )
 
         write_event(
             "gateway.deny",

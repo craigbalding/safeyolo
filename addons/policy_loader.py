@@ -65,6 +65,7 @@ class PolicyLoader:
         self,
         baseline_path: Path | None = None,
         on_reload: Callable[[], None] | None = None,
+        services_dir: Path | None = None,
     ):
         """
         Initialize policy loader.
@@ -72,6 +73,7 @@ class PolicyLoader:
         Args:
             baseline_path: Path to baseline policy file
             on_reload: Optional callback when policies are reloaded
+            services_dir: Path to service definitions directory (for capability route compilation)
         """
         # Import here to avoid circular imports
         from policy_engine import UnifiedPolicy
@@ -79,6 +81,7 @@ class PolicyLoader:
         self._UnifiedPolicy = UnifiedPolicy
 
         self._baseline_path = baseline_path
+        self._services_dir = services_dir
         self._on_reload_callbacks: list[Callable[[], None]] = []
         if on_reload:
             self._on_reload_callbacks.append(on_reload)
@@ -93,6 +96,7 @@ class PolicyLoader:
         self._last_baseline_mtime: float = 0
         self._last_addons_mtime: float = 0
         self._last_agents_mtime: float = 0
+        self._last_services_mtime: float = 0
         self._last_task_mtime: float = 0
 
         # File watcher
@@ -158,6 +162,20 @@ class PolicyLoader:
         log.info(f"Merged addon config from {addons_path}")
         return raw
 
+    def _services_max_mtime(self) -> float:
+        """Get the max mtime across all YAML files in the services directory."""
+        if not self._services_dir or not self._services_dir.is_dir():
+            return 0
+        max_mtime = 0.0
+        for p in self._services_dir.glob("*.yaml"):
+            try:
+                mt = p.stat().st_mtime
+                if mt > max_mtime:
+                    max_mtime = mt
+            except OSError:
+                pass
+        return max_mtime
+
     def _agents_path(self) -> Path | None:
         """Get path to sibling agents.yaml (if it exists)."""
         if not self._baseline_path:
@@ -170,8 +188,10 @@ class PolicyLoader:
     def _merge_agents(self, raw: dict) -> dict:
         """Merge sibling agents.yaml into the policy dict.
 
-        agents.yaml is authoritative for the 'agents' key — if agents.yaml
-        exists and 'agents' is not already in policy.yaml, merge it in.
+        policy.yaml has operator-managed agent config (service grants).
+        agents.yaml has machine-managed runtime state (contract_bindings, grants).
+        When both exist, deep-merge per agent: policy.yaml provides the base,
+        agents.yaml adds runtime keys.
         """
         agents_path = self._agents_path()
         if not agents_path:
@@ -183,6 +203,18 @@ class PolicyLoader:
 
         if "agents" not in raw:
             raw["agents"] = agents_raw
+        else:
+            # Deep merge: for each agent, agents.yaml keys supplement policy.yaml
+            for agent_name, agent_data in agents_raw.items():
+                if not isinstance(agent_data, dict):
+                    continue
+                if agent_name not in raw["agents"]:
+                    raw["agents"][agent_name] = agent_data
+                elif isinstance(raw["agents"][agent_name], dict):
+                    # agents.yaml provides defaults, policy.yaml overrides
+                    merged = dict(agent_data)
+                    merged.update(raw["agents"][agent_name])
+                    raw["agents"][agent_name] = merged
 
         log.info(f"Merged agents config from {agents_path}")
         return raw
@@ -228,6 +260,8 @@ class PolicyLoader:
                 agents_path = self._agents_path()
                 if agents_path:
                     self._last_agents_mtime = agents_path.stat().st_mtime
+                if self._services_dir:
+                    self._last_services_mtime = self._services_max_mtime()
 
                 # Sort permissions by specificity (most specific first)
                 self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
@@ -348,6 +382,12 @@ class PolicyLoader:
                     if agents_path:
                         mtime = agents_path.stat().st_mtime
                         if mtime > self._last_agents_mtime:
+                            reload_baseline = True
+
+                    # Check services dir (triggers baseline reload for capability routes)
+                    if self._services_dir and self._services_dir.is_dir():
+                        svc_mtime = self._services_max_mtime()
+                        if svc_mtime > self._last_services_mtime:
                             reload_baseline = True
 
                     if reload_baseline:
