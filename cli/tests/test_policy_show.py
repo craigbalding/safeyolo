@@ -71,20 +71,28 @@ class TestPolicyShow:
         assert "claude" in result.output
         assert "gmail" in result.output
 
-    def test_agents_not_overridden(self, tmp_config_dir):
-        """If policy.yaml already has 'agents', agents.yaml is ignored."""
+    def test_agents_deep_merged(self, tmp_config_dir):
+        """agents.yaml supplements policy.yaml agents (deep merge per agent)."""
         policy = {
             "hosts": {"example.com": None},
-            "agents": {"inline-agent": {"services": []}},
+            "agents": {"claude": {"services": {"minifuse": "reader"}}},
         }
-        agents = {"file-agent": {"services": [{"name": "svc", "role": "r"}]}}
+        agents = {
+            "claude": {"contract_bindings": [{"service": "minifuse"}]},
+            "file-agent": {"services": [{"name": "svc", "role": "r"}]},
+        }
         _write_yaml(tmp_config_dir / "policy.yaml", policy)
         _write_yaml(tmp_config_dir / "agents.yaml", agents)
 
         result = runner.invoke(app, ["policy", "show"])
         assert result.exit_code == 0
-        assert "inline-agent" in result.output
-        assert "file-agent" not in result.output
+        # policy.yaml agent preserved
+        assert "claude" in result.output
+        assert "reader" in result.output
+        # agents.yaml-only agent merged in
+        assert "file-agent" in result.output
+        # contract_bindings from agents.yaml merged into claude
+        assert "contract_bindings" in result.output
 
     def test_section_filter(self, tmp_config_dir):
         """--section filters to a single top-level key."""

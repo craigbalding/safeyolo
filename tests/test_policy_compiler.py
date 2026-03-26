@@ -406,10 +406,7 @@ scan_patterns: []
         assert len(policy.permissions) > 0
 
         # Check credential routing works
-        cred_perms = [
-            p for p in policy.permissions
-            if p.action == "credential:use" and "openai" in str(p.resource)
-        ]
+        cred_perms = [p for p in policy.permissions if p.action == "credential:use" and "openai" in str(p.resource)]
         assert len(cred_perms) == 1
         assert cred_perms[0].effect == "allow"
 
@@ -537,7 +534,9 @@ class TestCompileGateway:
         raw = {
             "agents": {
                 "my-agent": {
-                    "services": {"gmail": {"capability": "search_headers", "token": "gmail-cred", "account": "operator"}},
+                    "services": {
+                        "gmail": {"capability": "search_headers", "token": "gmail-cred", "account": "operator"}
+                    },
                 },
             },
         }
@@ -571,10 +570,12 @@ class TestCompileGateway:
         raw = {
             "agents": {
                 "a1": {"services": {"gmail": {"role": "readonly", "token": "g"}}},
-                "a2": {"services": {
-                    "slack": {"role": "poster", "token": "s"},
-                    "minifuse": {"role": "reader", "token": "m"},
-                }},
+                "a2": {
+                    "services": {
+                        "slack": {"role": "poster", "token": "s"},
+                        "minifuse": {"role": "reader", "token": "m"},
+                    }
+                },
             },
         }
         gateway = compile_gateway(raw)
@@ -926,15 +927,19 @@ scan_patterns: []
 """)
 
         agents = tmp_path / "agents.yaml"
-        agents.write_text(yaml.dump({
-            "boris": {
-                "template": "claude-code",
-                "folder": "/tmp/proj",
-                "services": {
-                    "gmail": {"role": "readonly", "token": "g"},
-                },
-            },
-        }))
+        agents.write_text(
+            yaml.dump(
+                {
+                    "boris": {
+                        "template": "claude-code",
+                        "folder": "/tmp/proj",
+                        "services": {
+                            "gmail": {"role": "readonly", "token": "g"},
+                        },
+                    },
+                }
+            )
+        )
 
         loader = PolicyLoader(baseline_path=baseline)
         policy = loader.baseline
@@ -966,13 +971,17 @@ scan_patterns: []
 
         # Create agents.yaml
         agents = tmp_path / "agents.yaml"
-        agents.write_text(yaml.dump({
-            "boris": {
-                "services": {
-                    "gmail": {"role": "readonly", "token": "g"},
-                },
-            },
-        }))
+        agents.write_text(
+            yaml.dump(
+                {
+                    "boris": {
+                        "services": {
+                            "gmail": {"role": "readonly", "token": "g"},
+                        },
+                    },
+                }
+            )
+        )
 
         # Simulate watcher: force reload since agents.yaml now exists
         loader._load_baseline()
@@ -1087,15 +1096,23 @@ scan_patterns: []
         engine = PolicyEngine(baseline_path=baseline)
         # collection for agent → allow
         decision = engine.evaluate_risky_route(
-            service="gmail", agent="boris", account="agent",
-            tactics=["collection"], enables=[], irreversible=False,
+            service="gmail",
+            agent="boris",
+            account="agent",
+            tactics=["collection"],
+            enables=[],
+            irreversible=False,
         )
         assert decision.effect == "allow"
 
         # exfiltration → prompt
         decision = engine.evaluate_risky_route(
-            service="gmail", agent="boris", account="agent",
-            tactics=["exfiltration"], enables=[], irreversible=False,
+            service="gmail",
+            agent="boris",
+            account="agent",
+            tactics=["exfiltration"],
+            enables=[],
+            irreversible=False,
         )
         assert decision.effect == "prompt"
 
@@ -1117,8 +1134,9 @@ class TestCompileCapabilityRoutes:
         svc_dir.mkdir(exist_ok=True)
         (svc_dir / "minifuse.yaml").write_text(service_yaml)
         # Init registry so compiler can look up services
-        from service_loader import ServiceRegistry
         import service_loader
+        from service_loader import ServiceRegistry
+
         registry = ServiceRegistry(svc_dir)
         registry.load()
         service_loader._registry = registry
@@ -1128,7 +1146,9 @@ class TestCompileCapabilityRoutes:
         """Capability without contract emits raw routes as gateway:request."""
         from policy_compiler import compile_gateway
 
-        svc_dir = self._make_service_dir(tmp_path, """
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
 schema_version: 1
 name: minifuse
 auth:
@@ -1142,7 +1162,8 @@ capabilities:
         path: "/v1/feeds"
       - methods: [GET]
         path: "/v1/entries"
-""")
+""",
+        )
         raw = {
             "agents": {
                 "claude": {
@@ -1168,7 +1189,9 @@ capabilities:
         """Capability with contract + binding resolves operations."""
         from policy_compiler import compile_gateway
 
-        svc_dir = self._make_service_dir(tmp_path, """
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
 schema_version: 1
 name: minifuse
 auth:
@@ -1207,7 +1230,8 @@ capabilities:
       enforcement:
         request_shape: enforced
         transport_hygiene: enforced
-""")
+""",
+        )
         raw = {
             "agents": {
                 "claude": {
@@ -1239,7 +1263,9 @@ capabilities:
         """Capability with contract but no binding → no permissions emitted."""
         from policy_compiler import compile_gateway
 
-        svc_dir = self._make_service_dir(tmp_path, """
+        svc_dir = self._make_service_dir(
+            tmp_path,
+            """
 schema_version: 1
 name: minifuse
 auth:
@@ -1268,7 +1294,8 @@ capabilities:
       enforcement:
         request_shape: enforced
         transport_hygiene: enforced
-""")
+""",
+        )
         raw = {
             "agents": {
                 "claude": {
@@ -1319,7 +1346,9 @@ capabilities:
         """Full compile_policy flow includes gateway:request permissions."""
         from policy_compiler import compile_policy
 
-        svc_dir = self._make_service_dir(tmp_path, """
+        self._make_service_dir(
+            tmp_path,
+            """
 schema_version: 1
 name: minifuse
 auth:
@@ -1331,7 +1360,8 @@ capabilities:
     routes:
       - methods: [GET]
         path: "/v1/feeds"
-""")
+""",
+        )
         raw = {
             "hosts": {"api.minifuse.io": {"service": "minifuse"}},
             "agents": {

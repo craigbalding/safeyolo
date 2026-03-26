@@ -74,11 +74,11 @@ def _merge_siblings(raw: dict, policy_path: Path) -> dict:
     return raw
 
 
-def _fetch_compiled_policy() -> dict:
+def _fetch_compiled_policy(raw: dict, policy_path: Path) -> dict:
     """Fetch the compiled policy from the running proxy's PDP.
 
-    Uses the admin API to get the live policy — this is the single source
-    of truth, not a local recompilation.
+    Tries the admin API first (live policy = single source of truth).
+    Falls back to local compilation if proxy isn't running.
     """
     from ..api import AdminAPI, APIError
 
@@ -86,10 +86,41 @@ def _fetch_compiled_policy() -> dict:
         api = AdminAPI()
         data = api._request("GET", "/admin/policy/baseline")
         return data.get("baseline", data)
-    except APIError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        console.print("Is SafeYolo running? Try [bold]safeyolo status[/bold]")
-        raise typer.Exit(1)
+    except APIError:
+        # Proxy not running — fall back to local compilation
+        return _compile_locally(raw, policy_path)
+
+
+def _compile_locally(raw: dict, policy_path: Path) -> dict:
+    """Compile policy locally (fallback when proxy isn't running)."""
+    import sys
+    import types
+
+    addons_dir = Path(__file__).parent.parent.parent.parent.parent / "addons"
+
+    stub = types.ModuleType("utils")
+    stub.sanitize_for_log = lambda s: s  # type: ignore[attr-defined]
+    prev_utils = sys.modules.get("utils")
+    prev_compiler = sys.modules.pop("policy_compiler", None)
+    prev_service_loader = sys.modules.pop("service_loader", None)
+    sys.modules["utils"] = stub
+    sys.path.insert(0, str(addons_dir))
+    try:
+        from policy_compiler import compile_policy
+
+        return compile_policy(raw)
+    finally:
+        sys.path.pop(0)
+        if prev_utils is not None:
+            sys.modules["utils"] = prev_utils
+        else:
+            sys.modules.pop("utils", None)
+        if prev_compiler is not None:
+            sys.modules["policy_compiler"] = prev_compiler
+        if prev_service_loader is not None:
+            sys.modules["service_loader"] = prev_service_loader
+        else:
+            sys.modules.pop("service_loader", None)
 
 
 @policy_app.command()
@@ -118,8 +149,8 @@ def show(
     result = _merge_siblings(raw, policy_path)
 
     if compiled:
-        result = _fetch_compiled_policy()
-        console.print("[dim]# Compiled IAM format (live from PDP)[/dim]")
+        result = _fetch_compiled_policy(result, policy_path)
+        console.print("[dim]# Compiled IAM format (as evaluated by PDP)[/dim]")
     else:
         console.print("[dim]# Merged from: policy.yaml + addons.yaml + agents.yaml[/dim]")
 
