@@ -10,13 +10,11 @@
 
 Most agent sandbox projects focus on host isolation: run the agent in a locked-down container, restrict the filesystem, limit network access.
 
-That helps, but it does not solve the real control problem.
+That helps, but it doesn't solve the real problem.
 
-Agents still need to reach external services. They still need credentials. They still make dynamic requests for access. And a human operator still needs a trustworthy way to decide what should be allowed.
+Agents need to reach your external services — your email, your project tracker, your cloud APIs. But an agent with access to your inbox can read password reset emails, 2FA codes, and security notifications. An agent with a cloud API key may be able to create more keys — giving itself or an attacker silent, ongoing access. In error or if prompt-injected, these are paths to account takeover.
 
-SafeYolo is the trusted control point between the operator and the agent.
-
-It sits in the path between agents and external systems, enforcing scoped access, protecting credentials, and presenting decisions in plain English rather than infrastructure jargon.
+SafeYolo gives you scoped control over what your agents can access, so they get what they need to do their job and nothing more.
 
 Built on the fantastic [mitmproxy](https://mitmproxy.org/) project.
 
@@ -44,12 +42,12 @@ The last argument (`~/code`) is where your project files live on the host - the 
 
 ## Key Features
 
-- **One-command agent setup** - pre-configured templates for Claude Code and Codex
-- **Credential routing** - OpenAI keys only reach `api.openai.com`, Anthropic keys only reach `api.anthropic.com`
-- **Human-in-the-loop** - credentials to new destinations require one-time approval
-- **Rate limiting** - prevent runaway loops from harming your IP reputation
-- **Audit trail** - every request logged with decisions and correlation
-- **Service gateway** - agents access external APIs (Gmail, Slack, etc.) without seeing real credentials
+- **One-command agent setup** — pre-configured templates for Claude Code and Codex
+- **Scoped API access** — grant agents specific capabilities per service, block everything else
+- **Credential isolation** — agents access your services without ever seeing your keys
+- **Human-in-the-loop** — risky actions need your approval via `safeyolo watch`
+- **Rate limiting** — prevent runaway loops from harming your IP reputation
+- **Audit trail** — every request logged with decisions and correlation
 
 ## Multiple Agents
 
@@ -72,49 +70,33 @@ safeyolo agent run work       # Each agent gets isolated policy
 
 If you've already authenticated on your host (via `claude` or `codex`), credentials are mounted automatically.
 
-## Approval Workflow
+## Controlling Agent Access
 
-SafeYolo requires operator approval for two types of events:
+Grant agents access to specific services with specific capabilities. Your credentials stay in SafeYolo's vault — agents make requests, SafeYolo handles authentication.
 
-**Credential routing** — when a credential heads to an unexpected destination:
+```bash
+# Authorize an agent to access Gmail with a specific capability
+safeyolo agent authorize boris gmail --capability read_agent_folder --token-env GMAIL_TOKEN
+```
 
-1. Agent gets HTTP 428 with details
-2. You see the event in `safeyolo watch`
-3. Approve or deny interactively
-4. Approved credentials are remembered
-
-**Risky route approval** — when an agent calls a service gateway route tagged as risky (e.g., deleting data, modifying forwarding rules):
-
-1. Agent gets HTTP 428 with reflection prompt
-2. You see the route details, ATT&CK tactics, and risk signals in `safeyolo watch`
-3. Approve a one-time grant (consumed after a successful response) or deny
-4. Grant bypasses PDP for that specific method + path
+`safeyolo watch` is your real-time control surface. When an agent needs access to a service, you see it here:
 
 ```
 $ safeyolo watch
 
-╭─ Credential Blocked 14:32:15 ─────────────────────────────╮
-│ Credential   anthropic                                    │
-│ Destination  api.example.com                              │
-│ Reason       destination_mismatch                         │
+╭─ boris requests authenticated access 14:32:15 ────────────╮
+│ Service      gmail                                        │
+│ Capability   read_agent_folder                             │
+│                                                           │
+│ This will permanently bind a credential to this agent.    │
 ├───────────────────────────────────────────────────────────┤
-│ [A]pprove | [D]eny | [S]kip                               │
+│ [A]uthorize · [D]eny · [L]ater                            │
 ╰───────────────────────────────────────────────────────────╯
 ```
 
-**Try it yourself:** Run `safeyolo demo` for a guided tour of the security features. Run `safeyolo watch` in a second terminal to see approvals appear in real-time.
+Within a granted capability, destructive or sensitive actions still need your approval — scoped to once, for the session, or permanently.
 
-## Service Gateway
-
-Agents can call external APIs (Gmail, Slack, etc.) without ever seeing the real credentials. SafeYolo stores tokens in its vault and injects them at the proxy layer. Risky routes (tagged with ATT&CK tactics like `exfiltration` or `impact`) require operator approval via `safeyolo watch`.
-
-```bash
-# Authorize an agent to access Gmail with a specific capability
-safeyolo agent authorize boris gmail --capability read_and_send --token-env GMAIL_TOKEN
-
-# See the merged policy
-safeyolo policy show --section agents
-```
+**Try it yourself:** Run `safeyolo demo` for a guided tour, with `safeyolo watch` in a second terminal.
 
 ---
 
@@ -134,20 +116,12 @@ claude
 
 ## Trust Model
 
-SafeYolo is a TLS-intercepting proxy. It can only protect credentials it can see.
-
-**What SafeYolo provides:**
-- Sandbox Mode runs agents in unprivileged containers with no direct internet
-- No Docker socket in containers - all Docker operations run from the CLI on your host
-- Credentials are fingerprinted (HMAC), never logged in cleartext
-- Container security properties (non-root, no capabilities, seccomp) verified by [CI tests](tests/blackbox/)
-
 **What SafeYolo does NOT do:**
-- Defend against determined adversaries running arbitrary code
-- Detect or prevent prompt injection
+- Eliminate prompt injection — but it reduces the blast radius by constraining what a compromised agent can access
+- Defend against determined adversaries with arbitrary code execution on the host
 - Replace application-layer auth
 
-**Don't trust pre-built images?** Build locally: `docker build -t safeyolo .` - digest-pinned base, minimal deps, runs non-root. See [SECURITY.md](SECURITY.md) for full container security details.
+See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, and enforcement details.
 
 ---
 
