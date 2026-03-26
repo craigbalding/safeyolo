@@ -71,6 +71,11 @@ credentials:
     patterns:
       - "gh[ps]_[a-zA-Z0-9]{36}"
     headers: [authorization]
+  safeyolo_gateway:
+    patterns:
+      - "sgw_[a-f0-9]{64}"
+    headers: [authorization, x-auth-token, x-api-key]
+    allowed_hosts: []
 
 # =============================================================================
 # REQUIRED ADDONS (cannot be disabled)
