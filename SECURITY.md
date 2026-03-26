@@ -1,235 +1,90 @@
 # Security
 
-SafeYolo is security software. This document outlines our security principles and how they inform architectural decisions.
+SafeYolo is a human-centric security control point for AI agents.
 
-## Principles
+Agents need to be controlled to prevent accidents and limit the blast radius of prompt-injected or malicious agents. SafeYolo sits between them and external systems, giving you scoped control over access to both your local data and remote services — failing closed when anything is ambiguous or out of policy.
 
-### 1. Minimize Trust
-
-**Principle:** Grant the minimum access required. Don't trust what you don't have to.
-
-**In practice:**
-- SafeYolo container has no Docker socket access. Service discovery uses static config written by the CLI, not runtime Docker queries. ([`service_discovery.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/service_discovery.py))
-- Agents run in isolated networks with no direct internet (`internal: true`). Bypass attempts fail rather than leak.
-- Admin API requires bearer token auth for all mutating operations, using `secrets.compare_digest()` to prevent timing attacks. ([`admin_api.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/admin_api.py))
-- Admin API ports bind to localhost only (`127.0.0.1:9090`), not all interfaces. ([`docker-compose.yml`](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml))
-- Container runs as non-root via host UID/GID mapping (`user: "${SAFEYOLO_UID}:${SAFEYOLO_GID}"`).
-
-### 2. Fail Closed
-
-**Principle:** When uncertain, block. False positives are recoverable; credential leaks are not.
-
-**In practice:**
-- Unknown credentials trigger approval workflow, not silent passthrough. PolicyEngine evaluates `effect: prompt` permissions.
-- Destination mismatches return HTTP 428 with actionable feedback, not silent drops. ([`credential_guard.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/credential_guard.py))
-- Circuit breaker fails fast on unhealthy upstreams. ([`circuit_breaker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/circuit_breaker.py))
-- Policy validation uses Pydantic `model_validate()`. Invalid policies are rejected, not silently ignored. ([`policy_loader.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_loader.py))
-- Startup script verifies network guard is in block mode, exits if verification fails. ([`start-safeyolo.sh`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh))
-- Test suite asserts container does not run as root. ([`test_policy_loader.py`](https://github.com/craigbalding/safeyolo/blob/master/tests/test_policy_loader.py))
-
-### 3. Never Store Secrets
-
-**Principle:** Credentials should not appear in logs, policies, or anywhere on disk.
-
-**In practice:**
-- Credentials are fingerprinted via HMAC-SHA256 (`hmac_fingerprint()`). Only the fingerprint is stored/logged. ([`utils.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py))
-- Policy files use human-readable credential types (`openai`, `anthropic`), never raw tokens. (`~/.safeyolo/policy.yaml`)
-- Log entries include fingerprint for correlation, never the credential itself.
-- HMAC secret uses atomic write with secure permissions (`O_CREAT|O_EXCL`, mode 0o600) via `load_hmac_secret()`. ([`utils.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py))
-- Admin API token files created with mode 0o600. ([`start-safeyolo.sh`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh))
-
-### 4. Destination-First Policy
-
-**Principle:** Define what credentials can access each endpoint, not what endpoints each credential can access.
-
-**Why destination-first:**
-- **IAM-aligned:** Resource = thing being protected (endpoint). Condition = what can access it.
-- **Prevents format collision:** Different services may use same credential format. Destination-first ensures approving `api.service-a.com` for unknown credentials doesn't accidentally allow access to `api.service-b.com`.
-- **Flexible approval:** Supports both type-based (`openai:*` - good for key rotation) and HMAC-based (`hmac:a1b2c3d4` - specific credential only).
-
-**In practice:**
-- Policy resource = destination pattern (`api.openai.com/*`)
-- Policy condition.credential = what can access it (`["openai:*"]` or `["hmac:abc123"]`)
-- Unknown credentials can be approved per-destination with HMAC precision
-
-### 5. Defense in Depth
-
-**Principle:** Multiple independent checks. Don't rely on a single layer.
-
-**In practice:**
-- Tier 1: Pattern matching for known credential formats (OpenAI, Anthropic, GitHub, etc.)
-- Tier 2: Shannon entropy analysis (`calculate_shannon_entropy()`) catches unknown high-entropy secrets in auth headers. ([`detection/credentials.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/detection/credentials.py))
-- Homoglyph detection (`detect_homoglyph_attack()`) flags mixed-script domain attacks (`api.οpenai.com` with Cyrillic 'ο'). ([`network_guard.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/network_guard.py))
-- GCRA rate limiting (`GCRABudgetTracker`) prevents runaway loops independent of credential checks. ([`budget_tracker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/budget_tracker.py))
-- Thread-safe operations across all stateful addons via Lock/RLock. ([`metrics.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/metrics.py), [`policy_loader.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_loader.py))
-- `blocked_by` metadata coordinates between addons in the chain. ([`base.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/base.py))
-
-### 6. The Eager Intern Problem
-
-**Principle:** Agents aren't malicious - they're like an inexperienced but energetic intern. Confident, fast, helpful, and occasionally wrong in ways that matter.
-
-An intern might email the wrong client, cc the wrong list, or paste credentials into a public Slack channel. Not malicious, just moving fast without the experience to know what can go wrong. AI agents have the same failure mode: hallucinating an endpoint, confusing `api.openai.com` with `api.openai.com.example.io`, or helpfully sending your GitHub token to a diagnostics endpoint.
-
-**In practice:**
-- Sandbox Mode enforces network isolation because agents will find creative ways around process-level controls - not to bypass you, but because they're problem-solving
-- HTTP 428 responses are machine-readable so agents can self-correct ("oh, wrong endpoint") without human intervention for obvious mistakes
-- Humans approve policy changes because "are you sure?" only works if someone experienced is asking
-- Try Mode bypass is documented, not hidden - know your intern's access level
-
-### 7. Audit Everything
-
-**Principle:** Every decision should be traceable. When something goes wrong, you need to know what happened.
-
-**In practice:**
-- All requests logged to JSONL with unique request IDs (uuid4 prefix). ([`request_id.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_id.py))
-- Security decisions include reasoning: credential type, destination, expected hosts, decision.
-- `blocked_by` field in logs shows which addon blocked the request. ([`request_logger.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_logger.py))
-- Logs are structured for grep/jq analysis, not just human reading.
-
-### 8. Minimal Attack Surface
-
-**Principle:** Reduce what can be exploited. Every package, port, and capability is a potential attack vector.
-
-**In practice:**
-- Single OS package in container (tmux only). No curl, procps, net-tools, iproute2. ([`Dockerfile`](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile))
-- `--no-install-recommends` prevents transitive package bloat.
-- Addons are passive - they inspect traffic but never initiate network connections. No httpx/requests/aiohttp imports.
-- Stream large bodies (10MB threshold) prevents OOM from media downloads. ([`start-safeyolo.sh`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh))
-- Health checks use Python httpx instead of curl - one less binary in image.
-- Non-root execution set at runtime via docker-compose, not baked into image. ([`docker-compose.yml`](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml))
-
-## Architecture Boundaries
+## Security Model
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ HOST (trusted)                                          │
-│                                                         │
-│  CLI: manages config, starts containers, no secrets     │
-│  Config: ~/.safeyolo/ - policies, rules, logs           │
-│                                                         │
-├─────────────────────────────────────────────────────────┤
-│ SAFEYOLO CONTAINER (semi-trusted)                       │
-│                                                         │
-│  Sees all traffic including credentials in transit      │
-│  Cannot access Docker, host filesystem (except mounts)  │
-│  Admin API on :9090 (token-protected)                   │
-│                                                         │
-├─────────────────────────────────────────────────────────┤
-│ AGENT CONTAINERS (untrusted)                            │
-│                                                         │
-│  Network-isolated, only route is through SafeYolo       │
-│  Cannot reach internet directly                         │
-│  Cannot reach other agents                              │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│ HOST (trusted)                                   │
+│  You: policy, approvals, config                  │
+├──────────────────────────────────────────────────┤
+│ SAFEYOLO (enforcement point)                     │
+│  Policy evaluation, access control, credential   │
+│  protection, capability contracts, audit          │
+├──────────────────────────────────────────────────┤
+│ AGENT CONTAINERS (untrusted)                     │
+│  Network-isolated, no direct internet,            │
+│  no inter-agent access                            │
+├──────────────────────────────────────────────────┤
+│ EXTERNAL SERVICES                                │
+│  Reachable only through SafeYolo policy           │
+└──────────────────────────────────────────────────┘
 ```
 
-## Known Limitations
+- **Host** is the trust root. You run the CLI, own config, and control the Docker runtime.
+- **SafeYolo** enforces your policy — no Docker socket, no host filesystem access beyond mounts, runs non-root.
+- **Agent containers** have no direct internet access in Sandbox Mode. Their only route to the outside world is through SafeYolo's policy enforcement.
+- **External services** are reachable only if policy explicitly permits the destination.
 
-We're explicit about what SafeYolo does NOT protect against:
+## Core Security Properties
 
-| Limitation | Status | Notes |
-|------------|--------|-------|
-| **Try Mode bypass** | By design | Agents can unset proxy vars or open direct sockets. Use Sandbox Mode for autonomous agents. |
-| **Credentials in URL query params** | Off by default | Enable with `--set credguard_scan_urls=true`. Performance tradeoff. |
-| **Credentials in request bodies** | Off by default | Enable with `--set credguard_scan_bodies=true`. Performance and false-positive tradeoff. |
-| **Credentials in URL path segments** | Not implemented | `/api/sk-proj-abc123/resource` - rare pattern, not currently scanned. |
-| **Prompt injection** | Out of scope (v1) | SafeYolo operates at network layer, not prompt layer. |
-| **Non-HTTP exfiltration** | Out of scope (v1) | DNS tunneling, ICMP, etc. Use network-level controls if needed. |
-| **Compromised ~/.safeyolo/** | Out of scope (v1) | If an attacker controls your config directory, all bets are off. |
+### Minimize trust
 
-## Container Security
+Grant the minimum access required. Agents run in isolated networks. The SafeYolo container has no Docker socket. Admin API binds to localhost only and requires token auth. The container runs as the host user's UID/GID, not root.
 
-**Don't trust pre-built images?** Build locally from source:
+### Fail closed
 
-```bash
-docker build -t safeyolo .
-```
+When uncertain, block. Unknown credentials trigger an approval workflow, not silent passthrough. Destination mismatches return HTTP 428 with actionable feedback. Invalid policies are rejected at load time. The startup script verifies block mode before accepting traffic.
 
-### Why You Can Verify
+### Human-governed access
 
-| Aspect | Implementation | Verification |
-|--------|----------------|--------------|
-| **Base image** | `python:3.13-slim` pinned by SHA256 digest | [Dockerfile](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile) |
-| **OS packages** | Single package: tmux (no curl, no network tools) | [Dockerfile](https://github.com/craigbalding/safeyolo/blob/master/Dockerfile) |
-| **Python deps** | Locked with hashes in `uv.lock` | [uv.lock](https://github.com/craigbalding/safeyolo/blob/master/uv.lock) |
-| **No Docker socket** | Container cannot access Docker API | [docker-compose.yml](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) |
-| **Non-root** | Runs as host UID/GID via compose | [docker-compose.yml](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) |
-| **Read-only root** | `read_only: true` with tmpfs for /tmp | [docker-compose.yml](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) |
+You decide what gets through. SafeYolo enforces your decisions — agents request access, you approve or deny, and the policy builds up from there.
 
-### What the Container Can Access
+Think of agents like an eager intern: confident, fast, helpful, and occasionally wrong in ways that matter. An intern might email the wrong client or paste credentials into a public channel — not malicious, just moving fast without experience. AI agents have the same failure mode. SafeYolo ensures a human is in the loop for trust decisions, while giving agents clear machine-readable feedback (HTTP 428) so they can self-correct obvious mistakes without operator intervention.
 
-- **Mounted volumes only:** `~/.safeyolo/` for config, logs, certs
-- **Network:** Listens on configured ports (8080, 9090 by default)
-- **No host filesystem:** Cannot read/write outside mounted paths
-- **No Docker socket:** Neither proxy nor agent containers have `/var/run/docker.sock` mounted - all Docker operations are performed by the CLI on your host
+Service capabilities scope what an agent can do within a service. Risky routes (destructive actions, data export, privilege changes) require explicit operator approval, with irreversible actions demanding typed confirmation. Grants can be scoped to once, session, or remembered.
 
-### Automated Security Testing
+### Auditability
 
-The [blackbox test suite](tests/blackbox/) runs container security verification on every CI build using [CDK (Container Development Kit)](https://github.com/cdk-team/CDK):
+Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. The `watch` command gives operators a real-time view of all decisions.
 
-| Test | Verifies |
-|------|----------|
-| Non-root execution | UID/GID != 0 |
-| No privileged mode | `--privileged` not set |
-| No dangerous capabilities | SYS_ADMIN, SYS_MODULE, DAC_READ_SEARCH absent |
-| Seccomp enabled | Syscall filtering active |
-| No Docker socket | `/var/run/docker.sock` not mounted |
-| Network isolation | Direct internet access blocked, DNS blocked, proxy-only egress |
+## Enforcement Layers
 
-See [`test_runtime_security.py`](tests/blackbox/runner/test_runtime_security.py) and [`test_sandbox_isolation.py`](tests/blackbox/runner/test_sandbox_isolation.py).
+**Granting agents access to your online data.**
+Agents call APIs on your behalf, but not every operation carries the same risk. Services are described in terms of capabilities — named groups of related operations like "manage categories" or "read feeds." You grant specific capabilities to each agent; everything else in that service is off-limits. Within a granted capability, a contract constrains exactly which endpoints, methods, and parameters the agent can use. Actions flagged as risky — deleting data, bulk export, changing permissions — require your approval, which you can scope to once, for the session, or permanently. Service files are generated from API specifications and ship with SafeYolo — you don't need to write them yourself, but you can if you like. If a service you use isn't covered yet, open a [GitHub issue](https://github.com/craigbalding/safeyolo/issues) or submit a PR.
 
-### Build Verification
+**Credential isolation.**
+Agents shouldn't hold the keys to your accounts. SafeYolo lets agents access your services without ever seeing your credentials — it injects credentials at the proxy layer based on policy, so agents make requests and SafeYolo handles authentication. Your keys never enter the agent's environment.
 
-```bash
-# Build from source
-docker build -t safeyolo:local .
+**Network and transport controls.**
+Agents have no direct internet access in Sandbox Mode. All HTTP traffic routes through SafeYolo. Non-canonical requests (path tricks, duplicate headers, encoding exploits) are rejected before policy evaluation. Homoglyph detection catches mixed-script domain spoofing. GCRA rate limiting prevents runaway loops.
 
-# Verify digest matches Dockerfile
-docker inspect safeyolo:local --format='{{.Config.Image}}'
+**Audit trail.**
+Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
 
-# Check no unexpected SUID binaries
-docker run --rm safeyolo:local find / -perm -4000 2>/dev/null
+**Credential detection.**
+As a safety net, SafeYolo also detects credentials in transit via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256 — only the fingerprint is stored or logged, never the raw value. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
 
-# Verify runs as non-root
-docker run --rm safeyolo:local id
-```
+## Out of Scope
 
-## Dependency Trust
+| Limitation | Notes |
+|------------|-------|
+| **Try Mode bypass** | By design — agents can unset proxy vars. Use Sandbox Mode for autonomous agents. |
+| **Prompt injection** | SafeYolo reduces prompt injection risk — through agent reflection prompts and limiting risky routes to prevent account takeover and credential theft — but doesn't eliminate it. |
+| **Non-HTTP exfiltration** | In Sandbox Mode, DNS is resolved by SafeYolo (no direct DNS) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
+| **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
+| **Credentials in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned. |
+| **Credentials in query/body** | Off by default. Enable with `--set credguard_scan_urls=true` / `credguard_scan_bodies=true`. |
 
-We evaluate dependencies for security posture. Last reviewed: 2026-01-05.
-
-### Direct Dependencies (requirements/base.txt)
-
-| Package | Trust | Notes |
-|---------|-------|-------|
-| mitmproxy | HIGH | Core dependency. Security-focused project, well-audited. |
-| httpx | HIGH | Encode org. Widely used async HTTP client. |
-| pydantic | HIGH | Pydantic org. Very popular validation library. |
-| pyyaml | HIGH | yaml.org. Industry standard YAML parser. |
-| yarl | HIGH | aio-libs (Andrew Svetlov). URL parsing. |
-| tenacity | HIGH | Julien Danjou. Retry library. |
-| confusable-homoglyphs | MEDIUM | Homoglyph detection. Adopted by new maintainer at [sr.ht](https://sr.ht/~valhalla/confusable_homoglyphs/) in 2024. Latest: 3.3.1. No known CVEs. Already isolated with try/except fallback. |
-
-### Transitive Dependencies (via mitmproxy)
-
-| Package | Trust | Notes |
-|---------|-------|-------|
-| publicsuffix2 | MEDIUM | Last release Dec 2019. No CVEs. Works fine, just won't have new TLDs. |
-| ldap3 | MEDIUM | LDAP library. Used by mitmproxy for NTLM/auth features we don't use. |
-| pyperclip | MEDIUM | Clipboard access. Used by mitmproxy's interactive console. Low risk in container. |
-| kaitaistruct | MEDIUM | Binary protocol parsing. Kaitai Project. |
-| cryptography, tornado, flask, jinja2 | HIGH | Well-maintained. All installed versions are patched against known CVEs. |
-
-### Vulnerability Scanning
-
-All installed package versions verified clean against [OSV.dev](https://osv.dev) database. Many packages (tornado, flask, jinja2, cryptography) had vulnerabilities in older versions - all patched in our pinned versions.
-
-## For Security Researchers
+## Reporting Security Issues
 
 We welcome security research on SafeYolo.
 
 **What we're looking for:**
-- Credential bypass techniques (ways to leak credentials past SafeYolo)
+- Credential bypass techniques (leaking credentials past SafeYolo)
 - Policy isolation breaks (Agent A accessing Agent B's approvals)
 - Admin API auth bypass
 - Log injection or forgery
@@ -240,38 +95,16 @@ We welcome security research on SafeYolo.
 - Or open a GitHub issue if the finding is not sensitive
 
 **What to expect:**
-- No financial rewards (we're not funded for bounties)
-- No CVEs until the project matures (we're pre-1.0)
+- No financial rewards (not funded for bounties)
+- No CVEs until the project matures (pre-1.0)
 - Acknowledgment in this document for credible finds
-- We genuinely appreciate fix suggestions and PRs - not expected, but welcomed
+- Fix suggestions and PRs welcomed
 
 **Current acknowledgments:**
-- (None yet - be the first!)
+- (None yet — be the first!)
 
-## Code Pointers
+## Further Reading
 
-Addons use standalone imports (e.g., `from utils import ...`) matching mitmproxy's `-s` execution model.
-
-<!-- Base URL for code links: https://github.com/craigbalding/safeyolo/blob/master -->
-
-| Area | Location | Notes |
-|------|----------|-------|
-| Policy engine | [`policy_engine.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_engine.py) | Unified IAM-style policy evaluation |
-| Destination-first matching | [`policy_engine.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_engine.py) | `evaluate_credential()` - resource=destination, condition.credential=what can access |
-| Credential detection | [`credential_guard.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/credential_guard.py) | Pattern matching, entropy analysis |
-| Credential type mapping | [`detection/credentials.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/detection/credentials.py) | `detect_credential_type()` - maps patterns to types |
-| HMAC fingerprinting | [`utils.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py) | `hmac_fingerprint()` - never stores raw credentials |
-| Atomic secret write | [`utils.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/utils.py) | `load_hmac_secret()` - O_CREAT\|O_EXCL with 0o600 |
-| Shannon entropy | [`detection/credentials.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/detection/credentials.py) | `calculate_shannon_entropy()` - high-entropy secret detection |
-| Condition matching | [`policy_engine.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/policy_engine.py) | `Condition` class with `matches()` - type-based and HMAC-based credential matching |
-| Budget tracking | [`budget_tracker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/budget_tracker.py) | `GCRABudgetTracker` - rate limiting via GCRA |
-| Homoglyph detection | [`network_guard.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/network_guard.py) | `detect_homoglyph_attack()` - mixed-script domain spoofing |
-| Circuit breaker | [`circuit_breaker.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/circuit_breaker.py) | Fail-fast for unhealthy upstreams |
-| Service discovery | [`service_discovery.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/service_discovery.py) | Static config, no Docker socket |
-| Admin API auth | [`admin_api.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/admin_api.py) | `_check_auth()` - bearer token with `secrets.compare_digest()` |
-| Base addon class | [`base.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/base.py) | `SecurityAddon` - stats, blocking, decision logging |
-| Request ID | [`request_id.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_id.py) | UUID correlation for audit trail |
-| Request logging | [`request_logger.py`](https://github.com/craigbalding/safeyolo/blob/master/addons/request_logger.py) | JSONL audit trail with `blocked_by` field |
-| Network isolation | [`cli/templates/`](https://github.com/craigbalding/safeyolo/tree/master/cli/src/safeyolo/templates) | Docker compose templates for agent containers |
-| Non-root execution | [`docker-compose.yml`](https://github.com/craigbalding/safeyolo/blob/master/docker-compose.yml) | Host UID/GID mapping |
-| Startup verification | [`start-safeyolo.sh`](https://github.com/craigbalding/safeyolo/blob/master/scripts/start-safeyolo.sh) | Block mode verification |
+- [Security verification](docs/security-verification.md) — container hardening, dependency trust, automated testing, build verification
+- [Architecture](docs/ARCHITECTURE.md)
+- [Service gateway v2 design](docs/service-gateway-v2-design.md)

@@ -6,7 +6,17 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11693/badge)](https://www.bestpractices.dev/projects/11693)
 [![CodeQL](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml)
 
-**Secure sandbox for AI coding agents.** Run Claude Code or Codex with network isolation, credential protection, and audit logging.
+**SafeYolo is a human-centric safety layer for AI agents.**
+
+Most agent sandbox projects focus on host isolation: run the agent in a locked-down container, restrict the filesystem, limit network access.
+
+That helps, but it does not solve the real control problem.
+
+Agents still need to reach external services. They still need credentials. They still make dynamic requests for access. And a human operator still needs a trustworthy way to decide what should be allowed.
+
+SafeYolo is the trusted control point between the operator and the agent.
+
+It sits in the path between agents and external systems, enforcing scoped access, protecting credentials, and presenting decisions in plain English rather than infrastructure jargon.
 
 ## Quick Start
 
