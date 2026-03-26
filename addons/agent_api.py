@@ -95,6 +95,7 @@ class AgentAPI:
             return
         if not hmac.compare_digest(bearer_token, active_token):
             from utils import get_client_ip
+
             client_ip = get_client_ip(flow)
             write_event(
                 "security.agent_auth_failed",
@@ -120,11 +121,12 @@ class AgentAPI:
             "/agents": self._handle_agents,
             "/circuits": self._handle_circuits,
             "/gateway/services": self._handle_gateway_services,
+            "/api/flows/search": self._handle_flow_search,
         }
 
         # POST handlers for flow store API and gateway
         post_handlers = {
-            "/api/flows/search": self._handle_flow_search,
+            "/api/flows/search": self._handle_flow_search,  # also accepts POST
             "/api/flows/endpoints": self._handle_flow_endpoints,
             "/api/flows/body-search": self._handle_flow_body_search,
             "/api/flows/diff": self._handle_flow_diff,
@@ -147,33 +149,49 @@ class AgentAPI:
                 suffix = m.group(2)
                 tag_name = m.group(3)
                 if suffix == "/request-body":
+
                     def handler(f, _fid=flow_id):
                         self._handle_flow_request_body(f, _fid)
                 elif suffix == "/response-body":
+
                     def handler(f, _fid=flow_id):
                         self._handle_flow_response_body(f, _fid)
                 elif suffix is not None and suffix.startswith("/tag"):
                     if method == "POST" and tag_name is None:
+
                         def handler(f, _fid=flow_id):
                             self._handle_flow_tag_add(f, _fid)
                     elif method == "DELETE" and tag_name is not None:
+
                         def handler(f, _fid=flow_id, _tn=tag_name):
                             self._handle_flow_tag_delete(f, _fid, _tn)
                     else:
                         handler = None  # will fall through to 404
                 else:
+
                     def handler(f, _fid=flow_id):
                         self._handle_flow_detail(f, _fid)
 
         if handler is None:
-            all_endpoints = list(handlers.keys()) + list(post_handlers.keys()) + [
-                "/api/flows/{id}", "/api/flows/{id}/request-body", "/api/flows/{id}/response-body",
-                "/api/flows/{id}/tag (POST)", "/api/flows/{id}/tag/{name} (DELETE)",
-            ]
-            self._respond(flow, 404, {
-                "error": "Not Found",
-                "endpoints": all_endpoints,
-            })
+            all_endpoints = (
+                list(handlers.keys())
+                + list(post_handlers.keys())
+                + [
+                    "/api/flows/{id}",
+                    "/api/flows/{id}/request-body",
+                    "/api/flows/{id}/response-body",
+                    "/api/flows/{id}/tag (POST)",
+                    "/api/flows/{id}/tag/{name} (DELETE)",
+                ]
+            )
+            self._respond(
+                flow,
+                404,
+                {
+                    "error": "Not Found",
+                    "endpoints": all_endpoints,
+                },
+            )
             return
 
         try:
@@ -233,6 +251,7 @@ class AgentAPI:
             return
 
         from utils import get_client_ip
+
         client_ip = get_client_ip(flow)
         agent_name = sd.get_client_for_ip(client_ip)
         if not agent_name or agent_name == "default":
@@ -250,26 +269,30 @@ class AgentAPI:
         # Build available services list from registry
         available = []
         from service_loader import get_service_registry
+
         registry = get_service_registry()
         if registry:
             authorized_names = set(agent_services.keys())
             for svc in registry.list_services():
                 if svc.name not in authorized_names:
-                    caps = [
-                        {"name": name, "description": cap.description}
-                        for name, cap in svc.capabilities.items()
-                    ]
-                    available.append({
-                        "name": svc.name,
-                        "description": svc.description,
-                        "capabilities": caps,
-                    })
+                    caps = [{"name": name, "description": cap.description} for name, cap in svc.capabilities.items()]
+                    available.append(
+                        {
+                            "name": svc.name,
+                            "description": svc.description,
+                            "capabilities": caps,
+                        }
+                    )
 
-        self._respond(flow, 200, {
-            "agent": agent_name,
-            "authorized": agent_services,
-            "available": available,
-        })
+        self._respond(
+            flow,
+            200,
+            {
+                "agent": agent_name,
+                "authorized": agent_services,
+                "available": available,
+            },
+        )
 
     def _handle_gateway_request_access(self, flow: http.HTTPFlow):
         """POST /gateway/request-access - Agent requests access to a service capability.
@@ -301,6 +324,7 @@ class AgentAPI:
             return
 
         from utils import get_client_ip
+
         client_ip = get_client_ip(flow)
         agent_name = sd.get_client_for_ip(client_ip)
         if not agent_name or agent_name == "default":
@@ -309,6 +333,7 @@ class AgentAPI:
 
         # Validate service and capability exist
         from service_loader import get_service_registry
+
         registry = get_service_registry()
         if not registry:
             self._respond(flow, 503, {"error": "Service registry not available"})
@@ -328,12 +353,16 @@ class AgentAPI:
         if cap_obj.contract is not None:
             contract = cap_obj.contract
             if not contract.is_grantable:
-                self._respond(flow, 200, {
-                    "decision": "contract_not_enforceable",
-                    "service": service_name,
-                    "capability": capability,
-                    "missing_tiers": contract.ungrantable_tiers(),
-                })
+                self._respond(
+                    flow,
+                    200,
+                    {
+                        "decision": "contract_not_enforceable",
+                        "service": service_name,
+                        "capability": capability,
+                        "missing_tiers": contract.ungrantable_tiers(),
+                    },
+                )
                 return
 
             # Grantable: return binding challenge
@@ -352,18 +381,21 @@ class AgentAPI:
                     bindings_info[name]["required_if"] = b.required_if
 
             grantable_ops = [
-                {"name": op.name, "method": op.method, "path": op.path}
-                for op in contract.grantable_operations()
+                {"name": op.name, "method": op.method, "path": op.path} for op in contract.grantable_operations()
             ]
 
-            self._respond(flow, 200, {
-                "decision": "needs_contract_binding",
-                "service": service_name,
-                "capability": capability,
-                "template": contract.template,
-                "bindings": bindings_info,
-                "grantable_operations": grantable_ops,
-            })
+            self._respond(
+                flow,
+                200,
+                {
+                    "decision": "needs_contract_binding",
+                    "service": service_name,
+                    "capability": capability,
+                    "template": contract.template,
+                    "bindings": bindings_info,
+                    "grantable_operations": grantable_ops,
+                },
+            )
             return
 
         # No contract: existing behavior — write approval event
@@ -371,7 +403,9 @@ class AgentAPI:
             "gateway.request_access",
             kind=EventKind.GATEWAY,
             severity=Severity.CRITICAL,
-            summary=f"{agent_name} requests {service_name}/{capability}: {reason}" if reason else f"{agent_name} requests {service_name}/{capability}",
+            summary=f"{agent_name} requests {service_name}/{capability}: {reason}"
+            if reason
+            else f"{agent_name} requests {service_name}/{capability}",
             decision=Decision.REQUIRE_APPROVAL,
             host=svc.default_host or "",
             agent=agent_name,
@@ -398,14 +432,18 @@ class AgentAPI:
             sanitize_for_log(capability),
         )
 
-        self._respond(flow, 202, {
-            "status": "pending",
-            "agent": agent_name,
-            "service": service_name,
-            "capability": capability,
-            "reason": reason,
-            "message": "Access request submitted. Operator will review in watch.",
-        })
+        self._respond(
+            flow,
+            202,
+            {
+                "status": "pending",
+                "agent": agent_name,
+                "service": service_name,
+                "capability": capability,
+                "reason": reason,
+                "message": "Access request submitted. Operator will review in watch.",
+            },
+        )
 
     def _handle_gateway_submit_binding(self, flow: http.HTTPFlow):
         """POST /gateway/submit-binding - Agent submits contract binding values.
@@ -439,6 +477,7 @@ class AgentAPI:
             return
 
         from utils import get_client_ip
+
         client_ip = get_client_ip(flow)
         agent_name = sd.get_client_for_ip(client_ip)
         if not agent_name or agent_name == "default":
@@ -447,6 +486,7 @@ class AgentAPI:
 
         # Validate service/capability/contract
         from service_loader import get_service_registry
+
         registry = get_service_registry()
         if not registry:
             self._respond(flow, 503, {"error": "Service registry not available"})
@@ -468,23 +508,26 @@ class AgentAPI:
 
         contract = cap_obj.contract
         if not contract.is_grantable:
-            self._respond(flow, 200, {
-                "decision": "contract_not_enforceable",
-                "missing_tiers": contract.ungrantable_tiers(),
-            })
+            self._respond(
+                flow,
+                200,
+                {
+                    "decision": "contract_not_enforceable",
+                    "missing_tiers": contract.ungrantable_tiers(),
+                },
+            )
             return
 
         # Validate each binding value
         import re as re_mod
+
         errors = []
         for var_name, var_def in contract.bindings.items():
             value = bindings.get(var_name)
 
             # Check required_if
             if var_def.required_if:
-                required = all(
-                    bindings.get(k) == v for k, v in var_def.required_if.items()
-                )
+                required = all(bindings.get(k) == v for k, v in var_def.required_if.items())
                 if required and value is None:
                     errors.append(f"'{var_name}' is required")
                     continue
@@ -520,10 +563,14 @@ class AgentAPI:
                 errors.append(f"Unknown binding variable '{var_name}'")
 
         if errors:
-            self._respond(flow, 200, {
-                "decision": "denied_out_of_scope",
-                "errors": errors,
-            })
+            self._respond(
+                flow,
+                200,
+                {
+                    "decision": "denied_out_of_scope",
+                    "errors": errors,
+                },
+            )
             return
 
         # Build grantable operations list
@@ -571,14 +618,18 @@ class AgentAPI:
             sanitize_for_log(str(bindings)),
         )
 
-        self._respond(flow, 202, {
-            "status": "pending",
-            "agent": agent_name,
-            "service": service_name,
-            "capability": capability,
-            "bindings": bindings,
-            "message": "Contract binding submitted. Operator will review in watch.",
-        })
+        self._respond(
+            flow,
+            202,
+            {
+                "status": "pending",
+                "agent": agent_name,
+                "service": service_name,
+                "capability": capability,
+                "bindings": bindings,
+                "message": "Contract binding submitted. Operator will review in watch.",
+            },
+        )
 
     def _handle_agents(self, flow: http.HTTPFlow):
         """GET /agents - Discovered agents and last-seen timestamps."""
@@ -608,10 +659,14 @@ class AgentAPI:
         """GET /health - PDP health + agent API alive."""
         client = self._get_policy_client()
         pdp_healthy = client.health_check() if client else False
-        self._respond(flow, 200, {
-            "agent_api": "ok",
-            "pdp": "ok" if pdp_healthy else "unavailable",
-        })
+        self._respond(
+            flow,
+            200,
+            {
+                "agent_api": "ok",
+                "pdp": "ok" if pdp_healthy else "unavailable",
+            },
+        )
 
     def _handle_status(self, flow: http.HTTPFlow):
         """GET /status - PDP stats."""
@@ -654,10 +709,14 @@ class AgentAPI:
         query = flow.request.query
         request_id = query.get("request_id", "")
         if not request_id or not _REQUEST_ID_PATTERN.match(request_id):
-            self._respond(flow, 400, {
-                "error": "Invalid or missing request_id",
-                "usage": "/explain?request_id=req-<12hex>",
-            })
+            self._respond(
+                flow,
+                400,
+                {
+                    "error": "Invalid or missing request_id",
+                    "usage": "/explain?request_id=req-<12hex>",
+                },
+            )
             return
 
         # Search JSONL log for matching events
@@ -721,16 +780,35 @@ class AgentAPI:
         return recorder.store
 
     def _handle_flow_search(self, flow: http.HTTPFlow):
-        """POST /api/flows/search - Search flows by filter criteria."""
+        """GET|POST /api/flows/search - Search flows by filter criteria.
+
+        GET with query params for simple searches:
+            /api/flows/search?host=httpbin.org&limit=5
+        POST with JSON body for complex queries:
+            {"host": "httpbin.org", "status_class": "4xx", "limit": 50}
+        """
         store = self._get_flow_store()
         if not store:
             self._respond(flow, 503, {"error": "Flow store not available"})
             return
-        body = self._read_json_body(flow)
-        if body is None:
-            self._respond(flow, 400, {"error": "Invalid JSON body"})
-            return
-        results = store.search_flows(body)
+
+        if flow.request.method == "GET":
+            # Build filters from query params
+            filters = dict(flow.request.query)
+            # Convert numeric params
+            for key in ("limit", "offset", "status_code", "status_min", "status_max"):
+                if key in filters:
+                    try:
+                        filters[key] = int(filters[key])
+                    except (ValueError, TypeError):
+                        pass
+        else:
+            filters = self._read_json_body(flow)
+            if filters is None:
+                self._respond(flow, 400, {"error": "Invalid JSON body"})
+                return
+
+        results = store.search_flows(filters)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 
     def _handle_flow_detail(self, flow: http.HTTPFlow, flow_id: int):
@@ -814,7 +892,6 @@ class AgentAPI:
             return
         results = store.search_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
-
 
     def _handle_flow_diff(self, flow: http.HTTPFlow):
         """POST /api/flows/diff - Compare two flow response bodies."""
