@@ -8,36 +8,42 @@ import typer
 from rich.console import Console
 from rich.text import Text
 
+from ..audit_schema import sanitize_for_log
 from ..config import find_config_dir, get_logs_dir
 
 console = Console()
 
-# Event type colors
-EVENT_COLORS = {
-    "traffic.request": "blue",
-    "traffic.response": "cyan",
-    "security.credential": "red",
-    "security.ratelimit": "yellow",
-    "security.circuit": "yellow",
-    "security.pattern": "magenta",
-    "admin.approve": "green",
-    "admin.deny": "red",
-    "admin.auth_failure": "red bold",
-    "ops.startup": "green",
-    "ops.config_reload": "green",
+# Severity colors and display
+SEVERITY_COLORS = {
+    "critical": "red bold",
+    "high": "red",
+    "medium": "yellow",
+    "low": "dim",
+}
+
+# Severity ordering for --severity filter
+SEVERITY_RANK = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+    "critical": 3,
 }
 
 # Decision colors
 DECISION_COLORS = {
     "allow": "green",
+    "deny": "red bold",
     "block": "red bold",
     "warn": "yellow",
     "greylist": "yellow",
+    "require_approval": "magenta",
+    "budget_exceeded": "yellow",
+    "log": "dim",
 }
 
 
 def format_event(event: dict) -> Text:
-    """Format a log event for display."""
+    """Format a log event for display using spine fields from AuditEvent contract."""
     text = Text()
 
     # Timestamp
@@ -50,15 +56,15 @@ def format_event(event: dict) -> Text:
             ts_short = ts[:8]
         text.append(f"{ts_short} ", style="dim")
 
-    # Event type
-    event_type = event.get("event", "unknown")
-    color = EVENT_COLORS.get(event_type, "white")
-    text.append(f"{event_type:<20} ", style=color)
+    # Severity
+    severity = event.get("severity", "")
+    sev_color = SEVERITY_COLORS.get(severity, "white")
+    if severity:
+        text.append(f"{severity:<8} ", style=sev_color)
 
-    # Request ID
-    request_id = event.get("request_id", "")
-    if request_id:
-        text.append(f"{request_id} ", style="dim")
+    # Event type (colored by severity)
+    event_type = sanitize_for_log(event.get("event", "unknown"))
+    text.append(f"{event_type:<24} ", style=sev_color)
 
     # Decision (if present)
     decision = event.get("decision")
@@ -66,48 +72,18 @@ def format_event(event: dict) -> Text:
         dec_color = DECISION_COLORS.get(decision, "white")
         text.append(f"[{decision}] ", style=dec_color)
 
-    # Event-specific details
-    if event_type == "traffic.request":
-        method = event.get("method", "")
-        host = event.get("host", "")
-        path = event.get("path", "")
-        text.append(f"{method} {host}{path}")
+    # Summary — the human-readable description from the event
+    summary = event.get("summary", "")
+    if summary:
+        text.append(sanitize_for_log(summary))
 
-    elif event_type == "traffic.response":
-        status = event.get("status", "")
-        latency = event.get("latency_ms", "")
-        blocked_by = event.get("blocked_by")
-        text.append(f"{status}")
-        if latency:
-            text.append(f" ({latency}ms)", style="dim")
-        if blocked_by:
-            text.append(f" blocked by {blocked_by}", style="red")
-
-    elif event_type.startswith("security."):
-        host = event.get("host", "")
-        reason = event.get("reason", "")
-        rule = event.get("rule", event.get("credential_type", ""))
-        text.append(f"{host}")
-        if rule:
-            text.append(f" [{rule}]", style="dim")
-        if reason:
-            text.append(f" - {reason}")
-
-    elif event_type.startswith("admin."):
-        details = []
-        if "token_prefix" in event:
-            details.append(f"token:{event['token_prefix']}...")
-        if "client_ip" in event:
-            details.append(f"from:{event['client_ip']}")
-        if details:
-            text.append(" ".join(details))
-
-    else:
-        # Generic: show all other keys
-        skip_keys = {"ts", "event", "request_id", "decision"}
-        extras = {k: v for k, v in event.items() if k not in skip_keys}
-        if extras:
-            text.append(str(extras)[:80])
+    # Context suffix: (agent, client_ip) when available
+    agent = event.get("agent")
+    details = event.get("details", {})
+    client = details.get("client") or details.get("client_ip")
+    context_parts = [sanitize_for_log(p) for p in (agent, client) if p]
+    if context_parts:
+        text.append(f"  ({', '.join(context_parts)})", style="dim")
 
     return text
 
@@ -151,17 +127,28 @@ def logs(
         "--raw",
         help="Output raw JSONL without formatting",
     ),
-    security: bool = typer.Option(
-        False,
-        "--security",
-        "-s",
-        help="Show only security.* events",
+    event_type: str = typer.Option(
+        None,
+        "--event",
+        "-e",
+        help="Filter by event type prefix (e.g. 'security', 'ops', 'traffic')",
     ),
     request_id: str = typer.Option(
         None,
         "--request-id",
         "-r",
         help="Filter to specific request ID",
+    ),
+    agent_filter: str = typer.Option(
+        None,
+        "--agent",
+        "-a",
+        help="Filter to specific agent",
+    ),
+    min_severity: str = typer.Option(
+        None,
+        "--severity",
+        help="Minimum severity (low/medium/high/critical)",
     ),
     tail: int = typer.Option(
         None,
@@ -187,6 +174,14 @@ def logs(
         )
         raise typer.Exit(0)
 
+    # Validate --severity if provided
+    min_sev_rank = None
+    if min_severity:
+        if min_severity not in SEVERITY_RANK:
+            console.print(f"[red]Invalid severity: {min_severity}[/red]\nValid: low, medium, high, critical")
+            raise typer.Exit(1)
+        min_sev_rank = SEVERITY_RANK[min_severity]
+
     # If tail specified, get last N lines first
     lines_to_show = []
     if tail and not follow:
@@ -208,10 +203,16 @@ def logs(
                 continue
 
             # Apply filters
-            if security and not event.get("event", "").startswith("security."):
+            if event_type and not event.get("event", "").startswith(event_type):
                 continue
             if request_id and event.get("request_id") != request_id:
                 continue
+            if agent_filter and event.get("agent") != agent_filter:
+                continue
+            if min_sev_rank is not None:
+                ev_rank = SEVERITY_RANK.get(event.get("severity", ""), -1)
+                if ev_rank < min_sev_rank:
+                    continue
 
             # Output
             if raw:

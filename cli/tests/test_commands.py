@@ -10,85 +10,111 @@ from safeyolo.commands.logs import format_event
 
 
 class TestFormatEvent:
-    """Tests for format_event() pure function."""
+    """Tests for format_event() using AuditEvent contract."""
 
     def test_formats_traffic_request(self):
-        """Formats traffic.request event."""
+        """Renders spine fields: timestamp, severity, event type, summary, context."""
         event = {
             "ts": "2024-01-01T12:00:00Z",
             "event": "traffic.request",
-            "method": "POST",
-            "host": "api.openai.com",
-            "path": "/v1/chat",
+            "severity": "low",
+            "summary": "POST api.openai.com/v1/chat",
+            "agent": "claude-code",
+            "details": {"method": "POST", "path": "/v1/chat", "client": "172.18.0.3"},
         }
         result = format_event(event)
         assert isinstance(result, Text)
         text = str(result)
         assert "12:00:00" in text
+        assert "low" in text
         assert "traffic.request" in text
-        assert "POST" in text
-        assert "api.openai.com" in text
+        assert "POST api.openai.com/v1/chat" in text
+        assert "claude-code" in text
+        assert "172.18.0.3" in text
 
-    def test_formats_traffic_response(self):
-        """Formats traffic.response event."""
-        event = {
-            "ts": "2024-01-01T12:00:01Z",
-            "event": "traffic.response",
-            "status": 200,
-            "latency_ms": 150,
-        }
-        result = format_event(event)
-        text = str(result)
-        assert "200" in text
-        assert "150ms" in text
-
-    def test_formats_security_credential(self):
-        """Formats security.credential event."""
+    def test_formats_decision(self):
+        """Shows decision badge when present."""
         event = {
             "ts": "2024-01-01T12:00:02Z",
             "event": "security.credential",
+            "severity": "high",
+            "summary": "openai cred sent to httpbin.org",
             "decision": "block",
-            "host": "httpbin.org",
-            "rule": "openai",
-            "reason": "destination_mismatch",
+            "agent": "claude-code",
+            "details": {"client": "172.18.0.3"},
         }
         result = format_event(event)
         text = str(result)
         assert "security.credential" in text
         assert "[block]" in text
-        assert "httpbin.org" in text
-        assert "openai" in text
+        assert "openai cred sent to httpbin.org" in text
 
-    def test_formats_blocked_response(self):
-        """Formats response blocked by addon."""
+    def test_formats_without_decision(self):
+        """Works without decision field."""
         event = {
-            "ts": "2024-01-01T12:00:03Z",
-            "event": "traffic.response",
-            "status": 403,
-            "blocked_by": "credential-guard",
+            "ts": "2024-01-01T12:00:00Z",
+            "event": "ops.startup",
+            "severity": "low",
+            "summary": "SafeYolo proxy started",
         }
         result = format_event(event)
         text = str(result)
-        assert "403" in text
-        assert "credential-guard" in text
+        assert "ops.startup" in text
+        assert "SafeYolo proxy started" in text
+        assert "[" not in text  # no decision badge
 
     def test_handles_missing_timestamp(self):
         """Handles events without timestamp."""
-        event = {"event": "traffic.request", "host": "example.com"}
+        event = {"event": "traffic.request", "severity": "low", "summary": "GET example.com/"}
         result = format_event(event)
-        # Should not raise
         assert isinstance(result, Text)
 
-    def test_handles_unknown_event(self):
-        """Handles unknown event types."""
+    def test_handles_missing_optional_fields(self):
+        """Renders gracefully when agent/details/severity are absent."""
         event = {
             "ts": "2024-01-01T12:00:00Z",
             "event": "unknown.event",
-            "custom_field": "value",
+            "summary": "something happened",
         }
         result = format_event(event)
         text = str(result)
         assert "unknown.event" in text
+        assert "something happened" in text
+
+    def test_context_shows_agent_and_client(self):
+        """Context suffix includes both agent and client IP."""
+        event = {
+            "event": "traffic.request",
+            "severity": "low",
+            "summary": "GET example.com/",
+            "agent": "my-agent",
+            "details": {"client": "10.0.0.1"},
+        }
+        text = str(format_event(event))
+        assert "(my-agent, 10.0.0.1)" in text
+
+    def test_context_agent_only(self):
+        """Context suffix with agent but no client."""
+        event = {
+            "event": "ops.startup",
+            "severity": "low",
+            "summary": "started",
+            "agent": "my-agent",
+            "details": {},
+        }
+        text = str(format_event(event))
+        assert "(my-agent)" in text
+
+    def test_context_client_ip_fallback(self):
+        """Falls back to details.client_ip if details.client is absent."""
+        event = {
+            "event": "admin.auth_failure",
+            "severity": "high",
+            "summary": "bad token",
+            "details": {"client_ip": "10.0.0.1"},
+        }
+        text = str(format_event(event))
+        assert "10.0.0.1" in text
 
 
 class TestLogsCommand:
@@ -110,11 +136,11 @@ class TestLogsCommand:
         assert "No logs found" in result.output
 
     def test_displays_log_events(self, cli_runner, write_log_file):
-        """Displays formatted log events."""
+        """Displays formatted log events with summary."""
         result = cli_runner.invoke(app, ["logs"])
         assert result.exit_code == 0
         assert "traffic.request" in result.output
-        assert "api.openai.com" in result.output
+        assert "POST api.openai.com/v1/chat" in result.output
 
     def test_raw_mode(self, cli_runner, write_log_file):
         """Raw mode outputs unformatted JSON."""
@@ -123,14 +149,38 @@ class TestLogsCommand:
         # Raw output should contain JSON
         assert '"event":' in result.output
 
-    def test_security_filter(self, cli_runner, write_log_file):
-        """Security filter shows only security events."""
-        result = cli_runner.invoke(app, ["logs", "--security"])
+    def test_event_filter(self, cli_runner, write_log_file):
+        """Event filter shows only matching event prefix."""
+        result = cli_runner.invoke(app, ["logs", "--event", "security"])
         assert result.exit_code == 0
         assert "security.credential" in result.output
         # Should not show traffic events
         lines = [line for line in result.output.split("\n") if "traffic.request" in line]
         assert len(lines) == 0
+
+    def test_agent_filter(self, cli_runner, write_log_file):
+        """Agent filter shows only events from matching agent."""
+        result = cli_runner.invoke(app, ["logs", "--agent", "other-agent"])
+        assert result.exit_code == 0
+        assert "security.ratelimit" in result.output
+        # Should not show claude-code events
+        lines = [line for line in result.output.split("\n") if "traffic.request" in line]
+        assert len(lines) == 0
+
+    def test_severity_filter(self, cli_runner, write_log_file):
+        """Severity filter shows events at or above threshold."""
+        result = cli_runner.invoke(app, ["logs", "--severity", "high"])
+        assert result.exit_code == 0
+        assert "security.credential" in result.output
+        # Should not show low/medium events
+        lines = [line for line in result.output.split("\n") if "traffic.request" in line]
+        assert len(lines) == 0
+
+    def test_severity_filter_invalid(self, cli_runner, write_log_file):
+        """Invalid severity exits with error."""
+        result = cli_runner.invoke(app, ["logs", "--severity", "bogus"])
+        assert result.exit_code == 1
+        assert "Invalid severity" in result.output
 
     def test_tail_option(self, cli_runner, write_log_file):
         """Tail option shows last N lines."""

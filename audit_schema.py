@@ -10,11 +10,58 @@ Importable by addons, CLI, and any future PEP.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Sanitization for safe rendering of user-controlled event fields.
+# Copied from pdp/core.py — keep in sync.
+_SAFE_CATEGORIES = frozenset(
+    {
+        "Lu",
+        "Ll",
+        "Lt",
+        "Lm",
+        "Lo",  # Letters
+        "Nd",
+        "Nl",
+        "No",  # Numbers
+        "Pc",
+        "Pd",
+        "Ps",
+        "Pe",
+        "Pi",
+        "Pf",
+        "Po",  # Punctuation
+        "Sm",
+        "Sc",
+        "Sk",
+        "So",  # Symbols
+        "Zs",  # Space (not Zl/Zp line seps)
+    }
+)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_BLOCKED_CODEPOINTS = frozenset(range(0x20)) | {0x7F, 0x2028, 0x2029}
+
+
+def sanitize_for_log(value, max_len: int = 200) -> str:
+    """Sanitize user-controlled values before logging to prevent log injection.
+
+    Uses Unicode category whitelist plus explicit codepoint blocklist.
+    Strips ANSI escapes and replaces unsafe chars with '?'.
+    """
+    if value is None:
+        return ""
+    text = _ANSI_ESCAPE_RE.sub("?", str(value))
+    sanitized = "".join(
+        c if (ord(c) not in _BLOCKED_CODEPOINTS and unicodedata.category(c) in _SAFE_CATEGORIES) else "?" for c in text
+    )
+    sanitized = re.sub(r"\?+", "?", sanitized)
+    return sanitized[:max_len] + "..." if len(sanitized) > max_len else sanitized
 
 
 class EventKind(StrEnum):
