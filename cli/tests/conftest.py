@@ -121,29 +121,50 @@ def mock_docker_running(mock_subprocess):
 
 @pytest.fixture
 def sample_log_events():
-    """Sample JSONL log events for testing."""
+    """Sample JSONL log events matching AuditEvent contract."""
     return [
         {
             "ts": "2024-01-01T12:00:00Z",
             "event": "traffic.request",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "POST api.openai.com/v1/chat",
             "host": "api.openai.com",
-            "method": "POST",
-            "path": "/v1/chat",
+            "agent": "claude-code",
+            "details": {"method": "POST", "path": "/v1/chat", "size": 1234, "client": "172.18.0.3"},
         },
-        {"ts": "2024-01-01T12:00:01Z", "event": "traffic.response", "status": 200, "latency_ms": 150},
+        {
+            "ts": "2024-01-01T12:00:01Z",
+            "event": "traffic.response",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "200 api.openai.com/v1/chat",
+            "host": "api.openai.com",
+            "agent": "claude-code",
+            "decision": "allow",
+            "details": {"path": "/v1/chat", "status": 200, "size": 5678, "ms": 150, "client": "172.18.0.3"},
+        },
         {
             "ts": "2024-01-01T12:00:02Z",
             "event": "security.credential",
-            "decision": "block",
+            "kind": "security",
+            "severity": "high",
+            "summary": "openai cred sent to httpbin.org",
             "host": "httpbin.org",
-            "rule": "openai",
+            "agent": "claude-code",
+            "decision": "block",
+            "details": {"credential_type": "openai", "reason": "destination_mismatch", "client": "172.18.0.3"},
         },
         {
             "ts": "2024-01-01T12:00:03Z",
             "event": "security.ratelimit",
+            "kind": "security",
+            "severity": "medium",
+            "summary": "rate limit warning for api.openai.com",
+            "host": "api.openai.com",
+            "agent": "other-agent",
             "decision": "warn",
-            "domain": "api.openai.com",
-            "wait_ms": 500,
+            "details": {"wait_ms": 500, "client": "172.18.0.4"},
         },
     ]
 
