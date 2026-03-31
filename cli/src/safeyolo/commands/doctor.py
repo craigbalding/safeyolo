@@ -3,6 +3,7 @@
 import json
 import shutil
 import socket
+import sqlite3
 import ssl
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -16,6 +17,8 @@ from rich.console import Console
 from ..config import (
     COMPOSE_NETWORK_NAME,
     find_config_dir,
+    get_admin_token_path,
+    get_agent_token_path,
     get_certs_dir,
     get_data_dir,
     get_logs_dir,
@@ -30,6 +33,8 @@ from ..docker import (
 )
 
 console = Console()
+
+_FLOW_STORE_WARN_MB = 500
 
 
 @dataclass
@@ -377,6 +382,93 @@ def _check_baseline() -> DiagResult:
         )
 
 
+def _check_tokens() -> DiagResult:
+    """Check admin and agent token files."""
+    admin_path = get_admin_token_path()
+    agent_path = get_agent_token_path()
+    issues = []
+
+    if not admin_path.exists():
+        issues.append("admin_token missing")
+    else:
+        mode = admin_path.stat().st_mode & 0o777
+        if mode & 0o077:
+            issues.append(f"admin_token permissions too open ({oct(mode)})")
+
+    if not agent_path.exists():
+        # Agent token is regenerated on each proxy start — not an error
+        issues.append("agent_token not yet generated (proxy not started?)")
+
+    if not issues:
+        return DiagResult(
+            name="Tokens",
+            status="pass",
+            message="Token files present with correct permissions",
+        )
+    # Distinguish between real problems and first-run state
+    real_issues = [i for i in issues if "not yet generated" not in i]
+    if not real_issues:
+        return DiagResult(
+            name="Tokens",
+            status="pass",
+            message="Admin token OK; agent token pending first start",
+        )
+    return DiagResult(
+        name="Tokens",
+        status="warn",
+        message="; ".join(issues),
+        remediation="safeyolo start (generates tokens)",
+    )
+
+
+def _check_vault() -> DiagResult:
+    """Check service gateway vault setup."""
+    from .vault import _get_key_path, _get_vault_path
+
+    key_path = _get_key_path()
+    vault_path = _get_vault_path()
+
+    if not key_path.exists() and not vault_path.exists():
+        return DiagResult(
+            name="Service gateway vault",
+            status="pass",
+            message="Not configured (gateway disabled)",
+        )
+
+    if not key_path.exists():
+        return DiagResult(
+            name="Service gateway vault",
+            status="fail",
+            message="Vault key missing but vault file exists (partial setup)",
+            remediation="Check ~/.safeyolo/data/ or re-run: safeyolo vault add",
+        )
+
+    if not vault_path.exists():
+        return DiagResult(
+            name="Service gateway vault",
+            status="pass",
+            message="Key present, no credentials stored yet",
+        )
+
+    try:
+        from .vault import _load_vault
+
+        vault, _ = _load_vault()
+        cred_count = len(vault.list_names())
+        return DiagResult(
+            name="Service gateway vault",
+            status="pass",
+            message=f"Unlocked ({cred_count} credential{'s' if cred_count != 1 else ''})",
+        )
+    except Exception as exc:
+        return DiagResult(
+            name="Service gateway vault",
+            status="fail",
+            message=f"Cannot decrypt: {type(exc).__name__}: {exc}",
+            remediation="Check vault.key matches vault.yaml.enc",
+        )
+
+
 def _check_crash_logs() -> DiagResult:
     """Scan mitmproxy logs for crash tracebacks."""
     logs_dir = get_logs_dir()
@@ -471,6 +563,87 @@ def _check_log_health() -> DiagResult:
         )
 
 
+def _check_flow_store() -> DiagResult:
+    """Check flow store SQLite database health."""
+    db_path = get_logs_dir() / "flows.sqlite3"
+    if not db_path.exists():
+        return DiagResult(
+            name="Flow store",
+            status="pass",
+            message="Database not yet created (will appear on first flow)",
+        )
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM flows")
+        count = cursor.fetchone()[0]
+        conn.close()
+        size_mb = db_path.stat().st_size / 1_000_000
+        msg = f"OK ({count} flows, {size_mb:.1f}MB)"
+        if size_mb > _FLOW_STORE_WARN_MB:
+            return DiagResult(
+                name="Flow store",
+                status="warn",
+                message=msg,
+                detail="Database is large — consider pruning old flows",
+            )
+        return DiagResult(
+            name="Flow store",
+            status="pass",
+            message=msg,
+        )
+    except Exception as exc:
+        return DiagResult(
+            name="Flow store",
+            status="warn",
+            message=f"Cannot read database: {type(exc).__name__}: {exc}",
+        )
+
+
+def _check_addon_loading() -> DiagResult:
+    """Check if addons are loaded and reporting via /stats."""
+    config = load_config()
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+
+    from ..config import get_admin_token
+
+    token = get_admin_token()
+    if not token:
+        return DiagResult(
+            name="Addon loading",
+            status="warn",
+            message="No admin token — cannot verify addons",
+        )
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"http://127.0.0.1:{admin_port}/stats",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5.0,
+        )
+        if resp.status_code != 200:
+            return DiagResult(
+                name="Addon loading",
+                status="warn",
+                message=f"/stats returned {resp.status_code}",
+            )
+        stats = resp.json()
+        addon_names = [k for k in stats if k != "proxy"]
+        return DiagResult(
+            name="Addon loading",
+            status="pass",
+            message=f"{len(addon_names)} addons reporting",
+            detail=", ".join(sorted(addon_names)),
+        )
+    except Exception as exc:
+        return DiagResult(
+            name="Addon loading",
+            status="warn",
+            message=f"Stats check failed: {type(exc).__name__}",
+        )
+
+
 def _check_docker_network() -> DiagResult:
     """Check if the SafeYolo Docker network exists."""
     try:
@@ -504,6 +677,7 @@ def _check_docker_network() -> DiagResult:
 _DEPENDS_ON = {
     "mitmproxy process": ["Container running"],
     "Admin API": ["mitmproxy process"],
+    "Addon loading": ["Admin API"],
     "Proxy port": ["mitmproxy process"],
     "Docker network": ["Docker available"],
 }
@@ -517,11 +691,15 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Container running", _check_container),
         ("mitmproxy process", _check_mitmproxy_process),
         ("Admin API", _check_admin_api),
+        ("Addon loading", _check_addon_loading),
         ("Proxy port", _check_proxy_port),
         ("CA certificate", _check_ca_cert),
         ("Baseline policy", _check_baseline),
+        ("Tokens", _check_tokens),
+        ("Service gateway vault", _check_vault),
         ("Crash detection", _check_crash_logs),
         ("Log health", _check_log_health),
+        ("Flow store", _check_flow_store),
         ("Docker network", _check_docker_network),
     ]
 
