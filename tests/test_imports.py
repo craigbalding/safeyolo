@@ -28,6 +28,8 @@ ADDON_MODULES = [
     "network_guard",
     "pattern_scanner",
     "test_context",
+    "toml_normalize",
+    "toml_roundtrip",
     "policy_compiler",
     "policy_engine",
     "policy_loader",
