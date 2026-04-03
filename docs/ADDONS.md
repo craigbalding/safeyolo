@@ -29,7 +29,7 @@ Complete documentation for SafeYolo's mitmproxy addons.
 │  ┌───────────────────────────────────────┼───────────────┐  │
 │  │  ~/.safeyolo/                         │               │  │
 │  │    config.yaml    ┌───────────────────┴────────────┐  │  │
-│  │    policy.yaml  │                                │  │  │
+│  │    policy.toml  │                                │  │  │
 │  │    policies/      │  ┌──────────┐  ┌──────────┐    │  │  │
 │  │    logs/          │  │  Claude  │  │  Codex   │ ...│  │  │
 │  │                   │  └──────────┘  └──────────┘    │  │  │
@@ -76,7 +76,7 @@ Addons are loaded in this order (order matters for security):
 **Default behavior:**
 - `network_guard`, `credential_guard`, and `test_context` block by default (core protections)
 - `pattern_scanner` warns by default (higher false positive rate)
-- `test_context` is only active when `target_hosts` is non-empty in policy.yaml
+- `test_context` is only active when `target_hosts` is non-empty in the policy file
 - Other addons are always active with no mode toggle
 
 ---
@@ -219,29 +219,29 @@ Unified policy engine with **host-centric** policy format. Handles credential au
 
 Addons use `get_policy_client()` to access the configured PolicyClient instance.
 
-**Configuration:** `config/policy.yaml` (hosts and credentials) + `config/addons.yaml` (addon tuning)
+**Configuration:** `config/policy.toml` (hosts and credentials) + `config/addons.yaml` (addon tuning)
 
-```yaml
-# policy.yaml — host-centric format
-hosts:
-  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
-  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
-  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
-  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
+```toml
+# policy.toml — host-centric format
+version = "2.0"
+budget = 12_000
 
-global_budget: 12000
+required = ["credential_guard", "network_guard", "circuit_breaker"]
+scan_patterns = []
 
-credentials:
-  openai:
-    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
-    headers: [authorization, x-api-key]
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
+"api.github.com"    = { allow = ["github:*"],     rate = 300 }
+"*"                 = { on_unknown = "prompt",     rate = 600 }
 
-required: [credential_guard, network_guard, circuit_breaker]
-scan_patterns: []
+[credential.openai]
+match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
 ```
 
 ```yaml
-# addons.yaml — addon tuning (sibling to policy.yaml)
+# addons.yaml — addon tuning (sibling to policy.toml)
 addons:
   credential_guard:
     enabled: true
@@ -255,7 +255,7 @@ addons:
     builtin_sets: []
 ```
 
-Each host entry can include: `credentials`, `rate_limit`, `bypass`, `rules` (IAM escape hatch). The wildcard `"*"` sets defaults. `allowed_hosts` for credential rules are auto-derived from the `hosts` section.
+Each host entry can include: `allow`, `rate`, `bypass`, `rules` (IAM escape hatch). The wildcard `"*"` sets defaults. `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section.
 
 **Credential condition formats:**
 - `openai:*` - type-based matching (any credential of that type)
@@ -279,7 +279,7 @@ Each host entry can include: `credentials`, `rate_limit`, `bypass`, `rules` (IAM
 2. PolicyEngine looks up the destination host in the `hosts` section
 3. Checks if credential matches the host's `credentials` list (type or HMAC)
 4. If match found -> permit
-5. If no match -> fall through to wildcard `"*"` entry (typically `unknown_credentials: prompt`)
+5. If no match -> fall through to wildcard `"*"` entry (typically `on_unknown = "prompt"`)
 
 ---
 
@@ -317,18 +317,18 @@ Unified network policy addon combining access control, rate limiting, and homogl
 
 **Key design:** Single `PolicyEngine.evaluate_request()` call per request prevents double budget consumption.
 
-**Configuration:** Network policies are defined in `policy.yaml` using the host-centric format:
+**Configuration:** Network policies are defined in `policy.toml` using the host-centric format:
 
-```yaml
-hosts:
-  api.openai.com:      { credentials: [openai:*],  rate_limit: 3000 }
-  api.anthropic.com:   { credentials: [anthropic:*], rate_limit: 3000 }
-  "*":                 { unknown_credentials: prompt, rate_limit: 600 }
+```toml
+budget = 12_000   # Global cap across all domains
 
-global_budget: 12000   # Global cap across all domains
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],  rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"], rate = 3_000 }
+"*"                 = { on_unknown = "prompt", rate = 600 }
 ```
 
-Each host's `rate_limit` controls requests per minute. The `global_budget` caps total traffic across all hosts. Hosts listed in `hosts:` are implicitly allowed; unlisted hosts fall through to the `"*"` wildcard.
+Each host's `rate` controls requests per minute. The `budget` caps total traffic across all hosts. Hosts listed in `[hosts]` are implicitly allowed; unlisted hosts fall through to the `"*"` wildcard.
 
 **Response when denied (403):**
 ```json
@@ -453,18 +453,18 @@ Core security addon. Ensures credentials only reach authorized hosts.
 
 ### Configuration
 
-**Credential patterns:** `config/policy.yaml` (credentials section)
-```yaml
-credentials:
-  openai:
-    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
-    headers: [authorization, x-api-key]
-  anthropic:
-    patterns: ["sk-ant-api[a-zA-Z0-9-]{90,}"]
-    headers: [authorization, x-api-key]
+**Credential patterns:** `config/policy.toml` (credential sections)
+```toml
+[credential.openai]
+match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
+
+[credential.anthropic]
+match   = ['sk-ant-api[a-zA-Z0-9-]{90,}']
+headers = ["authorization", "x-api-key"]
 ```
 
-`allowed_hosts` are auto-derived from the `hosts` section -- any host with `credentials: [openai:*]` becomes an allowed host for the `openai` credential type.
+`allowed_hosts` are auto-derived from the `[hosts]` section -- any host with `allow = ["openai:*"]` becomes an allowed host for the `openai` credential type.
 
 **Entropy settings:** `config/addons.yaml` (credential_guard section)
 ```yaml
@@ -529,15 +529,15 @@ Credential guard emits events to JSONL. The CLI handles the interactive workflow
 
 ### Policy-Based Approvals (Destination-First)
 
-Approvals are stored in `policy.yaml` as host entries:
+Approvals are stored in the policy file as host entries:
 
-```yaml
-hosts:
-  # Type-based: allow any custom-api credential to api.example.com
-  api.example.com:     { credentials: [custom-api:*], rate_limit: 600 }
+```toml
+[hosts]
+# Type-based: allow any custom-api credential to api.example.com
+"api.example.com" = { allow = ["custom-api:*"], rate = 600 }
 
-  # HMAC-based: allow specific credential to api.example.com
-  api.example.com:     { credentials: [hmac:a1b2c3d4], rate_limit: 600 }
+# HMAC-based: allow specific credential to api.example.com
+"api.example.com" = { allow = ["hmac:a1b2c3d4"], rate = 600 }
 ```
 
 **Credential condition formats:**
@@ -604,11 +604,11 @@ Fast regex scanning for secrets and suspicious patterns.
    - Looks up the agent's capability for this service
    - Evaluates the request against capability routes (positive list — no deny rules)
    - If the route matches a **risky route**, queries the PDP with ATT&CK tactics, enables, irreversible signals, and account persona
-   - PDP checks risk appetite rules in `policy.yaml` (`gateway:` section) and active grants
+   - PDP checks risk appetite rules in the policy file (`[[risk]]` in TOML / `gateway:` in YAML) and active grants
    - If a matching **grant** exists (approved by operator via watch or admin API), the request bypasses PDP risk evaluation
    - Looks up the real credential from the vault and injects it using the service's auth config (bearer, API key, etc.)
    - Forwards the request to the target host
-4. **Once-grants** are consumed after a successful (2xx) response. Non-2xx responses (4xx, 5xx) do not consume the grant, allowing retry. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in policy.yaml.
+4. **Once-grants** are consumed after a successful (2xx) response. Non-2xx responses (4xx, 5xx) do not consume the grant, allowing retry. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in the policy file.
 5. Flow store redacts injected credentials as `[GATEWAY:...last4]`
 
 **Service definitions** describe external APIs using v2 format: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). Builtins ship for common APIs (gmail, slack, github). Users can add custom service YAMLs in `~/.safeyolo/services/`.
@@ -630,7 +630,7 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 
 **Default: Block mode** (428 soft-reject)
 
-**Activation:** Active when `target_hosts` is non-empty in policy.yaml. No separate enable flag — add target hosts to activate, remove to deactivate.
+**Activation:** Active when `target_hosts` is non-empty in the policy file. No separate enable flag — add target hosts to activate, remove to deactivate.
 
 **How it works:**
 1. Requests to non-target hosts pass through untouched
@@ -643,7 +643,7 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 
 Required keys: `run`, `agent`. Optional: `test`, `phase`.
 
-**Configuration (policy.yaml):**
+**Configuration (addons.yaml):**
 ```yaml
 addons:
   test_context:

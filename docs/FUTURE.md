@@ -55,7 +55,7 @@ domains:
 1. `sk-proj-abc123` first seen going to `api.openai.com` → bind key to host
 2. Later, same key sent to `evil-proxy.com` → ALERT: key exfiltration attempt
 
-**Proposed schema** (policy.yaml):
+**Proposed schema** (addons.yaml):
 ```yaml
 credential_guard:
   host_binding:

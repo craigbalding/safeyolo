@@ -293,25 +293,30 @@ if [ -f "${CONFIG_DIR}/rate_limits.json" ]; then
 fi
 
 # Policy file is REQUIRED - fail closed if missing
-if [ ! -f "${CONFIG_DIR}/policy.yaml" ]; then
+# Prefer policy.toml, fall back to policy.yaml
+if [ -f "${CONFIG_DIR}/policy.toml" ]; then
+    POLICY_FILE="${CONFIG_DIR}/policy.toml"
+elif [ -f "${CONFIG_DIR}/policy.yaml" ]; then
+    POLICY_FILE="${CONFIG_DIR}/policy.yaml"
+else
     echo ""
     echo "=========================================="
     echo "FATAL: Policy file not found"
     echo "=========================================="
     echo ""
     echo "SafeYolo requires a policy file to operate."
-    echo "Expected: ${CONFIG_DIR}/policy.yaml"
+    echo "Expected: ${CONFIG_DIR}/policy.toml (or policy.yaml)"
     echo ""
     echo "To fix:"
     echo "  1. Run 'safeyolo init' to create default policy"
-    echo "  2. Or mount your own policy.yaml to ${CONFIG_DIR}/"
+    echo "  2. Or mount your own policy file to ${CONFIG_DIR}/"
     echo ""
     echo "A security proxy cannot run without a policy."
     echo "=========================================="
     exit 1
 fi
-MITM_OPTS="${MITM_OPTS} --set policy_file=${CONFIG_DIR}/policy.yaml"
-echo "Using policy from ${CONFIG_DIR}/policy.yaml"
+MITM_OPTS="${MITM_OPTS} --set policy_file=${POLICY_FILE}"
+echo "Using policy from ${POLICY_FILE}"
 
 #echo "Addons: policy -> discovery -> rate_limiter -> circuit_breaker -> credential_guard -> yara -> pattern -> injection -> logger -> metrics -> admin"
 echo "For TUI mode: set SAFEYOLO_TUI=true"

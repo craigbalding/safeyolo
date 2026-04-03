@@ -108,19 +108,24 @@ class PolicyLoader:
             self._load_baseline()
 
     def _load_file(self, path: Path) -> dict | None:
-        """Load YAML or JSON file, return None on error."""
+        """Load YAML, TOML, or JSON file, return None on error."""
         if not path.exists():
             log.warning(f"Policy file not found: {path}")
             return None
 
         try:
-            content = path.read_text()
-            if path.suffix in (".yaml", ".yml"):
+            if path.suffix == ".toml":
+                from toml_roundtrip import load_as_internal
+
+                return load_as_internal(path)
+            elif path.suffix in (".yaml", ".yml"):
                 if not YAML_AVAILABLE:
                     log.error("PyYAML not installed, cannot load YAML policy")
                     return None
+                content = path.read_text()
                 return yaml.safe_load(content) or {}
             else:
+                content = path.read_text()
                 return json.loads(content)
         except Exception as e:
             log.error(f"Failed to load {path}: {type(e).__name__}: {e}")

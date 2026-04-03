@@ -6,7 +6,7 @@ SafeYolo is a security proxy for AI coding agents. It sits between agent contain
 
 Today, SafeYolo controls access at three levels:
 
-1. **Network level** — which domains the agent can reach (policy.yaml allowlist)
+1. **Network level** — which domains the agent can reach (policy allowlist)
 2. **Credential level** — which credentials can go to which destinations (credential_guard)
 3. **Service level** — which services an agent is authorised to use, with route-based capability scoping (service_gateway)
 

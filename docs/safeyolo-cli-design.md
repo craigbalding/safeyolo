@@ -20,7 +20,7 @@ SafeYolo CLI is a host-side command-line tool that provides a friendly interface
 │  ┌────────────────┐       ┌──────────────────────────────┐  │
 │  │  safeyolo CLI  │◄─────►│  ~/.safeyolo/ (or ./safeyolo)│  │
 │  │                │       │    config.yaml                │  │
-│  │  Commands:     │       │    policy.yaml              │  │
+│  │  Commands:     │       │    policy.toml              │  │
 │  │  - init        │       │    policies/                  │  │
 │  │  - start/stop  │       │    logs/                      │  │
 │  │  - watch       │       └──────────────────────────────┘  │
@@ -45,7 +45,7 @@ SafeYolo CLI is a host-side command-line tool that provides a friendly interface
 │  │  └─────────────────────────────────────────────────┘ │  │
 │  │                                                       │  │
 │  │  Mounted volumes:                                     │  │
-│  │  - /config (policy.yaml)                            │  │
+│  │  - /config (policy.toml)                            │  │
 │  │  - /logs (safeyolo.jsonl)                             │  │
 │  │  - /certs (mitmproxy CA)                              │  │
 │  │  - /data (hmac_secret, policies/)                     │  │
@@ -243,7 +243,7 @@ The `token_hmac` serves as the approval token - it's deterministic for the same 
 ~/.safeyolo/                    # Global config (fallback)
 ./safeyolo/                     # Project-specific (preferred)
 ├── config.yaml                 # Main configuration
-├── policy.yaml                 # Host-centric policy (hosts, credentials, rate limits)
+├── policy.toml                 # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml                 # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── policies/                   # Approved credentials per project
 │   ├── default.yaml
@@ -287,32 +287,33 @@ approval:
     - destination_mismatch   # Known credential, wrong host
 ```
 
-### policy.yaml
+### policy.toml
 
 Host-centric policy defining hosts, credentials, and rate limits:
 
-```yaml
-hosts:
-  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
-  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
-  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
+```toml
+version = "2.0"
+budget = 12_000
 
-global_budget: 12000
+required = ["credential_guard", "network_guard", "circuit_breaker"]
 
-credentials:
-  openai:
-    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
-    headers: [authorization, x-api-key]
-  anthropic:
-    patterns: ["sk-ant-api[a-zA-Z0-9-]{90,}"]
-    headers: [authorization, x-api-key]
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
+"*"                 = { on_unknown = "prompt",     rate = 600 }
 
-required: [credential_guard, network_guard, circuit_breaker]
+[credential.openai]
+match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
+
+[credential.anthropic]
+match   = ['sk-ant-api[a-zA-Z0-9-]{90,}']
+headers = ["authorization", "x-api-key"]
 ```
 
 ### addons.yaml
 
-Addon tuning lives in a separate file, sibling to `policy.yaml`:
+Addon tuning lives in a separate file, sibling to `policy.toml`:
 
 ```yaml
 addons:
