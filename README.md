@@ -6,7 +6,9 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11693/badge)](https://www.bestpractices.dev/projects/11693)
 [![CodeQL](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml)
 
-**SafeYolo is a human-centric safety layer for AI agents.**
+**Don't slow your agents down, just scope their access.**
+
+SafeYolo is a security proxy that gives operators scoped control over what AI agents can access.
 
 Most agent sandbox projects focus on host isolation: run the agent in a locked-down container, restrict the filesystem, limit network access.
 
