@@ -728,33 +728,6 @@ def _contract_binding_deny(event: dict, api: AdminAPI) -> None:
     )
 
 
-DISPATCH: dict[str, ApprovalDispatch] = {
-    "credential": ApprovalDispatch(
-        approve=_credential_approve,
-        deny=_credential_deny,
-        format_row=_credential_format_row,
-        format_detail=lambda event: format_approval_request(event),
-    ),
-    "gateway_route": ApprovalDispatch(
-        approve=_gateway_approve,
-        deny=_gateway_deny,
-        format_row=_gateway_format_row,
-        format_detail=lambda event: format_risky_route_approval(event),
-    ),
-    "service": ApprovalDispatch(
-        approve=_service_approve,
-        deny=_service_deny,
-        format_row=_service_format_row,
-        format_detail=_service_format_detail,
-    ),
-    "contract_binding": ApprovalDispatch(
-        approve=_contract_binding_approve,
-        deny=_contract_binding_deny,
-        format_row=_contract_binding_format_row,
-        format_detail=_contract_binding_format_detail,
-    ),
-}
-
 
 def _dedup_key_from_approval(event: dict) -> str:
     """Derive dedup key from the approval field on an event."""
@@ -1374,6 +1347,36 @@ def format_risky_route_approval(event: dict) -> Panel:
         subtitle=subtitle,
         border_style=border_style,
     )
+
+
+# DISPATCH must be defined after format_approval_request and
+# format_risky_route_approval so the names resolve at module load time.
+DISPATCH: dict[str, ApprovalDispatch] = {
+    "credential": ApprovalDispatch(
+        approve=_credential_approve,
+        deny=_credential_deny,
+        format_row=_credential_format_row,
+        format_detail=format_approval_request,
+    ),
+    "gateway_route": ApprovalDispatch(
+        approve=_gateway_approve,
+        deny=_gateway_deny,
+        format_row=_gateway_format_row,
+        format_detail=format_risky_route_approval,
+    ),
+    "service": ApprovalDispatch(
+        approve=_service_approve,
+        deny=_service_deny,
+        format_row=_service_format_row,
+        format_detail=_service_format_detail,
+    ),
+    "contract_binding": ApprovalDispatch(
+        approve=_contract_binding_approve,
+        deny=_contract_binding_deny,
+        format_row=_contract_binding_format_row,
+        format_detail=_contract_binding_format_detail,
+    ),
+}
 
 
 def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:

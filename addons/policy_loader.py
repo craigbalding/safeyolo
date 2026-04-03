@@ -178,7 +178,7 @@ class PolicyLoader:
                 if mt > max_mtime:
                     max_mtime = mt
             except OSError:
-                pass
+                pass  # Skip files that vanish between glob and stat
         return max_mtime
 
     def _agents_path(self) -> Path | None:
