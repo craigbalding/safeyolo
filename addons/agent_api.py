@@ -801,7 +801,7 @@ class AgentAPI:
                     try:
                         filters[key] = int(filters[key])
                     except (ValueError, TypeError):
-                        pass
+                        pass  # Leave non-numeric filter values as strings
         else:
             filters = self._read_json_body(flow)
             if filters is None:
