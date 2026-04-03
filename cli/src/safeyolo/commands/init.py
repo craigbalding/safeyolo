@@ -18,7 +18,7 @@ from ..config import (
 from ..docker import check_docker, write_compose_file
 
 # Path to bundled templates in package
-POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.yaml"
+POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
 
 console = Console()
@@ -116,13 +116,13 @@ def init(
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 
-    # Copy policy.yaml (policy file)
-    policy_path = config_dir / "policy.yaml"
+    # Copy policy.toml (policy file)
+    policy_path = config_dir / "policy.toml"
     if POLICY_TEMPLATE_PATH.exists():
         shutil.copy(POLICY_TEMPLATE_PATH, policy_path)
         console.print(f"  [green]Created[/green] {policy_path}")
     else:
-        console.print(f"  [red]Warning[/red]: Could not find policy.yaml template at {POLICY_TEMPLATE_PATH}")
+        console.print(f"  [red]Warning[/red]: Could not find policy template at {POLICY_TEMPLATE_PATH}")
         console.print("    The proxy will fail to start without a policy file.")
 
     # Copy addons.yaml (addon configuration)

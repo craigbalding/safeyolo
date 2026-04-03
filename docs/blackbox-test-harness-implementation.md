@@ -21,7 +21,7 @@ Final structure:
 tests/blackbox/
 ├── docker-compose.yml          # Test orchestration
 ├── config/
-│   └── test-policy.yaml      # Test-specific policy
+│   └── test-policy.yaml      # Test-specific policy (IAM format, stays YAML)
 ├── sinkhole/
 │   ├── Dockerfile
 │   ├── server.py               # Multi-host HTTP server

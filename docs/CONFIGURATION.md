@@ -7,7 +7,7 @@ SafeYolo configuration lives in `~/.safeyolo/` (global) or `./safeyolo/` (projec
 ```
 ~/.safeyolo/
 ├── config.yaml          # Proxy settings
-├── policy.yaml          # Policy: hosts, credentials, rate limits
+├── policy.toml          # Policy: hosts, credentials, rate limits
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── agents.yaml          # Machine-managed agent metadata (services, capabilities, grants)
 ├── services/            # User service definitions (override builtin services)
@@ -41,45 +41,49 @@ modes:
   test_context: block
 ```
 
-## policy.yaml
+## policy.toml
 
-Host-centric policy format. Everything about one host lives in one place:
+Host-centric policy format in TOML. Everything about one host lives in one place:
 
-```yaml
-hosts:
-  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
-  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
-  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
-  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
+```toml
+version = "2.0"
+description = "SafeYolo baseline policy"
 
-global_budget: 12000
+budget = 12_000  # total req/min across all domains
 
-credentials:
-  openai:
-    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
-    headers: [authorization, x-api-key]
+required = ["credential_guard", "network_guard", "circuit_breaker"]
+scan_patterns = []
 
-required: [credential_guard, network_guard, circuit_breaker]
-scan_patterns: []
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
+"api.github.com"    = { allow = ["github:*"],     rate = 300 }
+"*"                 = { on_unknown = "prompt",     rate = 600 }
+
+[credential.openai]
+match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
 ```
 
 Each host entry can include:
-- `credentials` - credential types allowed (e.g. `[openai:*]`, `[hmac:a1b2c3d4]`)
-- `rate_limit` - requests per minute for this host
+- `allow` - credential types allowed (e.g. `["openai:*"]`, `["hmac:a1b2c3d4"]`)
+- `rate` - requests per minute for this host
 - `bypass` - addons to skip for this host
 - `rules` - escape hatch for full IAM expressiveness when needed
 
-The wildcard `"*"` entry sets defaults for unlisted hosts. `unknown_credentials: prompt` triggers human approval for unrecognized credentials.
+The wildcard `"*"` entry sets defaults for unlisted hosts. `on_unknown = "prompt"` triggers human approval for unrecognized credentials.
 
-`allowed_hosts` for credential rules are auto-derived from the `hosts` section -- you don't need to specify them separately.
+`allowed_hosts` for credential rules are auto-derived from the `[hosts]` section -- you don't need to specify them separately.
 
-> **Note:** The host-centric format compiles to IAM-style rules at load time. The IAM format remains the internal evaluation model.
+> **Note:** The host-centric format compiles to IAM-style rules at load time. The IAM format remains the internal evaluation model. TOML field names are normalized to internal names during loading (`allow` → `credentials`, `rate` → `rate_limit`, etc.).
 
-> **Tip:** Run `safeyolo policy show` to see the fully merged policy as the PDP sees it. This includes policy.yaml, addons.yaml, and agents.yaml merged together.
+> **Tip:** Run `safeyolo policy show` to see the fully merged policy as the PDP sees it. This includes policy.toml, addons.yaml, and agents.yaml merged together.
+
+> **Migration:** Existing `policy.yaml` files can be migrated with `safeyolo policy migrate`. Both formats are supported; the proxy prefers `.toml` when both exist.
 
 ## addons.yaml
 
-Addon tuning lives in a separate file, sibling to `policy.yaml`:
+Addon tuning lives in a separate file, sibling to the policy file:
 
 ```yaml
 addons:
@@ -97,11 +101,11 @@ addons:
 
 ## agents.yaml
 
-Machine-managed agent metadata, written by the CLI (`safeyolo agent authorize` / `safeyolo agent revoke`). Lives alongside `policy.yaml` and is merged at load time.
+Machine-managed agent metadata, written by the CLI (`safeyolo agent authorize` / `safeyolo agent revoke`). Lives alongside the policy file and is merged at load time.
 
 ```yaml
 # Machine-managed by CLI (safeyolo agent authorize/revoke)
-# Lives alongside policy.yaml — merged at load time
+# Lives alongside policy.toml — merged at load time
 boris:
   template: claude-code
   folder: /home/user/my-project
@@ -123,11 +127,11 @@ boris:
 ```
 
 Notes:
-- The CLI writes `agents.yaml`; it never touches `policy.yaml`.
-- The policy loader merges all sibling files (`policy.yaml` + `addons.yaml` + `agents.yaml`) at load time.
+- The CLI writes `agents.yaml`; it never touches the policy file.
+- The policy loader merges all sibling files (`policy.toml` + `addons.yaml` + `agents.yaml`) at load time.
 - Service bindings use `capability:` (not `role:`). The `account:` field declares whose account the credential belongs to (`agent`, `operator`, or a custom label).
-- The `grants:` section tracks operator-approved one-time or session grants for risky routes. Once-grants are consumed after a successful (2xx) response. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in policy.yaml.
-- If you want to hand-manage agents, move the section into `policy.yaml` and delete `agents.yaml`.
+- The `grants:` section tracks operator-approved one-time or session grants for risky routes. Once-grants are consumed after a successful (2xx) response. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in the policy file.
+- If you want to hand-manage agents, add the section to your policy file and delete `agents.yaml`.
 - `safeyolo policy show` displays the merged result.
 
 ## Service Definitions
@@ -136,7 +140,7 @@ Service definitions describe APIs: auth methods, capabilities (named sets of all
 
 - Builtin services ship with SafeYolo (gmail, slack, etc.) in `config/services/`.
 - User overrides go in `~/.safeyolo/services/`.
-- The `service:` field in `policy.yaml` host entries links a host to a service definition.
+- The `service` field in host entries links a host to a service definition.
 
 Example service YAML (v2 format):
 
@@ -168,7 +172,7 @@ Key v2 changes from v1:
 - **Capabilities** replace roles. Capability routes are a positive list (no `effect: allow/deny`).
 - **Risky routes** replace deny rules. Tagged with ATT&CK `tactics`, `enables`, and `irreversible` signals.
 - **Auth** is defined at service level (not per-role).
-- **Risk appetite** rules in `policy.yaml` (`gateway:` section) determine which risky routes require operator approval based on tactics, account persona, and irreversibility.
+- **Risk appetite** rules in the policy file (`[[risk]]` in TOML / `gateway:` in YAML) determine which risky routes require operator approval based on tactics, account persona, and irreversibility.
 
 ## Vault
 

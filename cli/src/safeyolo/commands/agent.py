@@ -1086,18 +1086,50 @@ def _auto_credential_name(service_name: str, existing_names: list[str]) -> str:
 
 
 def _load_policy_hosts() -> dict:
-    """Load hosts section from policy.yaml."""
+    """Load hosts section from policy file (TOML or YAML)."""
     from ..config import _get_config_dir_path
 
-    policy_path = _get_config_dir_path() / "policy.yaml"
-    if not policy_path.exists():
-        return {}
-    try:
-        raw = yaml.safe_load(policy_path.read_text())
-        if raw and isinstance(raw, dict):
-            return raw.get("hosts", {})
-    except (OSError, yaml.YAMLError):
-        pass  # Best-effort: missing or invalid policy is not fatal here
+    config_dir = _get_config_dir_path()
+
+    # Prefer .toml, fall back to .yaml
+    toml_path = config_dir / "policy.toml"
+    yaml_path = config_dir / "policy.yaml"
+
+    if toml_path.exists():
+        try:
+            import tomlkit
+
+            raw = tomlkit.parse(toml_path.read_text())
+            hosts = raw.get("hosts", {})
+            # Normalize TOML field names: allow->credentials, rate->rate_limit
+            result = {}
+            for host, config in hosts.items():
+                if isinstance(config, dict):
+                    entry = {}
+                    for k, v in config.items():
+                        if k == "allow":
+                            entry["credentials"] = v
+                        elif k == "rate":
+                            entry["rate_limit"] = v
+                        elif k == "on_unknown":
+                            entry["unknown_credentials"] = v
+                        else:
+                            entry[k] = v
+                    result[host] = entry
+                else:
+                    result[host] = config
+            return result
+        except (OSError, ValueError):
+            pass  # Best-effort: invalid TOML is not fatal here
+
+    if yaml_path.exists():
+        try:
+            raw = yaml.safe_load(yaml_path.read_text())
+            if raw and isinstance(raw, dict):
+                return raw.get("hosts", {})
+        except (OSError, yaml.YAMLError):
+            pass
+
     return {}
 
 

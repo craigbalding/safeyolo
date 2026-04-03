@@ -207,7 +207,7 @@ Inspect the merged policy that the proxy enforces at runtime.
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo policy show` | Show merged policy (policy.yaml + addons.yaml + agents.yaml) |
+| `safeyolo policy show` | Show merged policy (policy.toml + addons.yaml + agents.yaml) |
 | `safeyolo policy show --compiled` | Show compiled IAM format |
 | `safeyolo policy show --section hosts` | Filter output to one section |
 
@@ -281,7 +281,7 @@ Configuration is stored in `./safeyolo/` (project-specific) or `~/.safeyolo/` (g
 ```
 safeyolo/
 ├── config.yaml          # Main configuration
-├── policy.yaml          # Host-centric policy (hosts, credentials, rate limits)
+├── policy.toml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── agents.yaml          # Machine-managed agent metadata (services, capabilities, grants)
 ├── docker-compose.yml   # Generated compose file
@@ -310,29 +310,29 @@ modes:
   test_context: block
 ```
 
-### policy.yaml
+### policy.toml
 
 Host-centric policy defining hosts, credentials, and rate limits:
 
-```yaml
-hosts:
-  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
-  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
-  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
+```toml
+version = "2.0"
+budget = 12_000
 
-global_budget: 12000
+required = ["credential_guard", "network_guard", "circuit_breaker"]
 
-credentials:
-  openai:
-    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
-    headers: [authorization, x-api-key]
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
+"*"                 = { on_unknown = "prompt",     rate = 600 }
 
-required: [credential_guard, network_guard, circuit_breaker]
+[credential.openai]
+match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
 ```
 
 ### addons.yaml
 
-Addon tuning lives in a separate file, sibling to `policy.yaml`:
+Addon tuning lives in a separate file, sibling to `policy.toml`:
 
 ```yaml
 addons:

@@ -327,7 +327,7 @@ def _check_ca_cert() -> DiagResult:
 
 
 def _check_baseline() -> DiagResult:
-    """Check if policy.yaml is valid."""
+    """Check if policy file is valid (TOML or YAML)."""
     config_dir = find_config_dir()
     if not config_dir:
         return DiagResult(
@@ -335,22 +335,33 @@ def _check_baseline() -> DiagResult:
             status="skip",
             message="Config directory not found",
         )
-    baseline_path = config_dir / "policy.yaml"
+
+    # Prefer .toml, fall back to .yaml
+    baseline_path = config_dir / "policy.toml"
+    if not baseline_path.exists():
+        baseline_path = config_dir / "policy.yaml"
     if not baseline_path.exists():
         return DiagResult(
             name="Baseline policy",
             status="fail",
-            message="policy.yaml not found",
+            message="Policy file not found (policy.toml or policy.yaml)",
             remediation="safeyolo init",
         )
+
     try:
-        with open(baseline_path) as fh:
-            data = yaml.safe_load(fh)
+        if baseline_path.suffix == ".toml":
+            import tomlkit
+
+            data = tomlkit.parse(baseline_path.read_text())
+        else:
+            with open(baseline_path) as fh:
+                data = yaml.safe_load(fh)
+
         if not isinstance(data, dict):
             return DiagResult(
                 name="Baseline policy",
                 status="fail",
-                message="Invalid YAML (not a mapping)",
+                message=f"Invalid {baseline_path.suffix} (not a mapping)",
                 remediation="safeyolo init",
             )
         if "hosts" in data:
@@ -359,26 +370,26 @@ def _check_baseline() -> DiagResult:
             return DiagResult(
                 name="Baseline policy",
                 status="pass",
-                message=f"Valid ({host_count} hosts)",
+                message=f"Valid ({host_count} hosts) [{baseline_path.name}]",
             )
         if "permissions" not in data:
             return DiagResult(
                 name="Baseline policy",
                 status="warn",
-                message="No 'permissions' or 'hosts' key in policy.yaml",
+                message=f"No 'permissions' or 'hosts' key in {baseline_path.name}",
             )
         perm_count = len(data.get("permissions", []))
         return DiagResult(
             name="Baseline policy",
             status="pass",
-            message=f"Valid ({perm_count} permissions)",
+            message=f"Valid ({perm_count} permissions) [{baseline_path.name}]",
         )
-    except yaml.YAMLError as exc:
+    except Exception as exc:
         return DiagResult(
             name="Baseline policy",
             status="fail",
-            message=f"YAML parse error: {exc}",
-            remediation="Fix syntax in policy.yaml or run: safeyolo init",
+            message=f"Parse error: {exc}",
+            remediation=f"Fix syntax in {baseline_path.name} or run: safeyolo init",
         )
 
 

@@ -1,0 +1,85 @@
+# SafeYolo baseline policy
+#
+# TOML format: everything about one host in one place.
+# Each entry can have: allow, rate, bypass, rules.
+#
+# Approved credentials are auto-added here by `safeyolo watch`.
+# Addon tuning (entropy, circuit breaker, etc.) lives in addons.yaml.
+
+version = "2.0"
+description = "SafeYolo baseline policy"
+
+budget = 12_000  # total req/min across all domains
+
+# =============================================================================
+# REQUIRED ADDONS (cannot be disabled)
+# =============================================================================
+
+required = [
+    "credential_guard",
+    "network_guard",
+    "circuit_breaker",
+]
+
+scan_patterns = []
+
+# =============================================================================
+# HOSTS — credentials + rate limits + overrides, all in one place
+# =============================================================================
+
+[hosts]
+# ── LLM APIs ──────────────────────────────────────────────────
+"api.openai.com"      = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com"   = { allow = ["anthropic:*"],  rate = 3_000 }
+"openrouter.ai"       = { rate = 3_000 }
+
+# ── Code hosting ──────────────────────────────────────────────
+"api.github.com"      = { allow = ["github:*"],     rate = 300 }
+"github.com"          = { allow = ["github:*"] }
+
+# ── Google ────────────────────────────────────────────────────
+"*.googleapis.com"    = { rate = 120 }
+
+# ── Package registries ────────────────────────────────────────
+"pypi.org"               = { rate = 1_200 }
+"files.pythonhosted.org" = { rate = 1_200 }
+"registry.npmjs.org"     = { rate = 600 }
+
+# ── Rust ──────────────────────────────────────────────────────
+"index.crates.io"     = { rate = 3_000 }
+"static.crates.io"    = { rate = 1_200 }
+"crates.io"           = { rate = 600 }
+
+# ── Go ────────────────────────────────────────────────────────
+"proxy.golang.org"    = { rate = 300 }
+"sum.golang.org"      = { rate = 300 }
+
+# ── Local ─────────────────────────────────────────────────────
+"host.docker.internal" = { rate = 12_000 }
+
+# ── Domain overrides ──────────────────────────────────────────
+"*.internal"          = { bypass = ["pattern_scanner"] }
+
+# ── Service gateway (add after running `safeyolo agent authorize`) ──
+# "mail.google.com" = { service = "gmail" }
+# "api.slack.com"   = { service = "slack" }
+
+# ── Defaults (wildcard) ───────────────────────────────────────
+"*"                   = { on_unknown = "prompt",  rate = 600 }
+
+# =============================================================================
+# CREDENTIAL DETECTION — how to recognize each credential type
+# =============================================================================
+# allowed_hosts auto-derived from hosts section above
+
+[credential.openai]
+match   = ['sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}', 'sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
+
+[credential.anthropic]
+match   = ['sk-ant-api[a-zA-Z0-9_-]{90,}']
+headers = ["authorization", "x-api-key"]
+
+[credential.github]
+match   = ['gh[ps]_[a-zA-Z0-9]{36}']
+headers = ["authorization"]

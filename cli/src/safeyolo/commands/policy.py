@@ -12,22 +12,59 @@ console = Console()
 
 policy_app = typer.Typer(
     name="policy",
-    help="Inspect merged policy configuration.",
+    help="Inspect and manage policy configuration.",
     no_args_is_help=True,
 )
 
 
-def _load_policy_yaml(config_dir: Path) -> tuple[dict, Path]:
-    """Load policy.yaml from config dir. Returns (dict, path)."""
-    policy_path = config_dir / "policy.yaml"
-    if not policy_path.exists():
-        console.print(f"[red]Error:[/red] {policy_path} not found")
+def _find_policy_path(config_dir: Path) -> Path | None:
+    """Find policy file: prefer .toml, fall back to .yaml."""
+    toml_path = config_dir / "policy.toml"
+    if toml_path.exists():
+        return toml_path
+    yaml_path = config_dir / "policy.yaml"
+    if yaml_path.exists():
+        return yaml_path
+    return None
+
+
+def _load_policy_file(config_dir: Path) -> tuple[dict, Path]:
+    """Load policy file from config dir. Returns (dict, path).
+
+    Checks for policy.toml first, falls back to policy.yaml.
+    """
+    policy_path = _find_policy_path(config_dir)
+    if not policy_path:
+        console.print(f"[red]Error:[/red] Policy file not found in {config_dir}")
         console.print("Run [bold]safeyolo init[/bold] to create a policy.")
         raise typer.Exit(1)
 
-    with open(policy_path) as f:
-        raw = yaml.safe_load(f) or {}
-    return raw, policy_path
+    if policy_path.suffix == ".toml":
+        import tomlkit
+
+        raw = tomlkit.parse(policy_path.read_text())
+        # Normalize TOML field names to internal format for merge/compile
+        addons_dir = Path(__file__).parent.parent.parent.parent.parent / "addons"
+        import sys
+
+        prev_normalizer = sys.modules.pop("toml_normalize", None)
+        sys.path.insert(0, str(addons_dir))
+        try:
+            from toml_normalize import normalize
+
+            plain = raw.unwrap()
+            internal = normalize(plain)
+        finally:
+            sys.path.pop(0)
+            if prev_normalizer is not None:
+                sys.modules["toml_normalize"] = prev_normalizer
+            else:
+                sys.modules.pop("toml_normalize", None)
+        return internal, policy_path
+    else:
+        with open(policy_path) as f:
+            raw = yaml.safe_load(f) or {}
+        return raw, policy_path
 
 
 def _merge_siblings(raw: dict, policy_path: Path) -> dict:
@@ -130,9 +167,9 @@ def show(
         None, "--section", "-s", help="Show only this section (e.g. hosts, agents, credentials)"
     ),
 ) -> None:
-    """Show the merged policy (policy.yaml + addons.yaml + agents.yaml).
+    """Show the merged policy (policy + addons.yaml + agents.yaml).
 
-    By default shows the merged host-centric YAML that operators write.
+    By default shows the merged host-centric format that operators write.
     Use --compiled to see the IAM format the PDP evaluates.
 
     Examples:
@@ -145,14 +182,15 @@ def show(
     from ..config import get_config_dir
 
     config_dir = get_config_dir()
-    raw, policy_path = _load_policy_yaml(config_dir)
+    raw, policy_path = _load_policy_file(config_dir)
     result = _merge_siblings(raw, policy_path)
 
     if compiled:
         result = _fetch_compiled_policy(result, policy_path)
         console.print("[dim]# Compiled IAM format (as evaluated by PDP)[/dim]")
     else:
-        console.print("[dim]# Merged from: policy.yaml + addons.yaml + agents.yaml[/dim]")
+        sources = f"{policy_path.name} + addons.yaml + agents.yaml"
+        console.print(f"[dim]# Merged from: {sources}[/dim]")
 
     if section:
         if section not in result:
@@ -162,12 +200,153 @@ def show(
             raise typer.Exit(1)
         result = {section: result[section]}
 
+    # Use TOML syntax highlighting for TOML files
+    syntax_lang = "toml" if policy_path.suffix == ".toml" else "yaml"
     yaml_text = yaml.dump(result, default_flow_style=False, sort_keys=False)
-    console.print(Syntax(yaml_text, "yaml"))
+    console.print(Syntax(yaml_text, syntax_lang))
 
     # Show resolved agent authorizations (non-compiled view, full or agents section)
     if not compiled and (not section or section == "agents"):
         _show_agent_authorizations(result)
+
+
+@policy_app.command()
+def migrate(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print to stdout instead of writing"),
+    keep: bool = typer.Option(False, "--keep", help="Keep policy.yaml (don't rename to .bak)"),
+) -> None:
+    """Migrate policy.yaml to policy.toml.
+
+    Converts the YAML policy to TOML format with idiomatic field names.
+    Comments are migrated on a best-effort basis.
+
+    Examples:
+
+        safeyolo policy migrate --dry-run
+        safeyolo policy migrate
+        safeyolo policy migrate --keep
+    """
+    import sys
+
+    from ..config import get_config_dir
+
+    config_dir = get_config_dir()
+    yaml_path = config_dir / "policy.yaml"
+    toml_path = config_dir / "policy.toml"
+
+    if not yaml_path.exists():
+        console.print(f"[red]Error:[/red] {yaml_path} not found")
+        raise typer.Exit(1)
+
+    if toml_path.exists() and not dry_run:
+        console.print(f"[red]Error:[/red] {toml_path} already exists")
+        console.print("Remove it first or use --dry-run to preview.")
+        raise typer.Exit(1)
+
+    # Load YAML
+    with open(yaml_path) as f:
+        raw = yaml.safe_load(f) or {}
+
+    # Convert to TOML field names
+    addons_dir = Path(__file__).parent.parent.parent.parent.parent / "addons"
+    prev_normalizer = sys.modules.pop("toml_normalize", None)
+    sys.path.insert(0, str(addons_dir))
+    try:
+        from toml_normalize import denormalize
+
+        toml_data = denormalize(raw)
+    finally:
+        sys.path.pop(0)
+        if prev_normalizer is not None:
+            sys.modules["toml_normalize"] = prev_normalizer
+        else:
+            sys.modules.pop("toml_normalize", None)
+
+    # Build TOML document with proper structure
+    import tomlkit
+
+    doc = _build_toml_document(toml_data)
+    content = tomlkit.dumps(doc)
+
+    if dry_run:
+        console.print(Syntax(content, "toml"))
+        return
+
+    toml_path.write_text(content)
+    console.print(f"  [green]Created[/green] {toml_path}")
+
+    if not keep:
+        bak_path = yaml_path.with_suffix(".yaml.bak")
+        yaml_path.rename(bak_path)
+        console.print(f"  [dim]Renamed[/dim] {yaml_path} → {bak_path}")
+
+    console.print("[green]Migration complete.[/green]")
+
+
+def _build_toml_document(data: dict):
+    """Build a well-structured TOMLDocument from denormalized data."""
+    import tomlkit
+
+    doc = tomlkit.document()
+
+    # Top-level scalars and arrays (must come before any [table] headers in TOML)
+    if "version" in data:
+        doc.add("version", data["version"])
+    if "description" in data:
+        doc.add("description", data["description"])
+    if "budget" in data:
+        doc.add("budget", data["budget"])
+
+    # Top-level arrays (before table sections)
+    for key in ("required", "scan_patterns"):
+        if key in data:
+            doc.add(tomlkit.nl())
+            doc.add(key, data[key])
+
+    # [hosts] section with inline tables
+    if "hosts" in data:
+        doc.add(tomlkit.nl())
+        hosts_table = tomlkit.table()
+        for host, config in data["hosts"].items():
+            if isinstance(config, dict):
+                it = tomlkit.inline_table()
+                for k, v in config.items():
+                    it.append(k, v)
+                hosts_table.add(host, it)
+            else:
+                hosts_table.add(host, config)
+        doc.add("hosts", hosts_table)
+
+    # [credential.X] sub-tables
+    if "credential" in data:
+        doc.add(tomlkit.nl())
+        for cred_name, cred_config in data["credential"].items():
+            key = f"credential.{cred_name}"
+            tbl = tomlkit.table()
+            if isinstance(cred_config, dict):
+                for k, v in cred_config.items():
+                    tbl.add(k, v)
+            doc.add(key, tbl)
+
+    # [[risk]] array of tables
+    if "risk" in data:
+        doc.add(tomlkit.nl())
+        aot = tomlkit.aot()
+        for rule in data["risk"]:
+            tbl = tomlkit.table()
+            if isinstance(rule, dict):
+                for k, v in rule.items():
+                    tbl.add(k, v)
+            aot.append(tbl)
+        doc.add("risk", aot)
+
+    # Remaining keys as-is
+    for key in ("addons", "clients", "gateway", "services", "agents"):
+        if key in data:
+            doc.add(tomlkit.nl())
+            doc.add(key, data[key])
+
+    return doc
 
 
 def _show_agent_authorizations(result: dict) -> None:

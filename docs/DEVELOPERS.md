@@ -27,7 +27,7 @@ This guide is for developers who want to contribute to SafeYolo, build integrati
 │  ┌───────────────┐              ┌──────────────────────┐    │
 │  │ ./safeyolo/   │              │ Proxy :8080          │    │
 │  │  config.yaml  │              │                      │    │
-│  │  policy.yaml│              │ Intercepts HTTP      │    │
+│  │  policy.toml│              │ Intercepts HTTP      │    │
 │  │  policies/    │              │ from AI agents       │    │
 │  │  logs/        │              │                      │    │
 │  └───────────────┘              └──────────────────────┘    │
@@ -208,8 +208,8 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
 | POST | `/admin/policy/validate` | Validate YAML policy content |
 
 > **Note on `PUT /admin/policy/baseline`:** Full baseline replacement is intended
-> for machine-to-machine automation. This operation may not preserve YAML comments,
-> layout, or human-authored formatting in policy.yaml. Operators who use inline
+> for machine-to-machine automation. This operation may not preserve comments,
+> layout, or human-authored formatting in the policy file. Operators who use inline
 > comments as guidance should prefer incremental local updates or regenerate from
 > a canonical source.
 

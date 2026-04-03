@@ -146,44 +146,50 @@ is this? (agent / operator / custom label)"
 Service files declare facts. Policy expresses what the operator tolerates,
 using risky route signals and account persona.
 
-```yaml
-# policy.yaml — operator risk appetite
-gateway:
-  risk_appetite:
-    # Operator's inbox: credential_access routes need approval
-    - account: operator
-      enables: [credential_access]
-      decision: require_approval
-      approval_default: once
+```toml
+# policy.toml — operator risk appetite
 
-    # Agent's own account: collection is routine
-    - account: agent
-      tactics: [collection]
-      decision: allow
+# Operator's inbox: credential_access routes need approval
+[[risk]]
+account = "operator"
+enables = ["credential_access"]
+decision = "require_approval"
+approval_default = "once"
 
-    # Team inbox: sending is customer-facing, needs approval
-    - account: team-support
-      tactics: [impact]
-      decision: require_approval
+# Agent's own account: collection is routine
+[[risk]]
+account = "agent"
+tactics = ["collection"]
+decision = "allow"
 
-    # Exfiltration + persistence together = always require approval
-    - tactics: [exfiltration, persistence]
-      decision: require_approval
+# Team inbox: sending is customer-facing, needs approval
+[[risk]]
+account = "team-support"
+tactics = ["impact"]
+decision = "require_approval"
 
-    # Irreversible actions need explicit "yes" confirmation
-    - irreversible: true
-      decision: require_approval
-      confirm: true
+# Exfiltration + persistence together = always require approval
+[[risk]]
+tactics = ["exfiltration", "persistence"]
+decision = "require_approval"
 
-    # Trust boris with github privilege_escalation
-    - agent: boris
-      service: github
-      tactics: [privilege_escalation]
-      decision: allow
+# Irreversible actions need explicit "yes" confirmation
+[[risk]]
+irreversible = true
+decision = "require_approval"
+confirm = true
 
-    # Floor: no service file can make exfiltration routes safe
-    - tactics: [exfiltration]
-      minimum: require_approval
+# Trust boris with github privilege_escalation
+[[risk]]
+agent = "boris"
+service = "github"
+tactics = ["privilege_escalation"]
+decision = "allow"
+
+# Floor: no service file can make exfiltration routes safe
+[[risk]]
+tactics = ["exfiltration"]
+minimum = "require_approval"
 ```
 
 Policy is authoritative. A malicious service file that omits `tactics` on

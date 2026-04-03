@@ -1113,6 +1113,31 @@ class PolicyEngine:
         if not baseline_path:
             return
 
+        # TOML branch: use tomlkit for round-trip editing
+        if baseline_path.suffix == ".toml":
+            try:
+                from toml_roundtrip import add_host_credential, load_roundtrip, save_roundtrip
+
+                if baseline_path.exists():
+                    doc = load_roundtrip(baseline_path)
+
+                    # Extract host and cred_ids from the permission
+                    resource = new_permission.resource
+                    host = resource.rstrip("/*") if resource.endswith("/*") else resource
+                    cred_ids = []
+                    if new_permission.condition and new_permission.condition.credential:
+                        creds = new_permission.condition.credential
+                        cred_ids = [creds] if isinstance(creds, str) else list(creds)
+
+                    add_host_credential(doc, host, cred_ids)
+                    save_roundtrip(baseline_path, doc)
+                    return
+            except Exception as e:
+                log.warning("TOML round-trip save failed, falling back to full rewrite: %s", e)
+            self._save_baseline_plain()
+            return
+
+        # YAML branch: use ruamel.yaml for round-trip editing
         try:
             from yaml_roundtrip import load_roundtrip, save_roundtrip
 
@@ -1188,7 +1213,7 @@ class PolicyEngine:
     def _save_baseline_full(self) -> None:
         """Save full baseline policy, preserving comments where possible.
 
-        If the original file exists, loads it with ruamel.yaml and merges the
+        If the original file exists, loads it with ruamel.yaml/tomlkit and merges the
         current policy data into it, preserving section banners and comments
         on unchanged keys. Falls back to plain dump if round-trip fails.
         """
@@ -1196,6 +1221,35 @@ class PolicyEngine:
         if not baseline_path:
             return
 
+        # TOML branch: fresh document (no comment preservation for full replacement)
+        if baseline_path.suffix == ".toml":
+            try:
+                import tomlkit
+                from toml_normalize import denormalize
+
+                baseline = self._loader.baseline
+                internal = baseline.model_dump(exclude_none=True)
+                toml_data = denormalize(internal)
+                content = tomlkit.dumps(toml_data)
+
+                import shutil
+                import tempfile
+
+                baseline_path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".toml", dir=baseline_path.parent, delete=False
+                ) as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+                shutil.move(tmp_path, baseline_path)
+                log.info(f"Saved baseline policy (TOML full) to {baseline_path}")
+                return
+            except Exception as e:
+                log.warning("TOML full save failed, falling back to plain: %s", e)
+            self._save_baseline_plain()
+            return
+
+        # YAML branch
         try:
             from yaml_roundtrip import load_roundtrip, merge_into_roundtrip, save_roundtrip
 
@@ -1213,10 +1267,9 @@ class PolicyEngine:
         self._save_baseline_plain()
 
     def _save_baseline_plain(self) -> None:
-        """Save baseline policy as plain YAML (no comment preservation).
+        """Save baseline policy as plain YAML/TOML (no comment preservation).
 
-        Used as fallback when the original file doesn't exist or ruamel.yaml
-        round-trip fails.
+        Used as fallback when the original file doesn't exist or round-trip fails.
         """
         baseline_path = self._loader.baseline_path
         if not baseline_path:
@@ -1227,15 +1280,25 @@ class PolicyEngine:
             import tempfile
 
             baseline = self._loader.baseline
-            content = yaml.safe_dump(
-                baseline.model_dump(exclude_none=True),
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            )
+            internal = baseline.model_dump(exclude_none=True)
+
+            if baseline_path.suffix == ".toml":
+                import tomlkit
+                from toml_normalize import denormalize
+
+                content = tomlkit.dumps(denormalize(internal))
+                suffix = ".toml"
+            else:
+                content = yaml.safe_dump(
+                    internal,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+                suffix = ".yaml"
 
             baseline_path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", dir=baseline_path.parent, delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, dir=baseline_path.parent, delete=False) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
 

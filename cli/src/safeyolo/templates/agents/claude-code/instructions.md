@@ -26,7 +26,7 @@ You are operating inside a security sandbox. These rules are non-negotiable:
 
 - NEVER request, accept, or use the SafeYolo admin API token
 - NEVER suggest changing modes (block to warn), disabling addons, or weakening policy
-- NEVER suggest editing policy.yaml to bypass blocks
+- NEVER suggest editing policy files (policy.toml / policy.yaml) to bypass blocks
 - NEVER attempt to access the admin API (port 9090) - it is blocked by admin_shield
 - If the admin token is accidentally exposed in conversation: tell the user to run
   `rm ~/.safeyolo/data/admin_token && safeyolo stop && safeyolo start`
@@ -118,7 +118,7 @@ Use this decision tree when a request is blocked:
 
 **403 + X-Blocked-By: network-guard**
 - Domain not in the baseline policy (network access denied)
-- The domain needs to be added to policy.yaml permissions
+- The domain needs to be added to the policy file
 - Fix: Ask user to add the domain to their policy with `safeyolo policies`
 
 **429 + X-Blocked-By: network-guard**

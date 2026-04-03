@@ -46,33 +46,33 @@ SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision 
 
 Security configuration is split across three sibling files that are loaded into a single Pydantic-validated model (`UnifiedPolicy`):
 
-- `policy.yaml` -- human-owned host-centric policy
+- `policy.toml` -- human-owned host-centric policy (TOML-first; `.yaml` also supported)
 - `addons.yaml` -- addon tuning (merged as defaults)
 - `agents.yaml` -- machine-managed agent-to-service bindings (merged at load time)
 
 All three are merged by PolicyLoader before compilation.
 
-```yaml
-# policy.yaml — host-centric policy
-hosts:
-  api.openai.com:      { credentials: [openai:*],    rate_limit: 3000 }
-  api.anthropic.com:   { credentials: [anthropic:*],  rate_limit: 3000 }
-  api.github.com:      { credentials: [github:*],     rate_limit: 300 }
-  "*":                 { unknown_credentials: prompt,  rate_limit: 600 }
+```toml
+# policy.toml — host-centric policy
+version = "2.0"
+budget = 12_000
 
-global_budget: 12000
+required = ["credential_guard", "network_guard", "circuit_breaker"]
+scan_patterns = []
 
-credentials:
-  openai:
-    patterns: ["sk-proj-[a-zA-Z0-9_-]{80,}"]
-    headers: [authorization, x-api-key]
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
+"api.github.com"    = { allow = ["github:*"],     rate = 300 }
+"*"                 = { on_unknown = "prompt",     rate = 600 }
 
-required: [credential_guard, network_guard, circuit_breaker]
-scan_patterns: []
+[credential.openai]
+match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
+headers = ["authorization", "x-api-key"]
 ```
 
 ```yaml
-# addons.yaml — addon tuning (sibling to policy.yaml)
+# addons.yaml — addon tuning (sibling to policy.toml)
 addons:
   credential_guard:
     enabled: true
@@ -86,13 +86,13 @@ addons:
     builtin_sets: []
 ```
 
-The host-centric format in `policy.yaml` compiles to IAM-style rules at load time. Each host entry can include `credentials`, `rate_limit`, `bypass`, and a `rules` escape hatch for full IAM expressiveness. `allowed_hosts` for credential rules are auto-derived from the `hosts` section.
+The host-centric format in `policy.toml` compiles to IAM-style rules at load time. TOML field names are normalized during loading (`allow` → `credentials`, `rate` → `rate_limit`, etc.). Each host entry can include `allow`, `rate`, `bypass`, and a `rules` escape hatch for full IAM expressiveness. `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section.
 
 ### Policy Layers
 
 Policies are layered (baseline + task):
 
-1. **Baseline Policy**: Default rules loaded from `policy.yaml`
+1. **Baseline Policy**: Default rules loaded from `policy.toml` (or `policy.yaml`)
 2. **Task Policy**: Optional per-task overrides (additive)
 
 The PolicyEngine merges these, with task policy extending baseline.
@@ -101,11 +101,11 @@ The PolicyEngine merges these, with task policy extending baseline.
 
 | File | Section | Purpose |
 |------|---------|---------|
-| `policy.yaml` | `hosts` | Per-host credentials, rate limits, bypass, rules |
-| `policy.yaml` | `global_budget` | Global rate limit cap across all hosts |
-| `policy.yaml` | `credentials` | Credential detection patterns and header names |
-| `policy.yaml` | `required` | Addons that must be active |
-| `policy.yaml` | `scan_patterns` | Content scanning rules (URL, headers, body) |
+| `policy.toml` | `[hosts]` | Per-host credentials (`allow`), rate limits (`rate`), bypass, rules |
+| `policy.toml` | `budget` | Global rate limit cap across all hosts |
+| `policy.toml` | `[credential.*]` | Credential detection patterns (`match`) and header names |
+| `policy.toml` | `required` | Addons that must be active |
+| `policy.toml` | `scan_patterns` | Content scanning rules (URL, headers, body) |
 | `addons.yaml` | `addons` | Per-addon configuration, enablement, tuning |
 
 ## PDP Architecture
@@ -119,7 +119,7 @@ PolicyClient (interface)
     │                                                            │
     └── HttpPolicyClient ──► FastAPI (/v1/evaluate)              ▼
                                     │                      UnifiedPolicy
-                                    └──► PDPCore ──► ...        (yaml)
+                                    └──► PDPCore ──► ...    (toml/yaml)
 ```
 
 ### PolicyClient
@@ -167,9 +167,9 @@ Pure policy evaluation logic:
 
 ### PolicyLoader
 
-Handles YAML loading and validation:
+Handles policy file loading and validation:
 
-- Loads policy.yaml at startup
+- Loads policy.toml (or .yaml) at startup
 - Validates against UnifiedPolicy Pydantic model
 - Supports task policy upsert/delete
 - Computes policy hash for change detection
@@ -348,7 +348,7 @@ safeyolo/
 │   ├── request_id.py        # Request ID generation
 │   ├── sse_streaming.py     # SSE/streaming for LLM responses
 │   ├── policy_engine.py     # PolicyEngine + PolicyClientConfigurator
-│   ├── policy_loader.py     # YAML loading, hot reload
+│   ├── policy_loader.py     # TOML/YAML loading, hot reload
 │   ├── budget_tracker.py    # GCRA-based rate limiting
 │   ├── network_guard.py     # Access control + rate limiting
 │   ├── circuit_breaker.py   # Upstream failure protection
@@ -368,7 +368,7 @@ safeyolo/
 │   ├── tokens.py            # HMAC-signed readonly tokens
 │   └── app.py               # FastAPI HTTP adapter
 ├── config/
-│   ├── policy.yaml          # Host-centric policy (hosts, credentials, rate limits)
+│   ├── policy.yaml          # Host-centric policy (YAML fallback; TOML preferred)
 │   ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 │   └── safe_headers.yaml    # Headers to skip in credential scanning
 └── tests/

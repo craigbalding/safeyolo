@@ -43,7 +43,7 @@ from ..docker import (
 console = Console()
 
 # Path to bundled templates in package
-POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.yaml"
+POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
 
 
@@ -72,8 +72,8 @@ def _bootstrap_config(config_dir: Path) -> None:
     config = DEFAULT_CONFIG.copy()
     save_config(config)
 
-    # Copy policy.yaml (policy file)
-    policy_path = config_dir / "policy.yaml"
+    # Copy policy.toml (policy file)
+    policy_path = config_dir / "policy.toml"
     if POLICY_TEMPLATE_PATH.exists():
         shutil.copy(POLICY_TEMPLATE_PATH, policy_path)
 
