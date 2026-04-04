@@ -66,7 +66,7 @@ known_bad = "lists/stevenblack-hosts.txt"
 # "api.slack.com"   = { service = "slack" }
 
 # ── Defaults (wildcard) ───────────────────────────────────────
-"*"                   = { egress = "allow", on_unknown = "prompt",  rate = 600 }
+"*"                   = { egress = "allow", unknown_creds = "prompt",  rate = 600 }
 
 # =============================================================================
 # CREDENTIAL DETECTION — how to recognize each credential type

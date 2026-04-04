@@ -85,7 +85,7 @@ class TestDenormalize:
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
 
-        assert result["hosts"]["*"]["on_unknown"] == "prompt"
+        assert result["hosts"]["*"]["unknown_creds"] == "prompt"
         assert result["hosts"]["*"]["rate"] == 600
 
     def test_credentials_to_credential(self):

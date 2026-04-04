@@ -47,10 +47,10 @@ class TestNormalize:
         assert "allow" not in result["hosts"]["api.openai.com"]
         assert "rate" not in result["hosts"]["api.openai.com"]
 
-    def test_hosts_on_unknown_to_unknown_credentials(self, normalize):
-        """hosts.X.on_unknown -> hosts.X.unknown_credentials."""
+    def test_hosts_unknown_creds_to_unknown_credentials(self, normalize):
+        """hosts.X.unknown_creds -> hosts.X.unknown_credentials."""
         result = normalize({
-            "hosts": {"*": {"on_unknown": "prompt", "rate": 600}}
+            "hosts": {"*": {"unknown_creds": "prompt", "rate": 600}}
         })
         assert result["hosts"]["*"]["unknown_credentials"] == "prompt"
         assert result["hosts"]["*"]["rate_limit"] == 600
@@ -117,7 +117,7 @@ class TestNormalize:
             "hosts": {
                 "api.openai.com": {"allow": ["openai:*"], "rate": 3000},
                 "*.internal": {"bypass": ["pattern_scanner"]},
-                "*": {"on_unknown": "prompt", "rate": 600},
+                "*": {"unknown_creds": "prompt", "rate": 600},
             },
             "credential": {
                 "openai": {"match": ["sk-..."], "headers": ["authorization"]},
@@ -201,7 +201,7 @@ class TestRoundTrip:
             "budget": 12000,
             "hosts": {
                 "api.openai.com": {"allow": ["openai:*"], "rate": 3000},
-                "*": {"on_unknown": "prompt", "rate": 600},
+                "*": {"unknown_creds": "prompt", "rate": 600},
             },
             "credential": {
                 "openai": {"match": ["sk-..."], "headers": ["auth"]},
@@ -217,7 +217,7 @@ class TestRoundTrip:
         assert back["budget"] == 12000
         assert back["hosts"]["api.openai.com"]["allow"] == ["openai:*"]
         assert back["hosts"]["api.openai.com"]["rate"] == 3000
-        assert back["hosts"]["*"]["on_unknown"] == "prompt"
+        assert back["hosts"]["*"]["unknown_creds"] == "prompt"
         assert back["credential"]["openai"]["match"] == ["sk-..."]
         assert back["risk"] == [{"decision": "allow"}]
         assert back["required"] == ["credential_guard"]
