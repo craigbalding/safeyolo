@@ -20,6 +20,7 @@ from ..docker import check_docker, write_compose_file
 # Path to bundled templates in package
 POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
+LISTS_TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "lists"
 
 console = Console()
 
@@ -130,6 +131,12 @@ def init(
     if ADDONS_TEMPLATE_PATH.exists():
         shutil.copy(ADDONS_TEMPLATE_PATH, addons_path)
         console.print(f"  [green]Created[/green] {addons_path}")
+
+    # Copy lists/ directory (named list files for policy)
+    lists_dir = config_dir / "lists"
+    if LISTS_TEMPLATE_DIR.is_dir():
+        shutil.copytree(LISTS_TEMPLATE_DIR, lists_dir, dirs_exist_ok=True)
+        console.print(f"  [green]Created[/green] {lists_dir}/")
 
     # Write docker-compose.yml
     compose_path = write_compose_file(sandbox=sandbox)

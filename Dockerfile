@@ -76,6 +76,7 @@ COPY addons/policy_loader.py /app/addons/
 COPY addons/yaml_roundtrip.py /app/addons/
 COPY addons/toml_normalize.py /app/addons/
 COPY addons/toml_roundtrip.py /app/addons/
+COPY addons/list_loader.py /app/addons/
 COPY addons/sensor_utils.py /app/addons/
 # Detection module (pure detection logic, no mitmproxy deps)
 COPY addons/detection/ /app/addons/detection/
