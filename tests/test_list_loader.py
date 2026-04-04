@@ -237,10 +237,8 @@ scan_patterns: []
 """)
 
         loader = PolicyLoader(baseline_path=baseline)
-        policy = loader.baseline
 
-        deny_perms = [
-            p for p in policy.permissions
-            if p.resource == "evil.com/*" and p.effect == "deny"
-        ]
-        assert len(deny_perms) == 1
+        # Simple deny permissions are extracted into sets (not Permission objects)
+        simple_sets, _, _ = loader.get_merged_index()
+        deny_resources = simple_sets.get(("network:request", "deny"), set())
+        assert "evil.com/*" in deny_resources
