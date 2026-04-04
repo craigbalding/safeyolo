@@ -294,10 +294,12 @@ class PDPCore:
 
     def _evaluate_network(self, event: HttpEvent) -> LegacyDecision:
         """Evaluate network policy using existing engine."""
+        agent = event.context.agent if event.context else None
         return self._engine.evaluate_request(
             host=event.http.host,
             path=event.http.path,
             method=event.http.method,
+            agent=agent,
         )
 
     def _build_decision(

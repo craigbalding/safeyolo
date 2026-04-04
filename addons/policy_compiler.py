@@ -166,6 +166,9 @@ def compile_policy(raw: dict) -> dict:
     if isinstance(gateway_section, dict) and "risk_appetite" in gateway_section:
         _compile_risk_appetite(gateway_section["risk_appetite"], permissions)
 
+    # Per-agent hosts → permissions with agent condition
+    _compile_agent_hosts(raw.get("agents", {}), permissions, domains)
+
     # Services + agents section → gateway token map + capability route permissions
     if "services" in raw or "agents" in raw:
         gateway = compile_gateway(raw, host_map=host_map, permissions=permissions)
@@ -243,6 +246,74 @@ def _compile_wildcard(config: dict, permissions: list[dict]) -> None:
     if "rules" in config:
         for rule in config["rules"]:
             permissions.append(rule)
+
+
+def _compile_agent_hosts(
+    agents: dict[str, Any],
+    permissions: list[dict],
+    domains: dict[str, Any],
+) -> None:
+    """Compile per-agent host entries into permissions with agent conditions.
+
+    Each agents.<name>.hosts entry compiles identically to a proxy-wide host
+    entry, but with an additional condition.agent = name.
+    """
+    for agent_name, agent_config in agents.items():
+        if not isinstance(agent_config, dict):
+            continue
+        agent_hosts = agent_config.get("hosts", {})
+        for host_pattern, config in agent_hosts.items():
+            if config is None:
+                config = {}
+            if not isinstance(config, dict):
+                continue
+
+            resource = f"{host_pattern}/*"
+
+            # Egress control (per-host deny/prompt for this agent)
+            egress = config.get("egress")
+            if egress in ("deny", "prompt"):
+                permissions.append(
+                    {
+                        "action": "network:request",
+                        "resource": resource,
+                        "effect": egress,
+                        "tier": "explicit",
+                        "condition": {"agent": agent_name},
+                    }
+                )
+
+            # Rate limiting
+            if "rate_limit" in config:
+                permissions.append(
+                    {
+                        "action": "network:request",
+                        "resource": resource,
+                        "effect": "budget",
+                        "budget": config["rate_limit"],
+                        "tier": "explicit",
+                        "condition": {"agent": agent_name},
+                    }
+                )
+
+            # Credential routing
+            if "credentials" in config:
+                creds = config["credentials"]
+                if isinstance(creds, str):
+                    creds = [creds]
+                permissions.append(
+                    {
+                        "action": "credential:use",
+                        "resource": resource,
+                        "effect": "allow",
+                        "tier": "explicit",
+                        "condition": {"credential": creds, "agent": agent_name},
+                    }
+                )
+
+            # Domain bypass
+            if "bypass" in config:
+                domains[host_pattern] = {"bypass": config["bypass"]}
 
 
 def _compile_credentials(

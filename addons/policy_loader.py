@@ -43,16 +43,20 @@ from audit_schema import EventKind, Severity
 log = logging.getLogger("safeyolo.policy-loader")
 
 
-def _specificity_score(pattern: str) -> int:
+def _specificity_score(pattern: str, has_condition: bool = False) -> int:
     """Calculate specificity score for permission ordering.
 
     More specific patterns (fewer wildcards, longer) score higher.
+    Permissions with conditions (e.g., agent-scoped) sort before
+    unconditioned ones at the same specificity level.
     """
     score = len(pattern) * 10
     if "*" in pattern:
         score -= pattern.count("*") * 50
     if pattern == "*":
         score = 0
+    if has_condition:
+        score += 5  # tiebreaker: conditioned > unconditioned
     return score
 
 
@@ -437,7 +441,7 @@ class PolicyLoader:
                     self._last_services_mtime = self._services_max_mtime()
 
                 # Sort permissions by specificity (most specific first)
-                self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+                self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
 
                 # Build permission index for O(1) exact-host lookup
                 self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
@@ -498,7 +502,7 @@ class PolicyLoader:
                 self._last_task_mtime = path.stat().st_mtime
 
                 # Sort permissions
-                self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+                self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
                 self._task_simple, self._task_exact, self._task_patterns = (
                     _build_permission_index(self._task_policy.permissions)
                 )
@@ -658,7 +662,7 @@ class PolicyLoader:
         """Set baseline policy directly (for updates via API)."""
         with self._lock:
             self._baseline = policy
-            self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+            self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
             self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
                 _build_permission_index(self._baseline.permissions)
             )
@@ -667,7 +671,7 @@ class PolicyLoader:
         """Set task policy directly (for updates via API)."""
         with self._lock:
             self._task_policy = policy
-            self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+            self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
             self._task_simple, self._task_exact, self._task_patterns = (
                 _build_permission_index(self._task_policy.permissions)
             )

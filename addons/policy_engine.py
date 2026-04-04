@@ -587,14 +587,19 @@ class PolicyEngine:
         host: str,
         path: str = "/",
         method: str = "GET",
+        agent: str | None = None,
     ) -> PolicyDecision:
         """
-        Evaluate network request permission (for rate limiting).
+        Evaluate network request permission.
+
+        Agent-scoped permissions (with condition.agent) are checked first.
+        Falls back to proxy-wide permissions if no agent match.
 
         Args:
             host: Target host
             path: Request path
             method: HTTP method
+            agent: Agent name from service discovery (for per-agent policy)
 
         Returns:
             PolicyDecision with effect and details
@@ -607,6 +612,8 @@ class PolicyEngine:
             "path": path,
             "method": method,
         }
+        if agent:
+            context["agent"] = agent
 
         # Try exact host match first
         permission = self._find_matching_permission("network:request", resource, context)
