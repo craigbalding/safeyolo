@@ -1485,8 +1485,9 @@ class TestGrantPersistence:
 
     def test_load_reads_remembered_grants(self, gateway, mock_pdp, policy_toml):
         """Remembered grants are loaded from policy.toml."""
-        import tomlkit
         from datetime import timedelta
+
+        import tomlkit
 
         now = datetime.now(UTC)
         created = now.isoformat()
