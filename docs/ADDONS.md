@@ -233,7 +233,7 @@ scan_patterns = []
 "api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
 "api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
 "api.github.com"    = { allow = ["github:*"],     rate = 300 }
-"*"                 = { on_unknown = "prompt",     rate = 600 }
+"*"                 = { egress = "allow", unknown_creds = "prompt", rate = 600 }
 
 [credential.openai]
 match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
@@ -255,7 +255,7 @@ addons:
     builtin_sets: []
 ```
 
-Each host entry can include: `allow`, `rate`, `bypass`, `rules` (IAM escape hatch). The wildcard `"*"` sets defaults. `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section.
+Each host entry can include: `allow`, `rate`, `bypass`, `egress`, `unknown_creds`, `rules` (IAM escape hatch). The wildcard `"*"` sets defaults. `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section.
 
 **Credential condition formats:**
 - `openai:*` - type-based matching (any credential of that type)
@@ -279,7 +279,7 @@ Each host entry can include: `allow`, `rate`, `bypass`, `rules` (IAM escape hatc
 2. PolicyEngine looks up the destination host in the `hosts` section
 3. Checks if credential matches the host's `credentials` list (type or HMAC)
 4. If match found -> permit
-5. If no match -> fall through to wildcard `"*"` entry (typically `on_unknown = "prompt"`)
+5. If no match -> fall through to wildcard `"*"` entry (typically `unknown_creds = "prompt"`)
 
 ---
 
@@ -325,7 +325,7 @@ budget = 12_000   # Global cap across all domains
 [hosts]
 "api.openai.com"    = { allow = ["openai:*"],  rate = 3_000 }
 "api.anthropic.com" = { allow = ["anthropic:*"], rate = 3_000 }
-"*"                 = { on_unknown = "prompt", rate = 600 }
+"*"                 = { egress = "allow", unknown_creds = "prompt", rate = 600 }
 ```
 
 Each host's `rate` controls requests per minute. The `budget` caps total traffic across all hosts. Hosts listed in `[hosts]` are implicitly allowed; unlisted hosts fall through to the `"*"` wildcard.
@@ -350,6 +350,17 @@ Each host's `rate` controls requests per minute. The `budget` caps total traffic
 }
 ```
 
+**Response when egress approval required (428):**
+```json
+{
+  "error": "Network access requires approval",
+  "type": "egress_approval_required",
+  "destination": "unknown-api.example.com",
+  "action": "wait_for_approval",
+  "reflection": "Access to unknown-api.example.com is not in the allowed hosts list. Check if this is an expected destination, then approve or deny via safeyolo watch."
+}
+```
+
 **How it works:**
 1. Request comes in for domain
 2. NetworkGuard checks for homoglyph attacks (mixed Unicode scripts)
@@ -357,6 +368,7 @@ Each host's `rate` controls requests per minute. The `budget` caps total traffic
 4. PolicyEngine evaluates `network:request` permissions
 5. Results:
    - `effect: deny` → returns 403 Forbidden
+   - `effect: prompt` → returns 428 Egress Approval Required
    - `effect: budget_exceeded` → returns 429 with Retry-After header
    - `effect: allow` or `effect: budget` (within budget) → pass through
 
@@ -366,6 +378,27 @@ Each host's `rate` controls requests per minute. The `budget` caps total traffic
 --set network_guard_block=true     # Block mode (default: true, false = warn only)
 --set network_guard_homoglyph=true # Enable homoglyph detection (default: true)
 ```
+
+### Egress Control
+
+NetworkGuard handles egress approvals for unlisted hosts when the wildcard entry has `egress = "prompt"`. This lets operators lock down outbound access so agents cannot reach arbitrary hosts without approval.
+
+**Egress postures** (set on the wildcard `"*"` entry or per-host):
+- `egress = "allow"` -- unlisted hosts are permitted (default)
+- `egress = "prompt"` -- unlisted hosts trigger a 428 requiring human approval via `safeyolo watch`
+- `egress = "deny"` -- unlisted hosts are blocked outright (403)
+
+```toml
+[hosts]
+"api.openai.com"    = { allow = ["openai:*"],  rate = 3_000 }
+"api.anthropic.com" = { allow = ["anthropic:*"], rate = 3_000 }
+"$known_bad"        = { egress = "deny" }
+"*"                 = { egress = "prompt", unknown_creds = "prompt", rate = 600 }
+```
+
+With `egress = "prompt"`, any request to a host not explicitly listed in `[hosts]` gets a 428 response. The operator sees the pending request in `safeyolo watch` and can approve or deny it. Approved hosts are added to the policy file automatically.
+
+Note that `egress` and `unknown_creds` are independent controls. `egress` governs whether the host itself is reachable; `unknown_creds` governs what happens when an unrecognized credential is sent to any host.
 
 ### Homoglyph Detection
 
@@ -613,7 +646,7 @@ Fast regex scanning for secrets and suspicious patterns.
 
 **Service definitions** describe external APIs using v2 format: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). Builtins ship for common APIs (gmail, slack, github). Users can add custom service YAMLs in `~/.safeyolo/services/`.
 
-**Vault** stores encrypted credentials referenced by agents.yaml service bindings. Auto-refreshes OAuth2 tokens when `refresh_on_401: true`.
+**Vault** stores encrypted credentials referenced by policy.toml agent service bindings. Auto-refreshes OAuth2 tokens when `refresh_on_401: true`.
 
 **Hot-reload:** Service definitions are watched for changes (2s poll). Vault requires proxy restart.
 

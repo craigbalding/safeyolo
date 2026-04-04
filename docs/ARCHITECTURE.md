@@ -44,13 +44,12 @@ SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision 
 
 ### UnifiedPolicy
 
-Security configuration is split across three sibling files that are loaded into a single Pydantic-validated model (`UnifiedPolicy`):
+Security configuration is split across two sibling files that are loaded into a single Pydantic-validated model (`UnifiedPolicy`):
 
-- `policy.toml` -- human-owned host-centric policy (TOML-first; `.yaml` also supported)
+- `policy.toml` -- human-owned host-centric policy (TOML-first; `.yaml` also supported), including agent config in `[agents]`
 - `addons.yaml` -- addon tuning (merged as defaults)
-- `agents.yaml` -- machine-managed agent-to-service bindings (merged at load time)
 
-All three are merged by PolicyLoader before compilation.
+Both are merged by PolicyLoader before compilation.
 
 ```toml
 # policy.toml — host-centric policy
@@ -60,16 +59,31 @@ budget = 12_000
 required = ["credential_guard", "network_guard", "circuit_breaker"]
 scan_patterns = []
 
+[lists]
+package_registries = "lists/package-registries.txt"
+known_bad          = "lists/stevenblack-hosts.txt"
+
 [hosts]
-"api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
-"api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
-"api.github.com"    = { allow = ["github:*"],     rate = 300 }
-"*"                 = { on_unknown = "prompt",     rate = 600 }
+"api.openai.com"      = { allow = ["openai:*"],    rate = 3_000 }
+"api.anthropic.com"   = { allow = ["anthropic:*"],  rate = 3_000 }
+"api.github.com"      = { allow = ["github:*"],     rate = 300 }
+"$package_registries" = { rate = 1_200 }
+"$known_bad"          = { egress = "deny" }
+"*"                   = { egress = "allow", unknown_creds = "prompt", rate = 600 }
 
 [credential.openai]
 match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
 headers = ["authorization", "x-api-key"]
+
+[agents.boris]
+egress = "prompt"
+[agents.boris.hosts]
+"api.stripe.com" = { rate = 600 }
 ```
+
+The `[lists]` section defines named lists -- files containing one host per line. Reference them in `[hosts]` with a `$name` prefix; the loader expands each list entry into a host permission with the same settings.
+
+Agent configuration lives in `[agents]` within `policy.toml`. Each agent can have its own `egress` posture (default egress decision for hosts not explicitly listed) and a `[agents.<name>.hosts]` table that works identically to the top-level `[hosts]` but scopes permissions to that agent. Agent-scoped permissions are evaluated first; if no match is found, evaluation falls through to the proxy-wide `[hosts]` rules.
 
 ```yaml
 # addons.yaml — addon tuning (sibling to policy.toml)
@@ -86,7 +100,7 @@ addons:
     builtin_sets: []
 ```
 
-The host-centric format in `policy.toml` compiles to IAM-style rules at load time. TOML field names are normalized during loading (`allow` → `credentials`, `rate` → `rate_limit`, etc.). Each host entry can include `allow`, `rate`, `bypass`, and a `rules` escape hatch for full IAM expressiveness. `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section.
+The host-centric format in `policy.toml` compiles to IAM-style rules at load time. TOML field names are normalized during loading (`allow` → `credentials`, `rate` → `rate_limit`, `unknown_creds` → `unknown_credentials`, etc.). Each host entry can include `allow`, `egress`, `unknown_creds`, `rate`, `bypass`, and a `rules` escape hatch for full IAM expressiveness. `allowed_hosts` for credential rules are auto-derived from the `[hosts]` section.
 
 ### Policy Layers
 
@@ -101,9 +115,11 @@ The PolicyEngine merges these, with task policy extending baseline.
 
 | File | Section | Purpose |
 |------|---------|---------|
-| `policy.toml` | `[hosts]` | Per-host credentials (`allow`), rate limits (`rate`), bypass, rules |
+| `policy.toml` | `[hosts]` | Per-host credentials (`allow`), egress posture, rate limits (`rate`), bypass, rules |
 | `policy.toml` | `budget` | Global rate limit cap across all hosts |
+| `policy.toml` | `[lists]` | Named host lists (file paths), referenced with `$name` in `[hosts]` |
 | `policy.toml` | `[credential.*]` | Credential detection patterns (`match`) and header names |
+| `policy.toml` | `[agents.*]` | Per-agent egress posture and host overrides |
 | `policy.toml` | `required` | Addons that must be active |
 | `policy.toml` | `scan_patterns` | Content scanning rules (URL, headers, body) |
 | `addons.yaml` | `addons` | Per-addon configuration, enablement, tuning |
@@ -164,6 +180,14 @@ Pure policy evaluation logic:
 - Provides accessors for sensor config:
   - `get_credential_rules()` - merged credential detection rules
   - `get_scan_patterns()` - merged content scan patterns
+
+Compiled permissions are stored in a three-tier permission index for fast lookup:
+
+1. **Simple sets** -- `{(action, effect): set(resource)}` -- O(1) set membership for unconditional deny/allow/prompt rules (the bulk of host entries)
+2. **Exact dict** -- `{(action, resource): [Permission]}` -- O(1) dict lookup for entries that carry conditions or budgets and need full Permission evaluation
+3. **Pattern list** -- `[Permission]` -- linear scan reserved for wildcard/glob patterns only
+
+This avoids a linear scan over all permissions on every request; most lookups resolve in tier 1 or 2.
 
 ### PolicyLoader
 
@@ -368,7 +392,7 @@ safeyolo/
 │   ├── tokens.py            # HMAC-signed readonly tokens
 │   └── app.py               # FastAPI HTTP adapter
 ├── config/
-│   ├── policy.yaml          # Host-centric policy (YAML fallback; TOML preferred)
+│   ├── policy.toml          # Host-centric policy (TOML preferred; .yaml fallback)
 │   ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 │   └── safe_headers.yaml    # Headers to skip in credential scanning
 └── tests/
