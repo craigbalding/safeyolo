@@ -813,7 +813,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host, "old_rate": result.get("old_rate"), "new_rate": rate},
         )
-        log.info(f"Host rate updated: {_sanitize_log(host)} -> {rate}")
+        log.info("Host rate updated: %s -> %s", _sanitize_log(host), _sanitize_log(str(rate)))
         self._send_json(result)
 
     def _handle_post_host_allow(self) -> None:
@@ -849,7 +849,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host, "rate": rate},
         )
-        log.info(f"Host allowed: {_sanitize_log(host)} (rate={rate})")
+        log.info("Host allowed: %s (rate=%s)", _sanitize_log(host), _sanitize_log(str(rate)))
         self._send_json(result)
 
     def _handle_post_host_deny(self) -> None:
