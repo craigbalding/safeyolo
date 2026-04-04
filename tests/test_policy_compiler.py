@@ -910,9 +910,8 @@ required:
         # policy.yaml wins for non-addons keys
         assert policy.required == ["credential_guard"]
 
-    def test_agents_merged_from_sibling_file(self, tmp_path):
-        """agents.yaml content is merged into policy under 'agents' key."""
-        import yaml
+    def test_agents_in_policy_compiles_gateway(self, tmp_path):
+        """Agents section in policy.yaml compiles gateway tokens."""
         from policy_loader import PolicyLoader
 
         baseline = tmp_path / "policy.yaml"
@@ -924,22 +923,15 @@ required: [credential_guard]
 addons:
   credential_guard: { enabled: true }
 scan_patterns: []
+agents:
+  boris:
+    template: claude-code
+    folder: /tmp/proj
+    services:
+      gmail:
+        role: readonly
+        token: g
 """)
-
-        agents = tmp_path / "agents.yaml"
-        agents.write_text(
-            yaml.dump(
-                {
-                    "boris": {
-                        "template": "claude-code",
-                        "folder": "/tmp/proj",
-                        "services": {
-                            "gmail": {"role": "readonly", "token": "g"},
-                        },
-                    },
-                }
-            )
-        )
 
         loader = PolicyLoader(baseline_path=baseline)
         policy = loader.baseline
@@ -948,45 +940,6 @@ scan_patterns: []
         assert len(policy.permissions) > 0
         assert hasattr(policy, "gateway")
         assert len(policy.gateway.get("token_map", {})) == 1
-
-    def test_agents_yaml_change_triggers_reload(self, tmp_path):
-        """Modifying agents.yaml triggers a baseline reload."""
-        import yaml
-        from policy_loader import PolicyLoader
-
-        baseline = tmp_path / "policy.yaml"
-        baseline.write_text("""
-hosts:
-  "*": { unknown_credentials: prompt, rate_limit: 600 }
-required: []
-addons:
-  credential_guard: { enabled: true }
-scan_patterns: []
-""")
-
-        loader = PolicyLoader(baseline_path=baseline)
-
-        # No agents.yaml yet — gateway should be empty
-        assert loader.baseline.gateway.get("token_map", {}) == {}
-
-        # Create agents.yaml
-        agents = tmp_path / "agents.yaml"
-        agents.write_text(
-            yaml.dump(
-                {
-                    "boris": {
-                        "services": {
-                            "gmail": {"role": "readonly", "token": "g"},
-                        },
-                    },
-                }
-            )
-        )
-
-        # Simulate watcher: force reload since agents.yaml now exists
-        loader._load_baseline()
-
-        assert len(loader.baseline.gateway.get("token_map", {})) == 1
 
     def test_actual_config_files_load(self):
         """The real config/policy.yaml + config/addons.yaml load correctly."""

@@ -664,6 +664,22 @@ class PDPCore:
                 "error": "Failed to reset budget counters",
             }
 
+    def update_host_rate(self, host: str, rate: int) -> dict:
+        """Update rate limit for a host. Delegates to PolicyEngine."""
+        return self._engine.update_host_rate(host, rate)
+
+    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+        """Add a host to the allowed list. Delegates to PolicyEngine."""
+        return self._engine.add_host_allowance(host, rate)
+
+    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+        """Deny egress to a host. Delegates to PolicyEngine."""
+        return self._engine.add_host_denial(host, expires)
+
+    def add_host_bypass(self, host: str, addon: str) -> dict:
+        """Add an addon bypass for a host. Delegates to PolicyEngine."""
+        return self._engine.add_host_bypass(host, addon)
+
     # -------------------------------------------------------------------------
     # Task Policy Management
     # -------------------------------------------------------------------------

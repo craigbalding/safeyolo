@@ -20,7 +20,6 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
-import yaml
 from mitmproxy import ctx
 from utils import sanitize_for_log, write_event
 
@@ -556,11 +555,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
     # =========================================================================
 
     @staticmethod
-    def _agents_yaml_mutate(mutate_fn):
-        """Read-modify-write agents.yaml with atomic rename.
+    def _policy_toml_mutate(mutate_fn):
+        """Read-modify-write policy.toml [agents] section under file lock.
 
         Args:
-            mutate_fn: callable(raw_dict) -> result_value.
+            mutate_fn: callable(agents_dict) -> result_value.
+                       Receives the unwrapped agents dict, mutates it in place.
                        May raise KeyError/ValueError for 404/400.
 
         Returns:
@@ -571,36 +571,45 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             KeyError: propagated from mutate_fn (caller maps to 404).
             ValueError: propagated from mutate_fn (caller maps to 400).
         """
+        from toml_roundtrip import (
+            load_agents,
+            locked_policy_mutate,
+            policy_path_for_loader,
+            upsert_agent,
+        )
+
         if not is_policy_client_configured():
             raise RuntimeError("Policy client not configured")
 
         client = get_policy_client()
-        # LocalPolicyClient → _pdp (PDPCore) → _engine (PolicyEngine) → _loader
         pdp = getattr(client, "_pdp", None)
         engine = getattr(pdp, "_engine", None) if pdp else None
         loader = getattr(engine, "_loader", None) if engine else None
         if not loader:
             raise RuntimeError("Policy loader not available")
 
-        agents_path = getattr(loader, "_agents_path", lambda: None)()
-        if not agents_path:
-            raise RuntimeError("agents_path not available")
+        policy_path = policy_path_for_loader(loader)
+        if not policy_path:
+            raise RuntimeError("Policy path not available")
 
-        # Read
-        if agents_path.exists():
-            raw = yaml.safe_load(agents_path.read_text()) or {}
-        else:
-            raw = {}
+        result_holder = []
 
-        # Mutate
-        result = mutate_fn(raw)
+        def _mutate(doc):
+            agents = load_agents(doc)
+            result = mutate_fn(agents)
+            result_holder.append(result)
+            # Write back all agents
+            for name, data in agents.items():
+                upsert_agent(doc, name, data)
+            # Remove agents deleted by mutate_fn
+            existing = doc.get("agents")
+            if existing:
+                for name in list(existing):
+                    if name not in agents:
+                        del existing[name]
 
-        # Atomic write
-        tmp = agents_path.with_suffix(".tmp")
-        tmp.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
-        tmp.rename(agents_path)
-
-        return result
+        locked_policy_mutate(policy_path, _mutate)
+        return result_holder[0] if result_holder else None
 
     def _handle_post_agent_service(self, agent_name: str) -> None:
         """POST /admin/agents/{name}/services - Authorize agent for a service."""
@@ -625,7 +634,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             services[service] = {"capability": capability, "token": credential}
 
         try:
-            self._agents_yaml_mutate(mutate)
+            self._policy_toml_mutate(mutate)
         except RuntimeError as e:
             self._send_json({"error": str(e)}, 503)
             return
@@ -679,7 +688,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 agent_data.pop("services", None)
 
         try:
-            self._agents_yaml_mutate(mutate)
+            self._policy_toml_mutate(mutate)
         except RuntimeError as e:
             self._send_json({"error": str(e)}, 503)
             return
@@ -771,6 +780,185 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "status": "bound",
         })
 
+    def _handle_post_host_rate(self) -> None:
+        """POST /admin/policy/host/rate - Update host rate limit."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        host = data.get("host")
+        rate = data.get("rate")
+
+        if not host:
+            self._send_json({"error": "missing 'host' field"}, 400)
+            return
+        if rate is None or not isinstance(rate, int) or rate < 1:
+            self._send_json({"error": "'rate' must be a positive integer"}, 400)
+            return
+
+        client = get_policy_client()
+        try:
+            result = client.update_host_rate(host=host, rate=rate)
+        except (ValueError, Exception) as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.host_rate_updated",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host rate updated: {_sanitize_log(host)} {result.get('old_rate')} -> {rate}",
+            addon="admin-api",
+            details={"client_ip": client_ip, "host": host, "old_rate": result.get("old_rate"), "new_rate": rate},
+        )
+        log.info("Host rate updated: %s -> %s", _sanitize_log(host), _sanitize_log(str(rate)))
+        self._send_json(result)
+
+    def _handle_post_host_allow(self) -> None:
+        """POST /admin/policy/host/allow - Allow a new host."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        host = data.get("host")
+        rate = data.get("rate")  # optional
+
+        if not host:
+            self._send_json({"error": "missing 'host' field"}, 400)
+            return
+        if rate is not None and (not isinstance(rate, int) or rate < 1):
+            self._send_json({"error": "'rate' must be a positive integer if provided"}, 400)
+            return
+
+        client = get_policy_client()
+        try:
+            result = client.add_host_allowance(host=host, rate=rate)
+        except (ValueError, Exception) as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.host_allowed",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host allowed: {_sanitize_log(host)} (rate={rate})",
+            addon="admin-api",
+            details={"client_ip": client_ip, "host": host, "rate": rate},
+        )
+        log.info("Host allowed: %s (rate=%s)", _sanitize_log(host), _sanitize_log(str(rate)))
+        self._send_json(result)
+
+    def _handle_post_host_deny(self) -> None:
+        """POST /admin/policy/host/deny - Deny egress to a host."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        host = data.get("host")
+        expires = data.get("expires")  # optional ISO datetime
+
+        if not host or not isinstance(host, str):
+            self._send_json({"error": "'host' must be a non-empty string"}, 400)
+            return
+        if expires is not None and not isinstance(expires, str):
+            self._send_json({"error": "'expires' must be an ISO datetime string"}, 400)
+            return
+
+        client = get_policy_client()
+        try:
+            result = client.add_host_denial(host=host, expires=expires)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        except Exception as e:
+            log.error("Host denial failed: %s: %s", type(e).__name__, e)
+            self._send_json({"error": "Internal server error"}, 500)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.host_denied",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host denied: {_sanitize_log(host)} (expires={_sanitize_log(str(expires))})",
+            addon="admin-api",
+            details={"client_ip": client_ip, "host": host, "expires": expires},
+        )
+        log.info("Host denied: %s (expires=%s)", _sanitize_log(host), _sanitize_log(str(expires)))
+        self._send_json(result)
+
+    def _handle_post_circuit_breaker_reset(self) -> None:
+        """POST /admin/circuit-breaker/reset - Reset circuit breaker for a host."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        host = data.get("host")
+        if not host:
+            self._send_json({"error": "missing 'host' field"}, 400)
+            return
+
+        cb = self._get_addon("circuit-breaker")
+        if not cb or not hasattr(cb, "reset"):
+            self._send_json({"error": "circuit breaker not available"}, 503)
+            return
+
+        cb.reset(host)
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.circuit_breaker_reset",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Circuit breaker reset: {_sanitize_log(host)}",
+            addon="admin-api",
+            details={"client_ip": client_ip, "host": host},
+        )
+        log.info(f"Circuit breaker reset: {_sanitize_log(host)}")
+        self._send_json({"status": "reset", "host": host})
+
+    def _handle_post_host_bypass(self) -> None:
+        """POST /admin/policy/host/bypass - Add addon bypass for a host."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        host = data.get("host")
+        addon = data.get("addon")
+
+        if not host:
+            self._send_json({"error": "missing 'host' field"}, 400)
+            return
+        if not addon:
+            self._send_json({"error": "missing 'addon' field"}, 400)
+            return
+
+        client = get_policy_client()
+        try:
+            result = client.add_host_bypass(host=host, addon=addon)
+        except (ValueError, Exception) as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.host_bypass_added",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host bypass added: {_sanitize_log(host)} bypass={_sanitize_log(addon)}",
+            addon="admin-api",
+            details={"client_ip": client_ip, "host": host, "addon": addon, "bypass": result.get("bypass")},
+        )
+        log.info(f"Host bypass added: {_sanitize_log(host)} bypass={_sanitize_log(addon)}")
+        self._send_json(result)
+
     def _handle_post_budgets_reset(self) -> None:
         """POST /admin/budgets/reset - Reset budget counters."""
         client = get_policy_client()
@@ -811,6 +999,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/validate": self._handle_post_policy_validate,
             "/admin/policy/baseline/approve": self._handle_post_baseline_approve,
             "/admin/policy/baseline/deny": self._handle_post_baseline_deny,
+            "/admin/policy/host/rate": self._handle_post_host_rate,
+            "/admin/policy/host/allow": self._handle_post_host_allow,
+            "/admin/policy/host/deny": self._handle_post_host_deny,
+            "/admin/policy/host/bypass": self._handle_post_host_bypass,
+            "/admin/circuit-breaker/reset": self._handle_post_circuit_breaker_reset,
             "/admin/budgets/reset": self._handle_post_budgets_reset,
             "/admin/gateway/grant": self._handle_post_gateway_grant,
             "/admin/gateway/contract-binding": self._handle_post_contract_binding,

@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..agents_store import load_agent as _store_load_agent
-from ..agents_store import load_all_agents, migrate_from_json, save_agent
+from ..agents_store import load_all_agents, save_agent
 from ..agents_store import remove_agent as _store_remove_agent
 from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
 from ..docker import is_running, wait_for_healthy
@@ -128,15 +128,8 @@ def _validate_instance_name(name: str) -> None:
 
 
 def _load_agent_metadata(name: str) -> dict:
-    """Load agent metadata from agents.yaml, migrating from .safeyolo.json if needed."""
-    metadata = _store_load_agent(name)
-    if metadata:
-        return metadata
-    # Fallback: migrate legacy .safeyolo.json
-    json_file = get_agents_dir() / name / ".safeyolo.json"
-    if json_file.exists():
-        return migrate_from_json(name)
-    return {}
+    """Load agent metadata from policy.toml [agents] section."""
+    return _store_load_agent(name)
 
 
 def _get_agent_binary(metadata: dict) -> str | None:
@@ -554,7 +547,7 @@ def add(
     # Validate and normalize port specs
     parsed_ports = [_parse_port(p) for p in port]
 
-    # Write metadata to agents.yaml
+    # Write metadata to policy.toml [agents]
     metadata = {"template": template, "folder": folder_str}
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
@@ -621,12 +614,6 @@ def list_agents() -> None:
 
     if agents_dir.exists():
         instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()]
-        # Auto-migrate any legacy .safeyolo.json files
-        for inst_dir in instances:
-            if inst_dir.name not in all_agents and (inst_dir / ".safeyolo.json").exists():
-                migrate_from_json(inst_dir.name, inst_dir)
-        # Re-read after migration
-        all_agents = load_all_agents()
 
         if instances:
             table = Table(title="Configured Agents")
@@ -1146,7 +1133,7 @@ def authorize(
     """Authorize an agent to use a service.
 
     Resolves the service, picks a capability, stores the credential, and updates
-    agents.yaml. One command takes an agent from "no access" to "authorized."
+    policy.toml. One command takes an agent from "no access" to "authorized."
 
     Examples:
 
@@ -1286,7 +1273,7 @@ def authorize(
             vault.store(cred)
             console.print(f"[green]Stored credential:[/green] {escape(cred_name)} (type={escape(auth_type)})")
 
-    # 6. Write to agents.yaml (via admin API, with fallback to local write)
+    # 6. Write to policy.toml (via admin API, with fallback to local write)
     try:
         from ..api import APIError, get_api
 
@@ -1335,7 +1322,7 @@ def revoke(
 ) -> None:
     """Revoke an agent's access to a service.
 
-    Removes the service binding from agents.yaml. The vault credential
+    Removes the service binding from policy.toml. The vault credential
     is preserved (print reminder to remove manually).
 
     Examples:

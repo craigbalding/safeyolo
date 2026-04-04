@@ -7,6 +7,7 @@ into a single addon with one PolicyClient evaluation per request.
 Handles:
 - Homoglyph detection (mixed-script domain spoofing) → 403
 - Access denial (effect: deny) → 403
+- Egress approval required (effect: prompt) → 428
 - Rate limiting (effect: budget_exceeded) → 429
 
 Load order: Layer 1 (after policy_engine, before credential_guard)
@@ -49,7 +50,7 @@ except ImportError:
 from base import SecurityAddon
 from utils import get_client_ip, sanitize_for_log
 
-from audit_schema import Decision, Severity
+from audit_schema import ApprovalRequest, Decision, Severity
 
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -172,10 +173,9 @@ class NetworkGuard(SecurityAddon):
             self._handle_rate_limit(flow, domain, path, method, decision.reason)
             return
 
-        # 5. Handle require_approval (credential_guard handles this, but log it)
+        # 5. Handle require_approval → 428 (egress approval needed)
         if decision.effect == Effect.REQUIRE_APPROVAL:
-            # network_guard doesn't block on approval - that's credential_guard's job
-            self.stats.allowed += 1
+            self._handle_egress_approval(flow, domain, path, method)
             return
 
         # 6. Handle PDP errors
@@ -303,6 +303,59 @@ class NetworkGuard(SecurityAddon):
                 summary=f"Rate limit would be exceeded for {sanitize_for_log(domain)}",
                 host=domain,
                 reason=reason, decision_type="rate_limited",
+            )
+            self.warn(flow)
+
+    def _handle_egress_approval(self, flow, domain, path, method):
+        """Handle egress approval required — block with 428."""
+        client = get_client_ip(flow)
+
+        approval = ApprovalRequest(
+            required=True,
+            approval_type="network_egress",
+            key=domain,
+            target=domain,
+        )
+
+        if self.should_block():
+            log.warning(
+                "BLOCKED: %s %s%s from %s - egress approval required",
+                sanitize_for_log(method), sanitize_for_log(domain),
+                sanitize_for_log(path), sanitize_for_log(client),
+            )
+            self.log_decision(
+                flow, Decision.REQUIRE_APPROVAL,
+                severity=Severity.MEDIUM,
+                summary=f"Egress to {sanitize_for_log(domain)} requires approval",
+                host=domain,
+                approval=approval,
+                decision_type="egress_approval_required",
+            )
+            self.block(
+                flow,
+                428,
+                {
+                    "error": "Network access requires approval",
+                    "type": "egress_approval_required",
+                    "destination": domain,
+                    "action": "wait_for_approval",
+                    "reflection": f"Access to {sanitize_for_log(domain)} is not in the allowed hosts list. "
+                                  "Check if this is an expected destination, then approve or deny via safeyolo watch.",
+                },
+            )
+        else:
+            log.warning(
+                "WARN: %s %s%s from %s - egress approval would be required",
+                sanitize_for_log(method), sanitize_for_log(domain),
+                sanitize_for_log(path), sanitize_for_log(client),
+            )
+            self.log_decision(
+                flow, Decision.WARN,
+                severity=Severity.MEDIUM,
+                summary=f"Egress to {sanitize_for_log(domain)} would require approval",
+                host=domain,
+                approval=approval,
+                decision_type="egress_approval_required",
             )
             self.warn(flow)
 

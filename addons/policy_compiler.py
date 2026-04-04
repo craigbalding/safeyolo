@@ -93,6 +93,18 @@ def compile_policy(raw: dict) -> dict:
                 }
             )
 
+        # Egress control (per-host deny/prompt)
+        egress = config.get("egress")
+        if egress == "deny":
+            permissions.append(
+                {
+                    "action": "network:request",
+                    "resource": resource,
+                    "effect": "deny",
+                    "tier": "explicit",
+                }
+            )
+
         # Rate limiting
         if "rate_limit" in config:
             permissions.append(
@@ -192,6 +204,28 @@ def _compile_wildcard(config: dict, permissions: list[dict]) -> None:
                 "tier": "explicit",
             }
         )
+
+    # Egress posture (network-level access control for unlisted hosts)
+    egress = config.get("egress")
+    if egress == "prompt":
+        permissions.append(
+            {
+                "action": "network:request",
+                "resource": "*",
+                "effect": "prompt",
+                "tier": "explicit",
+            }
+        )
+    elif egress == "deny":
+        permissions.append(
+            {
+                "action": "network:request",
+                "resource": "*",
+                "effect": "deny",
+                "tier": "explicit",
+            }
+        )
+    # egress = "allow" or absent → default-allow behaviour, no permission needed
 
     # Default rate limit
     if "rate_limit" in config:

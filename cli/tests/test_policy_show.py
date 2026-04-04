@@ -12,8 +12,18 @@ def _write_yaml(path, data):
     path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
 
 
+import pytest
+
+
 class TestPolicyShow:
     """Tests for 'safeyolo policy show'."""
+
+    @pytest.fixture(autouse=True)
+    def _remove_default_toml(self, tmp_config_dir):
+        """Remove conftest's policy.toml so tests can use policy.yaml."""
+        toml = tmp_config_dir / "policy.toml"
+        if toml.exists():
+            toml.unlink()
 
     def test_basic_show(self, tmp_config_dir):
         """Loads policy.yaml and outputs its content."""
@@ -54,44 +64,25 @@ class TestPolicyShow:
         # network-guard comes from addons.yaml deep merge
         assert "network-guard" in result.output
 
-    def test_merge_agents(self, tmp_config_dir):
-        """agents.yaml 'agents' key appears in output when not in policy.yaml."""
-        policy = {"hosts": {"example.com": None}}
-        agents = {
-            "claude": {
-                "services": [{"name": "gmail", "role": "reader"}],
-            }
-        }
-        _write_yaml(tmp_config_dir / "policy.yaml", policy)
-        _write_yaml(tmp_config_dir / "agents.yaml", agents)
-
-        result = runner.invoke(app, ["policy", "show"])
-        assert result.exit_code == 0
-        assert "agents" in result.output
-        assert "claude" in result.output
-        assert "gmail" in result.output
-
-    def test_agents_deep_merged(self, tmp_config_dir):
-        """agents.yaml supplements policy.yaml agents (deep merge per agent)."""
+    def test_agents_in_policy(self, tmp_config_dir):
+        """Agents in policy.yaml appear in output."""
         policy = {
             "hosts": {"example.com": None},
-            "agents": {"claude": {"services": {"minifuse": "reader"}}},
-        }
-        agents = {
-            "claude": {"contract_bindings": [{"service": "minifuse"}]},
-            "file-agent": {"services": [{"name": "svc", "role": "r"}]},
+            "agents": {
+                "claude": {
+                    "services": {"gmail": {"capability": "reader", "token": "gmail-key"}},
+                    "contract_bindings": [{"service": "minifuse"}],
+                },
+                "file-agent": {"services": {"svc": {"capability": "r", "token": "svc-key"}}},
+            },
         }
         _write_yaml(tmp_config_dir / "policy.yaml", policy)
-        _write_yaml(tmp_config_dir / "agents.yaml", agents)
 
         result = runner.invoke(app, ["policy", "show"])
         assert result.exit_code == 0
-        # policy.yaml agent preserved
         assert "claude" in result.output
-        assert "reader" in result.output
-        # agents.yaml-only agent merged in
+        assert "gmail" in result.output
         assert "file-agent" in result.output
-        # contract_bindings from agents.yaml merged into claude
         assert "contract_bindings" in result.output
 
     def test_section_filter(self, tmp_config_dir):

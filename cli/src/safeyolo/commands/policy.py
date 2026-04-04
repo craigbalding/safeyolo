@@ -68,12 +68,11 @@ def _load_policy_file(config_dir: Path) -> tuple[dict, Path]:
 
 
 def _merge_siblings(raw: dict, policy_path: Path) -> dict:
-    """Merge sibling addons.yaml and agents.yaml into the policy dict.
+    """Merge sibling addons.yaml into the policy dict.
 
-    Replicates PolicyLoader._merge_addons() and _merge_agents():
+    Replicates PolicyLoader._merge_addons():
     - addons.yaml keys are defaults (policy.yaml overrides)
     - addons key gets deep-merged (addons.yaml defaults, policy.yaml overrides)
-    - agents.yaml provides the 'agents' key if not already present
     """
     parent = policy_path.parent
 
@@ -89,24 +88,6 @@ def _merge_siblings(raw: dict, policy_path: Path) -> dict:
                 merged = dict(value)
                 merged.update(raw[key])
                 raw[key] = merged
-
-    # Merge agents.yaml (runtime state supplements policy.yaml agent config)
-    agents_path = parent / "agents.yaml"
-    if agents_path.exists():
-        with open(agents_path) as f:
-            agents_raw = yaml.safe_load(f) or {}
-        if "agents" not in raw:
-            raw["agents"] = agents_raw
-        else:
-            for agent_name, agent_data in agents_raw.items():
-                if not isinstance(agent_data, dict):
-                    continue
-                if agent_name not in raw["agents"]:
-                    raw["agents"][agent_name] = agent_data
-                elif isinstance(raw["agents"][agent_name], dict):
-                    merged = dict(agent_data)
-                    merged.update(raw["agents"][agent_name])
-                    raw["agents"][agent_name] = merged
 
     return raw
 
@@ -167,7 +148,7 @@ def show(
         None, "--section", "-s", help="Show only this section (e.g. hosts, agents, credentials)"
     ),
 ) -> None:
-    """Show the merged policy (policy + addons.yaml + agents.yaml).
+    """Show the merged policy (policy + addons.yaml).
 
     By default shows the merged host-centric format that operators write.
     Use --compiled to see the IAM format the PDP evaluates.
@@ -189,7 +170,7 @@ def show(
         result = _fetch_compiled_policy(result, policy_path)
         console.print("[dim]# Compiled IAM format (as evaluated by PDP)[/dim]")
     else:
-        sources = f"{policy_path.name} + addons.yaml + agents.yaml"
+        sources = f"{policy_path.name} + addons.yaml"
         console.print(f"[dim]# Merged from: {sources}[/dim]")
 
     if section:

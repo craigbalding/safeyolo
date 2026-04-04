@@ -1422,20 +1422,29 @@ risky_routes:
 
 
 class TestGrantPersistence:
-    """Tests for _persist_grants and _load_grants_from_agents_yaml."""
+    """Tests for _persist_grants and _load_grants_from_policy."""
 
     @pytest.fixture
-    def agents_yaml(self, tmp_path):
-        """Create an empty agents.yaml."""
-        path = tmp_path / "agents.yaml"
-        path.write_text("claude:\n  template: claude-code\n")
+    def policy_toml(self, tmp_path):
+        """Create a policy.toml with an agent entry."""
+        import tomlkit
+
+        doc = tomlkit.document()
+        doc.add("version", "2.0")
+        agents = tomlkit.table()
+        claude = tomlkit.table()
+        claude.add("template", "claude-code")
+        agents.add("claude", claude)
+        doc.add("agents", agents)
+        path = tmp_path / "policy.toml"
+        path.write_text(tomlkit.dumps(doc))
         return path
 
     @pytest.fixture
-    def mock_pdp(self, agents_yaml):
+    def mock_pdp(self, policy_toml):
         """Mock PDP with correct client._pdp._engine._loader chain."""
         mock_loader = MagicMock()
-        mock_loader._agents_path.return_value = agents_yaml
+        mock_loader._baseline_path = policy_toml
 
         mock_engine = MagicMock()
         mock_engine._loader = mock_loader
@@ -1452,9 +1461,9 @@ class TestGrantPersistence:
         ):
             yield
 
-    def test_persist_writes_grants(self, gateway, mock_pdp, agents_yaml):
-        """Grants are written to agents.yaml."""
-        import yaml
+    def test_persist_writes_grants(self, gateway, mock_pdp, policy_toml):
+        """Grants are written to policy.toml."""
+        import tomlkit
 
         grant = GrantEntry(
             grant_id="g1",
@@ -1467,43 +1476,43 @@ class TestGrantPersistence:
         gateway._grants["g1"] = grant
         gateway._persist_grants()
 
-        raw = yaml.safe_load(agents_yaml.read_text())
-        grants = raw["claude"]["grants"]
+        doc = tomlkit.parse(policy_toml.read_text())
+        agents = doc["agents"].unwrap()
+        grants = agents["claude"]["grants"]
         assert len(grants) == 1
         assert grants[0]["grant_id"] == "g1"
         assert grants[0]["service"] == "gmail"
 
-    def test_load_reads_remembered_grants(self, gateway, mock_pdp, agents_yaml):
-        """Remembered grants are loaded from agents.yaml."""
+    def test_load_reads_remembered_grants(self, gateway, mock_pdp, policy_toml):
+        """Remembered grants are loaded from policy.toml."""
         from datetime import timedelta
 
-        import yaml
+        import tomlkit
 
-        # Use a recent timestamp so the grant isn't expired
         now = datetime.now(UTC)
         created = now.isoformat()
         expires = (now + timedelta(hours=1)).isoformat()
 
-        raw = yaml.safe_load(agents_yaml.read_text())
-        raw["claude"]["grants"] = [
-            {
-                "grant_id": "g2",
-                "service": "gmail",
-                "method": "DELETE",
-                "path": "/messages/*",
-                "scope": "remembered",
-                "created": created,
-                "expires": expires,
-            },
-        ]
-        agents_yaml.write_text(yaml.dump(raw, default_flow_style=False))
+        doc = tomlkit.parse(policy_toml.read_text())
+        grants = tomlkit.aot()
+        grant = tomlkit.table()
+        grant.add("grant_id", "g2")
+        grant.add("service", "gmail")
+        grant.add("method", "DELETE")
+        grant.add("path", "/messages/*")
+        grant.add("scope", "remembered")
+        grant.add("created", created)
+        grant.add("expires", expires)
+        grants.append(grant)
+        doc["agents"]["claude"].add("grants", grants)
+        policy_toml.write_text(tomlkit.dumps(doc))
 
-        gateway._load_grants_from_agents_yaml()
+        gateway._load_grants_from_policy()
         assert "g2" in gateway._grants
         assert gateway._grants["g2"].service == "gmail"
         assert gateway._grants["g2"].scope == "remembered"
 
-    def test_persist_then_load_roundtrip(self, gateway, mock_pdp, agents_yaml):
+    def test_persist_then_load_roundtrip(self, gateway, mock_pdp, policy_toml):
         """Grants survive a persist → load cycle."""
         grant = GrantEntry(
             grant_id="g3",
@@ -1518,7 +1527,7 @@ class TestGrantPersistence:
 
         # Fresh gateway loads from disk
         gw2 = ServiceGateway()
-        gw2._load_grants_from_agents_yaml()
+        gw2._load_grants_from_policy()
         assert "g3" in gw2._grants
         assert gw2._grants["g3"].service == "slack"
         assert gw2._grants["g3"].method == "POST"

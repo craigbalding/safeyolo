@@ -331,6 +331,91 @@ class AdminAPI:
             f"/admin/agents/{agent}/services/{service}",
         )
 
+    def update_host_rate(self, host: str, rate: int) -> dict[str, Any]:
+        """Update rate limit for a host.
+
+        Args:
+            host: Host pattern (e.g., "api.openai.com")
+            rate: New rate limit (requests per minute)
+        """
+        return self._request(
+            "POST",
+            "/admin/policy/host/rate",
+            json={"host": host, "rate": rate},
+        )
+
+    def allow_host(self, host: str, rate: int | None = None) -> dict[str, Any]:
+        """Allow a new host in policy.
+
+        Args:
+            host: Host pattern (e.g., "cdn.example.com")
+            rate: Optional rate limit (requests per minute)
+        """
+        payload: dict[str, Any] = {"host": host}
+        if rate is not None:
+            payload["rate"] = rate
+        return self._request(
+            "POST",
+            "/admin/policy/host/allow",
+            json=payload,
+        )
+
+    def deny_host(self, host: str, expires: str | None = None) -> dict[str, Any]:
+        """Deny egress to a host in policy.
+
+        Args:
+            host: Host pattern (e.g., "dodgy-site.com")
+            expires: Optional ISO datetime for auto-expiry
+        """
+        payload: dict[str, Any] = {"host": host}
+        if expires is not None:
+            payload["expires"] = expires
+        return self._request(
+            "POST",
+            "/admin/policy/host/deny",
+            json=payload,
+        )
+
+    def reset_circuit(self, host: str) -> dict[str, Any]:
+        """Reset circuit breaker for a host.
+
+        Args:
+            host: Host to reset circuit for
+        """
+        return self._request(
+            "POST",
+            "/admin/circuit-breaker/reset",
+            json={"host": host},
+        )
+
+    def add_host_bypass(self, host: str, addon: str) -> dict[str, Any]:
+        """Add addon bypass for a host.
+
+        Args:
+            host: Host pattern
+            addon: Addon name to bypass (e.g., "pattern-scanner")
+        """
+        return self._request(
+            "POST",
+            "/admin/policy/host/bypass",
+            json={"host": host, "addon": addon},
+        )
+
+    def reset_budget(self, resource: str | None = None) -> dict[str, Any]:
+        """Reset budget counters.
+
+        Args:
+            resource: Optional specific resource to reset. If None, resets all.
+        """
+        payload: dict[str, Any] = {}
+        if resource is not None:
+            payload["resource"] = resource
+        return self._request(
+            "POST",
+            "/admin/budgets/reset",
+            json=payload if payload else None,
+        )
+
     def pending_approvals(self) -> list[dict[str, Any]]:
         """Get pending credential approval requests.
 

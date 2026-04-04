@@ -108,9 +108,9 @@ def get_agents_dir() -> Path:
     return get_config_dir() / "agents"
 
 
-def get_agents_yaml_path() -> Path:
-    """Get path to agents.yaml (machine-managed agent metadata)."""
-    return get_config_dir() / "agents.yaml"
+def get_policy_toml_path() -> Path:
+    """Get path to policy.toml (single policy file)."""
+    return get_config_dir() / "policy.toml"
 
 
 def get_admin_token_path() -> Path:

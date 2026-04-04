@@ -242,8 +242,8 @@ class ServiceGateway:
         # Mint tokens, load grants and contract bindings when gateway enables
         if "gateway_enabled" in updates:
             self._mint_tokens_from_policy()
-            self._load_grants_from_agents_yaml()
-            self._load_contract_bindings_from_agents_yaml()
+            self._load_grants_from_policy()
+            self._load_contract_bindings_from_policy()
             self._register_reload_callback()
 
     def _init_services(self):
@@ -444,7 +444,7 @@ class ServiceGateway:
                 f"Service '{binding.service_name}' not found",
                 "SERVICE_NOT_FOUND",
                 action="self_correct",
-                reflection=f"Service '{sanitize_for_log(binding.service_name)}' is not in the service registry. Check the service name in agents.yaml.",
+                reflection=f"Service '{sanitize_for_log(binding.service_name)}' is not in the service registry. Check the service name in policy.toml [agents] section.",
             )
             self.stats.denied_token += 1
             return
@@ -791,32 +791,39 @@ class ServiceGateway:
             details={"grant_id": grant.grant_id},
         )
 
-    def _load_grants_from_agents_yaml(self) -> None:
-        """Load persisted grants from agents.yaml (if it exists beside the baseline)."""
+    @staticmethod
+    def _get_policy_path():
+        """Get the baseline policy path from the policy loader."""
+        from toml_roundtrip import policy_path_for_loader
+
+        from pdp import get_policy_client, is_policy_client_configured
+
+        if not is_policy_client_configured():
+            return None
+
+        client = get_policy_client()
+        pdp = getattr(client, "_pdp", None)
+        engine = getattr(pdp, "_engine", None) if pdp else None
+        loader = getattr(engine, "_loader", None) if engine else None
+        if not loader:
+            return None
+
+        return policy_path_for_loader(loader)
+
+    def _load_grants_from_policy(self) -> None:
+        """Load persisted grants from policy.toml [agents] section."""
         try:
-            from pdp import get_policy_client, is_policy_client_configured
+            from toml_roundtrip import load_agents, load_roundtrip
 
-            if not is_policy_client_configured():
+            policy_path = self._get_policy_path()
+            if not policy_path:
                 return
 
-            client = get_policy_client()
-            pdp = getattr(client, "_pdp", None)
-            engine = getattr(pdp, "_engine", None) if pdp else None
-            loader = getattr(engine, "_loader", None) if engine else None
-            if not loader:
-                return
-
-            agents_path = getattr(loader, "_agents_path", lambda: None)()
-            if not agents_path or not agents_path.exists():
-                return
-
-            import yaml
-
-            raw = yaml.safe_load(agents_path.read_text()) or {}
+            doc = load_roundtrip(policy_path)
+            agents = load_agents(doc)
 
             with self._lock:
-                # Clear session grants from previous run
-                for agent_name, agent_data in raw.items():
+                for agent_name, agent_data in agents.items():
                     if not isinstance(agent_data, dict):
                         continue
                     for grant_data in agent_data.get("grants", []):
@@ -833,52 +840,27 @@ class ServiceGateway:
                             created=grant_data.get("created", datetime.now(UTC).isoformat()),
                             expires=grant_data.get("expires", ""),
                         )
-                        # Skip expired grants on load
                         if grant.is_expired():
                             continue
                         self._grants[grant.grant_id] = grant
 
             if self._grants:
-                log.info(f"Loaded {len(self._grants)} grants from agents.yaml")
+                log.info(f"Loaded {len(self._grants)} grants from policy.toml")
 
         except Exception as e:
-            log.warning(f"Failed to load grants from agents.yaml: {type(e).__name__}: {e}")
+            log.warning(f"Failed to load grants from policy.toml: {type(e).__name__}: {e}")
 
     def _persist_grants(self) -> None:
-        """Write grants back to agents.yaml."""
+        """Write grants back to policy.toml [agents] section."""
         try:
-            from pdp import get_policy_client, is_policy_client_configured
+            from toml_roundtrip import load_agents, locked_policy_mutate, upsert_agent
 
-            if not is_policy_client_configured():
+            policy_path = self._get_policy_path()
+            if not policy_path:
                 return
 
-            client = get_policy_client()
-            pdp = getattr(client, "_pdp", None)
-            engine = getattr(pdp, "_engine", None) if pdp else None
-            loader = getattr(engine, "_loader", None) if engine else None
-            if not loader:
-                return
-
-            agents_path = getattr(loader, "_agents_path", lambda: None)()
-            if not agents_path:
-                return
-
-            import yaml
-
-            # Hold lock for entire read-modify-write to prevent TOCTOU
             with self._lock:
-                # Read existing agents.yaml
-                if agents_path.exists():
-                    raw = yaml.safe_load(agents_path.read_text()) or {}
-                else:
-                    raw = {}
-
-                # Clear all existing grants sections
-                for agent_data in raw.values():
-                    if isinstance(agent_data, dict) and "grants" in agent_data:
-                        del agent_data["grants"]
-
-                # Group current grants by agent
+                # Snapshot current grants grouped by agent
                 grants_by_agent: dict[str, list[dict]] = {}
                 for grant in self._grants.values():
                     grants_by_agent.setdefault(grant.agent, []).append(
@@ -893,16 +875,20 @@ class ServiceGateway:
                         }
                     )
 
-                # Write grants into agent sections
+            def _mutate(doc):
+                agents = load_agents(doc)
+                # Clear existing grants
+                for agent_data in agents.values():
+                    agent_data.pop("grants", None)
+                # Write new grants
                 for agent_name, grants in grants_by_agent.items():
-                    if agent_name not in raw:
-                        raw[agent_name] = {}
-                    raw[agent_name]["grants"] = grants
+                    if agent_name in agents:
+                        agents[agent_name]["grants"] = grants
+                # Write back modified agents
+                for name, data in agents.items():
+                    upsert_agent(doc, name, data)
 
-                # Atomic write
-                tmp = agents_path.with_suffix(".tmp")
-                tmp.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
-                tmp.rename(agents_path)
+            locked_policy_mutate(policy_path, _mutate)
 
         except Exception as e:
             log.warning(f"Failed to persist grants: {type(e).__name__}: {e}")
@@ -958,31 +944,20 @@ class ServiceGateway:
                     return True
         return False
 
-    def _load_contract_bindings_from_agents_yaml(self) -> None:
-        """Load persisted contract bindings from agents.yaml."""
+    def _load_contract_bindings_from_policy(self) -> None:
+        """Load persisted contract bindings from policy.toml [agents] section."""
         try:
-            from pdp import get_policy_client, is_policy_client_configured
+            from toml_roundtrip import load_agents, load_roundtrip
 
-            if not is_policy_client_configured():
+            policy_path = self._get_policy_path()
+            if not policy_path:
                 return
 
-            client = get_policy_client()
-            pdp = getattr(client, "_pdp", None)
-            engine = getattr(pdp, "_engine", None) if pdp else None
-            loader = getattr(engine, "_loader", None) if engine else None
-            if not loader:
-                return
-
-            agents_path = getattr(loader, "_agents_path", lambda: None)()
-            if not agents_path or not agents_path.exists():
-                return
-
-            import yaml
-
-            raw = yaml.safe_load(agents_path.read_text()) or {}
+            doc = load_roundtrip(policy_path)
+            agents = load_agents(doc)
 
             with self._lock:
-                for agent_name, agent_data in raw.items():
+                for agent_name, agent_data in agents.items():
                     if not isinstance(agent_data, dict):
                         continue
                     for cb_data in agent_data.get("contract_bindings", []):
@@ -1000,44 +975,22 @@ class ServiceGateway:
                         self._contract_bindings[key] = binding
 
             if self._contract_bindings:
-                log.info(f"Loaded {len(self._contract_bindings)} contract bindings from agents.yaml")
+                log.info(f"Loaded {len(self._contract_bindings)} contract bindings from policy.toml")
 
         except Exception as e:
-            log.warning(f"Failed to load contract bindings from agents.yaml: {type(e).__name__}: {e}")
+            log.warning(f"Failed to load contract bindings from policy.toml: {type(e).__name__}: {e}")
 
     def _persist_contract_bindings(self) -> None:
-        """Write contract bindings to agents.yaml."""
+        """Write contract bindings to policy.toml [agents] section."""
         try:
-            from pdp import get_policy_client, is_policy_client_configured
+            from toml_roundtrip import load_agents, locked_policy_mutate, upsert_agent
 
-            if not is_policy_client_configured():
+            policy_path = self._get_policy_path()
+            if not policy_path:
                 return
-
-            client = get_policy_client()
-            pdp = getattr(client, "_pdp", None)
-            engine = getattr(pdp, "_engine", None) if pdp else None
-            loader = getattr(engine, "_loader", None) if engine else None
-            if not loader:
-                return
-
-            agents_path = getattr(loader, "_agents_path", lambda: None)()
-            if not agents_path:
-                return
-
-            import yaml
 
             with self._lock:
-                if agents_path.exists():
-                    raw = yaml.safe_load(agents_path.read_text()) or {}
-                else:
-                    raw = {}
-
-                # Clear existing contract_bindings sections
-                for agent_data in raw.values():
-                    if isinstance(agent_data, dict) and "contract_bindings" in agent_data:
-                        del agent_data["contract_bindings"]
-
-                # Group by agent
+                # Snapshot current bindings grouped by agent
                 bindings_by_agent: dict[str, list[dict]] = {}
                 for binding in self._contract_bindings.values():
                     bindings_by_agent.setdefault(binding.agent, []).append(
@@ -1052,15 +1005,20 @@ class ServiceGateway:
                         }
                     )
 
+            def _mutate(doc):
+                agents = load_agents(doc)
+                # Clear existing contract_bindings
+                for agent_data in agents.values():
+                    agent_data.pop("contract_bindings", None)
+                # Write new bindings
                 for agent_name, bindings in bindings_by_agent.items():
-                    if agent_name not in raw:
-                        raw[agent_name] = {}
-                    raw[agent_name]["contract_bindings"] = bindings
+                    if agent_name in agents:
+                        agents[agent_name]["contract_bindings"] = bindings
+                # Write back modified agents
+                for name, data in agents.items():
+                    upsert_agent(doc, name, data)
 
-                # Atomic write
-                tmp = agents_path.with_suffix(".tmp")
-                tmp.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
-                tmp.rename(agents_path)
+            locked_policy_mutate(policy_path, _mutate)
 
         except Exception as e:
             log.warning(f"Failed to persist contract bindings: {type(e).__name__}: {e}")

@@ -4,6 +4,7 @@ import json
 import subprocess
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 
 from safeyolo.commands.doctor import (
@@ -54,6 +55,13 @@ class TestCheckDocker:
 
 
 class TestCheckBaseline:
+    @pytest.fixture(autouse=True)
+    def _remove_default_toml(self, tmp_config_dir):
+        """Remove conftest's policy.toml so tests can use policy.yaml."""
+        toml = tmp_config_dir / "policy.toml"
+        if toml.exists():
+            toml.unlink()
+
     def test_valid_baseline(self, tmp_config_dir):
         baseline = tmp_config_dir / "policy.yaml"
         baseline.write_text(
