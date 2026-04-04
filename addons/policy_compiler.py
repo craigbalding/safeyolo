@@ -261,6 +261,20 @@ def _compile_agent_hosts(
     for agent_name, agent_config in agents.items():
         if not isinstance(agent_config, dict):
             continue
+
+        # Agent-level default egress posture (catch-all for this agent)
+        agent_egress = agent_config.get("egress")
+        if agent_egress in ("deny", "prompt"):
+            permissions.append(
+                {
+                    "action": "network:request",
+                    "resource": "*",
+                    "effect": agent_egress,
+                    "tier": "explicit",
+                    "condition": {"agent": agent_name},
+                }
+            )
+
         agent_hosts = agent_config.get("hosts", {})
         for host_pattern, config in agent_hosts.items():
             if config is None:

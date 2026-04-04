@@ -474,33 +474,62 @@ class PolicyEngine:
     ) -> Permission | None:
         """Find first matching permission using three-tier indexed lookup.
 
+        When agent is in context, agent-scoped permissions are checked first
+        across all tiers before falling through to unconditioned permissions.
+        This ensures an agent's catch-all deny takes priority over proxy-wide
+        explicit host entries.
+
+        Tiers:
         1. Simple sets — O(1) set membership for bulk deny/allow/prompt
-           permissions with no conditions (e.g., 92k blocklist entries).
-           No Permission objects allocated per entry.
-        2. Exact dict — O(1) dict lookup for host/* permissions that have
-           conditions or budgets (e.g., credential routing).
-        3. Pattern list — linear scan over wildcards/globs only (<10 entries).
+        2. Exact dict — O(1) dict lookup for host/* with conditions/budgets
+        3. Pattern list — linear scan over wildcards/globs only
         """
         simple_sets, exact_dict, pattern_list = self._loader.get_merged_index()
+        agent = context.get("agent")
 
-        # Tier 1: O(1) set membership for simple permissions
-        # Check deny first (most restrictive), then prompt, then allow
+        if agent:
+            # Phase 1: agent-scoped permissions only (exact dict + patterns)
+            result = self._check_exact_dict(exact_dict, action, resource, context, agent_only=True)
+            if result:
+                return result
+            result = self._check_patterns(pattern_list, action, resource, context, agent_only=True)
+            if result:
+                return result
+
+        # Phase 2: unconditioned permissions (simple sets + exact dict + patterns)
+        # Simple sets have no conditions — always unconditioned
         for effect in ("deny", "prompt", "allow"):
             resources = simple_sets.get((action, effect))
             if resources and resource in resources:
                 return self._SIMPLE_EFFECT_MAP.get(effect, self._SIMPLE_DENY)
 
-        # Tier 2: O(1) exact lookup for permissions with conditions/budgets
-        candidates = exact_dict.get((action, resource))
-        if candidates:
-            for perm in candidates:
-                if perm.tier == "inferred":
-                    continue
-                if perm.condition and not perm.condition.matches(context):
-                    continue
-                return perm
+        result = self._check_exact_dict(exact_dict, action, resource, context, agent_only=False)
+        if result:
+            return result
+        return self._check_patterns(pattern_list, action, resource, context, agent_only=False)
 
-        # Tier 3: pattern scan (wildcards/globs only)
+    @staticmethod
+    def _check_exact_dict(exact_dict, action, resource, context, *, agent_only):
+        """Check exact dict tier, optionally filtering by agent condition."""
+        candidates = exact_dict.get((action, resource))
+        if not candidates:
+            return None
+        for perm in candidates:
+            if perm.tier == "inferred":
+                continue
+            has_agent_cond = perm.condition and perm.condition.agent is not None
+            if agent_only and not has_agent_cond:
+                continue
+            if not agent_only and has_agent_cond:
+                continue
+            if perm.condition and not perm.condition.matches(context):
+                continue
+            return perm
+        return None
+
+    @staticmethod
+    def _check_patterns(pattern_list, action, resource, context, *, agent_only):
+        """Check pattern list tier, optionally filtering by agent condition."""
         for perm in pattern_list:
             if perm.action != action:
                 continue
@@ -508,10 +537,14 @@ class PolicyEngine:
                 continue
             if perm.tier == "inferred":
                 continue
+            has_agent_cond = perm.condition and perm.condition.agent is not None
+            if agent_only and not has_agent_cond:
+                continue
+            if not agent_only and has_agent_cond:
+                continue
             if perm.condition and not perm.condition.matches(context):
                 continue
             return perm
-
         return None
 
     def evaluate_credential(
