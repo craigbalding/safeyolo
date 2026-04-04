@@ -178,12 +178,15 @@ scan_patterns: []
 """)
 
         loader = PolicyLoader(baseline_path=baseline)
-        policy = loader.baseline
 
         # expired-host.com should be gone, future-host.com should remain
-        resources = {p.resource for p in policy.permissions}
-        assert "expired-host.com/*" not in resources
-        assert "future-host.com/*" in resources
+        # Simple deny permissions live in the index sets, not Permission objects
+        simple_sets, _, _ = loader.get_merged_index()
+        deny_resources = simple_sets.get(("network:request", "deny"), set())
+        all_perm_resources = {p.resource for p in loader.baseline.permissions}
+        assert "expired-host.com/*" not in deny_resources
+        assert "expired-host.com/*" not in all_perm_resources
+        assert "future-host.com/*" in deny_resources
 
     def test_host_without_expires_unaffected(self, tmp_path):
         from policy_loader import PolicyLoader

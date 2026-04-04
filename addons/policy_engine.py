@@ -460,14 +460,11 @@ class PolicyEngine:
     # Permission Evaluation
     # -------------------------------------------------------------------------
 
-    def _get_merged_permissions(self) -> list[Permission]:
-        """Get merged permissions from baseline + task policy."""
-        permissions = list(self._loader.baseline.permissions)
-        task = self._loader.task_policy
-        if task:
-            # Task permissions come first (higher priority)
-            permissions = list(task.permissions) + permissions
-        return permissions
+    # Lightweight Permission stand-ins for simple set matches (no Pydantic overhead)
+    _SIMPLE_DENY = Permission(action="network:request", resource="*", effect="deny")
+    _SIMPLE_PROMPT = Permission(action="network:request", resource="*", effect="prompt")
+    _SIMPLE_ALLOW = Permission(action="network:request", resource="*", effect="allow")
+    _SIMPLE_EFFECT_MAP = {"deny": _SIMPLE_DENY, "prompt": _SIMPLE_PROMPT, "allow": _SIMPLE_ALLOW}
 
     def _find_matching_permission(
         self,
@@ -475,24 +472,44 @@ class PolicyEngine:
         resource: str,
         context: dict[str, Any],
     ) -> Permission | None:
-        """Find first matching permission (most specific first)."""
-        permissions = self._get_merged_permissions()
+        """Find first matching permission using three-tier indexed lookup.
 
-        for perm in permissions:
+        1. Simple sets — O(1) set membership for bulk deny/allow/prompt
+           permissions with no conditions (e.g., 92k blocklist entries).
+           No Permission objects allocated per entry.
+        2. Exact dict — O(1) dict lookup for host/* permissions that have
+           conditions or budgets (e.g., credential routing).
+        3. Pattern list — linear scan over wildcards/globs only (<10 entries).
+        """
+        simple_sets, exact_dict, pattern_list = self._loader.get_merged_index()
+
+        # Tier 1: O(1) set membership for simple permissions
+        # Check deny first (most restrictive), then prompt, then allow
+        for effect in ("deny", "prompt", "allow"):
+            resources = simple_sets.get((action, effect))
+            if resources and resource in resources:
+                return self._SIMPLE_EFFECT_MAP.get(effect, self._SIMPLE_DENY)
+
+        # Tier 2: O(1) exact lookup for permissions with conditions/budgets
+        candidates = exact_dict.get((action, resource))
+        if candidates:
+            for perm in candidates:
+                if perm.tier == "inferred":
+                    continue
+                if perm.condition and not perm.condition.matches(context):
+                    continue
+                return perm
+
+        # Tier 3: pattern scan (wildcards/globs only)
+        for perm in pattern_list:
             if perm.action != action:
                 continue
-
             if not matches_resource_pattern(resource, perm.resource):
                 continue
-
-            # Check tier - inferred permissions are inactive unless promoted
             if perm.tier == "inferred":
                 continue
-
-            # Check conditions
             if perm.condition and not perm.condition.matches(context):
                 continue
-
             return perm
 
         return None

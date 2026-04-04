@@ -56,6 +56,110 @@ def _specificity_score(pattern: str) -> int:
     return score
 
 
+def _is_exact_resource(resource: str) -> bool:
+    """Check if a permission resource is an exact host/* pattern.
+
+    Exact: "api.openai.com/*" (host + single trailing /*)
+    Pattern: "*.googleapis.com/*", "*", "minifuse:/v1/feeds/*", "/v1/**"
+
+    Only matches the host/* format used by network:request and credential:use
+    evaluations (e.g., "api.openai.com/*"). Resources with deeper paths or
+    service:path formats are treated as patterns even if they end with /*.
+    """
+    if not resource.endswith("/*"):
+        return False
+    prefix = resource[:-2]  # strip trailing /*
+    # Must be a simple host (no slashes, no colons, no glob chars in prefix)
+    if "/" in prefix or ":" in prefix:
+        return False
+    return "*" not in prefix and "?" not in prefix and "[" not in prefix
+
+
+def _is_simple_permission(perm) -> bool:
+    """Check if a permission is simple enough to reduce to a set entry.
+
+    Simple: explicit tier, no condition, effect is deny/prompt/allow (not budget).
+    These are the bulk of expanded list permissions (e.g., 92k blocklist denies).
+    """
+    return (
+        perm.tier == "explicit"
+        and perm.condition is None
+        and perm.effect != "budget"
+    )
+
+
+def _build_permission_index(permissions):
+    """Partition sorted permissions into three tiers for lookup.
+
+    Args:
+        permissions: Pre-sorted list of Permission objects
+
+    Returns:
+        (simple_sets, exact_dict, pattern_list) where:
+        - simple_sets: {(action, effect): set(resource, ...)} for O(1) set lookup
+          (no condition, no budget — just check membership)
+        - exact_dict: {(action, resource): [Permission, ...]} for O(1) dict lookup
+          (has conditions or budget — need full Permission check)
+        - pattern_list: [Permission, ...] for linear scan (wildcards/globs only)
+    """
+    simple: dict[tuple[str, str], set[str]] = {}
+    exact: dict[tuple[str, str], list] = {}
+    patterns = []
+
+    for perm in permissions:
+        if _is_exact_resource(perm.resource):
+            if _is_simple_permission(perm):
+                # Reduce to set membership — no Permission object needed
+                set_key = (perm.action, perm.effect)
+                simple.setdefault(set_key, set()).add(perm.resource)
+            else:
+                # Keep full Permission for condition/budget checking
+                key = (perm.action, perm.resource)
+                exact.setdefault(key, []).append(perm)
+        else:
+            patterns.append(perm)
+
+    return simple, exact, patterns
+
+
+def _is_simple_permission_dict(p: dict) -> bool:
+    """Check if a raw permission dict is simple enough for set extraction.
+
+    Simple: exact host/*, explicit tier, no condition, no budget.
+    """
+    resource = p.get("resource", "")
+    if not _is_exact_resource(resource):
+        return False
+    if p.get("condition"):
+        return False
+    if p.get("effect") == "budget":
+        return False
+    if p.get("tier", "explicit") != "explicit":
+        return False
+    return True
+
+
+def _extract_simple_permissions(
+    permissions: list[dict],
+) -> tuple[list[dict], dict[tuple[str, str], set[str]]]:
+    """Extract simple permissions from the raw list before Pydantic validation.
+
+    Returns:
+        (remaining, simple_sets) where:
+        - remaining: permission dicts that need full Pydantic validation
+        - simple_sets: {(action, effect): set(resource)} extracted entries
+    """
+    remaining = []
+    simple: dict[tuple[str, str], set[str]] = {}
+    for p in permissions:
+        if _is_simple_permission_dict(p):
+            key = (p["action"], p.get("effect", "allow"))
+            simple.setdefault(key, set()).add(p["resource"])
+        else:
+            remaining.append(p)
+    return remaining, simple
+
+
 class PolicyLoader:
     """
     Loads and watches policy files with hot reload support.
@@ -92,6 +196,14 @@ class PolicyLoader:
         self._baseline: UnifiedPolicy = UnifiedPolicy()
         self._task_policy: UnifiedPolicy | None = None
         self._task_policy_path: Path | None = None
+
+        # Permission indexes (built after sorting, used for O(1) lookup)
+        self._baseline_simple: dict[tuple[str, str], set[str]] = {}
+        self._baseline_exact: dict[tuple[str, str], list] = {}
+        self._baseline_patterns: list = []
+        self._task_simple: dict[tuple[str, str], set[str]] = {}
+        self._task_exact: dict[tuple[str, str], list] = {}
+        self._task_patterns: list = []
 
         # Thread safety
         self._lock = threading.RLock()
@@ -305,8 +417,14 @@ class PolicyLoader:
                 raw = expand_lists(raw, self._baseline_path.parent)
 
             # Compile host-centric format → IAM format if needed
+            pre_simple = {}
             if is_host_centric(raw):
                 raw = compile_policy(raw)
+                # Extract simple permissions into sets BEFORE Pydantic validation
+                # to avoid creating 92k+ Permission objects for bulk list entries.
+                # Only for host-centric (compiled) policies — IAM-format policies
+                # keep all permissions as-is since they're hand-authored.
+                raw["permissions"], pre_simple = _extract_simple_permissions(raw["permissions"])
 
             with self._lock:
                 self._baseline = self._UnifiedPolicy.model_validate(raw)
@@ -321,8 +439,17 @@ class PolicyLoader:
                 # Sort permissions by specificity (most specific first)
                 self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
 
+                # Build permission index for O(1) exact-host lookup
+                self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
+                    _build_permission_index(self._baseline.permissions)
+                )
+                # Merge pre-extracted simple sets into the index
+                for key, resources in pre_simple.items():
+                    self._baseline_simple.setdefault(key, set()).update(resources)
+
             log.info(
-                f"Loaded baseline policy: {len(self._baseline.permissions)} permissions, "
+                f"Loaded baseline policy: {len(self._baseline.permissions)} permissions "
+                f"({len(self._baseline_exact)} indexed, {len(self._baseline_patterns)} patterns), "
                 f"{len(self._baseline.required)} required addons"
             )
             write_event(
@@ -372,6 +499,9 @@ class PolicyLoader:
 
                 # Sort permissions
                 self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+                self._task_simple, self._task_exact, self._task_patterns = (
+                    _build_permission_index(self._task_policy.permissions)
+                )
 
             log.info(f"Loaded task policy: {len(self._task_policy.permissions)} permissions")
             write_event(
@@ -483,6 +613,37 @@ class PolicyLoader:
         with self._lock:
             return self._task_policy
 
+    def get_merged_index(self):
+        """Get merged permission index (task + baseline).
+
+        Task entries take priority over baseline for the same key.
+
+        Returns:
+            (simple_sets, exact_dict, pattern_list) — three-tier lookup:
+            - simple_sets: {(action, effect): set(resource)} for set membership
+            - exact_dict: {(action, resource): [Permission]} for condition checking
+            - pattern_list: [Permission] for wildcard/glob scan
+        """
+        with self._lock:
+            if not self._task_policy:
+                return self._baseline_simple, self._baseline_exact, self._baseline_patterns
+
+            # Merge simple sets: union (both baseline and task denies apply)
+            merged_simple = {}
+            for key, resources in self._baseline_simple.items():
+                merged_simple[key] = set(resources)
+            for key, resources in self._task_simple.items():
+                merged_simple.setdefault(key, set()).update(resources)
+
+            # Merge exact: task takes priority
+            merged_exact = dict(self._baseline_exact)
+            merged_exact.update(self._task_exact)
+
+            # Patterns: task first (higher priority), then baseline
+            merged_patterns = self._task_patterns + self._baseline_patterns
+
+            return merged_simple, merged_exact, merged_patterns
+
     @property
     def baseline_path(self) -> Path | None:
         """Get baseline policy path."""
@@ -498,12 +659,18 @@ class PolicyLoader:
         with self._lock:
             self._baseline = policy
             self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+            self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
+                _build_permission_index(self._baseline.permissions)
+            )
 
     def set_task_policy(self, policy: "UnifiedPolicy") -> None:
         """Set task policy directly (for updates via API)."""
         with self._lock:
             self._task_policy = policy
             self._task_policy.permissions.sort(key=lambda p: _specificity_score(p.resource), reverse=True)
+            self._task_simple, self._task_exact, self._task_patterns = (
+                _build_permission_index(self._task_policy.permissions)
+            )
 
     def reload(self) -> bool:
         """Force reload of all policies."""
