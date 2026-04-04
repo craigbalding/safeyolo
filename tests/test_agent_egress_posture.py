@@ -118,8 +118,8 @@ class TestAgentEgressEvaluation:
         d = engine.evaluate_request("random-site.com", agent="boris")
         assert d.effect == "deny"
 
-    def test_locked_agent_proxy_wide_explicit_still_works(self):
-        """Proxy-wide explicit host entries still accessible (higher specificity)."""
+    def test_locked_agent_proxy_wide_explicit_denied(self):
+        """Agent catch-all deny beats proxy-wide explicit entries."""
         engine = self._make_engine(
             hosts={
                 "api.openai.com": {"rate_limit": 3000},
@@ -127,8 +127,9 @@ class TestAgentEgressEvaluation:
             },
             agents={"boris": {"egress": "deny"}},
         )
+        # Boris's catch-all deny takes priority — only boris.hosts entries are allowed
         d = engine.evaluate_request("api.openai.com", agent="boris")
-        assert d.effect == "allow"
+        assert d.effect == "deny"
 
     def test_open_agent_unaffected(self):
         """Agent without egress restriction uses proxy-wide policy."""
