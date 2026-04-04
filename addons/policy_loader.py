@@ -429,6 +429,11 @@ class PolicyLoader:
                 # Only for host-centric (compiled) policies — IAM-format policies
                 # keep all permissions as-is since they're hand-authored.
                 raw["permissions"], pre_simple = _extract_simple_permissions(raw["permissions"])
+                # Record summary counts for visibility
+                raw["simple_permissions"] = {
+                    f"{action}:{effect}": len(resources)
+                    for (action, effect), resources in pre_simple.items()
+                }
 
             with self._lock:
                 self._baseline = self._UnifiedPolicy.model_validate(raw)

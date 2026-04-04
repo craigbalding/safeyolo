@@ -114,6 +114,7 @@ class AgentAPI:
             "/health": self._handle_health,
             "/status": self._handle_status,
             "/policy": self._handle_policy,
+            "/lookup": self._handle_lookup,
             "/budgets": self._handle_budgets,
             "/config": self._handle_config,
             "/explain": self._handle_explain,
@@ -685,6 +686,44 @@ class AgentAPI:
             return
         baseline = client.get_baseline()
         self._respond(flow, 200, {"policy": baseline})
+
+    def _handle_lookup(self, flow: http.HTTPFlow):
+        """GET /lookup?host=X - Check what would happen for a host.
+
+        Uses the calling agent's identity (from service discovery),
+        not a user-supplied parameter. Agents can only look up their
+        own access.
+        """
+        query = flow.request.query
+        host = query.get("host", "")
+        agent = flow.metadata.get("agent")  # from service_discovery, not query
+
+        if not host:
+            self._respond(flow, 400, {
+                "error": "Missing 'host' parameter",
+                "usage": "/lookup?host=example.com",
+            })
+            return
+
+        client = self._get_policy_client()
+        if not client:
+            self._respond(flow, 503, {"error": "PDP not available"})
+            return
+
+        # Navigate to engine for direct evaluation
+        pdp = getattr(client, "_pdp", None)
+        engine = getattr(pdp, "_engine", None) if pdp else None
+        if not engine:
+            self._respond(flow, 503, {"error": "Policy engine not available"})
+            return
+
+        decision = engine.evaluate_request(host=host, agent=agent)
+        self._respond(flow, 200, {
+            "host": host,
+            "agent": agent,
+            "effect": decision.effect,
+            "reason": decision.reason,
+        })
 
     def _handle_budgets(self, flow: http.HTTPFlow):
         """GET /budgets - Budget usage per domain."""
