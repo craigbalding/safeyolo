@@ -23,21 +23,37 @@ log = logging.getLogger("safeyolo.list-loader")
 def load_list(path: Path) -> list[str]:
     """Load a list file — one entry per line, # comments, blank lines skipped.
 
+    Also handles hosts-file format (e.g., "0.0.0.0 domain" or
+    "127.0.0.1 domain") by stripping the IP prefix.
+
     Args:
         path: Path to the list file
 
     Returns:
-        List of stripped, non-empty entries
+        List of stripped, non-empty, unique entries
 
     Raises:
         FileNotFoundError: If the file doesn't exist
     """
-    entries = []
+    seen: set[str] = set()
+    entries: list[str] = []
     for line in path.read_text().splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        entries.append(stripped)
+        # Handle hosts-file format: "0.0.0.0 domain", "127.0.0.1 domain", etc.
+        parts = stripped.split()
+        if len(parts) >= 2 and (parts[0] in ("0.0.0.0", "127.0.0.1", "255.255.255.255") or parts[0].startswith((":", "f"))):
+            stripped = parts[1]
+        # Skip non-domain entries from hosts files
+        if stripped in ("0.0.0.0", "127.0.0.1", "localhost", "localhost.localdomain", "local", "broadcasthost"):
+            continue
+        # Skip entries that aren't valid domain names (must contain a dot)
+        if "." not in stripped:
+            continue
+        if stripped not in seen:
+            seen.add(stripped)
+            entries.append(stripped)
     return entries
 
 

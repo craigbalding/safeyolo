@@ -30,6 +30,7 @@ scan_patterns = []
 
 [lists]
 package_registries = "lists/package-registries.txt"
+known_bad = "lists/stevenblack-hosts.txt"
 
 # =============================================================================
 # HOSTS — credentials + rate limits + overrides, all in one place
@@ -53,6 +54,9 @@ package_registries = "lists/package-registries.txt"
 
 # ── Local ─────────────────────────────────────────────────────
 "host.docker.internal" = { rate = 12_000 }
+
+# ── Known bad hosts (StevenBlack/hosts — malware + adware) ───
+"$known_bad"          = { egress = "deny" }
 
 # ── Domain overrides ──────────────────────────────────────────
 "*.internal"          = { bypass = ["pattern_scanner"] }

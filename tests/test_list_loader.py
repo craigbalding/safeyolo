@@ -29,6 +29,30 @@ class TestLoadList:
         f.write_text("  pypi.org  \n\tregistry.npmjs.org\t\n")
         assert load_list(f) == ["pypi.org", "registry.npmjs.org"]
 
+    def test_hosts_file_format(self, tmp_path):
+        from list_loader import load_list
+
+        f = tmp_path / "hosts"
+        f.write_text(
+            "# Steven Black hosts\n"
+            "127.0.0.1 localhost\n"
+            "127.0.0.1 localhost.localdomain\n"
+            "::1 localhost\n"
+            "0.0.0.0 0.0.0.0\n"
+            "0.0.0.0 evil.com\n"
+            "0.0.0.0 malware.org\n"
+            "0.0.0.0 evil.com\n"  # duplicate
+        )
+        result = load_list(f)
+        assert result == ["evil.com", "malware.org"]
+
+    def test_entries_without_dot_skipped(self, tmp_path):
+        from list_loader import load_list
+
+        f = tmp_path / "hosts.txt"
+        f.write_text("valid.com\nip6-allnodes\nanother.org\n")
+        assert load_list(f) == ["valid.com", "another.org"]
+
     def test_empty_file(self, tmp_path):
         from list_loader import load_list
 
