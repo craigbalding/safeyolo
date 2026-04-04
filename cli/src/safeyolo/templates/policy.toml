@@ -2,6 +2,7 @@
 #
 # TOML format: everything about one host in one place.
 # Each entry can have: allow, rate, bypass, rules.
+# Use $list_name to reference a named list from [lists].
 #
 # Approved credentials are auto-added here by `safeyolo watch`.
 # Addon tuning (entropy, circuit breaker, etc.) lives in addons.yaml.
@@ -24,6 +25,13 @@ required = [
 scan_patterns = []
 
 # =============================================================================
+# NAMED LISTS — files of hosts/domains, referenced with $name in [hosts]
+# =============================================================================
+
+[lists]
+package_registries = "lists/package-registries.txt"
+
+# =============================================================================
 # HOSTS — credentials + rate limits + overrides, all in one place
 # =============================================================================
 
@@ -40,19 +48,8 @@ scan_patterns = []
 # ── Google ────────────────────────────────────────────────────
 "*.googleapis.com"    = { rate = 120 }
 
-# ── Package registries ────────────────────────────────────────
-"pypi.org"               = { rate = 1_200 }
-"files.pythonhosted.org" = { rate = 1_200 }
-"registry.npmjs.org"     = { rate = 600 }
-
-# ── Rust ──────────────────────────────────────────────────────
-"index.crates.io"     = { rate = 3_000 }
-"static.crates.io"    = { rate = 1_200 }
-"crates.io"           = { rate = 600 }
-
-# ── Go ────────────────────────────────────────────────────────
-"proxy.golang.org"    = { rate = 300 }
-"sum.golang.org"      = { rate = 300 }
+# ── Package registries (expanded from $package_registries list) ──
+"$package_registries" = { rate = 1_200 }
 
 # ── Local ─────────────────────────────────────────────────────
 "host.docker.internal" = { rate = 12_000 }

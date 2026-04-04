@@ -97,6 +97,7 @@ class PolicyLoader:
         self._lock = threading.RLock()
         self._last_baseline_mtime: float = 0
         self._last_addons_mtime: float = 0
+        self._last_lists_mtime: float = 0
         self._last_services_mtime: float = 0
         self._last_task_mtime: float = 0
 
@@ -167,6 +168,36 @@ class PolicyLoader:
 
         log.info(f"Merged addon config from {addons_path}")
         return raw
+
+    def _lists_max_mtime(self) -> float:
+        """Get the max mtime across all list files referenced in policy."""
+        if not self._baseline_path:
+            return 0
+        try:
+            raw = self._load_file(self._baseline_path)
+            if not raw:
+                return 0
+            lists_config = raw.get("lists", {})
+            if not isinstance(lists_config, dict):
+                return 0
+        except (OSError, ValueError):
+            return 0
+
+        base_dir = self._baseline_path.parent
+        max_mtime = 0.0
+        for list_path_str in lists_config.values():
+            if not isinstance(list_path_str, str):
+                continue
+            p = Path(list_path_str)
+            if not p.is_absolute():
+                p = base_dir / p
+            try:
+                mt = p.stat().st_mtime
+                if mt > max_mtime:
+                    max_mtime = mt
+            except OSError:
+                pass
+        return max_mtime
 
     def _services_max_mtime(self) -> float:
         """Get the max mtime across all YAML files in the services directory."""
@@ -267,6 +298,12 @@ class PolicyLoader:
             # Merge sibling addons.yaml if present
             raw = self._merge_addons(raw)
 
+            # Expand $list references in hosts section
+            if "lists" in raw and "hosts" in raw:
+                from list_loader import expand_lists
+
+                raw = expand_lists(raw, self._baseline_path.parent)
+
             # Compile host-centric format → IAM format if needed
             if is_host_centric(raw):
                 raw = compile_policy(raw)
@@ -277,6 +314,7 @@ class PolicyLoader:
                 addons_path = self._addons_path()
                 if addons_path:
                     self._last_addons_mtime = addons_path.stat().st_mtime
+                self._last_lists_mtime = self._lists_max_mtime()
                 if self._services_dir:
                     self._last_services_mtime = self._services_max_mtime()
 
@@ -393,6 +431,11 @@ class PolicyLoader:
                         mtime = addons_path.stat().st_mtime
                         if mtime > self._last_addons_mtime:
                             reload_baseline = True
+
+                    # Check list files (triggers baseline reload since they expand into hosts)
+                    lists_mtime = self._lists_max_mtime()
+                    if lists_mtime > self._last_lists_mtime:
+                        reload_baseline = True
 
                     # Check services dir (triggers baseline reload for capability routes)
                     if self._services_dir and self._services_dir.is_dir():

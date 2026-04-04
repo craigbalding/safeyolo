@@ -1,0 +1,15 @@
+# Python
+pypi.org
+files.pythonhosted.org
+
+# JavaScript
+registry.npmjs.org
+
+# Rust
+index.crates.io
+static.crates.io
+crates.io
+
+# Go
+proxy.golang.org
+sum.golang.org
