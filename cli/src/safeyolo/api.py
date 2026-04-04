@@ -344,32 +344,42 @@ class AdminAPI:
             json={"host": host, "rate": rate},
         )
 
-    def allow_host(self, host: str, rate: int | None = None) -> dict[str, Any]:
+    def allow_host(
+        self, host: str, rate: int | None = None, agent: str | None = None,
+    ) -> dict[str, Any]:
         """Allow a new host in policy.
 
         Args:
             host: Host pattern (e.g., "cdn.example.com")
             rate: Optional rate limit (requests per minute)
+            agent: Optional agent name for agent-scoped entry
         """
         payload: dict[str, Any] = {"host": host}
         if rate is not None:
             payload["rate"] = rate
+        if agent is not None:
+            payload["agent"] = agent
         return self._request(
             "POST",
             "/admin/policy/host/allow",
             json=payload,
         )
 
-    def deny_host(self, host: str, expires: str | None = None) -> dict[str, Any]:
+    def deny_host(
+        self, host: str, expires: str | None = None, agent: str | None = None,
+    ) -> dict[str, Any]:
         """Deny egress to a host in policy.
 
         Args:
             host: Host pattern (e.g., "dodgy-site.com")
             expires: Optional ISO datetime for auto-expiry
+            agent: Optional agent name for agent-scoped entry
         """
         payload: dict[str, Any] = {"host": host}
         if expires is not None:
             payload["expires"] = expires
+        if agent is not None:
+            payload["agent"] = agent
         return self._request(
             "POST",
             "/admin/policy/host/deny",

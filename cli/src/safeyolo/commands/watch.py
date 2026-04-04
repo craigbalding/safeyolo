@@ -11,7 +11,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -617,8 +617,33 @@ def _fallback_format_detail(event: dict) -> Panel:
 # Network egress approval handlers
 # ---------------------------------------------------------------------------
 
+# Duration options: label → timedelta (None = permanent)
+DURATION_OPTIONS = {
+    "1h": timedelta(hours=1),
+    "8h": timedelta(hours=8),
+    "1d": timedelta(days=1),
+    "7d": timedelta(days=7),
+}
+
+
+def _parse_duration(code: str) -> str | None:
+    """Parse duration code (1h/8h/1d/7d) to ISO expires string, or None for permanent."""
+    td = DURATION_OPTIONS.get(code)
+    if td is None:
+        return None
+    return (datetime.now(UTC) + td).isoformat()
+
+
+def _host_to_domain(host: str) -> str:
+    """Convert api.stripe.com → *.stripe.com for domain scope."""
+    parts = host.split(".")
+    if len(parts) > 2:
+        return "*." + ".".join(parts[1:])
+    return "*." + host
+
 
 def _network_egress_approve(event: dict, api: AdminAPI) -> str | None:
+    """Approve with defaults — used by batch approve and fallback."""
     approval = event.get("approval", {})
     host = event.get("host", approval.get("target", ""))
     result = api.allow_host(host=host, rate=600)
@@ -626,13 +651,107 @@ def _network_egress_approve(event: dict, api: AdminAPI) -> str | None:
 
 
 def _network_egress_deny(event: dict, api: AdminAPI) -> None:
-    from datetime import datetime, timedelta
-
+    """Deny with defaults — used by batch deny and fallback."""
     approval = event.get("approval", {})
     host = event.get("host", approval.get("target", ""))
-    # Default deny duration: 1 day
     expires = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     api.deny_host(host=host, expires=expires)
+
+
+def _prompt_egress_approval(item: BatchItem, api: AdminAPI) -> bool:
+    """Interactive prompt for network egress approval with scope toggles.
+
+    Returns True if approved.
+    """
+    dispatch = DISPATCH["network_egress"]
+    event = item.event
+    approval = event.get("approval", {})
+    host = event.get("host", approval.get("target", "unknown"))
+    agent_name = event.get("agent")
+
+    # Show detail panel
+    console.print()
+    console.print(dispatch.format_detail(event))
+
+    # Collect scope
+    try:
+        scope_input = console.input(
+            f"  Scope: [bold][h][/bold]ost ({host}) / [bold][d][/bold]omain ({_host_to_domain(host)})  [dim]default: h[/dim]: "
+        ).lower().strip()
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[dim]Interrupted[/dim]")
+        return False
+
+    use_domain = scope_input in ("d", "domain")
+    target = _host_to_domain(host) if use_domain else host
+
+    # Collect agent scope (only if agent is known)
+    apply_to_agent = None
+    if agent_name and agent_name != "unknown":
+        try:
+            agent_input = console.input(
+                f"  Apply to: [bold][t][/bold]his agent ({agent_name}) / [bold][a][/bold]ll agents  [dim]default: t[/dim]: "
+            ).lower().strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Interrupted[/dim]")
+            return False
+        if agent_input not in ("a", "all"):
+            apply_to_agent = agent_name
+
+    # Collect action + duration
+    console.print(
+        "  [green]a[/green]pprove [dim]\u221e[/dim]  "
+        "[red]d[/red]eny [dim]1d[/dim]  "
+        "[dim]a1h a8h a1d a7d | d1h d8h d7d d\u221e | l(ater)[/dim]"
+    )
+    try:
+        action_input = console.input("  Action: ").lower().strip()
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[dim]Interrupted[/dim]")
+        return False
+
+    if action_input in ("l", "later", ""):
+        console.print("[dim]Deferred[/dim]")
+        return False
+
+    # Parse action + duration
+    if action_input in ("a", "approve", "y", "yes"):
+        action, duration = "approve", None
+    elif action_input in ("d", "deny", "n", "no"):
+        action, duration = "deny", "1d"
+    elif action_input.startswith("a") and action_input[1:] in DURATION_OPTIONS:
+        action, duration = "approve", action_input[1:]
+    elif action_input.startswith("d") and action_input[1:] in DURATION_OPTIONS:
+        action, duration = "deny", action_input[1:]
+    elif action_input == "d\u221e" or action_input == "d-":
+        action, duration = "deny", None
+    else:
+        console.print("[dim]Invalid input[/dim]")
+        return False
+
+    expires = _parse_duration(duration) if duration else None
+
+    # Execute
+    try:
+        if action == "approve":
+            api.allow_host(host=target, rate=600, agent=apply_to_agent)
+            scope_label = f"[bold]{escape(target)}[/bold]"
+            if apply_to_agent:
+                scope_label += f" (agent: {escape(apply_to_agent)})"
+            dur_label = f"expires {duration}" if duration else "permanent"
+            console.print(f"[green]Approved[/green] {scope_label} [{dur_label}]")
+            return True
+        else:
+            api.deny_host(host=target, expires=expires, agent=apply_to_agent)
+            scope_label = f"[bold]{escape(target)}[/bold]"
+            if apply_to_agent:
+                scope_label += f" (agent: {escape(apply_to_agent)})"
+            dur_label = f"expires {duration}" if duration else "permanent"
+            console.print(f"[red]Denied[/red] {scope_label} [{dur_label}]")
+            return False
+    except (APIError, NotImplementedError) as e:
+        console.print(f"[red]Error:[/red] {escape(str(e))}")
+        return False
 
 
 def _network_egress_format_row(event: dict) -> tuple[str, str, str, str]:
@@ -1009,6 +1128,8 @@ def _prompt_single_item(item: BatchItem, api: AdminAPI) -> bool:
         return handle_risky_route_approval(item.event, api)
     elif item.approval_type == "credential":
         return handle_approval(item.event, api)
+    elif item.approval_type == "network_egress":
+        return _prompt_egress_approval(item, api)
     elif item.approval_type in ("service", "contract_binding"):
         console.print()
         console.print(dispatch.format_detail(item.event))

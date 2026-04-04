@@ -314,12 +314,13 @@ class PolicyClient(ABC):
         pass
 
     @abstractmethod
-    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
         """Add a host to the allowed list.
 
         Args:
             host: Host pattern
             rate: Optional rate limit
+            agent: Optional agent name for agent-scoped entry
 
         Returns:
             Status dict
@@ -327,12 +328,13 @@ class PolicyClient(ABC):
         pass
 
     @abstractmethod
-    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
         """Deny egress to a host.
 
         Args:
             host: Host pattern
             expires: Optional ISO datetime for auto-expiry
+            agent: Optional agent name for agent-scoped entry
 
         Returns:
             Status dict
@@ -496,13 +498,13 @@ class LocalPolicyClient(PolicyClient):
         """Update rate limit for a host."""
         return self._pdp.update_host_rate(host, rate)
 
-    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
         """Add a host to the allowed list."""
-        return self._pdp.add_host_allowance(host, rate)
+        return self._pdp.add_host_allowance(host, rate, agent=agent)
 
-    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
         """Deny egress to a host."""
-        return self._pdp.add_host_denial(host, expires)
+        return self._pdp.add_host_denial(host, expires, agent=agent)
 
     def add_host_bypass(self, host: str, addon: str) -> dict:
         """Add an addon bypass for a host."""
@@ -799,11 +801,11 @@ class HttpPolicyClient(PolicyClient):
         """Update host rate limit via HTTP (not implemented for remote PDP)."""
         return {"error": "update_host_rate not supported via HTTP PDP"}
 
-    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+    def add_host_allowance(self, host: str, rate: int | None = None, agent: str | None = None) -> dict:
         """Add host allowance via HTTP (not implemented for remote PDP)."""
         return {"error": "add_host_allowance not supported via HTTP PDP"}
 
-    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+    def add_host_denial(self, host: str, expires: str | None = None, agent: str | None = None) -> dict:
         """Add host denial via HTTP (not implemented for remote PDP)."""
         return {"error": "add_host_denial not supported via HTTP PDP"}
 

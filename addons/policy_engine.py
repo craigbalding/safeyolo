@@ -1111,29 +1111,33 @@ class PolicyEngine:
 
         return {"status": "updated", "host": host, "old_rate": old_rate, "new_rate": rate}
 
-    def add_host_allowance(self, host: str, rate: int | None = None) -> dict[str, Any]:
+    def add_host_allowance(
+        self, host: str, rate: int | None = None, agent: str | None = None,
+    ) -> dict[str, Any]:
         """Add a host to the allowed list in baseline policy.
 
         Args:
             host: Host pattern (e.g., "cdn.example.com")
             rate: Optional rate limit (requests per minute)
+            agent: Optional agent name — writes to [agents.<name>.hosts] if set
 
         Returns:
-            Dict with status, host, rate
+            Dict with status, host, rate, agent
         """
+        condition = Condition(agent=agent) if agent else None
+
         with self._loader._lock:
             baseline = self._loader._baseline
 
-            # Create network:request allow permission
             new_perm = Permission(
                 action="network:request",
                 resource=f"{host}/*",
                 effect="allow",
                 tier="explicit",
+                condition=condition,
             )
             baseline.permissions.insert(0, new_perm)
 
-            # Optionally create budget permission
             if rate is not None:
                 budget_perm = Permission(
                     action="network:request",
@@ -1141,10 +1145,10 @@ class PolicyEngine:
                     effect="budget",
                     budget=rate,
                     tier="explicit",
+                    condition=condition,
                 )
                 baseline.permissions.append(budget_perm)
 
-        # Re-sort and update
         self._loader.set_baseline(baseline)
 
         # Persist to TOML
@@ -1156,24 +1160,31 @@ class PolicyEngine:
                 config: dict[str, Any] = {}
                 if rate is not None:
                     config["rate"] = rate
-                add_host(doc, host, config)
+
+                if agent:
+                    self._write_agent_host(doc, agent, host, config)
+                else:
+                    add_host(doc, host, config)
                 save_roundtrip(self._loader.baseline_path, doc)
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 log.warning("TOML round-trip save failed for host allowance: %s", e)
 
-        log.info("Added host allowance: %s (rate=%s)", sanitize_for_log(host), rate)
+        log.info("Added host allowance: %s (rate=%s, agent=%s)",
+                 sanitize_for_log(host), sanitize_for_log(str(rate)), sanitize_for_log(str(agent)))
         write_event(
             "admin.host_allowed",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Host allowed: {sanitize_for_log(host)} (rate={rate})",
             addon="policy-engine",
-            details={"host": host, "rate": rate},
+            details={"host": host, "rate": rate, "agent": agent},
         )
 
-        return {"status": "added", "host": host, "rate": rate}
+        return {"status": "added", "host": host, "rate": rate, "agent": agent}
 
-    def add_host_denial(self, host: str, expires: str | None = None) -> dict[str, Any]:
+    def add_host_denial(
+        self, host: str, expires: str | None = None, agent: str | None = None,
+    ) -> dict[str, Any]:
         """Deny egress to a host in baseline policy.
 
         Writes a host entry with egress = "deny" to policy.toml.
@@ -1182,10 +1193,13 @@ class PolicyEngine:
         Args:
             host: Host pattern (e.g., "dodgy-site.com")
             expires: Optional ISO datetime string for auto-expiry
+            agent: Optional agent name — writes to [agents.<name>.hosts] if set
 
         Returns:
-            Dict with status, host, expires
+            Dict with status, host, expires, agent
         """
+        condition = Condition(agent=agent) if agent else None
+
         with self._loader._lock:
             baseline = self._loader._baseline
 
@@ -1194,6 +1208,7 @@ class PolicyEngine:
                 resource=f"{host}/*",
                 effect="deny",
                 tier="explicit",
+                condition=condition,
             )
             baseline.permissions.insert(0, new_perm)
 
@@ -1210,22 +1225,50 @@ class PolicyEngine:
                     from datetime import datetime
 
                     config["expires"] = datetime.fromisoformat(expires)
-                add_host(doc, host, config)
+
+                if agent:
+                    self._write_agent_host(doc, agent, host, config)
+                else:
+                    add_host(doc, host, config)
                 save_roundtrip(self._loader.baseline_path, doc)
             except (OSError, ValueError) as e:
                 log.warning("TOML round-trip save failed for host denial: %s", e)
 
-        log.info("Added host denial: %s (expires=%s)", sanitize_for_log(host), sanitize_for_log(str(expires)))
+        log.info("Added host denial: %s (expires=%s, agent=%s)",
+                 sanitize_for_log(host), sanitize_for_log(str(expires)), sanitize_for_log(str(agent)))
         write_event(
             "admin.host_denied",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
             summary=f"Host denied: {sanitize_for_log(host)} (expires={sanitize_for_log(str(expires))})",
             addon="policy-engine",
-            details={"host": host, "expires": expires},
+            details={"host": host, "expires": expires, "agent": agent},
         )
 
-        return {"status": "denied", "host": host, "expires": expires}
+        return {"status": "denied", "host": host, "expires": expires, "agent": agent}
+
+    @staticmethod
+    def _write_agent_host(doc, agent_name: str, host: str, config: dict) -> None:
+        """Write a host entry to [agents.<name>.hosts] in a TOMLDocument."""
+        import tomlkit
+
+        agents = doc.get("agents")
+        if agents is None:
+            agents = tomlkit.table()
+            doc.add("agents", agents)
+        agent_section = agents.get(agent_name)
+        if agent_section is None:
+            agent_section = tomlkit.table()
+            agents.add(agent_name, agent_section)
+        hosts = agent_section.get("hosts")
+        if hosts is None:
+            hosts = tomlkit.table()
+            agent_section.add("hosts", hosts)
+
+        it = tomlkit.inline_table()
+        for k, v in config.items():
+            it.append(k, v)
+        hosts[host] = it
 
     def add_host_bypass(self, host: str, addon: str) -> dict[str, Any]:
         """Add an addon bypass for a host in baseline policy.
