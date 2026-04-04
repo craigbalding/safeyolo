@@ -300,7 +300,7 @@ required = ["credential_guard", "network_guard", "circuit_breaker"]
 [hosts]
 "api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
 "api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
-"*"                 = { on_unknown = "prompt",     rate = 600 }
+"*"                 = { egress = "allow", unknown_creds = "prompt", rate = 600 }
 
 [credential.openai]
 match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']

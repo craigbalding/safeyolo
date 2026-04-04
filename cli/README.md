@@ -207,7 +207,7 @@ Inspect the merged policy that the proxy enforces at runtime.
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo policy show` | Show merged policy (policy.toml + addons.yaml + agents.yaml) |
+| `safeyolo policy show` | Show merged policy (policy.toml + addons.yaml) |
 | `safeyolo policy show --compiled` | Show compiled IAM format |
 | `safeyolo policy show --section hosts` | Filter output to one section |
 
@@ -221,6 +221,36 @@ safeyolo policy show --section hosts
 # View compiled IAM representation
 safeyolo policy show --compiled
 ```
+
+### Policy Management
+
+Manage hosts, egress posture, and named lists in policy.toml.
+
+**Host rules:**
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo policy host add <host> [options]` | Add a host rule |
+| `safeyolo policy host remove <host>` | Remove a host rule |
+| `safeyolo policy host deny <host>` | Deny all traffic to a host |
+| `safeyolo policy host list` | List all host rules |
+| `safeyolo policy host bypass <host>` | Bypass proxy for a host (no MITM) |
+| `safeyolo policy host add-list <host> --list <name>` | Add a host from a named list |
+
+**Egress posture:**
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo policy egress set <posture>` | Set egress posture (allow, prompt, deny) |
+| `safeyolo policy egress show` | Show current egress posture |
+
+**Named lists:**
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo policy list add <name> <host>` | Add a host to a named list |
+| `safeyolo policy list remove <name> <host>` | Remove a host from a named list |
+| `safeyolo policy list show <name>` | Show hosts in a named list |
 
 ### Token Management
 
@@ -283,7 +313,6 @@ safeyolo/
 ├── config.yaml          # Main configuration
 ├── policy.toml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
-├── agents.yaml          # Machine-managed agent metadata (services, capabilities, grants)
 ├── docker-compose.yml   # Generated compose file
 ├── services/            # User service definitions (one YAML per service)
 ├── logs/                # Audit logs (safeyolo.jsonl)
@@ -317,13 +346,14 @@ Host-centric policy defining hosts, credentials, and rate limits:
 ```toml
 version = "2.0"
 budget = 12_000
+# egress posture is set on the wildcard [hosts] entry, not at top level
 
 required = ["credential_guard", "network_guard", "circuit_breaker"]
 
 [hosts]
 "api.openai.com"    = { allow = ["openai:*"],    rate = 3_000 }
 "api.anthropic.com" = { allow = ["anthropic:*"],  rate = 3_000 }
-"*"                 = { on_unknown = "prompt",     rate = 600 }
+"*"                 = { egress = "allow", unknown_creds = "prompt", rate = 600 }
 
 [credential.openai]
 match   = ['sk-proj-[a-zA-Z0-9_-]{80,}']
