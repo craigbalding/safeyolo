@@ -407,19 +407,39 @@ class TestAgentServiceEndpoints:
         return AdminRequestHandler
 
     @pytest.fixture
-    def agents_yaml(self, tmp_path):
-        """Create a mock agents.yaml with PDP wiring."""
-        agents_path = tmp_path / "agents.yaml"
-        agents_path.write_text(
-            "boris:\n  image: ghcr.io/test\n  services:\n    slack:\n      capability: chat\n      token: slack-key\n"
-        )
-        return agents_path
+    def policy_toml(self, tmp_path):
+        """Create a mock policy.toml with agents section."""
+        import tomlkit
+
+        doc = tomlkit.document()
+        doc.add("version", "2.0")
+        hosts = tomlkit.table()
+        it = tomlkit.inline_table()
+        it.append("rate", 600)
+        hosts.add("*", it)
+        doc.add("hosts", hosts)
+
+        agents = tomlkit.table()
+        boris = tomlkit.table()
+        boris.add("image", "ghcr.io/test")
+        services = tomlkit.table()
+        slack = tomlkit.table()
+        slack.add("capability", "chat")
+        slack.add("token", "slack-key")
+        services.add("slack", slack)
+        boris.add("services", services)
+        agents.add("boris", boris)
+        doc.add("agents", agents)
+
+        policy_path = tmp_path / "policy.toml"
+        policy_path.write_text(tomlkit.dumps(doc))
+        return policy_path
 
     @pytest.fixture
-    def mock_pdp(self, agents_yaml):
-        """Mock PDP to return a loader with agents_path via client._pdp._engine._loader."""
+    def mock_pdp(self, policy_toml):
+        """Mock PDP to return a loader with _baseline_path via client._pdp._engine._loader."""
         mock_loader = MagicMock()
-        mock_loader._agents_path.return_value = agents_yaml
+        mock_loader._baseline_path = policy_toml
 
         mock_engine = MagicMock()
         mock_engine._loader = mock_loader
@@ -436,9 +456,9 @@ class TestAgentServiceEndpoints:
         ):
             yield
 
-    def test_post_creates_binding(self, handler_class, mock_pdp, agents_yaml):
-        """POST creates service binding in agents.yaml."""
-        import yaml
+    def test_post_creates_binding(self, handler_class, mock_pdp, policy_toml):
+        """POST creates service binding in policy.toml."""
+        import tomlkit
 
         body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-oauth2"})
         handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
@@ -453,11 +473,12 @@ class TestAgentServiceEndpoints:
         assert response["service"] == "gmail"
         assert response["capability"] == "readonly"
 
-        # Verify agents.yaml was updated
-        raw = yaml.safe_load(agents_yaml.read_text())
-        assert raw["boris"]["services"]["gmail"] == {"capability": "readonly", "token": "gmail-oauth2"}
+        # Verify policy.toml was updated
+        doc = tomlkit.parse(policy_toml.read_text())
+        agents = doc["agents"].unwrap()
+        assert agents["boris"]["services"]["gmail"] == {"capability": "readonly", "token": "gmail-oauth2"}
         # Existing service preserved
-        assert raw["boris"]["services"]["slack"] == {"capability": "chat", "token": "slack-key"}
+        assert agents["boris"]["services"]["slack"] == {"capability": "chat", "token": "slack-key"}
 
     def test_post_missing_fields_returns_400(self, handler_class, mock_pdp):
         """POST with missing fields returns 400."""
@@ -486,9 +507,9 @@ class TestAgentServiceEndpoints:
         response = self._parse_response(handler)
         assert "not found" in response["error"]
 
-    def test_delete_removes_binding(self, handler_class, mock_pdp, agents_yaml):
-        """DELETE removes service binding from agents.yaml."""
-        import yaml
+    def test_delete_removes_binding(self, handler_class, mock_pdp, policy_toml):
+        """DELETE removes service binding from policy.toml."""
+        import tomlkit
 
         handler = self._create_handler(handler_class, "DELETE", "/admin/agents/boris/services/slack")
 
@@ -502,9 +523,10 @@ class TestAgentServiceEndpoints:
         assert response["service"] == "slack"
         assert response["credential"] == "slack-key"
 
-        # Verify agents.yaml was updated
-        raw = yaml.safe_load(agents_yaml.read_text())
-        assert "services" not in raw["boris"] or "slack" not in raw["boris"].get("services", {})
+        # Verify policy.toml was updated
+        doc = tomlkit.parse(policy_toml.read_text())
+        agents = doc["agents"].unwrap()
+        assert "services" not in agents["boris"] or "slack" not in agents["boris"].get("services", {})
 
     def test_delete_nonexistent_service_returns_404(self, handler_class, mock_pdp):
         """DELETE non-existent service returns 404."""
@@ -534,7 +556,7 @@ class TestAgentServiceEndpoints:
         assert call_args[1]["details"]["agent"] == "boris"
         assert call_args[1]["details"]["service"] == "gmail"
 
-    def test_delete_emits_audit_event(self, handler_class, mock_pdp, agents_yaml):
+    def test_delete_emits_audit_event(self, handler_class, mock_pdp, policy_toml):
         """DELETE emits admin.agent_service_revoked audit event."""
         handler = self._create_handler(handler_class, "DELETE", "/admin/agents/boris/services/slack")
 
@@ -547,7 +569,7 @@ class TestAgentServiceEndpoints:
         assert call_args[1]["details"]["agent"] == "boris"
         assert call_args[1]["details"]["service"] == "slack"
 
-    def test_atomic_write_uses_tmp_rename(self, handler_class, mock_pdp, agents_yaml):
+    def test_atomic_write_uses_tmp_rename(self, handler_class, mock_pdp, policy_toml):
         """Verify atomic write pattern (tmp file renamed)."""
         body = json.dumps({"service": "gmail", "capability": "readonly", "credential": "gmail-key"})
         handler = self._create_handler(handler_class, "POST", "/admin/agents/boris/services", body=body)
@@ -556,10 +578,10 @@ class TestAgentServiceEndpoints:
             handler.do_POST()
 
         # tmp file should not exist after successful write
-        tmp = agents_yaml.with_suffix(".tmp")
+        tmp = policy_toml.with_suffix(".tmp")
         assert not tmp.exists()
-        # Original should exist and be valid YAML
-        assert agents_yaml.exists()
+        # Original should exist and be valid TOML
+        assert policy_toml.exists()
 
     # Helper methods
 
@@ -602,6 +624,223 @@ class TestAgentServiceEndpoints:
 
     def _get_status(self, handler):
         """Get HTTP status from handler."""
+        return handler._status
+
+
+class TestPolicyHostEndpoints:
+    """Tests for host policy mutation endpoints."""
+
+    TEST_TOKEN = "test-token-for-unit-tests"
+
+    @pytest.fixture
+    def handler_class(self):
+        from admin_api import AdminRequestHandler
+
+        AdminRequestHandler.credential_guard = None
+        AdminRequestHandler.addons_with_stats = {}
+        AdminRequestHandler.admin_token = self.TEST_TOKEN
+        return AdminRequestHandler
+
+    def test_host_rate_happy_path(self, handler_class):
+        """POST /admin/policy/host/rate updates rate."""
+        mock_client = MagicMock()
+        mock_client.update_host_rate.return_value = {
+            "status": "updated", "host": "api.openai.com", "old_rate": 3000, "new_rate": 6000,
+        }
+
+        body = json.dumps({"host": "api.openai.com", "rate": 6000})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
+
+        with patch("admin_api.get_policy_client", return_value=mock_client), \
+             patch("admin_api.write_event"):
+            handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert response["status"] == "updated"
+        assert response["new_rate"] == 6000
+        mock_client.update_host_rate.assert_called_once_with(host="api.openai.com", rate=6000)
+
+    def test_host_rate_missing_host(self, handler_class):
+        body = json.dumps({"rate": 6000})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_host_rate_missing_rate(self, handler_class):
+        body = json.dumps({"host": "api.openai.com"})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_host_rate_invalid_rate(self, handler_class):
+        body = json.dumps({"host": "api.openai.com", "rate": -1})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_host_allow_happy_path(self, handler_class):
+        """POST /admin/policy/host/allow adds host."""
+        mock_client = MagicMock()
+        mock_client.add_host_allowance.return_value = {
+            "status": "added", "host": "cdn.example.com", "rate": 600,
+        }
+
+        body = json.dumps({"host": "cdn.example.com", "rate": 600})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
+
+        with patch("admin_api.get_policy_client", return_value=mock_client), \
+             patch("admin_api.write_event"):
+            handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert response["status"] == "added"
+        assert response["host"] == "cdn.example.com"
+
+    def test_host_allow_without_rate(self, handler_class):
+        """POST /admin/policy/host/allow works without rate."""
+        mock_client = MagicMock()
+        mock_client.add_host_allowance.return_value = {
+            "status": "added", "host": "cdn.example.com", "rate": None,
+        }
+
+        body = json.dumps({"host": "cdn.example.com"})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
+
+        with patch("admin_api.get_policy_client", return_value=mock_client), \
+             patch("admin_api.write_event"):
+            handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert response["status"] == "added"
+
+    def test_host_allow_missing_host(self, handler_class):
+        body = json.dumps({"rate": 600})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/allow", body=body)
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_host_bypass_happy_path(self, handler_class):
+        """POST /admin/policy/host/bypass adds bypass."""
+        mock_client = MagicMock()
+        mock_client.add_host_bypass.return_value = {
+            "status": "updated", "host": "api.internal.com", "bypass": ["pattern-scanner"],
+        }
+
+        body = json.dumps({"host": "api.internal.com", "addon": "pattern-scanner"})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/bypass", body=body)
+
+        with patch("admin_api.get_policy_client", return_value=mock_client), \
+             patch("admin_api.write_event"):
+            handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert response["status"] == "updated"
+        assert "pattern-scanner" in response["bypass"]
+
+    def test_host_bypass_missing_addon(self, handler_class):
+        body = json.dumps({"host": "api.internal.com"})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/bypass", body=body)
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_circuit_breaker_reset_happy_path(self, handler_class):
+        """POST /admin/circuit-breaker/reset resets circuit."""
+        mock_cb = MagicMock()
+        handler_class.addons_with_stats = {"circuit-breaker": mock_cb}
+        handler_class._addons_obj = None
+
+        body = json.dumps({"host": "api.slack.com"})
+        handler = self._create_handler(handler_class, "POST", "/admin/circuit-breaker/reset", body=body)
+
+        with patch("admin_api.write_event"):
+            handler.do_POST()
+
+        response = self._parse_response(handler)
+        assert response["status"] == "reset"
+        assert response["host"] == "api.slack.com"
+        mock_cb.reset.assert_called_once_with("api.slack.com")
+
+    def test_circuit_breaker_reset_missing_host(self, handler_class):
+        body = json.dumps({})
+        handler = self._create_handler(handler_class, "POST", "/admin/circuit-breaker/reset", body=body)
+        handler.do_POST()
+        assert handler._status == 400
+
+    def test_circuit_breaker_reset_not_available(self, handler_class):
+        """Returns 503 if circuit breaker addon not loaded."""
+        handler_class.addons_with_stats = {}
+        handler_class._addons_obj = None
+
+        body = json.dumps({"host": "api.slack.com"})
+        handler = self._create_handler(handler_class, "POST", "/admin/circuit-breaker/reset", body=body)
+
+        with patch("admin_api.write_event"):
+            handler.do_POST()
+
+        assert handler._status == 503
+
+    def test_host_rate_emits_audit_event(self, handler_class):
+        """POST /admin/policy/host/rate emits audit event."""
+        mock_client = MagicMock()
+        mock_client.update_host_rate.return_value = {
+            "status": "updated", "host": "api.openai.com", "old_rate": 3000, "new_rate": 6000,
+        }
+
+        body = json.dumps({"host": "api.openai.com", "rate": 6000})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/rate", body=body)
+
+        with patch("admin_api.get_policy_client", return_value=mock_client), \
+             patch("admin_api.write_event") as mock_write:
+            handler.do_POST()
+
+        mock_write.assert_called_once()
+        assert mock_write.call_args[0][0] == "admin.host_rate_updated"
+
+    def test_host_rate_requires_auth(self, handler_class):
+        """POST /admin/policy/host/rate requires auth."""
+        body = json.dumps({"host": "api.openai.com", "rate": 6000})
+        handler = self._create_handler(handler_class, "POST", "/admin/policy/host/rate", body=body, include_auth=False)
+        handler.do_POST()
+        assert handler._status == 401
+
+    # Helper methods
+
+    def _create_handler(self, handler_class, method, path, body=None, include_auth=True):
+        from io import BytesIO
+
+        test_token = self.TEST_TOKEN
+
+        class MockHandler(handler_class):
+            def __init__(self):
+                self.path = path
+                self.command = method
+                self.headers = {"Content-Length": str(len(body)) if body else "0"}
+                if include_auth:
+                    self.headers["Authorization"] = f"Bearer {test_token}"
+                self.rfile = BytesIO(body.encode() if body else b"")
+                self.wfile = BytesIO()
+                self._status = 200
+                self.client_address = ("127.0.0.1", 12345)
+
+            def send_response(self, code):
+                self._status = code
+
+            def send_header(self, name, value):
+                pass
+
+            def end_headers(self):
+                pass
+
+            def log_message(self, *args):
+                pass
+
+        return MockHandler()
+
+    def _parse_response(self, handler):
+        handler.wfile.seek(0)
+        return json.loads(handler.wfile.read().decode())
+
+    def _get_status(self, handler):
         return handler._status
 
 

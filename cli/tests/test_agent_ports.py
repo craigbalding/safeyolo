@@ -77,7 +77,7 @@ class TestParsePort:
 
 
 def _setup_agent(config_dir, name="test-agent", template="claude-code", ports=None):
-    """Helper to create a minimal agent directory with metadata in agents.yaml."""
+    """Helper to create a minimal agent directory with metadata in policy.toml."""
     agent_dir = config_dir / "agents" / name
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "docker-compose.yml").write_text("version: '3'\n")
@@ -92,7 +92,7 @@ class TestAgentConfigPorts:
     """CLI integration tests for port config operations."""
 
     def test_add_port_stores_in_metadata(self, cli_runner, tmp_config_dir):
-        """--add-port stores normalized port in agents.yaml."""
+        """--add-port stores normalized port in policy.toml."""
         _setup_agent(tmp_config_dir, "test-agent")
         result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--add-port", "6080:6080"])
         assert result.exit_code == 0
@@ -193,7 +193,7 @@ class TestAgentAddPorts:
     """Tests for --port in agent add command."""
 
     def test_port_stores_in_metadata(self, cli_runner, tmp_config_dir, mock_docker_running):
-        """--port on agent add stores ports in agents.yaml."""
+        """--port on agent add stores ports in policy.toml."""
         agent_dir = tmp_config_dir / "agents" / "test-add"
 
         def fake_render(**kwargs):

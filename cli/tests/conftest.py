@@ -36,6 +36,11 @@ def tmp_config_dir(tmp_path, monkeypatch):
         "version: 1\nproxy:\n  port: 8080\n  admin_port: 9090\n  container_name: safeyolo-test\n"
     )
 
+    # Write minimal policy.toml (agents_store reads/writes [agents] here)
+    (config_dir / "policy.toml").write_text(
+        'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n'
+    )
+
     # Set environment variables - accessor functions check these at call time
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))

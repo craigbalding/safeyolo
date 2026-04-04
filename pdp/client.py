@@ -301,6 +301,58 @@ class PolicyClient(ABC):
         pass
 
     @abstractmethod
+    def update_host_rate(self, host: str, rate: int) -> dict:
+        """Update rate limit for a host.
+
+        Args:
+            host: Host pattern
+            rate: New rate limit (requests per minute)
+
+        Returns:
+            Status dict with old_rate and new_rate
+        """
+        pass
+
+    @abstractmethod
+    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+        """Add a host to the allowed list.
+
+        Args:
+            host: Host pattern
+            rate: Optional rate limit
+
+        Returns:
+            Status dict
+        """
+        pass
+
+    @abstractmethod
+    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+        """Deny egress to a host.
+
+        Args:
+            host: Host pattern
+            expires: Optional ISO datetime for auto-expiry
+
+        Returns:
+            Status dict
+        """
+        pass
+
+    @abstractmethod
+    def add_host_bypass(self, host: str, addon: str) -> dict:
+        """Add an addon bypass for a host.
+
+        Args:
+            host: Host pattern
+            addon: Addon name to bypass
+
+        Returns:
+            Status dict with bypass list
+        """
+        pass
+
+    @abstractmethod
     def replace_baseline(self, policy_data: dict) -> dict:
         """Replace baseline policy.
 
@@ -439,6 +491,22 @@ class LocalPolicyClient(PolicyClient):
     def reset_budgets(self, resource: str | None = None) -> dict:
         """Reset budget counters."""
         return self._pdp.reset_budgets(resource)
+
+    def update_host_rate(self, host: str, rate: int) -> dict:
+        """Update rate limit for a host."""
+        return self._pdp.update_host_rate(host, rate)
+
+    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+        """Add a host to the allowed list."""
+        return self._pdp.add_host_allowance(host, rate)
+
+    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+        """Deny egress to a host."""
+        return self._pdp.add_host_denial(host, expires)
+
+    def add_host_bypass(self, host: str, addon: str) -> dict:
+        """Add an addon bypass for a host."""
+        return self._pdp.add_host_bypass(host, addon)
 
     def replace_baseline(self, policy_data: dict) -> dict:
         """Replace baseline policy."""
@@ -726,6 +794,22 @@ class HttpPolicyClient(PolicyClient):
         except Exception as e:
             log.error(f"reset_budgets error: {type(e).__name__}: {e}")
             return {"error": str(e)}
+
+    def update_host_rate(self, host: str, rate: int) -> dict:
+        """Update host rate limit via HTTP (not implemented for remote PDP)."""
+        return {"error": "update_host_rate not supported via HTTP PDP"}
+
+    def add_host_allowance(self, host: str, rate: int | None = None) -> dict:
+        """Add host allowance via HTTP (not implemented for remote PDP)."""
+        return {"error": "add_host_allowance not supported via HTTP PDP"}
+
+    def add_host_denial(self, host: str, expires: str | None = None) -> dict:
+        """Add host denial via HTTP (not implemented for remote PDP)."""
+        return {"error": "add_host_denial not supported via HTTP PDP"}
+
+    def add_host_bypass(self, host: str, addon: str) -> dict:
+        """Add host bypass via HTTP (not implemented for remote PDP)."""
+        return {"error": "add_host_bypass not supported via HTTP PDP"}
 
     def replace_baseline(self, policy_data: dict) -> dict:
         """Replace baseline policy via HTTP."""

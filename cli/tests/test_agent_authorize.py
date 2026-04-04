@@ -27,11 +27,33 @@ def _write_service(config_dir: Path, name: str, capabilities: dict, default_host
 
 
 def _write_policy(config_dir: Path, hosts: dict | None = None) -> None:
-    """Write a minimal policy.yaml with optional hosts section."""
-    policy = {"metadata": {"version": "2.0"}}
+    """Update policy.toml with optional hosts section."""
+    import tomlkit
+
+    policy_path = config_dir / "policy.toml"
+    if policy_path.exists():
+        doc = tomlkit.parse(policy_path.read_text())
+    else:
+        doc = tomlkit.document()
+        doc.add("version", "2.0")
+
     if hosts is not None:
-        policy["hosts"] = hosts
-    (config_dir / "policy.yaml").write_text(yaml.dump(policy, sort_keys=False))
+        if "hosts" in doc:
+            del doc["hosts"]
+        hosts_table = tomlkit.table()
+        for host, config in hosts.items():
+            if config is None:
+                hosts_table.add(host, tomlkit.table())
+            elif isinstance(config, dict):
+                it = tomlkit.inline_table()
+                for k, v in config.items():
+                    it.append(k, v)
+                hosts_table.add(host, it)
+            else:
+                hosts_table.add(host, config)
+        doc.add("hosts", hosts_table)
+
+    policy_path.write_text(tomlkit.dumps(doc))
 
 
 def _create_agent(config_dir: Path, name: str, extra: dict | None = None) -> None:
@@ -352,7 +374,7 @@ class TestCredentialFlow:
 
 
 # ---------------------------------------------------------------------------
-# agents.yaml writes
+# policy.toml writes
 # ---------------------------------------------------------------------------
 
 

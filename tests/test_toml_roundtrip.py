@@ -244,6 +244,53 @@ class TestMutationHelpers:
         assert "hosts" in doc
         assert doc["hosts"]["api.example.com"]["allow"] == ["hmac:abc"]
 
+    def test_update_host_field_bypass_list(self, sample_toml):
+        """Test update_host_field with a bypass list."""
+        from toml_roundtrip import load_roundtrip, update_host_field
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "policy.toml"
+            path.write_text(sample_toml)
+
+            doc = load_roundtrip(path)
+            update_host_field(doc, "api.openai.com", "bypass", ["pattern-scanner"])
+            assert doc["hosts"]["api.openai.com"]["bypass"] == ["pattern-scanner"]
+
+    def test_update_host_field_bypass_append(self, sample_toml):
+        """Test appending to an existing bypass list via update_host_field."""
+        from toml_roundtrip import load_roundtrip, save_roundtrip, update_host_field
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "policy.toml"
+            path.write_text(sample_toml)
+
+            doc = load_roundtrip(path)
+            # First bypass
+            update_host_field(doc, "api.openai.com", "bypass", ["credential-guard"])
+            save_roundtrip(path, doc)
+
+            # Load again, read existing, append
+            doc2 = load_roundtrip(path)
+            existing = list(doc2["hosts"]["api.openai.com"]["bypass"])
+            existing.append("pattern-scanner")
+            update_host_field(doc2, "api.openai.com", "bypass", existing)
+            save_roundtrip(path, doc2)
+
+            # Verify both are present
+            doc3 = load_roundtrip(path)
+            bypass = list(doc3["hosts"]["api.openai.com"]["bypass"])
+            assert "credential-guard" in bypass
+            assert "pattern-scanner" in bypass
+
+    def test_update_host_field_bypass_new_host(self):
+        """Test bypass on a host that doesn't exist yet creates it."""
+        from toml_roundtrip import update_host_field
+
+        doc = tomlkit.document()
+        doc.add("hosts", tomlkit.table())
+        update_host_field(doc, "new.host.com", "bypass", ["pattern-scanner"])
+        assert doc["hosts"]["new.host.com"]["bypass"] == ["pattern-scanner"]
+
 
 class TestTemplateRoundTrip:
     """Test that the real policy.toml template survives load/modify/save."""

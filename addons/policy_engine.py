@@ -1022,6 +1022,245 @@ class PolicyEngine:
             "permission_count": len(baseline.permissions),
         }
 
+    def update_host_rate(self, host: str, rate: int) -> dict[str, Any]:
+        """Update rate limit for a host in baseline policy.
+
+        Args:
+            host: Host pattern (e.g., "api.openai.com")
+            rate: New rate limit (requests per minute)
+
+        Returns:
+            Dict with status, host, old_rate, new_rate
+        """
+        if rate < 1:
+            raise ValueError("rate must be >= 1")
+
+        with self._loader._lock:
+            baseline = self._loader._baseline
+
+            # Find existing budget permission for this host
+            old_rate = None
+            found = False
+            for perm in baseline.permissions:
+                if perm.action == "network:request" and perm.effect == "budget":
+                    resource_host = perm.resource.rstrip("/*") if perm.resource.endswith("/*") else perm.resource
+                    if resource_host == host:
+                        old_rate = perm.budget
+                        perm.budget = rate
+                        found = True
+                        break
+
+            if not found:
+                # Create new budget permission
+                new_perm = Permission(
+                    action="network:request",
+                    resource=f"{host}/*",
+                    effect="budget",
+                    budget=rate,
+                    tier="explicit",
+                )
+                baseline.permissions.append(new_perm)
+
+        # Re-sort and update
+        self._loader.set_baseline(baseline)
+
+        # Persist to TOML if path exists
+        if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
+            try:
+                from toml_roundtrip import load_roundtrip, save_roundtrip, update_host_field
+
+                doc = load_roundtrip(self._loader.baseline_path)
+                update_host_field(doc, host, "rate", rate)
+                save_roundtrip(self._loader.baseline_path, doc)
+            except Exception as e:
+                log.warning("TOML round-trip save failed for host rate update: %s", e)
+
+        log.info("Updated host rate: %s %s -> %s", sanitize_for_log(host), old_rate, rate)
+        write_event(
+            "admin.host_rate_updated",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Rate limit updated: {sanitize_for_log(host)} {old_rate} -> {rate}",
+            addon="policy-engine",
+            details={"host": host, "old_rate": old_rate, "new_rate": rate},
+        )
+
+        return {"status": "updated", "host": host, "old_rate": old_rate, "new_rate": rate}
+
+    def add_host_allowance(self, host: str, rate: int | None = None) -> dict[str, Any]:
+        """Add a host to the allowed list in baseline policy.
+
+        Args:
+            host: Host pattern (e.g., "cdn.example.com")
+            rate: Optional rate limit (requests per minute)
+
+        Returns:
+            Dict with status, host, rate
+        """
+        with self._loader._lock:
+            baseline = self._loader._baseline
+
+            # Create network:request allow permission
+            new_perm = Permission(
+                action="network:request",
+                resource=f"{host}/*",
+                effect="allow",
+                tier="explicit",
+            )
+            baseline.permissions.insert(0, new_perm)
+
+            # Optionally create budget permission
+            if rate is not None:
+                budget_perm = Permission(
+                    action="network:request",
+                    resource=f"{host}/*",
+                    effect="budget",
+                    budget=rate,
+                    tier="explicit",
+                )
+                baseline.permissions.append(budget_perm)
+
+        # Re-sort and update
+        self._loader.set_baseline(baseline)
+
+        # Persist to TOML
+        if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
+            try:
+                from toml_roundtrip import add_host, load_roundtrip, save_roundtrip
+
+                doc = load_roundtrip(self._loader.baseline_path)
+                config: dict[str, Any] = {}
+                if rate is not None:
+                    config["rate"] = rate
+                add_host(doc, host, config)
+                save_roundtrip(self._loader.baseline_path, doc)
+            except Exception as e:
+                log.warning("TOML round-trip save failed for host allowance: %s", e)
+
+        log.info("Added host allowance: %s (rate=%s)", sanitize_for_log(host), rate)
+        write_event(
+            "admin.host_allowed",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host allowed: {sanitize_for_log(host)} (rate={rate})",
+            addon="policy-engine",
+            details={"host": host, "rate": rate},
+        )
+
+        return {"status": "added", "host": host, "rate": rate}
+
+    def add_host_denial(self, host: str, expires: str | None = None) -> dict[str, Any]:
+        """Deny egress to a host in baseline policy.
+
+        Writes a host entry with egress = "deny" to policy.toml.
+        Optionally includes an expires datetime for auto-cleanup.
+
+        Args:
+            host: Host pattern (e.g., "dodgy-site.com")
+            expires: Optional ISO datetime string for auto-expiry
+
+        Returns:
+            Dict with status, host, expires
+        """
+        with self._loader._lock:
+            baseline = self._loader._baseline
+
+            new_perm = Permission(
+                action="network:request",
+                resource=f"{host}/*",
+                effect="deny",
+                tier="explicit",
+            )
+            baseline.permissions.insert(0, new_perm)
+
+        self._loader.set_baseline(baseline)
+
+        # Persist to TOML
+        if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
+            try:
+                from toml_roundtrip import add_host, load_roundtrip, save_roundtrip
+
+                doc = load_roundtrip(self._loader.baseline_path)
+                config: dict[str, Any] = {"egress": "deny"}
+                if expires:
+                    from datetime import datetime
+
+                    config["expires"] = datetime.fromisoformat(expires)
+                add_host(doc, host, config)
+                save_roundtrip(self._loader.baseline_path, doc)
+            except (OSError, ValueError) as e:
+                log.warning("TOML round-trip save failed for host denial: %s", e)
+
+        log.info("Added host denial: %s (expires=%s)", sanitize_for_log(host), sanitize_for_log(str(expires)))
+        write_event(
+            "admin.host_denied",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host denied: {sanitize_for_log(host)} (expires={sanitize_for_log(str(expires))})",
+            addon="policy-engine",
+            details={"host": host, "expires": expires},
+        )
+
+        return {"status": "denied", "host": host, "expires": expires}
+
+    def add_host_bypass(self, host: str, addon: str) -> dict[str, Any]:
+        """Add an addon bypass for a host in baseline policy.
+
+        Reads current bypass list from the TOML file, appends the addon,
+        and persists. The bypass field is host-level config consumed by
+        the policy compiler, not part of the IAM Permission model.
+
+        Args:
+            host: Host pattern (e.g., "internal.example.com")
+            addon: Addon name to bypass (e.g., "pattern-scanner")
+
+        Returns:
+            Dict with status, host, bypass list
+        """
+        baseline_path = self._loader.baseline_path
+        if not baseline_path or baseline_path.suffix != ".toml":
+            raise ValueError("Host bypass requires a TOML policy file")
+
+        try:
+            from toml_roundtrip import load_roundtrip, save_roundtrip, update_host_field
+
+            doc = load_roundtrip(baseline_path)
+
+            # Read existing bypass list from TOML
+            current_bypass: list[str] = []
+            hosts = doc.get("hosts")
+            if hosts and host in hosts:
+                host_config = hosts[host]
+                if isinstance(host_config, dict):
+                    existing = host_config.get("bypass")
+                    if existing:
+                        current_bypass = list(existing)
+
+            if addon in current_bypass:
+                return {"status": "unchanged", "host": host, "bypass": current_bypass}
+
+            updated_bypass = current_bypass + [addon]
+            update_host_field(doc, host, "bypass", updated_bypass)
+            save_roundtrip(baseline_path, doc)
+        except Exception as e:
+            log.warning("TOML round-trip save failed for host bypass: %s", e)
+            raise
+
+        # Reload from disk to pick up the change
+        self._loader.reload()
+
+        log.info("Added host bypass: %s bypass=%s", sanitize_for_log(host), updated_bypass)
+        write_event(
+            "admin.host_bypass_added",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Host bypass added: {sanitize_for_log(host)} bypass={addon}",
+            addon="policy-engine",
+            details={"host": host, "addon": addon, "bypass": updated_bypass},
+        )
+
+        return {"status": "updated", "host": host, "bypass": updated_bypass}
+
     def replace_baseline(self, policy_data: dict[str, Any]) -> dict[str, Any]:
         """Replace baseline policy from dict.
 

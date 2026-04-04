@@ -33,8 +33,10 @@ except ImportError:
     YAML_AVAILABLE = False
     yaml = None
 
+from datetime import UTC
+
 from policy_compiler import compile_policy, is_host_centric
-from utils import write_event
+from utils import sanitize_for_log, write_event
 
 from audit_schema import EventKind, Severity
 
@@ -95,7 +97,6 @@ class PolicyLoader:
         self._lock = threading.RLock()
         self._last_baseline_mtime: float = 0
         self._last_addons_mtime: float = 0
-        self._last_agents_mtime: float = 0
         self._last_services_mtime: float = 0
         self._last_task_mtime: float = 0
 
@@ -181,47 +182,60 @@ class PolicyLoader:
                 pass  # Skip files that vanish between glob and stat
         return max_mtime
 
-    def _agents_path(self) -> Path | None:
-        """Get path to sibling agents.yaml (if it exists)."""
-        if not self._baseline_path:
-            return None
-        agents_path = self._baseline_path.parent / "agents.yaml"
-        if agents_path.exists():
-            return agents_path
-        return None
+    def _prune_expired_hosts(self, raw: dict) -> dict:
+        """Remove host entries with expired `expires` fields.
 
-    def _merge_agents(self, raw: dict) -> dict:
-        """Merge sibling agents.yaml into the policy dict.
-
-        policy.yaml has operator-managed agent config (service grants).
-        agents.yaml has machine-managed runtime state (contract_bindings, grants).
-        When both exist, deep-merge per agent: policy.yaml provides the base,
-        agents.yaml adds runtime keys.
+        Also removes the expired entries from the TOML file on disk.
         """
-        agents_path = self._agents_path()
-        if not agents_path:
-            return raw
+        from datetime import datetime
 
-        agents_raw = self._load_file(agents_path)
-        if agents_raw is None:
-            return raw
+        now = datetime.now(UTC)
+        hosts = raw.get("hosts", {})
+        expired = []
 
-        if "agents" not in raw:
-            raw["agents"] = agents_raw
-        else:
-            # Deep merge: for each agent, agents.yaml keys supplement policy.yaml
-            for agent_name, agent_data in agents_raw.items():
-                if not isinstance(agent_data, dict):
+        for host, config in hosts.items():
+            if not isinstance(config, dict):
+                continue
+            expires = config.get("expires")
+            if expires is None:
+                continue
+            # Parse if string, otherwise assume datetime
+            if isinstance(expires, str):
+                try:
+                    expires = datetime.fromisoformat(expires)
+                except (ValueError, TypeError):
                     continue
-                if agent_name not in raw["agents"]:
-                    raw["agents"][agent_name] = agent_data
-                elif isinstance(raw["agents"][agent_name], dict):
-                    # agents.yaml provides defaults, policy.yaml overrides
-                    merged = dict(agent_data)
-                    merged.update(raw["agents"][agent_name])
-                    raw["agents"][agent_name] = merged
+            if hasattr(expires, "tzinfo") and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=UTC)
+            if expires <= now:
+                expired.append(host)
 
-        log.info(f"Merged agents config from {agents_path}")
+        if not expired:
+            return raw
+
+        for host in expired:
+            del hosts[host]
+            log.info("Pruned expired host entry: %s", sanitize_for_log(host))
+
+        # Remove from TOML file on disk
+        if self._baseline_path and self._baseline_path.suffix == ".toml":
+            try:
+                from toml_roundtrip import load_roundtrip, save_roundtrip
+
+                doc = load_roundtrip(self._baseline_path)
+                toml_hosts = doc.get("hosts")
+                if toml_hosts:
+                    changed = False
+                    for host in expired:
+                        if host in toml_hosts:
+                            del toml_hosts[host]
+                            changed = True
+                    if changed:
+                        save_roundtrip(self._baseline_path, doc)
+                        log.info("Removed %d expired host(s) from policy.toml", len(expired))
+            except OSError as e:
+                log.warning("Failed to prune expired hosts from TOML: %s", e)
+
         return raw
 
     def _load_baseline(self) -> bool:
@@ -246,11 +260,12 @@ class PolicyLoader:
             return False
 
         try:
+            # Prune expired host entries before compilation
+            if "hosts" in raw:
+                raw = self._prune_expired_hosts(raw)
+
             # Merge sibling addons.yaml if present
             raw = self._merge_addons(raw)
-
-            # Merge sibling agents.yaml if present
-            raw = self._merge_agents(raw)
 
             # Compile host-centric format → IAM format if needed
             if is_host_centric(raw):
@@ -262,9 +277,6 @@ class PolicyLoader:
                 addons_path = self._addons_path()
                 if addons_path:
                     self._last_addons_mtime = addons_path.stat().st_mtime
-                agents_path = self._agents_path()
-                if agents_path:
-                    self._last_agents_mtime = agents_path.stat().st_mtime
                 if self._services_dir:
                     self._last_services_mtime = self._services_max_mtime()
 
@@ -380,13 +392,6 @@ class PolicyLoader:
                     if addons_path:
                         mtime = addons_path.stat().st_mtime
                         if mtime > self._last_addons_mtime:
-                            reload_baseline = True
-
-                    # Check agents.yaml (triggers baseline reload since it merges in)
-                    agents_path = self._agents_path()
-                    if agents_path:
-                        mtime = agents_path.stat().st_mtime
-                        if mtime > self._last_agents_mtime:
                             reload_baseline = True
 
                     # Check services dir (triggers baseline reload for capability routes)

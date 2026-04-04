@@ -11,7 +11,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -611,6 +611,62 @@ def _fallback_format_detail(event: dict) -> Panel:
         if approval.get(key):
             table.add_row(f"approval.{key}", str(approval[key]))
     return Panel(table, title="[bold]Unknown Approval Type[/bold]", border_style="yellow")
+
+
+# ---------------------------------------------------------------------------
+# Network egress approval handlers
+# ---------------------------------------------------------------------------
+
+
+def _network_egress_approve(event: dict, api: AdminAPI) -> str | None:
+    approval = event.get("approval", {})
+    host = event.get("host", approval.get("target", ""))
+    result = api.allow_host(host=host, rate=600)
+    return result.get("status", "ok")
+
+
+def _network_egress_deny(event: dict, api: AdminAPI) -> None:
+    from datetime import datetime, timedelta
+
+    approval = event.get("approval", {})
+    host = event.get("host", approval.get("target", ""))
+    # Default deny duration: 1 day
+    expires = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    api.deny_host(host=host, expires=expires)
+
+
+def _network_egress_format_row(event: dict) -> tuple[str, str, str, str]:
+    approval = event.get("approval", {})
+    agent = event.get("agent", "\u2014")
+    host = event.get("host", approval.get("target", "unknown"))
+    action = f"egress \u2192 {host}"
+    risk = "network access"
+    description = event.get("summary", "")
+    return (agent, action, risk, description)
+
+
+def _network_egress_format_detail(event: dict) -> Panel:
+    from rich.table import Table
+
+    approval = event.get("approval", {})
+    details = event.get("details", {})
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+
+    host = event.get("host", approval.get("target", "unknown"))
+    agent = event.get("agent", "\u2014")
+    table.add_row("Destination", f"[bold]{host}[/bold]")
+    table.add_row("Agent", agent)
+    table.add_row("Type", "Network egress approval")
+    if details.get("decision_type"):
+        table.add_row("Decision", details["decision_type"])
+    ts = event.get("ts", "")
+    if ts:
+        table.add_row("Time", str(ts))
+
+    return Panel(table, title="[bold]Egress Approval[/bold]", border_style="yellow")
 
 
 FALLBACK_DISPATCH = ApprovalDispatch(
@@ -1376,7 +1432,259 @@ DISPATCH: dict[str, ApprovalDispatch] = {
         format_row=_contract_binding_format_row,
         format_detail=_contract_binding_format_detail,
     ),
+    "network_egress": ApprovalDispatch(
+        approve=_network_egress_approve,
+        deny=_network_egress_deny,
+        format_row=_network_egress_format_row,
+        format_detail=_network_egress_format_detail,
+    ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Action dispatch — non-approval event actions (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ActionDef:
+    """A single action available on a non-approval event."""
+
+    key: str  # single char shortcut
+    label: str  # for hint display
+    confirm: str  # "instant" | "value" | "explicit"
+    execute: Callable[[dict, AdminAPI], str]  # returns status message
+    value_prompt: str | None = None
+    value_default: Callable[[dict], str] | None = None
+
+
+@dataclass
+class ActionDispatch:
+    """Maps non-approval events to available actions."""
+
+    match: Callable[[dict], bool]  # event matcher
+    actions: list[ActionDef]  # available actions
+    format_hint: Callable[[dict], str]  # inline hint string
+
+
+def _match_budget_exceeded(event: dict) -> bool:
+    return event.get("event") == "security.network_guard" and event.get("decision") == "budget_exceeded"
+
+
+def _match_access_denied(event: dict) -> bool:
+    return event.get("event") == "security.network_guard" and event.get("decision") == "deny"
+
+
+def _match_circuit_open(event: dict) -> bool:
+    return event.get("event") == "ops.circuit_breaker.open"
+
+
+def _match_pattern_block(event: dict) -> bool:
+    return event.get("event") == "security.pattern_scanner" and event.get("decision") == "deny"
+
+
+def _exec_bump_rate(event: dict, api: AdminAPI, value: str | None = None) -> str:
+    host = event.get("host", "")
+    details = event.get("details", {})
+    old_rate = details.get("budget", details.get("rate", 0))
+    new_rate = int(value) if value else old_rate * 2
+    result = api.update_host_rate(host=host, rate=new_rate)
+    return f"Rate limit: {result.get('old_rate')} \u2192 {result.get('new_rate')}"
+
+
+def _exec_reset_budget(event: dict, api: AdminAPI) -> str:
+    host = event.get("host", "")
+    resource = f"network:request:{host}"
+    api.reset_budget(resource=resource)
+    return f"Budget reset for {host}"
+
+
+def _exec_allow_host(event: dict, api: AdminAPI) -> str:
+    host = event.get("host", "")
+    result = api.allow_host(host=host, rate=600)
+    return f"Host allowed: {result.get('host')} (rate={result.get('rate')})"
+
+
+def _exec_reset_circuit(event: dict, api: AdminAPI) -> str:
+    host = event.get("host", "")
+    api.reset_circuit(host=host)
+    return f"Circuit reset for {host}"
+
+
+def _exec_suppress_pattern(event: dict, api: AdminAPI) -> str:
+    host = event.get("host", "")
+    api.add_host_bypass(host=host, addon="pattern-scanner")
+    return f"Pattern scanner bypassed for {host}"
+
+
+def _default_bump_rate(event: dict) -> str:
+    details = event.get("details", {})
+    rate = details.get("budget", details.get("rate", 0))
+    return str(rate * 2) if rate else "6000"
+
+
+def _hint_budget_exceeded(event: dict) -> str:
+    return r"\[b=bump rate, r=reset]"
+
+
+def _hint_access_denied(event: dict) -> str:
+    return r"\[h=allow host]"
+
+
+def _hint_circuit_open(event: dict) -> str:
+    return r"\[x=reset circuit]"
+
+
+def _hint_pattern_block(event: dict) -> str:
+    return r"\[s=suppress pattern]"
+
+
+ACTION_DISPATCH: list[ActionDispatch] = [
+    ActionDispatch(
+        match=_match_budget_exceeded,
+        actions=[
+            ActionDef(
+                key="b",
+                label="bump rate",
+                confirm="value",
+                execute=lambda e, api: "",  # placeholder — value flow handles this
+                value_prompt="New rate limit (req/min)",
+                value_default=_default_bump_rate,
+            ),
+            ActionDef(
+                key="r",
+                label="reset budget",
+                confirm="instant",
+                execute=_exec_reset_budget,
+            ),
+        ],
+        format_hint=_hint_budget_exceeded,
+    ),
+    ActionDispatch(
+        match=_match_access_denied,
+        actions=[
+            ActionDef(
+                key="h",
+                label="allow host",
+                confirm="explicit",
+                execute=_exec_allow_host,
+            ),
+        ],
+        format_hint=_hint_access_denied,
+    ),
+    ActionDispatch(
+        match=_match_circuit_open,
+        actions=[
+            ActionDef(
+                key="x",
+                label="reset circuit",
+                confirm="instant",
+                execute=_exec_reset_circuit,
+            ),
+        ],
+        format_hint=_hint_circuit_open,
+    ),
+    ActionDispatch(
+        match=_match_pattern_block,
+        actions=[
+            ActionDef(
+                key="s",
+                label="suppress pattern",
+                confirm="explicit",
+                execute=_exec_suppress_pattern,
+            ),
+        ],
+        format_hint=_hint_pattern_block,
+    ),
+]
+
+
+def find_action_dispatch(event: dict) -> ActionDispatch | None:
+    """Find matching ActionDispatch for an event, if any."""
+    for dispatch in ACTION_DISPATCH:
+        if dispatch.match(event):
+            return dispatch
+    return None
+
+
+def build_action_map(event: dict, dispatch: ActionDispatch) -> dict[str, tuple[dict, ActionDef]]:
+    """Build a key -> (event, action_def) map for the matched dispatch."""
+    return {action.key: (event, action) for action in dispatch.actions}
+
+
+def format_action_help() -> str:
+    """Format help text listing all action keys."""
+    lines = ["[bold]Action keys (active on last non-approval event):[/bold]", ""]
+    for dispatch in ACTION_DISPATCH:
+        for action in dispatch.actions:
+            confirm_tag = {"instant": "instant", "value": "input required", "explicit": "confirm y/N"}[action.confirm]
+            lines.append(f"  [bold]{action.key}[/bold]  {action.label}  [dim]({confirm_tag})[/dim]")
+    lines.append("")
+    lines.append("  [bold]?[/bold]  show this help")
+    return "\n".join(lines)
+
+
+def handle_action_key(
+    key: str,
+    last_actionable: dict[str, tuple[dict, ActionDef]],
+    api: AdminAPI,
+) -> bool:
+    """Handle an action key press. Returns True if handled."""
+    if key == "?":
+        console.print(format_action_help())
+        return True
+
+    if key not in last_actionable:
+        return False
+
+    event, action_def = last_actionable[key]
+    host = event.get("host", "")
+
+    try:
+        if action_def.confirm == "instant":
+            result_msg = action_def.execute(event, api)
+            console.print(f"  [green]\u2713[/green] {result_msg}")
+
+        elif action_def.confirm == "value":
+            default = action_def.value_default(event) if action_def.value_default else ""
+            prompt_text = f"  {action_def.value_prompt} for {host}"
+            if default:
+                prompt_text += f" [{default}]"
+            prompt_text += ": "
+            try:
+                raw_value = console.input(prompt_text).strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n  [dim]Cancelled[/dim]")
+                return True
+            value = raw_value or default
+            if not value:
+                console.print("  [dim]No value provided — cancelled[/dim]")
+                return True
+            # For bump rate, use the dedicated executor
+            if action_def.key == "b":
+                result_msg = _exec_bump_rate(event, api, value=value)
+            else:
+                result_msg = action_def.execute(event, api)
+            console.print(f"  [green]\u2713[/green] {result_msg}")
+
+        elif action_def.confirm == "explicit":
+            try:
+                confirm = console.input(f"  {action_def.label.title()} {host}? (y/N): ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n  [dim]Cancelled[/dim]")
+                return True
+            if confirm != "y":
+                console.print("  [dim]Cancelled[/dim]")
+                return True
+            result_msg = action_def.execute(event, api)
+            console.print(f"  [green]\u2713[/green] {result_msg}")
+
+    except APIError as e:
+        console.print(f"  [red]Error:[/red] {escape(str(e))}")
+    except Exception as e:
+        console.print(f"  [red]Error:[/red] {escape(str(e))}")
+
+    return True
 
 
 def handle_risky_route_approval(event: dict, api: AdminAPI) -> bool:
@@ -1678,7 +1986,7 @@ def watch(
 
     console.print(f"[bold]Watching:[/bold] {log_path}")
     if interactive and api:
-        console.print("[dim]Press Ctrl+C to exit. Approval prompts will appear for blocked credentials.[/dim]")
+        console.print("[dim]Press Ctrl+C to exit. Approvals and policy actions will appear inline.[/dim]")
     else:
         console.print("[dim]Press Ctrl+C to exit.[/dim]")
     console.print()
@@ -1739,12 +2047,52 @@ def watch(
         pending_batch = []
         batch_deadline = None
 
+    # Action dispatch state: tracks the last actionable event's available keys
+    last_actionable: dict[str, tuple[dict, ActionDef]] = {}
+    show_action_hints = interactive and api is not None
+    # Deadline for prompting after actionable events settle
+    action_deadline: float | None = None
+    action_suppressed: int = 0  # count of suppressed duplicate actionable events
+    action_dedup_key: str = ""  # host:event dedup key for current actionable batch
+    ACTION_SETTLE_WINDOW = 1.0  # seconds to wait for more events before prompting
+
+    def _flush_actions() -> None:
+        """Prompt for action on the last actionable event."""
+        nonlocal last_actionable, action_deadline, action_suppressed, action_dedup_key
+        if not last_actionable or not api:
+            action_deadline = None
+            action_suppressed = 0
+            action_dedup_key = ""
+            return
+        action_deadline = None
+        if action_suppressed > 0:
+            console.print(f"  [dim]({action_suppressed} more identical event(s) suppressed)[/dim]")
+        action_suppressed = 0
+        action_dedup_key = ""
+        # Build hint string from available keys
+        keys_display = "  ".join(
+            f"[bold]{k}[/bold]={escape(adef.label)}" for k, (_, adef) in last_actionable.items()
+        )
+        try:
+            raw = console.input(
+                f"  [dim]Action ({keys_display}  [bold]?[/bold]=help  Enter=skip):[/dim] "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            console.print()
+            last_actionable = {}
+            return
+        if raw:
+            handle_action_key(raw, last_actionable, api)
+        last_actionable = {}
+
     try:
         for event in tail_jsonl(log_path, follow=follow, tick_interval=0.5):
-            # Tick event (None) — check if batch window expired
+            # Tick event (None) — check deadlines
             if event is None:
                 if batch_deadline is not None and time.time() >= batch_deadline:
                     _flush_batch()
+                if action_deadline is not None and time.time() >= action_deadline:
+                    _flush_actions()
                 continue
 
             kind = event.get("kind", "")
@@ -1766,6 +2114,9 @@ def watch(
             decision = event.get("decision", "")
 
             if approval and approval.get("required"):
+                # Flush any pending action prompt before showing approval batch
+                if action_deadline is not None:
+                    _flush_actions()
                 # Deduplicate by key:target
                 dedup_key = _dedup_key_from_approval(event)
                 if dedup_key in seen_fingerprints:
@@ -1796,8 +2147,22 @@ def watch(
                 if batch_deadline is not None and time.time() >= batch_deadline:
                     _flush_batch()
             else:
-                # Other events - show summary
-                _print_event_summary(event)
+                # Other events - show summary with action hints
+                # Suppress duplicate actionable events (e.g., 100 rate limit hits)
+                event_dedup = f"{event.get('host', '')}:{event.get('event', '')}"
+                if show_action_hints and event_dedup == action_dedup_key and last_actionable:
+                    action_suppressed += 1
+                    action_deadline = time.time() + ACTION_SETTLE_WINDOW
+                else:
+                    # Flush previous action batch if a different event arrives
+                    if action_deadline is not None:
+                        _flush_actions()
+                    matched = _print_event_summary(event, show_hints=show_action_hints)
+                    if matched:
+                        last_actionable = build_action_map(event, matched)
+                        action_dedup_key = event_dedup
+                        action_suppressed = 0
+                        action_deadline = time.time() + ACTION_SETTLE_WINDOW
                 # Check batch deadline
                 if batch_deadline is not None and time.time() >= batch_deadline:
                     _flush_batch()
@@ -1843,8 +2208,16 @@ def _print_interactive_status(stats: RollingStats) -> None:
     console.print(f"[dim]{ts}[/dim] {status} [dim](5m window)[/dim]")
 
 
-def _print_event_summary(event: dict) -> None:
-    """Print a one-line summary of an event."""
+def _print_event_summary(event: dict, show_hints: bool = False) -> ActionDispatch | None:
+    """Print a one-line summary of an event.
+
+    Args:
+        event: The event dict
+        show_hints: If True, append action hints for actionable events
+
+    Returns:
+        The matched ActionDispatch if the event is actionable, else None
+    """
     event_type = event.get("event", "unknown")
     ts = event.get("ts", "")
     severity = event.get("severity", "")
@@ -1884,4 +2257,14 @@ def _print_event_summary(event: dict) -> None:
 
     agent = event.get("agent", "")
     agent_prefix = f"[bold]{escape(agent)}[/bold] " if agent else ""
-    console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {agent_prefix}{escape(summary)}")
+
+    # Check for actionable event
+    matched_dispatch = None
+    hint_str = ""
+    if show_hints:
+        matched_dispatch = find_action_dispatch(event)
+        if matched_dispatch:
+            hint_str = f"  [bold cyan]{matched_dispatch.format_hint(event)}[/bold cyan]"
+
+    console.print(f"[dim]{timestamp_str}[/dim] [{style}]{event_type}[/{style}] {agent_prefix}{escape(summary)}{hint_str}")
+    return matched_dispatch

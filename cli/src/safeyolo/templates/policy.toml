@@ -65,7 +65,7 @@ scan_patterns = []
 # "api.slack.com"   = { service = "slack" }
 
 # ── Defaults (wildcard) ───────────────────────────────────────
-"*"                   = { on_unknown = "prompt",  rate = 600 }
+"*"                   = { egress = "allow", on_unknown = "prompt",  rate = 600 }
 
 # =============================================================================
 # CREDENTIAL DETECTION — how to recognize each credential type
