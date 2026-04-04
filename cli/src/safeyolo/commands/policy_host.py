@@ -190,6 +190,49 @@ def host_deny(
     console.print(f"[red]Denied host:[/red] {escape(host)} [dim](expires {dur})[/dim]{_scope_label(agent)}")
 
 
+@host_app.command("add-list")
+def host_add_list(
+    name: str = typer.Argument(..., help="List name (from [lists] section)"),
+    rate: Optional[int] = typer.Option(None, "--rate", "-r", help="Rate limit (requests/min)"),
+    egress: Optional[str] = typer.Option(None, "--egress", help="Egress posture: allow, deny, prompt"),
+) -> None:
+    """Apply a named list as a host entry.
+
+    Writes "$name" = { config } to [hosts], referencing a list from [lists].
+
+    Examples:
+        safeyolo policy host add-list known_bad --egress deny
+        safeyolo policy host add-list package_registries --rate 1200
+    """
+    doc, path = _load_toml()
+
+    # Verify the list exists in [lists]
+    lists = doc.get("lists", {})
+    if name not in lists:
+        console.print(f"[red]Error:[/red] List '${escape(name)}' not found in [lists]. Add it first with: safeyolo policy list add {escape(name)} <path>")
+        raise typer.Exit(1)
+
+    hosts = doc.get("hosts")
+    if hosts is None:
+        hosts = tomlkit.table()
+        doc.add("hosts", hosts)
+
+    config = tomlkit.inline_table()
+    if egress is not None:
+        if egress not in ("allow", "deny", "prompt"):
+            console.print(f"[red]Error:[/red] Invalid egress '{escape(egress)}'. Use: allow, deny, prompt")
+            raise typer.Exit(1)
+        config.append("egress", egress)
+    if rate is not None:
+        config.append("rate", rate)
+
+    key = f"${name}"
+    hosts[key] = config
+
+    _save_toml(doc, path)
+    console.print(f"[green]Added list reference:[/green] ${escape(name)} = {escape(str(dict(config)))}")
+
+
 @host_app.command("list")
 def host_list(
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name (show agent-scoped entries)"),

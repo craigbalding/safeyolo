@@ -302,6 +302,10 @@ class UnifiedPolicy(BaseModel):
     # Service gateway: agent-to-service token bindings (compiled from agents: section)
     gateway: dict = Field(default_factory=dict)
 
+    # Summary of permissions extracted into simple sets (not in permissions list)
+    # Format: {"network:request:deny": 92276, "network:request:allow": 5}
+    simple_permissions: dict[str, int] = Field(default_factory=dict)
+
 
 # =============================================================================
 # Decision Types
@@ -1149,6 +1153,9 @@ class PolicyEngine:
     ) -> dict[str, Any]:
         """Add a host to the allowed list in baseline policy.
 
+        Upserts — removes any existing permission for the same host+agent
+        before adding, so repeated calls don't accumulate duplicates.
+
         Args:
             host: Host pattern (e.g., "cdn.example.com")
             rate: Optional rate limit (requests per minute)
@@ -1158,13 +1165,22 @@ class PolicyEngine:
             Dict with status, host, rate, agent
         """
         condition = Condition(agent=agent) if agent else None
+        resource = f"{host}/*"
 
         with self._loader._lock:
             baseline = self._loader._baseline
 
+            # Remove existing permissions for this host+agent before adding
+            baseline.permissions = [
+                p for p in baseline.permissions
+                if not (p.action == "network:request" and p.resource == resource
+                        and p.effect in ("allow", "budget")
+                        and p.condition == condition)
+            ]
+
             new_perm = Permission(
                 action="network:request",
-                resource=f"{host}/*",
+                resource=resource,
                 effect="allow",
                 tier="explicit",
                 condition=condition,
@@ -1174,7 +1190,7 @@ class PolicyEngine:
             if rate is not None:
                 budget_perm = Permission(
                     action="network:request",
-                    resource=f"{host}/*",
+                    resource=resource,
                     effect="budget",
                     budget=rate,
                     tier="explicit",
@@ -1220,6 +1236,9 @@ class PolicyEngine:
     ) -> dict[str, Any]:
         """Deny egress to a host in baseline policy.
 
+        Upserts — removes any existing deny permission for the same host+agent
+        before adding, so repeated calls don't accumulate duplicates.
+
         Writes a host entry with egress = "deny" to policy.toml.
         Optionally includes an expires datetime for auto-cleanup.
 
@@ -1232,13 +1251,21 @@ class PolicyEngine:
             Dict with status, host, expires, agent
         """
         condition = Condition(agent=agent) if agent else None
+        resource = f"{host}/*"
 
         with self._loader._lock:
             baseline = self._loader._baseline
 
+            # Remove existing deny for this host+agent before adding
+            baseline.permissions = [
+                p for p in baseline.permissions
+                if not (p.action == "network:request" and p.resource == resource
+                        and p.effect == "deny" and p.condition == condition)
+            ]
+
             new_perm = Permission(
                 action="network:request",
-                resource=f"{host}/*",
+                resource=resource,
                 effect="deny",
                 tier="explicit",
                 condition=condition,
