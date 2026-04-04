@@ -22,7 +22,7 @@ required = ["credential_guard"]
 [hosts]
 # LLM APIs
 "api.openai.com" = { allow = ["openai:*"], rate = 3000 }
-"*"              = { on_unknown = "prompt", rate = 600 }
+"*"              = { unknown_creds = "prompt", rate = 600 }
 
 [credential.openai]
 match   = ['sk-test']

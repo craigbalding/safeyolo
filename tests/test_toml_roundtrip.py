@@ -29,7 +29,7 @@ required = ["credential_guard", "network_guard"]
 "api.openai.com"    = { allow = ["openai:*"], rate = 3_000 }
 "api.anthropic.com" = { allow = ["anthropic:*"], rate = 3_000 }
 # ── Defaults ──────────────────────
-"*"                 = { on_unknown = "prompt", rate = 600 }
+"*"                 = { unknown_creds = "prompt", rate = 600 }
 
 [credential.openai]
 match   = ['sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}']

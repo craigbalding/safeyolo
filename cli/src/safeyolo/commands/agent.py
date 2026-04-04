@@ -1098,7 +1098,7 @@ def _load_policy_hosts() -> dict:
                             entry["credentials"] = v
                         elif k == "rate":
                             entry["rate_limit"] = v
-                        elif k == "on_unknown":
+                        elif k == "unknown_creds":
                             entry["unknown_credentials"] = v
                         else:
                             entry[k] = v

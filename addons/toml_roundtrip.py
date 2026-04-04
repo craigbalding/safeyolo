@@ -127,7 +127,7 @@ def update_host_field(doc: tomlkit.TOMLDocument, host: str, key: str, value: Any
     Args:
         doc: TOMLDocument loaded via load_roundtrip
         host: Host pattern
-        key: TOML field name (allow, rate, bypass, on_unknown, etc.)
+        key: TOML field name (allow, rate, bypass, unknown_creds, etc.)
         value: New value
     """
     hosts = doc.get("hosts")

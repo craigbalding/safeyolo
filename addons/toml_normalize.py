@@ -25,7 +25,7 @@ def normalize(doc: dict) -> dict:
     - risk (top-level list) -> gateway: { risk_appetite: [...] }
     - hosts.X.allow -> hosts.X.credentials
     - hosts.X.rate -> hosts.X.rate_limit
-    - hosts.X.on_unknown -> hosts.X.unknown_credentials
+    - hosts.X.unknown_creds -> hosts.X.unknown_credentials
 
     Unknown keys pass through unchanged.
     """
@@ -89,7 +89,7 @@ def _normalize_hosts(hosts: dict) -> dict:
                 entry["credentials"] = v
             elif k == "rate":
                 entry["rate_limit"] = v
-            elif k == "on_unknown":
+            elif k == "unknown_creds":
                 entry["unknown_credentials"] = v
             else:
                 entry[k] = v
@@ -183,7 +183,7 @@ def _denormalize_hosts(hosts: dict) -> dict:
             elif k == "rate_limit":
                 entry["rate"] = v
             elif k == "unknown_credentials":
-                entry["on_unknown"] = v
+                entry["unknown_creds"] = v
             else:
                 entry[k] = v
         result[host] = entry
