@@ -825,17 +825,21 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         host = data.get("host")
         rate = data.get("rate")  # optional
+        agent = data.get("agent")  # optional — agent-scoped if set
 
-        if not host:
-            self._send_json({"error": "missing 'host' field"}, 400)
+        if not host or not isinstance(host, str):
+            self._send_json({"error": "'host' must be a non-empty string"}, 400)
             return
         if rate is not None and (not isinstance(rate, int) or rate < 1):
             self._send_json({"error": "'rate' must be a positive integer if provided"}, 400)
             return
+        if agent is not None and not isinstance(agent, str):
+            self._send_json({"error": "'agent' must be a string if provided"}, 400)
+            return
 
         client = get_policy_client()
         try:
-            result = client.add_host_allowance(host=host, rate=rate)
+            result = client.add_host_allowance(host=host, rate=rate, agent=agent)
         except (ValueError, Exception) as e:
             self._send_json({"error": str(e)}, 400)
             return
@@ -861,6 +865,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         host = data.get("host")
         expires = data.get("expires")  # optional ISO datetime
+        agent = data.get("agent")  # optional — agent-scoped if set
 
         if not host or not isinstance(host, str):
             self._send_json({"error": "'host' must be a non-empty string"}, 400)
@@ -868,10 +873,13 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         if expires is not None and not isinstance(expires, str):
             self._send_json({"error": "'expires' must be an ISO datetime string"}, 400)
             return
+        if agent is not None and not isinstance(agent, str):
+            self._send_json({"error": "'agent' must be a string if provided"}, 400)
+            return
 
         client = get_policy_client()
         try:
-            result = client.add_host_denial(host=host, expires=expires)
+            result = client.add_host_denial(host=host, expires=expires, agent=agent)
         except ValueError as e:
             self._send_json({"error": str(e)}, 400)
             return
