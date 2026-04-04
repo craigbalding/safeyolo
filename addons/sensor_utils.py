@@ -51,6 +51,7 @@ def build_http_event_from_flow(
     credential_fingerprint: str | None = None,
     credential_confidence: str | CredentialConfidence | None = None,
     task_id: str | None = None,
+    agent: str | None = None,
 ) -> HttpEvent:
     """Build HttpEvent from mitmproxy flow.
 
@@ -137,4 +138,5 @@ def build_http_event_from_flow(
         scheme=flow.request.scheme,
         query_string=query_string,
         task_id=task_id,
+        agent=agent,
     )

@@ -154,10 +154,12 @@ class NetworkGuard(SecurityAddon):
                 return
 
         # 2. Build HttpEvent and evaluate via PolicyClient
+        agent = flow.metadata.get("agent")
         event = build_http_event_from_flow(
             flow=flow,
             principal_id=self._get_principal_id(flow),
             credential_detected=False,  # network_guard doesn't handle credentials
+            agent=agent,
         )
 
         client = get_policy_client()

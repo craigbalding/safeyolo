@@ -65,6 +65,14 @@ def normalize(doc: dict) -> dict:
         if key not in result:
             result[key] = value
 
+    # Normalize agents.<name>.hosts fields (same mapping as top-level hosts)
+    if "agents" in result:
+        agents = result["agents"]
+        if isinstance(agents, dict):
+            for agent_config in agents.values():
+                if isinstance(agent_config, dict) and "hosts" in agent_config:
+                    agent_config["hosts"] = _normalize_hosts(agent_config["hosts"])
+
     return result
 
 
@@ -149,6 +157,14 @@ def denormalize(doc: dict) -> dict:
             continue  # Already handled
         if key not in result:
             result[key] = value
+
+    # Denormalize agents.<name>.hosts fields (same mapping as top-level hosts)
+    if "agents" in result:
+        agents = result["agents"]
+        if isinstance(agents, dict):
+            for agent_config in agents.values():
+                if isinstance(agent_config, dict) and "hosts" in agent_config:
+                    agent_config["hosts"] = _denormalize_hosts(agent_config["hosts"])
 
     return result
 

@@ -177,6 +177,7 @@ class ContextBlock(BaseModel):
     task_id: str | None = Field(None, description="Task ID for task-scoped policies")
     session_id: str | None = Field(None, description="Session ID for continuity")
     project_id: str | None = Field(None, description="Project ID if distinct from principal")
+    agent: str | None = Field(None, description="Agent name from service discovery")
     # Gateway context (v2):
     gateway_service: str | None = Field(None, description="Service name for gateway requests")
     gateway_capability: str | None = Field(None, description="Capability name for gateway requests")
@@ -363,6 +364,7 @@ def create_http_event(
     body_size: int | None = None,
     body_content_type: str | None = None,
     task_id: str | None = None,
+    agent: str | None = None,
     identity_source: IdentitySource = IdentitySource.IPMAP,
     scheme: str = "https",
     query_string: str | None = None,
@@ -407,7 +409,7 @@ def create_http_event(
             size_bytes=body_size,
             content_type=body_content_type,
         ),
-        context=ContextBlock(task_id=task_id) if task_id else None,
+        context=ContextBlock(task_id=task_id, agent=agent) if (task_id or agent) else None,
     )
 
 
