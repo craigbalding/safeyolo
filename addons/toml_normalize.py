@@ -74,10 +74,16 @@ def normalize(doc: dict) -> dict:
             representations of the same logical field, or if a top-level
             section (hosts, credential, agents) is present but not a dict.
     """
-    # Collision detection: caller must not pass both forms of the same field
+    # Collision detection: caller must not pass both forms of the same field.
+    # Note: risk vs gateway.risk_appetite only conflicts on the sub-key. A gateway
+    # dict without risk_appetite can coexist with a top-level risk list.
     _check_no_collision(doc, "budget", "global_budget")
     _check_no_collision(doc, "credential", "credentials")
-    _check_no_collision(doc, "risk", "gateway")
+    if "risk" in doc and isinstance(doc.get("gateway"), dict) and "risk_appetite" in doc["gateway"]:
+        raise ValueError(
+            "Input contains both top-level 'risk' and 'gateway.risk_appetite' — "
+            "these are two representations of the same field. Keep only one."
+        )
 
     # Shape validation at the top level
     if "hosts" in doc:
@@ -114,17 +120,30 @@ def normalize(doc: dict) -> dict:
     if "credential" in doc:
         result["credentials"] = _normalize_credentials(doc["credential"])
 
-    # risk (top-level list) -> gateway.risk_appetite
+    # risk (top-level list) -> gateway.risk_appetite.
+    # If the input already has a gateway dict (without risk_appetite), merge
+    # the risk list into it rather than clobbering.
     if "risk" in doc:
-        result["gateway"] = {"risk_appetite": _normalize_risk(doc["risk"])}
+        existing_gateway = doc.get("gateway")
+        if isinstance(existing_gateway, dict):
+            merged = copy.deepcopy(existing_gateway)
+            merged["risk_appetite"] = _normalize_risk(doc["risk"])
+            result["gateway"] = merged
+        else:
+            result["gateway"] = {"risk_appetite": _normalize_risk(doc["risk"])}
 
     # Pass through keys that don't need renaming.
     # Deep-copy to guarantee output independence from input.
     for key, value in doc.items():
-        if key in ("version", "description", "budget", "credential", "risk", "hosts"):
-            continue  # Already handled above
+        if key in ("version", "description", "budget", "credential", "risk", "hosts", "gateway"):
+            continue  # Already handled above (gateway is merged with risk above)
         if key not in result:
             result[key] = copy.deepcopy(value)
+
+    # If doc had gateway but no risk, copy gateway through explicitly (since we
+    # skipped it in the pass-through loop above).
+    if "gateway" in doc and "risk" not in doc and "gateway" not in result:
+        result["gateway"] = copy.deepcopy(doc["gateway"])
 
     # Normalize agents.<name>.hosts fields (same mapping as top-level hosts).
     # We deep-copied `agents` in the pass-through above, so this mutates a
