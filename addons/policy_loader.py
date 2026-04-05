@@ -479,12 +479,12 @@ class PolicyLoader:
             return True
 
         except Exception as e:
-            log.error(f"Failed to validate baseline policy: {type(e).__name__}: {e}")
+            log.error(f"Failed to load baseline policy: {type(e).__name__}: {e}")
             write_event(
                 "ops.policy_error",
                 kind=EventKind.OPS,
                 severity=Severity.HIGH,
-                summary=f"Baseline policy validation failed: {type(e).__name__}",
+                summary=f"Baseline policy load failed: {e}",
                 addon="policy-loader",
                 details={"policy_type": "baseline", "error": str(e)},
             )
