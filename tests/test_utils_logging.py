@@ -122,21 +122,25 @@ class TestWriteEvent:
 
         assert "doesn't match taxonomy" not in caplog.text
 
-    def test_invalid_prefix_warns(self, temp_log, caplog):
-        """Invalid event prefix logs a warning but still writes."""
+    def test_invalid_prefix_is_rejected_and_fallback_entry_written(self, temp_log, caplog):
+        """An event whose prefix does not match its kind fails AuditEvent
+        validation. write_event catches the error, logs at ERROR level, and
+        writes a minimal fallback entry so the event is never silently lost."""
         import logging
 
         from utils import write_event
 
-        caplog.set_level(logging.WARNING)
+        caplog.set_level(logging.ERROR)
 
         with patch("utils.AUDIT_LOG_PATH", temp_log):
             write_event("invalid_event", kind=EventKind.OPS, severity=Severity.LOW, summary="test")
 
-        assert "doesn't match taxonomy" in caplog.text
-        # But event is still written
+        # The validation error is logged so the operator sees it
+        assert "Event validation failed" in caplog.text
+        # The fallback entry is still written so the event is not silently dropped
         entry = json.loads(temp_log.read_text().strip())
         assert entry["event"] == "invalid_event"
+        assert entry["summary"] == "test"
 
     def test_details_in_output(self, temp_log):
         """Details dict is included in the log entry."""
@@ -210,40 +214,6 @@ class TestWriteEvent:
         assert "decision" not in entry
         assert "host" not in entry
         assert "approval" not in entry
-
-
-class TestValidEventPrefixes:
-    """Tests for VALID_EVENT_PREFIXES constant."""
-
-    def test_contains_traffic(self):
-        from utils import VALID_EVENT_PREFIXES
-        assert "traffic." in VALID_EVENT_PREFIXES
-
-    def test_contains_security(self):
-        from utils import VALID_EVENT_PREFIXES
-        assert "security." in VALID_EVENT_PREFIXES
-
-    def test_contains_ops(self):
-        from utils import VALID_EVENT_PREFIXES
-        assert "ops." in VALID_EVENT_PREFIXES
-
-    def test_contains_admin(self):
-        from utils import VALID_EVENT_PREFIXES
-        assert "admin." in VALID_EVENT_PREFIXES
-
-    def test_contains_agent(self):
-        from utils import VALID_EVENT_PREFIXES
-        assert "agent." in VALID_EVENT_PREFIXES
-
-    def test_contains_gateway(self):
-        """gateway. prefix replaces broker."""
-        from utils import VALID_EVENT_PREFIXES
-        assert "gateway." in VALID_EVENT_PREFIXES
-        assert "broker." not in VALID_EVENT_PREFIXES
-
-    def test_is_tuple(self):
-        from utils import VALID_EVENT_PREFIXES
-        assert isinstance(VALID_EVENT_PREFIXES, tuple)
 
 
 class TestMakeBlockResponse:
