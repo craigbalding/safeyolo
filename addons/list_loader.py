@@ -64,12 +64,21 @@ def expand_lists(raw: dict, base_dir: Path) -> dict:
     and replaces each $name host entry with individual entries
     sharing the same config.
 
+    Fails closed: undefined references, missing files, and read errors
+    raise ValueError with a clear message. Policy load should abort
+    rather than silently dropping rules the operator wrote.
+
     Args:
         raw: Policy dict (modified in place)
         base_dir: Base directory for resolving relative list paths
 
     Returns:
         The modified raw dict
+
+    Raises:
+        ValueError: If a $name reference is undefined, the list file is
+            missing, or the file cannot be read. Message includes the
+            failing reference and (for undefined names) the defined names.
     """
     lists_config = raw.get("lists", {})
     if not lists_config or not isinstance(lists_config, dict):
@@ -86,8 +95,11 @@ def expand_lists(raw: dict, base_dir: Path) -> dict:
             continue
         list_name = host_key[1:]  # strip $
         if list_name not in lists_config:
-            log.warning("List reference '$%s' not defined in [lists], skipping", sanitize_for_log(list_name))
-            continue
+            defined = ", ".join(sorted(lists_config.keys())) or "(none)"
+            raise ValueError(
+                f"Undefined list reference '${list_name}' in [hosts]. "
+                f"Defined lists: {defined}"
+            )
         to_expand.append((host_key, list_name, config if config is not None else {}))
 
     if not to_expand:
@@ -102,20 +114,24 @@ def expand_lists(raw: dict, base_dir: Path) -> dict:
 
         try:
             entries = load_list(list_path)
-        except FileNotFoundError:
-            log.error("List file not found: %s (referenced by $%s)", sanitize_for_log(str(list_path)), sanitize_for_log(list_name))
-            continue
+        except FileNotFoundError as e:
+            raise ValueError(
+                f"List file not found: {list_path} (referenced by ${list_name})"
+            ) from e
         except OSError as e:
-            log.error("Failed to read list file %s: %s", sanitize_for_log(str(list_path)), e)
-            continue
+            raise ValueError(
+                f"Failed to read list file {list_path} (referenced by ${list_name}): {e}"
+            ) from e
 
         # Remove the $name entry
         del hosts[host_key]
 
-        # Add individual entries (don't overwrite existing explicit entries)
+        # Add individual entries (don't overwrite existing explicit entries).
+        # Copy the config dict so downstream mutations of one entry don't
+        # propagate to all expanded entries.
         for entry in entries:
             if entry not in hosts:
-                hosts[entry] = config
+                hosts[entry] = dict(config)
 
         log.info("Expanded $%s: %d entries from %s", sanitize_for_log(list_name), len(entries), sanitize_for_log(str(list_path)))
 
