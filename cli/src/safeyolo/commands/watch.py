@@ -22,6 +22,7 @@ from rich.table import Table
 
 from .._tactics import TACTIC_LABELS
 from ..api import AdminAPI, APIError, get_api
+from ..audit_schema import InvalidAuditEvent, parse_audit_event
 from ..config import get_logs_dir
 
 console = Console()
@@ -35,6 +36,38 @@ STATUS_BATCH = 10  # or after this many suppressed allow events
 
 # Batch mode: how long to accumulate events before flushing
 BATCH_WINDOW = 2.0  # seconds
+
+# Schema-drift warnings: track how many we've emitted to avoid log-spam.
+_drift_warnings_emitted = 0
+_MAX_DRIFT_WARNINGS = 10
+
+
+def _parse_jsonl_line(line: str) -> dict | None:
+    """Parse a JSONL audit line, warn on schema drift, skip on JSON errors.
+
+    Returns the event dict on success (even if schema validation warns), or
+    None if the line is not valid JSON. Schema drift is logged once per event
+    class (up to `_MAX_DRIFT_WARNINGS`) and does not drop the event — the
+    downstream formatting code is lenient and reads fields via dict.get.
+    """
+    global _drift_warnings_emitted
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+    try:
+        parse_audit_event(event)
+    except InvalidAuditEvent as exc:
+        if _drift_warnings_emitted < _MAX_DRIFT_WARNINGS:
+            _drift_warnings_emitted += 1
+            console.print(f"[dim yellow]schema drift: {exc}[/dim yellow]")
+            if _drift_warnings_emitted == _MAX_DRIFT_WARNINGS:
+                console.print(
+                    "[dim yellow]further schema-drift warnings suppressed[/dim yellow]"
+                )
+
+    return event
 
 
 def is_in_tmux() -> bool:
@@ -217,10 +250,9 @@ def tail_jsonl(path: Path, follow: bool = True, tick_interval: float = 0):
                 idle_cycles = 0
                 line = line.strip()
                 if line:
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError:
-                        continue  # Skip malformed lines
+                    event = _parse_jsonl_line(line)
+                    if event is not None:
+                        yield event
             elif follow:
                 time.sleep(0.1)
                 check_interval += 1
@@ -271,10 +303,9 @@ def _tail_reopened(path: Path):
                 check_interval = 0
                 line = line.strip()
                 if line:
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError:
-                        continue  # Skip malformed log lines
+                    event = _parse_jsonl_line(line)
+                    if event is not None:
+                        yield event
             else:
                 time.sleep(0.1)
                 check_interval += 1

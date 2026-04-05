@@ -1,6 +1,7 @@
 """Log viewing and tailing commands."""
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import typer
 from rich.console import Console
 from rich.text import Text
 
-from ..audit_schema import sanitize_for_log
+from ..audit_schema import InvalidAuditEvent, parse_audit_event, sanitize_for_log
 from ..config import find_config_dir, get_logs_dir
 
 console = Console()
@@ -29,17 +30,21 @@ SEVERITY_RANK = {
     "critical": 3,
 }
 
-# Decision colors
+# Decision colors — mirrors the Decision enum in audit_schema. SafeYolo emits
+# "deny", never "block"; anything else is drift worth flagging.
 DECISION_COLORS = {
     "allow": "green",
     "deny": "red bold",
-    "block": "red bold",
     "warn": "yellow",
-    "greylist": "yellow",
     "require_approval": "magenta",
     "budget_exceeded": "yellow",
     "log": "dim",
 }
+
+# How many schema-drift warnings to print per run before suppressing further
+# notices. Keeps the normal human-facing log view uncluttered when an old log
+# file contains many non-conforming lines.
+_MAX_DRIFT_WARNINGS = 10
 
 
 def format_event(event: dict) -> Text:
@@ -190,7 +195,10 @@ def logs(
     else:
         lines_to_show = None  # Will iterate file
 
+    drift_warnings = 0
+
     def process_lines(line_source):
+        nonlocal drift_warnings
         for line in line_source:
             if not line:
                 continue
@@ -201,6 +209,25 @@ def logs(
                 if raw:
                     console.print(line)
                 continue
+
+            # Validate against the shared schema for drift detection. The
+            # rendering path below is lenient (uses dict.get), so failures
+            # here are warnings, not skips — an old CLI against a newer log
+            # should still render events whose shape it understands.
+            try:
+                parse_audit_event(event)
+            except InvalidAuditEvent as exc:
+                if drift_warnings < _MAX_DRIFT_WARNINGS:
+                    drift_warnings += 1
+                    print(
+                        f"[safeyolo] schema drift: {exc}",
+                        file=sys.stderr,
+                    )
+                    if drift_warnings == _MAX_DRIFT_WARNINGS:
+                        print(
+                            "[safeyolo] further schema-drift warnings suppressed",
+                            file=sys.stderr,
+                        )
 
             # Apply filters
             if event_type and not event.get("event", "").startswith(event_type):
