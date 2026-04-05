@@ -27,6 +27,7 @@ import urllib.parse
 
 from flow_store import is_text_like_content_type
 from mitmproxy import ctx, http
+from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 from utils import sanitize_for_log, write_event
 
 from audit_schema import ApprovalRequest, Decision, EventKind, Severity
@@ -34,7 +35,6 @@ from audit_schema import ApprovalRequest, Decision, EventKind, Severity
 log = logging.getLogger("safeyolo.agent-api")
 
 AGENT_API_HOST = "_safeyolo.proxy.internal"
-_REQUEST_ID_PATTERN = re.compile(r"^req-[a-f0-9]{12}$")
 MAX_EXPLAIN_LINES = 10000
 
 
