@@ -189,11 +189,12 @@ class TestEndpoints:
     def test_explain_with_request_id(self, api, agent_token):
         """Test /explain returns 200 with request_id (log may not exist in test env)."""
         with _patch_active_token(agent_token):
-            flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-0a1b2c3d4e5f")
+            valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
             api.request(flow)
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
-            assert body["request_id"] == "req-0a1b2c3d4e5f"
+            assert body["request_id"] == valid_id
             assert isinstance(body["events"], list)
 
     def test_explain_invalid_request_id(self, api, agent_token):
