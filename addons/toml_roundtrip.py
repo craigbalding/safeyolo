@@ -2,12 +2,17 @@
 toml_roundtrip.py - TOML round-trip load/save with comment preservation.
 
 Uses tomlkit to load and save TOML files while preserving comments,
-formatting, and key ordering. Mirrors yaml_roundtrip.py for the TOML
-policy format.
+formatting, and key ordering.
+
+All mutation helpers fail-closed: they raise ValueError with a clear
+message rather than silently rewriting hand-edited malformed values.
+Atomic writes fsync the tempfile and clean up on failure so a crash
+mid-write cannot leave a zero-length policy file visible.
 """
 
 import fcntl
 import logging
+import os
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -21,6 +26,11 @@ from tomlkit.items import InlineTable, Table
 log = logging.getLogger("safeyolo.toml-roundtrip")
 
 
+# =========================================================================
+# Load / save
+# =========================================================================
+
+
 def load_roundtrip(path: Path) -> tomlkit.TOMLDocument:
     """Load a TOML file preserving comments and formatting.
 
@@ -32,7 +42,7 @@ def load_roundtrip(path: Path) -> tomlkit.TOMLDocument:
 
     Raises:
         FileNotFoundError: If the file doesn't exist
-        Exception: On parse errors
+        tomlkit.exceptions.TOMLKitError: On parse errors
     """
     return tomlkit.parse(path.read_text())
 
@@ -40,32 +50,54 @@ def load_roundtrip(path: Path) -> tomlkit.TOMLDocument:
 def save_roundtrip(path: Path, doc: tomlkit.TOMLDocument) -> None:
     """Atomic write of a TOMLDocument back to TOML, preserving comments.
 
-    Uses tempfile + move for atomic writes.
+    Uses tempfile + fsync + rename for atomicity. Cleans up the temp file
+    on failure so no leftover droppings accumulate in the target directory.
 
     Args:
         path: Destination file path
         doc: TOMLDocument to serialize
+
+    Raises:
+        OSError: On write or rename failure (temp file is cleaned up).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
     content = tomlkit.dumps(doc)
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".toml", dir=path.parent, delete=False
-    ) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".toml", dir=path.parent, delete=False
+        ) as tmp:
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = tmp.name
 
-    shutil.move(tmp_path, path)
-    log.info(f"Saved TOML (round-trip) to {path}")
+        shutil.move(tmp_path, path)
+        tmp_path = None  # moved successfully, no cleanup needed
+
+        # fsync the parent directory so the rename is durable
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+        log.debug("Saved TOML (round-trip) to %s", path)
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass  # best effort cleanup
 
 
 def load_as_internal(path: Path) -> dict:
     """Load TOML and normalize to internal field names.
 
-    Convenience: load + unwrap + normalize. The output dict is identical
-    to what PyYAML produces from the current policy.yaml format, so
-    policy_compiler.py works unmodified.
+    Convenience: load + unwrap + normalize. The output dict matches what
+    policy_compiler.py expects.
 
     Args:
         path: Path to the TOML policy file
@@ -83,84 +115,130 @@ def _unwrap(doc: tomlkit.TOMLDocument) -> dict:
     return doc.unwrap()
 
 
-def add_host_credential(doc: tomlkit.TOMLDocument, host: str, cred_ids: list[str]) -> None:
+# =========================================================================
+# Host helpers
+# =========================================================================
+
+
+def _ensure_hosts_table(doc: tomlkit.TOMLDocument) -> Table:
+    """Get or create the [hosts] table."""
+    hosts = doc.get("hosts")
+    if hosts is None:
+        hosts = tomlkit.table()
+        doc.add("hosts", hosts)
+    return hosts
+
+
+def _require_host_config_is_dict(host: str, host_config: Any) -> None:
+    """Raise ValueError if an existing host entry is not a dict/Table.
+
+    Silent rewrite of scalar/unexpected values hides operator hand-edit
+    errors and is a transparency violation.
+    """
+    if not isinstance(host_config, (dict, Table, InlineTable)):
+        raise ValueError(
+            f"Host entry '{host}' is not a table (got {type(host_config).__name__}). "
+            f"Fix the entry manually in policy.toml before using mutation helpers."
+        )
+
+
+def add_host_credential(
+    doc: tomlkit.TOMLDocument, host: str, cred_ids: list[str]
+) -> None:
     """Add credential IDs to a host entry in the [hosts] table.
 
-    Operates on the TOMLDocument using TOML field names (allow, rate).
-    Creates the host entry if it doesn't exist.
+    Creates the host entry if it doesn't exist. Appends to an existing
+    allow list without introducing duplicates. Order is preserved: new
+    credentials append after existing ones in the order given.
 
     Args:
         doc: TOMLDocument loaded via load_roundtrip
         host: Host pattern (e.g., "api.example.com")
         cred_ids: Credential identifiers to add (e.g., ["hmac:a1b2c3"])
+
+    Raises:
+        ValueError: if cred_ids is empty, if any id is not a string, or
+            if the existing host entry is not a table (scalar, list, etc.)
+            or an existing `allow` field is not a list.
     """
-    hosts = doc.get("hosts")
-    if hosts is None:
-        hosts = tomlkit.table()
-        doc.add("hosts", hosts)
+    if not cred_ids:
+        raise ValueError("cred_ids must be a non-empty list")
+    if not all(isinstance(c, str) for c in cred_ids):
+        raise ValueError("cred_ids must be a list of strings")
+
+    hosts = _ensure_hosts_table(doc)
 
     if host in hosts:
         host_config = hosts[host]
-        if isinstance(host_config, (dict, Table, InlineTable)):
-            existing = host_config.get("allow")
-            if existing is None:
-                host_config["allow"] = cred_ids
-            else:
-                for cred in cred_ids:
-                    if cred not in existing:
-                        existing.append(cred)
-        else:
-            # Scalar or unexpected — replace with inline table
-            it = tomlkit.inline_table()
-            it.append("allow", cred_ids)
-            hosts[host] = it
+        _require_host_config_is_dict(host, host_config)
+
+        existing = host_config.get("allow")
+        if existing is None:
+            host_config["allow"] = list(cred_ids)
+            return
+
+        if not isinstance(existing, list):
+            raise ValueError(
+                f"Host '{host}' has 'allow' of type {type(existing).__name__}, "
+                f"expected a list. Fix the entry manually in policy.toml."
+            )
+
+        for cred in cred_ids:
+            if cred not in existing:
+                existing.append(cred)
     else:
         # New host entry
         it = tomlkit.inline_table()
-        it.append("allow", cred_ids)
+        it.append("allow", list(cred_ids))
         hosts[host] = it
 
 
-def update_host_field(doc: tomlkit.TOMLDocument, host: str, key: str, value: Any) -> None:
-    """Update a single field on a host entry.
+def update_host_field(
+    doc: tomlkit.TOMLDocument, host: str, key: str, value: Any
+) -> None:
+    """Update (or create) a single field on a host entry.
 
     Args:
         doc: TOMLDocument loaded via load_roundtrip
         host: Host pattern
         key: TOML field name (allow, rate, bypass, unknown_creds, etc.)
-        value: New value
+        value: New value (must not be None)
+
+    Raises:
+        ValueError: if value is None, or if the existing host entry is
+            not a table (scalar, list, etc.).
     """
-    hosts = doc.get("hosts")
-    if hosts is None:
-        hosts = tomlkit.table()
-        doc.add("hosts", hosts)
+    if value is None:
+        raise ValueError(
+            f"update_host_field({host!r}, {key!r}): value must not be None. "
+            f"To remove a field, read the host config and delete the key directly."
+        )
+
+    hosts = _ensure_hosts_table(doc)
 
     if host in hosts:
         host_config = hosts[host]
-        if isinstance(host_config, (dict, Table, InlineTable)):
-            host_config[key] = value
-        else:
-            it = tomlkit.inline_table()
-            it.append(key, value)
-            hosts[host] = it
+        _require_host_config_is_dict(host, host_config)
+        host_config[key] = value
     else:
         it = tomlkit.inline_table()
         it.append(key, value)
         hosts[host] = it
 
 
-def add_host(doc: tomlkit.TOMLDocument, host: str, config: dict) -> None:
-    """Add a new host entry with multiple fields.
+def upsert_host(doc: tomlkit.TOMLDocument, host: str, config: dict) -> None:
+    """Insert or replace a host entry with the given config.
+
+    Replaces the entire entry if the host already exists. Callers that
+    want to preserve existing fields should read-modify-write themselves
+    using update_host_field.
 
     Args:
         doc: TOMLDocument loaded via load_roundtrip
         host: Host pattern
         config: Dict of TOML field names and values
     """
-    hosts = doc.get("hosts")
-    if hosts is None:
-        hosts = tomlkit.table()
-        doc.add("hosts", hosts)
+    hosts = _ensure_hosts_table(doc)
 
     it = tomlkit.inline_table()
     for k, v in config.items():
@@ -173,7 +251,7 @@ def add_host(doc: tomlkit.TOMLDocument, host: str, config: dict) -> None:
 # =========================================================================
 
 
-def _ensure_agents_table(doc: tomlkit.TOMLDocument) -> tomlkit.items.Table:
+def _ensure_agents_table(doc: tomlkit.TOMLDocument) -> Table:
     """Get or create the [agents] table in a TOMLDocument."""
     if "agents" not in doc:
         doc.add("agents", tomlkit.table())
@@ -183,24 +261,26 @@ def _ensure_agents_table(doc: tomlkit.TOMLDocument) -> tomlkit.items.Table:
 def load_agents(doc: tomlkit.TOMLDocument) -> dict:
     """Extract all agents from the [agents] section as plain dicts.
 
-    Returns:
-        Dict of agent_name -> agent_metadata (unwrapped to plain dicts).
-        Empty dict if no [agents] section.
+    The returned dict is independent of the TOMLDocument — mutating it
+    does not affect the document. Returns an empty dict if there is no
+    [agents] section.
     """
     agents = doc.get("agents")
     if agents is None:
         return {}
-    # Unwrap tomlkit items to plain Python types
+    # Unwrap tomlkit items to plain Python types (this creates a fresh dict)
     if hasattr(agents, "unwrap"):
         return agents.unwrap()
     return dict(agents)
 
 
-def upsert_agent(doc: tomlkit.TOMLDocument, name: str, metadata: dict) -> None:
+def upsert_agent(
+    doc: tomlkit.TOMLDocument, name: str, metadata: dict
+) -> None:
     """Insert or replace an agent entry under [agents].
 
-    Converts the metadata dict into tomlkit tables/arrays-of-tables
-    so the output is well-structured TOML with proper section headers.
+    Converts the metadata dict into tomlkit tables/arrays-of-tables so
+    the output is well-structured TOML with proper section headers.
 
     Args:
         doc: TOMLDocument loaded via load_roundtrip
@@ -284,6 +364,9 @@ def locked_policy_mutate(
 ) -> Any:
     """Read-modify-write policy.toml under an exclusive file lock.
 
+    The lock is released in a finally block, so a raising mutate_fn does
+    not leave the lock held.
+
     Args:
         policy_path: Path to policy.toml
         mutate_fn: Called with the loaded TOMLDocument. May modify it in place.
@@ -296,7 +379,8 @@ def locked_policy_mutate(
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.touch()
 
-    with open(lock) as lf:
+    lf = open(lock)
+    try:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
             doc = load_roundtrip(policy_path)
@@ -305,14 +389,37 @@ def locked_policy_mutate(
             return result
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+    finally:
+        lf.close()
 
 
-def policy_path_for_loader(loader: Any) -> Path | None:
+class LoaderNotConfigured(RuntimeError):
+    """Raised when policy_path_for_loader is called on a loader with no baseline."""
+
+
+class LoaderBaselineMissing(FileNotFoundError):
+    """Raised when the loader's baseline path exists in memory but not on disk."""
+
+
+def policy_path_for_loader(loader: Any) -> Path:
     """Extract the baseline policy path from a PolicyLoader instance.
 
-    Replaces the getattr(loader, "_agents_path", ...)() pattern.
+    Returns the path if the loader has a `_baseline_path` attribute, it
+    is a Path instance, and the file exists on disk.
+
+    Raises:
+        LoaderNotConfigured: if the loader has no _baseline_path attribute
+            or it is not a Path (e.g. None because the loader was
+            instantiated without a baseline).
+        LoaderBaselineMissing: if _baseline_path is set but the file does
+            not exist. Distinct from LoaderNotConfigured so callers can
+            tell "never configured" from "file deleted".
     """
     path = getattr(loader, "_baseline_path", None)
-    if path and isinstance(path, Path) and path.exists():
-        return path
-    return None
+    if path is None or not isinstance(path, Path):
+        raise LoaderNotConfigured(
+            "loader has no _baseline_path — loader was not configured with a baseline file"
+        )
+    if not path.exists():
+        raise LoaderBaselineMissing(f"baseline path {path} does not exist on disk")
+    return path

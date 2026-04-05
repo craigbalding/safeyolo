@@ -1203,7 +1203,7 @@ class PolicyEngine:
         # Persist to TOML
         if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
             try:
-                from toml_roundtrip import add_host, load_roundtrip, save_roundtrip
+                from toml_roundtrip import load_roundtrip, save_roundtrip, upsert_host
 
                 doc = load_roundtrip(self._loader.baseline_path)
                 config: dict[str, Any] = {}
@@ -1213,7 +1213,7 @@ class PolicyEngine:
                 if agent:
                     self._write_agent_host(doc, agent, host, config)
                 else:
-                    add_host(doc, host, config)
+                    upsert_host(doc, host, config)
                 save_roundtrip(self._loader.baseline_path, doc)
             except (OSError, ValueError) as e:
                 log.warning("TOML round-trip save failed for host allowance: %s", e)
@@ -1277,7 +1277,7 @@ class PolicyEngine:
         # Persist to TOML
         if self._loader.baseline_path and self._loader.baseline_path.suffix == ".toml":
             try:
-                from toml_roundtrip import add_host, load_roundtrip, save_roundtrip
+                from toml_roundtrip import load_roundtrip, save_roundtrip, upsert_host
 
                 doc = load_roundtrip(self._loader.baseline_path)
                 config: dict[str, Any] = {"egress": "deny"}
@@ -1289,7 +1289,7 @@ class PolicyEngine:
                 if agent:
                     self._write_agent_host(doc, agent, host, config)
                 else:
-                    add_host(doc, host, config)
+                    upsert_host(doc, host, config)
                 save_roundtrip(self._loader.baseline_path, doc)
             except (OSError, ValueError) as e:
                 log.warning("TOML round-trip save failed for host denial: %s", e)
