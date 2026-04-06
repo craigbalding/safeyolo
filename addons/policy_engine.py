@@ -1524,86 +1524,13 @@ class PolicyEngine:
                 )
                 return
 
-        # YAML branch: use ruamel.yaml for round-trip editing
-        try:
-            from yaml_roundtrip import load_roundtrip, save_roundtrip
-
-            if baseline_path.exists():
-                data = load_roundtrip(baseline_path)
-
-                if "hosts" in data:
-                    # Host-centric format: add to hosts section
-                    self._save_host_centric_approval(data, new_permission)
-                else:
-                    # IAM format: insert into permissions list
-                    perm_dict = new_permission.model_dump(exclude_none=True)
-                    if "permissions" in data:
-                        data["permissions"].insert(0, perm_dict)
-                    else:
-                        data["permissions"] = [perm_dict]
-
-                save_roundtrip(baseline_path, data)
-                return
-        except Exception as e:
-            log.warning("Round-trip save failed, falling back to full rewrite: %s", e)
-
-        # Fallback: full rewrite without comment preservation
+        # Non-TOML files: fall through to plain rewrite (no comment preservation).
+        # YAML round-trip support was removed — TOML is the canonical format.
         self._save_baseline_plain()
 
-    def _save_host_centric_approval(self, data: dict, permission: Permission) -> None:
-        """Insert a credential approval into the hosts section of a host-centric file.
-
-        Extracts the host from the permission resource and adds/updates the
-        credentials list in the hosts section.
-
-        Args:
-            data: Round-trip loaded YAML data (CommentedMap)
-            permission: The credential:use permission to add
-        """
-        from ruamel.yaml.comments import CommentedMap, CommentedSeq
-
-        # Extract host from resource pattern (e.g., "api.example.com/*" → "api.example.com")
-        resource = permission.resource
-        host = resource.rstrip("/*") if resource.endswith("/*") else resource
-
-        hosts = data.get("hosts")
-        if hosts is None:
-            hosts = CommentedMap()
-            data["hosts"] = hosts
-
-        # Get or create host entry
-        if host in hosts and isinstance(hosts[host], dict):
-            host_config = hosts[host]
-        else:
-            host_config = CommentedMap()
-            hosts[host] = host_config
-
-        # Extract credential IDs from the permission condition
-        cred_ids = []
-        if permission.condition and permission.condition.credential:
-            creds = permission.condition.credential
-            if isinstance(creds, str):
-                cred_ids = [creds]
-            else:
-                cred_ids = list(creds)
-
-        # Add to existing credentials or create new list
-        existing = host_config.get("credentials")
-        if existing is None:
-            new_creds = CommentedSeq(cred_ids)
-            host_config["credentials"] = new_creds
-        else:
-            for cred in cred_ids:
-                if cred not in existing:
-                    existing.append(cred)
-
     def _save_baseline_full(self) -> None:
-        """Save full baseline policy, preserving comments where possible.
-
-        If the original file exists, loads it with ruamel.yaml/tomlkit and merges the
-        current policy data into it, preserving section banners and comments
-        on unchanged keys. Falls back to plain dump if round-trip fails.
-        """
+        """Save full baseline policy. TOML uses tomlkit for comment preservation;
+        other formats fall through to plain dump."""
         baseline_path = self._loader.baseline_path
         if not baseline_path:
             return
@@ -1636,21 +1563,7 @@ class PolicyEngine:
             self._save_baseline_plain()
             return
 
-        # YAML branch
-        try:
-            from yaml_roundtrip import load_roundtrip, merge_into_roundtrip, save_roundtrip
-
-            if baseline_path.exists():
-                original = load_roundtrip(baseline_path)
-                baseline = self._loader.baseline
-                new_data = baseline.model_dump(exclude_none=True)
-                merge_into_roundtrip(original, new_data)
-                save_roundtrip(baseline_path, original)
-                return
-        except Exception as e:
-            log.warning("Round-trip save failed, falling back to full rewrite: %s", e)
-
-        # Fallback: full rewrite without comment preservation
+        # Non-TOML files: fall through to plain rewrite.
         self._save_baseline_plain()
 
     def _save_baseline_plain(self) -> None:
