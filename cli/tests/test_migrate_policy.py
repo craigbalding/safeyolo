@@ -5,9 +5,11 @@ Tests YAML-to-TOML migration: field name conversion, structure,
 and comment handling.
 """
 
+import copy
 import sys
 from pathlib import Path
 
+import pytest
 import tomlkit
 import yaml
 
@@ -161,3 +163,91 @@ class TestBuildTomlDocument:
         assert back["credentials"]["openai"]["patterns"] == ['sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}']
         assert back["required"] == ["credential_guard", "network_guard"]
         assert len(back["gateway"]["risk_appetite"]) == 1
+
+
+class TestNormalize:
+    """Tests for normalize() — TOML field names to internal field names."""
+
+    def test_normalize_budget_to_global_budget(self):
+        """Top-level 'budget' becomes 'global_budget'."""
+        from toml_normalize import normalize
+
+        result = normalize({"budget": 12000})
+        assert result["global_budget"] == 12000
+        assert "budget" not in result
+
+    def test_normalize_credential_to_credentials_with_patterns(self):
+        """Singular 'credential' becomes plural 'credentials', .match -> .patterns."""
+        from toml_normalize import normalize
+
+        result = normalize({
+            "credential": {
+                "openai": {"match": ["sk-.*"], "headers": ["authorization"]},
+            }
+        })
+        assert "credentials" in result
+        assert "credential" not in result
+        assert result["credentials"]["openai"]["patterns"] == ["sk-.*"]
+        assert result["credentials"]["openai"]["headers"] == ["authorization"]
+
+    def test_normalize_host_rate_to_rate_limit(self):
+        """Per-host 'rate' becomes 'rate_limit'."""
+        from toml_normalize import normalize
+
+        result = normalize({
+            "hosts": {"api.openai.com": {"rate": 3000, "allow": ["openai:*"]}}
+        })
+        assert result["hosts"]["api.openai.com"]["rate_limit"] == 3000
+        assert result["hosts"]["api.openai.com"]["credentials"] == ["openai:*"]
+        assert "rate" not in result["hosts"]["api.openai.com"]
+        assert "allow" not in result["hosts"]["api.openai.com"]
+
+    def test_normalize_collision_budget_and_global_budget_raises(self):
+        """Raises ValueError when both 'budget' and 'global_budget' are present."""
+        from toml_normalize import normalize
+
+        with pytest.raises(ValueError, match="budget.*global_budget"):
+            normalize({"budget": 100, "global_budget": 200})
+
+    def test_normalize_non_dict_hosts_raises(self):
+        """Raises ValueError when 'hosts' is not a dict."""
+        from toml_normalize import normalize
+
+        with pytest.raises(ValueError, match="Expected dict.*hosts"):
+            normalize({"hosts": ["not", "a", "dict"]})
+
+    def test_normalize_agents_hosts_renamed(self):
+        """Agent-scoped hosts get the same field renames as top-level hosts."""
+        from toml_normalize import normalize
+
+        result = normalize({
+            "agents": {
+                "boris": {
+                    "hosts": {
+                        "api.openai.com": {"rate": 500, "allow": ["openai:*"]}
+                    }
+                }
+            }
+        })
+        agent_host = result["agents"]["boris"]["hosts"]["api.openai.com"]
+        assert agent_host["rate_limit"] == 500
+        assert agent_host["credentials"] == ["openai:*"]
+
+    def test_normalize_does_not_mutate_input(self):
+        """normalize() must not modify the caller's input dict."""
+        from toml_normalize import normalize
+
+        original = {
+            "budget": 12000,
+            "hosts": {"api.openai.com": {"rate": 3000, "allow": ["openai:*"]}},
+        }
+        frozen = copy.deepcopy(original)
+        normalize(original)
+        assert original == frozen
+
+    def test_normalize_empty_input(self):
+        """normalize({}) returns an empty dict."""
+        from toml_normalize import normalize
+
+        result = normalize({})
+        assert result == {}

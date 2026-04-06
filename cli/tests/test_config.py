@@ -9,6 +9,7 @@ from safeyolo.config import (
     get_admin_token,
     get_config_dir,
     get_config_path,
+    get_logs_dir,
     load_config,
     save_config,
 )
@@ -162,6 +163,21 @@ class TestGetAdminToken:
         assert result is None
 
 
+class TestGetLogsDir:
+    """Tests for get_logs_dir()."""
+
+    def test_get_logs_dir_default(self, tmp_path, monkeypatch):
+        """Returns XDG_STATE_HOME/safeyolo when no override is set."""
+        monkeypatch.delenv("SAFEYOLO_LOGS_DIR", raising=False)
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        result = get_logs_dir()
+        # Default: ~/.local/state/safeyolo
+        from pathlib import Path
+
+        expected = Path.home() / ".local" / "state" / "safeyolo"
+        assert result == expected
+
+
 class TestGetConfigPath:
     """Tests for path getters."""
 
@@ -177,3 +193,23 @@ class TestGetConfigPath:
         result = get_config_dir(create=True)
         assert result.exists()
         assert result == config_dir
+
+
+class TestGetAdminTokenEdgeCases:
+    """Additional tests for get_admin_token() edge cases."""
+
+    def test_get_admin_token_strips_whitespace(self, tmp_config_dir, monkeypatch):
+        """Token read from file has trailing whitespace/newlines stripped."""
+        monkeypatch.delenv("SAFEYOLO_ADMIN_TOKEN", raising=False)
+        token_path = tmp_config_dir / "data" / "admin_token"
+        token_path.write_text("  my-token-123  \n\n")
+        result = get_admin_token()
+        assert result == "my-token-123"
+
+    def test_get_admin_token_env_overrides_file(self, tmp_config_dir, monkeypatch):
+        """Environment variable takes precedence even when file has different value."""
+        monkeypatch.setenv("SAFEYOLO_ADMIN_TOKEN", "from-env")
+        token_path = tmp_config_dir / "data" / "admin_token"
+        token_path.write_text("from-file")
+        result = get_admin_token()
+        assert result == "from-env"

@@ -205,12 +205,29 @@ class TestGetAvailableTemplates:
         assert "claude-code" in templates
         assert "openai-codex" in templates
 
+    def test_returns_exact_known_templates(self):
+        """Returns exactly the set of known templates (no surprise additions)."""
+        templates = get_available_templates()
+        assert set(templates.keys()) == {"claude-code", "openai-codex"}
+
     def test_descriptions_are_non_empty(self):
         """All templates have non-empty descriptions."""
         templates = get_available_templates()
 
         for name, description in templates.items():
             assert description, f"Template {name} has empty description"
+
+    def test_content_file_loading(self):
+        """Templates with content_file load instructions from the referenced file.
+
+        claude-code uses content_file = "instructions.md". The loaded config must
+        have non-empty instructions.content populated from that file, not from an
+        inline content field.
+        """
+        config = get_agent_config("claude-code")
+        assert config.instructions.content, "instructions.content should be loaded from content_file"
+        # The instructions.md file contains SafeYolo-specific content
+        assert "SafeYolo" in config.instructions.content or "safeyolo" in config.instructions.content.lower()
 
 
 class TestGetAgentConfig:
