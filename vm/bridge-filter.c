@@ -38,12 +38,7 @@
 #define SIOCGDRVSPEC    0xC0286977
 #endif
 
-struct ifdrv {
-    char        ifd_name[IFNAMSIZ];
-    unsigned long   ifd_cmd;
-    size_t      ifd_len;
-    void        *ifd_data;
-};
+/* struct ifdrv is defined in <net/if.h> on macOS */
 
 struct ifbrparam {
     union {
