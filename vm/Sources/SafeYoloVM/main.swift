@@ -178,13 +178,31 @@ do {
     runner.installSignalHandlers()
     try runner.start()
 
-    // Wait for guest vsock-term daemon to be ready, then connect
-    // The guest init starts vsock-term which listens on port 1024.
-    // Give the VM a few seconds to boot.
-    let terminal = VSockTerminal(vm: vm, queue: DispatchQueue(label: "com.safeyolo.vsock"))
+    // Wait for guest vsock-term daemon to be ready, then connect.
+    // The guest needs time to boot, run init, install agent binary, and start vsock-term.
+    let terminal = VSockTerminal(vm: vm, queue: vmQueue)
 
-    DispatchQueue.global().asyncAfter(deadline: .now() + 3.0) {
-        terminal.run()
+    DispatchQueue.global().async {
+        // Retry vsock connection until guest is ready (up to 120s for first boot with npm install)
+        var connected = false
+        for attempt in 1...60 {
+            sleep(2)
+            // Check VM is still running
+            if vm.state != .running { break }
+
+            fputs("Connecting to VM terminal (attempt \(attempt))...\r", stderr)
+            if terminal.tryConnect() {
+                connected = true
+                fputs("\u{1B}[2K", stderr)  // Clear the "Connecting..." line
+                break
+            }
+        }
+
+        if connected {
+            terminal.run()
+        } else {
+            fputs("\nFailed to connect to VM terminal\n", stderr)
+        }
         // Terminal session ended — stop VM
         runner.requestStopFromMain()
     }

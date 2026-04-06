@@ -96,12 +96,11 @@ struct VMConfiguration {
     private static func createSerialPort() -> VZVirtioConsoleDeviceSerialPortConfiguration {
         let serialPort = VZVirtioConsoleDeviceSerialPortConfiguration()
 
-        let inputHandle = FileHandle.standardInput
-        let outputHandle = FileHandle.standardOutput
-
+        // Serial console goes to stderr for boot logs.
+        // The interactive terminal is handled by vsock.
         let attachment = VZFileHandleSerialPortAttachment(
-            fileHandleForReading: inputHandle,
-            fileHandleForWriting: outputHandle
+            fileHandleForReading: nil,
+            fileHandleForWriting: FileHandle.standardError
         )
         serialPort.attachment = attachment
 

@@ -20,19 +20,26 @@ class VSockTerminal {
         self.queue = queue
     }
 
-    /// Connect to vsock-term in the guest and bridge terminal I/O.
-    /// Blocks until the session ends.
-    func run() {
-        // Connect data channel
+    /// Try to connect to both vsock ports. Returns true if data channel connected.
+    func tryConnect() -> Bool {
         guard let dataConn = connectToPort(VSockTerminal.DATA_PORT) else {
-            fputs("vsock: failed to connect to data port\n", stderr)
-            return
+            return false
         }
         dataFD = dataConn.fileDescriptor
 
-        // Connect control channel (non-fatal if it fails)
+        // Control channel is non-fatal
         if let ctrlConn = connectToPort(VSockTerminal.CTRL_PORT) {
             ctrlFD = ctrlConn.fileDescriptor
+        }
+        return true
+    }
+
+    /// Bridge terminal I/O. Call after tryConnect() succeeds.
+    /// Blocks until the session ends.
+    func run() {
+        guard dataFD >= 0 else {
+            fputs("vsock: not connected\n", stderr)
+            return
         }
 
         // Put host terminal in raw mode
