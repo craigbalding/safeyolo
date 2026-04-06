@@ -8,8 +8,10 @@ execution environment changes (host process vs. container).
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -136,8 +138,19 @@ def _build_command(
     admin_port: int = 9090,
 ) -> list[str]:
     """Build the mitmdump command line."""
+    # Find mitmdump in the same venv/prefix as this Python process
+    mitmdump = shutil.which("mitmdump")
+    if not mitmdump:
+        # Check sibling of the running Python interpreter
+        python_dir = Path(sys.executable).parent
+        candidate = python_dir / "mitmdump"
+        if candidate.exists():
+            mitmdump = str(candidate)
+        else:
+            mitmdump = "mitmdump"  # Fall back to PATH
+
     # Bind to all interfaces so VMs on the bridge can reach the proxy
-    cmd = ["mitmdump", "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
+    cmd = [mitmdump, "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
 
     # Load addons
     for addon_file in ADDON_CHAIN:
