@@ -27,24 +27,8 @@
 #include <termios.h>
 #include <pty.h>
 
-/* vsock address family — not in all headers */
-#ifndef AF_VSOCK
-#define AF_VSOCK 40
-#endif
-
-struct sockaddr_vm {
-    unsigned char  svm_len;
-    sa_family_t    svm_family;
-    unsigned short svm_reserved1;
-    unsigned int   svm_port;
-    unsigned int   svm_cid;
-    unsigned char  svm_zero[sizeof(struct sockaddr) -
-                   sizeof(sa_family_t) - sizeof(unsigned short) -
-                   sizeof(unsigned int) - sizeof(unsigned int) -
-                   sizeof(unsigned char)];
-};
-
-#define VMADDR_CID_ANY ((unsigned int)-1)
+/* Linux vsock headers */
+#include <linux/vm_sockets.h>
 #define VSOCK_DATA_PORT 1024
 #define VSOCK_CTRL_PORT 1025
 
