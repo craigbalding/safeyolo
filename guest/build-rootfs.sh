@@ -87,10 +87,12 @@ cp /tmp/mise/bin/mise /mnt/rootfs/usr/local/bin/mise
 chmod +x /mnt/rootfs/usr/local/bin/mise
 rm -rf /tmp/mise.tar.gz /tmp/mise
 
-# Configure mise with shared data dir (accessible to all users)
+# Configure mise with shared dirs (accessible to all users)
+# MISE_CONFIG_DIR must also be shared so `mise use -g` config is visible to all users
 mkdir -p /mnt/rootfs/opt/mise
 cat > /mnt/rootfs/etc/profile.d/mise.sh << '"'"'MISE_PROFILE'"'"'
 export MISE_DATA_DIR="/opt/mise"
+export MISE_CONFIG_DIR="/opt/mise"
 export MISE_CACHE_DIR="/opt/mise/cache"
 export PATH="/opt/mise/shims:$PATH"
 eval "$(mise activate bash)" 2>/dev/null || true
@@ -101,12 +103,13 @@ chmod +x /mnt/rootfs/etc/profile.d/mise.sh
 cp /mnt/rootfs/etc/profile.d/mise.sh /mnt/rootfs/etc/mise-activate.sh
 echo "BASH_ENV=/etc/mise-activate.sh" >> /mnt/rootfs/etc/environment
 
-# Pre-install node@22 into shared mise data dir
+# Pre-install node@22 into shared mise dir
 echo "--- Installing node@22 via mise ---"
-chroot /mnt/rootfs env MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache \
-    mise install node@22 || true
-chroot /mnt/rootfs env MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache \
-    mise use -g node@22 || true
+MISE_ENV="MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache"
+chroot /mnt/rootfs env $MISE_ENV mise install node@22 || true
+chroot /mnt/rootfs env $MISE_ENV mise use -g node@22 || true
+# Regenerate shims with correct config
+chroot /mnt/rootfs env $MISE_ENV mise reshim || true
 # Make shared dir writable by agent user (for installing additional tools)
 chroot /mnt/rootfs chmod -R 777 /opt/mise
 
