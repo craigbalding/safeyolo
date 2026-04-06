@@ -2,7 +2,7 @@
 Tests for circuit_breaker.py addon.
 
 Tests circuit state transitions, failure detection, recovery,
-policy-driven settings, and cache staleness fixes.
+policy-driven settings, cache staleness fixes, and request/response hooks.
 """
 
 import json
@@ -134,6 +134,42 @@ class TestCircuitBreakerBlocking:
         assert "Retry-After" in flow.response.headers
         assert flow.metadata.get("blocked_by") == "circuit-breaker"
 
+    def test_block_response_body_contains_circuit_state(self, circuit_breaker, make_flow):
+        """Test that block response body is JSON with domain, circuit_state, retry_after_seconds, error, message."""
+        circuit_breaker.force_open("test.com")
+
+        flow = make_flow(url="http://test.com/api")
+        circuit_breaker.request(flow)
+
+        body = json.loads(flow.response.content)
+        assert body["domain"] == "test.com"
+        assert body["circuit_state"] == "open"
+        assert isinstance(body["retry_after_seconds"], int)
+        assert "error" in body
+        assert "message" in body
+        assert "test.com" in body["error"]
+
+    def test_block_response_has_x_circuit_state_header(self, circuit_breaker, make_flow):
+        """Test that block response includes X-Circuit-State header."""
+        circuit_breaker.force_open("test.com")
+
+        flow = make_flow(url="http://test.com/api")
+        circuit_breaker.request(flow)
+
+        assert flow.response.headers["X-Circuit-State"] == "open"
+
+    def test_block_response_retry_after_matches_timeout(self, circuit_breaker, make_flow):
+        """Test that Retry-After header value reflects time_until_half_open or timeout_seconds."""
+        circuit_breaker.timeout_seconds = 120
+        circuit_breaker.force_open("test.com")
+
+        flow = make_flow(url="http://test.com/api")
+        circuit_breaker.request(flow)
+
+        retry_after = int(flow.response.headers["Retry-After"])
+        # Should be close to timeout_seconds (force_open just happened, so time_until_half_open ~ timeout_seconds)
+        assert 118 <= retry_after <= 120
+
     def test_limited_requests_in_half_open(self, circuit_breaker, make_flow):
         """Test that half-open allows limited requests."""
         circuit_breaker.failure_threshold = 1
@@ -153,6 +189,43 @@ class TestCircuitBreakerBlocking:
         # Third request blocked
         allowed3, _ = circuit_breaker.should_allow_request("test.com")
         assert allowed3 is False
+
+    def test_request_skips_excluded_domain(self, circuit_breaker, make_flow):
+        """Test that request hook skips excluded domains (localhost, etc.)."""
+        circuit_breaker.force_open("localhost")
+
+        flow = make_flow(url="http://localhost/api")
+        circuit_breaker.request(flow)
+
+        # Should NOT be blocked -- excluded domains are skipped
+        assert flow.response is None
+        assert "blocked_by" not in flow.metadata
+
+    def test_request_when_disabled_does_nothing(self, circuit_breaker, make_flow):
+        """Test that request hook is a no-op when addon is disabled."""
+        circuit_breaker.force_open("test.com")
+
+        flow = make_flow(url="http://test.com/api")
+
+        with patch.object(circuit_breaker, "is_enabled", return_value=False):
+            circuit_breaker.request(flow)
+
+        # Should NOT be blocked because addon is disabled
+        assert flow.response is None
+        assert "blocked_by" not in flow.metadata
+
+    def test_checks_total_increments_on_should_allow_request(self, circuit_breaker):
+        """Test that checks_total counter increments on each should_allow_request call."""
+        assert circuit_breaker.checks_total == 0
+
+        circuit_breaker.should_allow_request("a.com")
+        assert circuit_breaker.checks_total == 1
+
+        circuit_breaker.should_allow_request("b.com")
+        assert circuit_breaker.checks_total == 2
+
+        circuit_breaker.should_allow_request("a.com")
+        assert circuit_breaker.checks_total == 3
 
 
 class TestResponseHandling:
@@ -203,6 +276,65 @@ class TestResponseHandling:
         # Failure count should decay
         assert status.failure_count == 0
 
+    def test_ignores_4xx_responses(self, circuit_breaker, make_flow, make_response):
+        """Test that 4xx responses (except 429) are ignored -- not failures, not successes."""
+        for status_code in [400, 401, 403, 404, 405, 422]:
+            flow = make_flow(url="http://test.com/api")
+            flow.response = make_response(status_code=status_code)
+            circuit_breaker.response(flow)
+
+        status = circuit_breaker.get_status("test.com")
+        assert status.failure_count == 0
+        assert status.success_count == 0
+
+    def test_response_skips_excluded_domain(self, circuit_breaker, make_flow, make_response):
+        """Test that response handler skips excluded domains."""
+        # Pre-seed state for localhost so we can detect if it changes
+        circuit_breaker._state.set("localhost", {
+            "state": "closed",
+            "failure_count": 0,
+            "success_count": 0,
+        })
+
+        flow = make_flow(url="http://localhost/api")
+        flow.response = make_response(status_code=500)
+
+        circuit_breaker.response(flow)
+
+        # failure_count should remain 0 since localhost is excluded
+        data = circuit_breaker._state.get("localhost")
+        assert data["failure_count"] == 0
+
+    def test_response_when_no_flow_response_does_nothing(self, circuit_breaker, make_flow):
+        """Test that response handler returns early if flow.response is None."""
+        flow = make_flow(url="http://test.com/api")
+        flow.response = None
+
+        circuit_breaker.response(flow)
+
+        status = circuit_breaker.get_status("test.com")
+        assert status.failure_count == 0
+
+    def test_response_when_disabled_does_nothing(self, circuit_breaker, make_flow, make_response):
+        """Test that response handler is a no-op when addon is disabled."""
+        flow = make_flow(url="http://test.com/api")
+        flow.response = make_response(status_code=500)
+
+        with patch.object(circuit_breaker, "is_enabled", return_value=False):
+            circuit_breaker.response(flow)
+
+        status = circuit_breaker.get_status("test.com")
+        assert status.failure_count == 0
+
+    def test_record_success_for_unknown_domain_is_noop(self, circuit_breaker):
+        """Test that record_success for a domain with no state returns default closed status."""
+        from circuit_breaker import CircuitState
+
+        status = circuit_breaker.record_success("never-seen.com")
+        assert status.state == CircuitState.CLOSED
+        assert status.failure_count == 0
+        assert status.success_count == 0
+
 
 class TestExponentialBackoff:
     """Tests for exponential backoff on repeated failures."""
@@ -229,6 +361,28 @@ class TestExponentialBackoff:
         assert status.failure_streak == 1
         # With backoff: 1.0 * 2^1 = 2.0
         assert 1.5 < status.current_timeout < 2.5
+
+    def test_backoff_caps_at_max_timeout(self, circuit_breaker):
+        """Test that timeout is capped at max_timeout_seconds regardless of streak."""
+        circuit_breaker.timeout_seconds = 60
+        circuit_breaker.max_timeout_seconds = 300
+        circuit_breaker.use_exponential_backoff = True
+        circuit_breaker.backoff_multiplier = 2.0
+        circuit_breaker.jitter_factor = 0
+
+        # streak=10 would give 60 * 2^10 = 61440, but should cap at 300
+        timeout = circuit_breaker._calculate_timeout(streak=10)
+        assert timeout == 300
+
+    def test_backoff_disabled_returns_base_timeout(self, circuit_breaker):
+        """Test that with backoff disabled, timeout is always base timeout_seconds."""
+        circuit_breaker.timeout_seconds = 60
+        circuit_breaker.use_exponential_backoff = False
+
+        assert circuit_breaker._calculate_timeout(streak=0) == 60
+        assert circuit_breaker._calculate_timeout(streak=1) == 60
+        assert circuit_breaker._calculate_timeout(streak=5) == 60
+        assert circuit_breaker._calculate_timeout(streak=100) == 60
 
 
 class TestManualControl:
@@ -283,16 +437,33 @@ class TestStats:
         circuit_breaker.record_success("test.com")
         assert circuit_breaker.recoveries_total == 1
 
-    def test_get_stats_returns_dict(self, circuit_breaker):
-        """Test that get_stats returns proper structure."""
+    def test_get_stats_returns_exact_structure_for_fresh_instance(self, circuit_breaker):
+        """Test that get_stats returns correct default values for a fresh instance."""
         stats = circuit_breaker.get_stats()
 
-        assert "enabled" in stats
-        assert "failure_threshold" in stats
-        assert "timeout_seconds" in stats
-        assert "checks_total" in stats
-        assert "opens_total" in stats
-        assert "domains" in stats
+        assert stats == {
+            "enabled": True,
+            "failure_threshold": 5,
+            "timeout_seconds": 60,
+            "checks_total": 0,
+            "opens_total": 0,
+            "half_opens_total": 0,
+            "recoveries_total": 0,
+            "domains": {},
+        }
+
+    def test_get_stats_includes_domain_status(self, circuit_breaker):
+        """Test that get_stats includes per-domain status after recording failures."""
+        circuit_breaker.failure_threshold = 2
+        circuit_breaker.record_failure("api.example.com", "error 1")
+
+        stats = circuit_breaker.get_stats()
+        assert "api.example.com" in stats["domains"]
+        domain_info = stats["domains"]["api.example.com"]
+        assert domain_info["state"] == "closed"
+        assert domain_info["failure_count"] == 1
+        assert domain_info["failure_streak"] == 0
+        assert domain_info["time_until_half_open"] is None
 
 
 class TestCircuitBreakerStatePersistence:
@@ -496,7 +667,7 @@ class TestCircuitBreakerStatePersistence:
         # Second instance - should reconcile stale open circuit to HALF_OPEN
         cb2 = CircuitBreaker()
         cb2.failure_threshold = 2
-        cb2.timeout_seconds = 60  # 60s timeout, opened 2 min ago → stale
+        cb2.timeout_seconds = 60  # 60s timeout, opened 2 min ago -> stale
         cb2._state = InMemoryCircuitState(state_file=state_file)
         cb2._reconcile_stale_circuits()
 
@@ -545,18 +716,6 @@ class TestPolicyLoading:
         assert "custom.internal" in circuit_breaker._excluded_domains
         assert "localhost" in circuit_breaker._excluded_domains  # hardcoded still there
 
-    def test_no_policy_client_uses_hardcoded_defaults(self, circuit_breaker):
-        """No PolicyClient available → hardcoded defaults work fine."""
-        # Simulate PDP not configured by patching import
-        with patch("circuit_breaker.CircuitBreaker._maybe_reload_config") as mock_reload:
-            # _maybe_reload_config would catch RuntimeError - simulate that it's a no-op
-            mock_reload.return_value = None
-
-            # Defaults should still be intact
-            assert circuit_breaker.failure_threshold == 5
-            assert circuit_breaker.success_threshold == 2
-            assert circuit_breaker.timeout_seconds == 60
-
     def test_maybe_reload_config_skips_when_pdp_not_configured(self, circuit_breaker):
         """_maybe_reload_config silently skips when PDP raises RuntimeError."""
         mock_get = MagicMock(side_effect=RuntimeError("PolicyClient not configured"))
@@ -604,28 +763,6 @@ class TestPolicyLoading:
             circuit_breaker._maybe_reload_config()
             assert circuit_breaker.failure_threshold == 20
 
-    def test_excluded_domains_additive(self, circuit_breaker):
-        """Policy excluded_domains extends hardcoded set, not replaces."""
-        original_excluded = circuit_breaker._excluded_domains.copy()
-
-        sensor_config = {
-            "addons": {
-                "circuit_breaker": {
-                    "excluded_domains": ["extra1.local", "extra2.local"],
-                }
-            }
-        }
-
-        circuit_breaker._load_config_from_pdp(sensor_config)
-
-        # Original domains still present
-        for domain in original_excluded:
-            assert domain in circuit_breaker._excluded_domains
-
-        # New domains added
-        assert "extra1.local" in circuit_breaker._excluded_domains
-        assert "extra2.local" in circuit_breaker._excluded_domains
-
 
 class TestCacheStaleness:
     """Tests for cache staleness fixes."""
@@ -655,7 +792,7 @@ class TestCacheStaleness:
             json.dump(stale_data, f)
 
         cb = CircuitBreaker()
-        cb.timeout_seconds = 60  # 60s timeout, opened 2h ago → definitely stale
+        cb.timeout_seconds = 60  # 60s timeout, opened 2h ago -> definitely stale
         cb._state = InMemoryCircuitState(state_file=state_file)
         cb._reconcile_stale_circuits()
 
@@ -798,30 +935,18 @@ class TestRequestIdPropagation:
     """Tests for request_id propagation in circuit breaker logging."""
 
     def test_log_event_includes_request_id(self, circuit_breaker, make_flow_with_request_id, tmp_path):
-        """Verify _log_event includes request_id from flow metadata."""
-        from unittest.mock import patch
+        """Verify _log_circuit_event passes request_id from flow metadata to write_event."""
+        flow = make_flow_with_request_id(
+            request_id="req-circuit123",
+            url="http://test.com/api"
+        )
 
-        log_path = tmp_path / "test.jsonl"
+        with patch("circuit_breaker.write_event") as mock_write:
+            circuit_breaker._log_circuit_event("open", "test.com", flow=flow, failure_count=5)
 
-        # Force circuit open
-        circuit_breaker.force_open("test.com")
-
-        with patch("utils.AUDIT_LOG_PATH", log_path):
-            flow = make_flow_with_request_id(
-                request_id="req-circuit123",
-                url="http://test.com/api"
-            )
-
-            circuit_breaker.request(flow)
-
-            # Verify circuit event was logged with request_id
-            if log_path.exists():
-                lines = log_path.read_text().strip().split("\n")
-                for line in lines:
-                    entry = json.loads(line)
-                    if entry.get("event") == "security.circuit":
-                        assert entry.get("request_id") == "req-circuit123"
-                        break
+        mock_write.assert_called_once()
+        call_kwargs = mock_write.call_args
+        assert call_kwargs.kwargs["request_id"] == "req-circuit123"
 
     def test_metadata_preserved_on_circuit_block(self, circuit_breaker, make_flow_with_request_id):
         """Verify request_id is preserved when request is blocked by open circuit."""
@@ -840,20 +965,29 @@ class TestRequestIdPropagation:
         assert flow.response.status_code == 503
         assert flow.metadata.get("blocked_by") == "circuit-breaker"
 
-    def test_response_handler_uses_request_id(self, circuit_breaker, make_flow_with_request_id, make_response, tmp_path):
-        """Verify response handler logs with request_id on failure."""
-        from unittest.mock import patch
+    def test_response_handler_passes_request_id_on_failure(self, circuit_breaker, make_flow_with_request_id, make_response):
+        """Verify response handler propagates request_id when recording failure that opens circuit."""
+        circuit_breaker.failure_threshold = 1
 
-        log_path = tmp_path / "test.jsonl"
+        flow = make_flow_with_request_id(
+            request_id="req-respfail123",
+            url="http://failing.com/api"
+        )
+        flow.response = make_response(status_code=500)
 
-        with patch("utils.AUDIT_LOG_PATH", log_path):
-            flow = make_flow_with_request_id(
-                request_id="req-respfail123",
-                url="http://failing.com/api"
-            )
-            flow.response = make_response(status_code=500)
-
+        with patch("circuit_breaker.write_event") as mock_write:
             circuit_breaker.response(flow)
 
-            # Request ID should still be in metadata
-            assert flow.metadata.get("request_id") == "req-respfail123"
+        # The failure should have opened the circuit and logged an event with request_id
+        mock_write.assert_called_once()
+        call_kwargs = mock_write.call_args
+        assert call_kwargs.kwargs["request_id"] == "req-respfail123"
+
+    def test_log_event_without_flow_has_none_request_id(self, circuit_breaker):
+        """Verify _log_circuit_event passes None for request_id when no flow is provided."""
+        with patch("circuit_breaker.write_event") as mock_write:
+            circuit_breaker._log_circuit_event("reset", "test.com")
+
+        mock_write.assert_called_once()
+        call_kwargs = mock_write.call_args
+        assert call_kwargs.kwargs["request_id"] is None
