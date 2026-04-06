@@ -173,14 +173,18 @@ rm -rf /mnt/rootfs/usr/share/doc/*
 rm -rf /mnt/rootfs/usr/share/man/*
 find /mnt/rootfs/usr/share/locale -maxdepth 1 ! -name "en*" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Unmount any stray mounts left by chroot/systemd post-install hooks
+# Kill any processes still using the rootfs (gpg-agent, dirmngr, etc.)
+fuser -km /mnt/rootfs 2>/dev/null || true
+sleep 1
+
+# Unmount all mounts under rootfs (reverse order)
 umount /mnt/rootfs/dev/pts 2>/dev/null || true
 umount /mnt/rootfs/dev 2>/dev/null || true
 umount /mnt/rootfs/proc 2>/dev/null || true
 umount /mnt/rootfs/sys 2>/dev/null || true
 umount /mnt/rootfs/run 2>/dev/null || true
 
-umount /mnt/rootfs
+umount /mnt/rootfs || { echo "WARN: lazy unmount"; umount -l /mnt/rootfs; }
 echo "--- Rootfs built ---"
 '
 
