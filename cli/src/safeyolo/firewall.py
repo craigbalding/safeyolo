@@ -48,8 +48,8 @@ def setup_feth(agent_index: int) -> dict:
     host_ip = alloc["host_ip"]
 
     # Destroy stale feth interfaces if they exist from a previous run
-    _sudo_run(["ifconfig", feth_vm, "destroy"], check=False)
-    _sudo_run(["ifconfig", feth_host, "destroy"], check=False)
+    _sudo_run(["ifconfig", feth_vm, "destroy"], check=False, capture=True)
+    _sudo_run(["ifconfig", feth_host, "destroy"], check=False, capture=True)
 
     # Create feth pair
     _sudo_run(["ifconfig", feth_vm, "create"])
@@ -115,7 +115,7 @@ def load_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnets: l
 
     _sudo_write_file(ANCHOR_FILE, rules)
     _ensure_anchor_in_pf_conf()
-    _sudo_run(["pfctl", "-a", ANCHOR_NAME, "-f", str(ANCHOR_FILE)])
+    _sudo_run(["pfctl", "-a", ANCHOR_NAME, "-f", str(ANCHOR_FILE)], capture=True)
 
     # Enable pf if not already
     result = _sudo_run(["pfctl", "-s", "info"], capture=True)

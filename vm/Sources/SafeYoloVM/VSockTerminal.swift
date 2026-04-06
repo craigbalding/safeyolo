@@ -83,8 +83,8 @@ class VSockTerminal {
                 switch connectResult {
                 case .success(let connection):
                     result = connection
-                case .failure(let error):
-                    fputs("vsock connect port \(port): \(error.localizedDescription)\n", stderr)
+                case .failure:
+                    break  // Expected during boot — guest vsock-term not ready yet
                 }
                 semaphore.signal()
             }

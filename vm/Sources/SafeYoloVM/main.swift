@@ -166,7 +166,6 @@ do {
             throw VMConfigurationError.invalidConfiguration("posix_spawn feth-bridge: \(String(cString: strerror(rc)))")
         }
         close(hostFD)  // Parent no longer needs it
-        fputs("feth-bridge started (pid=\(pid)) on \(config.feth)\n", stderr)
     }
 
     let vmConfig = try VMConfiguration.build(from: config)
@@ -190,10 +189,8 @@ do {
             // Check VM is still running
             if vm.state != .running { break }
 
-            fputs("Connecting to VM terminal (attempt \(attempt))...\r", stderr)
             if terminal.tryConnect() {
                 connected = true
-                fputs("\u{1B}[2K", stderr)  // Clear the "Connecting..." line
                 break
             }
         }

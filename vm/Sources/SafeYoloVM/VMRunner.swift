@@ -27,13 +27,12 @@ class VMRunner: NSObject {
     private func handleStateChange(_ state: VZVirtualMachine.State) {
         switch state {
         case .stopped:
-            fputs("VM stopped\n", stderr)
             exitClean(code: 0)
         case .error:
-            fputs("VM entered error state\n", stderr)
+            fputs("Error: VM entered error state\n", stderr)
             exitClean(code: 1)
         case .running:
-            fputs("VM running\n", stderr)
+            break
         case .starting:
             break
         case .stopping:
