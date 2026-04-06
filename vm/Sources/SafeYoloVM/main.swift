@@ -172,9 +172,22 @@ do {
     let vmConfig = try VMConfiguration.build(from: config)
     try vmConfig.validate()
 
-    let runner = VMRunner(configuration: vmConfig)
+    let vmQueue = DispatchQueue(label: "com.safeyolo.vm", qos: .userInteractive)
+    let vm = VZVirtualMachine(configuration: vmConfig, queue: vmQueue)
+    let runner = VMRunner(vm: vm, queue: vmQueue)
     runner.installSignalHandlers()
     try runner.start()
+
+    // Wait for guest vsock-term daemon to be ready, then connect
+    // The guest init starts vsock-term which listens on port 1024.
+    // Give the VM a few seconds to boot.
+    let terminal = VSockTerminal(vm: vm, queue: DispatchQueue(label: "com.safeyolo.vsock"))
+
+    DispatchQueue.global().asyncAfter(deadline: .now() + 3.0) {
+        terminal.run()
+        // Terminal session ended — stop VM
+        runner.requestStopFromMain()
+    }
 
     // Run until VM exits
     RunLoop.main.run()

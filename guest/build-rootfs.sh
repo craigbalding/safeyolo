@@ -29,6 +29,7 @@ echo "This runs in Docker (privileged) and takes several minutes on first build.
 
 docker run --rm --privileged --platform linux/arm64/v8 \
     -v "$SCRIPT_DIR/rootfs:/build/rootfs:ro" \
+    -v "$SCRIPT_DIR/vsock-term.c:/build/vsock-term.c:ro" \
     -v "$OUTPUT_DIR:/output" \
     -e MISE_VERSION="$MISE_VERSION" \
     -e MISE_SHA256_ARM64="$MISE_SHA256_ARM64" \
@@ -158,6 +159,12 @@ sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" /mnt/rootfs/etc/s
 sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" /mnt/rootfs/etc/ssh/sshd_config
 # Generate host keys
 chroot /mnt/rootfs ssh-keygen -A >/dev/null 2>&1
+
+# Build and install vsock-term (terminal daemon with PTY + resize)
+echo "--- Building vsock-term ---"
+chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends libutil-linux-dev >/dev/null 2>&1 || true
+cc -static -O2 -o /mnt/rootfs/usr/local/bin/vsock-term /build/vsock-term.c -lutil
+chmod +x /mnt/rootfs/usr/local/bin/vsock-term
 
 # Install guest init script
 echo "--- Installing guest init ---"

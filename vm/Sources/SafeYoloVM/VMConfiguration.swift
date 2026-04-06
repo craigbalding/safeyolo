@@ -64,6 +64,9 @@ struct VMConfiguration {
             }
         }
 
+        // vsock (for terminal and host-guest IPC)
+        vmConfig.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+
         // Entropy
         vmConfig.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 

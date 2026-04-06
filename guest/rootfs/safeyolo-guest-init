@@ -168,22 +168,25 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 9. Run agent command or drop to login shell, then shut down cleanly
+# 9. Run agent via vsock terminal (proper PTY with resize support)
 # --------------------------------------------------------------------------
-# Build yolo mode args if enabled
+# Build the command to run inside the PTY
 YOLO_ARGS=""
 if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
     YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"
-    echo "[yolo mode: ${YOLO_ARGS}]"
 fi
 
-# Run as a child process (not exec) so PID 1 survives and can poweroff.
 if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
-    echo "Starting ${SAFEYOLO_AGENT_CMD}..."
-    su agent -lc "cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}" || true
+    AGENT_SHELL="cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}"
 else
-    su agent -lc "cd /workspace && bash -l" || true
+    AGENT_SHELL="cd /workspace && exec bash -l"
 fi
+
+# vsock-term listens on vsock, allocates a PTY, and runs the command
+# when the host connects. This gives the host a proper terminal with
+# resize support.
+echo "Waiting for terminal connection..."
+/usr/local/bin/vsock-term su agent -lc "$AGENT_SHELL" || true
 
 # Agent exited — shut down the VM cleanly
 echo "Agent exited, shutting down VM..."

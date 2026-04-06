@@ -4,13 +4,14 @@ import Virtualization
 /// Manages the lifecycle of a VZVirtualMachine: start, state observation, signal handling, shutdown.
 class VMRunner: NSObject {
 
-    private let vm: VZVirtualMachine
-    private let queue = DispatchQueue(label: "com.safeyolo.vm", qos: .userInteractive)
+    let vm: VZVirtualMachine
+    private let queue: DispatchQueue
     private var observation: NSKeyValueObservation?
     private var hasExited = false
 
-    init(configuration: VZVirtualMachineConfiguration) {
-        self.vm = VZVirtualMachine(configuration: configuration, queue: queue)
+    init(vm: VZVirtualMachine, queue: DispatchQueue? = nil) {
+        self.vm = vm
+        self.queue = queue ?? DispatchQueue(label: "com.safeyolo.vm.runner", qos: .userInteractive)
         super.init()
         observeState()
     }
@@ -50,7 +51,7 @@ class VMRunner: NSObject {
         let semaphore = DispatchSemaphore(value: 0)
         var startError: Error?
 
-        enableRawMode()
+        // Terminal raw mode is handled by VSockTerminal, not here.
 
         queue.async { [self] in
             vm.start { (result: Result<Void, Error>) in
@@ -69,6 +70,11 @@ class VMRunner: NSObject {
     }
 
     // MARK: - Shutdown
+
+    /// Called from outside (e.g., when vsock terminal session ends).
+    func requestStopFromMain() {
+        requestStop()
+    }
 
     /// Graceful shutdown: sends ACPI power button request to guest.
     private func requestStop() {
