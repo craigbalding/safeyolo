@@ -44,21 +44,17 @@ class VMRunner: NSObject {
         }
     }
 
-    // MARK: - Start
+    // MARK: - Start (completion handler API, not async)
 
     func start() throws {
         let semaphore = DispatchSemaphore(value: 0)
         var startError: Error?
 
-        // Put terminal in raw mode for serial console passthrough
         enableRawMode()
 
         queue.async { [self] in
-            vm.start { result in
-                switch result {
-                case .success:
-                    break
-                case .failure(let error):
+            vm.start { (result: Result<Void, Error>) in
+                if case .failure(let error) = result {
                     startError = error
                 }
                 semaphore.signal()
@@ -74,6 +70,7 @@ class VMRunner: NSObject {
 
     // MARK: - Shutdown
 
+    /// Graceful shutdown: sends ACPI power button request to guest.
     private func requestStop() {
         queue.async { [self] in
             guard vm.canRequestStop else {
@@ -99,20 +96,20 @@ class VMRunner: NSObject {
         }
     }
 
+    /// Force stop using completion handler API (not the async variant).
     private func forceStop() {
         queue.async { [self] in
-            if vm.state == .running || vm.state == .starting {
-                Task {
-                    do {
-                        try await vm.stop()
-                    } catch {
-                        fputs("Force stop failed: \(error.localizedDescription)\n", stderr)
-                    }
-                    exitClean(code: 1)
-                }
+            guard vm.state == .running || vm.state == .starting || vm.state == .stopping else {
+                exitClean(code: 1)
                 return
             }
-            exitClean(code: 1)
+            // Use stop(completionHandler:) — the callback API, not the async stop()
+            vm.stop { [self] (error: Error?) in
+                if let error = error {
+                    fputs("Force stop failed: \(error.localizedDescription)\n", stderr)
+                }
+                exitClean(code: 1)
+            }
         }
     }
 
@@ -126,7 +123,6 @@ class VMRunner: NSObject {
     // MARK: - Signal handling
 
     func installSignalHandlers() {
-        // Ignore default signal handling so DispatchSource can catch them
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
 
@@ -144,7 +140,6 @@ class VMRunner: NSObject {
         }
         sigtermSource.resume()
 
-        // Keep sources alive
         _signalSources = [sigintSource, sigtermSource]
     }
 
@@ -161,11 +156,8 @@ class VMRunner: NSObject {
         tcgetattr(STDIN_FILENO, &raw)
         originalTermios = raw
 
-        // Disable canonical mode, echo, and signal generation
         raw.c_lflag &= ~tcflag_t(ICANON | ECHO | ISIG)
-        // Disable input processing
         raw.c_iflag &= ~tcflag_t(IXON | ICRNL)
-        // Read byte-at-a-time, no timeout
         withUnsafeMutablePointer(to: &raw.c_cc) { ptr in
             let cc = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: cc_t.self)
             cc[Int(VMIN)] = 1
