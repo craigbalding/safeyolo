@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Virtualization
 
@@ -150,23 +151,17 @@ do {
         // Ensure the host fd is NOT close-on-exec
         _ = fcntl(hostFD, F_SETFD, 0)
 
-        // Use fork/exec instead of Foundation's Process — Process may close
-        // extra fds. sudo also closes fds >= 3 by default, so pass -C to
-        // preserve our socket fd.
+        // Use posix_spawn to launch sudo feth-bridge.
+        // sudo closes fds >= 3 by default; -C <N> closes only fds >= N.
         let closeFrom = String(hostFD + 1)
-        let pid = fork()
-        if pid == 0 {
-            // Child process — exec sudo with -C to preserve fds
-            execl("/usr/bin/sudo", "sudo",
-                  "-C", closeFrom,
-                  bridgePath,
-                  String(hostFD),
-                  config.feth,
-                  nil)
-            _exit(1)
-        }
-        guard pid > 0 else {
-            throw VMConfigurationError.invalidConfiguration("fork failed: \(String(cString: strerror(errno)))")
+        let argv: [String] = ["sudo", "-C", closeFrom, bridgePath, String(hostFD), config.feth]
+        let cArgs = argv.map { strdup($0) } + [nil]
+        defer { cArgs.forEach { if let p = $0 { free(p) } } }
+
+        var pid: pid_t = 0
+        let spawnResult = posix_spawn(&pid, "/usr/bin/sudo", nil, nil, cArgs, environ)
+        guard spawnResult == 0 else {
+            throw VMConfigurationError.invalidConfiguration("posix_spawn failed: \(String(cString: strerror(spawnResult)))")
         }
         fputs("feth-bridge started (pid=\(pid)) on \(config.feth)\n", stderr)
 
