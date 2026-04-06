@@ -9,7 +9,6 @@ class VSockTerminal {
     private let queue: DispatchQueue
     private var dataFD: Int32 = -1
     private var ctrlFD: Int32 = -1
-    // Must retain connection objects or the fds get closed on dealloc
     private var dataConnection: VZVirtioSocketConnection?
     private var ctrlConnection: VZVirtioSocketConnection?
     private var originalTermios: termios?
@@ -23,48 +22,35 @@ class VSockTerminal {
         self.queue = queue
     }
 
-    /// Try to connect to both vsock ports. Returns true if data channel connected.
     func tryConnect() -> Bool {
         guard let dataConn = connectToPort(VSockTerminal.DATA_PORT) else {
             return false
         }
-        dataConnection = dataConn  // Retain to keep fd alive
+        dataConnection = dataConn
         dataFD = dataConn.fileDescriptor
 
-        // Control channel is non-fatal
         if let ctrlConn = connectToPort(VSockTerminal.CTRL_PORT) {
-            ctrlConnection = ctrlConn  // Retain to keep fd alive
+            ctrlConnection = ctrlConn
             ctrlFD = ctrlConn.fileDescriptor
         }
         return true
     }
 
-    /// Bridge terminal I/O. Call after tryConnect() succeeds.
-    /// Blocks until the session ends.
+    /// Bridge terminal I/O. Blocks until the session ends.
     func run() {
-        guard dataFD >= 0 else {
-            fputs("vsock: not connected\n", stderr)
-            return
-        }
+        guard dataFD >= 0 else { return }
 
-        // Clear screen and move cursor home (boot log output pushed cursor down)
-        let clearScreen = "\u{1B}[2J\u{1B}[H"
-        write(STDOUT_FILENO, clearScreen, clearScreen.utf8.count)
+        // Clear screen before handing over to the TUI
+        let clear = "\u{1B}[2J\u{1B}[H"
+        _ = writeAll(STDOUT_FILENO, Array(clear.utf8))
 
-        // Put host terminal in raw mode
         enableRawMode()
-
-        // Send initial window size
         sendWindowSize()
-
-        // Install SIGWINCH handler for resize
         installResizeHandler()
 
-        // Bridge stdin ↔ vsock data, bidirectional
         bridgeRunning = true
         bridge()
 
-        // Restore terminal
         restoreTerminal()
     }
 
@@ -80,11 +66,8 @@ class VSockTerminal {
                 return
             }
             device.connect(toPort: port) { connectResult in
-                switch connectResult {
-                case .success(let connection):
+                if case .success(let connection) = connectResult {
                     result = connection
-                case .failure:
-                    break  // Expected during boot
                 }
                 semaphore.signal()
             }
@@ -101,11 +84,9 @@ class VSockTerminal {
         let stdoutFD = FileHandle.standardOutput.fileDescriptor
         let dfd = dataFD
 
-        // Make fds non-blocking
-        fcntl(dfd, F_SETFL, O_NONBLOCK)
-        fcntl(stdinFD, F_SETFL, O_NONBLOCK)
-
-        var buf = [UInt8](repeating: 0, count: 4096)
+        // Keep fds BLOCKING — prevents partial writes that corrupt ANSI sequences.
+        // Use select() to check readability, then blocking read/write.
+        var buf = [UInt8](repeating: 0, count: 16384)
 
         while bridgeRunning {
             var readSet = fd_set()
@@ -121,12 +102,13 @@ class VSockTerminal {
                 if errno == EINTR { continue }
                 break
             }
+            if ready == 0 { continue }
 
             // stdin → vsock (host typing)
             if fdIsSet(stdinFD, set: &readSet) {
                 let n = read(stdinFD, &buf, buf.count)
                 if n > 0 {
-                    _ = write(dfd, buf, n)
+                    if !writeAll(dfd, Array(buf[0..<n])) { break }
                 } else if n == 0 {
                     break
                 }
@@ -136,17 +118,35 @@ class VSockTerminal {
             if fdIsSet(dfd, set: &readSet) {
                 let n = read(dfd, &buf, buf.count)
                 if n > 0 {
-                    _ = write(stdoutFD, buf, n)
+                    if !writeAll(stdoutFD, Array(buf[0..<n])) { break }
                 } else if n == 0 {
-                    break
-                } else if errno != EAGAIN {
                     break
                 }
             }
         }
+    }
 
-        // Restore stdin to blocking
-        fcntl(stdinFD, F_SETFL, 0)
+    /// Write all bytes, retrying on partial writes and EINTR.
+    @discardableResult
+    private func writeAll(_ fd: Int32, _ data: [UInt8]) -> Bool {
+        var offset = 0
+        while offset < data.count {
+            let n = data[offset...].withUnsafeBufferPointer { buf in
+                write(fd, buf.baseAddress!, buf.count)
+            }
+            if n > 0 {
+                offset += n
+            } else if n < 0 {
+                if errno == EINTR { continue }
+                if errno == EAGAIN {
+                    // Brief wait for fd to become writable
+                    usleep(1000)
+                    continue
+                }
+                return false
+            }
+        }
+        return true
     }
 
     func stop() {
@@ -181,17 +181,20 @@ class VSockTerminal {
 
     private var _resizeSource: Any?
 
-    // MARK: - Raw terminal mode
+    // MARK: - Full raw terminal mode (cfmakeraw equivalent)
 
     private func enableRawMode() {
         guard isatty(STDIN_FILENO) != 0 else { return }
         var raw = termios()
         tcgetattr(STDIN_FILENO, &raw)
         originalTermios = raw
-        // Disable ICANON (line buffering), ECHO, and ISIG (so Ctrl-C passes
-        // through to the guest as 0x03 instead of generating host SIGINT)
-        raw.c_lflag &= ~tcflag_t(ICANON | ECHO | ISIG)
-        raw.c_iflag &= ~tcflag_t(IXON | ICRNL)
+
+        // cfmakeraw equivalent — full raw mode like SSH/tmux
+        raw.c_iflag &= ~tcflag_t(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON)
+        raw.c_oflag &= ~tcflag_t(OPOST)
+        raw.c_lflag &= ~tcflag_t(ECHO | ECHONL | ICANON | ISIG | IEXTEN)
+        raw.c_cflag &= ~tcflag_t(CSIZE | PARENB)
+        raw.c_cflag |= tcflag_t(CS8)
         withUnsafeMutablePointer(to: &raw.c_cc) { ptr in
             let cc = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: cc_t.self)
             cc[Int(VMIN)] = 1
@@ -206,30 +209,29 @@ class VSockTerminal {
         originalTermios = nil
     }
 
-    // MARK: - fd_set helpers (Swift doesn't expose these nicely)
+    // MARK: - fd_set helpers
 
     private func fdZero(_ set: inout fd_set) {
         withUnsafeMutablePointer(to: &set) { ptr in
-            let raw = UnsafeMutableRawPointer(ptr)
-            memset(raw, 0, MemoryLayout<fd_set>.size)
+            memset(UnsafeMutableRawPointer(ptr), 0, MemoryLayout<fd_set>.size)
         }
     }
 
     private func fdSet(_ fd: Int32, set: inout fd_set) {
-        let intOffset = Int(fd) / (MemoryLayout<Int32>.size * 8)
-        let bitOffset = Int(fd) % (MemoryLayout<Int32>.size * 8)
+        let intOff = Int(fd) / (MemoryLayout<Int32>.size * 8)
+        let bitOff = Int(fd) % (MemoryLayout<Int32>.size * 8)
         withUnsafeMutablePointer(to: &set) { ptr in
             let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: Int32.self)
-            raw[intOffset] |= Int32(1 << bitOffset)
+            raw[intOff] |= Int32(1 << bitOff)
         }
     }
 
     private func fdIsSet(_ fd: Int32, set: inout fd_set) -> Bool {
-        let intOffset = Int(fd) / (MemoryLayout<Int32>.size * 8)
-        let bitOffset = Int(fd) % (MemoryLayout<Int32>.size * 8)
+        let intOff = Int(fd) / (MemoryLayout<Int32>.size * 8)
+        let bitOff = Int(fd) % (MemoryLayout<Int32>.size * 8)
         return withUnsafeMutablePointer(to: &set) { ptr in
             let raw = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: Int32.self)
-            return (raw[intOffset] & Int32(1 << bitOffset)) != 0
+            return (raw[intOff] & Int32(1 << bitOff)) != 0
         }
     }
 }

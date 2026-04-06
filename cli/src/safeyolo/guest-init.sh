@@ -148,9 +148,13 @@ if [ ! -x "$VSOCK_TERM" ]; then
 fi
 
 if [ -x "$VSOCK_TERM" ]; then
+    # Exec the agent binary directly — no shell wrapper.
+    # vsock-term sets up the PTY, drops privileges, sets PATH with mise shims,
+    # and execs the command. A shell wrapper (bash -lc) would break the TTY
+    # connection, causing process.stdout.isTTY to be undefined in Node.js.
     if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
-            bash -lc "mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}" || true
+            ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-} || true
     else
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
             bash -l || true

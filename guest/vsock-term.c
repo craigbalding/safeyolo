@@ -4,10 +4,7 @@
  * Listens on vsock port 1024 (data) and 1025 (control/resize).
  * On connection: allocates a PTY via openpty, forks, sets up the child
  * session and controlling terminal, drops to the agent user, and execs
- * the command. Bridges I/O between vsock and PTY master.
- *
- * Follows the pattern from Shuru's guest binary: openpty + fork + setsid
- * + TIOCSCTTY + dup2, with no su/login shell in the path.
+ * the command directly (no shell wrapper).
  *
  * Resize messages on port 1025: 4 bytes (rows_hi, rows_lo, cols_hi, cols_lo).
  *
@@ -45,6 +42,43 @@ static void sigchld_handler(int sig) {
     child_exited = 1;
 }
 
+/* Write all bytes, retrying on partial writes and EAGAIN/EINTR. */
+static ssize_t write_all(int fd, const void *buf, size_t len) {
+    const char *p = buf;
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t n = write(fd, p, remaining);
+        if (n > 0) {
+            p += n;
+            remaining -= n;
+        } else if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN) {
+                /* fd is non-blocking and buffer is full — poll until writable */
+                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                poll(&pfd, 1, 100);
+                continue;
+            }
+            return -1;
+        }
+    }
+    return len;
+}
+
+/* Read exactly n bytes, retrying on partial reads. */
+static ssize_t read_exact(int fd, void *buf, size_t len, int timeout_ms) {
+    char *p = buf;
+    size_t got = 0;
+    while (got < len) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        if (poll(&pfd, 1, timeout_ms) <= 0) break;
+        ssize_t n = read(fd, p + got, len - got);
+        if (n <= 0) break;
+        got += n;
+    }
+    return got;
+}
+
 static int vsock_listen(unsigned int port) {
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (fd < 0) { perror("vsock socket"); return -1; }
@@ -56,14 +90,10 @@ static int vsock_listen(unsigned int port) {
     addr.svm_cid = VMADDR_CID_ANY;
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("vsock bind");
-        close(fd);
-        return -1;
+        perror("vsock bind"); close(fd); return -1;
     }
     if (listen(fd, 1) < 0) {
-        perror("vsock listen");
-        close(fd);
-        return -1;
+        perror("vsock listen"); close(fd); return -1;
     }
     return fd;
 }
@@ -75,13 +105,12 @@ static int vsock_accept(int listen_fd) {
 }
 
 int main(int argc, char *argv[]) {
-    uid_t uid = 1000;  /* agent user */
+    uid_t uid = 1000;
     gid_t gid = 1000;
     const char *home = "/home/agent";
     const char *cwd = "/workspace";
     int cmd_start = 1;
 
-    /* Parse options */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--uid") == 0 && i + 1 < argc) {
             uid = atoi(argv[++i]); cmd_start = i + 1;
@@ -98,20 +127,17 @@ int main(int argc, char *argv[]) {
     }
 
     if (cmd_start >= argc) {
-        fprintf(stderr, "Usage: %s [--uid N] [--gid N] [--home DIR] [--cwd DIR] <command> [args...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--uid N] [--gid N] [--home DIR] [--cwd DIR] <cmd> [args...]\n", argv[0]);
         return 1;
     }
 
     signal(SIGCHLD, sigchld_handler);
 
-    /* Listen on data and control ports */
     int data_listen = vsock_listen(VSOCK_DATA_PORT);
     int ctrl_listen = vsock_listen(VSOCK_CTRL_PORT);
     if (data_listen < 0) return 1;
 
-    fprintf(stderr, "vsock-term: listening on ports %d/%d\n", VSOCK_DATA_PORT, VSOCK_CTRL_PORT);
-
-    /* Wait for data connection from host */
+    /* Wait for data connection */
     int data_fd = vsock_accept(data_listen);
     if (data_fd < 0) { perror("accept data"); return 1; }
     close(data_listen);
@@ -125,37 +151,25 @@ int main(int argc, char *argv[]) {
         if (poll(&pfd, 1, 10000) > 0) {
             ctrl_fd = vsock_accept(ctrl_listen);
             if (ctrl_fd >= 0) {
-                close(ctrl_listen);
-                ctrl_listen = -1;
-
-                /* Read initial window size */
+                close(ctrl_listen); ctrl_listen = -1;
                 unsigned char rbuf[4];
-                struct pollfd rpfd = { .fd = ctrl_fd, .events = POLLIN };
-                if (poll(&rpfd, 1, 5000) > 0 && read(ctrl_fd, rbuf, 4) == 4) {
+                if (read_exact(ctrl_fd, rbuf, 4, 5000) == 4) {
                     ws.ws_row = (rbuf[0] << 8) | rbuf[1];
                     ws.ws_col = (rbuf[2] << 8) | rbuf[3];
                 }
-                fcntl(ctrl_fd, F_SETFL, O_NONBLOCK);
             }
         }
     }
-    fprintf(stderr, "vsock-term: connected (%dx%d)\n", ws.ws_col, ws.ws_row);
 
-    /* Allocate PTY with correct initial size (following Shuru pattern) */
+    /* Allocate PTY with initial size */
     int master_fd, slave_fd;
     if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) < 0) {
-        perror("openpty");
-        close(data_fd);
-        return 1;
+        perror("openpty"); close(data_fd); return 1;
     }
 
     child_pid = fork();
     if (child_pid < 0) {
-        perror("fork");
-        close(master_fd);
-        close(slave_fd);
-        close(data_fd);
-        return 1;
+        perror("fork"); close(master_fd); close(slave_fd); close(data_fd); return 1;
     }
 
     if (child_pid == 0) {
@@ -165,31 +179,30 @@ int main(int argc, char *argv[]) {
         if (ctrl_fd >= 0) close(ctrl_fd);
         if (ctrl_listen >= 0) close(ctrl_listen);
 
-        /* Create new session and set controlling terminal */
+        /* New session + controlling terminal (Shuru pattern) */
         setsid();
         ioctl(slave_fd, TIOCSCTTY, 0);
-
-        /* Wire PTY slave to stdin/stdout/stderr */
         dup2(slave_fd, 0);
         dup2(slave_fd, 1);
         dup2(slave_fd, 2);
         if (slave_fd > 2) close(slave_fd);
-
-        /* Close any other inherited fds */
         for (int fd = 3; fd < 1024; fd++) close(fd);
 
-        /* Set environment */
+        /* Environment */
         setenv("TERM", "xterm-256color", 1);
         setenv("HOME", home, 1);
         setenv("USER", "agent", 1);
         setenv("SHELL", "/bin/bash", 1);
         setenv("LANG", "C.UTF-8", 1);
+        /* mise paths — so the child can find installed tools */
+        setenv("MISE_DATA_DIR", "/opt/mise", 1);
+        setenv("MISE_CONFIG_DIR", "/opt/mise", 1);
+        setenv("MISE_CACHE_DIR", "/opt/mise/cache", 1);
+        setenv("PATH", "/opt/mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
 
-        /* Source the mise/proxy env files if they exist */
-        /* (These are normally sourced by the guest init, but we need them
-         * in this process's environment for the child to inherit) */
+        /* Source proxy/agent env if present */
+        /* These were written to /etc/environment by the guest init */
 
-        /* Change to working directory */
         chdir(cwd);
 
         /* Drop privileges */
@@ -197,7 +210,7 @@ int main(int argc, char *argv[]) {
         initgroups("agent", gid);
         setuid(uid);
 
-        /* Exec the command */
+        /* Exec the command directly — no shell wrapper */
         execvp(argv[cmd_start], &argv[cmd_start]);
         perror("vsock-term: exec failed");
         _exit(127);
@@ -206,60 +219,67 @@ int main(int argc, char *argv[]) {
     /* === PARENT === */
     close(slave_fd);
 
-    /* Bridge: vsock data <-> PTY master */
-    fcntl(master_fd, F_SETFL, O_NONBLOCK);
-    fcntl(data_fd, F_SETFL, O_NONBLOCK);
+    /* Keep fds BLOCKING for the bridge — prevents partial writes.
+     * Use poll() to check readability before read(). */
+    /* master_fd and data_fd stay blocking */
 
-    char buf[4096];
-    struct pollfd fds[3];
-    int nfds = ctrl_fd >= 0 ? 3 : 2;
+    char buf[16384];  /* Larger buffer for TUI bursts */
 
+    /* Bridge loop: vsock data ↔ PTY master */
     while (!child_exited) {
-        fds[0].fd = data_fd;
-        fds[0].events = POLLIN;
-        fds[1].fd = master_fd;
-        fds[1].events = POLLIN;
+        struct pollfd fds[3];
+        int nfds = 2;
+        fds[0].fd = data_fd;   fds[0].events = POLLIN;
+        fds[1].fd = master_fd; fds[1].events = POLLIN;
         if (ctrl_fd >= 0) {
-            fds[2].fd = ctrl_fd;
-            fds[2].events = POLLIN;
+            fds[2].fd = ctrl_fd; fds[2].events = POLLIN;
+            nfds = 3;
         }
 
-        int ret = poll(fds, nfds, 500);
+        int ret = poll(fds, nfds, 200);
         if (ret < 0) {
             if (errno == EINTR) continue;
             break;
         }
 
-        /* vsock data → PTY (host typing) */
+        /* vsock → PTY (host typing) */
         if (fds[0].revents & POLLIN) {
             ssize_t n = read(data_fd, buf, sizeof(buf));
-            if (n > 0) write(master_fd, buf, n);
+            if (n > 0) write_all(master_fd, buf, n);
             else if (n == 0) break;
         }
 
-        /* PTY → vsock data (command output) */
+        /* PTY → vsock (guest output) */
         if (fds[1].revents & POLLIN) {
             ssize_t n = read(master_fd, buf, sizeof(buf));
-            if (n > 0) write(data_fd, buf, n);
+            if (n > 0) write_all(data_fd, buf, n);
             else if (n == 0) break;
         }
 
         /* Resize from control channel */
-        if (ctrl_fd >= 0 && nfds > 2 && (fds[2].revents & POLLIN)) {
+        if (nfds > 2 && (fds[2].revents & POLLIN)) {
             unsigned char rbuf[4];
-            ssize_t n = read(ctrl_fd, rbuf, 4);
-            if (n == 4) {
-                struct winsize nws;
-                nws.ws_row = (rbuf[0] << 8) | rbuf[1];
-                nws.ws_col = (rbuf[2] << 8) | rbuf[3];
-                nws.ws_xpixel = 0;
-                nws.ws_ypixel = 0;
+            if (read_exact(ctrl_fd, rbuf, 4, 100) == 4) {
+                struct winsize nws = {
+                    .ws_row = (rbuf[0] << 8) | rbuf[1],
+                    .ws_col = (rbuf[2] << 8) | rbuf[3],
+                };
                 ioctl(master_fd, TIOCSWINSZ, &nws);
                 kill(child_pid, SIGWINCH);
             }
         }
 
-        if ((fds[0].revents | fds[1].revents) & (POLLERR | POLLHUP)) break;
+        if ((fds[0].revents | fds[1].revents) & POLLERR) break;
+        /* Don't break on POLLHUP from PTY — drain remaining data first */
+    }
+
+    /* Drain remaining PTY output after child exits */
+    for (;;) {
+        struct pollfd pfd = { .fd = master_fd, .events = POLLIN };
+        if (poll(&pfd, 1, 100) <= 0) break;
+        ssize_t n = read(master_fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        write_all(data_fd, buf, n);
     }
 
     int status = 0;
@@ -270,6 +290,5 @@ int main(int argc, char *argv[]) {
     close(data_fd);
     if (ctrl_fd >= 0) close(ctrl_fd);
 
-    fprintf(stderr, "vsock-term: exit %d\n", exit_code);
     return exit_code;
 }
