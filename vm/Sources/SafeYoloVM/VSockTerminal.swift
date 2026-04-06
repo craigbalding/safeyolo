@@ -63,11 +63,12 @@ class VSockTerminal {
                 semaphore.signal()
                 return
             }
-            device.connect(toPort: port) { connection, error in
-                if let error = error {
-                    fputs("vsock connect port \(port): \(error.localizedDescription)\n", stderr)
-                } else {
+            device.connect(toPort: port) { connectResult in
+                switch connectResult {
+                case .success(let connection):
                     result = connection
+                case .failure(let error):
+                    fputs("vsock connect port \(port): \(error.localizedDescription)\n", stderr)
                 }
                 semaphore.signal()
             }
