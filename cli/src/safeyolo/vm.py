@@ -341,9 +341,11 @@ def start_vm(
 
 
 def stop_vm(name: str) -> None:
-    """Stop a running VM by sending SIGTERM to safeyolo-vm."""
+    """Stop a running VM, its feth-bridge, and clean up network state."""
     pid_path = get_agent_pid_path(name)
     if not pid_path.exists():
+        _cleanup_feth_bridge(name)
+        _update_agent_map(name, remove=True)
         return
 
     pid = int(pid_path.read_text().strip())
@@ -352,6 +354,7 @@ def stop_vm(name: str) -> None:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pid_path.unlink(missing_ok=True)
+        _cleanup_feth_bridge(name)
         _update_agent_map(name, remove=True)
         return
 
@@ -369,7 +372,62 @@ def stop_vm(name: str) -> None:
             pass
 
     pid_path.unlink(missing_ok=True)
+    _cleanup_feth_bridge(name)
     _update_agent_map(name, remove=True)
+
+
+def _cleanup_feth_bridge(name: str) -> None:
+    """Kill any stale feth-bridge processes and tear down feth interfaces."""
+    # Kill feth-bridge processes associated with this agent's feth interface
+    agents_dir = get_agents_dir()
+    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
+    agent_index = existing.index(name) if name in existing else -1
+
+    # Kill any feth-bridge process on this agent's feth interface
+    if agent_index >= 0:
+        feth_vm = f"feth{agent_index * 2}"
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", f"feth-bridge.*{feth_vm}"],
+                capture_output=True, text=True,
+            )
+            for pid_str in result.stdout.strip().splitlines():
+                try:
+                    os.kill(int(pid_str), signal.SIGTERM)
+                except (ProcessLookupError, ValueError):
+                    pass
+        except subprocess.SubprocessError:
+            pass
+
+        # Tear down feth interfaces
+        try:
+            from .firewall import teardown_feth
+            teardown_feth(agent_index)
+        except Exception:
+            pass
+
+    # Also kill any orphaned feth-bridge processes
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "feth-bridge"],
+            capture_output=True, text=True,
+        )
+        for pid_str in result.stdout.strip().splitlines():
+            try:
+                pid = int(pid_str)
+                # Check if the parent safeyolo-vm is still alive
+                ppid_result = subprocess.run(
+                    ["ps", "-o", "ppid=", "-p", str(pid)],
+                    capture_output=True, text=True,
+                )
+                ppid = int(ppid_result.stdout.strip()) if ppid_result.stdout.strip() else 0
+                if ppid <= 1:  # Orphaned (parent is init/launchd)
+                    os.kill(pid, signal.SIGTERM)
+                    log.info("Killed orphaned feth-bridge (pid=%d)", pid)
+            except (ProcessLookupError, ValueError):
+                pass
+    except subprocess.SubprocessError:
+        pass
 
 
 def is_vm_running(name: str) -> bool:

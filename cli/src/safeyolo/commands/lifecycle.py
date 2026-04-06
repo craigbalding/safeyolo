@@ -173,6 +173,22 @@ def stop() -> None:
                     console.print(f"  Stopping agent '{name}'...")
                     stop_vm(name)
 
+    # Kill any orphaned feth-bridge processes
+    import subprocess as _sp
+    try:
+        result = _sp.run(["pkill", "-f", "feth-bridge"], capture_output=True)
+    except Exception:
+        pass
+
+    # Destroy all safeyolo feth interfaces
+    try:
+        result = _sp.run(["ifconfig", "-a"], capture_output=True, text=True)
+        import re
+        for feth in re.findall(r"^(feth\d+):", result.stdout, re.MULTILINE):
+            _sp.run(["sudo", "ifconfig", feth, "destroy"], capture_output=True)
+    except Exception:
+        pass
+
     # Unload pf rules
     try:
         from ..firewall import unload_rules
