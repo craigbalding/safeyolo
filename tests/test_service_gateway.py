@@ -349,7 +349,7 @@ class TestCredentialInjection:
         assert "AGENT_MISMATCH" in body["reason_codes"]
         assert body["type"] == "agent_mismatch"
         assert body["action"] == "self_correct"
-        assert "reflection" in body
+        assert "other-agent" in body["reflection"]
 
     def test_unknown_host_passes_through(self, make_flow, configured_gateway):
         """sgw_ token sent to unmapped host is not recognized — passes through as non-gateway traffic."""
@@ -386,7 +386,7 @@ class TestCredentialInjection:
         assert "INVALID_TOKEN" in body["reason_codes"]
         assert body["type"] == "invalid_token"
         assert body["action"] == "self_correct"
-        assert "reflection" in body
+        assert "not recognized" in body["reflection"]
 
     def test_route_not_in_capability_denied(self, make_flow, configured_gateway):
         """POST to a path not in the reader capability is denied."""
@@ -409,7 +409,7 @@ class TestCredentialInjection:
         assert "ROUTE_DENIED" in body["reason_codes"]
         assert body["type"] == "route_denied"
         assert body["action"] == "self_correct"
-        assert "reflection" in body
+        assert "reader" in body["reflection"]
 
     def test_capability_not_found_denied(self, make_flow, gateway, registry, vault_obj):
         """Token bound to nonexistent capability is denied."""
@@ -438,7 +438,75 @@ class TestCredentialInjection:
         assert "CAPABILITY_NOT_FOUND" in body["reason_codes"]
         assert body["type"] == "capability_not_found"
         assert body["action"] == "self_correct"
-        assert "reflection" in body
+        assert "nonexistent" in body["reflection"]
+        assert "minifuse" in body["reflection"]
+
+    def test_host_mismatch_denied(self, make_flow, configured_gateway):
+        """G5: Token bound to service A used against host mapped to service B is denied."""
+        gw, env, registry, vault_obj = configured_gateway
+        # Token is for minifuse, but we send it to gmail.googleapis.com
+        minifuse_token = env["test-agent"]["minifuse"]
+        flow = make_flow(
+            url="https://gmail.googleapis.com/gmail/v1/users/me/messages",
+            headers={"authorization": f"Bearer {minifuse_token}"},
+        )
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                gw.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 403
+        body = json.loads(flow.response.content)
+        assert "HOST_MISMATCH" in body["reason_codes"]
+        assert body["type"] == "host_mismatch"
+        assert body["action"] == "self_correct"
+
+    def test_vault_unavailable_returns_503(self, make_flow, configured_gateway):
+        """G3: When vault is unavailable, gateway returns 503 not a silent pass-through."""
+        gw, env, registry, vault_obj = configured_gateway
+        token = env["test-agent"]["minifuse"]
+        flow = make_flow(
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
+        )
+        flow.metadata["agent"] = "test-agent"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=None):
+                    gw.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 503
+        body = json.loads(flow.response.content)
+        assert "VAULT_UNAVAILABLE" in body["reason_codes"]
+        assert "vault" in body["reflection"].lower()
+
+    def test_credential_not_found_returns_503(self, make_flow, configured_gateway):
+        """G4: When credential is not in vault, gateway returns 503."""
+        gw, env, registry, vault_obj = configured_gateway
+        token = env["test-agent"]["minifuse"]
+        flow = make_flow(
+            url="https://api.minifuse.io/v1/feeds",
+            headers={"x-api-key": token},
+        )
+        flow.metadata["agent"] = "test-agent"
+
+        empty_vault = MagicMock()
+        empty_vault.get.return_value = None
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=empty_vault):
+                    gw.request(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 503
+        body = json.loads(flow.response.content)
+        assert "CREDENTIAL_NOT_FOUND" in body["reason_codes"]
+        assert "safeyolo agent authorize" in body["reflection"]
 
 
 # --- Risky Route PDP Integration Tests ---
@@ -600,7 +668,130 @@ risky_routes:
         assert "GATEWAY_RISKY_ROUTE" in body["reason_codes"]
         assert body["type"] == "gateway_risky_route"
         assert body["action"] == "wait_for_approval"
-        assert "reflection" in body
+        assert body["reflection"] == {"service": "test_risky", "question": "Check signals"}
+
+
+class TestRiskyRouteFailClosed:
+    """Fail-closed tests: risky routes must deny when PDP is unavailable."""
+
+    def test_risky_route_no_pdp_denies(self, make_flow, tmp_path):
+        """B1: When PDP not configured, risky route must NOT allow through — returns non-None to block."""
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir(exist_ok=True)
+        (svc_dir / "test_svc.yaml").write_text("""
+schema_version: 1
+name: test_risky
+auth:
+  type: bearer
+capabilities:
+  full:
+    description: "Full"
+    routes:
+      - methods: ["*"]
+        path: "/api/**"
+risky_routes:
+  - path: "/api/admin/**"
+    methods: [DELETE]
+    tactics: [impact]
+    irreversible: true
+""")
+        registry = init_service_registry(svc_dir)
+
+        vault = MagicMock()
+        vault.get.return_value = VaultCredential(
+            name="test-cred",
+            type="bearer",
+            value="real-token",
+        )
+
+        gw = ServiceGateway()
+        gw._host_map = {"api.test.com": "test_risky"}
+        env = gw.mint_tokens(
+            {"agent-1": {"test_risky": {"capability": "full", "token": "test-cred"}}},
+        )
+        token = env["agent-1"]["test_risky"]
+
+        flow = make_flow(
+            method="DELETE",
+            url="https://api.test.com/api/admin/users",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        flow.metadata["agent"] = "agent-1"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault):
+                    # PDP not configured — risky route must fail closed
+                    with patch("pdp.is_policy_client_configured", return_value=False):
+                        gw.request(flow)
+
+        # Critical: credential must NOT have been injected
+        assert "real-token" not in str(flow.request.headers)
+        assert gw.stats.injected == 0
+
+    def test_risky_route_pdp_exception_denies(self, make_flow, tmp_path):
+        """PDP raising an exception on risky route check fails closed with 503."""
+        svc_dir = tmp_path / "services"
+        svc_dir.mkdir(exist_ok=True)
+        (svc_dir / "test_svc.yaml").write_text("""
+schema_version: 1
+name: test_risky
+auth:
+  type: bearer
+capabilities:
+  full:
+    description: "Full"
+    routes:
+      - methods: ["*"]
+        path: "/api/**"
+risky_routes:
+  - path: "/api/admin/**"
+    methods: [DELETE]
+    tactics: [impact]
+""")
+        registry = init_service_registry(svc_dir)
+
+        vault = MagicMock()
+        vault.get.return_value = VaultCredential(
+            name="test-cred",
+            type="bearer",
+            value="real-token",
+        )
+
+        gw = ServiceGateway()
+        gw._host_map = {"api.test.com": "test_risky"}
+        env = gw.mint_tokens(
+            {"agent-1": {"test_risky": {"capability": "full", "token": "test-cred"}}},
+        )
+        token = env["agent-1"]["test_risky"]
+
+        mock_client = MagicMock()
+        mock_client.evaluate.side_effect = RuntimeError("PDP connection failed")
+        mock_route_decision = MagicMock()
+        from pdp.schemas import Effect
+        mock_route_decision.effect = Effect.ALLOW
+        mock_client.evaluate_gateway_request.return_value = mock_route_decision
+
+        flow = make_flow(
+            method="DELETE",
+            url="https://api.test.com/api/admin/users",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        flow.metadata["agent"] = "agent-1"
+
+        with patch("service_gateway.ctx", _mock_ctx()):
+            with patch("service_gateway.get_service_registry", return_value=registry):
+                with patch("service_gateway.get_vault", return_value=vault):
+                    with patch("pdp.is_policy_client_configured", return_value=True):
+                        with patch("pdp.get_policy_client", return_value=mock_client):
+                            gw.request(flow)
+
+        # Fail closed: must block, credential must not be injected
+        assert flow.response is not None
+        assert flow.response.status_code == 503
+        body = json.loads(flow.response.content)
+        assert "PDP_ERROR" in body["reason_codes"]
+        assert "real-token" not in str(flow.request.headers)
 
 
 class TestPDPRouteCheck:
@@ -778,18 +969,6 @@ class TestTokenMinting:
         binding = gateway._token_map[token]
         assert binding.account == "agent"
 
-    def test_mint_tokens_role_compat(self, gateway):
-        """Legacy role field still works."""
-        env = gateway.mint_tokens(
-            {
-                "agent-1": {
-                    "gmail": {"role": "readonly", "token": "g"},
-                },
-            }
-        )
-        token = env["agent-1"]["gmail"]
-        binding = gateway._token_map[token]
-        assert binding.capability_name == "readonly"
 
 
 # --- Stats Tests ---
@@ -879,33 +1058,6 @@ class TestFullFlow:
         assert flow.metadata["gateway_agent"] == "my-agent"
         assert gw.stats.injected == 1
 
-    def test_unmapped_host_passes_through(self, make_flow, services_dir):
-        """Request to unmapped host is not recognized as gateway traffic."""
-        registry = init_service_registry(services_dir)
-
-        gw = ServiceGateway()
-        # host_map does NOT include unmapped.example.com
-        gw._host_map = {"api.minifuse.io": "minifuse"}
-        env = gw.mint_tokens(
-            {
-                "my-agent": {"minifuse": {"capability": "reader", "token": "minifuse-test"}},
-            }
-        )
-        token = env["my-agent"]["minifuse"]
-
-        flow = make_flow(
-            url="https://unmapped.example.com/v1/data",
-            headers={"x-api-key": token},
-        )
-        flow.metadata["agent"] = "my-agent"
-
-        with patch("service_gateway.ctx", _mock_ctx()):
-            with patch("service_gateway.get_service_registry", return_value=registry):
-                gw.request(flow)
-
-        # Not recognized as gateway request
-        assert flow.response is None
-        assert "gateway_service" not in flow.metadata
 
 
 # --- Grant Management Tests ---
@@ -998,6 +1150,20 @@ class TestGrantManagement:
 
     def test_revoke_nonexistent(self, gateway):
         assert gateway.revoke_grant("grt_nonexistent") is False
+
+    def test_add_grant_invalid_scope_raises(self, gateway):
+        """B7: Invalid scope raises ValueError with descriptive message."""
+        with pytest.raises(ValueError, match="Invalid grant scope 'forever'"):
+            gateway.add_grant("claude", "minifuse", "DELETE", "/v1/feeds/1", scope="forever")
+
+    def test_add_grant_valid_scopes_accepted(self, gateway):
+        """All three valid scopes are accepted without error."""
+        g1 = gateway.add_grant("claude", "svc", "DELETE", "/a", scope="once")
+        assert g1.scope == "once"
+        g2 = gateway.add_grant("claude", "svc", "DELETE", "/b", scope="session")
+        assert g2.scope == "session"
+        g3 = gateway.add_grant("claude", "svc", "DELETE", "/c", scope="remembered")
+        assert g3.scope == "remembered"
 
     def test_check_grant_found(self, gateway):
         gateway.add_grant("claude", "minifuse", "DELETE", "/v1/feeds/658")
@@ -1531,6 +1697,117 @@ class TestGrantPersistence:
         assert "g3" in gw2._grants
         assert gw2._grants["g3"].service == "slack"
         assert gw2._grants["g3"].method == "POST"
+
+    def test_session_grants_skipped_during_load(self, gateway, mock_pdp, policy_toml):
+        """G8: Session-scope grants are not loaded from policy.toml (they don't survive restart)."""
+        from datetime import timedelta
+
+        import tomlkit
+
+        now = datetime.now(UTC)
+        created = now.isoformat()
+        expires = (now + timedelta(hours=1)).isoformat()
+
+        doc = tomlkit.parse(policy_toml.read_text())
+        grants = tomlkit.aot()
+
+        # Session grant — should be skipped
+        session_grant = tomlkit.table()
+        session_grant.add("grant_id", "g_session")
+        session_grant.add("service", "gmail")
+        session_grant.add("method", "POST")
+        session_grant.add("path", "/messages/send")
+        session_grant.add("scope", "session")
+        session_grant.add("created", created)
+        session_grant.add("expires", expires)
+        grants.append(session_grant)
+
+        # Remembered grant — should be loaded
+        remembered_grant = tomlkit.table()
+        remembered_grant.add("grant_id", "g_remembered")
+        remembered_grant.add("service", "slack")
+        remembered_grant.add("method", "POST")
+        remembered_grant.add("path", "/chat.postMessage")
+        remembered_grant.add("scope", "remembered")
+        remembered_grant.add("created", created)
+        remembered_grant.add("expires", expires)
+        grants.append(remembered_grant)
+
+        doc["agents"]["claude"].add("grants", grants)
+        policy_toml.write_text(tomlkit.dumps(doc))
+
+        gateway._load_grants_from_policy()
+
+        assert "g_session" not in gateway._grants
+        assert "g_remembered" in gateway._grants
+        assert gateway._grants["g_remembered"].service == "slack"
+
+    def test_malformed_grant_does_not_break_other_grants(self, gateway, mock_pdp, policy_toml):
+        """B8: One malformed grant dict does not prevent loading valid grants."""
+        from datetime import timedelta
+
+        import tomlkit
+
+        now = datetime.now(UTC)
+        created = now.isoformat()
+        expires = (now + timedelta(hours=1)).isoformat()
+
+        doc = tomlkit.parse(policy_toml.read_text())
+        grants = tomlkit.aot()
+
+        # Malformed grant — missing required "service" key
+        bad_grant = tomlkit.table()
+        bad_grant.add("grant_id", "g_bad")
+        bad_grant.add("method", "DELETE")
+        bad_grant.add("path", "/v1/feeds/1")
+        bad_grant.add("scope", "remembered")
+        bad_grant.add("created", created)
+        bad_grant.add("expires", expires)
+        grants.append(bad_grant)
+
+        # Valid grant
+        good_grant = tomlkit.table()
+        good_grant.add("grant_id", "g_good")
+        good_grant.add("service", "minifuse")
+        good_grant.add("method", "DELETE")
+        good_grant.add("path", "/v1/feeds/*")
+        good_grant.add("scope", "remembered")
+        good_grant.add("created", created)
+        good_grant.add("expires", expires)
+        grants.append(good_grant)
+
+        doc["agents"]["claude"].add("grants", grants)
+        policy_toml.write_text(tomlkit.dumps(doc))
+
+        gateway._load_grants_from_policy()
+
+        # Bad grant skipped, good grant loaded
+        assert "g_bad" not in gateway._grants
+        assert "g_good" in gateway._grants
+        assert gateway._grants["g_good"].service == "minifuse"
+
+    def test_persist_grants_for_unknown_agent_silently_dropped(self, gateway, mock_pdp, policy_toml):
+        """B2: Grants for agents not in policy.toml [agents] are silently dropped on persist."""
+        grant = GrantEntry(
+            grant_id="g_orphan",
+            agent="unknown-agent",
+            service="gmail",
+            method="POST",
+            path="/messages/send",
+            scope="remembered",
+        )
+        gateway._grants["g_orphan"] = grant
+        gateway._persist_grants()
+
+        # The grant is in memory but not persisted (agent not in policy.toml)
+        import tomlkit
+        doc = tomlkit.parse(policy_toml.read_text())
+        agents = doc["agents"].unwrap()
+        # unknown-agent doesn't exist in policy, so no grants written for it
+        assert "unknown-agent" not in agents
+
+        # But the in-memory grant is still there
+        assert "g_orphan" in gateway._grants
 
 
 # =========================================================================
