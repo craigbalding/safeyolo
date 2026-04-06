@@ -43,7 +43,6 @@ ADDON_MODULES = [
     "sse_streaming",
     "utils",
     "vault",
-    "yaml_roundtrip",
 ]
 
 # Names that must be importable in each module (used at runtime)
