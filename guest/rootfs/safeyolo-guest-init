@@ -176,17 +176,16 @@ if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
     YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"
 fi
 
-if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
-    AGENT_SHELL="cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}"
-else
-    AGENT_SHELL="cd /workspace && exec bash -l"
-fi
-
-# vsock-term listens on vsock, allocates a PTY, and runs the command
-# when the host connects. This gives the host a proper terminal with
-# resize support.
+# vsock-term allocates a PTY, drops to agent user, and execs the command.
+# No su/login shell — vsock-term handles uid/gid drop directly (like Shuru).
 echo "Waiting for terminal connection..."
-/usr/local/bin/vsock-term su agent -lc "$AGENT_SHELL" || true
+if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
+    /usr/local/bin/vsock-term --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
+        bash -lc "mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}" || true
+else
+    /usr/local/bin/vsock-term --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
+        bash -l || true
+fi
 
 # Agent exited — shut down the VM cleanly
 echo "Agent exited, shutting down VM..."
