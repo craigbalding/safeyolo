@@ -753,7 +753,7 @@ class AgentAPI:
                 400,
                 {
                     "error": "Invalid or missing request_id",
-                    "usage": "/explain?request_id=req-<12hex>",
+                    "usage": "/explain?request_id=req-<32hex>",
                 },
             )
             return
