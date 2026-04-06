@@ -15,10 +15,10 @@ enum BridgeFilter {
     private static let IFBF_FILT_USEIPF: UInt32 = 0x00000001
 
     // From sys/ioctl.h — SIOCSDRVSPEC
-    // _IOW('i', 123, struct ifdrv) = 0x8028_6977 on arm64
-    // But Swift can't easily compute _IOW, so use the raw value.
-    // Verified: SIOCSDRVSPEC = 0x8028_6977 on macOS arm64/x86_64
-    private static let SIOCSDRVSPEC: UInt = 0x80286977
+    // SIOCSDRVSPEC = _IOW('i', 124, struct ifdrv)
+    // = IOC_IN(0x80000000) | (sizeof(ifdrv)=40=0x28 << 16) | ('i'=0x69 << 8) | 124=0x7C
+    // = 0x8028697C
+    private static let SIOCSDRVSPEC: UInt = 0x8028697C
 
     /// Layout must match struct ifdrv from <net/if_var.h>
     /// struct ifdrv {
