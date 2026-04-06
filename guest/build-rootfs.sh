@@ -35,6 +35,7 @@ docker run --rm --privileged --platform linux/arm64/v8 \
     debian:trixie-slim /bin/bash -c '
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
 ROOTFS_SIZE_MB='"$ROOTFS_SIZE_MB"'
 
 echo "--- Installing build tools ---"

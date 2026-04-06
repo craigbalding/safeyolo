@@ -157,6 +157,7 @@ def prepare_config_share(
         'export SSL_CERT_FILE="/usr/local/share/ca-certificates/safeyolo.crt"\n'
         'export REQUESTS_CA_BUNDLE="/usr/local/share/ca-certificates/safeyolo.crt"\n'
         'export NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/safeyolo.crt"\n'
+        'export NO_UPDATE_NOTIFIER=1\n'
     )
     (share_dir / "proxy.env").write_text(proxy_env)
 
