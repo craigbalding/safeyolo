@@ -125,6 +125,13 @@ permissions:
     effect: prompt
     tier: explicit
 
+  # Default-allow for network requests (explicit catch-all required
+  # since evaluate_request defaults to deny)
+  - action: network:request
+    resource: "*"
+    effect: allow
+    tier: explicit
+
 budgets: {}
 required: []
 addons:

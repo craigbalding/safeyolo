@@ -346,12 +346,26 @@ class PolicyLoader:
             expires = config.get("expires")
             if expires is None:
                 continue
-            # Parse if string, otherwise assume datetime
+            # Parse if string, otherwise validate it is a datetime
             if isinstance(expires, str):
                 try:
                     expires = datetime.fromisoformat(expires)
                 except (ValueError, TypeError):
+                    log.warning(
+                        "Host '%s' has unparseable expires value '%s' — "
+                        "host will NOT expire until this is fixed",
+                        sanitize_for_log(host),
+                        sanitize_for_log(expires),
+                    )
                     continue
+            elif not isinstance(expires, datetime):
+                log.warning(
+                    "Host '%s' has expires of type %s (expected datetime or ISO string) — "
+                    "host will NOT expire until this is fixed",
+                    sanitize_for_log(host),
+                    type(expires).__name__,
+                )
+                continue
             if hasattr(expires, "tzinfo") and expires.tzinfo is None:
                 expires = expires.replace(tzinfo=UTC)
             if expires <= now:
@@ -452,7 +466,10 @@ class PolicyLoader:
                 self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
                     _build_permission_index(self._baseline.permissions)
                 )
-                # Merge pre-extracted simple sets into the index
+                # Merge pre-extracted simple sets into the index and store
+                # them durably so set_baseline() can re-merge them after
+                # an incremental mutation rebuilds the index.
+                self._pre_extracted_simple = pre_simple
                 for key, resources in pre_simple.items():
                     self._baseline_simple.setdefault(key, set()).update(resources)
 
@@ -664,13 +681,26 @@ class PolicyLoader:
         return self._task_policy_path
 
     def set_baseline(self, policy: "UnifiedPolicy") -> None:
-        """Set baseline policy directly (for updates via API)."""
+        """Set baseline policy directly (for updates via API).
+
+        Re-merges any pre-extracted simple permissions from the last full
+        load so an incremental mutation does not silently drop bulk
+        blocklist entries.
+        """
         with self._lock:
             self._baseline = policy
             self._baseline.permissions.sort(key=lambda p: _specificity_score(p.resource, p.condition is not None), reverse=True)
             self._baseline_simple, self._baseline_exact, self._baseline_patterns = (
                 _build_permission_index(self._baseline.permissions)
             )
+            # Re-merge pre-extracted simple sets (potentially 92k blocklist
+            # entries) that were separated from permissions during the last
+            # full _load_baseline. Without this, every incremental mutation
+            # silently drops the entire blocklist until the watcher triggers
+            # a full reload (~2 seconds).
+            if hasattr(self, "_pre_extracted_simple"):
+                for key, resources in self._pre_extracted_simple.items():
+                    self._baseline_simple.setdefault(key, set()).update(resources)
 
     def set_task_policy(self, policy: "UnifiedPolicy") -> None:
         """Set task policy directly (for updates via API)."""

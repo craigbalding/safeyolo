@@ -66,10 +66,11 @@ def compile_policy(raw: dict) -> dict:
         if config is None:
             config = {}
 
-        # Scalar shorthand: { rate_limit: 3000 } or full dict
         if not isinstance(config, dict):
-            log.warning("Skipping host %s: config is not a dict", sanitize_for_log(host_pattern))
-            continue
+            raise ValueError(
+                f"Host '{host_pattern}' config must be a dict, "
+                f"got {type(config).__name__}. Fix the hosts section in policy."
+            )
 
         # Wildcard host gets special handling
         if host_pattern == "*":
@@ -95,7 +96,16 @@ def compile_policy(raw: dict) -> dict:
 
         # Egress control (per-host deny/prompt)
         egress = config.get("egress")
-        if egress == "deny":
+        if egress == "prompt":
+            permissions.append(
+                {
+                    "action": "network:request",
+                    "resource": resource,
+                    "effect": "prompt",
+                    "tier": "explicit",
+                }
+            )
+        elif egress == "deny":
             permissions.append(
                 {
                     "action": "network:request",
@@ -350,7 +360,10 @@ def _compile_credentials(
     rules = []
     for name, config in credentials.items():
         if not isinstance(config, dict):
-            continue
+            raise ValueError(
+                f"Credential '{name}' config must be a dict, "
+                f"got {type(config).__name__}. Fix the credentials section in policy."
+            )
 
         rule: dict[str, Any] = {"name": name}
 
@@ -358,8 +371,10 @@ def _compile_credentials(
         if "patterns" in config:
             rule["patterns"] = config["patterns"]
         else:
-            log.warning("Credential %s has no patterns, skipping", sanitize_for_log(name))
-            continue
+            raise ValueError(
+                f"Credential '{name}' has no 'patterns' field. "
+                f"Every credential rule must specify patterns for detection."
+            )
 
         # Headers
         if "headers" in config:
@@ -405,7 +420,12 @@ def _compile_risk_appetite(rules: list[dict], permissions: list[dict]) -> None:
 
     for rule in rules:
         decision = rule.get("decision", "require_approval")
-        effect = decision_map.get(decision, "prompt")
+        if decision not in decision_map:
+            raise ValueError(
+                f"risk_appetite rule has unknown decision '{decision}'. "
+                f"Valid values: {', '.join(decision_map.keys())}"
+            )
+        effect = decision_map[decision]
 
         condition: dict[str, Any] = {}
         if "tactics" in rule:
