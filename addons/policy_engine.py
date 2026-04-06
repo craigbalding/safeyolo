@@ -409,11 +409,16 @@ class PolicyEngine:
         return self._loader.baseline_path
 
     def get_baseline(self) -> UnifiedPolicy | None:
-        """Get current baseline policy."""
-        baseline = self._loader.baseline
-        if not baseline.permissions:
+        """Get current baseline policy.
+
+        Returns the policy object if a baseline has been loaded (even if it
+        has zero IAM permissions — a policy with only simple_permissions,
+        credential_rules, or gateway config is still meaningful). Returns
+        None only if no baseline path was configured.
+        """
+        if self._loader.baseline_path is None:
             return None
-        return baseline
+        return self._loader.baseline
 
     def get_task_policy(self, task_id: str | None = None) -> UnifiedPolicy | None:
         """Get current task policy (if any).
@@ -660,8 +665,10 @@ class PolicyEngine:
             permission = self._find_matching_permission("network:request", "*", context)
 
         if permission is None:
-            # Default: allow (baseline should define catch-all)
-            return PolicyDecision(effect="allow", reason="No matching permission, default allow")
+            # Default: deny. A security tool must fail closed when no
+            # permission matches. If the operator wants default-allow, the
+            # setup wizard adds an explicit `*` allow rule to the baseline.
+            return PolicyDecision(effect="deny", reason="No matching permission (default deny)")
 
         # Handle budget effect
         if permission.effect == "budget":
@@ -797,10 +804,14 @@ class PolicyEngine:
 
         budget = baseline.budgets.get(action)
         if task and action in task.budgets:
-            # Task policy can increase but not decrease global budget
+            # Task policy can restrict (lower) but not escalate (raise) the
+            # global budget. The baseline is the security ceiling — a scoped,
+            # less-trusted task context must not be able to raise rate limits.
             task_budget = task.budgets[action]
-            if budget is None or task_budget > budget:
+            if budget is None:
                 budget = task_budget
+            else:
+                budget = min(budget, task_budget)
         return budget
 
     def consume_budget(self, action: str, resource: str, cost: int = 1) -> tuple[bool, int]:
@@ -852,16 +863,20 @@ class PolicyEngine:
         baseline = self._loader.baseline
         task = self._loader.task_policy
 
-        # Check domain bypasses
+        # Check domain bypasses — but required addons cannot be bypassed
         if domain:
             for pattern, override in baseline.domains.items():
                 if matches_host_pattern(domain, pattern):
                     if addon_name in override.bypass:
+                        if addon_name in baseline.required:
+                            return True  # Required addons resist domain bypass
                         return False
             if task:
                 for pattern, override in task.domains.items():
                     if matches_host_pattern(domain, pattern):
                         if addon_name in override.bypass:
+                            if addon_name in baseline.required:
+                                return True
                             return False
 
         # Check client bypasses and addon config
@@ -1499,9 +1514,15 @@ class PolicyEngine:
                     save_roundtrip(baseline_path, doc)
                     return
             except Exception as e:
-                log.warning("TOML round-trip save failed, falling back to full rewrite: %s", e)
-            self._save_baseline_plain()
-            return
+                # Do NOT fall back to _save_baseline_plain — that silently
+                # destroys all comments and formatting in the operator's TOML.
+                # Let the in-memory state be the source of truth; the file
+                # will be correct on the next full reload/save cycle.
+                log.error(
+                    "TOML round-trip save failed (in-memory state preserved, "
+                    "file NOT overwritten): %s", e,
+                )
+                return
 
         # YAML branch: use ruamel.yaml for round-trip editing
         try:
