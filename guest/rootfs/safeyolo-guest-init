@@ -4,13 +4,14 @@
 #
 # Responsibilities:
 # 1. Mount remaining filesystems
-# 2. Mount VirtioFS shares (workspace, config)
+# 2. Mount VirtioFS shares (workspace, config, host config dirs/files)
 # 3. Configure proxy environment from config share
 # 4. Trust SafeYolo CA certificate
-# 5. Start sshd for `safeyolo agent shell`
-# 6. Install agent binary via mise if missing
-# 7. Run user init hook
-# 8. Exec agent command or login shell
+# 5. Inject agent instructions (CLAUDE.md etc.)
+# 6. Set up agent token, SSH, disable IPv6
+# 7. Install agent binary via mise if missing
+# 8. Run user init hook
+# 9. Run agent command or login shell, then shut down
 #
 set -e
 
@@ -41,7 +42,7 @@ mkdir -p /workspace /safeyolo
 # Workspace (host project directory, typically read-write)
 mount -t virtiofs workspace /workspace 2>/dev/null || true
 
-# Config share (proxy env, CA cert, SSH keys — read-only)
+# Config share (proxy env, CA cert, SSH keys)
 mount -t virtiofs config /safeyolo 2>/dev/null || true
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
@@ -72,11 +73,10 @@ fi
 # 3. Configure proxy environment
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then
-    # Export proxy vars for all processes
     set -a
     . /safeyolo/proxy.env
     set +a
-    # Also write to /etc/environment for SSH sessions
+    # Also write to /etc/environment for SSH sessions and child processes
     cp /safeyolo/proxy.env /etc/environment
 fi
 
@@ -84,7 +84,12 @@ if [ -f /safeyolo/agent.env ]; then
     set -a
     . /safeyolo/agent.env
     set +a
+    # Append agent env to /etc/environment too
+    cat /safeyolo/agent.env >> /etc/environment
 fi
+
+# Ensure HOME is set for all contexts
+echo 'export HOME=/home/agent' >> /etc/environment
 
 # --------------------------------------------------------------------------
 # 4. Trust SafeYolo CA certificate
@@ -95,8 +100,25 @@ if [ -f /safeyolo/mitmproxy-ca-cert.pem ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 5. Set up SSH and start sshd
+# 5. Inject agent instructions (e.g., /etc/claude-code/CLAUDE.md)
 # --------------------------------------------------------------------------
+if [ -f /safeyolo/instructions.md ] && [ -n "${SAFEYOLO_INSTRUCTIONS_PATH:-}" ]; then
+    mkdir -p "$(dirname "$SAFEYOLO_INSTRUCTIONS_PATH")"
+    cp /safeyolo/instructions.md "$SAFEYOLO_INSTRUCTIONS_PATH"
+fi
+
+# --------------------------------------------------------------------------
+# 6. Set up agent token, SSH, disable IPv6
+# --------------------------------------------------------------------------
+
+# Agent API token at /app/agent_token (matches Docker layout and instructions.md)
+if [ -f /safeyolo/agent_token ]; then
+    mkdir -p /app
+    cp /safeyolo/agent_token /app/agent_token
+    chmod 644 /app/agent_token
+fi
+
+# SSH for `safeyolo agent shell`
 if [ -f /safeyolo/authorized_keys ]; then
     mkdir -p /home/agent/.ssh
     cp /safeyolo/authorized_keys /home/agent/.ssh/authorized_keys
@@ -110,9 +132,12 @@ if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
     ssh-keygen -A >/dev/null 2>&1 || true
 fi
 
-# Start sshd in the background (for `safeyolo agent shell`)
+# Start sshd in the background
 mkdir -p /run/sshd
 /usr/sbin/sshd -D &
+
+# Disable IPv6 (matches Docker sysctl: net.ipv6.conf.all.disable_ipv6=1)
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------
 # Write VM IP to config share so the CLI can discover it
@@ -124,7 +149,7 @@ if [ -n "$VM_IP" ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 6. Install agent binary via mise if missing
+# 7. Install agent binary via mise if missing
 # --------------------------------------------------------------------------
 if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
     if ! su agent -c "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
@@ -136,26 +161,32 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
 fi
 
 # --------------------------------------------------------------------------
-# 7. Run user init hook
+# 8. Run user init hook
 # --------------------------------------------------------------------------
 if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
     su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
 fi
 
 # --------------------------------------------------------------------------
-# 8. Run agent command or drop to login shell, then shut down cleanly
+# 9. Run agent command or drop to login shell, then shut down cleanly
 # --------------------------------------------------------------------------
+# Build yolo mode args if enabled
+YOLO_ARGS=""
+if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
+    YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"
+    echo "[yolo mode: ${YOLO_ARGS}]"
+fi
+
 # Run as a child process (not exec) so PID 1 survives and can poweroff.
 if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
     echo "Starting ${SAFEYOLO_AGENT_CMD}..."
-    su agent -lc "cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${SAFEYOLO_AGENT_ARGS:-}" || true
+    su agent -lc "cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}" || true
 else
     su agent -lc "cd /workspace && bash -l" || true
 fi
 
 # Agent exited — shut down the VM cleanly
 echo "Agent exited, shutting down VM..."
-# Try reboot syscall directly (works without systemd)
 reboot -f -p 2>/dev/null || poweroff -f 2>/dev/null || halt -f -p 2>/dev/null || true
 # If none of those work, just sleep forever (VM will be force-stopped by host)
 exec sleep infinity

@@ -133,6 +133,9 @@ def prepare_config_share(
     proxy_port: int = 8080,
     host_mounts: list[tuple[str, str, bool]] | None = None,
     host_config_files: list[str] | None = None,
+    instructions_content: str = "",
+    instructions_path: str = "",
+    auto_args: str = "",
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -158,6 +161,8 @@ def prepare_config_share(
         'export REQUESTS_CA_BUNDLE="/usr/local/share/ca-certificates/safeyolo.crt"\n'
         'export NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/safeyolo.crt"\n'
         'export NO_UPDATE_NOTIFIER=1\n'
+        'export npm_config_update_notifier=false\n'
+        'export HOME=/home/agent\n'
     )
     (share_dir / "proxy.env").write_text(proxy_env)
 
@@ -165,16 +170,23 @@ def prepare_config_share(
     agent_env_lines = []
     if agent_binary:
         agent_env_lines.append(f'export SAFEYOLO_AGENT_BINARY="{agent_binary}"')
+        agent_env_lines.append(f'export SAFEYOLO_AGENT_CMD="{agent_binary}"')
     if mise_package:
         agent_env_lines.append(f'export SAFEYOLO_MISE_PACKAGE="{mise_package}"')
     if agent_args:
         agent_env_lines.append(f'export SAFEYOLO_AGENT_ARGS="{agent_args}"')
-    if agent_binary:
-        agent_env_lines.append(f'export SAFEYOLO_AGENT_CMD="{agent_binary}"')
+    if instructions_path:
+        agent_env_lines.append(f'export SAFEYOLO_INSTRUCTIONS_PATH="{instructions_path}"')
+    if auto_args:
+        agent_env_lines.append(f'export SAFEYOLO_AUTO_ARGS="{auto_args}"')
     if extra_env:
         for k, v in extra_env.items():
             agent_env_lines.append(f'export {k}="{v}"')
     (share_dir / "agent.env").write_text("\n".join(agent_env_lines) + "\n")
+
+    # Instructions file (e.g., CLAUDE.md for Claude Code)
+    if instructions_content and instructions_path:
+        (share_dir / "instructions.md").write_text(instructions_content)
 
     # CA certificate
     ca_cert = config_dir / "certs" / "mitmproxy-ca-cert.pem"

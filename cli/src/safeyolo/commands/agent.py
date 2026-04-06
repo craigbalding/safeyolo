@@ -220,16 +220,24 @@ def _run_agent(
     if yolo:
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
 
-    # Get mise package and host config from template
+    # Get mise package, host config, instructions, and auto_args from template
     mise_package = ""
     host_shares = []  # (host_path, tag, read_only) for VirtioFS mounts
     host_config_files = []  # Individual files to copy into config share
+    instructions_content = ""
+    instructions_path = ""
+    auto_args = ""
     template_name = metadata.get("template", "")
     if template_name:
         try:
             agent_config = get_agent_config(template_name)
             mise_package = agent_config.install.mise
-            # Mount host config dirs/files into guest /home/agent/
+            auto_args = agent_config.run.auto_args_str
+            # Instructions injection (e.g., CLAUDE.md)
+            if agent_config.instructions.content and agent_config.instructions.path:
+                instructions_content = agent_config.instructions.content
+                instructions_path = agent_config.instructions.path
+            # Mount host config dirs into guest /home/agent/
             home = Path.home()
             share_idx = 0
             for dir_name in agent_config.host.config_dirs:
@@ -244,7 +252,7 @@ def _run_agent(
         except TemplateError:
             pass
 
-    # Prepare config share (proxy env, CA cert, SSH key, agent env)
+    # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
     config = load_config()
     proxy_port = config.get("proxy", {}).get("port", 8080)
     try:
@@ -258,6 +266,9 @@ def _run_agent(
             proxy_port=proxy_port,
             host_mounts=host_shares if host_shares else None,
             host_config_files=host_config_files if host_config_files else None,
+            instructions_content=instructions_content,
+            instructions_path=instructions_path,
+            auto_args=auto_args,
         )
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
