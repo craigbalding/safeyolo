@@ -65,8 +65,8 @@ def generate_rules(proxy_port: int = 8080, admin_port: int = 9090) -> str:
 # Allow DHCP (UDP 67/68) for VM network setup
 pass in quick on {bridge} proto udp from any to any port {{ 67 68 }}
 
-# Allow DNS to host gateway
-pass in quick on {bridge} proto {{ tcp udp }} from any to any port 53
+# No DNS — proxy resolves hostnames on the host side.
+# Guest uses HTTP_PROXY with proxy IP, no DNS needed.
 
 # Allow VMs to reach mitmproxy proxy port
 pass in quick on {bridge} proto tcp from 192.168.64.0/24 to any port {proxy_port}
