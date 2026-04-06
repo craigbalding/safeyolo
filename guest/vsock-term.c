@@ -148,7 +148,10 @@ int main(int argc, char *argv[]) {
         _exit(127);
     }
 
-    /* Parent: bridge vsock ↔ PTY master */
+    /* Parent: set PTY size from the master side (more reliable than slave side) */
+    ioctl(pty_master, TIOCSWINSZ, &initial_ws);
+
+    /* Bridge vsock ↔ PTY master */
     fcntl(pty_master, F_SETFL, O_NONBLOCK);
     fcntl(data_fd, F_SETFL, O_NONBLOCK);
 
