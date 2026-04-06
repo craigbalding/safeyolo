@@ -223,6 +223,7 @@ def _run_agent(
     # Get mise package and host config from template
     mise_package = ""
     host_shares = []  # (host_path, tag, read_only) for VirtioFS mounts
+    host_config_files = []  # Individual files to copy into config share
     template_name = metadata.get("template", "")
     if template_name:
         try:
@@ -236,13 +237,10 @@ def _run_agent(
                 if host_path.is_dir():
                     host_shares.append((str(host_path), f"hostcfg{share_idx}", True))
                     share_idx += 1
-            for file_name in agent_config.host.config_files:
-                host_path = home / file_name
-                if host_path.exists():
-                    # VirtioFS shares directories, not files.
-                    # For individual files, share the parent dir.
-                    host_shares.append((str(host_path.parent), f"hostcfg{share_idx}", True))
-                    share_idx += 1
+            # Individual config files: copy into config share (not VirtioFS,
+            # since mounting parent dir could expose $HOME)
+            host_config_files = [f for f in agent_config.host.config_files
+                                 if (home / f).exists()]
         except TemplateError:
             pass
 
@@ -259,6 +257,7 @@ def _run_agent(
             extra_env=extra_env,
             proxy_port=proxy_port,
             host_mounts=host_shares if host_shares else None,
+            host_config_files=host_config_files if host_config_files else None,
         )
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
@@ -572,7 +571,8 @@ def add(
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
-    panel_lines.append("Proxy: http://192.168.64.1:8080 (host mitmproxy)")
+    cfg = load_config()
+    panel_lines.append(f"Proxy: http://192.168.64.1:{cfg.get('proxy', {}).get('port', 8080)} (host mitmproxy)")
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})

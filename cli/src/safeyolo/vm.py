@@ -132,6 +132,7 @@ def prepare_config_share(
     extra_env: dict[str, str] | None = None,
     proxy_port: int = 8080,
     host_mounts: list[tuple[str, str, bool]] | None = None,
+    host_config_files: list[str] | None = None,
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -205,6 +206,22 @@ def prepare_config_share(
                 guest_path = f"/mnt/{tag}"
             lines.append(f"{tag}:{guest_path}")
         (share_dir / "host-mounts").write_text("\n".join(lines) + "\n")
+
+    # Host config files — copied into config share (not VirtioFS mounted,
+    # since mounting the parent dir could expose $HOME)
+    if host_config_files:
+        files_dir = share_dir / "host-files"
+        files_dir.mkdir(exist_ok=True)
+        manifest_lines = []
+        home = Path.home()
+        for file_name in host_config_files:
+            src = home / file_name
+            if src.exists() and src.is_file():
+                dest = files_dir / file_name.replace("/", "__")
+                shutil.copy2(str(src), str(dest))
+                manifest_lines.append(f"{dest.name}:/home/agent/{file_name}")
+        if manifest_lines:
+            (share_dir / "host-files-manifest").write_text("\n".join(manifest_lines) + "\n")
 
     return share_dir
 
