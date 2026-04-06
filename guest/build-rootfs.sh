@@ -162,9 +162,9 @@ chroot /mnt/rootfs ssh-keygen -A >/dev/null 2>&1
 
 # Build and install vsock-term (terminal daemon with PTY + resize)
 echo "--- Building vsock-term ---"
-chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends libutil-linux-dev >/dev/null 2>&1 || true
-cc -static -O2 -o /mnt/rootfs/usr/local/bin/vsock-term /build/vsock-term.c -lutil
-chmod +x /mnt/rootfs/usr/local/bin/vsock-term
+cp /build/vsock-term.c /mnt/rootfs/tmp/vsock-term.c
+chroot /mnt/rootfs cc -static -O2 -o /usr/local/bin/vsock-term /tmp/vsock-term.c -lutil
+rm /mnt/rootfs/tmp/vsock-term.c
 
 # Install guest init script
 echo "--- Installing guest init ---"
