@@ -271,12 +271,13 @@ def _run_agent(
             active_subnets=[feth_alloc["subnet"]],
         )
     except Exception as err:
-        console.print(f"[yellow]Warning: feth setup failed:[/yellow] {err}")
-        console.print("  Network isolation will not be enforced.")
-        feth_alloc = None
+        console.print(f"[red]Network isolation setup failed:[/red] {err}")
+        console.print("  SafeYolo requires network isolation to run agents.")
+        console.print("  The VM will not start without enforced egress control.")
+        raise typer.Exit(1)
 
-    gateway_ip = feth_alloc["host_ip"] if feth_alloc else "192.168.65.1"
-    guest_ip = feth_alloc["guest_ip"] if feth_alloc else "192.168.65.2"
+    gateway_ip = feth_alloc["host_ip"]
+    guest_ip = feth_alloc["guest_ip"]
 
     # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
     try:
