@@ -143,11 +143,19 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 8. Exec agent command or drop to login shell
+# 8. Run agent command or drop to login shell, then shut down cleanly
 # --------------------------------------------------------------------------
+# Run as a child process (not exec) so PID 1 survives and can poweroff.
 if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
     echo "Starting ${SAFEYOLO_AGENT_CMD}..."
-    exec su agent -lc "cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${SAFEYOLO_AGENT_ARGS:-}"
+    su agent -lc "cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${SAFEYOLO_AGENT_ARGS:-}" || true
 else
-    exec su agent -lc "cd /workspace && exec bash -l"
+    su agent -lc "cd /workspace && bash -l" || true
 fi
+
+# Agent exited — shut down the VM cleanly
+echo "Agent exited, shutting down VM..."
+# Try reboot syscall directly (works without systemd)
+reboot -f -p 2>/dev/null || poweroff -f 2>/dev/null || halt -f -p 2>/dev/null || true
+# If none of those work, just sleep forever (VM will be force-stopped by host)
+exec sleep infinity
