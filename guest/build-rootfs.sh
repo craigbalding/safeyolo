@@ -111,7 +111,9 @@ chroot /mnt/rootfs env $MISE_ENV mise install node@22 || true
 chroot /mnt/rootfs env $MISE_ENV mise use -g node@22 || true
 echo "--- Installing gh CLI ---"
 GH_VERSION="2.89.0"
+GH_SHA256="9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5"
 curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" -o /tmp/gh.tar.gz
+echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -
 tar -xzf /tmp/gh.tar.gz -C /tmp
 cp /tmp/gh_${GH_VERSION}_linux_arm64/bin/gh /mnt/rootfs/usr/local/bin/gh
 chmod +x /mnt/rootfs/usr/local/bin/gh
