@@ -112,8 +112,11 @@ int main(int argc, char *argv[]) {
         close(data_fd);
         if (ctrl_fd >= 0) close(ctrl_fd);
         if (ctrl_listen >= 0) close(ctrl_listen);
+        fprintf(stderr, "vsock-term child: exec");
+        for (int i = 1; i < argc; i++) fprintf(stderr, " %s", argv[i]);
+        fprintf(stderr, "\n");
         execvp(argv[1], &argv[1]);
-        perror("execvp");
+        perror("vsock-term child: execvp failed");
         _exit(127);
     }
 
@@ -189,6 +192,8 @@ int main(int argc, char *argv[]) {
 
         /* Check for errors */
         if ((fds[0].revents | fds[1].revents) & (POLLERR | POLLHUP)) {
+            fprintf(stderr, "vsock-term: poll error/hangup (data=0x%x pty=0x%x)\n",
+                    fds[0].revents, fds[1].revents);
             break;
         }
     }
