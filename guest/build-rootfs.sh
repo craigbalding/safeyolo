@@ -108,11 +108,13 @@ echo "--- Installing node@22 via mise ---"
 MISE_ENV="MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache"
 chroot /mnt/rootfs env $MISE_ENV mise install node@22 || true
 chroot /mnt/rootfs env $MISE_ENV mise use -g node@22 || true
-echo "--- Installing gh CLI via mise ---"
-chroot /mnt/rootfs env $MISE_ENV MISE_AQUA_VERIFY_ATTESTATIONS=false \
-    mise install github-cli || true
-chroot /mnt/rootfs env $MISE_ENV MISE_AQUA_VERIFY_ATTESTATIONS=false \
-    mise use -g github-cli || true
+echo "--- Installing gh CLI ---"
+GH_VERSION="2.89.0"
+curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" -o /tmp/gh.tar.gz
+tar -xzf /tmp/gh.tar.gz -C /tmp
+cp /tmp/gh_${GH_VERSION}_linux_arm64/bin/gh /mnt/rootfs/usr/local/bin/gh
+chmod +x /mnt/rootfs/usr/local/bin/gh
+rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_arm64
 # Regenerate shims with correct config
 chroot /mnt/rootfs env $MISE_ENV mise reshim || true
 # Make shared dir writable by agent user (for installing additional tools)
