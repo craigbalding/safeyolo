@@ -109,8 +109,10 @@ MISE_ENV="MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/
 chroot /mnt/rootfs env $MISE_ENV mise install node@22 || true
 chroot /mnt/rootfs env $MISE_ENV mise use -g node@22 || true
 echo "--- Installing gh CLI via mise ---"
-chroot /mnt/rootfs env $MISE_ENV mise install github-cli || true
-chroot /mnt/rootfs env $MISE_ENV mise use -g github-cli || true
+chroot /mnt/rootfs env $MISE_ENV MISE_AQUA_VERIFY_ATTESTATIONS=false \
+    mise install github-cli || true
+chroot /mnt/rootfs env $MISE_ENV MISE_AQUA_VERIFY_ATTESTATIONS=false \
+    mise use -g github-cli || true
 # Regenerate shims with correct config
 chroot /mnt/rootfs env $MISE_ENV mise reshim || true
 # Make shared dir writable by agent user (for installing additional tools)
