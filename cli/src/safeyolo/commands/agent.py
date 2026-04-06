@@ -30,10 +30,8 @@ from ..vm import (
     get_agent_rootfs_path,
     is_vm_running,
     prepare_config_share,
-    ssh_into_vm,
     start_vm,
     stop_vm,
-    wait_for_ssh,
 )
 from ._service_discovery import find_service
 from .mount import is_path_protected
@@ -302,61 +300,24 @@ def _run_agent(
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
 
-    console.print(f"Starting {name}...")
+    console.print(f"Starting {name}...\n")
 
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
-        # Start VM in background (serial console to log file, not terminal)
         proc = start_vm(
             name=name,
             workspace_path=str(workspace_path),
             extra_shares=host_shares if host_shares else None,
             feth_vm=feth_alloc["feth_vm"] if feth_alloc else "",
-            background=True,
         )
         _update_agent_map(name, ip=guest_ip)
-
-        # Wait for SSH, then connect with a proper PTY
-        console.print(f"  VM booting (IP: {guest_ip})...")
-        console.print(f"  Waiting for SSH...", end=" ")
-
-        if wait_for_ssh(name, timeout=60):
-            console.print("[green]ready![/green]\n")
-
-            # Build the agent command to run over SSH
-            agent_cmd = ""
-            if binary:
-                yolo_str = ""
-                if yolo and auto_args:
-                    yolo_str = auto_args + " "
-                agent_cmd = f"cd /workspace && mise exec -- {binary} {yolo_str}{agent_args_str}".strip()
-
-            exit_code = ssh_into_vm(ip=guest_ip, command=agent_cmd)
-        else:
-            console.print("[yellow]timeout[/yellow]")
-            console.print("  Falling back to serial console (limited terminal)...\n")
-            # Kill background VM and restart with serial on stdin/stdout
-            stop_vm(name)
-            proc = start_vm(
-                name=name,
-                workspace_path=str(workspace_path),
-                extra_shares=host_shares if host_shares else None,
-                feth_vm=feth_alloc["feth_vm"] if feth_alloc else "",
-                background=False,
-            )
-            proc.wait()
-            exit_code = proc.returncode
-
-        # Stop the background VM if still running (SSH session ended)
-        if is_vm_running(name):
-            stop_vm(name)
-
+        # Wait for VM process to exit (serial console on stdin/stdout)
+        proc.wait()
+        exit_code = proc.returncode
     except VMError as err:
         console.print(f"[red]VM error:[/red] {err}")
         exit_code = 1
     except KeyboardInterrupt:
-        if is_vm_running(name):
-            stop_vm(name)
         exit_code = 130
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
