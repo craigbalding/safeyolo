@@ -136,7 +136,8 @@ def _build_command(
     admin_port: int = 9090,
 ) -> list[str]:
     """Build the mitmdump command line."""
-    cmd = ["mitmdump", "-p", str(proxy_port)]
+    # Bind to all interfaces so VMs on the bridge can reach the proxy
+    cmd = ["mitmdump", "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
 
     # Load addons
     for addon_file in ADDON_CHAIN:
