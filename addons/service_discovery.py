@@ -1,19 +1,16 @@
 """
-service_discovery.py - Automatic service discovery via Docker DNS
+service_discovery.py - Agent discovery via file-based IP map
 
-Maps container IPs to client IDs for per-client credential policies.
-Uses Docker's embedded DNS to resolve container IPs to names on first
-request, with caching to avoid per-request DNS lookups.
-
-Resolution order:
-1. DNS cache hit (non-expired)
-2. Reverse DNS lookup via Docker embedded DNS
-3. Default: "unknown"
+Maps VM IPs to agent names for per-agent credential policies.
+The CLI writes agent_map.json when VMs start/stop. This addon
+reads the file (mtime-cached) to resolve IPs to agent names.
 """
 
+import json
 import logging
-import socket
+import os
 import time
+from pathlib import Path
 from threading import Lock
 
 from mitmproxy import ctx, http
@@ -23,137 +20,99 @@ from audit_schema import EventKind, Severity
 
 log = logging.getLogger("safeyolo.discovery")
 
-# DNS-based discovery constants
-DNS_CACHE_TTL_SECONDS = 300  # How long to trust a reverse DNS result
-DNS_NEGATIVE_CACHE_TTL_SECONDS = 60  # Cache failed lookups to avoid repeated slow queries
-DNS_CACHE_MAX_SIZE = 500  # Max cached DNS entries
-
 
 class ServiceDiscovery:
     """
-    Automatic service registry via Docker DNS.
+    Agent registry via file-based IP map.
 
-    Resolves container IPs to client IDs using Docker's embedded DNS.
-    Results are cached to avoid per-request DNS lookups.
+    The CLI writes ~/.safeyolo/data/agent_map.json with entries like:
+        {"test": {"ip": "192.168.68.2", "started": "2026-04-06T..."}}
+
+    This addon reads the file on each request (mtime-cached) and
+    resolves client IPs to agent names.
     """
 
     name = "service-discovery"
 
     def __init__(self):
-        self.network = "safeyolo_internal"
-        self._dns_cache: dict[str, tuple[str, float]] = {}  # ip -> (client_name, expiry)
-        self._dns_negative_cache: dict[str, float] = {}  # ip -> expiry (failed lookups)
-        self._last_seen: dict[str, float] = {}  # agent_name -> epoch timestamp
+        self._agent_map: dict[str, dict] = {}  # name -> {ip, started}
+        self._ip_to_name: dict[str, str] = {}  # ip -> name (reverse index)
+        self._map_mtime: float = 0
+        self._map_path: str = ""
+        self._last_seen: dict[str, float] = {}  # agent_name -> epoch
         self._lock = Lock()
 
     def load(self, loader):
-        """Register mitmproxy options."""
         loader.add_option(
-            name="discovery_network",
+            name="agent_map_file",
             typespec=str,
-            default="safeyolo_internal",
-            help="Docker network name for DNS suffix stripping",
+            default="",
+            help="Path to agent IP map JSON file (written by CLI)",
         )
 
     def configure(self, updates):
-        """Handle option changes."""
-        if "discovery_network" in updates:
-            self.network = ctx.options.discovery_network
+        if "agent_map_file" in updates:
+            self._map_path = ctx.options.agent_map_file
+            if self._map_path:
+                self._reload_map()
 
-    def done(self):
-        """Cleanup on shutdown."""
-        pass
+    def _reload_map(self):
+        """Reload agent map if file has changed (mtime check)."""
+        if not self._map_path:
+            return
 
-    def _resolve_ip_via_dns(self, ip: str) -> str | None:
-        """Resolve an IP to a client name via Docker's embedded reverse DNS.
+        path = Path(self._map_path)
+        if not path.exists():
+            return
 
-        Docker's DNS returns "{container_name}.{network_name}" for containers
-        on user-defined networks. We strip the network suffix to get the
-        clean instance name.
-
-        Returns:
-            Client name (e.g., "claude") or None if resolution fails.
-        """
         try:
-            hostname, _aliases, _addresses = socket.gethostbyaddr(ip)
-        except (socket.herror, socket.gaierror, OSError):
-            return None
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
 
-        if not hostname:
-            return None
+        if mtime == self._map_mtime:
+            return
 
-        # Docker returns "{container_name}.{network_name}" on user-defined networks
-        network_suffix = f".{self.network}"
-        if hostname.endswith(network_suffix):
-            hostname = hostname[: -len(network_suffix)]
+        try:
+            data = json.loads(path.read_text())
+            ip_to_name = {}
+            for name, info in data.items():
+                ip = info.get("ip")
+                if ip:
+                    ip_to_name[ip] = name
 
-        # Skip the proxy container itself
-        if hostname == "safeyolo":
-            return None
+            with self._lock:
+                old_names = set(self._ip_to_name.values())
+                self._agent_map = data
+                self._ip_to_name = ip_to_name
+                self._map_mtime = mtime
 
-        return hostname
-
-    def get_client_for_ip(self, ip: str) -> str:
-        """Get client ID for an IP address.
-
-        Thread-safe: reads cache under lock.
-
-        Resolution order:
-        1. DNS cache (non-expired)
-        2. Reverse DNS via Docker embedded DNS
-        3. "unknown"
-
-        Returns:
-            Client ID if IP is resolved, otherwise "unknown".
-            Policy should explicitly handle "unknown" principals.
-        """
-        now = time.time()
-
-        # Take a snapshot under lock
-        with self._lock:
-            dns_entry = self._dns_cache.get(ip)
-            dns_negative_expiry = self._dns_negative_cache.get(ip)
-
-        # 1. Check DNS cache (non-expired)
-        if dns_entry is not None:
-            client_name, expiry = dns_entry
-            if now < expiry:
-                return client_name
-            # Expired — will re-resolve below
-
-        # 2. Reverse DNS lookup (skip if recently failed)
-        if dns_negative_expiry is None or now >= dns_negative_expiry:
-            resolved = self._resolve_ip_via_dns(ip)
-            if resolved:
-                expiry = now + DNS_CACHE_TTL_SECONDS
-                with self._lock:
-                    # Evict expired entries if at capacity
-                    if len(self._dns_cache) >= DNS_CACHE_MAX_SIZE:
-                        self._dns_cache = {
-                            k: v for k, v in self._dns_cache.items() if v[1] > now
-                        }
-                    self._dns_cache[ip] = (resolved, expiry)
-                if dns_entry is None:
-                    log.info(f"DNS discovery: {ip} -> {resolved}")
+                # Log newly discovered agents
+                new_names = set(ip_to_name.values()) - old_names
+                for name in new_names:
+                    ip = next(k for k, v in ip_to_name.items() if v == name)
+                    log.info("Agent discovered: %s at %s", name, ip)
                     write_event(
                         "agent.discovered",
                         kind=EventKind.AGENT,
                         severity=Severity.LOW,
-                        summary=f"Discovered agent {sanitize_for_log(resolved)} at {ip}",
-                        agent=resolved,
+                        summary=f"Discovered agent {sanitize_for_log(name)} at {ip}",
+                        agent=name,
                         addon="service-discovery",
                         details={"ip": ip},
                     )
-                else:
-                    log.debug(f"DNS cache refresh: {ip} -> {resolved}")
-                return resolved
-            else:
-                # Cache the failure to avoid repeated lookups
-                with self._lock:
-                    self._dns_negative_cache[ip] = now + DNS_NEGATIVE_CACHE_TTL_SECONDS
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("Failed to load agent map: %s", e)
 
-        # 3. Unknown IP — negative cache already throttles retries to every 60s
-        log.warning(f"Unknown source IP: {ip} - using 'unknown' principal")
+    def get_client_for_ip(self, ip: str) -> str:
+        """Get agent name for an IP address. Thread-safe."""
+        self._reload_map()
+
+        with self._lock:
+            name = self._ip_to_name.get(ip)
+
+        if name:
+            return name
 
         return "unknown"
 
@@ -168,27 +127,18 @@ class ServiceDiscovery:
                     self._last_seen[agent] = time.time()
 
     def get_agents(self) -> dict:
-        """Get agent overview for agent API /agents endpoint.
-
-        Returns per-agent info: IP, last seen timestamp, and seconds since
-        last activity. Thread-safe.
-        """
+        """Get agent overview for agent API /agents endpoint."""
         now = time.time()
-        with self._lock:
-            dns_cached = {ip: (name, exp) for ip, (name, exp) in self._dns_cache.items() if exp > now}
-            last_seen_snapshot = dict(self._last_seen)
+        self._reload_map()
 
-        # Build agent -> {ip, last_seen, idle_seconds}
-        # An agent may have multiple IPs (container restart), take the latest cache entry
-        agents: dict[str, dict] = {}
-        for ip, (name, _exp) in dns_cached.items():
-            if name not in agents:
-                agents[name] = {"ip": ip}
-            # If duplicate, keep whichever — both are valid
-        for name, ts in last_seen_snapshot.items():
-            entry = agents.setdefault(name, {"ip": None})
-            entry["last_seen"] = ts
-            entry["idle_seconds"] = round(now - ts, 1)
+        with self._lock:
+            agents: dict[str, dict] = {}
+            for name, info in self._agent_map.items():
+                entry = {"ip": info.get("ip")}
+                if name in self._last_seen:
+                    entry["last_seen"] = self._last_seen[name]
+                    entry["idle_seconds"] = round(now - self._last_seen[name], 1)
+                agents[name] = entry
 
         return {
             "agents": agents,
@@ -196,22 +146,14 @@ class ServiceDiscovery:
         }
 
     def get_stats(self) -> dict:
-        """Get discovery statistics for admin API.
-
-        Thread-safe: takes snapshot under lock.
-        Includes full agent details so `safeyolo status` can display them.
-        """
+        """Get discovery statistics for admin API."""
         agents_data = self.get_agents()
-        now = time.time()
         with self._lock:
-            dns_cached = {ip: name for ip, (name, exp) in self._dns_cache.items() if exp > now}
-            dns_negative = {ip for ip, exp in self._dns_negative_cache.items() if exp > now}
+            ip_count = len(self._ip_to_name)
 
         return {
-            "dns_cache_size": len(dns_cached),
-            "dns_cached_clients": dns_cached,
-            "dns_negative_cache_size": len(dns_negative),
-            "unresolved_ips_count": len(dns_negative),
+            "map_file": self._map_path,
+            "known_ips": ip_count,
             "agents": agents_data["agents"],
             "agents_seen": agents_data["count"],
         }
@@ -222,11 +164,9 @@ _discovery: ServiceDiscovery | None = None
 
 
 def get_service_discovery() -> ServiceDiscovery | None:
-    """Get the service discovery instance."""
     return _discovery
 
 
-# Create instance and register as mitmproxy addon
 discovery = ServiceDiscovery()
 _discovery = discovery
 addons = [discovery]
