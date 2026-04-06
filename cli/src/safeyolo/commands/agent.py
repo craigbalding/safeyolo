@@ -235,7 +235,7 @@ def _run_agent(
             for dir_name in agent_config.host.config_dirs:
                 host_path = home / dir_name
                 if host_path.is_dir():
-                    host_shares.append((str(host_path), f"hostcfg{share_idx}", True))
+                    host_shares.append((str(host_path), f"hostcfg{share_idx}", False))
                     share_idx += 1
             # Individual config files: copy into config share (not VirtioFS,
             # since mounting parent dir could expose $HOME)
