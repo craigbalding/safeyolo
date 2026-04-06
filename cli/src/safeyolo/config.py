@@ -6,16 +6,6 @@ from typing import Any
 
 import yaml
 
-# Secure mode network constants
-COMPOSE_PROJECT_NAME = "safeyolo"  # Explicit project name for docker compose -p
-INTERNAL_NETWORK_NAME = "internal"
-COMPOSE_NETWORK_NAME = "safeyolo_internal"  # Full network name (project_internal)
-# Proxy container name - used for Docker DNS resolution (agents use http://safeyolo:8080)
-PROXY_CONTAINER_NAME = "safeyolo"
-# Cert volumes (split for security: private key separate from public CA)
-PRIVATE_CERTS_VOLUME_NAME = "safeyolo-certs-private"  # Private key material (600 perms)
-CA_VOLUME_NAME = "safeyolo-ca"  # Public CA cert only (agents mount read-only)
-
 # Environment variable names for path overrides (useful for testing and custom setups)
 _CONFIG_DIR_ENV = "SAFEYOLO_CONFIG_DIR"
 _LOGS_DIR_ENV = "SAFEYOLO_LOGS_DIR"

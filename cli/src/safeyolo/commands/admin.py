@@ -23,7 +23,7 @@ console = Console()
 def check() -> None:
     """Verify SafeYolo setup is working correctly.
 
-    Checks configuration, Docker, container, API, and HTTPS inspection.
+    Checks configuration, proxy, API, and HTTPS inspection.
 
     Examples:
 

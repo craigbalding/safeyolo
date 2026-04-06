@@ -81,47 +81,6 @@ def mock_httpx(monkeypatch):
     }
 
 
-@pytest.fixture
-def mock_docker_available(mock_subprocess):
-    """Mock docker as available but container not running."""
-
-    def run_side_effect(args, **kwargs):
-        if args[:2] == ["docker", "version"]:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Docker 24.0", stderr="")
-        if args[:2] == ["docker", "ps"]:
-            # Container not running - empty output
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-        if "compose" in args:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-    mock_subprocess.side_effect = run_side_effect
-    return mock_subprocess
-
-
-@pytest.fixture
-def mock_docker_running(mock_subprocess):
-    """Mock docker container as running."""
-
-    def run_side_effect(args, **kwargs):
-        if args[:2] == ["docker", "version"]:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="Docker 24.0", stderr="")
-        if args[:2] == ["docker", "ps"]:
-            # Agent-specific name filter (exact match) — agent not running in tests
-            if any(a.startswith("name=^/") for a in args):
-                return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-            # SafeYolo proxy container check
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="abc123\n", stderr="")
-        if args[:2] == ["docker", "inspect"]:
-            return subprocess.CompletedProcess(
-                args=args, returncode=0, stdout="running|healthy|2024-01-01T00:00:00Z", stderr=""
-            )
-        if "compose" in args:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-    mock_subprocess.side_effect = run_side_effect
-    return mock_subprocess
 
 
 @pytest.fixture

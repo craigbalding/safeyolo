@@ -683,7 +683,7 @@ def list_agents() -> None:
     all_agents = load_all_agents()
 
     if agents_dir.exists():
-        instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()]
+        instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "rootfs.ext4").exists()]
 
         if instances:
             table = Table(title="Configured Agents")

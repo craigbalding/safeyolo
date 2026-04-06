@@ -15,7 +15,6 @@ import yaml
 from rich.console import Console
 
 from ..config import (
-    COMPOSE_NETWORK_NAME,
     find_config_dir,
     get_admin_token_path,
     get_agent_token_path,
@@ -25,23 +24,6 @@ from ..config import (
     load_config,
 )
 from ..proxy import is_proxy_running
-
-# Docker module removed in microvm branch — stub out for doctor compatibility
-DOCKER_INSPECT_TIMEOUT_SECONDS = 5
-
-class DockerError(Exception):
-    pass
-
-def check_docker():
-    return False
-
-def get_container_name():
-    return "safeyolo"
-
-def get_container_status():
-    if is_proxy_running():
-        return {"status": "running", "health": "healthy"}
-    return None
 
 console = Console()
 
@@ -88,15 +70,20 @@ def _check_config_dir() -> DiagResult:
 
 
 def _check_docker() -> DiagResult:
-    """Check if Docker daemon is available."""
-    if not check_docker():
+    """Check if proxy is running (replaces Docker check)."""
+    if not is_proxy_running():
         return DiagResult(
-            name="Docker available",
+            name="Proxy running",
             status="fail",
-            message="Docker daemon not reachable",
-            remediation="Start Docker Desktop or the Docker daemon",
+            message="mitmproxy is not running",
+            remediation="Run: safeyolo start",
         )
-    # Get version for detail
+    return DiagResult(name="Proxy running", status="pass", message="mitmproxy is running")
+
+def _check_docker_DISABLED() -> DiagResult:
+    """DISABLED — original Docker check preserved for reference."""
+    if False:
+        pass
     try:
         result = subprocess.run(
             ["docker", "version", "--format", "{{.Server.Version}}"],
@@ -698,10 +685,9 @@ def _check_docker_network() -> DiagResult:
 # Dependency map: check_name -> list of check_names it depends on
 _DEPENDS_ON = {
     "mitmproxy process": ["Container running"],
-    "Admin API": ["mitmproxy process"],
+    "Admin API": ["Proxy running"],
     "Addon loading": ["Admin API"],
-    "Proxy port": ["mitmproxy process"],
-    "Docker network": ["Docker available"],
+    "Proxy port": ["Proxy running"],
 }
 
 
@@ -709,9 +695,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     """Run all diagnostic checks with cascade logic."""
     checks_funcs = [
         ("Config directory", _check_config_dir),
-        ("Docker available", _check_docker),
-        ("Container running", _check_container),
-        ("mitmproxy process", _check_mitmproxy_process),
+        ("Proxy running", _check_docker),  # Reused — now checks proxy, not Docker
         ("Admin API", _check_admin_api),
         ("Addon loading", _check_addon_loading),
         ("Proxy port", _check_proxy_port),
@@ -722,7 +706,6 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Crash detection", _check_crash_logs),
         ("Log health", _check_log_health),
         ("Flow store", _check_flow_store),
-        ("Docker network", _check_docker_network),
     ]
 
     results = []
@@ -841,35 +824,13 @@ def _attempt_fix(results: list[DiagResult]) -> list[str]:
         if result.status != "fail":
             continue
 
-        if result.name == "Container running":
-            console.print("[bold]Auto-fix:[/bold] Starting SafeYolo...")
+        if result.name == "Proxy running":
+            console.print("[bold]Auto-fix:[/bold] Starting proxy...")
             try:
-                from ..docker import start
-
-                start()
-                actions.append("Started SafeYolo container")
-            except DockerError as exc:
-                console.print(f"  [red]Failed:[/red] {exc}")
-
-        elif result.name == "mitmproxy process":
-            console.print("[bold]Auto-fix:[/bold] Restarting SafeYolo...")
-            try:
-                from ..docker import restart
-
-                restart()
-                actions.append("Restarted SafeYolo container")
-            except DockerError as exc:
-                console.print(f"  [red]Failed:[/red] {exc}")
-
-        elif result.name == "Docker network":
-            console.print("[bold]Auto-fix:[/bold] Recreating network via restart...")
-            try:
-                from ..docker import start, stop
-
-                stop()
-                start()
-                actions.append("Recreated SafeYolo (stop + start)")
-            except DockerError as exc:
+                from ..proxy import start_proxy
+                start_proxy()
+                actions.append("Started mitmproxy")
+            except Exception as exc:
                 console.print(f"  [red]Failed:[/red] {exc}")
 
     return actions

@@ -23,7 +23,9 @@ setup_hint = "Set ANTHROPIC_API_KEY in .env"
 config_dirs = [".claude", ".safeyolo-hooks"]
 config_files = [".claude.json"]
 
-[docker]
+[vm]
+cpus = 4
+memory = 4096
 env = {}
 
 [instructions]

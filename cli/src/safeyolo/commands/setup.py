@@ -6,99 +6,68 @@ import subprocess
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
+
+from ..vm import check_guest_images, guest_image_status
 
 console = Console()
 
-setup_app = typer.Typer(
-    name="setup",
-    help="System integration setup commands.",
-    no_args_is_help=True,
-)
 
-
-def check_docker_access() -> tuple[bool, str]:
-    """Check if current user has Docker access.
-
-    Returns:
-        (has_access, reason)
-    """
-    # Check if user is in docker group
+def check_bpf_access() -> tuple[bool, str]:
+    """Check if the user can access BPF devices (needed for feth-bridge)."""
     try:
-        docker_gid = grp.getgrnam("docker").gr_gid
-        user_groups = os.getgroups()
-        in_docker_group = docker_gid in user_groups
+        bpf_gid = grp.getgrnam("access_bpf").gr_gid
     except KeyError:
-        in_docker_group = False
+        return False, "access_bpf group does not exist"
 
-    # Try running docker info to confirm access
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        docker_works = result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        docker_works = False
-
-    if docker_works:
-        if in_docker_group:
-            return True, "User is in docker group"
-        else:
-            return True, "Docker accessible (possibly via sudo or rootless)"
-    else:
-        if in_docker_group:
-            return False, "In docker group but docker not responding"
-        else:
-            return False, "Not in docker group"
+    user_groups = os.getgroups()
+    if bpf_gid in user_groups:
+        return True, "User is in access_bpf group"
+    return False, "Not in access_bpf group (install Wireshark or OrbStack to add it)"
 
 
-@setup_app.command()
-def check() -> None:
-    """Check system prerequisites for SafeYolo.
+def setup() -> None:
+    """Check system prerequisites for SafeYolo microVM agents.
 
-    Verifies Docker access and provides guidance if issues are found.
+    Verifies guest images, BPF access, and other requirements.
 
     Examples:
 
-        safeyolo setup check
+        safeyolo setup
     """
-    console.print("[bold]SafeYolo System Check[/bold]\n")
+    console.print("[bold]Checking prerequisites...[/bold]\n")
 
-    # Check Docker access
-    has_access, reason = check_docker_access()
+    all_ok = True
 
-    if has_access:
-        console.print(f"[green]✓[/green] Docker access: {reason}")
+    # Guest images
+    if check_guest_images():
+        console.print("  [green]OK[/green]  Guest images available")
     else:
-        console.print(f"[red]✗[/red] Docker access: {reason}")
-        console.print(
-            Panel(
-                "[bold]To add yourself to the docker group:[/bold]\n\n"
-                "  sudo usermod -aG docker $USER\n"
-                "  newgrp docker  # or log out and back in\n\n"
-                "[dim]This allows SafeYolo to manage agent containers.[/dim]",
-                title="Docker Group Setup",
-                border_style="yellow",
-            )
-        )
-        raise typer.Exit(1)
+        status = guest_image_status()
+        missing = [k for k, v in status.items() if not v]
+        console.print(f"  [red]MISSING[/red]  Guest images: {', '.join(missing)}")
+        console.print("    Build with: cd guest && ./build-all.sh")
+        console.print("    Install:    cp guest/out/* ~/.safeyolo/share/")
+        all_ok = False
 
-    # Check if safeyolo network exists
+    # BPF access
+    has_bpf, reason = check_bpf_access()
+    if has_bpf:
+        console.print(f"  [green]OK[/green]  BPF access ({reason})")
+    else:
+        console.print(f"  [yellow]WARN[/yellow]  BPF access: {reason}")
+        console.print("    feth-bridge needs BPF to forward VM network traffic")
+
+    # VM helper
+    from ..vm import find_vm_helper, VMError
     try:
-        result = subprocess.run(
-            ["docker", "network", "inspect", "safeyolo_internal"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            console.print("[green]✓[/green] SafeYolo network exists")
-        else:
-            console.print("[yellow]○[/yellow] SafeYolo network not created yet (will be created on start)")
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        console.print("[yellow]○[/yellow] Could not check network status")
+        helper = find_vm_helper()
+        console.print(f"  [green]OK[/green]  safeyolo-vm at {helper}")
+    except VMError:
+        console.print("  [red]MISSING[/red]  safeyolo-vm binary")
+        console.print("    Build with: cd vm && make install")
+        all_ok = False
 
-    console.print("\n[green]All checks passed![/green]")
+    if all_ok:
+        console.print("\n[green]All prerequisites met.[/green]")
+    else:
+        console.print("\n[yellow]Some prerequisites missing — see above.[/yellow]")

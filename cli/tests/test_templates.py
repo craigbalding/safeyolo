@@ -13,13 +13,12 @@ from safeyolo.templates import (
     detect_host_config_for_agent,
     get_agent_config,
     get_available_templates,
-    render_template,
 )
 from safeyolo.templates.loader import (
     AgentConfig,
     AgentConfigError,
     AuthConfig,
-    DockerConfig,
+    VMConfig,
     HostConfig,
     InstallConfig,
     InstructionsConfig,
@@ -64,7 +63,7 @@ setup_hint = "Set TEST_API_KEY"
 config_dirs = [".test"]
 config_files = [".testrc"]
 
-[docker]
+[vm]
 env = { TEST_VAR = "value" }
 
 [instructions]
@@ -88,7 +87,7 @@ path = "/etc/test/config.md"
         assert config.auth.oauth_file == ".test/auth.json"
         assert config.host.config_dirs == [".test"]
         assert config.host.config_files == [".testrc"]
-        assert config.docker.env == {"TEST_VAR": "value"}
+        assert config.vm.env == {"TEST_VAR": "value"}
         assert config.instructions.content == "Test instructions"
         assert config.instructions.injection_type == "system_file"
         assert config.instructions.path == "/etc/test/config.md"
@@ -148,7 +147,7 @@ name = "minimal"
         assert config.auth.env_var == ""
         assert config.host.config_dirs == []
         assert config.host.config_files == []
-        assert config.docker.env == {}
+        assert config.vm.env == {}
         assert config.instructions.content == ""
 
     def test_uses_dirname_when_name_missing(self, tmp_path):
@@ -273,7 +272,7 @@ class TestDetectHostConfigForAgent:
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
             host=HostConfig(config_dirs=[".test-config", ".missing"], config_files=[]),
-            docker=DockerConfig(),
+            vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
@@ -296,7 +295,7 @@ class TestDetectHostConfigForAgent:
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
             host=HostConfig(config_dirs=[], config_files=[".testrc", ".missingrc"]),
-            docker=DockerConfig(),
+            vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
@@ -318,7 +317,7 @@ class TestDetectHostConfigForAgent:
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
             host=HostConfig(config_dirs=[], config_files=[]),
-            docker=DockerConfig(),
+            vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
@@ -329,109 +328,8 @@ class TestDetectHostConfigForAgent:
 
 
 class TestRenderTemplate:
-    """Tests for render_template()."""
-
-    def test_creates_env_file(self, tmp_config_dir, tmp_path):
-        """Creates .env file with UID/GID and project info."""
-        output_dir = tmp_path / "output"
-        project_dir = "/home/user/myproject"
-
-        files = render_template("claude-code", output_dir, project_dir)
-
-        env_path = output_dir / ".env"
-        assert env_path.exists()
-        assert env_path in files
-
-        content = env_path.read_text()
-        assert f"SAFEYOLO_UID={os.getuid()}" in content
-        assert f"SAFEYOLO_GID={os.getgid()}" in content
-        assert f"USER_DIR={project_dir}" in content
-        assert "USER_DIRNAME=myproject" in content
-
-    def test_creates_compose_file(self, tmp_config_dir, tmp_path):
-        """Creates docker-compose.yml from template."""
-        output_dir = tmp_path / "output"
-
-        files = render_template("claude-code", output_dir, "/tmp/project")
-
-        compose_path = output_dir / "docker-compose.yml"
-        assert compose_path.exists()
-        assert compose_path in files
-
-    def test_skips_agent_toml(self, tmp_config_dir, tmp_path):
-        """Does not copy agent.toml to output."""
-        output_dir = tmp_path / "output"
-
-        render_template("claude-code", output_dir, "/tmp/project")
-
-        assert not (output_dir / "agent.toml").exists()
-
-    def test_accepts_instance_name_parameter(self, tmp_config_dir, tmp_path):
-        """Accepts instance_name parameter without error.
-
-        Note: instance_name is passed to template context but current templates
-        use agent_name for service naming. This test verifies the parameter
-        is accepted and rendering succeeds.
-        """
-        output_dir = tmp_path / "output"
-
-        # Should not raise
-        files = render_template("claude-code", output_dir, "/tmp/project", instance_name="myinstance")
-
-        # Files should be created
-        assert len(files) >= 2  # At least .env and docker-compose.yml
-        assert (output_dir / "docker-compose.yml").exists()
-
-    def test_raises_on_unknown_template(self, tmp_config_dir, tmp_path):
-        """Raises TemplateError for unknown template."""
-        output_dir = tmp_path / "output"
-
-        with pytest.raises(TemplateError, match="Unknown template"):
-            render_template("nonexistent", output_dir, "/tmp/project")
-
-    def test_renders_guarded_agent_install_in_init_script(self, tmp_config_dir, tmp_path):
-        """Rendered init script should only install when the agent binary is missing."""
-        output_dir = tmp_path / "output"
-
-        render_template("openai-codex", output_dir, "/tmp/myproject")
-
-        init_script = (output_dir / "safeyolo-init.sh").read_text()
-
-        assert "{{ binary }}" not in init_script
-        assert "command -v codex >/dev/null 2>&1" in init_script
-        assert "Installing codex with mise..." in init_script
-        assert "timeout 120 bash -lc 'mise use -g npm:@openai/codex@latest'" in init_script
-        assert "Warning: codex installation failed or timed out" in init_script
-
-    def test_renders_guarded_agent_install_in_claude_init_script(self, tmp_config_dir, tmp_path):
-        """Claude template should render the binary name in the guarded install block."""
-        output_dir = tmp_path / "output"
-
-        render_template("claude-code", output_dir, "/tmp/myproject")
-
-        init_script = (output_dir / "safeyolo-init.sh").read_text()
-
-        assert "command -v claude >/dev/null 2>&1" in init_script
-        assert "Installing claude with mise..." in init_script
-        assert "timeout 120 bash -lc 'mise use -g npm:@anthropic-ai/claude-code@latest'" in init_script
-        assert "Warning: claude installation failed or timed out" in init_script
-
-    def test_populates_template_variables(self, tmp_config_dir, tmp_path):
-        """Template variables are correctly populated in output."""
-        output_dir = tmp_path / "output"
-
-        render_template("claude-code", output_dir, "/tmp/myproject")
-
-        compose_content = (output_dir / "docker-compose.yml").read_text()
-
-        # Should not contain raw Jinja2 placeholders
-        assert "{{" not in compose_content, "Unrendered Jinja2 variable found"
-        assert "}}" not in compose_content, "Unrendered Jinja2 variable found"
-        assert "{%" not in compose_content, "Unrendered Jinja2 block found"
-
-        # Verify specific substitutions happened
-        assert "HTTP_PROXY=http://safeyolo:8080" in compose_content, "proxy_hostname not substituted"
-        assert "claude-code:" in compose_content, "instance_name not substituted in service definition"
+    """Docker compose rendering tests removed — microVM branch uses rootfs + config share."""
+    pass
 
 
 # =============================================================================

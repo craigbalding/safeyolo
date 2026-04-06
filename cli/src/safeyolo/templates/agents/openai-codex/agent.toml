@@ -23,7 +23,9 @@ setup_hint = "Run: codex login --device-auth"
 config_dirs = [".codex", ".safeyolo-hooks"]
 config_files = []
 
-[docker]
+[vm]
+cpus = 4
+memory = 4096
 env = { CODEX_HOME = "/home/agent/.codex" }
 
 [instructions]

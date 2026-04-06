@@ -114,8 +114,7 @@ def show() -> None:
             pass  # Skip fingerprint display on any error
 
         if sandbox:
-            console.print("\n[dim]Sandbox Mode: Agents access the CA via Docker volume mount.[/dim]")
-            console.print("[dim]Host access is available for diagnostics but not recommended for agents.[/dim]")
+            console.print("\n[dim]Sandbox Mode: Agents access the CA via VirtioFS config share.[/dim]")
 
         console.print("\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
     else:
