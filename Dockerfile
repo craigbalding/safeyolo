@@ -77,6 +77,7 @@ COPY addons/toml_normalize.py /app/addons/
 COPY addons/toml_roundtrip.py /app/addons/
 COPY addons/list_loader.py /app/addons/
 COPY addons/sensor_utils.py /app/addons/
+COPY addons/flow_pruner.py /app/addons/
 # Detection module (pure detection logic, no mitmproxy deps)
 COPY addons/detection/ /app/addons/detection/
 # Copy addons in load order (see scripts/start-safeyolo.sh)
