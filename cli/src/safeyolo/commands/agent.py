@@ -271,9 +271,16 @@ def _run_agent(
             active_subnets=[feth_alloc["subnet"]],
         )
     except Exception as err:
-        console.print(f"[red]Network isolation setup failed:[/red] {err}")
-        console.print("  SafeYolo requires network isolation to run agents.")
-        console.print("  The VM will not start without enforced egress control.")
+        console.print(f"[red]Network isolation failed:[/red] {err}")
+        console.print()
+        console.print("  SafeYolo will not start an agent without enforced egress control.")
+        console.print("  This typically means sudo is needed for feth/pf setup.")
+        console.print()
+        console.print("  Try:")
+        console.print("    1. Run again (sudo password may be needed for pf)")
+        console.print("    2. Check feth-bridge is installed: ls ~/.safeyolo/bin/feth-bridge")
+        console.print("    3. Check BPF access: groups | grep access_bpf")
+        console.print("    4. Run [bold]safeyolo setup[/bold] to check all prerequisites")
         raise typer.Exit(1)
 
     gateway_ip = feth_alloc["host_ip"]
