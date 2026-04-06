@@ -148,8 +148,18 @@ int main(int argc, char *argv[]) {
         _exit(127);
     }
 
-    /* Parent: set PTY size from the master side (more reliable than slave side) */
-    ioctl(pty_master, TIOCSWINSZ, &initial_ws);
+    /* Parent: set PTY size from master side and verify */
+    usleep(100000);  /* 100ms — let child start before resize */
+    if (ioctl(pty_master, TIOCSWINSZ, &initial_ws) < 0) {
+        perror("vsock-term: TIOCSWINSZ set failed");
+    }
+    /* Verify it took */
+    struct winsize verify;
+    if (ioctl(pty_master, TIOCGWINSZ, &verify) == 0) {
+        fprintf(stderr, "vsock-term: pty master verified: %dx%d\n", verify.ws_col, verify.ws_row);
+    }
+    /* Notify child to re-read terminal size */
+    kill(child_pid, SIGWINCH);
 
     /* Bridge vsock ↔ PTY master */
     fcntl(pty_master, F_SETFL, O_NONBLOCK);
