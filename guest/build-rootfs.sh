@@ -167,6 +167,13 @@ rm -rf /mnt/rootfs/usr/share/doc/*
 rm -rf /mnt/rootfs/usr/share/man/*
 find /mnt/rootfs/usr/share/locale -maxdepth 1 ! -name "en*" -type d -exec rm -rf {} + 2>/dev/null || true
 
+# Unmount any stray mounts left by chroot/systemd post-install hooks
+umount /mnt/rootfs/dev/pts 2>/dev/null || true
+umount /mnt/rootfs/dev 2>/dev/null || true
+umount /mnt/rootfs/proc 2>/dev/null || true
+umount /mnt/rootfs/sys 2>/dev/null || true
+umount /mnt/rootfs/run 2>/dev/null || true
+
 umount /mnt/rootfs
 echo "--- Rootfs built ---"
 '
