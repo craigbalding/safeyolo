@@ -186,7 +186,7 @@ class ServiceDiscovery:
                 agents[name] = {"ip": ip}
             # If duplicate, keep whichever — both are valid
         for name, ts in last_seen_snapshot.items():
-            entry = agents.setdefault(name, {})
+            entry = agents.setdefault(name, {"ip": None})
             entry["last_seen"] = ts
             entry["idle_seconds"] = round(now - ts, 1)
 
