@@ -140,6 +140,11 @@ class NetworkGuard(SecurityAddon):
         if not self.is_enabled():
             return
 
+        # Check per-flow bypass (flow already has response, or policy says
+        # this addon is disabled for this domain/client).
+        if self.is_bypassed(flow):
+            return
+
         domain = flow.request.host
         path = flow.request.path
         method = flow.request.method
@@ -162,7 +167,14 @@ class NetworkGuard(SecurityAddon):
             agent=agent,
         )
 
-        client = get_policy_client()
+        try:
+            client = get_policy_client()
+        except RuntimeError:
+            # PDP not configured — fail closed
+            log.error("PDP not configured, failing closed for %s", sanitize_for_log(domain))
+            self._handle_deny(flow, domain, path, method, "PDP not configured (fail-closed)")
+            return
+
         decision = client.evaluate(event)
 
         # 3. Handle deny → 403
