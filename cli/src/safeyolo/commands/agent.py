@@ -231,6 +231,8 @@ def _run_agent(
             pass
 
     # Prepare config share (proxy env, CA cert, SSH key, agent env)
+    config = load_config()
+    proxy_port = config.get("proxy", {}).get("port", 8080)
     try:
         prepare_config_share(
             name=name,
@@ -239,6 +241,7 @@ def _run_agent(
             mise_package=mise_package,
             agent_args=agent_args_str,
             extra_env=extra_env,
+            proxy_port=proxy_port,
         )
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")

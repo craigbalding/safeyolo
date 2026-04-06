@@ -130,6 +130,7 @@ def prepare_config_share(
     mise_package: str = "",
     agent_args: str = "",
     extra_env: dict[str, str] | None = None,
+    proxy_port: int = 8080,
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -143,11 +144,12 @@ def prepare_config_share(
     # Proxy environment variables
     # The guest uses HTTP_PROXY to route through host mitmproxy.
     # Gateway IP is typically 192.168.64.1 for VZNATNetworkDeviceAttachment.
+    proxy_url = f"http://192.168.64.1:{proxy_port}"
     proxy_env = (
-        'export HTTP_PROXY="http://192.168.64.1:8080"\n'
-        'export HTTPS_PROXY="http://192.168.64.1:8080"\n'
-        'export http_proxy="http://192.168.64.1:8080"\n'
-        'export https_proxy="http://192.168.64.1:8080"\n'
+        f'export HTTP_PROXY="{proxy_url}"\n'
+        f'export HTTPS_PROXY="{proxy_url}"\n'
+        f'export http_proxy="{proxy_url}"\n'
+        f'export https_proxy="{proxy_url}"\n'
         'export NO_PROXY="localhost,127.0.0.1"\n'
         'export no_proxy="localhost,127.0.0.1"\n'
         'export SSL_CERT_FILE="/usr/local/share/ca-certificates/safeyolo.crt"\n'
