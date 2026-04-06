@@ -87,18 +87,36 @@ cp /tmp/mise/bin/mise /mnt/rootfs/usr/local/bin/mise
 chmod +x /mnt/rootfs/usr/local/bin/mise
 rm -rf /tmp/mise.tar.gz /tmp/mise
 
-# Configure mise activation (interactive shells)
-echo '\''eval "$(mise activate bash)"'\'' >> /mnt/rootfs/etc/bash.bashrc
+# Configure mise with shared data dir (accessible to all users)
+mkdir -p /mnt/rootfs/opt/mise
+cat > /mnt/rootfs/etc/profile.d/mise.sh << '"'"'MISE_PROFILE'"'"'
+export MISE_DATA_DIR="/opt/mise"
+export MISE_CACHE_DIR="/opt/mise/cache"
+export PATH="/opt/mise/shims:$PATH"
+eval "$(mise activate bash)" 2>/dev/null || true
+MISE_PROFILE
+chmod +x /mnt/rootfs/etc/profile.d/mise.sh
 
-# Configure mise for non-interactive shells
-echo '\''eval "$(mise activate bash)"'\'' > /mnt/rootfs/etc/mise-activate.sh
+# Also source for non-interactive shells
+cp /mnt/rootfs/etc/profile.d/mise.sh /mnt/rootfs/etc/mise-activate.sh
 echo "BASH_ENV=/etc/mise-activate.sh" >> /mnt/rootfs/etc/environment
 
-# Pre-install node@22 system-wide
+# Pre-install node@22 into shared mise data dir
 echo "--- Installing node@22 via mise ---"
-chroot /mnt/rootfs mise install --system node@22 || true
+chroot /mnt/rootfs env MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache \
+    mise install node@22 || true
+chroot /mnt/rootfs env MISE_DATA_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache \
+    mise use -g node@22 || true
+# Make shared dir writable by agent user (for installing additional tools)
+chroot /mnt/rootfs chmod -R 777 /opt/mise
+
+# Clean up apt BEFORE installing package-manager intercepts
+echo "--- Cleaning up ---"
+chroot /mnt/rootfs /usr/bin/apt-get clean
+rm -rf /mnt/rootfs/var/lib/apt/lists/*
 
 # Package-manager intercepts (same as current SafeYolo Dockerfile)
+# MUST come after apt-get clean since they shadow /usr/bin/apt-get
 for cmd in apt apt-get yum dnf apk; do
     cat > "/mnt/rootfs/usr/local/bin/$cmd" << '"'"'INTERCEPT'"'"'
 #!/bin/bash
@@ -132,11 +150,6 @@ echo "safeyolo" > /mnt/rootfs/etc/hostname
 
 # Default DNS (overridden by DHCP at boot)
 echo "nameserver 8.8.8.8" > /mnt/rootfs/etc/resolv.conf
-
-# Clean up
-echo "--- Cleaning up ---"
-chroot /mnt/rootfs apt-get clean
-rm -rf /mnt/rootfs/var/lib/apt/lists/*
 rm -rf /mnt/rootfs/usr/share/doc/*
 rm -rf /mnt/rootfs/usr/share/man/*
 find /mnt/rootfs/usr/share/locale -maxdepth 1 ! -name "en*" -type d -exec rm -rf {} + 2>/dev/null || true
