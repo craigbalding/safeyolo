@@ -53,6 +53,24 @@ class TestGCRABasics:
         assert allowed is False
         assert remaining == 0
 
+    def test_burst_capacity_is_10_percent_of_budget(self):
+        """Burst capacity for check_and_consume is max(1, budget_per_minute // 10)."""
+        from budget_tracker import GCRABudgetTracker
+
+        tracker = GCRABudgetTracker()
+
+        # For budget=100, burst=10. A new key starts with full burst.
+        remaining = tracker.get_remaining("fresh-key", 100)
+        assert remaining == 10
+
+        # For budget=50, burst=5
+        remaining_fifty = tracker.get_remaining("fifty-key", 50)
+        assert remaining_fifty == 5
+
+        # For budget=200, burst=20
+        remaining_200 = tracker.get_remaining("big-key", 200)
+        assert remaining_200 == 20
+
     def test_different_keys_independent(self):
         """Test different keys have independent budgets."""
         from budget_tracker import GCRABudgetTracker
@@ -97,6 +115,23 @@ class TestGCRARemaining:
         # For new key, should return burst capacity (10% of budget)
         remaining = tracker.get_remaining("new-key", budget)
         assert remaining == budget // 10
+
+
+    def test_get_remaining_after_partial_consumption(self):
+        """get_remaining decreases after consuming budget."""
+        from budget_tracker import GCRABudgetTracker
+
+        tracker = GCRABudgetTracker()
+        budget = 100
+
+        before = tracker.get_remaining("test-key", budget)
+        assert before == 10  # Full burst capacity
+
+        # Consume one unit
+        tracker.check_and_consume("test-key", budget)
+
+        after = tracker.get_remaining("test-key", budget)
+        assert after < before
 
 
 class TestGCRAReset:
@@ -342,7 +377,7 @@ class TestBudgetTrackerErrorPaths:
 
                 # Tracker should still function (in-memory operation)
                 allowed, _ = tracker.check_and_consume("test-key", 100)
-                assert isinstance(allowed, bool)
+                assert allowed is True
             finally:
                 # Restore permissions so cleanup can work
                 os.chmod(state_dir, 0o755)

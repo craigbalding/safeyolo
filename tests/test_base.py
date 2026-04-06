@@ -134,6 +134,30 @@ class TestSecurityAddonBypass:
             assert addon.is_bypassed(flow) is False
 
 
+    def test_is_bypassed_when_policy_disables_addon(self):
+        """Addon is bypassed when PolicyClient says addon is disabled for this domain."""
+        from base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.response = None
+        flow.request.host = "example.com"
+        flow.client_conn.peername = ("10.0.0.1", 12345)
+
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = False
+
+        with patch('base.get_policy_client', return_value=mock_client), \
+             patch('base.get_service_discovery', return_value=None):
+            assert addon.is_bypassed(flow) is True
+
+        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
+
+
 class TestSecurityAddonBlocking:
     """Tests for addon blocking functionality."""
 
@@ -176,6 +200,52 @@ class TestSecurityAddonBlocking:
 
         assert flow.response is not None
         assert addon.stats.blocked == 1
+
+
+    def test_block_response_has_correct_status_and_body(self):
+        """block() produces response with the exact status code, JSON body, and X-Blocked-By header."""
+        import json
+
+        from base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.metadata = {}
+        flow.response = None
+
+        body = {"error": "Credential leak", "event_id": "ev-123"}
+        addon.block(flow, 403, body)
+
+        resp = flow.response
+        assert resp.status_code == 403
+        assert json.loads(resp.content) == {"error": "Credential leak", "event_id": "ev-123"}
+        assert resp.headers["Content-Type"] == "application/json"
+        assert resp.headers["X-Blocked-By"] == "test-addon"
+
+    def test_block_with_extra_headers_verifies_headers(self):
+        """block() with extra_headers includes those headers in the response."""
+        from base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "rate-limiter"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.metadata = {}
+        flow.response = None
+
+        body = {"error": "Rate limited"}
+        addon.block(flow, 429, body, extra_headers={"Retry-After": "60"})
+
+        resp = flow.response
+        assert resp.status_code == 429
+        assert resp.headers["Retry-After"] == "60"
+        assert resp.headers["X-Blocked-By"] == "rate-limiter"
 
 
 class TestSecurityAddonWarn:
