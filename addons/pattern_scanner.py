@@ -287,7 +287,7 @@ class PatternScanner(SecurityAddon):
         if not self.rules:
             return
 
-        if not flow.response or not flow.response.content:
+        if not flow.response:
             return
 
         rule, location = self._scan_response_content(flow)
