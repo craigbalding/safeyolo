@@ -30,6 +30,8 @@ func printUsage() {
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
       --share HOST:TAG:MODE  VirtioFS share (MODE = ro or rw, repeatable)
+      --feth IFACE        feth interface for network isolation
+      --feth-bridge PATH  Path to feth-bridge binary
       --help              Show this help
 
     Example:
@@ -39,7 +41,7 @@ func printUsage() {
         --rootfs ~/.safeyolo/agents/test/rootfs.ext4 \\
         --cpus 4 --memory 4096 \\
         --share /Users/me/code:workspace:rw \\
-        --share /tmp/config:config:ro
+        --feth feth0
     """
     fputs(usage, stderr)
 }
@@ -136,37 +138,39 @@ guard var config = parseArguments() else {
 }
 
 do {
-    // Set up feth-based networking if --feth is specified
-    var fethBridgeProcess: Process?
     if !config.feth.isEmpty {
+        // Network isolation via feth pair.
+        // Create socketpair: VM gets one end, feth-bridge gets the other.
+        // Use posix_spawn_file_actions to dup the host fd into fd 3 of the
+        // child process, avoiding the sudo fd-closing problem.
         let (vmFD, hostFD) = try VMConfiguration.createNetworkSocketPair()
         config.netSocketFD = vmFD
 
-        // Launch feth-bridge as a child process (needs root for BPF)
         let bridgePath = config.fethBridgePath.isEmpty
             ? (ProcessInfo.processInfo.arguments[0] as NSString)
                 .deletingLastPathComponent + "/feth-bridge"
             : config.fethBridgePath
 
-        // Ensure the host fd is NOT close-on-exec
-        _ = fcntl(hostFD, F_SETFD, 0)
+        // posix_spawn with file_actions to dup hostFD → fd 3 in child
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, hostFD, 3)  // hostFD → 3
+        posix_spawn_file_actions_addclose(&fileActions, hostFD)     // close original
 
-        // Use posix_spawn to launch sudo feth-bridge.
-        // sudo closes fds >= 3 by default; -C <N> closes only fds >= N.
-        let closeFrom = String(hostFD + 1)
-        let argv: [String] = ["sudo", "-C", closeFrom, bridgePath, String(hostFD), config.feth]
+        let argv: [String] = ["sudo", bridgePath, "3", config.feth]
         let cArgs = argv.map { strdup($0) } + [nil]
-        defer { cArgs.forEach { if let p = $0 { free(p) } } }
+        defer {
+            cArgs.forEach { if let p = $0 { free(p) } }
+            posix_spawn_file_actions_destroy(&fileActions)
+        }
 
         var pid: pid_t = 0
-        let spawnResult = posix_spawn(&pid, "/usr/bin/sudo", nil, nil, cArgs, environ)
-        guard spawnResult == 0 else {
-            throw VMConfigurationError.invalidConfiguration("posix_spawn failed: \(String(cString: strerror(spawnResult)))")
+        let rc = posix_spawn(&pid, "/usr/bin/sudo", &fileActions, nil, cArgs, environ)
+        guard rc == 0 else {
+            throw VMConfigurationError.invalidConfiguration("posix_spawn: \(String(cString: strerror(rc)))")
         }
+        close(hostFD)  // Parent no longer needs it
         fputs("feth-bridge started (pid=\(pid)) on \(config.feth)\n", stderr)
-
-        // Close our copy of the host fd — feth-bridge owns it now
-        close(hostFD)
     }
 
     let vmConfig = try VMConfiguration.build(from: config)

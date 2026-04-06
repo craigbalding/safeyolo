@@ -7,8 +7,8 @@
  *
  * Usage: sudo feth-bridge <socket-fd> <feth-interface>
  *
- * The socket-fd is inherited from the parent process (safeyolo-vm) and
- * carries raw Ethernet frames as Unix datagrams.
+ * The socket-fd (typically 3) is set up by the parent process via
+ * posix_spawn_file_actions_adddup2 before sudo is exec'd.
  *
  * Build: cc -O2 -o feth-bridge feth-bridge.c
  */
@@ -44,7 +44,6 @@ static int open_bpf(const char *ifname) {
     int fd = -1;
     char bpfdev[32];
 
-    /* Find an available /dev/bpf device */
     for (int i = 0; i < 256; i++) {
         snprintf(bpfdev, sizeof(bpfdev), "/dev/bpf%d", i);
         fd = open(bpfdev, O_RDWR);
@@ -59,7 +58,6 @@ static int open_bpf(const char *ifname) {
         return -1;
     }
 
-    /* Attach to interface */
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
     strlcpy(ifr.ifr_name, ifname, IFNAMSIZ);
@@ -69,39 +67,16 @@ static int open_bpf(const char *ifname) {
         return -1;
     }
 
-    /* Enable immediate mode (don't buffer reads) */
     int imm = 1;
-    if (ioctl(fd, BIOCIMMEDIATE, &imm) < 0) {
-        fprintf(stderr, "feth-bridge: BIOCIMMEDIATE: %s\n", strerror(errno));
-        close(fd);
-        return -1;
-    }
+    ioctl(fd, BIOCIMMEDIATE, &imm);
 
-    /* See sent packets (so we can capture responses) */
-    int seesent = 1;
-    if (ioctl(fd, BIOCSSEESENT, &seesent) < 0) {
-        /* Non-fatal — some BPF versions don't support this */
-    }
-
-    /* Enable header-complete mode (we provide full Ethernet headers) */
     int hdrcmplt = 1;
-    if (ioctl(fd, BIOCSHDRCMPLT, &hdrcmplt) < 0) {
-        fprintf(stderr, "feth-bridge: BIOCSHDRCMPLT: %s\n", strerror(errno));
-        close(fd);
-        return -1;
-    }
+    ioctl(fd, BIOCSHDRCMPLT, &hdrcmplt);
 
-    /* Get BPF buffer length */
-    unsigned int buflen;
-    if (ioctl(fd, BIOCGBLEN, &buflen) < 0) {
-        fprintf(stderr, "feth-bridge: BIOCGBLEN: %s\n", strerror(errno));
-        close(fd);
-        return -1;
-    }
-
-    /* Set non-blocking for poll */
     fcntl(fd, F_SETFL, O_NONBLOCK);
 
+    unsigned int buflen;
+    ioctl(fd, BIOCGBLEN, &buflen);
     fprintf(stderr, "feth-bridge: attached to %s (bpf buf=%u)\n", ifname, buflen);
     return fd;
 }
@@ -115,17 +90,14 @@ int main(int argc, char *argv[]) {
     int sock_fd = atoi(argv[1]);
     const char *ifname = argv[2];
 
-    /* Validate socket fd */
     if (fcntl(sock_fd, F_GETFD) < 0) {
         fprintf(stderr, "feth-bridge: fd %d is not valid: %s\n", sock_fd, strerror(errno));
         return 1;
     }
 
-    /* Open BPF on the feth interface */
     int bpf_fd = open_bpf(ifname);
     if (bpf_fd < 0) return 1;
 
-    /* Get BPF buffer size for reads */
     unsigned int bpf_buflen;
     ioctl(bpf_fd, BIOCGBLEN, &bpf_buflen);
 
@@ -137,11 +109,7 @@ int main(int argc, char *argv[]) {
 
     uint8_t sock_buf[MAX_FRAME_SIZE];
     uint8_t *bpf_buf = malloc(bpf_buflen);
-    if (!bpf_buf) {
-        perror("malloc");
-        close(bpf_fd);
-        return 1;
-    }
+    if (!bpf_buf) { perror("malloc"); close(bpf_fd); return 1; }
 
     struct pollfd fds[2];
     fds[0].fd = sock_fd;
@@ -173,10 +141,6 @@ int main(int argc, char *argv[]) {
         if (fds[1].revents & POLLIN) {
             ssize_t n = read(bpf_fd, bpf_buf, bpf_buflen);
             if (n > 0) {
-                /*
-                 * BPF returns one or more frames, each with a bpf_hdr prefix.
-                 * Walk the buffer extracting individual frames.
-                 */
                 uint8_t *p = bpf_buf;
                 uint8_t *end = bpf_buf + n;
                 while (p < end) {
@@ -187,14 +151,11 @@ int main(int argc, char *argv[]) {
                     if (caplen > 0 && frame + caplen <= end) {
                         send(sock_fd, frame, caplen, 0);
                     }
-
-                    /* Advance to next frame (BPF_WORDALIGN) */
                     p += BPF_WORDALIGN(hdr->bh_hdrlen + hdr->bh_caplen);
                 }
             }
         }
 
-        /* Check for errors/hangup */
         if ((fds[0].revents | fds[1].revents) & (POLLERR | POLLHUP)) {
             fprintf(stderr, "feth-bridge: fd error/hangup\n");
             break;
