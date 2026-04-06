@@ -181,7 +181,8 @@ def headers_to_json(headers, redact_headers: set[str] | None = None) -> str:
     """Convert mitmproxy Headers to JSON string.
 
     Preserves duplicate header names as list of [name, value] pairs.
-    Headers named in redact_headers have their values replaced with [REDACTED].
+    Headers named in redact_headers have their values replaced with
+    [GATEWAY:...{last4chars}] (or [GATEWAY:...?] for values shorter than 4 chars).
     """
     if headers is None:
         return "[]"
@@ -227,6 +228,7 @@ class FlowStore:
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=NORMAL;")
         self._conn.execute("PRAGMA temp_store=MEMORY;")
+        self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.execute(_CREATE_FLOWS_TABLE)
         self._conn.execute(_CREATE_FTS_TABLE)
         self._conn.execute(_CREATE_REQUEST_FTS_TABLE)
