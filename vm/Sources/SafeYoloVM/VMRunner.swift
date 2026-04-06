@@ -126,10 +126,18 @@ class VMRunner: NSObject {
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
 
+        // First Ctrl-C: try graceful stop. Second Ctrl-C: force stop immediately.
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigintSource.setEventHandler { [weak self] in
-            fputs("\nReceived SIGINT, shutting down VM...\n", stderr)
-            self?.requestStop()
+            guard let self = self else { return }
+            if self.stopRequested {
+                fputs("\nForce stopping VM...\n", stderr)
+                self.forceStop()
+            } else {
+                fputs("\nShutting down VM... (Ctrl-C again to force)\n", stderr)
+                self.stopRequested = true
+                self.requestStop()
+            }
         }
         sigintSource.resume()
 
@@ -144,6 +152,7 @@ class VMRunner: NSObject {
     }
 
     private var _signalSources: [Any] = []
+    private var stopRequested = false
 
     // MARK: - Terminal raw mode
 
@@ -156,7 +165,9 @@ class VMRunner: NSObject {
         tcgetattr(STDIN_FILENO, &raw)
         originalTermios = raw
 
-        raw.c_lflag &= ~tcflag_t(ICANON | ECHO | ISIG)
+        // Keep ISIG enabled so Ctrl-C generates SIGINT for our signal handler.
+        // Disable ICANON (line buffering) and ECHO (character echo) for raw serial passthrough.
+        raw.c_lflag &= ~tcflag_t(ICANON | ECHO)
         raw.c_iflag &= ~tcflag_t(IXON | ICRNL)
         withUnsafeMutablePointer(to: &raw.c_cc) { ptr in
             let cc = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: cc_t.self)
