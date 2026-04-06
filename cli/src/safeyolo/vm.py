@@ -131,6 +131,7 @@ def prepare_config_share(
     agent_args: str = "",
     extra_env: dict[str, str] | None = None,
     proxy_port: int = 8080,
+    host_mounts: list[tuple[str, str, bool]] | None = None,
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -188,6 +189,22 @@ def prepare_config_share(
     agent_token = config_dir / "data" / "agent_token"
     if agent_token.exists():
         shutil.copy2(str(agent_token), str(share_dir / "agent_token"))
+
+    # Host config mount manifest — tells the guest init which VirtioFS tags
+    # to mount and where. Format: one line per mount, "tag:guest_path"
+    if host_mounts:
+        lines = []
+        for host_path, tag, _read_only in host_mounts:
+            # Derive guest path: ~/.claude → /home/agent/.claude
+            host_p = Path(host_path)
+            home = Path.home()
+            try:
+                rel = host_p.relative_to(home)
+                guest_path = f"/home/agent/{rel}"
+            except ValueError:
+                guest_path = f"/mnt/{tag}"
+            lines.append(f"{tag}:{guest_path}")
+        (share_dir / "host-mounts").write_text("\n".join(lines) + "\n")
 
     return share_dir
 

@@ -220,13 +220,29 @@ def _run_agent(
     if yolo:
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
 
-    # Get mise package from template
+    # Get mise package and host config from template
     mise_package = ""
+    host_shares = []  # (host_path, tag, read_only) for VirtioFS mounts
     template_name = metadata.get("template", "")
     if template_name:
         try:
             agent_config = get_agent_config(template_name)
             mise_package = agent_config.install.mise
+            # Mount host config dirs/files into guest /home/agent/
+            home = Path.home()
+            share_idx = 0
+            for dir_name in agent_config.host.config_dirs:
+                host_path = home / dir_name
+                if host_path.is_dir():
+                    host_shares.append((str(host_path), f"hostcfg{share_idx}", True))
+                    share_idx += 1
+            for file_name in agent_config.host.config_files:
+                host_path = home / file_name
+                if host_path.exists():
+                    # VirtioFS shares directories, not files.
+                    # For individual files, share the parent dir.
+                    host_shares.append((str(host_path.parent), f"hostcfg{share_idx}", True))
+                    share_idx += 1
         except TemplateError:
             pass
 
@@ -242,6 +258,7 @@ def _run_agent(
             agent_args=agent_args_str,
             extra_env=extra_env,
             proxy_port=proxy_port,
+            host_mounts=host_shares if host_shares else None,
         )
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
@@ -255,6 +272,7 @@ def _run_agent(
         proc = start_vm(
             name=name,
             workspace_path=str(workspace_path),
+            extra_shares=host_shares if host_shares else None,
         )
         # Register VM IP in agent map (for service_discovery addon)
         register_vm_ip(name)

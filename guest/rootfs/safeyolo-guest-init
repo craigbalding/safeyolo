@@ -44,6 +44,18 @@ mount -t virtiofs workspace /workspace 2>/dev/null || true
 # Config share (proxy env, CA cert, SSH keys — read-only)
 mount -t virtiofs config /safeyolo 2>/dev/null || true
 
+# Host config mounts (e.g., ~/.claude, ~/.safeyolo-hooks)
+# Manifest written by CLI: one line per mount, "tag:guest_path"
+if [ -f /safeyolo/host-mounts ]; then
+    while IFS=: read -r tag guest_path; do
+        [ -z "$tag" ] && continue
+        mkdir -p "$guest_path"
+        mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
+        # Fix ownership for agent user
+        chown -R agent:agent "$guest_path" 2>/dev/null || true
+    done < /safeyolo/host-mounts
+fi
+
 # --------------------------------------------------------------------------
 # 3. Configure proxy environment
 # --------------------------------------------------------------------------
