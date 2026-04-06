@@ -147,15 +147,28 @@ do {
                 .deletingLastPathComponent + "/feth-bridge"
             : config.fethBridgePath
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = [bridgePath, String(hostFD), config.feth]
-        // Ensure the host fd is NOT close-on-exec so sudo/feth-bridge inherit it
-        fcntl(hostFD, F_SETFD, 0)
+        // Ensure the host fd is NOT close-on-exec
+        _ = fcntl(hostFD, F_SETFD, 0)
 
-        try process.run()
-        fethBridgeProcess = process
-        fputs("feth-bridge started (pid=\(process.processIdentifier)) on \(config.feth)\n", stderr)
+        // Use fork/exec instead of Foundation's Process — Process may close
+        // extra fds. sudo also closes fds >= 3 by default, so pass -C to
+        // preserve our socket fd.
+        let closeFrom = String(hostFD + 1)
+        let pid = fork()
+        if pid == 0 {
+            // Child process — exec sudo with -C to preserve fds
+            execl("/usr/bin/sudo", "sudo",
+                  "-C", closeFrom,
+                  bridgePath,
+                  String(hostFD),
+                  config.feth,
+                  nil)
+            _exit(1)
+        }
+        guard pid > 0 else {
+            throw VMConfigurationError.invalidConfiguration("fork failed: \(String(cString: strerror(errno)))")
+        }
+        fputs("feth-bridge started (pid=\(pid)) on \(config.feth)\n", stderr)
 
         // Close our copy of the host fd — feth-bridge owns it now
         close(hostFD)
