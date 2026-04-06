@@ -10,6 +10,7 @@
  * Build: cc -o bridge-filter bridge-filter.c
  */
 
+#include <stdint.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <net/if.h>
@@ -79,6 +80,9 @@ int main(int argc, char *argv[]) {
     }
 
     uint32_t current = gp.ifbrp_filter;
+    fprintf(stderr, "current flags on %s: 0x%x (sizeof ifbrparam=%zu, sizeof ifdrv=%zu)\n",
+            bridge, current, sizeof(struct ifbrparam), sizeof(struct ifdrv));
+
     if (current & IFBF_FILT_USEIPF) {
         fprintf(stderr, "ipfilter already enabled on %s (flags=0x%x)\n", bridge, current);
         close(s);
@@ -89,6 +93,8 @@ int main(int argc, char *argv[]) {
     struct ifbrparam sp;
     memset(&sp, 0, sizeof(sp));
     sp.ifbrp_filter = current | IFBF_FILT_USEIPF;
+    fprintf(stderr, "setting flags: 0x%x, ifd_cmd=%d, ifd_len=%zu\n",
+            sp.ifbrp_filter, BRDGSFILT, sizeof(sp));
 
     struct ifdrv sdrv;
     memset(&sdrv, 0, sizeof(sdrv));
