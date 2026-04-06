@@ -81,13 +81,18 @@ class TestAuth:
         api.request(flow)
         assert flow.response.status_code == 401
         body = json.loads(flow.response.content)
-        assert "Authorization required" in body["error"]
+        assert body == {
+            "error": "Authorization required",
+            "hint": "Bearer <token>",
+        }
 
     def test_invalid_token_returns_401(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token="invalid-token")
             api.request(flow)
             assert flow.response.status_code == 401
+            body = json.loads(flow.response.content)
+            assert body == {"error": "Invalid agent token"}
 
     def test_valid_token_succeeds(self, api, agent_token):
         with _patch_active_token(agent_token):
@@ -102,7 +107,7 @@ class TestAuth:
             api.request(flow)
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
-            assert "not configured" in body["error"].lower()
+            assert body == {"error": "Agent token not configured"}
 
     def test_replaced_token_rejects_old(self, api):
         """Creating a new token invalidates the old one."""
@@ -121,6 +126,31 @@ class TestAuth:
             api.request(flow)
             assert flow.response.status_code == 200
 
+    def test_invalid_token_emits_audit_event(self, api, agent_token):
+        """Failed auth writes a security.agent_auth_failed event."""
+        with _patch_active_token(agent_token), \
+             patch("agent_api.write_event") as mock_write:
+            flow = _make_api_flow("/health", token="wrong-token")
+            api.request(flow)
+            assert flow.response.status_code == 401
+
+            mock_write.assert_called_once()
+            call_args = mock_write.call_args
+            assert call_args[0][0] == "security.agent_auth_failed"
+            assert call_args[1]["severity"].value == "high"
+            assert call_args[1]["decision"].value == "deny"
+            assert call_args[1]["addon"] == "agent-api"
+            assert "path" in call_args[1]["details"]
+
+    def test_bearer_prefix_required(self, api, agent_token):
+        """Auth header without 'Bearer ' prefix is rejected as 401."""
+        flow = _make_api_flow("/health")
+        flow.request.headers["authorization"] = f"Token {agent_token}"
+        api.request(flow)
+        assert flow.response.status_code == 401
+        body = json.loads(flow.response.content)
+        assert body["hint"] == "Bearer <token>"
+
 
 class TestMethods:
     def test_post_returns_405(self, api, agent_token):
@@ -135,6 +165,12 @@ class TestMethods:
 
     def test_delete_returns_405(self, api, agent_token):
         flow = _make_api_flow("/health", method="DELETE", token=agent_token)
+        api.request(flow)
+        assert flow.response.status_code == 405
+
+    def test_patch_returns_405(self, api, agent_token):
+        """PATCH is not in the allowed methods set."""
+        flow = _make_api_flow("/health", method="PATCH", token=agent_token)
         api.request(flow)
         assert flow.response.status_code == 405
 
@@ -180,14 +216,51 @@ class TestEndpoints:
             body = json.loads(flow.response.content)
             assert "endpoints" in body
 
+    def test_unknown_endpoint_lists_all_routes(self, api, agent_token):
+        """404 body includes the full list of available endpoints for discoverability."""
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/nonexistent", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 404
+            body = json.loads(flow.response.content)
+            endpoints = body["endpoints"]
+            # Verify key routes are listed
+            assert "/health" in endpoints
+            assert "/status" in endpoints
+            assert "/policy" in endpoints
+            assert "/explain" in endpoints
+            assert "/lookup" in endpoints
+            assert "/budgets" in endpoints
+            assert "/config" in endpoints
+            assert "/memory" in endpoints
+            assert "/circuits" in endpoints
+            assert "/agents" in endpoints
+
+    def test_handler_exception_returns_500(self, api, agent_token):
+        """If a handler raises, the API returns 500 with the exception type."""
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_handle_health", side_effect=RuntimeError("boom")):
+            flow = _make_api_flow("/health", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 500
+            body = json.loads(flow.response.content)
+            assert body == {"error": "Internal error: RuntimeError"}
+
+
+class TestExplain:
     def test_explain_missing_param(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token)
             api.request(flow)
             assert flow.response.status_code == 400
+            body = json.loads(flow.response.content)
+            assert body == {
+                "error": "Invalid or missing request_id",
+                "usage": "/explain?request_id=req-<32hex>",
+            }
 
-    def test_explain_with_request_id(self, api, agent_token):
-        """Test /explain returns 200 with request_id (log may not exist in test env)."""
+    def test_explain_with_request_id_no_log_file(self, api, agent_token):
+        """When JSONL log doesn't exist, returns empty events list."""
         with _patch_active_token(agent_token):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
@@ -195,21 +268,349 @@ class TestEndpoints:
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["request_id"] == valid_id
-            assert isinstance(body["events"], list)
+            assert body["events"] == []
 
     def test_explain_invalid_request_id(self, api, agent_token):
-        """Test /explain rejects malformed request_id."""
+        """Path traversal attempt is rejected."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=../../../etc/passwd")
             api.request(flow)
             assert flow.response.status_code == 400
 
     def test_explain_rejects_short_request_id(self, api, agent_token):
-        """Test /explain rejects request_id that doesn't match expected format."""
+        """Request ID that doesn't match req-<32hex> format is rejected."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-123")
             api.request(flow)
             assert flow.response.status_code == 400
+
+    def test_explain_rejects_old_12hex_format(self, api, agent_token):
+        """Old 12-hex format is rejected (must be 32 hex)."""
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-0a1b2c3d4e5f")
+            api.request(flow)
+            assert flow.response.status_code == 400
+
+    def test_explain_finds_matching_events_in_jsonl(self, api, agent_token, tmp_path):
+        """Explain searches JSONL log and returns only events matching request_id."""
+        target_id = "req-aabbccdd11223344aabbccdd11223344"
+        other_id = "req-00000000000000000000000000000000"
+        log_file = tmp_path / "safeyolo.jsonl"
+        log_file.write_text(
+            json.dumps({"request_id": target_id, "event": "traffic.request", "host": "example.com"}) + "\n"
+            + json.dumps({"request_id": other_id, "event": "traffic.request", "host": "other.com"}) + "\n"
+            + json.dumps({"request_id": target_id, "event": "traffic.response", "status_code": 200}) + "\n"
+            + "not valid json\n"
+        )
+        from pathlib import Path as RealPath
+
+        def fake_path(arg):
+            if arg == "/app/logs/safeyolo.jsonl":
+                return RealPath(str(log_file))
+            return RealPath(arg)
+
+        with _patch_active_token(agent_token), \
+             patch("pathlib.Path", side_effect=fake_path):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            api.request(flow)
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert body["request_id"] == target_id
+        assert len(body["events"]) == 2
+        assert body["events"][0]["host"] == "example.com"
+        assert body["events"][1]["status_code"] == 200
+        assert "truncated" not in body
+
+    def test_explain_sets_truncated_flag_when_log_exceeds_limit(self, api, agent_token, tmp_path):
+        """When log exceeds MAX_EXPLAIN_LINES, truncated flag is set."""
+        target_id = "req-aabbccdd11223344aabbccdd11223344"
+        log_file = tmp_path / "safeyolo.jsonl"
+        # Write more lines than MAX_EXPLAIN_LINES (10000)
+        lines = []
+        for i in range(10002):
+            lines.append(json.dumps({"request_id": "req-00000000000000000000000000000000", "i": i}))
+        # Put target at the end so it's in the retained window
+        lines.append(json.dumps({"request_id": target_id, "event": "traffic.request"}))
+        log_file.write_text("\n".join(lines) + "\n")
+
+        from pathlib import Path as RealPath
+
+        def fake_path(arg):
+            if arg == "/app/logs/safeyolo.jsonl":
+                return RealPath(str(log_file))
+            return RealPath(arg)
+
+        with _patch_active_token(agent_token), \
+             patch("pathlib.Path", side_effect=fake_path):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            api.request(flow)
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert body["truncated"] is True
+        assert body["searched_lines"] == 10000
+        # Target event was in the last 10000 lines, so it should be found
+        assert len(body["events"]) == 1
+
+
+class TestPDPEndpoints:
+    """Tests for endpoints that proxy to PDP: /health, /status, /policy, /budgets, /config."""
+
+    def test_health_pdp_available(self, api, agent_token):
+        """When PDP is healthy, /health returns pdp: ok."""
+        mock_client = Mock()
+        mock_client.health_check.return_value = True
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/health", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {"agent_api": "ok", "pdp": "ok"}
+
+    def test_health_pdp_unavailable(self, api, agent_token):
+        """When PDP is not configured, /health returns pdp: unavailable."""
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=None):
+            flow = _make_api_flow("/health", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {"agent_api": "ok", "pdp": "unavailable"}
+
+    def test_health_pdp_unhealthy(self, api, agent_token):
+        """When PDP health check fails, pdp field is 'unavailable'."""
+        mock_client = Mock()
+        mock_client.health_check.return_value = False
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/health", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {"agent_api": "ok", "pdp": "unavailable"}
+
+    def test_status_returns_pdp_stats(self, api, agent_token):
+        """/status proxies PDP stats."""
+        mock_client = Mock()
+        mock_client.get_stats.return_value = {
+            "engine_version": "2.0",
+            "policy_hash": "abc123",
+            "eval_count": 42,
+        }
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/status", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {
+                "engine_version": "2.0",
+                "policy_hash": "abc123",
+                "eval_count": 42,
+            }
+
+    def test_status_503_when_pdp_unavailable(self, api, agent_token):
+        """/status returns 503 when PDP not configured."""
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=None):
+            flow = _make_api_flow("/status", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "PDP not available"}
+
+    def test_policy_returns_baseline(self, api, agent_token):
+        """/policy wraps baseline in a 'policy' key."""
+        mock_client = Mock()
+        mock_client.get_baseline.return_value = {"permissions": [], "budgets": {}}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/policy", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {"policy": {"permissions": [], "budgets": {}}}
+
+    def test_policy_503_when_pdp_unavailable(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=None):
+            flow = _make_api_flow("/policy", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "PDP not available"}
+
+    def test_budgets_returns_budget_stats(self, api, agent_token):
+        """/budgets proxies PDP budget stats."""
+        mock_client = Mock()
+        mock_client.get_budget_stats.return_value = {
+            "api.openai.com": {"used": 5, "limit": 100, "remaining": 95},
+        }
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/budgets", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {
+                "api.openai.com": {"used": 5, "limit": 100, "remaining": 95},
+            }
+
+    def test_budgets_503_when_pdp_unavailable(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=None):
+            flow = _make_api_flow("/budgets", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "PDP not available"}
+
+    def test_config_returns_sensor_config(self, api, agent_token):
+        """/config proxies PDP sensor config."""
+        mock_client = Mock()
+        mock_client.get_sensor_config.return_value = {
+            "credential_rules": [{"name": "openai"}],
+            "scan_patterns": [],
+        }
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/config", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {
+                "credential_rules": [{"name": "openai"}],
+                "scan_patterns": [],
+            }
+
+    def test_config_503_when_pdp_unavailable(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=None):
+            flow = _make_api_flow("/config", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "PDP not available"}
+
+
+class TestAddonEndpoints:
+    """Tests for endpoints that delegate to other addons: /memory, /circuits."""
+
+    def test_memory_returns_stats(self, api, agent_token):
+        """/memory proxies memory-monitor stats."""
+        mock_monitor = Mock()
+        mock_monitor.get_stats.return_value = {
+            "rss_mb": 128.5,
+            "connections": 12,
+        }
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=mock_monitor):
+            flow = _make_api_flow("/memory", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {"rss_mb": 128.5, "connections": 12}
+
+    def test_memory_503_when_addon_missing(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=None):
+            flow = _make_api_flow("/memory", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "memory-monitor addon not loaded"}
+
+    def test_circuits_returns_stats(self, api, agent_token):
+        """/circuits proxies circuit-breaker stats."""
+        mock_cb = Mock()
+        mock_cb.get_stats.return_value = {
+            "api.openai.com": {"state": "closed", "failures": 0},
+        }
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=mock_cb):
+            flow = _make_api_flow("/circuits", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body == {
+                "api.openai.com": {"state": "closed", "failures": 0},
+            }
+
+    def test_circuits_503_when_addon_missing(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=None):
+            flow = _make_api_flow("/circuits", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "circuit-breaker addon not loaded"}
+
+
+class TestLookup:
+    """Tests for GET /lookup?host=X - policy evaluation for a host."""
+
+    def test_lookup_missing_host_returns_400(self, api, agent_token):
+        """Missing host parameter returns 400 with usage hint."""
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/lookup", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 400
+            body = json.loads(flow.response.content)
+            assert body == {
+                "error": "Missing 'host' parameter",
+                "usage": "/lookup?host=example.com",
+            }
+
+    def test_lookup_pdp_unavailable_returns_503(self, api, agent_token):
+        """When PDP is not configured, returns 503."""
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=None):
+            flow = _make_api_flow("/lookup", token=agent_token, query="host=example.com")
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "PDP not available"}
+
+    def test_lookup_engine_unavailable_returns_503(self, api, agent_token):
+        """When policy engine is not accessible via client, returns 503."""
+        mock_client = Mock()
+        mock_client._pdp = None  # No PDP core attached
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/lookup", token=agent_token, query="host=example.com")
+            api.request(flow)
+            assert flow.response.status_code == 503
+            body = json.loads(flow.response.content)
+            assert body == {"error": "Policy engine not available"}
+
+    def test_lookup_returns_decision(self, api, agent_token):
+        """Successful lookup returns host, agent, effect, reason."""
+        mock_decision = Mock()
+        mock_decision.effect = "allow"
+        mock_decision.reason = "explicit permission"
+
+        mock_engine = Mock()
+        mock_engine.evaluate_request.return_value = mock_decision
+
+        mock_pdp = Mock()
+        mock_pdp._engine = mock_engine
+
+        mock_client = Mock()
+        mock_client._pdp = mock_pdp
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_get_policy_client", return_value=mock_client):
+            flow = _make_api_flow("/lookup", token=agent_token, query="host=api.openai.com")
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body["host"] == "api.openai.com"
+            assert body["effect"] == "allow"
+            assert body["reason"] == "explicit permission"
+            # agent comes from flow.metadata, which is None in this test
+            assert body["agent"] is None
 
 
 class TestMetadata:
@@ -226,6 +627,28 @@ class TestMetadata:
             flow = _make_api_flow("/health", token=agent_token)
             api.request(flow)
             assert flow.response.headers.get("X-SafeYolo-Agent-API") == "true"
+
+    def test_content_type_is_json(self, api, agent_token):
+        """All responses have application/json content type."""
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/health", token=agent_token)
+            api.request(flow)
+            assert flow.response.headers.get("Content-Type") == "application/json"
+
+    def test_error_responses_set_blocked_by(self, api):
+        """Even 401 errors set blocked_by metadata (downstream addons must skip)."""
+        flow = _make_api_flow("/health")
+        api.request(flow)
+        assert flow.response.status_code == 401
+        assert flow.metadata.get("blocked_by") == "agent-api"
+
+    def test_404_sets_blocked_by(self, api, agent_token):
+        """404 responses set blocked_by metadata."""
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/nonexistent", token=agent_token)
+            api.request(flow)
+            assert flow.response.status_code == 404
+            assert flow.metadata.get("blocked_by") == "agent-api"
 
 
 # -- Flow Store API route tests --
@@ -346,10 +769,9 @@ class TestFlowStoreAPI:
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert "body_base64" in body
-            assert body["body_length"] > 0
+            assert body["body_length"] == 16  # len(b'{"action":"get"}')
             # Text-like content should include body_text
-            assert "body_text" in body
-            assert "action" in body["body_text"]
+            assert body["body_text"] == '{"action":"get"}'
 
     def test_get_response_body(self, api_with_store):
         """GET /api/flows/{id}/response-body returns decompressed body."""
@@ -360,8 +782,7 @@ class TestFlowStoreAPI:
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert "body_base64" in body
-            assert "body_text" in body
-            assert "alice" in body["body_text"]
+            assert body["body_text"] == '{"id":42,"owner":"alice","role":"admin"}'
 
     def test_post_flow_endpoints(self, api_with_store):
         """POST /api/flows/endpoints returns grouped data."""
@@ -375,7 +796,7 @@ class TestFlowStoreAPI:
             api.request(flow)
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
-            assert body["count"] >= 1
+            assert body["count"] == 1
 
     def test_post_flow_body_search(self, api_with_store):
         """POST /api/flows/body-search returns FTS results."""
@@ -389,7 +810,7 @@ class TestFlowStoreAPI:
             api.request(flow)
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
-            assert body["count"] >= 1
+            assert body["count"] == 1
 
     def test_flow_store_503_when_not_available(self, api, agent_token):
         """Flow store routes return 503 when recorder not loaded."""
@@ -510,8 +931,7 @@ class TestFlowStoreAPI:
             api.request(flow)
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
-            assert "flows" in body
-            assert "count" in body
+            assert body["count"] == 1
 
     def test_post_flow_request_body_search_missing_params(self, api_with_store):
         """POST /api/flows/request-body-search requires engagement_id and query."""
@@ -578,3 +998,38 @@ class TestFlowStoreAPI:
             flow = _make_api_flow("/health", method="DELETE", token=agent_token)
             api.request(flow)
             assert flow.response.status_code == 405
+
+    def test_get_flow_search_with_query_params(self, api_with_store):
+        """GET /api/flows/search converts query params to filters."""
+        api, store, token = api_with_store
+        with _patch_active_token(token):
+            flow = _make_api_flow(
+                "/api/flows/search",
+                token=token,
+                query="host=app.example.com&limit=5",
+            )
+            api.request(flow)
+            assert flow.response.status_code == 200
+            body = json.loads(flow.response.content)
+            assert body["count"] == 1
+            assert body["flows"][0]["host"] == "app.example.com"
+
+    def test_post_flow_search_invalid_json(self, api_with_store):
+        """POST /api/flows/search with invalid JSON returns 400."""
+        api, store, token = api_with_store
+        with _patch_active_token(token):
+            flow = _make_api_flow("/api/flows/search", method="POST", token=token)
+            flow.request.content = b"not json at all {{"
+            flow.request.headers["content-type"] = "application/json"
+            api.request(flow)
+            assert flow.response.status_code == 400
+            body = json.loads(flow.response.content)
+            assert body == {"error": "Invalid JSON body"}
+
+
+# -- Gateway endpoint tests --
+# DEFERRED: /gateway/services, /gateway/request-access, /gateway/submit-binding
+# require complex setup with service-discovery, service-gateway, service-loader,
+# and contract model mocking. These are better tested as integration tests or
+# in a dedicated test file. The endpoint handler logic is ~300 LOC with multiple
+# addon lookups, service registry calls, and contract validation.

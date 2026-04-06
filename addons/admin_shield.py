@@ -74,7 +74,7 @@ class AdminShield:
             flow.response = http.Response.make(
                 403,
                 b'{"error": "Forbidden", "message": "Admin API not accessible through proxy"}',
-                {"Content-Type": "application/json"},
+                {"Content-Type": "application/json", "X-Blocked-By": "admin-shield"},
             )
 
             # Mark as handled so other addons skip it
