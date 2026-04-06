@@ -7,6 +7,7 @@
 # Changes here take effect immediately — no rootfs rebuild needed.
 #
 set -e
+export DEBIAN_FRONTEND=noninteractive
 
 # --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
@@ -118,10 +119,11 @@ fi
 # --------------------------------------------------------------------------
 if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
     if ! su agent -c "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "Installing $SAFEYOLO_MISE_PACKAGE via mise..." >&2
-        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" 2>&1 || {
-            echo "Warning: mise install failed or timed out" >&2
+        echo "installing" > /safeyolo/vm-status 2>/dev/null || true
+        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || {
+            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
         }
+        echo "" > /safeyolo/vm-status 2>/dev/null || true
     fi
 fi
 

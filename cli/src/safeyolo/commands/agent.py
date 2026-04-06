@@ -331,12 +331,27 @@ def _run_agent(
             exit_code = proc.returncode
         else:
             console.print(f" {guest_ip}")
-            console.print(f"  Connecting terminal...", end="")
 
-            # Wait for safeyolo-vm to connect vsock (it exits when session ends)
-            # The vsock terminal handles everything from here — clear screen and hand off
-            # Give a moment for vsock to connect before clearing
-            _time.sleep(1)
+            # Watch for agent install (first run only)
+            status_file = config_share_dir / "vm-status"
+            shown_installing = False
+            deadline2 = _time.time() + 120
+            while _time.time() < deadline2 and proc.poll() is None:
+                status = status_file.read_text().strip() if status_file.exists() else ""
+                if status == "installing" and not shown_installing:
+                    agent_label = binary or template_name
+                    console.print(f"  Installing {agent_label}...")
+                    shown_installing = True
+                elif status == "install-failed":
+                    console.print(f"  [red]Install failed[/red]")
+                    break
+                elif status == "" and shown_installing:
+                    break  # Install finished (file removed or empty)
+                if not shown_installing and status == "":
+                    break  # No install needed
+                _time.sleep(1)
+
+            console.print(f"  Connecting terminal...")
             # Clear progress and hand over the screen
             console.print()
             proc.wait()
