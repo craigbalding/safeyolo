@@ -24,13 +24,24 @@ from ..config import (
     get_logs_dir,
     load_config,
 )
-from ..docker import (
-    DOCKER_INSPECT_TIMEOUT_SECONDS,
-    DockerError,
-    check_docker,
-    get_container_name,
-    get_container_status,
-)
+from ..proxy import is_proxy_running
+
+# Docker module removed in microvm branch — stub out for doctor compatibility
+DOCKER_INSPECT_TIMEOUT_SECONDS = 5
+
+class DockerError(Exception):
+    pass
+
+def check_docker():
+    return False
+
+def get_container_name():
+    return "safeyolo"
+
+def get_container_status():
+    if is_proxy_running():
+        return {"status": "running", "health": "healthy"}
+    return None
 
 console = Console()
 

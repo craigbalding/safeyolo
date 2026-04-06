@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 
 from ..config import find_config_dir, get_certs_dir, load_config
-from ..docker import copy_ca_cert_to_host, is_running
+from ..proxy import is_proxy_running
 
 console = Console()
 
@@ -46,9 +46,7 @@ def env() -> None:
     ca_cert = get_ca_cert_path()
 
     # If cert not on host, try to copy from running container
-    if not ca_cert and is_running():
-        copy_ca_cert_to_host()
-        ca_cert = get_ca_cert_path()
+    # Cert is generated on host by proxy.start_proxy(), no copy needed
 
     if not ca_cert:
         console.print("[red]CA certificate not found.[/red]")
@@ -91,9 +89,7 @@ def show() -> None:
     ca_cert = get_ca_cert_path()
 
     # If cert not on host, try to copy from running container
-    if not ca_cert and is_running():
-        copy_ca_cert_to_host()
-        ca_cert = get_ca_cert_path()
+    # Cert is generated on host by proxy.start_proxy(), no copy needed
 
     config = load_config()
     sandbox = config.get("sandbox", False)

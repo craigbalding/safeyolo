@@ -15,7 +15,7 @@ from ..config import (
     get_logs_dir,
     save_config,
 )
-from ..docker import check_docker, write_compose_file
+from ..vm import check_guest_images
 
 # Path to bundled templates in package
 POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
@@ -82,21 +82,17 @@ def init(
         console.print("Use --force to overwrite")
         raise typer.Exit(1)
 
-    # Check Docker availability
-    docker_available = check_docker()
-    if not docker_available:
+    # Check guest images
+    if not check_guest_images():
         console.print(
             Panel(
-                "[yellow]Docker is not available.[/yellow]\n\n"
-                "SafeYolo requires Docker to run. Please install Docker:\n"
-                "  macOS: https://docs.docker.com/desktop/mac/install/\n"
-                "  Linux: https://docs.docker.com/engine/install/",
-                title="Warning",
+                "[yellow]Guest VM images not found.[/yellow]\n\n"
+                "Build them with:\n"
+                "  cd guest && ./build-all.sh\n"
+                "  mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/",
+                title="Note",
             )
         )
-        if interactive:
-            if not Confirm.ask("Continue anyway?", default=True):
-                raise typer.Exit(1)
 
     console.print(f"\n[bold]Initializing SafeYolo in {config_dir}[/bold]\n")
 
@@ -138,9 +134,10 @@ def init(
         shutil.copytree(LISTS_TEMPLATE_DIR, lists_dir, dirs_exist_ok=True)
         console.print(f"  [green]Created[/green] {lists_dir}/")
 
-    # Write docker-compose.yml
-    compose_path = write_compose_file(sandbox=sandbox)
-    console.print(f"  [green]Created[/green] {compose_path}")
+    # Create VM-related directories
+    (config_dir / "share").mkdir(exist_ok=True)
+    (config_dir / "bin").mkdir(exist_ok=True)
+    console.print(f"  [green]Created[/green] {config_dir}/share/ and bin/")
 
     # Summary
     mode_label = "[bold green]Sandbox Mode[/bold green]" if sandbox else "Try Mode"

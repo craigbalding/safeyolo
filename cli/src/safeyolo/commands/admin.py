@@ -15,7 +15,7 @@ from ..config import (
     get_config_path,
     load_config,
 )
-from ..docker import check_docker, get_container_status
+from ..proxy import is_proxy_running
 
 console = Console()
 
@@ -92,24 +92,13 @@ def check() -> None:
     else:
         console.print(f"  [dim]–[/dim]  Admin token not set (expected at {token_path})")
 
-    # 6. Check Docker
-    if check_docker():
-        console.print("  [green]✓[/green]  Docker available")
+    # 6. Check proxy process
+    if is_proxy_running():
+        console.print("  [green]✓[/green]  Proxy running")
+        proxy_running = True
     else:
-        console.print("  [red]✗[/red]  Docker not available")
-        all_ok = False
-
-    # 7. Check container status
-    status = get_container_status()
-    if status:
-        if status.get("status") == "running":
-            console.print("  [green]✓[/green]  Container running")
-            proxy_running = True
-        else:
-            console.print("  [yellow]![/yellow]  Container not running")
-            console.print("        Run: [bold]safeyolo start[/bold]")
-    else:
-        console.print("  [dim]–[/dim]  Container not created yet")
+        console.print("  [yellow]![/yellow]  Proxy not running")
+        console.print("        Run: [bold]safeyolo start[/bold]")
 
     # 8. Check API connectivity
     if proxy_running:
