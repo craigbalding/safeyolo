@@ -7,7 +7,7 @@ patterns via policy or enable builtin pattern sets.
 """
 
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -240,6 +240,14 @@ class TestLoadPatternsFromConfig:
 
         assert rules[0].target == "response"
 
+    def test_empty_config_produces_zero_rules(self):
+        """Test empty scan_patterns list produces zero rules."""
+        from detection.patterns import load_patterns_from_config
+
+        rules = load_patterns_from_config([])
+
+        assert rules == []
+
 
 class TestBuiltinPatternSets:
     """Tests for builtin pattern sets."""
@@ -258,14 +266,16 @@ class TestBuiltinPatternSets:
         assert "pii" in BUILTIN_PATTERN_SETS
         assert len(BUILTIN_PATTERN_SETS["pii"]) > 0
 
-    def test_load_builtin_set_returns_patterns(self):
-        """Test load_builtin_set returns pattern configs."""
+    def test_load_builtin_set_returns_pattern_configs_with_required_fields(self):
+        """Test load_builtin_set returns configs each having 'name' and 'pattern'."""
         from detection.patterns import load_builtin_set
 
         patterns = load_builtin_set("secrets")
 
-        assert len(patterns) > 0
-        assert all("name" in p and "pattern" in p for p in patterns)
+        assert len(patterns) == 10
+        for p in patterns:
+            assert "name" in p, f"Pattern missing 'name': {p}"
+            assert "pattern" in p, f"Pattern missing 'pattern': {p}"
 
     def test_load_builtin_set_unknown_returns_empty(self):
         """Test load_builtin_set returns empty for unknown set."""
@@ -284,36 +294,26 @@ class TestBuiltinPatternSets:
         assert len(rules) == len(BUILTIN_PATTERN_SETS["secrets"])
 
     def test_secrets_patterns_detect_openai_key(self):
-        """Test secrets patterns detect OpenAI API key."""
+        """Test secrets set detects an OpenAI API key by name."""
         from detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
 
         rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
+        openai_rules = [r for r in rules if r.name == "openai-api-key"]
+        assert len(openai_rules) == 1
+
         test_key = "sk-abcdefghij1234567890abcdefghij1234567890abcdefgh"
-
-        matched = None
-        for rule in rules:
-            if rule.matches(test_key):
-                matched = rule
-                break
-
-        assert matched is not None
-        assert "openai" in matched.name
+        assert openai_rules[0].matches(test_key) is not None
 
     def test_secrets_patterns_detect_github_pat(self):
-        """Test secrets patterns detect GitHub PAT."""
+        """Test secrets set detects a GitHub PAT by name."""
         from detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
 
         rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
+        github_rules = [r for r in rules if r.name == "github-pat"]
+        assert len(github_rules) == 1
+
         test_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
-
-        matched = None
-        for rule in rules:
-            if rule.matches(test_token):
-                matched = rule
-                break
-
-        assert matched is not None
-        assert "github" in matched.name
+        assert github_rules[0].matches(test_token) is not None
 
 
 class TestPatternScanner:
@@ -343,7 +343,7 @@ class TestPatternScanner:
         assert scanner.rules[0].name == "test"
 
     def test_load_policy_config_loads_builtin_sets(self, scanner):
-        """Test load_policy_config loads builtin sets when enabled."""
+        """Test load_policy_config loads builtin sets and includes openai rule."""
         config = {
             "addons": {
                 "pattern_scanner": {
@@ -353,8 +353,9 @@ class TestPatternScanner:
         }
         scanner.load_policy_config(config)
 
-        assert len(scanner.rules) > 0
-        assert any("openai" in r.name for r in scanner.rules)
+        rule_names = [r.name for r in scanner.rules]
+        assert len(scanner.rules) == 10
+        assert "openai-api-key" in rule_names
 
     def test_load_policy_config_combines_builtin_and_user(self, scanner):
         """Test load_policy_config combines builtin and user patterns."""
@@ -548,6 +549,469 @@ class TestPatternScanner:
         assert flow.metadata.get("blocked_by") == "pattern-scanner"
 
 
+class TestResponseHeaderScanningWithEmptyBody:
+    """Tests that response() scans headers even when the body is empty.
+
+    This pins the fix: previously response() returned early when the body
+    was empty, skipping header scanning entirely.
+    """
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_response_header_matched_when_body_is_empty(self, scanner, make_flow, make_response):
+        """A response with no body but a matching header must still be detected."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "leaked-token",
+                "pattern": r"SECRET-\w{10}",
+                "target": "response",
+                "scope": ["headers"],
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = make_response(
+            status_code=204,
+            content=b"",
+            headers={"X-Debug": "SECRET-abcdefghij"},
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = False
+            scanner.response(flow)
+
+        assert flow.metadata.get("pattern_matched_response") == "leaked-token"
+        assert flow.metadata.get("pattern_location_response") == "header:X-Debug"
+
+    def test_response_header_blocked_when_body_is_empty(self, scanner, make_flow, make_response):
+        """A response with empty body and matching header is blocked when blocking is on."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "leaked-token",
+                "pattern": r"SECRET-\w{10}",
+                "target": "response",
+                "scope": ["headers"],
+                "action": "block",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = make_response(
+            status_code=204,
+            content=b"",
+            headers={"X-Debug": "SECRET-abcdefghij"},
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = True
+            scanner.response(flow)
+
+        assert flow.response.status_code == 502
+        assert flow.metadata.get("blocked_by") == "pattern-scanner"
+
+
+class TestDirectionFiltering:
+    """Tests that direction (target) filtering is enforced."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_request_only_rule_does_not_match_response(self, scanner, make_flow, make_response):
+        """A rule with target=request must not trigger on a response."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "request-only",
+                "pattern": r"PROJ-\d{5}",
+                "target": "request",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = make_response(
+            status_code=200,
+            content='{"id": "PROJ-12345"}',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = False
+            scanner.response(flow)
+
+        assert flow.metadata.get("pattern_matched_response") is None
+
+    def test_response_only_rule_does_not_match_request(self, scanner, make_flow):
+        """A rule with target=response must not trigger on a request."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "response-only",
+                "pattern": r"PROJ-\d{5}",
+                "target": "response",
+            }]
+        })
+        flow = make_flow(
+            method="POST",
+            url="https://api.example.com/data",
+            content='{"id": "PROJ-12345"}',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = False
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") is None
+
+    def test_both_target_matches_request(self, scanner, make_flow):
+        """A rule with target=both must match on a request."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "both-dir",
+                "pattern": r"PROJ-\d{5}",
+                "target": "both",
+            }]
+        })
+        flow = make_flow(
+            method="POST",
+            url="https://api.example.com/data",
+            content='{"id": "PROJ-12345"}',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = False
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") == "both-dir"
+
+    def test_both_target_matches_response(self, scanner, make_flow, make_response):
+        """A rule with target=both must match on a response."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "both-dir",
+                "pattern": r"PROJ-\d{5}",
+                "target": "both",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = make_response(
+            status_code=200,
+            content='{"id": "PROJ-12345"}',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = False
+            scanner.response(flow)
+
+        assert flow.metadata.get("pattern_matched_response") == "both-dir"
+
+
+class TestBlockResponseContent:
+    """Tests that block responses include the correct body fields."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_request_block_response_body_contains_rule_and_location(self, scanner, make_flow):
+        """Blocked request response body includes error, rule, location, and message."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "proj-id",
+                "pattern": r"PROJ-\d{5}",
+                "target": "request",
+                "action": "block",
+                "message": "Project ID leak",
+            }]
+        })
+        flow = make_flow(
+            method="POST",
+            url="https://api.example.com/data",
+            content='PROJ-12345',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = True
+            scanner.request(flow)
+
+        import json
+        body = json.loads(flow.response.get_text())
+        assert body["error"] == "Request blocked by pattern policy"
+        assert body["rule"] == "proj-id"
+        assert body["location"] == "body"
+        assert body["message"] == "Project ID leak"
+
+    def test_response_block_response_body_contains_rule_and_location(self, scanner, make_flow, make_response):
+        """Blocked response body includes error, rule, location, and message."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "cust-id",
+                "pattern": r"CUST-\d{6}",
+                "target": "response",
+                "action": "block",
+                "message": "Customer ID in response",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = make_response(
+            status_code=200,
+            content='CUST-123456',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = True
+            scanner.response(flow)
+
+        import json
+        body = json.loads(flow.response.get_text())
+        assert body["error"] == "Response blocked by pattern policy"
+        assert body["rule"] == "cust-id"
+        assert body["location"] == "body"
+        assert body["message"] == "Customer ID in response"
+
+
+class TestLogOnlyPath:
+    """Tests that log-only rules do not block traffic."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_log_action_request_sets_metadata_but_does_not_block(self, scanner, make_flow):
+        """A rule with action=log matches but does not produce a block response."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "audit-only",
+                "pattern": r"PROJ-\d{5}",
+                "target": "request",
+                "action": "log",
+            }]
+        })
+        flow = make_flow(
+            method="POST",
+            url="https://api.example.com/data",
+            content='PROJ-12345',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = True  # blocking enabled globally
+            scanner.request(flow)
+
+        # Metadata is set (match happened)
+        assert flow.metadata.get("pattern_matched") == "audit-only"
+        # But no block response
+        assert flow.metadata.get("blocked_by") is None
+        assert flow.response is None
+
+    def test_log_action_response_sets_metadata_but_does_not_block(self, scanner, make_flow, make_response):
+        """A response rule with action=log matches but does not block."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "audit-resp",
+                "pattern": r"CUST-\d{6}",
+                "target": "response",
+                "action": "log",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = make_response(
+            status_code=200,
+            content='CUST-123456',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = True  # blocking enabled globally
+            scanner.response(flow)
+
+        assert flow.metadata.get("pattern_matched_response") == "audit-resp"
+        # The original 200 response is preserved, not replaced with a block
+        assert flow.response.status_code == 200
+
+
+class TestBlockRequiresBothRuleActionAndOption:
+    """Tests that blocking requires BOTH rule.action=='block' AND the option enabled."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_block_action_with_option_disabled_does_not_block(self, scanner, make_flow):
+        """A block-action rule with pattern_block_request=False must not block."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "block-rule",
+                "pattern": r"PROJ-\d{5}",
+                "target": "request",
+                "action": "block",
+            }]
+        })
+        flow = make_flow(
+            method="POST",
+            url="https://api.example.com/data",
+            content='PROJ-12345',
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = False
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") == "block-rule"
+        assert flow.response is None
+        assert flow.metadata.get("blocked_by") is None
+
+
+class TestMaybeReloadPatterns:
+    """Tests for _maybe_reload_patterns contract."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_reloads_when_policy_hash_changes(self, scanner):
+        """When policy hash changes, rules are reloaded from config."""
+        mock_client = MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "hash-v2",
+            "scan_patterns": [
+                {"name": "new-rule", "pattern": r"NEW-\d+", "target": "both"}
+            ],
+        }
+
+        scanner._last_policy_hash = "hash-v1"
+        assert scanner.rules == []
+
+        with patch("pdp.get_policy_client", return_value=mock_client):
+            scanner._maybe_reload_patterns()
+
+        assert len(scanner.rules) == 1
+        assert scanner.rules[0].name == "new-rule"
+        assert scanner._last_policy_hash == "hash-v2"
+
+    def test_skips_reload_when_policy_hash_unchanged(self, scanner):
+        """When policy hash is the same, rules are not reloaded."""
+        scanner.load_policy_config({
+            "scan_patterns": [
+                {"name": "existing", "pattern": r"OLD-\d+", "target": "both"}
+            ]
+        })
+        scanner._last_policy_hash = "same-hash"
+
+        mock_client = MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "same-hash",
+            "scan_patterns": [
+                {"name": "different", "pattern": r"DIFF-\d+", "target": "both"}
+            ],
+        }
+
+        with patch("pdp.get_policy_client", return_value=mock_client):
+            scanner._maybe_reload_patterns()
+
+        # Rules should not have changed
+        assert len(scanner.rules) == 1
+        assert scanner.rules[0].name == "existing"
+
+    def test_runtime_error_silently_caught(self, scanner):
+        """RuntimeError from get_policy_client (not configured) is silently caught."""
+        scanner.load_policy_config({
+            "scan_patterns": [
+                {"name": "kept", "pattern": r"KEEP-\d+", "target": "both"}
+            ]
+        })
+
+        with patch("pdp.get_policy_client", side_effect=RuntimeError("not configured")):
+            scanner._maybe_reload_patterns()
+
+        # Rules unchanged, no exception raised
+        assert len(scanner.rules) == 1
+        assert scanner.rules[0].name == "kept"
+
+
+class TestRequestWithNoBody:
+    """Tests that request scanning works when the body is empty."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_request_with_no_body_still_scans_url(self, scanner, make_flow):
+        """A GET request with no body still scans the URL."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "url-leak",
+                "pattern": r"PROJ-\d{5}",
+                "target": "request",
+                "scope": ["url"],
+            }]
+        })
+        flow = make_flow(
+            method="GET",
+            url="https://api.example.com/PROJ-12345",
+            content=b"",
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = False
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") == "url-leak"
+        assert flow.metadata.get("pattern_location") == "url"
+
+    def test_request_with_no_body_still_scans_headers(self, scanner, make_flow):
+        """A GET request with no body still scans headers."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "header-leak",
+                "pattern": r"SECRET-\w{8}",
+                "target": "request",
+                "scope": ["headers"],
+            }]
+        })
+        flow = make_flow(
+            method="GET",
+            url="https://api.example.com/data",
+            content=b"",
+            headers={"X-Token": "SECRET-abcdefgh"},
+        )
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_request = False
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") == "header-leak"
+        assert flow.metadata.get("pattern_location") == "header:X-Token"
+
+
+class TestResponseSkippedWhenNone:
+    """Test that response() handles missing flow.response gracefully."""
+
+    @pytest.fixture
+    def scanner(self):
+        from pattern_scanner import PatternScanner
+        return PatternScanner()
+
+    def test_response_with_no_flow_response_is_noop(self, scanner, make_flow):
+        """response() returns silently when flow.response is None."""
+        scanner.load_policy_config({
+            "scan_patterns": [{
+                "name": "test",
+                "pattern": r"MATCH",
+                "target": "response",
+            }]
+        })
+        flow = make_flow(url="https://api.example.com/data")
+        flow.response = None
+
+        with patch("pattern_scanner.ctx") as mock_ctx:
+            mock_ctx.options.pattern_block_response = False
+            scanner.response(flow)
+
+        assert flow.metadata.get("pattern_matched_response") is None
+
+
 class TestStats:
     """Tests for scanner statistics."""
 
@@ -570,21 +1034,27 @@ class TestStats:
         assert scanner.scans_total == 3
         assert scanner.matches_total == 1
 
-    def test_get_stats_structure(self):
-        """Test get_stats returns expected structure."""
+    def test_get_stats_returns_exact_values(self):
+        """Test get_stats returns exact expected values after known operations."""
         from pattern_scanner import PatternScanner
 
         scanner = PatternScanner()
         scanner.load_policy_config({
             "scan_patterns": [
-                {"name": "test", "pattern": r"test", "target": "both"}
+                {"name": "rule-a", "pattern": r"AAA", "target": "both"},
+                {"name": "rule-b", "pattern": r"BBB", "target": "both"},
             ]
         })
 
+        # Perform known operations
+        scanner._scan_for_scope(scanner.rules, "body", "contains AAA", "request")
+        scanner._scan_for_scope(scanner.rules, "body", "no match", "request")
+
         stats = scanner.get_stats()
 
-        assert "rules_total" in stats
-        assert "scans_total" in stats
-        assert "matches_total" in stats
-        assert "blocks_total" in stats
-        assert stats["rules_total"] == 1
+        assert stats == {
+            "rules_total": 2,
+            "scans_total": 2,
+            "matches_total": 1,
+            "blocks_total": 0,
+        }
