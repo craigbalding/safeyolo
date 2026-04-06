@@ -62,20 +62,16 @@ These environment variables configure:
 3. **Reversible** - Close the terminal and trust is gone
 4. **Safe** - Can't accidentally leave CA installed
 
-## Docker Containers (Sandbox Mode)
+## MicroVM Agents (Sandbox Mode)
 
-For Sandbox Mode, SafeYolo automatically mounts the CA certificate into agent containers and sets the environment variables. The docker-compose templates handle this:
+For Sandbox Mode, SafeYolo automatically injects the CA certificate into agent VMs via the VirtioFS config share and sets the environment variables. The guest init script handles this:
 
-```yaml
-volumes:
-  - safeyolo-certs:/certs:ro
-environment:
-  - NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem
-  - SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem
-  - REQUESTS_CA_BUNDLE=/certs/mitmproxy-ca-cert.pem
-```
+- CA cert copied from `~/.safeyolo/certs/` to the config share
+- Guest init installs it to `/usr/local/share/ca-certificates/` and runs `update-ca-certificates`
+- Environment variables set in `proxy.env` on the config share:
+  - `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`
 
-Use `safeyolo sandbox setup` to generate properly configured templates.
+No manual configuration needed — `safeyolo agent add` handles everything.
 
 ## Certificate Pinning
 

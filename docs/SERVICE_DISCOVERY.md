@@ -1,51 +1,55 @@
 # Service Discovery
 
-SafeYolo automatically identifies which agent is making each request using
-Docker's embedded DNS — no configuration needed.
+SafeYolo identifies which agent is making each request using a file-based IP map maintained by the CLI.
 
 ## How It Works
 
-1. Agent container starts and joins the `safeyolo_internal` Docker network
-2. Docker assigns an IP and registers the container name in its DNS
-3. When the proxy sees a request from an unknown IP, it does a reverse DNS lookup
-4. Docker's DNS resolves the IP back to the container name (e.g., `claude`)
-5. The result is cached (5 minute TTL) — subsequent requests skip the DNS lookup
+1. CLI writes `~/.safeyolo/data/agent_map.json` when a VM starts (with its IP) and removes the entry when it stops
+2. The `service_discovery` addon reads this file on each request (mtime-cached)
+3. The addon resolves the client source IP to an agent name
+4. Downstream addons (credential_guard, network_guard, etc.) use the agent name for per-agent policy evaluation
 
 ```
-Agent "claude" (172.20.0.3)
-    │
-    │  HTTP request
-    ▼
-SafeYolo proxy
-    │
-    ├─ Source IP: 172.20.0.3
-    ├─ DNS cache miss → gethostbyaddr("172.20.0.3")
-    ├─ Docker DNS returns: "claude.safeyolo_internal"
-    ├─ Strip suffix → "claude"
-    ├─ Cache: 172.20.0.3 → claude (5min TTL)
+agent_map.json:
+  {"test": {"ip": "192.168.68.2", "started": "2026-04-06T..."}}
+
+Request from 192.168.68.2
     │
     ▼
-credential_guard evaluates policy for principal "project:claude"
+service_discovery: IP lookup → "test"
+    │
+    ▼
+flow.metadata["agent"] = "test"
+    │
+    ▼
+credential_guard evaluates policy for agent "test"
 ```
 
-## Container Naming
+## Agent Map Format
 
-Agent containers use `container_name: <instance_name>` in their
-docker-compose template. This ensures:
+```json
+{
+  "test": {
+    "ip": "192.168.68.2",
+    "started": "2026-04-06T18:30:00Z"
+  },
+  "work": {
+    "ip": "192.168.69.2",
+    "started": "2026-04-06T18:35:00Z"
+  }
+}
+```
 
-- Reverse DNS returns the clean instance name (not a compose-generated hash)
-- Only one instance of each agent can run at a time (prevents shared-volume conflicts)
+The map is passed to mitmproxy via `--set agent_map_file=~/.safeyolo/data/agent_map.json`.
 
 ## Troubleshooting
 
 ### All requests show "unknown" principal
 
-1. Verify the agent container is on the `safeyolo_internal` network: `docker network inspect safeyolo_internal`
-2. Test reverse DNS from the proxy: `docker exec safeyolo python3 -c "import socket; print(socket.gethostbyaddr('<agent-ip>'))"`
-3. Check the proxy logs for "DNS discovery" or "Unknown source IP" messages
+1. Check the agent map file exists and has entries: `cat ~/.safeyolo/data/agent_map.json`
+2. Check the VM is running: `safeyolo status`
+3. Check the agent's IP matches the map entry
 
-### Agent not being identified
+### Agent map not updating
 
-The proxy caches failed DNS lookups for 60 seconds. If you started the proxy
-before the agent, wait a minute for the negative cache to expire, or restart
-the proxy.
+The CLI writes the map on `agent add/run` (start) and `agent stop/remove` (cleanup). If the VM crashes without cleanup, stale entries may remain. `safeyolo stop` cleans up all entries.

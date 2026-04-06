@@ -1,66 +1,41 @@
 # Sandbox Mode
 
-This guide explains how to deploy SafeYolo in **Sandbox Mode** where bypass is impossible - traffic either goes through the proxy or fails.
-
-## Why Sandbox Mode?
-
-Many autonomous coding agents will retry failed calls by changing network configuration - unsetting proxy variables, opening direct sockets, or using hardcoded IPs. Sandbox Mode avoids "policy by suggestion" by removing direct internet routing entirely.
-
-**Try Mode** (per-process env vars) is fine for interactive use, but provides no enforcement against agents that bypass proxy settings.
+Sandbox Mode runs AI coding agents in isolated Linux microVMs. Traffic either goes through the SafeYolo proxy or is blocked — bypass is impossible.
 
 ## Quick Start
 
 ```bash
-# Ensure SafeYolo is running
 safeyolo start
-
-# Generate agent container template
-safeyolo sandbox setup
-
-# Run agent in isolated container
-cd claude-code
-docker compose run --rm claudecode
+safeyolo agent add myproject claude-code ~/projects/myapp
 ```
 
-The generated template handles network isolation, CA certificate mounting, and proxy configuration automatically.
+The agent boots in a microVM with network isolation, CA trust, and proxy configuration handled automatically.
 
 ## How It Works
 
-SafeYolo creates a Docker network marked `internal: true`:
+Each agent runs in a persistent Linux microVM (Apple Virtualization.framework) with a dedicated feth network pair:
 
-1. **safeyolo_internal** (`172.31.0.0/24`)
-   - No default gateway to internet
-   - Agent containers live here
-   - Direct connections get "no route to host"
-
-2. **SafeYolo container** bridges between the internal network and internet
-   - Only path to the internet is through SafeYolo at `172.31.0.10:8080`
+1. **feth pair** creates an isolated network segment per VM
+2. **pf rules** on the feth interface allow only the proxy port
+3. **All other egress is blocked** — the VM cannot reach the internet directly
+4. **HTTP_PROXY/HTTPS_PROXY** route traffic through SafeYolo's mitmproxy
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  safeyolo_internal (no internet)                            │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │  Agent       │  │  App         │  │  Worker      │      │
-│  │  Container   │  │  Container   │  │  Container   │      │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
-│         │                 │                 │               │
-│         └────────────────►│◄────────────────┘               │
-│                           │                                 │
-│                           ▼                                 │
-│                  ┌────────────────┐                         │
-│                  │   SafeYolo     │                         │
-│                  │  172.31.0.10   │                         │
-│                  │    :8080       │                         │
-│                  └────────┬───────┘                         │
-│                           │                                 │
-└───────────────────────────┼─────────────────────────────────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │   Internet    │
-                    └───────────────┘
+Agent VM (192.168.68.2)
+    │
+    │  HTTP_PROXY=http://192.168.68.1:8090
+    │
+    ▼
+feth pair (pf: allow :8090, block all else)
+    │
+    ▼
+SafeYolo mitmproxy (host process)
+    │  addon chain: policy, credential guard, rate limits, audit
+    ▼
+Internet
 ```
+
+If the agent unsets proxy env vars, raw connections are blocked by pf. If the agent sends non-HTTP traffic, it's blocked by pf. The enforcement is at the network level, not the process level.
 
 ## Available Templates
 
@@ -70,82 +45,46 @@ safeyolo sandbox list
 
 | Template | Description |
 |----------|-------------|
-| `claude-code` | Claude Code with Node.js, git, python3 |
+| `claude-code` | Claude Code with Node.js, mise, git, gh |
 | `openai-codex` | OpenAI Codex CLI with similar tooling |
-
-## Generated Files
-
-`safeyolo sandbox setup` creates:
-
-```
-./claude-code/
-├── docker-compose.yml    # Network isolation + proxy config
-└── README.md             # Usage instructions
-```
-
-The compose file includes:
-- Internal network attachment
-- Proxy environment variables
-- CA certificate volume mount
-- Common dev tools (git, curl, python3, jq)
 
 ## Verification
 
-Test that bypass is impossible from inside the agent container:
+From inside the agent:
 
 ```bash
 # This works (goes through proxy):
 curl https://httpbin.org/ip
 
-# This fails (no route):
-curl --noproxy '*' https://httpbin.org/ip
-# Error: Could not resolve host / No route to host
+# This is blocked (pf drops it):
+curl --noproxy '*' https://ifconfig.co
+# Error: Could not resolve host / Connection refused
 ```
 
 ## Security Properties
 
 | Scenario | Result |
 |----------|--------|
-| Code respects `HTTP_PROXY` | Inspected by SafeYolo |
-| Code ignores proxy vars | Connection fails (no route) |
-| Code uses hardcoded IPs | Connection fails (no route) |
-| Code tries DNS exfil | DNS fails (no resolver outside network) |
-| Container-to-container | Works (same internal network) |
+| Code respects HTTP_PROXY | Inspected by SafeYolo |
+| Code unsets proxy vars | Blocked by pf (no route) |
+| Code uses hardcoded IPs | Blocked by pf |
+| Code sends raw TCP/UDP | Blocked by pf |
+| Code tries DNS exfil | Blocked (no DNS allowed from VM) |
 
-## When to Use Each Mode
+## Persistence
 
-**Use Sandbox Mode when:**
-- Running autonomous AI agents
-- Running untrusted or AI-generated code
-- You need audit logs of all egress
-- Credential protection must be enforced, not optional
-
-**Try Mode is acceptable when:**
-- You control all code running in your shell
-- Best-effort logging is sufficient
-- Just testing SafeYolo functionality
-
-## Authentication
-
-Agents handle their own authentication. When you run the container:
-
-- **Claude Code** - Prompts for API key or OAuth on first run
-- **OpenAI Codex** - Prompts for API key or ChatGPT OAuth on first run
-
-No `.env` file or pre-configuration required.
+Agent state persists across restarts: mise installs, shell history, config files. Each agent has its own ext4 disk image at `~/.safeyolo/agents/<name>/rootfs.ext4`.
 
 ## Troubleshooting
 
-**"No route to host" for legitimate requests:**
-- Verify `HTTP_PROXY` is set in the container
-- Check SafeYolo container is running: `docker ps | grep safeyolo`
-- Verify network connectivity: `ping 172.31.0.10`
+**Agent can't reach the internet:**
+- Check proxy is running: `safeyolo status`
+- Check mitmproxy logs: `cat ~/.local/state/safeyolo/mitmproxy.log | tail -20`
 
 **SSL errors:**
-- CA cert should be auto-mounted at `/certs/`
-- Verify volume exists: `docker volume ls | grep safeyolo-certs`
-- Check env vars: `echo $SSL_CERT_FILE`
+- The CA cert is injected via VirtioFS config share
+- Check from agent: `echo $SSL_CERT_FILE`
 
-**Container can't resolve DNS:**
-- DNS resolution happens through the proxy
-- Verify SafeYolo is running and healthy: `safeyolo status`
+**Agent binary not found:**
+- First run installs via mise (may take a minute)
+- Check status: the CLI shows "Installing <agent>..." during first boot
