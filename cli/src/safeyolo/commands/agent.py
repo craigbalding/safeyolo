@@ -286,6 +286,13 @@ def _run_agent(
         )
         # Register VM IP in agent map (for service_discovery addon)
         register_vm_ip(name)
+        # Load pf rules now that the VM is running (bridge is detectable)
+        try:
+            from ..firewall import load_rules, is_loaded
+            if not is_loaded():
+                load_rules(proxy_port=proxy_port)
+        except Exception:
+            pass  # Non-fatal — proxy env vars still route traffic
         # Wait for VM process to exit (interactive — serial console on stdin/stdout)
         proc.wait()
         exit_code = proc.returncode

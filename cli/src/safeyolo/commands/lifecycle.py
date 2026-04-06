@@ -120,19 +120,9 @@ def start(
         console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)
 
-    # Load pf firewall rules
-    try:
-        from ..firewall import load_rules, is_loaded
-        if not is_loaded():
-            console.print("Loading firewall rules (may require sudo)...")
-            load_rules(proxy_port=proxy_port, admin_port=admin_port)
-            console.print("  [green]pf rules loaded[/green]")
-        else:
-            console.print("  pf rules already active")
-    except Exception as err:
-        console.print(f"[yellow]Warning: Could not load pf rules:[/yellow] {err}")
-        console.print("  VM egress will not be restricted. Run manually:")
-        console.print("  [bold]sudo pfctl -a com.safeyolo -f /etc/pf.anchors/com.safeyolo[/bold]")
+    # pf firewall rules are loaded when the first VM starts (needs a running
+    # VM to detect the bridge interface). See _run_agent in agent.py.
+    console.print("  pf rules will be loaded when first agent starts")
 
     if wait:
         console.print("Waiting for healthy status...", end=" ")
