@@ -41,13 +41,15 @@ class TestEgressCompilation:
         result = self._compile("prompt")
         perms = self._network_wildcard_perms(result)
         effects = {p["effect"] for p in perms}
-        assert "prompt" in effects
+        # Wildcard also has rate_limit=600 which compiles to budget
+        assert effects == {"prompt", "budget"}
 
     def test_egress_deny_compiles_to_deny_permission(self):
         result = self._compile("deny")
         perms = self._network_wildcard_perms(result)
         effects = {p["effect"] for p in perms}
-        assert "deny" in effects
+        # Wildcard also has rate_limit=600 which compiles to budget
+        assert effects == {"deny", "budget"}
 
     def test_egress_allow_no_prompt_or_deny(self):
         result = self._compile("allow")
@@ -85,6 +87,58 @@ class TestEgressCompilation:
             if "api.openai.com" in p["resource"]
         ]
         assert len(openai_perms) > 0
+
+    def test_per_host_egress_deny_compiles(self):
+        """A specific host with egress=deny produces a deny permission for that host."""
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "evil.example.com": {"egress": "deny"},
+                "*": {"unknown_credentials": "prompt", "rate_limit": 600},
+            },
+            "required": [],
+            "addons": {},
+            "scan_patterns": [],
+        }
+        result = compile_policy(raw)
+
+        deny_perms = [
+            p for p in result["permissions"]
+            if p["action"] == "network:request"
+            and p["effect"] == "deny"
+            and p["resource"] == "evil.example.com/*"
+        ]
+        assert len(deny_perms) == 1
+        assert deny_perms[0]["tier"] == "explicit"
+
+    def test_per_host_egress_prompt_compiles(self):
+        """A specific host with egress=prompt produces a prompt permission for that host.
+
+        Pins the Batch 3 fix: per-host egress prompt was only supported for wildcard
+        initially; this verifies named hosts also compile correctly.
+        """
+        from policy_compiler import compile_policy
+
+        raw = {
+            "hosts": {
+                "new-service.example.com": {"egress": "prompt"},
+                "*": {"unknown_credentials": "prompt", "rate_limit": 600},
+            },
+            "required": [],
+            "addons": {},
+            "scan_patterns": [],
+        }
+        result = compile_policy(raw)
+
+        prompt_perms = [
+            p for p in result["permissions"]
+            if p["action"] == "network:request"
+            and p["effect"] == "prompt"
+            and p["resource"] == "new-service.example.com/*"
+        ]
+        assert len(prompt_perms) == 1
+        assert prompt_perms[0]["tier"] == "explicit"
 
 
 # =========================================================================
