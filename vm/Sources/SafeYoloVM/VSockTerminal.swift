@@ -47,6 +47,10 @@ class VSockTerminal {
             return
         }
 
+        // Clear screen and move cursor home (boot log output pushed cursor down)
+        let clearScreen = "\u{1B}[2J\u{1B}[H"
+        write(STDOUT_FILENO, clearScreen, clearScreen.utf8.count)
+
         // Put host terminal in raw mode
         enableRawMode()
 

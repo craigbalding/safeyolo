@@ -132,13 +132,17 @@ int main(int argc, char *argv[]) {
     }
 
     if (child_pid == 0) {
-        /* Child: run the command */
+        /* Child: run the command in the PTY */
         close(data_fd);
         if (ctrl_fd >= 0) close(ctrl_fd);
         if (ctrl_listen >= 0) close(ctrl_listen);
-        fprintf(stderr, "vsock-term child: exec");
-        for (int i = 1; i < argc; i++) fprintf(stderr, " %s", argv[i]);
-        fprintf(stderr, "\n");
+
+        /* Set terminal type for proper TUI rendering */
+        setenv("TERM", "xterm-256color", 1);
+
+        /* Re-apply window size (su -l may reset it) */
+        ioctl(STDIN_FILENO, TIOCSWINSZ, &initial_ws);
+
         execvp(argv[1], &argv[1]);
         perror("vsock-term child: execvp failed");
         _exit(127);
