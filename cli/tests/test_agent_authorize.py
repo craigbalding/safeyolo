@@ -2,10 +2,14 @@
 
 from pathlib import Path
 
+import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
 from safeyolo.agents_store import load_agent, save_agent
+from safeyolo.commands.agent import _parse_mount, _validate_instance_name
+from safeyolo.commands.mount import is_path_protected
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -646,3 +650,113 @@ class TestRevoke:
         agent = load_agent("boris")
         assert "svc1" not in agent["services"]
         assert "svc2" in agent["services"]
+
+
+# ---------------------------------------------------------------------------
+# _validate_instance_name
+# ---------------------------------------------------------------------------
+
+
+class TestValidateInstanceName:
+    def test_valid_simple_name(self):
+        # Should not raise
+        _validate_instance_name("boris")
+
+    def test_valid_name_with_hyphens(self):
+        _validate_instance_name("my-agent-1")
+
+    def test_valid_single_char(self):
+        _validate_instance_name("a")
+
+    def test_empty_name_exits(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("")
+
+    def test_too_long_name_exits(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("a" * 64)
+
+    def test_max_length_name_accepted(self):
+        _validate_instance_name("a" * 63)
+
+    def test_uppercase_rejected(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("Boris")
+
+    def test_underscore_rejected(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("my_agent")
+
+    def test_leading_hyphen_rejected(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("-agent")
+
+    def test_trailing_hyphen_rejected(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("agent-")
+
+    def test_dot_rejected(self):
+        with pytest.raises(typer.Exit):
+            _validate_instance_name("my.agent")
+
+
+# ---------------------------------------------------------------------------
+# _parse_mount (mount security: protected paths)
+# ---------------------------------------------------------------------------
+
+
+class TestParseMountSecurity:
+    def test_protected_path_requires_read_only(self, tmp_path, monkeypatch):
+        """Mounting a protected path without :ro is refused."""
+        host_dir = tmp_path / "refs"
+        host_dir.mkdir()
+        # Pass protected_paths directly to is_path_protected
+        assert is_path_protected(str(host_dir), [str(tmp_path)]) is not None
+        # _parse_mount checks is_path_protected internally via get_protected_paths
+        # We mock get_protected_paths to return our test path
+        from unittest.mock import patch
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=str(tmp_path)):
+            with pytest.raises(typer.Exit):
+                _parse_mount(f"{host_dir}:/container/refs")
+
+    def test_protected_path_allowed_with_ro(self, tmp_path):
+        """Protected path with :ro is accepted."""
+        host_dir = tmp_path / "refs"
+        host_dir.mkdir()
+        from unittest.mock import patch
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=str(tmp_path)):
+            result = _parse_mount(f"{host_dir}:/container/refs:ro")
+            assert result.endswith(":ro")
+            assert "/container/refs" in result
+
+    def test_normal_path_writable(self, tmp_path):
+        """Non-protected path can be mounted without :ro."""
+        host_dir = tmp_path / "project"
+        host_dir.mkdir()
+        from unittest.mock import patch
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=None):
+            result = _parse_mount(f"{host_dir}:/container/project")
+            assert ":ro" not in result
+            assert "/container/project" in result
+
+    def test_invalid_mount_format_rejected(self):
+        with pytest.raises(typer.Exit):
+            _parse_mount("single-part-only")
+
+    def test_invalid_mount_option_rejected(self, tmp_path):
+        host_dir = tmp_path / "d"
+        host_dir.mkdir()
+        from unittest.mock import patch
+        with patch("safeyolo.commands.agent.is_path_protected", return_value=None):
+            with pytest.raises(typer.Exit):
+                _parse_mount(f"{host_dir}:/container/d:rw")
+
+    def test_nonexistent_host_path_rejected(self, tmp_path):
+        with pytest.raises(typer.Exit):
+            _parse_mount(f"{tmp_path}/nonexistent:/container/d")
+
+    def test_relative_container_path_rejected(self, tmp_path):
+        host_dir = tmp_path / "d"
+        host_dir.mkdir()
+        with pytest.raises(typer.Exit):
+            _parse_mount(f"{host_dir}:relative/path")

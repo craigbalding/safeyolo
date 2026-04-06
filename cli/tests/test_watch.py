@@ -12,11 +12,18 @@ from safeyolo.commands.watch import (
     DISPATCH,
     FALLBACK_DISPATCH,
     RollingStats,
+    _contract_binding_format_row,
     _credential_format_row,
     _dedup_key_from_approval,
     _fallback_format_row,
     _format_batch_table,
     _gateway_format_row,
+    _host_to_domain,
+    _network_egress_format_row,
+    _parse_duration,
+    _resolved_key_from_admin_event,
+    _risky_route_dedup_key,
+    _service_format_row,
     build_batch_items,
     handle_batch,
     parse_selection,
@@ -680,3 +687,456 @@ class TestBatchTableRendering:
         # Verify it can be rendered by a Console without error
         test_console = Console(file=io.StringIO(), width=120)
         test_console.print(panel)
+
+
+# ---------------------------------------------------------------------------
+# Sample events: network_egress, contract_binding, service
+# ---------------------------------------------------------------------------
+
+def _network_egress_event(host="cdn.example.com", agent="boris", ts="2026-04-04T12:00:00Z"):
+    return {
+        "event": "security.network_guard",
+        "kind": "security",
+        "decision": "require_approval",
+        "host": host,
+        "agent": agent,
+        "ts": ts,
+        "summary": f"Egress approval needed for {host}",
+        "approval": {
+            "required": True,
+            "approval_type": "network_egress",
+            "key": host,
+            "target": host,
+        },
+        "details": {},
+    }
+
+
+def _contract_binding_event(
+    agent="boris",
+    service="gmail",
+    capability="mail",
+    template="send-only",
+    bindings=None,
+    grantable_ops=None,
+    ts="2026-04-04T12:00:00Z",
+):
+    bindings = bindings or {"project": "acme"}
+    grantable_ops = grantable_ops or ["send", "list"]
+    return {
+        "event": "gateway.contract_binding",
+        "kind": "gateway",
+        "decision": "require_approval",
+        "host": "gmail.googleapis.com",
+        "agent": agent,
+        "ts": ts,
+        "summary": f"Contract binding {service}/{capability}",
+        "approval": {
+            "required": True,
+            "approval_type": "contract_binding",
+            "key": f"{agent}:{service}:{capability}",
+            "target": service,
+            "scope_hint": {
+                "capability": capability,
+                "template": template,
+                "bindings": bindings,
+                "grantable_operations": grantable_ops,
+            },
+        },
+        "details": {},
+    }
+
+
+def _service_event(agent="boris", service="gmail", capability="mail", ts="2026-04-04T12:00:00Z"):
+    return {
+        "event": "gateway.service_access",
+        "kind": "gateway",
+        "decision": "require_approval",
+        "host": "gmail.googleapis.com",
+        "agent": agent,
+        "ts": ts,
+        "summary": f"{agent} requests access to {service}",
+        "approval": {
+            "required": True,
+            "approval_type": "service",
+            "key": f"{agent}:{service}",
+            "target": service,
+            "scope_hint": {
+                "capability": capability,
+                "reason": "Agent needs mail access",
+            },
+        },
+        "details": {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# TestRollingStats
+# ---------------------------------------------------------------------------
+
+class TestRollingStats:
+    def test_initial_counts_are_zero(self):
+        stats = RollingStats()
+        assert stats.total_requests == 0
+        assert stats.total_blocks == 0
+        assert stats.total_warnings == 0
+        assert stats.pending_approvals == 0
+
+    def test_add_event_increments_request_count(self):
+        stats = RollingStats()
+        stats.add_event({"kind": "security", "decision": "allow"})
+        assert stats.total_requests == 1
+        assert stats.total_blocks == 0
+
+    def test_add_deny_event_increments_block_count(self):
+        stats = RollingStats()
+        stats.add_event({"kind": "security", "decision": "deny"})
+        assert stats.total_requests == 1
+        assert stats.total_blocks == 1
+
+    def test_add_approval_event_increments_pending(self):
+        stats = RollingStats()
+        stats.add_event({
+            "kind": "security",
+            "decision": "require_approval",
+            "approval": {"required": True, "key": "hmac:abc", "target": "host.com"},
+        })
+        assert stats.pending_approvals == 1
+
+    def test_dedup_by_fingerprint(self):
+        stats = RollingStats()
+        event = {
+            "kind": "security",
+            "decision": "require_approval",
+            "approval": {"required": True, "key": "hmac:abc", "target": "host.com"},
+        }
+        stats.add_event(event)
+        stats.add_event(event)  # same fingerprint
+        assert stats.pending_approvals == 1
+
+    def test_mark_resolved_decrements_pending(self):
+        stats = RollingStats()
+        stats.add_event({
+            "kind": "security",
+            "decision": "require_approval",
+            "approval": {"required": True, "key": "hmac:abc", "target": "host.com"},
+        })
+        assert stats.pending_approvals == 1
+        stats.mark_resolved("hmac:abc:host.com")
+        assert stats.pending_approvals == 0
+
+    def test_mark_resolved_does_not_go_negative(self):
+        stats = RollingStats()
+        stats.mark_resolved("nonexistent:key")
+        assert stats.pending_approvals == 0
+
+    def test_warn_event_increments_warnings(self):
+        stats = RollingStats()
+        stats.add_event({"kind": "security", "decision": "warn"})
+        assert stats.total_warnings == 1
+        assert stats.total_blocks == 0
+
+    def test_non_security_event_ignored(self):
+        stats = RollingStats()
+        stats.add_event({"kind": "traffic", "decision": "allow"})
+        assert stats.total_requests == 0
+
+
+# ---------------------------------------------------------------------------
+# TestResolvedKeyFromAdminEvent
+# ---------------------------------------------------------------------------
+
+class TestResolvedKeyFromAdminEvent:
+    def test_credential_approval(self):
+        event = {
+            "event": "admin.approval_added",
+            "details": {"destination": "api.openai.com", "cred_id": "hmac:abc"},
+        }
+        assert _resolved_key_from_admin_event(event) == "hmac:abc:api.openai.com"
+
+    def test_credential_denial(self):
+        event = {
+            "event": "admin.denial",
+            "details": {"destination": "api.openai.com", "cred_id": "hmac:abc", "reason": "user_denied"},
+        }
+        assert _resolved_key_from_admin_event(event) == "hmac:abc:api.openai.com"
+
+    def test_gateway_grant(self):
+        event = {
+            "event": "admin.gateway_grant",
+            "details": {"agent": "boris", "service": "gmail", "method": "POST", "path": "/send"},
+        }
+        assert _resolved_key_from_admin_event(event) == "gw:boris:gmail:POST:/send:gmail"
+
+    def test_service_authorized(self):
+        event = {
+            "event": "admin.agent_service_authorized",
+            "details": {"agent": "boris", "service": "gmail"},
+        }
+        assert _resolved_key_from_admin_event(event) == "boris:gmail:gmail"
+
+    def test_service_revoked(self):
+        event = {
+            "event": "admin.agent_service_revoked",
+            "details": {"agent": "boris", "service": "gmail"},
+        }
+        assert _resolved_key_from_admin_event(event) == "boris:gmail:gmail"
+
+    def test_contract_binding_approved(self):
+        event = {
+            "event": "admin.contract_binding_approved",
+            "details": {"agent": "boris", "service": "gmail", "capability": "mail"},
+        }
+        assert _resolved_key_from_admin_event(event) == "boris:gmail:mail:gmail"
+
+    def test_host_allowed(self):
+        event = {
+            "event": "admin.host_allowed",
+            "details": {"host": "cdn.example.com"},
+        }
+        assert _resolved_key_from_admin_event(event) == "cdn.example.com:cdn.example.com"
+
+    def test_host_denied(self):
+        event = {
+            "event": "admin.host_denied",
+            "details": {"host": "evil.com"},
+        }
+        assert _resolved_key_from_admin_event(event) == "evil.com:evil.com"
+
+    def test_unknown_event_returns_none(self):
+        event = {"event": "traffic.request", "details": {}}
+        assert _resolved_key_from_admin_event(event) is None
+
+    def test_missing_details_returns_none(self):
+        event = {"event": "admin.approval_added", "details": {}}
+        assert _resolved_key_from_admin_event(event) is None
+
+    def test_gateway_denial_via_credential_path(self):
+        """Gateway denial uses destination=gateway:service, cred_id=agent:method:path."""
+        event = {
+            "event": "admin.denial",
+            "details": {
+                "destination": "gateway:gmail",
+                "cred_id": "boris:POST:/send",
+                "reason": "user_denied",
+            },
+        }
+        assert _resolved_key_from_admin_event(event) == "gw:boris:gmail:POST:/send:gmail"
+
+
+# ---------------------------------------------------------------------------
+# TestHostToDomain
+# ---------------------------------------------------------------------------
+
+class TestHostToDomain:
+    def test_three_part_host(self):
+        assert _host_to_domain("api.stripe.com") == "*.stripe.com"
+
+    def test_two_part_host(self):
+        assert _host_to_domain("example.com") == "*.example.com"
+
+    def test_deeply_nested_host(self):
+        assert _host_to_domain("a.b.c.d.example.com") == "*.b.c.d.example.com"
+
+
+# ---------------------------------------------------------------------------
+# TestParseDuration
+# ---------------------------------------------------------------------------
+
+class TestParseDuration:
+    def test_valid_1h(self):
+        result = _parse_duration("1h")
+        assert result is not None
+        # Should be a valid ISO datetime string
+        assert "T" in result
+
+    def test_valid_7d(self):
+        result = _parse_duration("7d")
+        assert result is not None
+        assert "T" in result
+
+    def test_unknown_code_returns_none(self):
+        assert _parse_duration("2h") is None
+        assert _parse_duration("3d") is None
+
+    def test_permanent_returns_none(self):
+        assert _parse_duration("permanent") is None
+
+
+# ---------------------------------------------------------------------------
+# TestRiskyRouteDedup
+# ---------------------------------------------------------------------------
+
+class TestRiskyRouteDedupKey:
+    def test_key_format(self):
+        event = _gateway_event(agent="boris", service="gmail", method="POST", path="/messages/send")
+        key = _risky_route_dedup_key(event)
+        assert key == "gw:boris:gmail:POST:/messages/send"
+
+    def test_missing_fields_produce_empty_segments(self):
+        event = {"details": {}, "agent": ""}
+        key = _risky_route_dedup_key(event)
+        assert key == "gw::::"
+
+
+# ---------------------------------------------------------------------------
+# New dispatch format_row tests for egress, contract_binding, service
+# ---------------------------------------------------------------------------
+
+class TestNetworkEgressFormatRow:
+    def test_format_row_fields(self):
+        event = _network_egress_event(host="cdn.example.com")
+        agent, action, risk, desc = _network_egress_format_row(event)
+        assert agent == "boris"
+        assert "cdn.example.com" in action
+        assert risk == "network access"
+
+    def test_format_row_fallback_agent(self):
+        event = _network_egress_event()
+        del event["agent"]
+        agent, _, _, _ = _network_egress_format_row(event)
+        assert agent == "\u2014"
+
+
+class TestContractBindingFormatRow:
+    def test_format_row_with_bindings(self):
+        event = _contract_binding_event(
+            service="gmail", capability="mail", bindings={"project": "acme"}
+        )
+        agent, action, risk, desc = _contract_binding_format_row(event)
+        assert agent == "boris"
+        assert "gmail/mail" in action
+        assert "acme" in action
+        assert risk == "contract binding"
+
+    def test_format_row_no_capability(self):
+        event = _contract_binding_event(capability="")
+        agent, action, risk, _ = _contract_binding_format_row(event)
+        assert "gmail" in action
+
+
+class TestServiceFormatRow:
+    def test_format_row_with_capability(self):
+        event = _service_event(service="gmail", capability="mail")
+        agent, action, risk, desc = _service_format_row(event)
+        assert agent == "boris"
+        assert "gmail/mail" in action
+        assert risk == "service access"
+
+    def test_format_row_without_capability(self):
+        event = _service_event(capability="")
+        event["approval"]["scope_hint"]["capability"] = ""
+        agent, action, _, _ = _service_format_row(event)
+        assert action == "gmail"
+
+
+# ---------------------------------------------------------------------------
+# Dispatch approve/deny tests for egress, contract_binding, service
+# ---------------------------------------------------------------------------
+
+class TestNetworkEgressDispatch:
+    def test_approve_calls_allow_host(self):
+        api = MagicMock()
+        api.allow_host.return_value = {"status": "ok"}
+        event = _network_egress_event(host="cdn.example.com")
+        dispatch = DISPATCH["network_egress"]
+        result = dispatch.approve(event, api)
+        assert result == "ok"
+        api.allow_host.assert_called_once_with(host="cdn.example.com", rate=600)
+
+    def test_deny_calls_deny_host(self):
+        api = MagicMock()
+        event = _network_egress_event(host="cdn.example.com")
+        dispatch = DISPATCH["network_egress"]
+        dispatch.deny(event, api)
+        api.deny_host.assert_called_once()
+        call_kwargs = api.deny_host.call_args[1]
+        assert call_kwargs["host"] == "cdn.example.com"
+        assert call_kwargs["expires"] is not None
+
+
+class TestContractBindingDispatch:
+    def test_approve_calls_api(self):
+        api = MagicMock()
+        api.approve_contract_binding.return_value = {"status": "bound"}
+        event = _contract_binding_event(
+            agent="boris", service="gmail", capability="mail",
+            template="send-only", bindings={"project": "acme"},
+            grantable_ops=["send"],
+        )
+        dispatch = DISPATCH["contract_binding"]
+        result = dispatch.approve(event, api)
+        assert result == "bound"
+        api.approve_contract_binding.assert_called_once_with(
+            agent="boris",
+            service="gmail",
+            capability="mail",
+            template="send-only",
+            bindings={"project": "acme"},
+            grantable_operations=["send"],
+        )
+
+    def test_approve_missing_agent_raises(self):
+        api = MagicMock()
+        event = _contract_binding_event()
+        event["agent"] = ""
+        dispatch = DISPATCH["contract_binding"]
+        with pytest.raises(NotImplementedError, match="missing"):
+            dispatch.approve(event, api)
+
+    def test_deny_calls_log_denial(self):
+        api = MagicMock()
+        event = _contract_binding_event(agent="boris", service="gmail")
+        dispatch = DISPATCH["contract_binding"]
+        dispatch.deny(event, api)
+        api.log_denial.assert_called_once_with(
+            destination="gateway:gmail",
+            cred_id="boris:contract_binding",
+            reason="user_denied",
+        )
+
+
+class TestServiceDispatch:
+    def test_deny_calls_log_denial(self):
+        api = MagicMock()
+        event = _service_event(agent="boris", service="gmail")
+        dispatch = DISPATCH["service"]
+        dispatch.deny(event, api)
+        api.log_denial.assert_called_once_with(
+            destination="gateway:gmail",
+            cred_id="boris:service_access",
+            reason="user_denied",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Batch table rendering: additional checks
+# ---------------------------------------------------------------------------
+
+class TestBatchTableRenderingExtended:
+    def test_irreversible_marker_in_output(self):
+        events = [_gateway_event(irreversible=True)]
+        items = build_batch_items(events)
+        test_console = Console(file=io.StringIO(), width=120)
+        panel = _format_batch_table(items)
+        test_console.print(panel)
+        output = test_console.file.getvalue()
+        assert "IRREVERSIBLE" in output
+
+    def test_service_item_rendered_differently(self):
+        events = [_service_event()]
+        items = build_batch_items(events)
+        test_console = Console(file=io.StringIO(), width=120)
+        panel = _format_batch_table(items)
+        test_console.print(panel)
+        output = test_console.file.getvalue()
+        assert "authenticated access" in output
+
+    def test_network_egress_in_batch(self):
+        events = [_network_egress_event()]
+        items = build_batch_items(events)
+        test_console = Console(file=io.StringIO(), width=120)
+        panel = _format_batch_table(items)
+        test_console.print(panel)
+        output = test_console.file.getvalue()
+        assert "cdn.example.com" in output

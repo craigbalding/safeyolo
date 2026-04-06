@@ -7,7 +7,7 @@ import typer
 
 from safeyolo.agents_store import load_agent, save_agent
 from safeyolo.cli import app
-from safeyolo.commands.agent import _parse_port
+from safeyolo.commands.agent import _parse_port, _parse_user_default_args
 
 
 class TestParsePort:
@@ -229,3 +229,25 @@ class TestAgentAddPorts:
 
             metadata = load_agent("test-add")
             assert metadata["ports"] == ["127.0.0.1:6080:6080"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_user_default_args
+# ---------------------------------------------------------------------------
+
+
+class TestParseUserDefaultArgs:
+    def test_none_returns_none(self):
+        assert _parse_user_default_args(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert _parse_user_default_args("") is None
+
+    def test_simple_args(self):
+        assert _parse_user_default_args("--model opus --verbose") == ["--model", "opus", "--verbose"]
+
+    def test_quoted_args(self):
+        assert _parse_user_default_args('--prompt "hello world"') == ["--prompt", "hello world"]
+
+    def test_single_arg(self):
+        assert _parse_user_default_args("--verbose") == ["--verbose"]
