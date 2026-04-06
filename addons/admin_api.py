@@ -133,15 +133,25 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json(self) -> dict | None:
-        """Read JSON from request body."""
+        """Read JSON from request body.
+
+        Returns the parsed dict on success, or None if no body was sent.
+        On malformed JSON, sends a 400 response directly and returns None
+        so the caller's `if not data` check short-circuits correctly with
+        the right error message already sent.
+        """
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             if content_length == 0:
                 return None
             body = self.rfile.read(content_length)
             return json.loads(body.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
-            log.warning(f"Invalid JSON in request body: {type(e).__name__}: {e}")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            log.warning("Malformed JSON in request body: %s: %s", type(e).__name__, e)
+            self._send_json({"error": "Malformed JSON in request body", "detail": str(e)}, 400)
+            return None
+        except ValueError as e:
+            log.warning("Invalid request body: %s: %s", type(e).__name__, e)
             return None
 
     def _get_addon_mode(self, addon_name: str) -> dict | None:
@@ -800,8 +810,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         client = get_policy_client()
         try:
             result = client.update_host_rate(host=host, rate=rate)
-        except (ValueError, Exception) as e:
+        except ValueError as e:
             self._send_json({"error": str(e)}, 400)
+            return
+        except Exception as e:
+            log.error("Internal error updating host rate: %s: %s", type(e).__name__, e)
+            self._send_json({"error": "Internal server error"}, 500)
             return
 
         client_ip = self._get_client_ip()
@@ -840,8 +854,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         client = get_policy_client()
         try:
             result = client.add_host_allowance(host=host, rate=rate, agent=agent)
-        except (ValueError, Exception) as e:
+        except ValueError as e:
             self._send_json({"error": str(e)}, 400)
+            return
+        except Exception as e:
+            log.error("Internal error adding host allowance: %s: %s", type(e).__name__, e)
+            self._send_json({"error": "Internal server error"}, 500)
             return
 
         client_ip = self._get_client_ip()
@@ -951,8 +969,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         client = get_policy_client()
         try:
             result = client.add_host_bypass(host=host, addon=addon)
-        except (ValueError, Exception) as e:
+        except ValueError as e:
             self._send_json({"error": str(e)}, 400)
+            return
+        except Exception as e:
+            log.error("Internal error adding host bypass: %s: %s", type(e).__name__, e)
+            self._send_json({"error": "Internal server error"}, 500)
             return
 
         client_ip = self._get_client_ip()
