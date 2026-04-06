@@ -37,7 +37,7 @@ class VMRunner: NSObject {
             break
         case .stopping:
             fputs("VM stopping...\n", stderr)
-        case .pausing, .paused, .resuming:
+        case .pausing, .paused, .resuming, .saving, .restoring:
             break
         @unknown default:
             break
@@ -102,11 +102,15 @@ class VMRunner: NSObject {
     private func forceStop() {
         queue.async { [self] in
             if vm.state == .running || vm.state == .starting {
-                do {
-                    try vm.stop()
-                } catch {
-                    fputs("Force stop failed: \(error.localizedDescription)\n", stderr)
+                Task {
+                    do {
+                        try await vm.stop()
+                    } catch {
+                        fputs("Force stop failed: \(error.localizedDescription)\n", stderr)
+                    }
+                    exitClean(code: 1)
                 }
+                return
             }
             exitClean(code: 1)
         }
