@@ -51,8 +51,11 @@ struct VMConfiguration {
         // Root disk
         vmConfig.storageDevices = [try createRootDisk(path: config.rootfsPath)]
 
-        // NAT networking
-        vmConfig.networkDevices = [createNetworkDevice()]
+        // FileHandle networking (feth-based isolation)
+        // The caller must have created a socketpair and passed the VM-side fd
+        if let netFD = config.netSocketFD {
+            vmConfig.networkDevices = [createFileHandleNetworkDevice(vmSocketFD: netFD)]
+        }
 
         // VirtioFS shares
         if !config.shares.isEmpty {
@@ -116,12 +119,36 @@ struct VMConfiguration {
         return VZVirtioBlockDeviceConfiguration(attachment: attachment)
     }
 
-    // MARK: - NAT networking
+    // MARK: - FileHandle networking (feth-based isolation)
 
-    private static func createNetworkDevice() -> VZVirtioNetworkDeviceConfiguration {
+    /// Create a network device backed by a Unix datagram socket.
+    /// The VM sends/receives raw Ethernet frames on the socket.
+    /// The other end of the socketpair goes to feth-bridge for forwarding to a feth interface.
+    static func createFileHandleNetworkDevice(vmSocketFD: Int32) -> VZVirtioNetworkDeviceConfiguration {
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        let fileHandle = FileHandle(fileDescriptor: vmSocketFD, closeOnDealloc: true)
+        networkDevice.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: fileHandle)
         return networkDevice
+    }
+
+    /// Create a Unix datagram socketpair for VM networking.
+    /// Returns (vmFD, hostFD) — vmFD goes to the VM, hostFD goes to feth-bridge.
+    static func createNetworkSocketPair() throws -> (Int32, Int32) {
+        var fds: [Int32] = [0, 0]
+        let ret = socketpair(AF_UNIX, SOCK_DGRAM, 0, &fds)
+        guard ret == 0 else {
+            throw VMConfigurationError.invalidConfiguration("socketpair failed: \(String(cString: strerror(errno)))")
+        }
+
+        // Tune socket buffers (per Lima/vfkit best practices)
+        var sndbuf: Int32 = 1 * 1024 * 1024  // 1MB send
+        var rcvbuf: Int32 = 4 * 1024 * 1024  // 4MB receive
+        setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fds[0], SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fds[1], SOL_SOCKET, SO_SNDBUF, &sndbuf, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fds[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, socklen_t(MemoryLayout<Int32>.size))
+
+        return (fds[0], fds[1])
     }
 
     // MARK: - VirtioFS directory sharing

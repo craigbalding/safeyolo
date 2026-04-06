@@ -25,11 +25,11 @@ from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
 from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..vm import (
     VMError,
+    _update_agent_map,
     create_agent_rootfs,
     get_agent_rootfs_path,
     is_vm_running,
     prepare_config_share,
-    register_vm_ip,
     start_vm,
     stop_vm,
 )
@@ -252,9 +252,33 @@ def _run_agent(
         except TemplateError:
             pass
 
-    # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
+    # Set up feth pair for network isolation
     config = load_config()
     proxy_port = config.get("proxy", {}).get("port", 8080)
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+
+    from ..firewall import setup_feth, load_rules
+    # Allocate agent index from name (simple: hash-based or sequential)
+    agents_dir = get_agents_dir()
+    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
+    agent_index = existing.index(name) if name in existing else len(existing)
+
+    try:
+        feth_alloc = setup_feth(agent_index)
+        load_rules(
+            proxy_port=proxy_port,
+            admin_port=admin_port,
+            active_subnets=[feth_alloc["subnet"]],
+        )
+    except Exception as err:
+        console.print(f"[yellow]Warning: feth setup failed:[/yellow] {err}")
+        console.print("  Network isolation will not be enforced.")
+        feth_alloc = None
+
+    gateway_ip = feth_alloc["host_ip"] if feth_alloc else "192.168.65.1"
+    guest_ip = feth_alloc["guest_ip"] if feth_alloc else "192.168.65.2"
+
+    # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
     try:
         prepare_config_share(
             name=name,
@@ -269,6 +293,8 @@ def _run_agent(
             instructions_content=instructions_content,
             instructions_path=instructions_path,
             auto_args=auto_args,
+            gateway_ip=gateway_ip,
+            guest_ip=guest_ip,
         )
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
@@ -283,16 +309,10 @@ def _run_agent(
             name=name,
             workspace_path=str(workspace_path),
             extra_shares=host_shares if host_shares else None,
+            feth_vm=feth_alloc["feth_vm"] if feth_alloc else "",
         )
         # Register VM IP in agent map (for service_discovery addon)
-        register_vm_ip(name)
-        # Load pf rules now that the VM is running (bridge is detectable)
-        try:
-            from ..firewall import load_rules, is_loaded
-            if not is_loaded():
-                load_rules(proxy_port=proxy_port)
-        except Exception:
-            pass  # Non-fatal — proxy env vars still route traffic
+        _update_agent_map(name, ip=guest_ip)
         # Wait for VM process to exit (interactive — serial console on stdin/stdout)
         proc.wait()
         exit_code = proc.returncode

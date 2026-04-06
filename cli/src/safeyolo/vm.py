@@ -136,6 +136,8 @@ def prepare_config_share(
     instructions_content: str = "",
     instructions_path: str = "",
     auto_args: str = "",
+    gateway_ip: str = "192.168.65.1",
+    guest_ip: str = "192.168.65.2",
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -147,9 +149,8 @@ def prepare_config_share(
     share_dir.mkdir(parents=True, exist_ok=True)
 
     # Proxy environment variables
-    # The guest uses HTTP_PROXY to route through host mitmproxy.
-    # Gateway IP is typically 192.168.64.1 for VZNATNetworkDeviceAttachment.
-    proxy_url = f"http://192.168.64.1:{proxy_port}"
+    # The guest uses HTTP_PROXY to route through host mitmproxy on the feth gateway.
+    proxy_url = f"http://{gateway_ip}:{proxy_port}"
     proxy_env = (
         f'export HTTP_PROXY="{proxy_url}"\n'
         f'export HTTPS_PROXY="{proxy_url}"\n'
@@ -187,6 +188,13 @@ def prepare_config_share(
     # Instructions file (e.g., CLAUDE.md for Claude Code)
     if instructions_content and instructions_path:
         (share_dir / "instructions.md").write_text(instructions_content)
+
+    # Network config for static IP (used by initramfs init)
+    (share_dir / "network.env").write_text(
+        f"GUEST_IP={guest_ip}\n"
+        f"GATEWAY_IP={gateway_ip}\n"
+        f"NETMASK=255.255.255.0\n"
+    )
 
     # CA certificate
     ca_cert = config_dir / "certs" / "mitmproxy-ca-cert.pem"
@@ -267,6 +275,7 @@ def start_vm(
     cpus: int = 4,
     memory_mb: int = 4096,
     extra_shares: list[tuple[str, str, bool]] | None = None,
+    feth_vm: str = "",
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
@@ -297,6 +306,13 @@ def start_vm(
         "--share", f"{config_share}:config:rw",
         "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
     ]
+
+    # feth-based networking
+    if feth_vm:
+        feth_bridge = get_config_dir() / "bin" / "feth-bridge"
+        cmd.extend(["--feth", feth_vm])
+        if feth_bridge.exists():
+            cmd.extend(["--feth-bridge", str(feth_bridge)])
 
     # Additional shares
     if extra_shares:

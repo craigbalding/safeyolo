@@ -28,11 +28,8 @@ mount -t tmpfs tmpfs /run 2>/dev/null || true
 # Bring up loopback
 ip link set lo up 2>/dev/null || true
 
-# Bring up eth0 if not already configured (initramfs may have done this)
-if ! ip addr show eth0 2>/dev/null | grep -q 'inet '; then
-    ip link set eth0 up 2>/dev/null || true
-    udhcpc -i eth0 -q -n -t 5 2>/dev/null || dhclient -1 eth0 2>/dev/null || true
-fi
+# eth0 is configured with a static IP by the initramfs init script.
+# No DHCP — network is controlled by the feth pair on the host.
 
 # --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares

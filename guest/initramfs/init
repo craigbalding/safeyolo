@@ -2,7 +2,7 @@
 #
 # SafeYolo initramfs init script.
 # Runs before the real rootfs is available.
-# Tasks: fsck, resize, mount root, set up network, switch_root.
+# Tasks: fsck, resize, mount root, set up static network, switch_root.
 #
 set -e
 
@@ -20,12 +20,22 @@ echo "Checking root filesystem..."
 # Mount root filesystem
 mount -t ext4 /dev/vda /mnt/root
 
-# Set up networking via DHCP (VZNATNetworkDeviceAttachment provides DHCP)
+# Mount config share to read network config
+mkdir -p /mnt/config
+mount -t virtiofs config /mnt/config 2>/dev/null || true
+
+# Set up static networking from config share
 if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up
-    mkdir -p /etc
-    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 5 2>/dev/null || true
+
+    if [ -f /mnt/config/network.env ]; then
+        . /mnt/config/network.env
+        ip addr add ${GUEST_IP}/${NETMASK:-255.255.255.0} dev eth0
+        ip route add default via ${GATEWAY_IP}
+    fi
 fi
+
+umount /mnt/config 2>/dev/null || true
 
 # Clean up before switch_root
 umount /proc /sys

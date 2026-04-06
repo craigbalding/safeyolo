@@ -12,6 +12,9 @@ struct RunConfig {
     var cmdline: String = "console=hvc0 root=/dev/vda rw quiet"
     var shares: [(hostPath: String, tag: String, readOnly: Bool)] = []
     var console: Bool = true
+    var feth: String = ""            // feth interface name (e.g., "feth0")
+    var fethBridgePath: String = ""  // path to feth-bridge binary
+    var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
 }
 
 func printUsage() {
@@ -86,6 +89,12 @@ func parseArguments() -> RunConfig? {
                 return nil
             }
             config.shares.append((hostPath: parts[0], tag: parts[1], readOnly: parts[2] == "ro"))
+        case "--feth":
+            i += 1; guard i < args.count else { fputs("Error: --feth requires interface name\n", stderr); return nil }
+            config.feth = args[i]
+        case "--feth-bridge":
+            i += 1; guard i < args.count else { fputs("Error: --feth-bridge requires path\n", stderr); return nil }
+            config.fethBridgePath = args[i]
         case "--help":
             printUsage()
             return nil
@@ -116,18 +125,42 @@ func parseArguments() -> RunConfig? {
 
 // MARK: - Main
 
-// MARK: - Main
-
 guard VZVirtualMachine.isSupported else {
     fputs("Error: Virtualization is not supported on this machine\n", stderr)
     exit(1)
 }
 
-guard let config = parseArguments() else {
+guard var config = parseArguments() else {
     exit(1)
 }
 
 do {
+    // Set up feth-based networking if --feth is specified
+    var fethBridgeProcess: Process?
+    if !config.feth.isEmpty {
+        let (vmFD, hostFD) = try VMConfiguration.createNetworkSocketPair()
+        config.netSocketFD = vmFD
+
+        // Launch feth-bridge as a child process (needs root for BPF)
+        let bridgePath = config.fethBridgePath.isEmpty
+            ? (ProcessInfo.processInfo.arguments[0] as NSString)
+                .deletingLastPathComponent + "/feth-bridge"
+            : config.fethBridgePath
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        process.arguments = [bridgePath, String(hostFD), config.feth]
+        // Ensure the host fd is NOT close-on-exec so sudo/feth-bridge inherit it
+        fcntl(hostFD, F_SETFD, 0)
+
+        try process.run()
+        fethBridgeProcess = process
+        fputs("feth-bridge started (pid=\(process.processIdentifier)) on \(config.feth)\n", stderr)
+
+        // Close our copy of the host fd — feth-bridge owns it now
+        close(hostFD)
+    }
+
     let vmConfig = try VMConfiguration.build(from: config)
     try vmConfig.validate()
 

@@ -1,14 +1,13 @@
-"""macOS pf firewall management for SafeYolo VM network isolation.
+"""macOS pf firewall and feth interface management for SafeYolo VM isolation.
 
-Manages a pf anchor (com.safeyolo) that restricts VM egress to only
-the mitmproxy proxy port. VMs use HTTP_PROXY/HTTPS_PROXY env vars to
-route through mitmproxy in regular mode. The pf rules enforce this —
-if the guest unsets the proxy vars, traffic is blocked rather than
-bypassing the proxy.
+Creates feth (fake Ethernet) interface pairs for VM networking. Unlike vmnet
+bridge interfaces, feth interfaces are regular network interfaces where pf
+rules work. Each VM gets its own feth pair and /24 subnet.
+
+Subnet allocation: agent index → 192.168.(65+index).0/24
 """
 
 import logging
-import re
 import subprocess
 from pathlib import Path
 
@@ -17,101 +16,109 @@ log = logging.getLogger("safeyolo.firewall")
 ANCHOR_NAME = "com.safeyolo"
 ANCHOR_FILE = Path("/etc/pf.anchors") / ANCHOR_NAME
 
+# Base subnet: 192.168.65.0/24 for first VM, .66 for second, etc.
+SUBNET_BASE = 65
 
-def _detect_vm_bridge() -> str | None:
-    """Detect the bridge interface used by Apple Virtualization.framework VMs.
 
-    Apple Vz creates bridge interfaces (bridge100+) dynamically. We find
-    the VM bridge by checking the ARP table for 192.168.64.x entries.
+def allocate_subnet(agent_index: int) -> dict:
+    """Allocate a subnet for a VM.
+
+    Returns dict with host_ip, guest_ip, subnet, feth_vm, feth_host.
     """
-    try:
-        result = subprocess.run(
-            ["arp", "-an"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in result.stdout.splitlines():
-            if "192.168.64." in line:
-                # ARP format: ? (192.168.64.16) at b6:dc:... on bridge104 ifscope [ethernet]
-                match = re.search(r"on (bridge\d+)", line)
-                if match:
-                    return match.group(1)
-    except (subprocess.SubprocessError, OSError):
-        pass
-
-    return None
+    third_octet = SUBNET_BASE + agent_index
+    feth_idx = agent_index * 2
+    return {
+        "host_ip": f"192.168.{third_octet}.1",
+        "guest_ip": f"192.168.{third_octet}.2",
+        "subnet": f"192.168.{third_octet}.0/24",
+        "feth_vm": f"feth{feth_idx}",
+        "feth_host": f"feth{feth_idx + 1}",
+        "third_octet": third_octet,
+    }
 
 
-def generate_rules(proxy_port: int = 8080, admin_port: int = 9090) -> str:
-    """Generate pf anchor rules for SafeYolo VM isolation.
+def setup_feth(agent_index: int) -> dict:
+    """Create a feth pair and configure the host side. Requires sudo.
 
-    Rules:
-    1. Allow DHCP (guest needs to get an IP)
-    2. Allow DNS (guest resolves via host gateway)
-    3. Allow traffic to mitmproxy proxy port
-    4. Block traffic to admin API port
-    5. Block all other VM egress
+    Returns the subnet allocation dict.
     """
-    bridge = _detect_vm_bridge()
-    if not bridge:
-        raise RuntimeError(
-            "Cannot detect VM bridge interface. Is a VM running?\n"
-            "Start a VM first, then load firewall rules."
-        )
+    alloc = allocate_subnet(agent_index)
+    feth_vm = alloc["feth_vm"]
+    feth_host = alloc["feth_host"]
+    host_ip = alloc["host_ip"]
 
-    return f"""\
-# SafeYolo VM egress control — anchor {ANCHOR_NAME}
-# Bridge interface: {bridge}
+    # Create feth pair
+    _sudo_run(["ifconfig", feth_vm, "create"], check=False)  # May already exist
+    _sudo_run(["ifconfig", feth_host, "create"], check=False)
+    _sudo_run(["ifconfig", feth_vm, "peer", feth_host])
 
-# Allow DHCP (UDP 67/68) for VM network setup
-pass in quick on {bridge} proto udp from any to any port {{ 67 68 }}
+    # Configure host side with IP
+    _sudo_run(["ifconfig", feth_host, host_ip, "netmask", "255.255.255.0", "up"])
+    _sudo_run(["ifconfig", feth_vm, "up"])
 
-# No DNS — proxy resolves hostnames on the host side.
-# Guest uses HTTP_PROXY with proxy IP, no DNS needed.
+    # Enable IP forwarding (required for NAT)
+    _sudo_run(["sysctl", "-w", "net.inet.ip.forwarding=1"], capture=True)
 
-# Allow VMs to reach mitmproxy proxy port
-pass in quick on {bridge} proto tcp from 192.168.64.0/24 to any port {proxy_port}
-
-# Block VMs from reaching admin API
-block in quick on {bridge} proto tcp from any to any port {admin_port}
-
-# Block all other VM egress
-block in on {bridge} all
-"""
+    log.info("feth pair created: %s <-> %s (host=%s)", feth_vm, feth_host, host_ip)
+    return alloc
 
 
-def load_rules(proxy_port: int = 8080, admin_port: int = 9090) -> None:
+def teardown_feth(agent_index: int) -> None:
+    """Destroy a feth pair."""
+    alloc = allocate_subnet(agent_index)
+    _sudo_run(["ifconfig", alloc["feth_vm"], "destroy"], check=False)
+    # Destroying one end also destroys the peer
+    log.info("feth pair destroyed: %s", alloc["feth_vm"])
+
+
+def generate_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnets: list[str] | None = None) -> str:
+    """Generate pf anchor rules for all active VM feth interfaces.
+
+    Args:
+        proxy_port: mitmproxy listening port
+        admin_port: admin API port to block
+        active_subnets: list of subnet strings (e.g., ["192.168.65.0/24"])
+    """
+    if not active_subnets:
+        return f"# SafeYolo anchor {ANCHOR_NAME} — no active VMs\n"
+
+    # Detect outbound interface for NAT
+    outbound_if = _detect_outbound_interface()
+
+    rules = f"# SafeYolo VM egress control — anchor {ANCHOR_NAME}\n\n"
+
+    # NAT: allow proxy's upstream connections from feth subnets
+    for subnet in active_subnets:
+        rules += f"nat on {outbound_if} from {subnet} to any -> ({outbound_if})\n"
+
+    rules += "\n"
+
+    # Per-feth rules (applied to all feth interfaces via interface group)
+    for subnet in active_subnets:
+        # Derive host IP from subnet (x.x.x.1)
+        host_ip = subnet.replace(".0/24", ".1")
+        rules += f"# Subnet {subnet}\n"
+        rules += f"pass in quick on feth proto tcp from {subnet} to {host_ip} port {proxy_port}\n"
+        rules += f"block in quick on feth proto tcp from {subnet} to any port {admin_port}\n"
+        rules += f"block in on feth from {subnet} to any\n\n"
+
+    return rules
+
+
+def load_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnets: list[str] | None = None) -> None:
     """Write and load pf anchor rules. Requires sudo."""
-    rules = generate_rules(proxy_port=proxy_port, admin_port=admin_port)
+    rules = generate_rules(proxy_port=proxy_port, admin_port=admin_port, active_subnets=active_subnets)
 
-    # Write anchor file
     _sudo_write_file(ANCHOR_FILE, rules)
-
-    # Ensure anchor reference exists in /etc/pf.conf
     _ensure_anchor_in_pf_conf()
-
-    # Load the anchor rules
     _sudo_run(["pfctl", "-a", ANCHOR_NAME, "-f", str(ANCHOR_FILE)])
 
-    # Enable pf if not already enabled
+    # Enable pf if not already
     result = _sudo_run(["pfctl", "-s", "info"], capture=True)
     if "Status: Disabled" in (result.stdout or ""):
         _sudo_run(["pfctl", "-e"])
 
-    # Enable IP filtering on the bridge (disabled by default on macOS).
-    # Without this, pf rules on the bridge are ignored entirely.
-    bridge = _detect_vm_bridge()
-    if bridge:
-        try:
-            from .config import get_config_dir
-            bridge_filter = get_config_dir() / "bin" / "bridge-filter"
-            if bridge_filter.exists():
-                _sudo_run([str(bridge_filter), bridge])
-            else:
-                log.warning("bridge-filter not found at %s — pf rules may not work", bridge_filter)
-        except Exception as err:
-            log.warning("Could not enable bridge ipfilter: %s", err)
-
-    log.info("pf rules loaded for anchor %s on %s", ANCHOR_NAME, bridge)
+    log.info("pf rules loaded for anchor %s", ANCHOR_NAME)
 
 
 def unload_rules() -> None:
@@ -129,31 +136,28 @@ def is_loaded() -> bool:
     return bool(result.stdout and result.stdout.strip())
 
 
-def validate(proxy_port: int = 8080) -> bool:
-    """Validate that pf rules are active and contain the proxy port rule."""
-    if not is_loaded():
-        return False
-
-    result = _sudo_run(
-        ["pfctl", "-a", ANCHOR_NAME, "-s", "rules"],
-        capture=True, check=False,
-    )
-    return str(proxy_port) in (result.stdout or "")
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _sudo_run(
-    cmd: list[str],
-    capture: bool = False,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    """Run a command with sudo."""
-    full_cmd = ["sudo"] + cmd
+def _detect_outbound_interface() -> str:
+    """Detect the primary outbound network interface (e.g., en0)."""
+    try:
+        result = subprocess.run(
+            ["route", "-n", "get", "default"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            if "interface:" in line:
+                return line.split(":")[1].strip()
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return "en0"
+
+
+def _sudo_run(cmd, capture=False, check=True):
     return subprocess.run(
-        full_cmd,
+        ["sudo"] + cmd,
         capture_output=capture,
         text=True,
         check=check,
@@ -161,22 +165,19 @@ def _sudo_run(
 
 
 def _sudo_write_file(path: Path, content: str) -> None:
-    """Write a file as root via sudo tee."""
     path.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         ["sudo", "tee", str(path)],
-        input=content,
-        capture_output=True,
-        text=True,
+        input=content, capture_output=True, text=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to write {path}: {proc.stderr}")
 
 
 def _ensure_anchor_in_pf_conf() -> None:
-    """Ensure /etc/pf.conf references our anchor."""
     pf_conf = Path("/etc/pf.conf")
     anchor_line = f'anchor "{ANCHOR_NAME}"'
+    nat_anchor_line = f'nat-anchor "{ANCHOR_NAME}"'
     load_line = f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"'
 
     try:
@@ -185,16 +186,20 @@ def _ensure_anchor_in_pf_conf() -> None:
         result = _sudo_run(["cat", "/etc/pf.conf"], capture=True)
         content = result.stdout or ""
 
-    if anchor_line in content:
-        return
+    needs_update = False
+    addition = ""
 
-    addition = f"\n# SafeYolo VM isolation\n{anchor_line}\n{load_line}\n"
-    proc = subprocess.run(
-        ["sudo", "tee", "-a", str(pf_conf)],
-        input=addition,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to update /etc/pf.conf: {proc.stderr}")
-    log.info("Added SafeYolo anchor to /etc/pf.conf")
+    if nat_anchor_line not in content:
+        addition += f"\n# SafeYolo VM isolation (NAT)\n{nat_anchor_line}\n"
+        needs_update = True
+
+    if anchor_line not in content:
+        addition += f"# SafeYolo VM isolation (filter)\n{anchor_line}\n{load_line}\n"
+        needs_update = True
+
+    if needs_update:
+        subprocess.run(
+            ["sudo", "tee", "-a", str(pf_conf)],
+            input=addition, capture_output=True, text=True,
+        )
+        log.info("Added SafeYolo anchors to /etc/pf.conf")
