@@ -2,6 +2,8 @@
 
 SafeYolo runs AI coding agents in persistent Linux microVMs with hardware-level isolation and enforced network egress control.
 
+The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCSCTTY PTY pattern — was informed by [Shuru](https://github.com/superhq-ai/shuru/), an open-source microVM sandbox for AI agents.
+
 ## Architecture
 
 ```
