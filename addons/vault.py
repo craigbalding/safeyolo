@@ -55,7 +55,10 @@ class VaultCredential:
             expiry = datetime.fromisoformat(self.expires_at)
             return datetime.now(UTC) >= expiry
         except ValueError:
-            return False
+            # Unparseable expiry date — treat as expired (fail-closed).
+            # A credential with a corrupt expiry should force a refresh
+            # rather than being silently treated as valid forever.
+            return True
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for YAML storage."""

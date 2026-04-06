@@ -105,6 +105,24 @@ class TestSSEStreamingDetection:
         assert flow.response.stream is False
         assert addon.streams_enabled == 0
 
+    def test_content_type_with_charset_still_matches(self):
+        """Content-Type 'text/event-stream; charset=utf-8' matches because startswith is used."""
+        from sse_streaming import SSEStreaming
+
+        addon = SSEStreaming()
+
+        flow = Mock()
+        flow.response.headers.get.return_value = "text/event-stream; charset=utf-8"
+        flow.request.host = "api.example.com"
+        flow.metadata.get.return_value = None
+
+        with patch('sse_streaming.ctx') as mock_ctx:
+            mock_ctx.options.sse_streaming_enabled = True
+            addon.responseheaders(flow)
+
+        assert flow.response.stream is True
+        assert addon.streams_enabled == 1
+
     def test_disabled_when_option_false(self):
         """Test streaming disabled when option is False."""
         from sse_streaming import SSEStreaming
@@ -146,6 +164,26 @@ class TestSSEStreamingWithPolicy:
         # Should NOT enable streaming when policy disables addon
         assert addon.streams_enabled == 0
         mock_client.is_addon_enabled.assert_called_with("sse_streaming", domain="api.example.com")
+
+    def test_pdp_unavailable_defaults_to_enabled(self):
+        """When PDP is unavailable (RuntimeError), addon defaults to enabled."""
+        from sse_streaming import SSEStreaming
+
+        addon = SSEStreaming()
+
+        flow = Mock()
+        flow.response.headers.get.return_value = "text/event-stream"
+        flow.request.host = "api.example.com"
+        flow.metadata.get.return_value = None
+
+        with patch('sse_streaming.ctx') as mock_ctx, \
+             patch('pdp.get_policy_client', side_effect=RuntimeError("not configured")):
+            mock_ctx.options.sse_streaming_enabled = True
+            addon.responseheaders(flow)
+
+        # Should still enable streaming when PDP is down
+        assert flow.response.stream is True
+        assert addon.streams_enabled == 1
 
     def test_streams_json_when_option_enabled(self):
         """Test JSON streaming when sse_stream_json option is True."""

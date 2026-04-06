@@ -61,6 +61,13 @@ class TestVaultCredential:
         assert not cred.is_expired()
 
 
+    def test_is_expired_malformed_date_returns_true(self):
+        """Malformed expires_at is treated as expired (fail-closed)."""
+        cred = VaultCredential(name="test", type="oauth2", value="tok",
+                               expires_at="not-a-date")
+        assert cred.is_expired() is True
+
+
 class TestVault:
     def test_unlock_creates_new_vault(self, vault_path):
         v = Vault(vault_path)
@@ -164,3 +171,50 @@ class TestVault:
         assert not v1._has_changes()
         assert v1.get("added") is not None
         assert v1.get("added").value == "key2"
+
+    def test_save_without_unlock_raises(self, vault_path):
+        """Calling save() on a vault that was never unlocked raises RuntimeError."""
+        v = Vault(vault_path)
+        with pytest.raises(RuntimeError, match="Vault not unlocked"):
+            v.save()
+
+    def test_list_names_returns_only_names(self, vault):
+        """list_names() returns credential names, never values or other fields."""
+        vault.store(VaultCredential(name="alpha", type="api_key", value="secret-a"))
+        vault.store(VaultCredential(name="beta", type="bearer", value="secret-b"))
+
+        names = vault.list_names()
+        assert sorted(names) == ["alpha", "beta"]
+        # Ensure values are NOT in the list
+        for name in names:
+            assert "secret" not in name
+
+
+class TestVaultSingleton:
+    """Tests for init_vault / get_vault module-level singleton."""
+
+    def test_init_vault_and_get_vault_singleton(self, tmp_path):
+        """init_vault creates and returns vault; get_vault returns same instance."""
+        import vault as vault_mod
+
+        path = tmp_path / "singleton.yaml.enc"
+        old_vault = vault_mod._vault
+
+        try:
+            v = vault_mod.init_vault(path, "pass123")
+            assert v is not None
+            assert vault_mod.get_vault() is v
+            assert path.exists()
+        finally:
+            vault_mod._vault = old_vault
+
+    def test_get_vault_before_init_returns_none(self):
+        """get_vault returns None when init_vault has not been called."""
+        import vault as vault_mod
+
+        old_vault = vault_mod._vault
+        try:
+            vault_mod._vault = None
+            assert vault_mod.get_vault() is None
+        finally:
+            vault_mod._vault = old_vault

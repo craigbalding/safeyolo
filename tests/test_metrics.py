@@ -262,6 +262,90 @@ class TestMetricsCollectorResponse:
         assert stats.latency_max_ms >= 100
 
 
+class TestMetricsCollectorEdgeCases:
+    """Tests for edge-case response classification."""
+
+    def test_504_counts_as_timeout_and_5xx_and_error(self):
+        """504 Gateway Timeout increments timeouts, upstream_5xx, and requests_error."""
+        from metrics import MetricsCollector
+
+        collector = MetricsCollector()
+
+        flow = Mock()
+        flow.request.host = "api.example.com"
+        flow.metadata = {}
+        flow.response.status_code = 504
+
+        collector.response(flow)
+
+        stats = collector._domain_stats["api.example.com"]
+        assert stats.timeouts == 1
+        assert stats.upstream_5xx == 1
+        assert collector.requests_error == 1
+        # 504 is not a success
+        assert collector.requests_success == 0
+        assert stats.successes == 0
+
+    def test_blocked_response_does_not_count_success(self):
+        """Blocked response increments blocked but NOT success, even with 200-like status."""
+        from metrics import MetricsCollector
+
+        collector = MetricsCollector()
+
+        flow = Mock()
+        flow.request.host = "api.example.com"
+        flow.metadata = {"blocked_by": "credential-guard"}
+        flow.response.status_code = 403  # Status doesn't matter; blocked_by causes early return
+
+        collector.response(flow)
+
+        assert collector.requests_blocked == 1
+        assert collector.requests_success == 0
+        assert collector.requests_error == 0
+
+    def test_unknown_block_source_tracked(self):
+        """Block source not in _BLOCK_FIELD_MAP still counted in blocks_by_source."""
+        from metrics import MetricsCollector
+
+        collector = MetricsCollector()
+
+        flow = Mock()
+        flow.request.host = "api.example.com"
+        flow.metadata = {"blocked_by": "network-guard"}
+
+        collector.response(flow)
+
+        assert collector.requests_blocked == 1
+        # network-guard is not in _BLOCK_FIELD_MAP so no domain stat field incremented
+        stats = collector._domain_stats["api.example.com"]
+        assert stats.blocked_credential == 0
+        assert stats.blocked_yara == 0
+        assert stats.blocked_pattern == 0
+        assert stats.blocked_injection == 0
+        # But it IS tracked in the per-source counter
+        assert collector._blocks_by_source["network-guard"] == 1
+
+    def test_4xx_status_not_counted_as_success_or_error(self):
+        """4xx (other than 429) does not increment success, error, or upstream_5xx."""
+        from metrics import MetricsCollector
+
+        collector = MetricsCollector()
+
+        for status in [400, 401, 403, 404, 422]:
+            flow = Mock()
+            flow.request.host = "api.example.com"
+            flow.metadata = {}
+            flow.response.status_code = status
+            collector.response(flow)
+
+        assert collector.requests_success == 0
+        assert collector.requests_error == 0
+        stats = collector._domain_stats["api.example.com"]
+        assert stats.upstream_5xx == 0
+        assert stats.upstream_429s == 0
+        assert stats.successes == 0
+
+
 class TestMetricsCollectorOutput:
     """Tests for metrics output formats."""
 
@@ -302,7 +386,7 @@ class TestMetricsCollectorOutput:
 
         result = collector.get_json()
 
-        assert len(result["problem_domains"]) >= 1
+        assert len(result["problem_domains"]) == 1
         problem = result["problem_domains"][0]
         assert problem["domain"] == "problem.example.com"
         assert any("low_success_rate" in issue for issue in problem["issues"])

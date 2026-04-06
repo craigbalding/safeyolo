@@ -85,6 +85,53 @@ class TestLoopDetection:
         assert flow.response.status_code == 508
 
 
+    def test_loop_response_body_is_json_with_error_message(self):
+        """508 response body is JSON with 'error' and 'message' fields."""
+        import json
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        addon.requestheaders(flow)
+
+        body = json.loads(flow.response.content)
+        assert body == {
+            "error": "Loop Detected",
+            "message": "Request would create a proxy loop",
+        }
+        assert flow.response.headers["Content-Type"] == "application/json"
+
+
+class TestLoopDetectionAudit:
+    """Tests for audit event emission on loop detection."""
+
+    def _addon(self):
+        from loop_guard import LoopGuard
+        return LoopGuard()
+
+    def test_loop_detection_emits_audit_event(self):
+        """Loop detection writes a security.loop_guard audit event with DENY decision."""
+        from unittest.mock import patch
+
+        from audit_schema import Decision, EventKind, Severity
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        with patch("loop_guard.write_event") as mock_write:
+            addon.requestheaders(flow)
+
+            mock_write.assert_called_once()
+            call_kwargs = mock_write.call_args[1]
+            assert mock_write.call_args[0][0] == "security.loop_guard"
+            assert call_kwargs["kind"] == EventKind.SECURITY
+            assert call_kwargs["severity"] == Severity.HIGH
+            assert call_kwargs["decision"] == Decision.DENY
+            assert call_kwargs["addon"] == "loop-guard"
+
+
 class TestViaTokenPresence:
     """Tests that Via token is present for upstream to see."""
 

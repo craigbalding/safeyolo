@@ -157,6 +157,28 @@ class TestRequestTracking:
 
         assert addon._connections[conn_id].bytes_sent == 0
 
+    def test_domain_set_on_first_request_not_overwritten(self):
+        """Domain is set on first request and preserved on subsequent requests to different hosts."""
+        addon = _addon()
+        addon._last_event_time = time.time()
+
+        flow1 = tflow.tflow()
+        flow1.request.url = "http://first.example.com/v1"
+        conn_id = flow1.client_conn.id
+        addon._connections[conn_id] = _make_conn_info()
+
+        addon.request(flow1)
+        assert addon._connections[conn_id].domain == "first.example.com"
+
+        # Second request on same connection to different host
+        flow2 = tflow.tflow()
+        flow2.request.url = "http://second.example.com/v2"
+        # Reuse same client_conn id
+        object.__setattr__(flow2.client_conn, "id", conn_id)
+
+        addon.request(flow2)
+        assert addon._connections[conn_id].domain == "first.example.com"
+
     def test_request_unknown_connection_safe(self):
         """Request for unknown connection doesn't crash."""
         addon = _addon()
@@ -257,21 +279,22 @@ class TestGetStats:
     """Tests for get_stats() admin API method."""
 
     def test_get_stats_structure(self):
-        """get_stats() returns expected keys."""
+        """get_stats() returns correct values for empty addon."""
         addon = _addon()
         addon._started = time.time()
 
         stats = addon.get_stats()
 
-        assert "rss_mb" in stats
-        assert "rss_hwm_mb" in stats
-        assert "rss_start_mb" in stats
-        assert "uptime_s" in stats
-        assert "total_flows" in stats
-        assert "active_connections" in stats
-        assert "connections" in stats
-        assert "active_websockets" in stats
-        assert "websockets" in stats
+        assert stats["rss_start_mb"] == 0.0
+        assert stats["total_flows"] == 0
+        assert stats["active_connections"] == 0
+        assert stats["connections"] == []
+        assert stats["active_websockets"] == 0
+        assert stats["websockets"] == []
+        assert stats["uptime_s"] == 0
+        # rss_mb and rss_hwm_mb come from /proc so just check type
+        assert isinstance(stats["rss_mb"], float)
+        assert isinstance(stats["rss_hwm_mb"], float)
 
     def test_get_stats_with_connections(self):
         """get_stats() includes connection details."""
@@ -388,18 +411,14 @@ class TestProcMemory:
     """Tests for /proc/self/status reading."""
 
     def test_proc_memory_read(self):
-        """_read_proc_memory() returns sane values on Linux."""
+        """_read_proc_memory() returns positive values on Linux with peak >= rss."""
         from memory_monitor import _read_proc_memory
 
         rss_kb, peak_kb = _read_proc_memory()
 
-        # Should be positive on Linux (0 if /proc not available)
-        # In test environment, should have some RSS
-        assert rss_kb >= 0
-        assert peak_kb >= 0
-        # Peak should be >= RSS
-        if rss_kb > 0:
-            assert peak_kb >= rss_kb
+        # On Linux (where tests run), both values should be positive
+        assert rss_kb > 0
+        assert peak_kb >= rss_kb
 
 
 # ---- Helpers ----
