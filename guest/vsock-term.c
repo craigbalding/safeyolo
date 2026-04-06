@@ -179,7 +179,7 @@ int main(int argc, char *argv[]) {
         if (ctrl_fd >= 0) close(ctrl_fd);
         if (ctrl_listen >= 0) close(ctrl_listen);
 
-        /* New session + controlling terminal (Shuru pattern) */
+        /* New session + controlling terminal */
         setsid();
         ioctl(slave_fd, TIOCSCTTY, 0);
         dup2(slave_fd, 0);
