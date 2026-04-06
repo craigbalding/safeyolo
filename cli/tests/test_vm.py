@@ -1,0 +1,1204 @@
+"""Tests for safeyolo.vm — microVM lifecycle management."""
+
+import json
+import os
+import signal
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, mock_open, patch
+
+import pytest
+
+from safeyolo.vm import (
+    VMError,
+    _update_agent_map,
+    check_guest_images,
+    create_agent_rootfs,
+    find_vm_helper,
+    get_agent_config_share_dir,
+    get_agent_pid_path,
+    get_agent_rootfs_path,
+    get_base_rootfs_path,
+    get_initrd_path,
+    get_kernel_path,
+    get_vm_ip,
+    guest_image_status,
+    is_vm_running,
+    prepare_config_share,
+    start_vm,
+    stop_vm,
+)
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
+class TestPathHelpers:
+    """Path derivation from config dir and agent name."""
+
+    def test_kernel_path(self, tmp_config_dir):
+        assert get_kernel_path() == tmp_config_dir / "share" / "Image"
+
+    def test_initrd_path(self, tmp_config_dir):
+        assert get_initrd_path() == tmp_config_dir / "share" / "initramfs.cpio.gz"
+
+    def test_base_rootfs_path(self, tmp_config_dir):
+        assert get_base_rootfs_path() == tmp_config_dir / "share" / "rootfs-base.ext4"
+
+    def test_agent_rootfs_path(self, tmp_config_dir):
+        assert get_agent_rootfs_path("myagent") == tmp_config_dir / "agents" / "myagent" / "rootfs.ext4"
+
+    def test_agent_pid_path(self, tmp_config_dir):
+        assert get_agent_pid_path("myagent") == tmp_config_dir / "agents" / "myagent" / "vm.pid"
+
+    def test_agent_config_share_dir(self, tmp_config_dir):
+        assert get_agent_config_share_dir("myagent") == tmp_config_dir / "agents" / "myagent" / "config-share"
+
+
+# ---------------------------------------------------------------------------
+# find_vm_helper
+# ---------------------------------------------------------------------------
+
+
+class TestFindVmHelper:
+    """Binary lookup in three locations with priority order."""
+
+    def test_finds_in_config_bin(self, tmp_config_dir):
+        """~/.safeyolo/bin/safeyolo-vm is found first."""
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        helper = bin_dir / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+
+        result = find_vm_helper()
+        assert result == helper
+
+    def test_config_bin_must_be_executable(self, tmp_config_dir, monkeypatch):
+        """A non-executable file in config/bin is skipped."""
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        helper = bin_dir / "safeyolo-vm"
+        helper.write_text("not executable")
+        helper.chmod(0o644)
+
+        # Block both PATH lookup and repo layout fallback
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        _real_access = os.access
+        def _deny_repo_access(path, mode):
+            if "vm/.build/release" in str(path):
+                return False
+            return _real_access(path, mode)
+        monkeypatch.setattr("os.access", _deny_repo_access)
+
+        with pytest.raises(VMError, match="Cannot find safeyolo-vm"):
+            find_vm_helper()
+
+    def test_falls_back_to_path(self, tmp_config_dir, monkeypatch):
+        """Falls back to shutil.which when config/bin has nothing."""
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/safeyolo-vm")
+
+        result = find_vm_helper()
+        assert result == Path("/usr/local/bin/safeyolo-vm")
+
+    def test_falls_back_to_repo_layout(self, tmp_config_dir, monkeypatch):
+        """Falls back to repo dev build directory when config/bin and PATH miss."""
+        # Block PATH lookup — config/bin doesn't have it (tmp_config_dir is clean)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+
+        # The real repo has vm/.build/release/safeyolo-vm — verify the
+        # fallback finds it. This test is environment-dependent by design:
+        # it validates the dev-layout heuristic in the actual repo.
+        import safeyolo.vm as vm_mod
+        repo_bin = Path(vm_mod.__file__).resolve().parents[3] / "vm" / ".build" / "release" / "safeyolo-vm"
+        if not (repo_bin.exists() and os.access(repo_bin, os.X_OK)):
+            pytest.skip("repo dev binary not present — cannot test repo layout fallback")
+
+        result = find_vm_helper()
+        assert result == repo_bin
+
+    def _block_all_fallbacks(self, monkeypatch):
+        """Helper: block both PATH and repo layout so nothing is found."""
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        _real_access = os.access
+        def _deny_repo(path, mode):
+            if "vm/.build/release" in str(path):
+                return False
+            return _real_access(path, mode)
+        monkeypatch.setattr("os.access", _deny_repo)
+
+    def test_raises_vmerror_when_not_found(self, tmp_config_dir, monkeypatch):
+        """Raises VMError with install instructions when binary not found anywhere."""
+        self._block_all_fallbacks(monkeypatch)
+
+        with pytest.raises(VMError, match="Cannot find safeyolo-vm"):
+            find_vm_helper()
+
+    def test_error_message_includes_install_instructions(self, tmp_config_dir, monkeypatch):
+        """Error message tells the user how to install."""
+        self._block_all_fallbacks(monkeypatch)
+
+        with pytest.raises(VMError, match="cd vm && make install"):
+            find_vm_helper()
+
+
+# ---------------------------------------------------------------------------
+# create_agent_rootfs
+# ---------------------------------------------------------------------------
+
+
+class TestCreateAgentRootfs:
+    """Base rootfs cloning for new agents."""
+
+    def test_raises_when_base_rootfs_missing(self, tmp_config_dir):
+        """Raises VMError if base rootfs doesn't exist."""
+        with pytest.raises(VMError, match="Base rootfs not found"):
+            create_agent_rootfs("myagent")
+
+    def test_error_includes_build_instructions(self, tmp_config_dir):
+        """Error tells user how to build guest images."""
+        with pytest.raises(VMError, match="build-all.sh"):
+            create_agent_rootfs("myagent")
+
+    def test_creates_agent_dir(self, tmp_config_dir, monkeypatch):
+        """Creates the agents/{name}/ directory."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(args=[], returncode=0),
+        )
+
+        create_agent_rootfs("newagent")
+        assert (tmp_config_dir / "agents" / "newagent").is_dir()
+
+    def test_skips_clone_if_dest_exists(self, tmp_config_dir, monkeypatch):
+        """Returns immediately when rootfs already exists (idempotent)."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
+
+        agent_dir = tmp_config_dir / "agents" / "myagent"
+        agent_dir.mkdir(parents=True)
+        existing = agent_dir / "rootfs.ext4"
+        existing.write_bytes(b"existing-rootfs")
+
+        run_called = False
+
+        def mock_run(*args, **kwargs):
+            nonlocal run_called
+            run_called = True
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        result = create_agent_rootfs("myagent")
+        assert result == existing
+        assert not run_called
+
+    def test_uses_cp_c_for_apfs_clone(self, tmp_config_dir, monkeypatch):
+        """First attempts cp -c for APFS CoW copy."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
+
+        captured_cmd = []
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        create_agent_rootfs("myagent")
+        assert captured_cmd[0] == "cp"
+        assert captured_cmd[1] == "-c"
+
+    def test_falls_back_to_shutil_copy_on_non_apfs(self, tmp_config_dir, monkeypatch):
+        """Falls back to shutil.copy2 when cp -c fails (non-APFS)."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        base = share_dir / "rootfs-base.ext4"
+        base.write_bytes(b"rootfs-data")
+
+        def mock_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(args=cmd, returncode=1)
+
+        copy2_calls = []
+
+        def mock_copy2(src, dst):
+            copy2_calls.append((src, dst))
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+        monkeypatch.setattr("shutil.copy2", mock_copy2)
+
+        result = create_agent_rootfs("myagent")
+        assert len(copy2_calls) == 1
+        assert copy2_calls[0][0] == str(base)
+        assert result == tmp_config_dir / "agents" / "myagent" / "rootfs.ext4"
+
+    def test_returns_dest_path(self, tmp_config_dir, monkeypatch):
+        """Returns the path to the cloned rootfs."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(args=[], returncode=0),
+        )
+
+        result = create_agent_rootfs("agent1")
+        assert result == tmp_config_dir / "agents" / "agent1" / "rootfs.ext4"
+
+
+# ---------------------------------------------------------------------------
+# prepare_config_share
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareConfigShare:
+    """Config share directory contents for guest init."""
+
+    @pytest.fixture(autouse=True)
+    def setup_config_share_deps(self, tmp_config_dir, monkeypatch):
+        """Set up dependencies for prepare_config_share tests."""
+        self.config_dir = tmp_config_dir
+
+        # Create the guest-init.sh source file where the code expects it
+        # (same directory as vm.py)
+        import safeyolo.vm as vm_mod
+
+        self.guest_init_src = Path(vm_mod.__file__).parent / "guest-init.sh"
+        if not self.guest_init_src.exists():
+            self.guest_init_src.write_text("#!/bin/bash\necho guest-init\n")
+            self._created_guest_init = True
+        else:
+            self._created_guest_init = False
+
+        # Mock _ensure_ssh_key to avoid subprocess calls
+        monkeypatch.setattr("safeyolo.vm._ensure_ssh_key", lambda: None)
+
+        # Create SSH public key
+        data_dir = tmp_config_dir / "data"
+        data_dir.mkdir(exist_ok=True)
+        ssh_key = data_dir / "vm_ssh_key"
+        ssh_key.write_text("fake-private-key")
+        ssh_key.with_suffix(".pub").write_text("ssh-ed25519 AAAA... agent@safeyolo")
+
+        yield
+
+        if self._created_guest_init:
+            self.guest_init_src.unlink(missing_ok=True)
+
+    def test_returns_config_share_dir(self, tmp_config_dir):
+        result = prepare_config_share("agent1", "/workspace")
+        assert result == tmp_config_dir / "agents" / "agent1" / "config-share"
+
+    def test_creates_config_share_directory(self, tmp_config_dir):
+        result = prepare_config_share("agent1", "/workspace")
+        assert result.is_dir()
+
+    def test_guest_init_is_executable(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        guest_init = share / "guest-init"
+        assert guest_init.exists()
+        assert os.access(guest_init, os.X_OK)
+
+    def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            gateway_ip="10.0.0.1", proxy_port=9999,
+        )
+        proxy_env = (share / "proxy.env").read_text()
+        assert 'HTTP_PROXY="http://10.0.0.1:9999"' in proxy_env
+        assert 'HTTPS_PROXY="http://10.0.0.1:9999"' in proxy_env
+        assert 'http_proxy="http://10.0.0.1:9999"' in proxy_env
+        assert 'https_proxy="http://10.0.0.1:9999"' in proxy_env
+
+    def test_proxy_env_default_values(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        proxy_env = (share / "proxy.env").read_text()
+        # Default gateway_ip=192.168.65.1, proxy_port=8080
+        assert 'HTTP_PROXY="http://192.168.65.1:8080"' in proxy_env
+
+    def test_proxy_env_includes_no_proxy(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        proxy_env = (share / "proxy.env").read_text()
+        assert 'NO_PROXY="localhost,127.0.0.1"' in proxy_env
+        assert 'no_proxy="localhost,127.0.0.1"' in proxy_env
+
+    def test_proxy_env_includes_ssl_cert_paths(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        proxy_env = (share / "proxy.env").read_text()
+        assert 'SSL_CERT_FILE="/usr/local/share/ca-certificates/safeyolo.crt"' in proxy_env
+        assert 'REQUESTS_CA_BUNDLE="/usr/local/share/ca-certificates/safeyolo.crt"' in proxy_env
+        assert 'NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/safeyolo.crt"' in proxy_env
+
+    def test_proxy_env_sets_home(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        proxy_env = (share / "proxy.env").read_text()
+        assert 'HOME=/home/agent' in proxy_env
+
+    def test_network_env_uses_guest_and_gateway_ips(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            gateway_ip="192.168.66.1", guest_ip="192.168.66.2",
+        )
+        network_env = (share / "network.env").read_text()
+        assert network_env == (
+            "GUEST_IP=192.168.66.2\n"
+            "GATEWAY_IP=192.168.66.1\n"
+            "NETMASK=255.255.255.0\n"
+        )
+
+    def test_network_env_default_values(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        network_env = (share / "network.env").read_text()
+        assert network_env == (
+            "GUEST_IP=192.168.65.2\n"
+            "GATEWAY_IP=192.168.65.1\n"
+            "NETMASK=255.255.255.0\n"
+        )
+
+    def test_agent_env_with_all_parameters(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            agent_binary="claude",
+            mise_package="npm:@anthropic/claude-code",
+            agent_args="--model opus",
+            instructions_path="/home/agent/.claude/CLAUDE.md",
+            auto_args="--auto",
+            extra_env={"FOO": "bar", "BAZ": "qux"},
+        )
+        agent_env = (share / "agent.env").read_text()
+        assert 'SAFEYOLO_AGENT_BINARY="claude"' in agent_env
+        assert 'SAFEYOLO_AGENT_CMD="claude"' in agent_env
+        assert 'SAFEYOLO_MISE_PACKAGE="npm:@anthropic/claude-code"' in agent_env
+        assert 'SAFEYOLO_AGENT_ARGS="--model opus"' in agent_env
+        assert 'SAFEYOLO_INSTRUCTIONS_PATH="/home/agent/.claude/CLAUDE.md"' in agent_env
+        assert 'SAFEYOLO_AUTO_ARGS="--auto"' in agent_env
+        assert 'FOO="bar"' in agent_env
+        assert 'BAZ="qux"' in agent_env
+
+    def test_agent_env_empty_when_no_parameters(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        agent_env = (share / "agent.env").read_text()
+        # Should just be a trailing newline with no export lines
+        assert agent_env == "\n"
+
+    def test_agent_env_omits_empty_parameters(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            agent_binary="claude",
+            # mise_package, agent_args, etc. left as defaults (empty)
+        )
+        agent_env = (share / "agent.env").read_text()
+        assert "SAFEYOLO_AGENT_BINARY" in agent_env
+        assert "SAFEYOLO_MISE_PACKAGE" not in agent_env
+        assert "SAFEYOLO_AGENT_ARGS" not in agent_env
+
+    def test_instructions_md_written_when_both_content_and_path_given(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            instructions_content="# Hello\nDo things.",
+            instructions_path="/home/agent/.claude/CLAUDE.md",
+        )
+        assert (share / "instructions.md").read_text() == "# Hello\nDo things."
+
+    def test_instructions_md_not_written_when_content_only(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            instructions_content="# Hello",
+            # instructions_path not given
+        )
+        assert not (share / "instructions.md").exists()
+
+    def test_instructions_md_not_written_when_path_only(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            instructions_path="/home/agent/.claude/CLAUDE.md",
+            # instructions_content not given
+        )
+        assert not (share / "instructions.md").exists()
+
+    def test_ca_cert_copied_if_exists(self, tmp_config_dir):
+        certs_dir = tmp_config_dir / "certs"
+        certs_dir.mkdir(exist_ok=True)
+        (certs_dir / "mitmproxy-ca-cert.pem").write_text("CA-CERT-DATA")
+
+        share = prepare_config_share("agent1", "/workspace")
+        assert (share / "mitmproxy-ca-cert.pem").read_text() == "CA-CERT-DATA"
+
+    def test_ca_cert_not_copied_if_missing(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        assert not (share / "mitmproxy-ca-cert.pem").exists()
+
+    def test_ssh_authorized_keys_copied(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        assert (share / "authorized_keys").read_text() == "ssh-ed25519 AAAA... agent@safeyolo"
+
+    def test_agent_token_copied_if_exists(self, tmp_config_dir):
+        (tmp_config_dir / "data" / "agent_token").write_text("tok-abc-123")
+
+        share = prepare_config_share("agent1", "/workspace")
+        assert (share / "agent_token").read_text() == "tok-abc-123"
+
+    def test_agent_token_not_copied_if_missing(self, tmp_config_dir):
+        # Ensure no agent_token file exists
+        token_path = tmp_config_dir / "data" / "agent_token"
+        token_path.unlink(missing_ok=True)
+
+        share = prepare_config_share("agent1", "/workspace")
+        assert not (share / "agent_token").exists()
+
+    def test_vsock_term_copied_if_exists(self, tmp_config_dir):
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / "vsock-term").write_bytes(b"\x7fELF-fake")
+
+        share = prepare_config_share("agent1", "/workspace")
+        vsock = share / "vsock-term"
+        assert vsock.exists()
+        assert os.access(vsock, os.X_OK)
+
+    def test_vsock_term_not_copied_if_missing(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        assert not (share / "vsock-term").exists()
+
+    def test_host_mounts_manifest_under_home(self, tmp_config_dir, monkeypatch):
+        """Paths under $HOME are mapped to /home/agent/..."""
+        home = Path.home()
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            host_mounts=[(str(home / ".claude"), "dotclaude", True)],
+        )
+        manifest = (share / "host-mounts").read_text()
+        assert manifest == "dotclaude:/home/agent/.claude\n"
+
+    def test_host_mounts_manifest_outside_home(self, tmp_config_dir):
+        """Paths outside $HOME are mapped to /mnt/{tag}."""
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            host_mounts=[("/opt/data", "optdata", False)],
+        )
+        manifest = (share / "host-mounts").read_text()
+        assert manifest == "optdata:/mnt/optdata\n"
+
+    def test_host_mounts_multiple_entries(self, tmp_config_dir):
+        home = Path.home()
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            host_mounts=[
+                (str(home / ".config"), "dotconfig", True),
+                ("/opt/tools", "tools", False),
+            ],
+        )
+        manifest = (share / "host-mounts").read_text()
+        lines = manifest.strip().split("\n")
+        assert len(lines) == 2
+        assert lines[0] == "dotconfig:/home/agent/.config"
+        assert lines[1] == "tools:/mnt/tools"
+
+    def test_host_mounts_not_written_when_none(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        assert not (share / "host-mounts").exists()
+
+    def test_host_config_files_copied_and_manifested(self, tmp_config_dir, monkeypatch, tmp_path):
+        """Host config files are copied into host-files/ with slash escaping."""
+        # Point Path.home() to a temp dir so we can create files
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+        # Create source files
+        (fake_home / ".gitconfig").write_text("[user]\nname = test")
+        sub = fake_home / ".config" / "gh"
+        sub.mkdir(parents=True)
+        (sub / "hosts.yml").write_text("github.com: token")
+
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            host_config_files=[".gitconfig", ".config/gh/hosts.yml"],
+        )
+
+        files_dir = share / "host-files"
+        assert files_dir.is_dir()
+        assert (files_dir / ".gitconfig").read_text() == "[user]\nname = test"
+        assert (files_dir / ".config__gh__hosts.yml").read_text() == "github.com: token"
+
+        manifest = (share / "host-files-manifest").read_text()
+        assert ".gitconfig:/home/agent/.gitconfig" in manifest
+        assert ".config__gh__hosts.yml:/home/agent/.config/gh/hosts.yml" in manifest
+
+    def test_host_config_files_skips_missing(self, tmp_config_dir, monkeypatch, tmp_path):
+        """Missing host config files are silently skipped."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            host_config_files=[".nonexistent"],
+        )
+        # No manifest written because no files were found
+        assert not (share / "host-files-manifest").exists()
+
+
+# ---------------------------------------------------------------------------
+# start_vm
+# ---------------------------------------------------------------------------
+
+
+class TestStartVm:
+    """VM process startup and PID file management."""
+
+    @pytest.fixture(autouse=True)
+    def setup_vm_deps(self, tmp_config_dir, monkeypatch):
+        """Create required files for start_vm."""
+        self.config_dir = tmp_config_dir
+
+        # Create share dir with kernel, initrd, rootfs
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        (share_dir / "Image").write_bytes(b"kernel")
+        (share_dir / "initramfs.cpio.gz").write_bytes(b"initrd")
+
+        # Create agent rootfs
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "rootfs.ext4").write_bytes(b"rootfs")
+        (agent_dir / "config-share").mkdir()
+
+        # Create vm helper
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        helper = bin_dir / "safeyolo-vm"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+
+    def test_raises_when_rootfs_missing(self, tmp_config_dir, monkeypatch):
+        (tmp_config_dir / "agents" / "agent1" / "rootfs.ext4").unlink()
+
+        with pytest.raises(VMError, match="Agent rootfs not found"):
+            start_vm("agent1", "/workspace")
+
+    def test_raises_when_kernel_missing(self, tmp_config_dir):
+        (tmp_config_dir / "share" / "Image").unlink()
+
+        with pytest.raises(VMError, match="kernel not found"):
+            start_vm("agent1", "/workspace")
+
+    def test_raises_when_initrd_missing(self, tmp_config_dir):
+        (tmp_config_dir / "share" / "initramfs.cpio.gz").unlink()
+
+        with pytest.raises(VMError, match="initramfs not found"):
+            start_vm("agent1", "/workspace")
+
+    def test_writes_pid_file(self, tmp_config_dir, monkeypatch):
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda cmd, **kw: mock_proc,
+        )
+
+        start_vm("agent1", "/workspace")
+
+        pid_path = tmp_config_dir / "agents" / "agent1" / "vm.pid"
+        assert pid_path.read_text() == "12345"
+
+    def test_returns_popen_handle(self, tmp_config_dir, monkeypatch):
+        mock_proc = MagicMock()
+        mock_proc.pid = 99
+        monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: mock_proc)
+
+        result = start_vm("agent1", "/workspace")
+        assert result is mock_proc
+
+    def test_command_includes_kernel_initrd_rootfs(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace")
+
+        assert "--kernel" in captured_cmd
+        assert "--initrd" in captured_cmd
+        assert "--rootfs" in captured_cmd
+
+    def test_command_includes_cpus_and_memory(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace", cpus=8, memory_mb=8192)
+
+        cpu_idx = captured_cmd.index("--cpus")
+        assert captured_cmd[cpu_idx + 1] == "8"
+        mem_idx = captured_cmd.index("--memory")
+        assert captured_cmd[mem_idx + 1] == "8192"
+
+    def test_command_includes_workspace_and_config_shares(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/my/workspace")
+
+        # Find the --share arguments
+        share_args = []
+        for i, arg in enumerate(captured_cmd):
+            if arg == "--share":
+                share_args.append(captured_cmd[i + 1])
+
+        assert any(a.startswith("/my/workspace:workspace:rw") for a in share_args)
+        assert any(":config:rw" in a for a in share_args)
+
+    def test_feth_networking_adds_feth_flag(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace", feth_vm="feth0")
+
+        idx = captured_cmd.index("--feth")
+        assert captured_cmd[idx + 1] == "feth0"
+
+    def test_feth_bridge_added_when_binary_exists(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        feth_bridge = tmp_config_dir / "bin" / "feth-bridge"
+        feth_bridge.write_text("#!/bin/sh\n")
+        feth_bridge.chmod(0o755)
+
+        start_vm("agent1", "/workspace", feth_vm="feth0")
+
+        assert "--feth-bridge" in captured_cmd
+        fb_idx = captured_cmd.index("--feth-bridge")
+        assert captured_cmd[fb_idx + 1] == str(feth_bridge)
+
+    def test_extra_shares_added_with_correct_mode(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm(
+            "agent1", "/workspace",
+            extra_shares=[
+                ("/data", "data", False),
+                ("/secrets", "secrets", True),
+            ],
+        )
+
+        share_args = []
+        for i, arg in enumerate(captured_cmd):
+            if arg == "--share":
+                share_args.append(captured_cmd[i + 1])
+
+        assert "/data:data:rw" in share_args
+        assert "/secrets:secrets:ro" in share_args
+
+    def test_background_mode_redirects_to_serial_log(self, tmp_config_dir, monkeypatch):
+        captured_kwargs = {}
+
+        def mock_popen(cmd, **kw):
+            captured_kwargs.update(kw)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace", background=True)
+
+        assert captured_kwargs.get("stdin") == subprocess.DEVNULL
+        # stdout and stderr should be file handles (not None/PIPE)
+        assert captured_kwargs.get("stdout") is not None
+        assert captured_kwargs.get("stderr") is not None
+
+    def test_foreground_mode_no_redirection(self, tmp_config_dir, monkeypatch):
+        captured_kwargs = {}
+
+        def mock_popen(cmd, **kw):
+            captured_kwargs.update(kw)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace", background=False)
+
+        assert "stdin" not in captured_kwargs
+        assert "stdout" not in captured_kwargs
+
+
+# ---------------------------------------------------------------------------
+# stop_vm
+# ---------------------------------------------------------------------------
+
+
+class TestStopVm:
+    """VM process shutdown and cleanup."""
+
+    def test_no_pid_file_still_cleans_up(self, tmp_config_dir, monkeypatch):
+        """When no PID file exists, still cleans up feth and agent map."""
+        agents_dir = tmp_config_dir / "agents"
+        agents_dir.mkdir(exist_ok=True)
+        (agents_dir / "agent1").mkdir(exist_ok=True)
+
+        # Mock _cleanup_feth_bridge and _update_agent_map
+        feth_calls = []
+        map_calls = []
+        monkeypatch.setattr(
+            "safeyolo.vm._cleanup_feth_bridge",
+            lambda name: feth_calls.append(name),
+        )
+        monkeypatch.setattr(
+            "safeyolo.vm._update_agent_map",
+            lambda name, **kw: map_calls.append((name, kw)),
+        )
+
+        stop_vm("agent1")
+        assert feth_calls == ["agent1"]
+        assert map_calls == [("agent1", {"remove": True})]
+
+    def test_sends_sigterm(self, tmp_config_dir, monkeypatch):
+        """Sends SIGTERM to the VM process."""
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "vm.pid").write_text("12345")
+
+        killed_signals = []
+
+        def mock_kill(pid, sig):
+            killed_signals.append((pid, sig))
+            if sig == signal.SIGTERM:
+                return  # Success
+            # For os.kill(pid, 0) — pretend process is dead after SIGTERM
+            raise ProcessLookupError()
+
+        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
+        monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
+
+        stop_vm("agent1")
+
+        assert (12345, signal.SIGTERM) in killed_signals
+
+    def test_cleans_up_pid_file_after_stop(self, tmp_config_dir, monkeypatch):
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        pid_path = agent_dir / "vm.pid"
+        pid_path.write_text("12345")
+
+        def mock_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError()
+
+        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
+        monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
+
+        stop_vm("agent1")
+        assert not pid_path.exists()
+
+    def test_handles_already_dead_process(self, tmp_config_dir, monkeypatch):
+        """ProcessLookupError on SIGTERM is handled gracefully."""
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        pid_path = agent_dir / "vm.pid"
+        pid_path.write_text("99999")
+
+        def mock_kill(pid, sig):
+            raise ProcessLookupError()
+
+        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
+        monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
+
+        stop_vm("agent1")  # Should not raise
+        assert not pid_path.exists()
+
+    def test_sends_sigkill_after_timeout(self, tmp_config_dir, monkeypatch):
+        """Sends SIGKILL when process doesn't die after SIGTERM."""
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "vm.pid").write_text("12345")
+
+        kill_count = 0
+        signals_sent = []
+
+        def mock_kill(pid, sig):
+            nonlocal kill_count
+            signals_sent.append(sig)
+            kill_count += 1
+            # Process stays alive for all signal-0 checks, then dies on SIGKILL
+            if sig == signal.SIGKILL:
+                return
+            if sig == 0:
+                return  # Process is always alive
+            # SIGTERM succeeds but process doesn't die
+
+        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr("time.sleep", lambda x: None)  # Skip waits
+        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
+        monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
+
+        stop_vm("agent1")
+
+        assert signal.SIGTERM in signals_sent
+        assert signal.SIGKILL in signals_sent
+
+    def test_removes_from_agent_map(self, tmp_config_dir, monkeypatch):
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "vm.pid").write_text("12345")
+
+        map_calls = []
+
+        def mock_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError()
+
+        monkeypatch.setattr("os.kill", mock_kill)
+        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
+        monkeypatch.setattr(
+            "safeyolo.vm._update_agent_map",
+            lambda name, **kw: map_calls.append((name, kw)),
+        )
+
+        stop_vm("agent1")
+        assert map_calls == [("agent1", {"remove": True})]
+
+
+# ---------------------------------------------------------------------------
+# is_vm_running
+# ---------------------------------------------------------------------------
+
+
+class TestIsVmRunning:
+    """PID file check and process liveness probe."""
+
+    def test_returns_false_when_no_pid_file(self, tmp_config_dir):
+        assert is_vm_running("nonexistent") is False
+
+    def test_returns_true_when_process_alive(self, tmp_config_dir, monkeypatch):
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "vm.pid").write_text("12345")
+
+        monkeypatch.setattr("os.kill", lambda pid, sig: None)  # Process is alive
+
+        assert is_vm_running("agent1") is True
+
+    def test_returns_false_and_cleans_stale_pid(self, tmp_config_dir, monkeypatch):
+        """Stale PID file (dead process) is cleaned up and returns False."""
+        agent_dir = tmp_config_dir / "agents" / "agent1"
+        agent_dir.mkdir(parents=True)
+        pid_path = agent_dir / "vm.pid"
+        pid_path.write_text("99999")
+
+        def mock_kill(pid, sig):
+            raise ProcessLookupError()
+
+        monkeypatch.setattr("os.kill", mock_kill)
+
+        assert is_vm_running("agent1") is False
+        assert not pid_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# get_vm_ip
+# ---------------------------------------------------------------------------
+
+
+class TestGetVmIp:
+    """Polling config share for guest-reported IP."""
+
+    def test_returns_ip_when_file_exists(self, tmp_config_dir, monkeypatch):
+        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
+        config_share.mkdir(parents=True)
+        (config_share / "vm-ip").write_text("192.168.65.2\n")
+
+        monkeypatch.setattr("time.sleep", lambda x: None)
+
+        result = get_vm_ip("agent1", timeout=1)
+        assert result == "192.168.65.2"
+
+    def test_returns_none_on_timeout(self, tmp_config_dir, monkeypatch):
+        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
+        config_share.mkdir(parents=True)
+
+        monkeypatch.setattr("time.sleep", lambda x: None)
+
+        result = get_vm_ip("agent1", timeout=1)
+        assert result is None
+
+    def test_waits_for_nonempty_content(self, tmp_config_dir, monkeypatch):
+        """Skips empty file, returns IP when content appears."""
+        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
+        config_share.mkdir(parents=True)
+        ip_file = config_share / "vm-ip"
+        ip_file.write_text("")  # Start empty
+
+        call_count = 0
+
+        def mock_sleep(x):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                ip_file.write_text("10.0.0.5")
+
+        monkeypatch.setattr("time.sleep", mock_sleep)
+
+        result = get_vm_ip("agent1", timeout=30)
+        assert result == "10.0.0.5"
+
+    def test_strips_whitespace_from_ip(self, tmp_config_dir, monkeypatch):
+        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
+        config_share.mkdir(parents=True)
+        (config_share / "vm-ip").write_text("  192.168.65.2  \n")
+
+        monkeypatch.setattr("time.sleep", lambda x: None)
+
+        result = get_vm_ip("agent1", timeout=1)
+        assert result == "192.168.65.2"
+
+
+# ---------------------------------------------------------------------------
+# _update_agent_map
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateAgentMap:
+    """Agent map JSON for service discovery."""
+
+    def test_adds_agent_with_ip(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr(
+            "time.strftime",
+            lambda fmt, t: "2026-04-06T12:00:00Z",
+        )
+
+        _update_agent_map("agent1", ip="192.168.65.2")
+
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        data = json.loads(map_path.read_text())
+        assert data == {
+            "agent1": {
+                "ip": "192.168.65.2",
+                "started": "2026-04-06T12:00:00Z",
+            }
+        }
+
+    def test_removes_agent(self, tmp_config_dir):
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        map_path.write_text(json.dumps({
+            "agent1": {"ip": "1.2.3.4", "started": "2026-01-01T00:00:00Z"},
+            "agent2": {"ip": "5.6.7.8", "started": "2026-01-01T00:00:00Z"},
+        }))
+
+        _update_agent_map("agent1", remove=True)
+
+        data = json.loads(map_path.read_text())
+        assert "agent1" not in data
+        assert "agent2" in data
+
+    def test_remove_nonexistent_agent_is_noop(self, tmp_config_dir):
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        map_path.write_text(json.dumps({"other": {"ip": "1.2.3.4", "started": "t"}}))
+
+        _update_agent_map("ghost", remove=True)
+
+        data = json.loads(map_path.read_text())
+        assert data == {"other": {"ip": "1.2.3.4", "started": "t"}}
+
+    def test_creates_map_file_if_missing(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr(
+            "time.strftime",
+            lambda fmt, t: "2026-04-06T00:00:00Z",
+        )
+
+        _update_agent_map("agent1", ip="10.0.0.1")
+
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        assert map_path.exists()
+        data = json.loads(map_path.read_text())
+        assert data["agent1"]["ip"] == "10.0.0.1"
+
+    def test_handles_corrupt_json(self, tmp_config_dir, monkeypatch):
+        """Corrupt agent_map.json is treated as empty."""
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        map_path.write_text("{broken json!!!")
+
+        monkeypatch.setattr(
+            "time.strftime",
+            lambda fmt, t: "2026-04-06T00:00:00Z",
+        )
+
+        _update_agent_map("agent1", ip="10.0.0.1")
+
+        data = json.loads(map_path.read_text())
+        assert data["agent1"]["ip"] == "10.0.0.1"
+
+    def test_preserves_other_agents(self, tmp_config_dir, monkeypatch):
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        map_path.write_text(json.dumps({
+            "existing": {"ip": "1.1.1.1", "started": "2026-01-01T00:00:00Z"},
+        }))
+
+        monkeypatch.setattr(
+            "time.strftime",
+            lambda fmt, t: "2026-04-06T00:00:00Z",
+        )
+
+        _update_agent_map("new-agent", ip="2.2.2.2")
+
+        data = json.loads(map_path.read_text())
+        assert data["existing"]["ip"] == "1.1.1.1"
+        assert data["new-agent"]["ip"] == "2.2.2.2"
+
+    def test_json_has_trailing_newline(self, tmp_config_dir, monkeypatch):
+        """Output is pretty-printed with trailing newline."""
+        monkeypatch.setattr(
+            "time.strftime",
+            lambda fmt, t: "2026-04-06T00:00:00Z",
+        )
+
+        _update_agent_map("agent1", ip="10.0.0.1")
+
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        content = map_path.read_text()
+        assert content.endswith("\n")
+        # Verify pretty-printed (indented)
+        assert "\n  " in content
+
+    def test_no_ip_and_no_remove_is_noop(self, tmp_config_dir):
+        """Calling with neither ip nor remove writes back unchanged map."""
+        map_path = tmp_config_dir / "data" / "agent_map.json"
+        map_path.write_text(json.dumps({"x": {"ip": "1.1.1.1", "started": "t"}}))
+
+        _update_agent_map("y")  # No ip, no remove
+
+        data = json.loads(map_path.read_text())
+        assert "y" not in data
+        assert data["x"]["ip"] == "1.1.1.1"
+
+
+# ---------------------------------------------------------------------------
+# check_guest_images / guest_image_status
+# ---------------------------------------------------------------------------
+
+
+class TestGuestImageChecks:
+    """Guest image artifact existence checks."""
+
+    def test_check_guest_images_all_present(self, tmp_config_dir):
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "Image").write_bytes(b"k")
+        (share / "initramfs.cpio.gz").write_bytes(b"i")
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        assert check_guest_images() is True
+
+    def test_check_guest_images_missing_kernel(self, tmp_config_dir):
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "initramfs.cpio.gz").write_bytes(b"i")
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        assert check_guest_images() is False
+
+    def test_check_guest_images_missing_initrd(self, tmp_config_dir):
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "Image").write_bytes(b"k")
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        assert check_guest_images() is False
+
+    def test_check_guest_images_missing_rootfs(self, tmp_config_dir):
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "Image").write_bytes(b"k")
+        (share / "initramfs.cpio.gz").write_bytes(b"i")
+
+        assert check_guest_images() is False
+
+    def test_check_guest_images_none_present(self, tmp_config_dir):
+        assert check_guest_images() is False
+
+    def test_guest_image_status_all_present(self, tmp_config_dir):
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "Image").write_bytes(b"k")
+        (share / "initramfs.cpio.gz").write_bytes(b"i")
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        assert guest_image_status() == {
+            "kernel": True,
+            "initramfs": True,
+            "rootfs": True,
+        }
+
+    def test_guest_image_status_partial(self, tmp_config_dir):
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "Image").write_bytes(b"k")
+
+        assert guest_image_status() == {
+            "kernel": True,
+            "initramfs": False,
+            "rootfs": False,
+        }
+
+    def test_guest_image_status_none_present(self, tmp_config_dir):
+        assert guest_image_status() == {
+            "kernel": False,
+            "initramfs": False,
+            "rootfs": False,
+        }

@@ -11,6 +11,13 @@ from ..vm import check_guest_images, guest_image_status
 
 console = Console()
 
+setup_app = typer.Typer(
+    name="setup",
+    help="Check system prerequisites for SafeYolo microVM agents.",
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
+
 
 def check_bpf_access() -> tuple[bool, str]:
     """Check if the user can access BPF devices (needed for feth-bridge)."""
@@ -25,6 +32,7 @@ def check_bpf_access() -> tuple[bool, str]:
     return False, "Not in access_bpf group (install Wireshark or OrbStack to add it)"
 
 
+@setup_app.callback(invoke_without_command=True)
 def setup() -> None:
     """Check system prerequisites for SafeYolo microVM agents.
 

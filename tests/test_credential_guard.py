@@ -1583,3 +1583,79 @@ class TestApprovalResponseContent:
         assert "approval" in body["reflection"].lower()
         assert body["destination"] == "api.example.com"
         assert body["credential_fingerprint"] == "hmac:abc123"
+
+
+class TestEnvVarPaths:
+    """Tests for SAFEYOLO_DATA_DIR env var support in credential_guard.configure().
+
+    Contract:
+    - HMAC secret path: SAFEYOLO_DATA_DIR/hmac_secret (falls back to /safeyolo/data/hmac_secret)
+    - Only loaded once (when hmac_secret is empty bytes)
+    """
+
+    def test_hmac_path_uses_safeyolo_data_dir(self, monkeypatch):
+        """When SAFEYOLO_DATA_DIR is set, HMAC secret is loaded from $SAFEYOLO_DATA_DIR/hmac_secret."""
+        from pathlib import Path
+
+        from credential_guard import CredentialGuard
+        from mitmproxy.test import taddons
+
+        monkeypatch.setenv("SAFEYOLO_DATA_DIR", "/custom/data")
+        captured_path = None
+
+        def capture_load_hmac(path):
+            nonlocal captured_path
+            captured_path = path
+            return b"test-secret"
+
+        guard = CredentialGuard()
+        with taddons.context(guard) as tctx, \
+             mock.patch("credential_guard.load_hmac_secret", side_effect=capture_load_hmac):
+            tctx.options.credguard_block = True
+
+        assert captured_path == Path("/custom/data/hmac_secret")
+
+    def test_hmac_path_falls_back_to_default(self, monkeypatch):
+        """When SAFEYOLO_DATA_DIR is not set, HMAC secret is loaded from /safeyolo/data/hmac_secret."""
+        from pathlib import Path
+
+        from credential_guard import CredentialGuard
+        from mitmproxy.test import taddons
+
+        monkeypatch.delenv("SAFEYOLO_DATA_DIR", raising=False)
+        captured_path = None
+
+        def capture_load_hmac(path):
+            nonlocal captured_path
+            captured_path = path
+            return b"test-secret"
+
+        guard = CredentialGuard()
+        with taddons.context(guard) as tctx, \
+             mock.patch("credential_guard.load_hmac_secret", side_effect=capture_load_hmac):
+            tctx.options.credguard_block = True
+
+        assert captured_path == Path("/safeyolo/data/hmac_secret")
+
+    def test_hmac_loaded_only_once(self, monkeypatch):
+        """When hmac_secret is already set, configure() does not reload it."""
+        from credential_guard import CredentialGuard
+        from mitmproxy.test import taddons
+
+        monkeypatch.setenv("SAFEYOLO_DATA_DIR", "/custom/data")
+        call_count = 0
+
+        def counting_load_hmac(path):
+            nonlocal call_count
+            call_count += 1
+            return b"test-secret"
+
+        guard = CredentialGuard()
+        with taddons.context(guard) as tctx, \
+             mock.patch("credential_guard.load_hmac_secret", side_effect=counting_load_hmac):
+            # First configure call loads the secret
+            tctx.options.credguard_block = True
+            assert call_count == 1
+            # Second configure call should not reload
+            tctx.options.credguard_scan_urls = True
+            assert call_count == 1

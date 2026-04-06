@@ -93,11 +93,10 @@ app.add_typer(services_app, name="services")
 # Convenience aliases
 @app.command(name="up")
 def up_alias(
-    pull: bool = typer.Option(False, "--pull", "-p"),
     wait: bool = typer.Option(True, "--wait/--no-wait"),
 ):
     """Alias for 'start'."""
-    start(pull=pull, wait=wait)
+    start(wait=wait)
 
 
 @app.command(name="down")

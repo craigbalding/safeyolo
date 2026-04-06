@@ -147,6 +147,9 @@ name = "minimal"
         assert config.auth.env_var == ""
         assert config.host.config_dirs == []
         assert config.host.config_files == []
+        assert config.vm.cpus == 4
+        assert config.vm.memory == 4096
+        assert config.vm.disk_size == 4096
         assert config.vm.env == {}
         assert config.instructions.content == ""
 
@@ -161,6 +164,103 @@ description = "No name specified"
 
         config = load_agent_config(agent_dir)
         assert config.name == "dirname-fallback"
+
+    def test_vm_section_populates_all_fields(self, tmp_path):
+        """Reads cpus, memory, disk_size, env from [vm] section."""
+        agent_dir = tmp_path / "vm-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "vm-test"
+
+[vm]
+cpus = 8
+memory = 8192
+disk_size = 16384
+env = { GPU = "true", WORKERS = "4" }
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 8
+        assert config.vm.memory == 8192
+        assert config.vm.disk_size == 16384
+        assert config.vm.env == {"GPU": "true", "WORKERS": "4"}
+
+    def test_docker_section_falls_back_to_vm(self, tmp_path):
+        """[docker] section is read when [vm] is absent (migration path)."""
+        agent_dir = tmp_path / "legacy-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "legacy"
+
+[docker]
+cpus = 2
+memory = 2048
+env = { LEGACY = "yes" }
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 2
+        assert config.vm.memory == 2048
+        assert config.vm.env == {"LEGACY": "yes"}
+
+    def test_vm_section_takes_precedence_over_docker(self, tmp_path):
+        """When both [vm] and [docker] exist, [vm] wins."""
+        agent_dir = tmp_path / "both-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "both"
+
+[docker]
+cpus = 2
+memory = 2048
+env = { FROM = "docker" }
+
+[vm]
+cpus = 8
+memory = 8192
+env = { FROM = "vm" }
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 8
+        assert config.vm.memory == 8192
+        assert config.vm.env == {"FROM": "vm"}
+
+    def test_vm_defaults_when_neither_section_present(self, tmp_path):
+        """VMConfig uses dataclass defaults when no [vm] or [docker] section."""
+        agent_dir = tmp_path / "no-vm-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "no-vm"
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 4
+        assert config.vm.memory == 4096
+        assert config.vm.disk_size == 4096
+        assert config.vm.env == {}
+
+    def test_vm_partial_fields_get_defaults(self, tmp_path):
+        """Missing fields in [vm] section get defaults."""
+        agent_dir = tmp_path / "partial-vm"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "partial"
+
+[vm]
+cpus = 2
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 2
+        assert config.vm.memory == 4096
+        assert config.vm.disk_size == 4096
+        assert config.vm.env == {}
 
 
 class TestRunConfig:
@@ -254,15 +354,16 @@ class TestGetAgentConfig:
 
 
 class TestDetectHostConfigForAgent:
-    """Tests for detect_host_config_for_agent()."""
+    """Tests for detect_host_config_for_agent().
 
-    def test_finds_existing_dirs(self, tmp_path, monkeypatch):
-        """Detects existing host config directories."""
-        # Create fake home with config dir
+    Returns a list of config_dirs names that exist under $HOME.
+    """
+
+    def test_returns_existing_dirs(self, tmp_path, monkeypatch):
+        """Returns names of config_dirs that exist under home."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         (fake_home / ".test-config").mkdir()
-        monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(Path, "home", lambda: fake_home)
 
         config = AgentConfig(
@@ -276,16 +377,14 @@ class TestDetectHostConfigForAgent:
             instructions=InstructionsConfig(),
         )
 
-        status = detect_host_config_for_agent(config)
+        found = detect_host_config_for_agent(config)
 
-        assert ".test-config" in status.found_dirs
-        assert ".missing" not in status.found_dirs
+        assert found == [".test-config"]
 
-    def test_finds_existing_files(self, tmp_path, monkeypatch):
-        """Detects existing host config files."""
+    def test_excludes_missing_dirs(self, tmp_path, monkeypatch):
+        """Dirs that do not exist are not in the returned list."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        (fake_home / ".testrc").write_text("config")
         monkeypatch.setattr(Path, "home", lambda: fake_home)
 
         config = AgentConfig(
@@ -294,18 +393,17 @@ class TestDetectHostConfigForAgent:
             install=InstallConfig(mise="", binary=""),
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
-            host=HostConfig(config_dirs=[], config_files=[".testrc", ".missingrc"]),
+            host=HostConfig(config_dirs=[".no-such-dir"], config_files=[]),
             vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
-        status = detect_host_config_for_agent(config)
+        found = detect_host_config_for_agent(config)
 
-        assert ".testrc" in status.found_files
-        assert ".missingrc" not in status.found_files
+        assert found == []
 
-    def test_handles_empty_host_config(self, tmp_path, monkeypatch):
-        """Returns empty status when no host config specified."""
+    def test_returns_empty_list_when_no_dirs_configured(self, tmp_path, monkeypatch):
+        """Returns empty list when agent has no config_dirs."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: fake_home)
@@ -321,15 +419,31 @@ class TestDetectHostConfigForAgent:
             instructions=InstructionsConfig(),
         )
 
-        status = detect_host_config_for_agent(config)
+        found = detect_host_config_for_agent(config)
 
-        assert status.found_dirs == []
-        assert status.found_files == []
+        assert found == []
 
+    def test_does_not_match_files_as_dirs(self, tmp_path, monkeypatch):
+        """A file with the same name as a config_dir is not returned (only dirs count)."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / ".is-a-file").write_text("not a directory")
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
 
-class TestRenderTemplate:
-    """Docker compose rendering tests removed — microVM branch uses rootfs + config share."""
-    pass
+        config = AgentConfig(
+            name="test",
+            description="",
+            install=InstallConfig(mise="", binary=""),
+            run=RunConfig(command="", args=[], auto_args=[]),
+            auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
+            host=HostConfig(config_dirs=[".is-a-file"], config_files=[]),
+            vm=VMConfig(),
+            instructions=InstructionsConfig(),
+        )
+
+        found = detect_host_config_for_agent(config)
+
+        assert found == []
 
 
 # =============================================================================

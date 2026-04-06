@@ -1,0 +1,916 @@
+"""
+Tests for proxy.py — Host mitmproxy process management.
+
+Tests command construction, token generation, cert management,
+PID file lifecycle, and directory discovery.
+"""
+
+import os
+import signal
+import stat
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# TestAddonChain
+# ---------------------------------------------------------------------------
+
+class TestAddonChain:
+    """Tests for ADDON_CHAIN ordering and completeness."""
+
+    def test_addon_chain_has_expected_count(self):
+        """ADDON_CHAIN contains exactly 19 addons."""
+        from safeyolo.proxy import ADDON_CHAIN
+        assert len(ADDON_CHAIN) == 19
+
+    def test_addon_chain_starts_with_infrastructure(self):
+        """First addon loaded is file_logging.py (infrastructure layer)."""
+        from safeyolo.proxy import ADDON_CHAIN
+        assert ADDON_CHAIN[0] == "file_logging.py"
+
+    def test_addon_chain_ends_with_admin_api(self):
+        """Last addon loaded is admin_api.py (observability layer)."""
+        from safeyolo.proxy import ADDON_CHAIN
+        assert ADDON_CHAIN[-1] == "admin_api.py"
+
+    def test_policy_engine_before_network_guard(self):
+        """policy_engine.py loads before network_guard.py (policy must exist before enforcement)."""
+        from safeyolo.proxy import ADDON_CHAIN
+        pe_idx = ADDON_CHAIN.index("policy_engine.py")
+        ng_idx = ADDON_CHAIN.index("network_guard.py")
+        assert pe_idx < ng_idx
+
+    def test_credential_guard_after_network_guard(self):
+        """credential_guard.py loads after network_guard.py (network check before credential inspection)."""
+        from safeyolo.proxy import ADDON_CHAIN
+        ng_idx = ADDON_CHAIN.index("network_guard.py")
+        cg_idx = ADDON_CHAIN.index("credential_guard.py")
+        assert ng_idx < cg_idx
+
+    def test_request_id_before_all_guards(self):
+        """request_id.py loads before network_guard and credential_guard (needed for correlation)."""
+        from safeyolo.proxy import ADDON_CHAIN
+        rid_idx = ADDON_CHAIN.index("request_id.py")
+        ng_idx = ADDON_CHAIN.index("network_guard.py")
+        cg_idx = ADDON_CHAIN.index("credential_guard.py")
+        assert rid_idx < ng_idx
+        assert rid_idx < cg_idx
+
+    def test_service_discovery_before_policy_engine(self):
+        """service_discovery.py loads before policy_engine.py (agent identity needed for policy)."""
+        from safeyolo.proxy import ADDON_CHAIN
+        sd_idx = ADDON_CHAIN.index("service_discovery.py")
+        pe_idx = ADDON_CHAIN.index("policy_engine.py")
+        assert sd_idx < pe_idx
+
+    def test_all_addon_filenames_end_with_py(self):
+        """Every entry in ADDON_CHAIN ends with .py."""
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            assert addon.endswith(".py"), f"{addon} does not end with .py"
+
+
+# ---------------------------------------------------------------------------
+# TestFindAddonsDir
+# ---------------------------------------------------------------------------
+
+class TestFindAddonsDir:
+    """Tests for _find_addons_dir() — locating addons directory."""
+
+    def test_returns_none_when_no_addons_dir_exists(self, tmp_path):
+        """When no candidate directory has request_id.py, returns None."""
+        from safeyolo.proxy import _find_addons_dir
+
+        # Patch __file__ to point to a location with no valid addons dir
+        fake_file = tmp_path / "cli" / "src" / "safeyolo" / "proxy.py"
+        fake_file.parent.mkdir(parents=True)
+        fake_file.touch()
+
+        with patch("safeyolo.proxy.__file__", str(fake_file)):
+            result = _find_addons_dir()
+
+        assert result is None
+
+    def test_returns_path_when_marker_file_exists(self, tmp_path):
+        """When a candidate has request_id.py, returns that path."""
+        from safeyolo.proxy import _find_addons_dir
+
+        # Create repo-like layout: repo/cli/src/safeyolo/proxy.py and repo/addons/request_id.py
+        repo = tmp_path / "repo"
+        proxy_file = repo / "cli" / "src" / "safeyolo" / "proxy.py"
+        proxy_file.parent.mkdir(parents=True)
+        proxy_file.touch()
+
+        addons = repo / "addons"
+        addons.mkdir()
+        (addons / "request_id.py").touch()
+
+        with patch("safeyolo.proxy.__file__", str(proxy_file)):
+            result = _find_addons_dir()
+
+        assert result == addons
+
+
+# ---------------------------------------------------------------------------
+# TestFindPdpDir
+# ---------------------------------------------------------------------------
+
+class TestFindPdpDir:
+    """Tests for _find_pdp_dir() — locating PDP directory."""
+
+    def test_returns_none_when_no_pdp_dir_exists(self, tmp_path):
+        """When no candidate directory has __init__.py, returns None."""
+        from safeyolo.proxy import _find_pdp_dir
+
+        fake_file = tmp_path / "cli" / "src" / "safeyolo" / "proxy.py"
+        fake_file.parent.mkdir(parents=True)
+        fake_file.touch()
+
+        with patch("safeyolo.proxy.__file__", str(fake_file)):
+            result = _find_pdp_dir()
+
+        assert result is None
+
+    def test_returns_path_when_init_exists(self, tmp_path):
+        """When a candidate has __init__.py, returns that path."""
+        from safeyolo.proxy import _find_pdp_dir
+
+        repo = tmp_path / "repo"
+        proxy_file = repo / "cli" / "src" / "safeyolo" / "proxy.py"
+        proxy_file.parent.mkdir(parents=True)
+        proxy_file.touch()
+
+        pdp = repo / "pdp"
+        pdp.mkdir()
+        (pdp / "__init__.py").touch()
+
+        with patch("safeyolo.proxy.__file__", str(proxy_file)):
+            result = _find_pdp_dir()
+
+        assert result == pdp
+
+
+# ---------------------------------------------------------------------------
+# TestEnsureCerts
+# ---------------------------------------------------------------------------
+
+class TestEnsureCerts:
+    """Tests for _ensure_certs() — CA certificate generation."""
+
+    def test_generates_cert_when_missing(self, tmp_path):
+        """When cert doesn't exist, runs mitmdump and returns cert path."""
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "certs"
+        ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
+
+        def create_cert(*args, **kwargs):
+            """Simulate mitmdump creating the cert."""
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            ca_cert.write_text("FAKE CERT")
+            return MagicMock(returncode=0)
+
+        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert) as mock_run:
+            result = _ensure_certs(cert_dir)
+
+        assert result == ca_cert
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        cmd = call_args[0][0]
+        assert cmd[0] == "mitmdump"
+        assert f"confdir={cert_dir}" in " ".join(cmd)
+        assert "-p" in cmd
+        assert "0" in cmd
+
+    def test_skips_generation_when_cert_exists(self, tmp_path):
+        """When cert already exists, no subprocess call is made."""
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
+        ca_cert.write_text("EXISTING CERT")
+
+        with patch("safeyolo.proxy.subprocess.run") as mock_run:
+            result = _ensure_certs(cert_dir)
+
+        assert result == ca_cert
+        mock_run.assert_not_called()
+
+    def test_raises_when_generation_fails(self, tmp_path):
+        """When mitmdump runs but cert still missing, RuntimeError is raised."""
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "certs"
+
+        with patch("safeyolo.proxy.subprocess.run", return_value=MagicMock()):
+            with pytest.raises(RuntimeError, match="Failed to generate CA certificate"):
+                _ensure_certs(cert_dir)
+
+    def test_timeout_expired_is_swallowed(self, tmp_path):
+        """TimeoutExpired from mitmdump is expected and swallowed."""
+        import subprocess as sp
+
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "certs"
+        ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
+
+        def timeout_then_cert(*args, **kwargs):
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            ca_cert.write_text("CERT FROM TIMEOUT")
+            raise sp.TimeoutExpired(cmd="mitmdump", timeout=5)
+
+        with patch("safeyolo.proxy.subprocess.run", side_effect=timeout_then_cert):
+            result = _ensure_certs(cert_dir)
+
+        assert result == ca_cert
+
+    def test_sets_permissions_on_generated_pem_files(self, tmp_path):
+        """Generated .pem and .p12 files get 0o600 permissions."""
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "certs"
+
+        def create_cert_files(*args, **kwargs):
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
+            (cert_dir / "mitmproxy-ca.pem").write_text("ca")
+            (cert_dir / "mitmproxy-ca.p12").write_bytes(b"p12")
+            (cert_dir / "readme.txt").write_text("not a cert")
+            return MagicMock(returncode=0)
+
+        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert_files):
+            _ensure_certs(cert_dir)
+
+        assert (cert_dir / "mitmproxy-ca-cert.pem").stat().st_mode & 0o777 == 0o600
+        assert (cert_dir / "mitmproxy-ca.pem").stat().st_mode & 0o777 == 0o600
+        assert (cert_dir / "mitmproxy-ca.p12").stat().st_mode & 0o777 == 0o600
+        # Non-cert file not restricted
+        assert (cert_dir / "readme.txt").stat().st_mode & 0o777 != 0o600
+
+    def test_creates_cert_dir_if_missing(self, tmp_path):
+        """cert_dir is created (with parents) if it doesn't exist."""
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "deep" / "nested" / "certs"
+        ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
+
+        def create_cert(*args, **kwargs):
+            ca_cert.write_text("CERT")
+            return MagicMock(returncode=0)
+
+        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert):
+            _ensure_certs(cert_dir)
+
+        assert cert_dir.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# TestEnsureTokens
+# ---------------------------------------------------------------------------
+
+class TestEnsureTokens:
+    """Tests for _ensure_tokens() — admin and agent token management."""
+
+    def test_creates_new_admin_and_agent_tokens(self, tmp_path):
+        """Fresh data_dir -> both tokens created and returned."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "data"
+        admin_token, agent_token = _ensure_tokens(data_dir)
+
+        assert len(admin_token) > 20  # token_urlsafe(32) is ~43 chars
+        assert len(agent_token) == 64  # token_hex(32) is exactly 64 hex chars
+        assert (data_dir / "admin_token").read_text() == admin_token
+        assert (data_dir / "agent_token").read_text() == agent_token
+
+    def test_preserves_existing_admin_token(self, tmp_path):
+        """Existing admin_token file is read, not overwritten."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "admin_token").write_text("my-existing-admin-token")
+
+        admin_token, agent_token = _ensure_tokens(data_dir)
+
+        assert admin_token == "my-existing-admin-token"
+        assert (data_dir / "admin_token").read_text() == "my-existing-admin-token"
+
+    def test_regenerates_agent_token_every_call(self, tmp_path):
+        """Agent token is different on each call (regenerated every start)."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "data"
+        _, agent1 = _ensure_tokens(data_dir)
+        _, agent2 = _ensure_tokens(data_dir)
+
+        assert agent1 != agent2
+
+    def test_sets_file_permissions_to_600(self, tmp_path):
+        """Both token files get 0o600 permissions."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "data"
+        _ensure_tokens(data_dir)
+
+        admin_mode = (data_dir / "admin_token").stat().st_mode & 0o777
+        agent_mode = (data_dir / "agent_token").stat().st_mode & 0o777
+        assert admin_mode == 0o600
+        assert agent_mode == 0o600
+
+    def test_creates_data_dir_if_missing(self, tmp_path):
+        """data_dir is created (with parents) if it doesn't exist."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "deep" / "nested" / "data"
+        _ensure_tokens(data_dir)
+
+        assert data_dir.is_dir()
+
+    def test_admin_token_whitespace_stripped(self, tmp_path):
+        """Existing admin token file with whitespace is stripped."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "admin_token").write_text("  my-token-with-spaces  \n")
+
+        admin_token, _ = _ensure_tokens(data_dir)
+        assert admin_token == "my-token-with-spaces"
+
+
+# ---------------------------------------------------------------------------
+# TestBuildCommand
+# ---------------------------------------------------------------------------
+
+class TestBuildCommand:
+    """Tests for _build_command() — mitmdump command line construction."""
+
+    @pytest.fixture
+    def cmd_env(self, tmp_path):
+        """Set up minimal filesystem for _build_command."""
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+
+        # Create all addon files so they get included
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            (addons_dir / addon).touch()
+
+        # Create a policy file
+        (config_dir / "policy.toml").touch()
+
+        return {
+            "addons_dir": addons_dir,
+            "cert_dir": cert_dir,
+            "config_dir": config_dir,
+            "logs_dir": logs_dir,
+        }
+
+    def test_basic_command_structure(self, cmd_env):
+        """Command starts with mitmdump, listen-host 0.0.0.0, and port."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            proxy_port=8080,
+            admin_port=9090,
+            **cmd_env,
+        )
+
+        assert cmd[0] == "mitmdump" or cmd[0].endswith("/mitmdump")
+        assert "--listen-host" in cmd
+        idx = cmd.index("--listen-host")
+        assert cmd[idx + 1] == "0.0.0.0"
+        assert "-p" in cmd
+        idx = cmd.index("-p")
+        assert cmd[idx + 1] == "8080"
+
+    def test_addons_loaded_in_chain_order(self, cmd_env):
+        """Addons appear as -s flags in ADDON_CHAIN order."""
+        from safeyolo.proxy import ADDON_CHAIN, _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        # Extract addon paths in order
+        addon_paths = []
+        for i, arg in enumerate(cmd):
+            if arg == "-s":
+                addon_paths.append(cmd[i + 1])
+
+        # Should have all addons (all files exist)
+        assert len(addon_paths) == len(ADDON_CHAIN)
+
+        # Verify order matches ADDON_CHAIN
+        for path, expected_name in zip(addon_paths, ADDON_CHAIN):
+            assert path.endswith(expected_name)
+
+    def test_missing_addon_skipped(self, cmd_env):
+        """Addon file that doesn't exist on disk is not included in command."""
+        from safeyolo.proxy import _build_command
+
+        # Remove one addon file
+        (cmd_env["addons_dir"] / "metrics.py").unlink()
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        addon_paths = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-s"]
+        assert not any(p.endswith("metrics.py") for p in addon_paths)
+
+    def test_policy_toml_preferred_over_yaml(self, cmd_env):
+        """When both policy.toml and policy.yaml exist, toml is used."""
+        from safeyolo.proxy import _build_command
+
+        (cmd_env["config_dir"] / "policy.yaml").touch()
+        # policy.toml already exists from fixture
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "policy.toml" in cmd_str
+        assert "policy.yaml" not in cmd_str
+
+    def test_policy_yaml_used_when_no_toml(self, cmd_env):
+        """When only policy.yaml exists, it is used."""
+        from safeyolo.proxy import _build_command
+
+        (cmd_env["config_dir"] / "policy.toml").unlink()
+        (cmd_env["config_dir"] / "policy.yaml").touch()
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "policy.yaml" in cmd_str
+
+    def test_raises_when_no_policy_file(self, cmd_env):
+        """When neither policy file exists, RuntimeError is raised."""
+        from safeyolo.proxy import _build_command
+
+        (cmd_env["config_dir"] / "policy.toml").unlink()
+
+        with pytest.raises(RuntimeError, match="No policy file found"):
+            _build_command(admin_token="tok", **cmd_env)
+
+    def test_gateway_enabled_when_vault_files_exist(self, cmd_env):
+        """Gateway flags present when vault.key and vault.yaml.enc both exist."""
+        from safeyolo.proxy import _build_command
+
+        data = cmd_env["config_dir"] / "data"
+        (data / "vault.key").touch()
+        (data / "vault.yaml.enc").touch()
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "gateway_enabled=true" in cmd_str
+        assert "gateway_services_dir=" in cmd_str
+        assert "gateway_vault_path=" in cmd_str
+        assert "gateway_vault_key=" in cmd_str
+
+    def test_gateway_not_enabled_without_vault(self, cmd_env):
+        """No gateway flags when vault files are missing."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "gateway_enabled" not in cmd_str
+
+    def test_gateway_not_enabled_with_only_vault_key(self, cmd_env):
+        """Gateway needs both vault.key AND vault.yaml.enc."""
+        from safeyolo.proxy import _build_command
+
+        data = cmd_env["config_dir"] / "data"
+        (data / "vault.key").touch()
+        # vault.yaml.enc intentionally missing
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "gateway_enabled" not in cmd_str
+
+    def test_agent_map_file_always_set(self, cmd_env):
+        """agent_map_file option is always in the command."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "agent_map_file=" in cmd_str
+
+    def test_core_options_present(self, cmd_env):
+        """Core options (confdir, block_global, stream_large_bodies, etc.) are set."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="my-admin-tok",
+            admin_port=9090,
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert f"confdir={cmd_env['cert_dir']}" in cmd_str
+        assert "block_global=false" in cmd_str
+        assert "stream_large_bodies=10m" in cmd_str
+        assert "admin_port=9090" in cmd_str
+        assert "admin_api_token=my-admin-tok" in cmd_str
+        assert "network_guard_block=true" in cmd_str
+        assert "credguard_block=true" in cmd_str
+
+    def test_host_override_paths(self, cmd_env):
+        """circuit_state_file and flow_store_db_path point to host paths."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        expected_data = str(cmd_env["config_dir"] / "data")
+        expected_logs = str(cmd_env["logs_dir"])
+        assert f"circuit_state_file={expected_data}" in cmd_str
+        assert f"flow_store_db_path={expected_logs}" in cmd_str
+
+    def test_custom_ports_in_command(self, cmd_env):
+        """Custom proxy and admin ports appear in the command."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            proxy_port=9999,
+            admin_port=7777,
+            **cmd_env,
+        )
+
+        idx = cmd.index("-p")
+        assert cmd[idx + 1] == "9999"
+        cmd_str = " ".join(cmd)
+        assert "admin_port=7777" in cmd_str
+
+    def test_mitmdump_found_via_shutil_which(self, cmd_env):
+        """When shutil.which finds mitmdump, that path is used."""
+        from safeyolo.proxy import _build_command
+
+        with patch("safeyolo.proxy.shutil.which", return_value="/usr/local/bin/mitmdump"):
+            cmd = _build_command(
+                admin_token="tok",
+                **cmd_env,
+            )
+
+        assert cmd[0] == "/usr/local/bin/mitmdump"
+
+    def test_mitmdump_fallback_to_sibling_of_python(self, cmd_env):
+        """When shutil.which fails, checks sibling of sys.executable."""
+        from safeyolo.proxy import _build_command
+
+        fake_python_dir = cmd_env["config_dir"] / "bin"
+        fake_python_dir.mkdir(exist_ok=True)
+        fake_mitmdump = fake_python_dir / "mitmdump"
+        fake_mitmdump.touch()
+
+        with patch("safeyolo.proxy.shutil.which", return_value=None), \
+             patch("safeyolo.proxy.sys.executable", str(fake_python_dir / "python")):
+            cmd = _build_command(
+                admin_token="tok",
+                **cmd_env,
+            )
+
+        assert cmd[0] == str(fake_mitmdump)
+
+    def test_mitmdump_fallback_to_bare_name(self, cmd_env, tmp_path):
+        """When shutil.which and sibling both fail, falls back to 'mitmdump'."""
+        from safeyolo.proxy import _build_command
+
+        fake_python = tmp_path / "nowhere" / "python"
+        fake_python.parent.mkdir(parents=True)
+        fake_python.touch()
+
+        with patch("safeyolo.proxy.shutil.which", return_value=None), \
+             patch("safeyolo.proxy.sys.executable", str(fake_python)):
+            cmd = _build_command(
+                admin_token="tok",
+                **cmd_env,
+            )
+
+        assert cmd[0] == "mitmdump"
+
+
+# ---------------------------------------------------------------------------
+# TestPidFileManagement
+# ---------------------------------------------------------------------------
+
+class TestPidFileManagement:
+    """Tests for is_proxy_running() and stop_proxy() PID file handling."""
+
+    def test_is_running_false_when_no_pid_file(self, tmp_path, monkeypatch):
+        """No PID file -> is_proxy_running returns False."""
+        from safeyolo.proxy import is_proxy_running
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "data").mkdir(exist_ok=True)
+
+        assert is_proxy_running() is False
+
+    def test_is_running_true_when_process_alive(self, tmp_path, monkeypatch):
+        """PID file with live PID -> returns True."""
+        from safeyolo.proxy import is_proxy_running
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "proxy.pid").write_text(str(os.getpid()))
+
+        assert is_proxy_running() is True
+
+    def test_is_running_cleans_stale_pid_file(self, tmp_path, monkeypatch):
+        """PID file with dead PID -> returns False and removes PID file."""
+        from safeyolo.proxy import is_proxy_running
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        pid_file = data_dir / "proxy.pid"
+        pid_file.write_text("99999999")  # Almost certainly not a real PID
+
+        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError):
+            result = is_proxy_running()
+
+        assert result is False
+        assert not pid_file.exists()
+
+    def test_stop_sends_sigterm(self, tmp_path, monkeypatch):
+        """stop_proxy sends SIGTERM to the PID from the file."""
+        from safeyolo.proxy import stop_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "proxy.pid").write_text("12345")
+
+        kill_calls = []
+
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
+            if sig == signal.SIGTERM:
+                return  # "Process received signal"
+            raise ProcessLookupError  # Process already exited when we check
+
+        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill), \
+             patch("safeyolo.proxy.time.sleep"):
+            stop_proxy()
+
+        # First call is SIGTERM
+        assert kill_calls[0] == (12345, signal.SIGTERM)
+
+    def test_stop_noop_when_no_pid_file(self, tmp_path, monkeypatch):
+        """stop_proxy does nothing when no PID file exists."""
+        from safeyolo.proxy import stop_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "data").mkdir(exist_ok=True)
+
+        # Should not raise
+        stop_proxy()
+
+    def test_stop_cleans_pid_file_when_process_already_dead(self, tmp_path, monkeypatch):
+        """stop_proxy cleans up PID file when SIGTERM fails with ProcessLookupError."""
+        from safeyolo.proxy import stop_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        pid_file = data_dir / "proxy.pid"
+        pid_file.write_text("12345")
+
+        with patch("safeyolo.proxy.os.kill", side_effect=ProcessLookupError):
+            stop_proxy()
+
+        assert not pid_file.exists()
+
+    def test_stop_force_kills_after_timeout(self, tmp_path, monkeypatch):
+        """Process that doesn't exit after SIGTERM gets SIGKILL."""
+        from safeyolo.proxy import stop_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "proxy.pid").write_text("12345")
+
+        kill_calls = []
+
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
+            # Process never dies — signal 0 always succeeds (no exception)
+            return None
+
+        with patch("safeyolo.proxy.os.kill", side_effect=mock_kill), \
+             patch("safeyolo.proxy.time.sleep"):
+            stop_proxy()
+
+        signals_sent = [sig for _, sig in kill_calls]
+        assert signal.SIGTERM in signals_sent
+        assert signal.SIGKILL in signals_sent
+
+
+# ---------------------------------------------------------------------------
+# TestGetCaCertPath
+# ---------------------------------------------------------------------------
+
+class TestGetCaCertPath:
+    """Tests for get_ca_cert_path() — CA certificate path lookup."""
+
+    def test_returns_path_when_cert_exists(self, tmp_path, monkeypatch):
+        """When cert file exists, returns its Path."""
+        from safeyolo.proxy import get_ca_cert_path
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        certs = tmp_path / "certs"
+        certs.mkdir()
+        cert = certs / "mitmproxy-ca-cert.pem"
+        cert.write_text("CERT")
+
+        result = get_ca_cert_path()
+
+        assert result == cert
+
+    def test_returns_none_when_cert_missing(self, tmp_path, monkeypatch):
+        """When cert file doesn't exist, returns None."""
+        from safeyolo.proxy import get_ca_cert_path
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+
+        result = get_ca_cert_path()
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestStartProxy
+# ---------------------------------------------------------------------------
+
+class TestStartProxy:
+    """Tests for start_proxy() — the orchestrator function."""
+
+    def test_skips_when_already_running(self, tmp_path, monkeypatch):
+        """start_proxy returns early if proxy is already running."""
+        from safeyolo.proxy import start_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
+             patch("safeyolo.proxy._find_addons_dir") as mock_find:
+            start_proxy()
+
+        # _find_addons_dir should never be called if already running
+        mock_find.assert_not_called()
+
+    def test_raises_when_addons_dir_not_found(self, tmp_path, monkeypatch):
+        """start_proxy raises RuntimeError when addons dir is not found."""
+        from safeyolo.proxy import start_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "data").mkdir(exist_ok=True)
+
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
+             patch("safeyolo.proxy._find_addons_dir", return_value=None):
+            with pytest.raises(RuntimeError, match="Cannot find addons directory"):
+                start_proxy()
+
+    def test_writes_pid_file_on_success(self, tmp_path, monkeypatch):
+        """start_proxy writes PID file after launching the process."""
+        from safeyolo.proxy import start_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (tmp_path / "logs").mkdir(exist_ok=True)
+        (tmp_path / "policy.toml").touch()
+
+        # Create minimal addons dir
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
+             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
+             patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
+             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
+             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
+             patch("safeyolo.proxy._build_command", return_value=["mitmdump"]), \
+             patch("safeyolo.proxy.subprocess.Popen", return_value=mock_proc), \
+             patch("builtins.open", MagicMock()):
+            start_proxy()
+
+        pid_file = data_dir / "proxy.pid"
+        assert pid_file.exists()
+        assert pid_file.read_text() == "42"
+
+
+# ---------------------------------------------------------------------------
+# TestWaitForHealthy
+# ---------------------------------------------------------------------------
+
+class TestWaitForHealthy:
+    """Tests for wait_for_healthy() — admin API health polling."""
+
+    def test_returns_true_on_immediate_health(self, tmp_path, monkeypatch):
+        """Returns True when health endpoint responds 200 immediately."""
+        from safeyolo.proxy import wait_for_healthy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "admin_token").write_text("test-token")
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = wait_for_healthy(timeout=1, admin_port=9090)
+
+        assert result is True
+
+    def test_returns_false_on_timeout(self, tmp_path, monkeypatch):
+        """Returns False when health endpoint never responds within timeout."""
+        import urllib.error
+
+        from safeyolo.proxy import wait_for_healthy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+
+        with patch("urllib.request.urlopen", side_effect=ConnectionError), \
+             patch("safeyolo.proxy.time.sleep"):
+            result = wait_for_healthy(timeout=2, admin_port=9090)
+
+        assert result is False
+
+    def test_reads_token_from_file(self, tmp_path, monkeypatch):
+        """Health check uses Bearer token from admin_token file."""
+        from safeyolo.proxy import wait_for_healthy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "admin_token").write_text("secret-tok-123")
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        captured_request = None
+
+        def capture_urlopen(req, **kwargs):
+            nonlocal captured_request
+            captured_request = req
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+            wait_for_healthy(timeout=1, admin_port=9090)
+
+        assert captured_request is not None
+        assert captured_request.get_header("Authorization") == "Bearer secret-tok-123"
