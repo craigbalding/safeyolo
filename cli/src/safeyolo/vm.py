@@ -276,11 +276,12 @@ def start_vm(
     memory_mb: int = 4096,
     extra_shares: list[tuple[str, str, bool]] | None = None,
     feth_vm: str = "",
+    background: bool = False,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
-    The caller is responsible for waiting on the process (interactive)
-    or storing the PID for later management (background).
+    If background=True, serial console goes to a log file instead of
+    stdin/stdout (for SSH-primary mode).
     """
     helper = find_vm_helper()
     rootfs = get_agent_rootfs_path(name)
@@ -320,7 +321,17 @@ def start_vm(
             mode = "ro" if read_only else "rw"
             cmd.extend(["--share", f"{host_path}:{tag}:{mode}"])
 
-    proc = subprocess.Popen(cmd)
+    if background:
+        serial_log = get_agents_dir() / name / "serial.log"
+        serial_fh = open(serial_log, "w")
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=serial_fh,
+            stderr=serial_fh,
+        )
+    else:
+        proc = subprocess.Popen(cmd)
 
     # Write PID file
     pid_path = get_agent_pid_path(name)
@@ -422,6 +433,24 @@ def wait_for_ssh(name: str, timeout: int = 30) -> bool:
         time.sleep(1)
 
     return False
+
+
+def ssh_into_vm(ip: str, command: str = "", user: str = "agent") -> int:
+    """SSH into a VM. Returns the exit code."""
+    key_path = get_ssh_key_path()
+    cmd = [
+        "ssh",
+        "-i", str(key_path),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-t", "-t",  # Force PTY allocation
+        f"{user}@{ip}",
+    ]
+    if command:
+        cmd.append(command)
+    result = subprocess.run(cmd)
+    return result.returncode
 
 
 # ---------------------------------------------------------------------------
