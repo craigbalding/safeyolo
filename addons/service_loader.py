@@ -565,6 +565,24 @@ class ServiceRegistry:
                         log.info("Loaded service: %s", sanitize_for_log(service.name))
                     except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError) as e:
                         log.warning("Skipping %s: %s", yaml_file.name, sanitize_for_log(str(e)))
+                        try:
+                            from utils import write_event
+
+                            from audit_schema import EventKind, Severity
+                            write_event(
+                                "ops.config_error",
+                                kind=EventKind.OPS,
+                                severity=Severity.MEDIUM,
+                                summary=f"Service definition {yaml_file.name} failed to load",
+                                addon="service-loader",
+                                details={
+                                    "file": yaml_file.name,
+                                    "error_type": type(e).__name__,
+                                    "error": sanitize_for_log(str(e)),
+                                },
+                            )
+                        except Exception:
+                            pass  # Don't let audit event failure break the registry load
 
             log.info(f"Service registry: {len(self._services)} services loaded")
 
