@@ -151,23 +151,19 @@ do {
                 .deletingLastPathComponent + "/feth-bridge"
             : config.fethBridgePath
 
-        // posix_spawn with file_actions to dup hostFD → fd 3 in child
-        var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        posix_spawn_file_actions_adddup2(&fileActions, hostFD, 3)  // hostFD → 3
-        posix_spawn_file_actions_addclose(&fileActions, hostFD)     // close original
+        // Ensure the host fd is NOT close-on-exec so the child inherits it
+        _ = fcntl(hostFD, F_SETFD, 0)
 
-        let argv: [String] = ["sudo", bridgePath, "3", config.feth]
+        // Launch feth-bridge directly (no sudo — BPF is group-accessible
+        // via access_bpf on macOS with Wireshark/OrbStack installed)
+        let argv: [String] = [bridgePath, String(hostFD), config.feth]
         let cArgs = argv.map { strdup($0) } + [nil]
-        defer {
-            cArgs.forEach { if let p = $0 { free(p) } }
-            posix_spawn_file_actions_destroy(&fileActions)
-        }
+        defer { cArgs.forEach { if let p = $0 { free(p) } } }
 
         var pid: pid_t = 0
-        let rc = posix_spawn(&pid, "/usr/bin/sudo", &fileActions, nil, cArgs, environ)
+        let rc = posix_spawn(&pid, bridgePath, nil, nil, cArgs, environ)
         guard rc == 0 else {
-            throw VMConfigurationError.invalidConfiguration("posix_spawn: \(String(cString: strerror(rc)))")
+            throw VMConfigurationError.invalidConfiguration("posix_spawn feth-bridge: \(String(cString: strerror(rc)))")
         }
         close(hostFD)  // Parent no longer needs it
         fputs("feth-bridge started (pid=\(pid)) on \(config.feth)\n", stderr)
