@@ -654,6 +654,8 @@ class ServiceGateway:
     # Grant management
     # =========================================================================
 
+    _VALID_SCOPES = frozenset({"once", "session", "remembered"})
+
     def add_grant(
         self,
         agent: str,
@@ -663,6 +665,11 @@ class ServiceGateway:
         scope: str = "once",
     ) -> GrantEntry:
         """Add a risky route grant. Returns the new GrantEntry."""
+        if scope not in self._VALID_SCOPES:
+            raise ValueError(
+                f"Invalid grant scope '{scope}'. "
+                f"Valid scopes: {', '.join(sorted(self._VALID_SCOPES))}"
+            )
         from datetime import timedelta
 
         created = datetime.now(UTC).isoformat()
@@ -827,28 +834,36 @@ class ServiceGateway:
                     if not isinstance(agent_data, dict):
                         continue
                     for grant_data in agent_data.get("grants", []):
-                        scope = grant_data.get("scope", "once")
-                        if scope == "session":
-                            continue  # Session grants don't survive restart
-                        grant = GrantEntry(
-                            grant_id=grant_data.get("grant_id", _mint_grant_id()),
-                            agent=agent_name,
-                            service=grant_data["service"],
-                            method=grant_data["method"],
-                            path=grant_data["path"],
-                            scope=scope,
-                            created=grant_data.get("created", datetime.now(UTC).isoformat()),
-                            expires=grant_data.get("expires", ""),
-                        )
-                        if grant.is_expired():
-                            continue
-                        self._grants[grant.grant_id] = grant
+                        try:
+                            scope = grant_data.get("scope", "once")
+                            if scope == "session":
+                                continue  # Session grants don't survive restart
+                            grant = GrantEntry(
+                                grant_id=grant_data.get("grant_id", _mint_grant_id()),
+                                agent=agent_name,
+                                service=grant_data["service"],
+                                method=grant_data["method"],
+                                path=grant_data["path"],
+                                scope=scope,
+                                created=grant_data.get("created", datetime.now(UTC).isoformat()),
+                                expires=grant_data.get("expires", ""),
+                            )
+                            if grant.is_expired():
+                                continue
+                            self._grants[grant.grant_id] = grant
+                        except (KeyError, TypeError, ValueError) as e:
+                            log.warning(
+                                "Skipping malformed grant for agent '%s': %s: %s",
+                                sanitize_for_log(agent_name),
+                                type(e).__name__,
+                                e,
+                            )
 
             if self._grants:
-                log.info(f"Loaded {len(self._grants)} grants from policy.toml")
+                log.info("Loaded %d grants from policy.toml", len(self._grants))
 
         except Exception as e:
-            log.warning(f"Failed to load grants from policy.toml: {type(e).__name__}: {e}")
+            log.warning("Failed to load grants from policy.toml: %s: %s", type(e).__name__, e)
 
     def _persist_grants(self) -> None:
         """Write grants back to policy.toml [agents] section."""
@@ -1108,8 +1123,20 @@ class ServiceGateway:
             )
 
             if not is_policy_client_configured():
-                log.debug("PolicyClient not configured, skipping risky route check")
-                return None
+                log.error("PolicyClient not configured — cannot evaluate risky route, denying")
+                return make_block_response(
+                    503,
+                    {
+                        "error": "Policy engine not available",
+                        "type": "pdp_unavailable",
+                        "reason_codes": ["PDP_NOT_CONFIGURED"],
+                        "action": "abort",
+                        "reflection": "The policy decision engine is not configured. "
+                                      "Risky routes require PDP evaluation and cannot proceed without it.",
+                        "addon": self.name,
+                    },
+                    self.name,
+                )
 
             client = get_policy_client()
             request_id = flow.metadata.get("request_id", "evt-gateway-risky")
@@ -1121,7 +1148,7 @@ class ServiceGateway:
                     trace_id=request_id,
                     kind=SchemaEventKind.HTTP_REQUEST,
                     phase=EventPhase.PRE_UPSTREAM,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                     sensor_id="service-gateway",
                 ),
                 principal=PrincipalBlock(
@@ -1163,7 +1190,7 @@ class ServiceGateway:
 
             # Non-allow: build response from PDP immediate_response
             if decision.immediate_response:
-                body = decision.immediate_response.body_json
+                body = dict(decision.immediate_response.body_json)
                 body["addon"] = self.name
                 body.setdefault("type", "gateway_risky_route")
                 body.setdefault("action", "wait_for_approval")
