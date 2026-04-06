@@ -65,6 +65,12 @@ path-exclude /usr/share/locale/*
 path-include /usr/share/locale/en*
 EOF
 
+# Mount proc/sys/dev for chroot (needed by dpkg post-install hooks)
+mount -t proc proc /mnt/rootfs/proc
+mount -t sysfs sys /mnt/rootfs/sys
+mount -t devtmpfs dev /mnt/rootfs/dev
+mount -t devpts devpts /mnt/rootfs/dev/pts
+
 # Install packages
 echo "--- Installing packages ---"
 chroot /mnt/rootfs apt-get update -qq
