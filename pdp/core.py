@@ -126,6 +126,10 @@ class PDPCore:
         3. Evaluates network policy (rate limiting)
         4. Returns atomic decision with budget already consumed
 
+        Always returns a PolicyDecision — never raises. On internal error,
+        returns Effect.ERROR with a 500 immediate response so callers don't
+        need their own try/except.
+
         Args:
             event: The HTTP event to evaluate
 
@@ -135,6 +139,36 @@ class PDPCore:
         event_id = event.event.event_id
         policy_hash = self.policy_hash
 
+        try:
+            return self._evaluate_inner(event, event_id, policy_hash)
+        except Exception as exc:
+            log.error(
+                "PDPCore.evaluate() internal error: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return PolicyDecision(
+                version=1,
+                event=DecisionEventBlock(
+                    event_id=event_id,
+                    policy_hash=policy_hash or "",
+                    engine_version=ENGINE_VERSION,
+                ),
+                effect=Effect.ERROR,
+                reason=f"Internal evaluation error: {type(exc).__name__}",
+                reason_codes=["PDP_ERROR", "INTERNAL_ERROR"],
+                checks=ChecksBlock(required=[]),
+                immediate_response=ImmediateResponseBlock(
+                    status_code=500,
+                    body_json={
+                        "error": "PDP evaluation failed",
+                        "event_id": event_id,
+                        "reason_codes": ["PDP_ERROR", "INTERNAL_ERROR"],
+                    },
+                ),
+            )
+
+    def _evaluate_inner(self, event: HttpEvent, event_id: str, policy_hash: str) -> PolicyDecision:
+        """Core evaluation logic, separated so evaluate() can wrap with try/except."""
         safe_host = _sanitize_for_log(event.http.host)
         safe_method = _sanitize_for_log(event.http.method)
         safe_path = _sanitize_for_log(event.http.path)
@@ -151,7 +185,7 @@ class PDPCore:
         # First: credential validation (if credential detected)
         if event.credential.detected and "credential_validation" in required_checks:
             cred_decision = self._evaluate_credential(event)
-            if cred_decision.effect != Effect.ALLOW:
+            if cred_decision.effect != "allow":
                 return self._build_decision(
                     event_id=event_id,
                     policy_hash=policy_hash,
@@ -174,7 +208,7 @@ class PDPCore:
         # Second: network policy (rate limiting)
         if "rate_limit" in required_checks:
             network_decision = self._evaluate_network(event)
-            if network_decision.effect != Effect.ALLOW:
+            if network_decision.effect != "allow":
                 return self._build_decision(
                     event_id=event_id,
                     policy_hash=policy_hash,

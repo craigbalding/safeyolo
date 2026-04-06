@@ -13,11 +13,11 @@ Design principles:
 Schema version: 1
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Annotated
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # =============================================================================
 # Enums
@@ -150,6 +150,22 @@ class CredentialBlock(BaseModel):
     fingerprint: str | None = Field(None, description="HMAC fingerprint (e.g., a1b2c3d4...)")
     confidence: CredentialConfidence | None = Field(None, description="Detection confidence")
 
+    @model_validator(mode="after")
+    def _validate_detected_consistency(self) -> "CredentialBlock":
+        """When detected=True, type and confidence are required.
+        When detected=False, credential fields must be None."""
+        if self.detected:
+            if self.type is None:
+                raise ValueError("credential type is required when detected=True")
+            if self.confidence is None:
+                raise ValueError("credential confidence is required when detected=True")
+        else:
+            if self.type is not None or self.fingerprint is not None or self.confidence is not None:
+                raise ValueError(
+                    "credential fields (type, fingerprint, confidence) must be None when detected=False"
+                )
+        return self
+
 
 class BodyBlock(BaseModel):
     """Request/response body metadata.
@@ -202,7 +218,7 @@ class HttpEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Schema version
-    version: Annotated[int, Field(strict=True)] = Field(1, description="Schema version (must be 1)")
+    version: Literal[1] = Field(1, description="Schema version")
 
     # REQUIRED blocks
     event: EventBlock
@@ -381,7 +397,7 @@ def create_http_event(
             trace_id=event_id,  # v1: trace_id = event_id
             kind=EventKind.HTTP_REQUEST,
             phase=EventPhase.PRE_UPSTREAM,
-            timestamp=timestamp or datetime.utcnow(),
+            timestamp=timestamp or datetime.now(UTC),
             sensor_id=sensor_id,
         ),
         principal=PrincipalBlock(
