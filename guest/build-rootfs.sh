@@ -69,7 +69,7 @@ EOF
 echo "--- Installing packages ---"
 chroot /mnt/rootfs apt-get update -qq
 chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
-    git curl jq ca-certificates build-essential \
+    git curl jq ca-certificates build-essential gnupg \
     openssh-server iproute2 iputils-ping procps \
     less xz-utils libgomp1 libatomic1 \
     busybox-static >/dev/null
