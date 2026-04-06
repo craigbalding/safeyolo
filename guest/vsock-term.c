@@ -92,15 +92,39 @@ int main(int argc, char *argv[]) {
     close(data_listen);
     fprintf(stderr, "vsock-term: data connection established\n");
 
-    /* Accept control connection (non-blocking, may come later) */
+    /* Accept control connection and wait for initial window size.
+     * This ensures the PTY has the correct size BEFORE the child starts. */
     int ctrl_fd = -1;
+    struct winsize initial_ws = { .ws_row = 24, .ws_col = 80 };
     if (ctrl_listen >= 0) {
-        fcntl(ctrl_listen, F_SETFL, O_NONBLOCK);
+        /* Block waiting for control connection (up to 10s) */
+        struct pollfd pfd = { .fd = ctrl_listen, .events = POLLIN };
+        if (poll(&pfd, 1, 10000) > 0) {
+            ctrl_fd = vsock_accept(ctrl_listen);
+            if (ctrl_fd >= 0) {
+                close(ctrl_listen);
+                ctrl_listen = -1;
+                fprintf(stderr, "vsock-term: ctrl connection established\n");
+
+                /* Read initial window size (4 bytes: rows_hi, rows_lo, cols_hi, cols_lo) */
+                unsigned char resize_buf[4];
+                struct pollfd rpfd = { .fd = ctrl_fd, .events = POLLIN };
+                if (poll(&rpfd, 1, 5000) > 0) {
+                    if (read(ctrl_fd, resize_buf, 4) == 4) {
+                        initial_ws.ws_row = (resize_buf[0] << 8) | resize_buf[1];
+                        initial_ws.ws_col = (resize_buf[2] << 8) | resize_buf[3];
+                        fprintf(stderr, "vsock-term: initial size %dx%d\n",
+                                initial_ws.ws_col, initial_ws.ws_row);
+                    }
+                }
+                fcntl(ctrl_fd, F_SETFL, O_NONBLOCK);
+            }
+        }
     }
 
-    /* Allocate PTY and fork */
+    /* Allocate PTY with correct initial size and fork */
     int pty_master;
-    child_pid = forkpty(&pty_master, NULL, NULL, NULL);
+    child_pid = forkpty(&pty_master, NULL, NULL, &initial_ws);
     if (child_pid < 0) {
         perror("forkpty");
         close(data_fd);
@@ -125,7 +149,7 @@ int main(int argc, char *argv[]) {
     fcntl(data_fd, F_SETFL, O_NONBLOCK);
 
     char buf[4096];
-    int nfds = ctrl_listen >= 0 ? 3 : 2;
+    int nfds = ctrl_fd >= 0 ? 3 : 2;
 
     while (!child_exited) {
         struct pollfd fds[3];
