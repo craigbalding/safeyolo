@@ -30,7 +30,7 @@ class TestTOMLLoading:
     """Test PolicyLoader with TOML policy files."""
 
     def test_loads_toml_policy(self):
-        """Test loading a .toml policy file."""
+        """Test loading a .toml policy file produces exact permission actions."""
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -40,10 +40,25 @@ class TestTOMLLoading:
             loader = PolicyLoader(baseline_path=path)
             policy = loader.baseline
 
-            # Should have compiled permissions from host-centric format
-            assert len(policy.permissions) > 0
-            assert any(p.action == "credential:use" for p in policy.permissions)
-            assert any(p.action == "network:request" for p in policy.permissions)
+            # The sample TOML defines:
+            #   openai host  -> credential:use + network:request(budget)
+            #   anthropic host -> credential:use + network:request(budget)
+            #   wildcard "*" -> credential:use(prompt) + network:request(budget)
+            # So we expect exactly these action counts:
+            cred_use = [p for p in policy.permissions if p.action == "credential:use"]
+            net_req = [p for p in policy.permissions if p.action == "network:request"]
+
+            assert len(cred_use) == 3  # openai + anthropic + wildcard prompt
+            assert len(net_req) == 3   # openai budget + anthropic budget + wildcard budget
+
+            # Verify specific actions exist with correct effects
+            openai_cred = [p for p in cred_use if "openai" in p.resource]
+            assert len(openai_cred) == 1
+            assert openai_cred[0].effect == "allow"
+
+            wildcard_cred = [p for p in cred_use if p.resource == "*"]
+            assert len(wildcard_cred) == 1
+            assert wildcard_cred[0].effect == "prompt"
 
     def test_toml_host_centric_compiles(self):
         """TOML host-centric format compiles to correct IAM permissions."""
@@ -110,7 +125,7 @@ class TestTOMLLoading:
             assert len(openai_rules[0].patterns) > 0
 
     def test_toml_merges_with_addons_yaml(self):
-        """TOML policy merges with sibling addons.yaml."""
+        """TOML policy merges with sibling addons.yaml — addon config is present."""
         from policy_loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -120,8 +135,13 @@ class TestTOMLLoading:
             addons_path = Path(tmpdir) / "addons.yaml"
             addons_path.write_text("addons:\n  entropy_scanner:\n    threshold: 4.5\n")
 
-            PolicyLoader(baseline_path=policy_path)
-            # Should not crash — addons merge is format-agnostic
+            loader = PolicyLoader(baseline_path=policy_path)
+            policy = loader.baseline
+
+            # After merge, the addons dict should contain the entropy_scanner config
+            assert "entropy_scanner" in policy.addons
+            addon_cfg = policy.addons["entropy_scanner"]
+            assert addon_cfg.threshold == 4.5
 
     def test_toml_iam_format(self):
         """TOML file in IAM format (no hosts section) loads directly."""
@@ -140,6 +160,25 @@ effect = "allow"
             loader = PolicyLoader(baseline_path=path)
             assert len(loader.baseline.permissions) == 1
             assert loader.baseline.permissions[0].action == "network:request"
+
+
+    def test_toml_without_hosts_loads_empty_permissions(self):
+        """TOML with only metadata and no hosts section loads with zero permissions."""
+        from policy_loader import PolicyLoader
+
+        metadata_only_toml = '''\
+version = "2.0"
+required = []
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "policy.toml"
+            path.write_text(metadata_only_toml)
+
+            loader = PolicyLoader(baseline_path=path)
+            policy = loader.baseline
+
+            assert len(policy.permissions) == 0
+            assert policy.required == []
 
 
 class TestTOMLEquivalence:

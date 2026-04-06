@@ -22,3 +22,10 @@ class TestReadActiveToken:
         path = tmp_path / "agent_token"
         path.write_text("")
         assert read_active_token(path) is None
+
+    def test_unreadable_file_returns_none(self, tmp_path):
+        """OSError (e.g. permission denied) returns None, not an exception."""
+        # Use a directory path — read_text() on a directory raises IsADirectoryError (an OSError)
+        path = tmp_path / "is_a_directory"
+        path.mkdir()
+        assert read_active_token(path) is None

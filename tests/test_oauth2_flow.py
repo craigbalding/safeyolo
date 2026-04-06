@@ -437,3 +437,46 @@ class TestManualFlow:
                 input_fn=lambda _: "http://localhost/?error=access_denied",
                 print_fn=lambda *a: None,
             )
+
+
+class TestExchangeCodeErrors:
+    """Test _exchange_code error handling — HTTP errors and network failures."""
+
+    def test_exchange_code_http_error_raises_oauth2_error(self):
+        """HTTP 400 from token endpoint raises OAuth2Error with description."""
+        from safeyolo.commands._oauth2_flow import _exchange_code
+
+        error_body = {"error": "invalid_grant", "error_description": "Code expired"}
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = error_body
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Bad Request", request=MagicMock(), response=mock_response,
+        )
+
+        with patch("safeyolo.commands._oauth2_flow.httpx.post", return_value=mock_response):
+            with pytest.raises(OAuth2Error, match="Code expired"):
+                _exchange_code(
+                    code="expired-code",
+                    redirect_uri="http://localhost:9999",
+                    client_id="cid",
+                    client_secret="csec",
+                    token_url="https://example.com/token",
+                )
+
+    def test_exchange_code_network_error_raises_oauth2_error(self):
+        """Network failure (DNS, timeout, etc.) raises OAuth2Error."""
+        from safeyolo.commands._oauth2_flow import _exchange_code
+
+        with patch(
+            "safeyolo.commands._oauth2_flow.httpx.post",
+            side_effect=httpx.ConnectError("DNS resolution failed"),
+        ):
+            with pytest.raises(OAuth2Error, match="Token exchange request failed"):
+                _exchange_code(
+                    code="some-code",
+                    redirect_uri="http://localhost:9999",
+                    client_id="cid",
+                    client_secret="csec",
+                    token_url="https://unreachable.example.com/token",
+                )

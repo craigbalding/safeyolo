@@ -363,8 +363,9 @@ permissions:
         client = get_policy_client()
         assert isinstance(client, LocalPolicyClient)
 
-        # Verify policy was loaded
-        assert client._pdp._engine.get_baseline() is not None
+        # Verify policy was loaded via public API
+        baseline = client.get_baseline()
+        assert baseline is not None
 
         reset_policy_client()
 
