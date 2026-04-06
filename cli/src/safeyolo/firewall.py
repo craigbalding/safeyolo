@@ -97,8 +97,18 @@ def load_rules(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     if "Status: Disabled" in (result.stdout or ""):
         _sudo_run(["pfctl", "-e"])
 
-    log.info("pf rules loaded for anchor %s on %s",
-             ANCHOR_NAME, _detect_vm_bridge())
+    # Enable IP filtering on the bridge (disabled by default on macOS).
+    # Without this, pf rules on the bridge are ignored entirely.
+    bridge = _detect_vm_bridge()
+    if bridge:
+        from .vm import find_vm_helper
+        try:
+            helper = find_vm_helper()
+            _sudo_run([str(helper), "bridge-filter", bridge])
+        except Exception as err:
+            log.warning("Could not enable bridge ipfilter: %s", err)
+
+    log.info("pf rules loaded for anchor %s on %s", ANCHOR_NAME, bridge)
 
 
 def unload_rules() -> None:

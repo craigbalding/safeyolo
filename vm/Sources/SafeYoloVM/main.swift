@@ -116,6 +116,21 @@ func parseArguments() -> RunConfig? {
 
 // MARK: - Main
 
+// MARK: - Subcommand dispatch
+
+let args = CommandLine.arguments
+
+if args.count > 1 && args[1] == "bridge-filter" {
+    // safeyolo-vm bridge-filter <bridge-name>
+    // Enables pf IP filtering on a bridge interface (requires root)
+    guard args.count > 2 else {
+        fputs("Usage: safeyolo-vm bridge-filter <bridge-name>\n", stderr)
+        exit(1)
+    }
+    exit(BridgeFilter.enableIPFilter(on: args[2]) ? 0 : 1)
+}
+
+// All other subcommands require Virtualization support
 guard VZVirtualMachine.isSupported else {
     fputs("Error: Virtualization is not supported on this machine\n", stderr)
     exit(1)
