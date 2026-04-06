@@ -211,23 +211,98 @@ class TestServiceDiscoveryDNS:
         assert client == "new-agent"
         assert len(discovery._dns_cache) == 1
 
+    def test_dns_gaierror_returns_none(self):
+        """Test socket.gaierror is caught and returns unknown."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.gaierror("Name or service not known")
+            client = discovery.get_client_for_ip("172.20.0.50")
+
+        assert client == "unknown"
+
+    def test_dns_oserror_returns_none(self):
+        """Test generic OSError is caught and returns unknown."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = OSError("Network unreachable")
+            client = discovery.get_client_for_ip("172.20.0.50")
+
+        assert client == "unknown"
+
+    def test_resolve_returns_none_for_empty_hostname(self):
+        """Test _resolve_ip_via_dns returns None when DNS returns empty hostname."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.return_value = ("", [], ["172.20.0.5"])
+            result = discovery._resolve_ip_via_dns("172.20.0.5")
+
+        assert result is None
+
+    def test_dns_cache_refresh_picks_up_new_name(self):
+        """Test expired cache entry re-resolves and picks up a new hostname."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            # First resolution: boris
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            client1 = discovery.get_client_for_ip("172.20.0.5")
+            assert client1 == "boris"
+
+            # Expire the cache
+            with discovery._lock:
+                ip, (name, _) = next(iter(discovery._dns_cache.items()))
+                discovery._dns_cache[ip] = (name, time.time() - 1)
+
+            # Re-resolve: container was replaced, IP now maps to natasha
+            mock_dns.return_value = ("natasha.safeyolo_internal", [], ["172.20.0.5"])
+            client2 = discovery.get_client_for_ip("172.20.0.5")
+            assert client2 == "natasha"
+
+    def test_negative_cache_populated_after_dns_failure(self):
+        """Test that a failed DNS lookup populates the negative cache for the IP."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            discovery.get_client_for_ip("172.20.0.99")
+
+        with discovery._lock:
+            assert "172.20.0.99" in discovery._dns_negative_cache
+            assert discovery._dns_negative_cache["172.20.0.99"] > time.time()
+
 
 class TestServiceDiscoveryStats:
     """Tests for stats tracking."""
 
-    def test_get_stats_returns_dict(self):
-        """Test get_stats returns proper structure."""
+    def test_get_stats_returns_exact_structure_when_empty(self):
+        """Test get_stats returns correct keys and values for a fresh instance."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
         stats = discovery.get_stats()
 
-        assert "dns_cache_size" in stats
-        assert "dns_cached_clients" in stats
-        assert "dns_negative_cache_size" in stats
-        assert "unresolved_ips_count" in stats
-        assert "agents_seen" in stats
-        assert "agents" in stats
+        assert stats == {
+            "dns_cache_size": 0,
+            "dns_cached_clients": {},
+            "dns_negative_cache_size": 0,
+            "unresolved_ips_count": 0,
+            "agents_seen": 0,
+            "agents": {},
+        }
 
     def test_dns_stats_populated_after_lookup(self):
         """Test get_stats includes DNS cache information after lookups."""
@@ -266,6 +341,20 @@ class TestServiceDiscoveryStats:
         assert stats["agents"]["boris"]["ip"] == "172.20.0.5"
         assert "last_seen" in stats["agents"]["boris"]
         assert "idle_seconds" in stats["agents"]["boris"]
+
+    def test_stats_negative_cache_count_after_failure(self):
+        """Test get_stats reports negative cache size after a failed lookup."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            discovery.get_client_for_ip("172.20.0.99")
+
+        stats = discovery.get_stats()
+        assert stats["dns_negative_cache_size"] == 1
+        assert stats["unresolved_ips_count"] == 1
 
 
 class TestServiceDiscoveryThreadSafety:
@@ -364,6 +453,22 @@ class TestServiceDiscoveryRequestHook:
         assert flow1.metadata["agent"] == "boris"
         assert flow2.metadata["agent"] == "boris"
 
+    def test_request_stamps_unknown_when_dns_fails_for_known_ip(self):
+        """Test request() stamps 'unknown' when DNS fails for a real client IP."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        flow = Mock()
+        flow.client_conn.peername = ("172.20.0.50", 12345)
+        flow.metadata = {}
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns:
+            mock_dns.side_effect = socket.herror("Host not found")
+            discovery.request(flow)
+
+        assert flow.metadata["agent"] == "unknown"
+
 
 class TestServiceDiscoveryAgentEvent:
     """Tests for agent.discovered event emission."""
@@ -410,7 +515,7 @@ class TestServiceDiscoveryAgentEvent:
              patch("service_discovery.write_event") as mock_event:
             mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
 
-            # First resolution — should emit event
+            # First resolution -- should emit event
             discovery.get_client_for_ip("172.20.0.5")
             assert mock_event.call_count == 1
 
@@ -419,16 +524,37 @@ class TestServiceDiscoveryAgentEvent:
                 ip, (name, _) = next(iter(discovery._dns_cache.items()))
                 discovery._dns_cache[ip] = (name, time.time() - 1)
 
-            # Re-resolve after expiry — should NOT emit event
+            # Re-resolve after expiry -- should NOT emit event
             discovery.get_client_for_ip("172.20.0.5")
             assert mock_event.call_count == 1
+
+    def test_agent_discovered_event_has_correct_schema(self):
+        """Test agent.discovered event includes kind, severity, addon, and summary fields."""
+        from service_discovery import ServiceDiscovery
+
+        from audit_schema import EventKind, Severity
+
+        discovery = ServiceDiscovery()
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event") as mock_event:
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.get_client_for_ip("172.20.0.5")
+
+            mock_event.assert_called_once()
+            call_kwargs = mock_event.call_args[1]
+            assert call_kwargs["kind"] == EventKind.AGENT
+            assert call_kwargs["severity"] == Severity.LOW
+            assert call_kwargs["addon"] == "service-discovery"
+            assert "boris" in call_kwargs["summary"]
+            assert "172.20.0.5" in call_kwargs["summary"]
 
 
 class TestServiceDiscoveryLastSeen:
     """Tests for last-seen timestamp tracking."""
 
-    def test_request_updates_last_seen(self):
-        """Test request() updates _last_seen for resolved agents."""
+    def test_request_updates_last_seen_within_narrow_window(self):
+        """Test request() records last_seen timestamp close to current time."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
@@ -437,16 +563,18 @@ class TestServiceDiscoveryLastSeen:
         flow.client_conn.peername = ("172.20.0.5", 12345)
         flow.metadata = {}
 
+        before = time.time()
         with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
              patch("service_discovery.write_event"):
             mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
             discovery.request(flow)
+        after = time.time()
 
         assert "boris" in discovery._last_seen
-        assert discovery._last_seen["boris"] <= time.time()
+        assert before <= discovery._last_seen["boris"] <= after
 
-    def test_last_seen_updates_on_each_request(self):
-        """Test last_seen timestamp advances with each flow."""
+    def test_last_seen_advances_on_subsequent_request(self):
+        """Test last_seen timestamp advances when a second request arrives."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
@@ -461,16 +589,19 @@ class TestServiceDiscoveryLastSeen:
             discovery.request(flow1)
             ts1 = discovery._last_seen["boris"]
 
+            # Burn a tiny amount of time to ensure monotonic advance
+            time.sleep(0.001)
+
             flow2 = Mock()
             flow2.client_conn.peername = ("172.20.0.5", 23456)
             flow2.metadata = {}
             discovery.request(flow2)
             ts2 = discovery._last_seen["boris"]
 
-        assert ts2 >= ts1
+        assert ts2 > ts1
 
-    def test_no_last_seen_for_unknown_agent(self):
-        """Test _last_seen is not updated for unresolved IPs."""
+    def test_no_last_seen_for_unknown_agent_and_metadata_stamped(self):
+        """Test _last_seen is not updated for unresolved IPs, but metadata is stamped 'unknown'."""
         from service_discovery import ServiceDiscovery
 
         discovery = ServiceDiscovery()
@@ -484,6 +615,7 @@ class TestServiceDiscoveryLastSeen:
             discovery.request(flow)
 
         assert len(discovery._last_seen) == 0
+        assert flow.metadata["agent"] == "unknown"
 
     def test_last_seen_tracks_multiple_agents(self):
         """Test _last_seen tracks each agent independently."""
@@ -570,6 +702,35 @@ class TestServiceDiscoveryGetAgents:
         assert result["count"] == 2
         assert "boris" in result["agents"]
         assert "claude" in result["agents"]
+
+    def test_get_agents_with_expired_dns_shows_ip_none(self):
+        """Test get_agents returns ip=None for agents whose DNS cache has expired."""
+        from service_discovery import ServiceDiscovery
+
+        discovery = ServiceDiscovery()
+
+        # Simulate: agent was seen via request (populates last_seen and dns cache)
+        flow = Mock()
+        flow.client_conn.peername = ("172.20.0.5", 12345)
+        flow.metadata = {}
+
+        with patch("service_discovery.socket.gethostbyaddr") as mock_dns, \
+             patch("service_discovery.write_event"):
+            mock_dns.return_value = ("boris.safeyolo_internal", [], ["172.20.0.5"])
+            discovery.request(flow)
+
+        # Expire the DNS cache entry so get_agents filters it out
+        with discovery._lock:
+            ip, (name, _) = next(iter(discovery._dns_cache.items()))
+            discovery._dns_cache[ip] = (name, time.time() - 1)
+
+        result = discovery.get_agents()
+        assert result["count"] == 1
+        assert "boris" in result["agents"]
+        # The fix: expired DNS means no IP is associated, so ip defaults to None
+        assert result["agents"]["boris"]["ip"] is None
+        # But last_seen is still present from the request
+        assert "last_seen" in result["agents"]["boris"]
 
 
 class TestGetServiceDiscovery:
