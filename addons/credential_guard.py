@@ -63,9 +63,20 @@ def evaluate_credential_with_pdp(
     """Evaluate credential using PolicyClient.
 
     Returns:
-        (Effect, context_dict) - Effect enum and additional context
+        (Effect, context_dict) - Effect enum and additional context.
+        On any evaluation failure (PDP unreachable, client misconfigured,
+        internal error), returns (Effect.ERROR, context) so the caller can
+        fail closed rather than letting the request through.
     """
-    client = get_policy_client()
+    try:
+        client = get_policy_client()
+    except RuntimeError as exc:
+        log.error("PDP not configured during credential evaluation: %s", exc)
+        return Effect.ERROR, {
+            "fingerprint": f"hmac:{hmac_fingerprint(credential, hmac_secret)}",
+            "reason_codes": ["PDP_NOT_CONFIGURED"],
+            "reason": "Policy engine not configured (fail-closed)",
+        }
 
     # Detect credential type and compute fingerprint
     credential_type = detect_credential_type(credential, rules)
@@ -84,8 +95,21 @@ def evaluate_credential_with_pdp(
         credential_confidence=confidence,
     )
 
-    # Evaluate via PolicyClient
-    decision = client.evaluate(event)
+    try:
+        decision = client.evaluate(event)
+    except Exception as exc:
+        log.error(
+            "PDP evaluation failed for credential %s on %s: %s: %s",
+            sanitize_for_log(rule_name),
+            sanitize_for_log(flow.request.host),
+            type(exc).__name__,
+            exc,
+        )
+        return Effect.ERROR, {
+            "fingerprint": f"hmac:{fingerprint}",
+            "reason_codes": ["PDP_EVALUATION_FAILED"],
+            "reason": f"Policy evaluation failed: {type(exc).__name__}",
+        }
 
     # Build context for response building
     context = {
@@ -257,7 +281,12 @@ class CredentialGuard(SecurityAddon):
             log.warning("No credential rules loaded from policy")
 
     def _maybe_reload_rules(self):
-        """Reload credential rules and config if policy changed."""
+        """Reload credential rules and config if policy changed.
+
+        On first load (_last_policy_hash is empty), a failure is logged at
+        ERROR level because the addon is running with zero rules. On
+        subsequent reloads, the previous rules survive, so a WARNING suffices.
+        """
         try:
             client = get_policy_client()
             sensor_config = client.get_sensor_config()
@@ -268,10 +297,21 @@ class CredentialGuard(SecurityAddon):
                 self._load_config_from_pdp(sensor_config)
                 self._last_policy_hash = policy_hash
         except RuntimeError:
-            # PolicyClient not configured yet - skip reload
+            # PolicyClient not configured yet — skip reload. If this is the
+            # first attempt the addon has zero rules, which is the expected
+            # startup state before the PDP finishes loading.
             pass
         except Exception as e:
-            log.warning(f"Failed to reload credential rules: {type(e).__name__}: {e}")
+            if self._last_policy_hash == "":
+                log.error(
+                    "First credential rule load failed — addon running with zero rules: "
+                    "%s: %s", type(e).__name__, e,
+                )
+            else:
+                log.warning(
+                    "Failed to reload credential rules (previous rules preserved): "
+                    "%s: %s", type(e).__name__, e,
+                )
 
     def should_block(self) -> bool:
         """Override base - uses credguard_block option."""
