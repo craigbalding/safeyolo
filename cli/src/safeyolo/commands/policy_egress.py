@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import tomlkit
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -41,8 +42,6 @@ def egress_set(
 
     if agent:
         # Agent-level egress
-        import tomlkit
-
         agents = doc.get("agents")
         if agents is None:
             agents = tomlkit.table()

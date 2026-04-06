@@ -1,5 +1,6 @@
 """Tests for safeyolo policy show command."""
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -10,9 +11,6 @@ runner = CliRunner()
 
 def _write_yaml(path, data):
     path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
-
-
-import pytest
 
 
 class TestPolicyShow:
@@ -141,3 +139,31 @@ class TestPolicyShow:
         result = runner.invoke(app, ["policy", "show"])
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+class TestPolicyShowToml:
+    """Tests for 'safeyolo policy show' when policy.toml is the source."""
+
+    def test_toml_source_shows_path_in_header(self, tmp_config_dir):
+        """When policy.toml is the source file, the header mentions policy.toml."""
+        result = runner.invoke(app, ["policy", "show"])
+        assert result.exit_code == 0
+        assert "policy.toml" in result.output
+
+    def test_toml_source_shows_hosts(self, tmp_config_dir):
+        """policy.toml hosts appear in the output."""
+        # The fixture has '*' = { rate = 600 }
+        result = runner.invoke(app, ["policy", "show"])
+        assert result.exit_code == 0
+        # The wildcard host should be present
+        assert "'*'" in result.output or '"*"' in result.output or "* " in result.output or "*:" in result.output
+
+    def test_toml_preferred_over_yaml(self, tmp_config_dir):
+        """When both policy.toml and policy.yaml exist, TOML is preferred."""
+        _write_yaml(tmp_config_dir / "policy.yaml", {"hosts": {"yaml-only.com": None}})
+
+        result = runner.invoke(app, ["policy", "show"])
+        assert result.exit_code == 0
+        # Should see TOML content, not YAML content
+        assert "policy.toml" in result.output
+        assert "yaml-only.com" not in result.output
