@@ -289,6 +289,61 @@ class TestAdminAPIAgentService:
             api.revoke_service(agent="boris", service="nope")
 
 
+class TestAdminAPIRequestErrors:
+    """Tests for _request() error handling."""
+
+    def test_request_403_raises_api_error(self, tmp_config_dir, mock_httpx):
+        """403 status raises APIError with 'Permission denied' and status_code=403."""
+        mock_httpx["response"].status_code = 403
+        mock_httpx["response"].text = "Forbidden"
+
+        api = AdminAPI(token="test")
+        with pytest.raises(APIError, match="Permission denied") as exc_info:
+            api.stats()
+        assert exc_info.value.status_code == 403
+
+    def test_request_timeout_raises_api_error(self, tmp_config_dir, monkeypatch):
+        """Request timeout raises APIError with actionable message."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.request.side_effect = httpx.TimeoutException("timed out")
+        monkeypatch.setattr("httpx.Client", MagicMock(return_value=mock_client))
+
+        api = AdminAPI(timeout=5.0)
+        with pytest.raises(APIError, match="timed out after 5.0s"):
+            api.stats()
+
+    def test_request_read_error_raises_api_error(self, tmp_config_dir, monkeypatch):
+        """ReadError raises APIError with connection-lost message."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.request.side_effect = httpx.ReadError("connection reset")
+        monkeypatch.setattr("httpx.Client", MagicMock(return_value=mock_client))
+
+        api = AdminAPI()
+        with pytest.raises(APIError, match="Connection lost"):
+            api.health()
+
+    def test_non_json_response_returns_text(self, tmp_config_dir, mock_httpx):
+        """Non-JSON response returns response.text instead of calling .json()."""
+        mock_httpx["response"].headers = {"content-type": "text/plain"}
+        mock_httpx["response"].text = "# Prometheus metrics\nproxy_requests_total 42"
+
+        api = AdminAPI(token="test")
+        result = api.metrics()
+        assert result == "# Prometheus metrics\nproxy_requests_total 42"
+
+    def test_request_includes_auth_header(self, tmp_config_dir, mock_httpx):
+        """Authenticated requests include Bearer token in Authorization header."""
+        api = AdminAPI(token="secret-token-xyz")
+        api.stats()
+
+        call_args = mock_httpx["client"].request.call_args
+        assert call_args[1]["headers"]["Authorization"] == "Bearer secret-token-xyz"
+
+
 class TestGetAPI:
     """Tests for get_api() helper."""
 

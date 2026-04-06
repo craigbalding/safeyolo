@@ -11,6 +11,7 @@ from safeyolo.commands.doctor import (
     DiagResult,
     _build_bundle,
     _check_addon_loading,
+    _check_admin_api,
     _check_baseline,
     _check_ca_cert,
     _check_config_dir,
@@ -18,6 +19,7 @@ from safeyolo.commands.doctor import (
     _check_docker,
     _check_flow_store,
     _check_log_health,
+    _check_proxy_port,
     _check_tokens,
     _check_vault,
     _run_checks,
@@ -336,6 +338,59 @@ class TestCheckFlowStore:
         result = _check_flow_store()
         assert result.status == "warn"
         assert "Cannot read" in result.message
+
+
+class TestCheckProxyPort:
+    """Tests for _check_proxy_port()."""
+
+    def test_check_proxy_port_open(self, tmp_config_dir, monkeypatch):
+        """Returns pass when proxy port is accepting connections."""
+
+        def mock_create_connection(address, timeout=None):
+            # Simulate successful connection by returning a mock socket
+            mock_sock = MagicMock()
+            return mock_sock
+
+        monkeypatch.setattr("socket.create_connection", mock_create_connection)
+        result = _check_proxy_port()
+        assert result.status == "pass"
+        assert "8080" in result.message
+
+    def test_check_proxy_port_closed(self, tmp_config_dir, monkeypatch):
+        """Returns fail when proxy port is not accepting connections."""
+
+        def mock_create_connection(address, timeout=None):
+            raise ConnectionRefusedError("Connection refused")
+
+        monkeypatch.setattr("socket.create_connection", mock_create_connection)
+        result = _check_proxy_port()
+        assert result.status == "fail"
+        assert "8080" in result.message
+        assert result.remediation != ""
+
+
+class TestCheckAdminApi:
+    """Tests for _check_admin_api()."""
+
+    def test_check_admin_api_healthy(self, tmp_config_dir, monkeypatch):
+        """Returns pass when admin API responds with 200 and port is open."""
+
+        def mock_create_connection(address, timeout=None):
+            mock_sock = MagicMock()
+            return mock_sock
+
+        monkeypatch.setattr("socket.create_connection", mock_create_connection)
+        monkeypatch.setattr("safeyolo.config.get_admin_token", lambda: "test-token")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_httpx = MagicMock()
+        mock_httpx.get.return_value = mock_resp
+        monkeypatch.setitem(__import__("sys").modules, "httpx", mock_httpx)
+
+        result = _check_admin_api()
+        assert result.status == "pass"
+        assert "200 OK" in result.message
 
 
 class TestCheckAddonLoading:

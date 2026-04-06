@@ -26,15 +26,15 @@ def _lock_path() -> Path:
 
 
 def _load_doc() -> tomlkit.TOMLDocument:
-    """Load policy.toml as a TOMLDocument. Returns empty doc if missing."""
+    """Load policy.toml as a TOMLDocument. Returns empty doc if missing.
+
+    Raises on parse errors — a corrupted policy.toml must NOT be silently
+    replaced with an empty document, as that would destroy all policy data.
+    """
     path = _policy_toml_path()
     if not path.exists():
         return tomlkit.document()
-    try:
-        return tomlkit.parse(path.read_text())
-    except (OSError, tomlkit.exceptions.TOMLKitError) as e:
-        log.warning("Failed to parse %s: %s", path, type(e).__name__)
-        return tomlkit.document()
+    return tomlkit.parse(path.read_text())
 
 
 def _save_doc(doc: tomlkit.TOMLDocument) -> None:

@@ -186,7 +186,15 @@ class TestLogsCommand:
         """Tail option shows last N lines."""
         result = cli_runner.invoke(app, ["logs", "--tail", "2"])
         assert result.exit_code == 0
-        # Should show limited events
+        # With 4 sample events and --tail 2, should only see the last 2 events
+        # (security.credential and security.ratelimit)
+        assert "security" in result.output
+        # Should NOT see the first traffic.request event
+        lines_with_traffic_request = [
+            line for line in result.output.split("\n")
+            if "traffic.request" in line
+        ]
+        assert len(lines_with_traffic_request) == 0
 
 
 class TestStatusCommand:
@@ -210,9 +218,10 @@ class TestStatusCommand:
         mock_httpx["response"].json = mock_json
 
         result = cli_runner.invoke(app, ["status"])
-        # Status command has a bug calling non-existent pending_approvals()
-        # Just verify it runs without crashing on the mocked parts
-        assert "status" in result.output.lower() or result.exit_code in (0, 1)
+        assert result.exit_code in (0, 1)
+        # Must show either "running" container status or "SafeYolo" header
+        output_lower = result.output.lower()
+        assert "running" in output_lower or "safeyolo" in output_lower
 
 
 class TestModeCommand:
@@ -320,7 +329,8 @@ class TestStartCommand:
 
     def test_starts_with_docker(self, cli_runner, tmp_config_dir, mock_docker_available):
         """Starts container with Docker."""
-        cli_runner.invoke(app, ["start", "--no-wait"])
+        result = cli_runner.invoke(app, ["start", "--no-wait"])
+        assert result.exit_code == 0
         # Check that docker compose was called
         calls = mock_docker_available.call_args_list
         compose_calls = [c for c in calls if "compose" in str(c)]
@@ -332,7 +342,8 @@ class TestStopCommand:
 
     def test_stops_container(self, cli_runner, tmp_config_dir, mock_docker_running):
         """Stops running container."""
-        cli_runner.invoke(app, ["stop"])
+        result = cli_runner.invoke(app, ["stop"])
+        assert result.exit_code == 0
         # Should attempt docker compose down or docker stop
         calls = mock_docker_running.call_args_list
         stop_calls = [c for c in calls if "stop" in str(c) or "down" in str(c)]

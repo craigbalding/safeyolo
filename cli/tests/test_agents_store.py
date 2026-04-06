@@ -1,8 +1,10 @@
 """Tests for agents_store module (policy.toml backend)."""
 
+import pytest
 import tomlkit
 
 from safeyolo.agents_store import (
+    _load_doc,
     load_agent,
     load_all_agents,
     remove_agent,
@@ -78,6 +80,52 @@ class TestSaveAndLoadAgent:
         loaded = load_agent("boris")
         assert loaded["services"]["gmail"]["capability"] == "read_and_send"
         assert loaded["services"]["gmail"]["token"] == "gmail-oauth2"
+
+
+class TestLoadDoc:
+    def test_corrupted_policy_raises(self, tmp_config_dir):
+        """Parse error propagates as exception instead of silently returning empty doc.
+
+        Pins the fix: a corrupted policy.toml must NOT be silently replaced
+        with an empty document, as that would destroy all policy data on next save.
+        """
+        (tmp_config_dir / "policy.toml").write_text("[[broken toml syntax")
+        with pytest.raises(Exception):
+            _load_doc()
+
+    def test_load_doc_missing_file_returns_empty(self, tmp_config_dir):
+        """Returns empty TOMLDocument when policy.toml does not exist."""
+        (tmp_config_dir / "policy.toml").unlink()
+        doc = _load_doc()
+        assert tomlkit.dumps(doc) == ""
+
+
+class TestSavePreservesAllSections:
+    def test_save_preserves_all_sections_on_update(self, tmp_config_dir):
+        """Saving an agent preserves every non-agents section in the file.
+
+        Regression test: a read-modify-write cycle must not drop sections
+        like [hosts], top-level keys, or comments.
+        """
+        doc = tomlkit.document()
+        doc.add("version", "2.0")
+        hosts = tomlkit.table()
+        it = tomlkit.inline_table()
+        it.append("rate", 600)
+        hosts.add("*", it)
+        hosts.add("api.openai.com", tomlkit.inline_table())
+        doc.add("hosts", hosts)
+        doc.add("required", ["credential_guard", "network_guard"])
+        (tmp_config_dir / "policy.toml").write_text(tomlkit.dumps(doc))
+
+        save_agent("boris", {"template": "claude-code", "folder": "/tmp/proj"})
+
+        content = (tmp_config_dir / "policy.toml").read_text()
+        reparsed = tomlkit.parse(content)
+        assert reparsed["version"] == "2.0"
+        assert "api.openai.com" in reparsed["hosts"]
+        assert reparsed["required"] == ["credential_guard", "network_guard"]
+        assert reparsed["agents"]["boris"]["template"] == "claude-code"
 
 
 class TestRemoveAgent:
