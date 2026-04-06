@@ -176,6 +176,31 @@ def get_admin_token() -> str | None:
     return None
 
 
+def get_share_dir() -> Path:
+    """Get path to shared VM assets (kernel, initramfs, base rootfs)."""
+    return get_config_dir() / "share"
+
+
+def get_vm_helper_path() -> Path:
+    """Get path to the safeyolo-vm binary."""
+    return get_config_dir() / "bin" / "safeyolo-vm"
+
+
+def get_ssh_key_path() -> Path:
+    """Get path to the VM SSH private key."""
+    return get_data_dir() / "vm_ssh_key"
+
+
+def get_agent_map_path() -> Path:
+    """Get path to the agent-IP map file (read by service_discovery addon)."""
+    return get_data_dir() / "agent_map.json"
+
+
+def get_proxy_pid_path() -> Path:
+    """Get path to the mitmproxy PID file."""
+    return get_data_dir() / "proxy.pid"
+
+
 def ensure_directories() -> None:
     """Ensure all required directories exist."""
     config_dir = get_config_dir(create=True)
@@ -183,3 +208,5 @@ def ensure_directories() -> None:
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
     (config_dir / "logs").mkdir(exist_ok=True)
+    (config_dir / "share").mkdir(exist_ok=True)
+    (config_dir / "bin").mkdir(exist_ok=True)
