@@ -169,6 +169,11 @@ def _build_command(
     cmd.extend(["--set", "network_guard_block=true"])
     cmd.extend(["--set", "credguard_block=true"])
 
+    # Override container-default paths for host execution
+    data_dir = config_dir / "data"
+    cmd.extend(["--set", f"circuit_state_file={data_dir / 'circuit_breaker_state.json'}"])
+    cmd.extend(["--set", f"flow_store_path={logs_dir / 'flows.sqlite3'}"])
+
     # Policy file
     policy_toml = config_dir / "policy.toml"
     policy_yaml = config_dir / "policy.yaml"
@@ -238,8 +243,16 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
         python_paths.append(str(pdp_dir.parent))  # Parent so `from pdp import ...` works
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = ":".join(python_paths) + (":" + existing if existing else "")
-    env["LOG_DIR"] = str(logs_dir)
+
+    # Map container paths to host paths.
+    # Addons hardcode /safeyolo (config bind-mount) and /app/logs (log dir)
+    # from the Docker container layout. These env vars override the defaults.
     env["CONFIG_DIR"] = str(config_dir)
+    env["LOG_DIR"] = str(logs_dir)
+    env["SAFEYOLO_LOG_PATH"] = str(logs_dir / "safeyolo.jsonl")
+    env["MITMPROXY_LOG_PATH"] = str(logs_dir / "mitmproxy.log")
+    env["SAFEYOLO_DATA_DIR"] = str(config_dir / "data")
+    env["SAFEYOLO_SERVICES_DIR"] = str(config_dir / "services")
 
     # Start as background process
     log_file = logs_dir / "mitmproxy.log"
