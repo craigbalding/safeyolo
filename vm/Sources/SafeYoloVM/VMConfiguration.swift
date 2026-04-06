@@ -96,8 +96,9 @@ struct VMConfiguration {
     private static func createSerialPort() -> VZVirtioConsoleDeviceSerialPortConfiguration {
         let serialPort = VZVirtioConsoleDeviceSerialPortConfiguration()
 
-        // Serial console goes to /dev/null — interactive terminal uses vsock.
-        // Boot logs from guest init go to serial but aren't needed on the host.
+        // Serial console goes to /dev/null by default.
+        // Interactive terminal is handled via vsock.
+        // Boot logs are visible in the guest's own log files.
         let devNull = FileHandle(forWritingAtPath: "/dev/null")!
         let attachment = VZFileHandleSerialPortAttachment(
             fileHandleForReading: nil,

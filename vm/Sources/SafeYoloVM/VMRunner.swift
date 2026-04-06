@@ -29,14 +29,13 @@ class VMRunner: NSObject {
         case .stopped:
             exitClean(code: 0)
         case .error:
-            fputs("Error: VM entered error state\n", stderr)
             exitClean(code: 1)
         case .running:
             break
         case .starting:
             break
         case .stopping:
-            fputs("VM stopping...\n", stderr)
+            break
         case .pausing, .paused, .resuming, .saving, .restoring:
             break
         @unknown default:

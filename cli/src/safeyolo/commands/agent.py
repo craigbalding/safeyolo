@@ -300,10 +300,10 @@ def _run_agent(
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
 
-    console.print(f"Starting {name}...\n")
-
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
+        # Show progress as the VM boots
+        console.print(f"  Booting VM...", end="")
         proc = start_vm(
             name=name,
             workspace_path=str(workspace_path),
@@ -311,11 +311,40 @@ def _run_agent(
             feth_vm=feth_alloc["feth_vm"] if feth_alloc else "",
         )
         _update_agent_map(name, ip=guest_ip)
-        # Wait for VM process to exit (serial console on stdin/stdout)
-        proc.wait()
-        exit_code = proc.returncode
+
+        # Monitor boot progress by watching config share for milestones
+        from ..vm import get_agent_config_share_dir
+        import time as _time
+        config_share_dir = get_agent_config_share_dir(name)
+        ip_file = config_share_dir / "vm-ip"
+
+        # Wait for VM IP (indicates guest init is running)
+        deadline = _time.time() + 120
+        while _time.time() < deadline and proc.poll() is None:
+            if ip_file.exists() and ip_file.read_text().strip():
+                break
+            _time.sleep(0.5)
+
+        if proc.poll() is not None:
+            console.print(" [red]failed[/red]")
+            console.print(f"  Check logs: ~/.safeyolo/agents/{name}/serial.log")
+            exit_code = proc.returncode
+        else:
+            console.print(f" {guest_ip}")
+            console.print(f"  Connecting terminal...", end="")
+
+            # Wait for safeyolo-vm to connect vsock (it exits when session ends)
+            # The vsock terminal handles everything from here — clear screen and hand off
+            # Give a moment for vsock to connect before clearing
+            _time.sleep(1)
+            # Clear progress and hand over the screen
+            console.print()
+            proc.wait()
+            exit_code = proc.returncode
+
     except VMError as err:
-        console.print(f"[red]VM error:[/red] {err}")
+        console.print(f" [red]error[/red]")
+        console.print(f"  {err}")
         exit_code = 1
     except KeyboardInterrupt:
         exit_code = 130

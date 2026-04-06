@@ -197,8 +197,6 @@ do {
 
         if connected {
             terminal.run()
-        } else {
-            fputs("\nFailed to connect to VM terminal\n", stderr)
         }
         // Terminal session ended — stop VM
         runner.requestStopFromMain()

@@ -84,7 +84,7 @@ class VSockTerminal {
                 case .success(let connection):
                     result = connection
                 case .failure:
-                    break  // Expected during boot — guest vsock-term not ready yet
+                    break  // Expected during boot
                 }
                 semaphore.signal()
             }
