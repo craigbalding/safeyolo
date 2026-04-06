@@ -47,9 +47,13 @@ def setup_feth(agent_index: int) -> dict:
     feth_host = alloc["feth_host"]
     host_ip = alloc["host_ip"]
 
+    # Destroy stale feth interfaces if they exist from a previous run
+    _sudo_run(["ifconfig", feth_vm, "destroy"], check=False)
+    _sudo_run(["ifconfig", feth_host, "destroy"], check=False)
+
     # Create feth pair
-    _sudo_run(["ifconfig", feth_vm, "create"], check=False)  # May already exist
-    _sudo_run(["ifconfig", feth_host, "create"], check=False)
+    _sudo_run(["ifconfig", feth_vm, "create"])
+    _sudo_run(["ifconfig", feth_host, "create"])
     _sudo_run(["ifconfig", feth_vm, "peer", feth_host])
 
     # Configure host side with IP
