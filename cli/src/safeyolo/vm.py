@@ -148,6 +148,19 @@ def prepare_config_share(
     share_dir = get_agent_config_share_dir(name)
     share_dir.mkdir(parents=True, exist_ok=True)
 
+    # Guest init script — served from config share, not baked into rootfs.
+    # Changes here take effect on next agent run without rootfs rebuild.
+    guest_init_src = Path(__file__).parent / "guest-init.sh"
+    guest_init_dst = share_dir / "guest-init"
+    shutil.copy2(str(guest_init_src), str(guest_init_dst))
+    guest_init_dst.chmod(0o755)
+
+    # vsock-term binary — cross-compiled, served from config share
+    vsock_term_src = config_dir / "bin" / "vsock-term"
+    if vsock_term_src.exists():
+        shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
+        (share_dir / "vsock-term").chmod(0o755)
+
     # Proxy environment variables
     # The guest uses HTTP_PROXY to route through host mitmproxy on the feth gateway.
     proxy_url = f"http://{gateway_ip}:{proxy_port}"

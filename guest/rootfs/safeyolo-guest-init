@@ -1,194 +1,34 @@
 #!/bin/bash
 #
-# SafeYolo guest init — runs as PID 1 inside the microVM.
+# SafeYolo guest init STUB — baked into rootfs, rarely changes.
 #
-# Responsibilities:
-# 1. Mount remaining filesystems
-# 2. Mount VirtioFS shares (workspace, config, host config dirs/files)
-# 3. Configure proxy environment from config share
-# 4. Trust SafeYolo CA certificate
-# 5. Inject agent instructions (CLAUDE.md etc.)
-# 6. Set up agent token, SSH, disable IPv6
-# 7. Install agent binary via mise if missing
-# 8. Run user init hook
-# 9. Run agent command or login shell, then shut down
+# Mounts the VirtioFS config share and execs the real init from there.
+# All SafeYolo-specific logic lives on the config share so it can be
+# updated without rebuilding the rootfs.
 #
 set -e
 
-# --------------------------------------------------------------------------
-# 1. Mount remaining filesystems
-# --------------------------------------------------------------------------
+# Mount minimal filesystems needed for VirtioFS
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts -o gid=5,mode=620 2>/dev/null || true
-# Ensure /dev/ptmx exists (needed by sshd for PTY allocation)
 ln -sf pts/ptmx /dev/ptmx 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 
-# Bring up loopback
-ip link set lo up 2>/dev/null || true
+# Mount config share (contains the real init script, vsock-term, env files)
+mkdir -p /safeyolo
+mount -t virtiofs config /safeyolo 2>/dev/null || {
+    echo "FATAL: cannot mount config share" >&2
+    exec sleep infinity
+}
 
-# eth0 is configured with a static IP by the initramfs init script.
-# No DHCP — network is controlled by the feth pair on the host.
-
-# --------------------------------------------------------------------------
-# 2. Mount VirtioFS shares
-# --------------------------------------------------------------------------
-mkdir -p /workspace /safeyolo
-
-# Workspace (host project directory, typically read-write)
-mount -t virtiofs workspace /workspace 2>/dev/null || true
-
-# Config share (proxy env, CA cert, SSH keys)
-mount -t virtiofs config /safeyolo 2>/dev/null || true
-
-# Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
-# Manifest: one line per mount, "tag:guest_path"
-if [ -f /safeyolo/host-mounts ]; then
-    while IFS=: read -r tag guest_path; do
-        [ -z "$tag" ] && continue
-        mkdir -p "$guest_path"
-        mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
-        chown -R agent:agent "$guest_path" 2>/dev/null || true
-    done < /safeyolo/host-mounts
-fi
-
-# Host config files (copied into config share to avoid mounting $HOME)
-# Manifest: one line per file, "filename_in_share:guest_path"
-if [ -f /safeyolo/host-files-manifest ]; then
-    while IFS=: read -r src_name guest_path; do
-        [ -z "$src_name" ] && continue
-        if [ -f "/safeyolo/host-files/$src_name" ]; then
-            mkdir -p "$(dirname "$guest_path")"
-            cp "/safeyolo/host-files/$src_name" "$guest_path"
-            chown agent:agent "$guest_path" 2>/dev/null || true
-        fi
-    done < /safeyolo/host-files-manifest
-fi
-
-# --------------------------------------------------------------------------
-# 3. Configure proxy environment
-# --------------------------------------------------------------------------
-if [ -f /safeyolo/proxy.env ]; then
-    set -a
-    . /safeyolo/proxy.env
-    set +a
-    # Also write to /etc/environment for SSH sessions and child processes
-    cp /safeyolo/proxy.env /etc/environment
-fi
-
-if [ -f /safeyolo/agent.env ]; then
-    set -a
-    . /safeyolo/agent.env
-    set +a
-    # Append agent env to /etc/environment too
-    cat /safeyolo/agent.env >> /etc/environment
-fi
-
-# Ensure HOME is set for all contexts
-echo 'export HOME=/home/agent' >> /etc/environment
-
-# --------------------------------------------------------------------------
-# 4. Trust SafeYolo CA certificate
-# --------------------------------------------------------------------------
-if [ -f /safeyolo/mitmproxy-ca-cert.pem ]; then
-    cp /safeyolo/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/safeyolo.crt
-    update-ca-certificates --fresh >/dev/null 2>&1 || true
-fi
-
-# --------------------------------------------------------------------------
-# 5. Inject agent instructions (e.g., /etc/claude-code/CLAUDE.md)
-# --------------------------------------------------------------------------
-if [ -f /safeyolo/instructions.md ] && [ -n "${SAFEYOLO_INSTRUCTIONS_PATH:-}" ]; then
-    mkdir -p "$(dirname "$SAFEYOLO_INSTRUCTIONS_PATH")"
-    cp /safeyolo/instructions.md "$SAFEYOLO_INSTRUCTIONS_PATH"
-fi
-
-# --------------------------------------------------------------------------
-# 6. Set up agent token, SSH, disable IPv6
-# --------------------------------------------------------------------------
-
-# Agent API token at /app/agent_token (matches Docker layout and instructions.md)
-if [ -f /safeyolo/agent_token ]; then
-    mkdir -p /app
-    cp /safeyolo/agent_token /app/agent_token
-    chmod 644 /app/agent_token
-fi
-
-# SSH for `safeyolo agent shell`
-if [ -f /safeyolo/authorized_keys ]; then
-    mkdir -p /home/agent/.ssh
-    cp /safeyolo/authorized_keys /home/agent/.ssh/authorized_keys
-    chown -R agent:agent /home/agent/.ssh
-    chmod 700 /home/agent/.ssh
-    chmod 600 /home/agent/.ssh/authorized_keys
-fi
-
-# Generate host keys if missing (first boot)
-if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
-    ssh-keygen -A >/dev/null 2>&1 || true
-fi
-
-# Start sshd in the background
-mkdir -p /run/sshd
-/usr/sbin/sshd -D &
-
-# Disable IPv6 (matches Docker sysctl: net.ipv6.conf.all.disable_ipv6=1)
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-
-# --------------------------------------------------------------------------
-# Write VM IP to config share so the CLI can discover it
-# --------------------------------------------------------------------------
-VM_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo "")
-if [ -n "$VM_IP" ]; then
-    echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
-    echo "VM IP: $VM_IP"
-fi
-
-# --------------------------------------------------------------------------
-# 7. Install agent binary via mise if missing
-# --------------------------------------------------------------------------
-if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
-    if ! su agent -c "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "Installing $SAFEYOLO_MISE_PACKAGE via mise..."
-        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" 2>&1 || {
-            echo "Warning: mise install failed or timed out"
-        }
-    fi
-fi
-
-# --------------------------------------------------------------------------
-# 8. Run user init hook
-# --------------------------------------------------------------------------
-if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
-    su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
-fi
-
-# --------------------------------------------------------------------------
-# 9. Run agent via vsock terminal (proper PTY with resize support)
-# --------------------------------------------------------------------------
-# Build the command to run inside the PTY
-YOLO_ARGS=""
-if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
-    YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"
-fi
-
-# vsock-term allocates a PTY, drops to agent user, and execs the command.
-# No su/login shell — vsock-term handles uid/gid drop directly (like Shuru).
-echo "Waiting for terminal connection..."
-if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
-    /usr/local/bin/vsock-term --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
-        bash -lc "mise exec -- ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-}" || true
+# Hand off to the real init from the config share
+if [ -x /safeyolo/guest-init ]; then
+    exec /safeyolo/guest-init
 else
-    /usr/local/bin/vsock-term --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
-        bash -l || true
+    echo "FATAL: /safeyolo/guest-init not found on config share" >&2
+    exec sleep infinity
 fi
-
-# Agent exited — shut down the VM cleanly
-echo "Agent exited, shutting down VM..."
-reboot -f -p 2>/dev/null || poweroff -f 2>/dev/null || halt -f -p 2>/dev/null || true
-# If none of those work, just sleep forever (VM will be force-stopped by host)
-exec sleep infinity

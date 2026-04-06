@@ -29,7 +29,6 @@ echo "This runs in Docker (privileged) and takes several minutes on first build.
 
 docker run --rm --privileged --platform linux/arm64/v8 \
     -v "$SCRIPT_DIR/rootfs:/build/rootfs:ro" \
-    -v "$SCRIPT_DIR/vsock-term.c:/build/vsock-term.c:ro" \
     -v "$OUTPUT_DIR:/output" \
     -e MISE_VERSION="$MISE_VERSION" \
     -e MISE_SHA256_ARM64="$MISE_SHA256_ARM64" \
@@ -161,12 +160,10 @@ sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" /mnt/rootfs/et
 chroot /mnt/rootfs ssh-keygen -A >/dev/null 2>&1
 
 # Build and install vsock-term (terminal daemon with PTY + resize)
-echo "--- Building vsock-term ---"
-cp /build/vsock-term.c /mnt/rootfs/tmp/vsock-term.c
-chroot /mnt/rootfs cc -static -O2 -o /usr/local/bin/vsock-term /tmp/vsock-term.c -lutil
-rm /mnt/rootfs/tmp/vsock-term.c
+# vsock-term is now cross-compiled by `make guest-tools` and served
+# from the config share. No longer baked into rootfs.
 
-# Install guest init script
+# Install guest init STUB (thin wrapper that execs from config share)
 echo "--- Installing guest init ---"
 cp /build/rootfs/safeyolo-guest-init /mnt/rootfs/usr/local/bin/safeyolo-guest-init
 chmod +x /mnt/rootfs/usr/local/bin/safeyolo-guest-init
