@@ -140,7 +140,17 @@ int main(int argc, char *argv[]) {
         /* Set terminal type for proper TUI rendering */
         setenv("TERM", "xterm-256color", 1);
 
-        /* Re-apply window size (su -l may reset it) */
+        /* Wait for parent to set PTY size via master */
+        usleep(200000);  /* 200ms */
+
+        /* Check what size we see on the slave side */
+        struct winsize child_ws;
+        if (ioctl(STDIN_FILENO, TIOCGWINSZ, &child_ws) == 0) {
+            fprintf(stderr, "vsock-term child: slave size %dx%d\n",
+                    child_ws.ws_col, child_ws.ws_row);
+        }
+
+        /* Force the size from the slave side too, belt and suspenders */
         ioctl(STDIN_FILENO, TIOCSWINSZ, &initial_ws);
 
         execvp(argv[1], &argv[1]);
