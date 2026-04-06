@@ -1,7 +1,6 @@
-"""Container lifecycle commands: start, stop, status."""
+"""Proxy lifecycle commands: start, stop, status, build."""
 
 import datetime
-import os
 import secrets
 import shutil
 from pathlib import Path
@@ -19,26 +18,14 @@ from ..config import (
     load_config,
     save_config,
 )
-from ..docker import (
-    DOCKER_BUILD_TIMEOUT_SECONDS,
-    BuildError,
-    DockerError,
-    build_image,
-    check_docker,
-    copy_ca_cert_to_host,
-    get_container_status,
-    get_repo_root,
-    image_exists,
-    is_running,
+from ..proxy import (
+    get_ca_cert_path,
+    is_proxy_running,
+    start_proxy,
+    stop_proxy,
     wait_for_healthy,
-    write_compose_file,
 )
-from ..docker import (
-    start as docker_start,
-)
-from ..docker import (
-    stop as docker_stop,
-)
+from ..vm import check_guest_images, guest_image_status
 
 console = Console()
 
@@ -49,12 +36,13 @@ ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml
 
 def _bootstrap_config(config_dir: Path) -> None:
     """Bootstrap config directory with sensible defaults."""
-    # Create directories
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "logs").mkdir(exist_ok=True)
     (config_dir / "certs").mkdir(exist_ok=True)
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
+    (config_dir / "share").mkdir(exist_ok=True)
+    (config_dir / "bin").mkdir(exist_ok=True)
 
     # Generate admin token
     token = secrets.token_urlsafe(32)
@@ -62,8 +50,7 @@ def _bootstrap_config(config_dir: Path) -> None:
     token_path.write_text(token)
     token_path.chmod(0o600)
 
-    # Create agent token placeholder (proxy overwrites on start;
-    # file must exist so Docker bind-mounts it as a file, not a directory)
+    # Create agent token placeholder
     agent_token_path = config_dir / "data" / "agent_token"
     agent_token_path.touch()
     agent_token_path.chmod(0o600)
@@ -72,42 +59,22 @@ def _bootstrap_config(config_dir: Path) -> None:
     config = DEFAULT_CONFIG.copy()
     save_config(config)
 
-    # Copy policy.toml (policy file)
+    # Copy policy.toml
     policy_path = config_dir / "policy.toml"
     if POLICY_TEMPLATE_PATH.exists():
         shutil.copy(POLICY_TEMPLATE_PATH, policy_path)
 
-    # Copy addons.yaml (addon configuration)
+    # Copy addons.yaml
     addons_path = config_dir / "addons.yaml"
     if ADDONS_TEMPLATE_PATH.exists():
         shutil.copy(ADDONS_TEMPLATE_PATH, addons_path)
 
-    # Write docker-compose.yml
-    write_compose_file(sandbox=False)
-
 
 def start(
-    build: bool = typer.Option(
-        False,
-        "--build",
-        "-b",
-        help="Rebuild image before starting",
-    ),
-    pull: bool = typer.Option(
-        False,
-        "--pull",
-        "-p",
-        help="Pull latest image before starting",
-    ),
     wait: bool = typer.Option(
         True,
         "--wait/--no-wait",
         help="Wait for healthy status",
-    ),
-    headless: bool = typer.Option(
-        False,
-        "--headless",
-        help="Run without TUI (mitmdump instead of mitmproxy)",
     ),
     dev: bool = typer.Option(
         False,
@@ -115,17 +82,8 @@ def start(
         help="Mount source code and auto-restart on changes (requires repo checkout)",
     ),
 ) -> None:
-    """Start SafeYolo proxy container."""
+    """Start SafeYolo proxy and firewall."""
     first_run = False
-
-    # Set headless env var (passthrough to container via compose)
-    if headless:
-        os.environ["SAFEYOLO_HEADLESS"] = "true"
-
-    # Check Docker first
-    if not check_docker():
-        console.print("[red]Docker is not available.[/red]")
-        raise typer.Exit(1)
 
     # Check config exists, bootstrap if needed
     config_dir = find_config_dir()
@@ -137,61 +95,49 @@ def start(
         console.print(f"  Created {config_dir}")
 
     # Check if already running
-    if is_running():
-        console.print("[yellow]SafeYolo is already running.[/yellow]")
+    if is_proxy_running():
+        console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
         raise typer.Exit(0)
+
+    # Check guest images
+    if not check_guest_images():
+        status = guest_image_status()
+        missing = [k for k, v in status.items() if not v]
+        console.print(f"[yellow]Guest images missing: {', '.join(missing)}[/yellow]")
+        console.print("Build them first: [bold]cd guest && ./build-all.sh[/bold]")
+        console.print("Then install: [bold]mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/[/bold]")
 
     config = load_config()
     proxy_port = config["proxy"]["port"]
-    image_name = config["proxy"].get("image", "safeyolo:latest")
+    admin_port = config["proxy"]["admin_port"]
 
     console.print("[bold]Starting SafeYolo...[/bold]")
 
-    # Force rebuild if requested
-    if build:
-        repo_root = get_repo_root()
-        if repo_root:
-            console.print(f"Building from {repo_root}...")
-            try:
-                build_image(tag=image_name)
-            except BuildError as err:
-                console.print(f"[red]Build failed:[/red] {err}")
-                raise typer.Exit(1)
-        else:
-            console.print("[red]Cannot build: repo not found.[/red]")
-            raise typer.Exit(1)
-
-    # Check if image exists, show build message if auto-building
-    if not build and not pull and not image_exists(image_name):
-        console.print(f"[yellow]Image '{image_name}' not found locally.[/yellow]")
-        repo_root = get_repo_root()
-        if repo_root:
-            console.print(f"Building from {repo_root}...")
-        else:
-            console.print("[red]Cannot auto-build: repo not found.[/red]")
-            console.print("Either build manually or pull the image:")
-            console.print("  docker pull safeyolo:latest")
-            raise typer.Exit(1)
-
-    if dev:
-        console.print("[bold]Dev mode:[/bold] addons/ and pdp/ mounted from repo, auto-restart on changes")
-
+    # Start host mitmproxy
     try:
-        docker_start(detach=True, pull=pull, dev=dev)
-    except BuildError as err:
-        console.print(f"[red]Build failed:[/red] {err}")
+        start_proxy(proxy_port=proxy_port, admin_port=admin_port)
+    except Exception as err:
+        console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)
-    except DockerError as err:
-        console.print(f"[red]Failed to start:[/red] {err}")
-        raise typer.Exit(1)
+
+    # Load pf firewall rules
+    try:
+        from ..firewall import load_rules, is_loaded
+        if not is_loaded():
+            console.print("Loading firewall rules (may require sudo)...")
+            load_rules(proxy_port=proxy_port, admin_port=admin_port)
+            console.print("  [green]pf rules loaded[/green]")
+        else:
+            console.print("  pf rules already active")
+    except Exception as err:
+        console.print(f"[yellow]Warning: Could not load pf rules:[/yellow] {err}")
+        console.print("  VM egress will not be restricted. Run manually:")
+        console.print("  [bold]sudo pfctl -a com.safeyolo -f /etc/pf.anchors/com.safeyolo[/bold]")
 
     if wait:
         console.print("Waiting for healthy status...", end=" ")
-        if wait_for_healthy(timeout=30):
+        if wait_for_healthy(timeout=30, admin_port=admin_port):
             console.print("[green]ready![/green]")
-            # Copy CA cert to host for diagnostic access
-            if copy_ca_cert_to_host():
-                console.print("  CA certificate copied to host")
         else:
             console.print("[yellow]timeout (may still be starting)[/yellow]")
 
@@ -202,10 +148,7 @@ def start(
                 f"[green]SafeYolo is running![/green]\n\n"
                 f"Proxy: http://localhost:{proxy_port}\n\n"
                 f"Next:\n"
-                f"  eval $(safeyolo cert env)   [dim]# CA trust + proxy vars[/dim]\n"
-                f"  claude                      [dim]# Run your agent[/dim]\n\n"
-                f"For enforced protection (autonomous agents):\n"
-                f"  [bold]safeyolo sandbox setup[/bold]",
+                f"  safeyolo agent add myproject claude-code .   [dim]# Add and run an agent[/dim]\n",
                 title="Ready",
             )
         )
@@ -213,29 +156,44 @@ def start(
         console.print(
             Panel(
                 f"[green]SafeYolo is running[/green]\n\n"
-                f"Proxy: http://localhost:{proxy_port}\n\n"
-                f"  eval $(safeyolo cert env)   [dim]# CA trust + proxy vars[/dim]",
+                f"Proxy: http://localhost:{proxy_port}",
                 title="Started",
             )
         )
 
 
 def stop() -> None:
-    """Stop SafeYolo proxy container."""
+    """Stop SafeYolo proxy and firewall."""
 
-    if not is_running():
-        console.print("[yellow]SafeYolo is not running.[/yellow]")
+    if not is_proxy_running():
+        console.print("[yellow]SafeYolo proxy is not running.[/yellow]")
         raise typer.Exit(0)
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
-    try:
-        docker_stop()
-        console.print("[green]Stopped.[/green]")
+    # Stop all running agent VMs
+    from ..vm import is_vm_running, stop_vm
+    from ..config import get_agents_dir
+    agents_dir = get_agents_dir()
+    if agents_dir.exists():
+        for agent_dir in agents_dir.iterdir():
+            if agent_dir.is_dir():
+                name = agent_dir.name
+                if is_vm_running(name):
+                    console.print(f"  Stopping agent '{name}'...")
+                    stop_vm(name)
 
-    except DockerError as e:
-        console.print(f"[red]Failed to stop:[/red] {e}")
-        raise typer.Exit(1)
+    # Unload pf rules
+    try:
+        from ..firewall import unload_rules
+        unload_rules()
+        console.print("  pf rules unloaded")
+    except Exception:
+        pass  # Non-fatal
+
+    # Stop proxy
+    stop_proxy()
+    console.print("[green]Stopped.[/green]")
 
 
 def status() -> None:
@@ -250,10 +208,7 @@ def status() -> None:
 
     config = load_config()
 
-    # Container status
-    container_status = get_container_status()
-
-    if not container_status or container_status["status"] != "running":
+    if not is_proxy_running():
         console.print(
             Panel(
                 "[yellow]SafeYolo is not running[/yellow]\n\nRun [bold]safeyolo start[/bold] to start the proxy.",
@@ -267,50 +222,37 @@ def status() -> None:
     table.add_column("Key", style="bold")
     table.add_column("Value")
 
-    table.add_row("Container", "[green]running[/green]")
-    table.add_row("Health", container_status.get("health", "unknown"))
-
-    # Uptime from container start time
-    started_at = container_status.get("started_at", "")
-    if started_at:
-        try:
-            started = datetime.datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-            delta = datetime.datetime.now(datetime.UTC) - started
-            total_seconds = int(delta.total_seconds())
-            days, remainder = divmod(total_seconds, 86400)
-            hours, remainder = divmod(remainder, 3600)
-            minutes = remainder // 60
-            if days > 0:
-                uptime_str = f"{days}d {hours}h {minutes}m"
-            elif hours > 0:
-                uptime_str = f"{hours}h {minutes}m"
-            else:
-                uptime_str = f"{minutes}m"
-            table.add_row("Uptime", uptime_str)
-        except (ValueError, TypeError):
-            table.add_row("Uptime", "?")
-
+    table.add_row("Proxy", "[green]running[/green]")
     table.add_row("Proxy Port", str(config["proxy"]["port"]))
     table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
+
+    # Guest images
+    if check_guest_images():
+        table.add_row("Guest Images", "[green]available[/green]")
+    else:
+        table.add_row("Guest Images", "[yellow]missing[/yellow]")
+
+    # pf rules
+    try:
+        from ..firewall import is_loaded
+        if is_loaded():
+            table.add_row("Firewall", "[green]active[/green]")
+        else:
+            table.add_row("Firewall", "[yellow]not loaded[/yellow]")
+    except Exception:
+        table.add_row("Firewall", "[dim]unknown[/dim]")
 
     # Try to get stats from API
     try:
         api = get_api()
         stats = api.stats()
 
-        # Credential guard stats
         cg = stats.get("credential-guard", {})
         if cg:
-            table.add_row("", "")  # Spacer
+            table.add_row("", "")
             table.add_row("Credentials Blocked", str(cg.get("violations_total", 0)))
             table.add_row("Rules Loaded", str(cg.get("rules_count", 0)))
 
-        # Rate limiter stats
-        rl = stats.get("rate-limiter", {})
-        if rl:
-            table.add_row("Rate Limited", str(rl.get("limited_total", 0)))
-
-        # Pending approvals
         pending = api.pending_approvals()
         if pending:
             table.add_row("Pending Approvals", f"[yellow]{len(pending)}[/yellow]")
@@ -339,164 +281,70 @@ def status() -> None:
         console.print(mode_table)
 
     except APIError:
-        pass  # Already shown API unavailable above
+        pass
 
-    # Agents section
-    try:
-        api = get_api()
-        stats = api.stats()
-        sd = stats.get("service-discovery", {})
-        agents = sd.get("agents", {})
-        if agents:
-            agent_table = Table(title="Agents", show_header=True)
+    # Running agents
+    from ..vm import is_vm_running, get_vm_ip
+    from ..config import get_agents_dir
+    agents_dir = get_agents_dir()
+    if agents_dir.exists():
+        running = []
+        for agent_dir in agents_dir.iterdir():
+            if agent_dir.is_dir() and is_vm_running(agent_dir.name):
+                ip_file = agent_dir / "config-share" / "vm-ip"
+                ip = ip_file.read_text().strip() if ip_file.exists() else "?"
+                running.append((agent_dir.name, ip))
+
+        if running:
+            agent_table = Table(title="Running Agents", show_header=True)
             agent_table.add_column("Name", style="bold")
             agent_table.add_column("IP")
-            agent_table.add_column("Last Seen")
-            agent_table.add_column("Idle", justify="right")
 
-            for name, info in sorted(agents.items()):
-                ip = info.get("ip", "?")
-                idle = info.get("idle_seconds")
-                if idle is not None:
-                    idle_int = int(idle)
-                    if idle_int < 60:
-                        idle_str = f"{idle_int}s"
-                        style = "green"
-                    elif idle_int < 300:
-                        idle_str = f"{idle_int // 60}m {idle_int % 60}s"
-                        style = "green"
-                    elif idle_int < 3600:
-                        idle_str = f"{idle_int // 60}m"
-                        style = "yellow"
-                    else:
-                        idle_str = f"{idle_int // 3600}h {(idle_int % 3600) // 60}m"
-                        style = "dim"
-                else:
-                    idle_str = "?"
-                    style = "dim"
-
-                last_seen_str = ""
-                last_seen_ts = info.get("last_seen")
-                if last_seen_ts:
-                    try:
-                        dt = datetime.datetime.fromtimestamp(last_seen_ts, tz=datetime.UTC)
-                        last_seen_str = dt.strftime("%H:%M:%S")
-                    except (ValueError, OSError):
-                        last_seen_str = "?"
-
-                agent_table.add_row(name, ip, last_seen_str, f"[{style}]{idle_str}[/{style}]")
+            for name, ip in running:
+                agent_table.add_row(name, ip)
 
             console.print()
             console.print(agent_table)
 
-    except APIError:
-        console.print("[dim]Agent info unavailable[/dim]")
 
-    # Memory section
-    try:
-        api = get_api()
-        stats = api.stats()
-        mem = stats.get("memory-monitor", {})
-        if mem:
-            mem_table = Table(title="Memory", show_header=False)
-            mem_table.add_column("Key", style="bold")
-            mem_table.add_column("Value")
+def build() -> None:
+    """Build guest VM images (kernel, initramfs, rootfs).
 
-            rss = mem.get("rss_mb", 0)
-            peak = mem.get("rss_hwm_mb", 0)
-            start = mem.get("rss_start_mb", 0)
-
-            rss_style = "green" if rss < 200 else "yellow" if rss < 400 else "red"
-            mem_table.add_row(
-                "RSS",
-                f"[{rss_style}]{rss:.0f} MB[/{rss_style}] (started: {start:.0f} MB, peak: {peak:.0f} MB)",
-            )
-            mem_table.add_row("Total Flows", str(mem.get("total_flows", 0)))
-
-            conns = mem.get("connections", [])
-            if conns:
-                mem_table.add_row("", "")
-                mem_table.add_row("Active Connections", str(len(conns)))
-                for conn in conns[:5]:
-                    age_m = conn["age_s"] // 60
-                    mem_table.add_row(
-                        f"  {conn['domain']}",
-                        f"{conn['flows']} flows, {age_m}m",
-                    )
-
-            ws = mem.get("websockets", [])
-            if ws:
-                mem_table.add_row("", "")
-                mem_table.add_row("WebSocket Sessions", str(len(ws)))
-                for session in ws:
-                    mem_table.add_row(
-                        f"  {session['domain']}",
-                        f"{session['messages']} msgs, {session['age_s'] // 60}m",
-                    )
-
-            console.print()
-            console.print(mem_table)
-
-    except APIError:
-        pass  # Already shown API unavailable above
-
-
-def build(
-    tag: str = typer.Option(
-        "safeyolo:latest",
-        "--tag",
-        "-t",
-        help="Image tag to build",
-    ),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Build without using cache",
-    ),
-) -> None:
-    """Build SafeYolo Docker image from source.
-
-    Builds the image from the local repo checkout. Use this when developing
-    SafeYolo or when you don't want to pull from a registry.
-
-    Examples:
-
-        safeyolo build
-        safeyolo build --tag safeyolo:dev
-        safeyolo build --no-cache
+    Requires Docker for cross-compilation. Output is installed to
+    ~/.safeyolo/share/.
     """
-    if not check_docker():
-        console.print("[red]Docker is not available.[/red]")
-        raise typer.Exit(1)
-
-    repo_root = get_repo_root()
-    if not repo_root:
-        console.print("[red]Cannot find safeyolo repo root.[/red]")
-        console.print(
-            "The 'build' command requires a local repo checkout.\n"
-            "If installed from PyPI, pull the image instead:\n"
-            "  docker pull safeyolo:latest"
-        )
-        raise typer.Exit(1)
-
-    console.print(f"[bold]Building {tag}...[/bold]")
-    console.print(f"Context: {repo_root}")
-
     import subprocess
 
-    args = ["docker", "build", "-t", tag, str(repo_root)]
-    if no_cache:
-        args.insert(2, "--no-cache")
+    # Find build script
+    repo_root = Path(__file__).resolve().parents[4]
+    build_script = repo_root / "guest" / "build-all.sh"
+
+    if not build_script.exists():
+        console.print("[red]Cannot find guest/build-all.sh[/red]")
+        console.print("Run from the SafeYolo repo checkout.")
+        raise typer.Exit(1)
+
+    console.print("[bold]Building guest VM images...[/bold]")
+    console.print("This requires Docker and takes several minutes on first build.\n")
 
     try:
-        subprocess.run(args, check=True, timeout=DOCKER_BUILD_TIMEOUT_SECONDS)
-        console.print(f"[green]Built {tag}[/green]")
-    except subprocess.TimeoutExpired:
-        console.print(
-            f"[red]Build timed out after {DOCKER_BUILD_TIMEOUT_SECONDS}s[/red]\n"
-            "Check network connectivity or try: docker build --no-cache"
+        subprocess.run(
+            [str(build_script)],
+            check=True,
         )
-        raise typer.Exit(1)
     except subprocess.CalledProcessError as err:
         console.print(f"[red]Build failed with exit code {err.returncode}[/red]")
         raise typer.Exit(1)
+
+    # Install to ~/.safeyolo/share/
+    share_dir = get_config_dir() / "share"
+    share_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = build_script.parent / "out"
+
+    for artifact in ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]:
+        src = out_dir / artifact
+        if src.exists():
+            shutil.copy2(str(src), str(share_dir / artifact))
+            console.print(f"  Installed {artifact}")
+
+    console.print(f"\n[green]Guest images installed to {share_dir}[/green]")

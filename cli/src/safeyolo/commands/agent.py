@@ -19,19 +19,26 @@ from rich.table import Table
 from ..agents_store import load_agent as _store_load_agent
 from ..agents_store import load_all_agents, save_agent
 from ..agents_store import remove_agent as _store_remove_agent
-from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
-from ..docker import is_running, wait_for_healthy
-from ..docker import start as docker_start
+from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
-from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
+from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
+from ..templates import TemplateError, get_agent_config, get_available_templates
+from ..vm import (
+    VMError,
+    create_agent_rootfs,
+    get_agent_rootfs_path,
+    is_vm_running,
+    prepare_config_share,
+    register_vm_ip,
+    start_vm,
+    stop_vm,
+)
 from ._service_discovery import find_service
 from .mount import is_path_protected
 
 log = logging.getLogger("safeyolo.agent")
 console = Console()
 
-# Subprocess timeout (seconds)
-DOCKER_COMPOSE_TIMEOUT_SECONDS = 30
 
 
 def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
@@ -154,22 +161,14 @@ def _run_agent(
     extra_mounts: list[str] | None = None,
     extra_ports: list[str] | None = None,
 ) -> int:
-    """Run an agent container. Returns exit code.
+    """Run an agent VM. Returns exit code.
 
     Shared logic used by both `add` (auto-run) and `run` commands.
-
-    Args:
-        agent_args: Extra arguments to pass to the agent CLI (after --)
-        skip_default_args: If True, ignore user_default_args even if no agent_args
-        extra_mounts: Transient mount specs (/local/path:/container/path[:ro]) for this run only
-        extra_ports: Transient port specs (127.0.0.1:host:container) for this run only
     """
     _validate_instance_name(name)
 
-    agent_dir = get_agents_dir() / name
-    compose_file = agent_dir / "docker-compose.yml"
-
-    if not compose_file.exists():
+    rootfs = get_agent_rootfs_path(name)
+    if not rootfs.exists():
         console.print(f"[red]Agent not found: {escape(name)}[/red]")
         console.print("Run [bold]safeyolo agent add <name> <template> <folder>[/bold] first.")
         raise typer.Exit(1)
@@ -178,54 +177,21 @@ def _run_agent(
     metadata = _load_agent_metadata(name)
     binary = _get_agent_binary(metadata)
 
-    # Check SafeYolo is running
-    if not is_running():
-        console.print("[yellow]SafeYolo is not running. Starting...[/yellow]")
+    # Check SafeYolo proxy is running
+    if not is_proxy_running():
+        console.print("[yellow]SafeYolo proxy is not running. Starting...[/yellow]")
         try:
-            docker_start()
+            start_proxy()
             if not wait_for_healthy(timeout=30):
-                console.print("[red]SafeYolo failed to start.[/red]")
+                console.print("[red]SafeYolo proxy failed to start.[/red]")
                 raise typer.Exit(1)
-            console.print("[green]SafeYolo started.[/green]\n")
-
+            console.print("[green]SafeYolo proxy started.[/green]\n")
         except Exception as err:
             console.print(f"[red]Failed to start SafeYolo:[/red] {escape(str(err))}")
             raise typer.Exit(1)
 
-    # Run the agent container
-    console.print(f"Starting {name}...\n")
-
-    # Build compose env: override USER_DIR/USER_DIRNAME for volume interpolation
-    compose_env = os.environ.copy()
-    if folder_override:
-        folder_path = Path(folder_override).expanduser().resolve()
-        if not folder_path.is_dir():
-            console.print(f"[red]Folder not found: {folder_path}[/red]")
-            raise typer.Exit(1)
-        _check_project_ownership(folder_path, dangerously_allow_unowned)
-        compose_env["USER_DIR"] = str(folder_path)
-        compose_env["USER_DIRNAME"] = folder_path.name
-
-    # Build image quietly (only shows output on actual build, not cache hits)
-    build_result = subprocess.run(
-        ["docker", "compose", "--progress=quiet", "-f", str(compose_file), "build"],
-        cwd=agent_dir,
-        env=compose_env,
-    )
-    if build_result.returncode != 0:
-        console.print("[red]Failed to build agent image.[/red]")
-        raise typer.Exit(build_result.returncode)
-
-    # Get service name from instance name
-    service_name = _get_service_name(name)
-
-    # Check if a container with this name is already running
-    check_running = subprocess.run(
-        ["docker", "ps", "-q", "-f", f"name=^/{name}$"],
-        capture_output=True,
-        text=True,
-    )
-    if check_running.stdout.strip():
+    # Check if VM is already running
+    if is_vm_running(name):
         console.print(f"[red]Agent '{name}' is already running.[/red]")
         console.print(
             f"To open a shell in it:  [bold]safeyolo agent shell {name}[/bold]\n"
@@ -234,58 +200,77 @@ def _run_agent(
         )
         raise typer.Exit(1)
 
-    # Clean up stale container from unclean shutdown (no-op if absent)
-    subprocess.run(
-        ["docker", "rm", name],
-        capture_output=True,
-    )
+    # Resolve workspace path
+    workspace = folder_override or metadata.get("folder", ".")
+    workspace_path = Path(workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        console.print(f"[red]Folder not found: {workspace_path}[/red]")
+        raise typer.Exit(1)
+    _check_project_ownership(workspace_path, dangerously_allow_unowned)
 
-    # Run with inherited stdin/stdout for interactive use
-    cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "--name", name]
-    if yolo:
-        cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
-
-    # Dev mode: mount logs so agent can read proxy events
-    proxy_compose = find_config_dir()
-    if proxy_compose:
-        proxy_compose_file = Path(proxy_compose) / "docker-compose.yml"
-        if proxy_compose_file.exists() and "/app/addons" in proxy_compose_file.read_text():
-            from ..config import get_logs_dir
-            logs_dir = get_logs_dir()
-            if logs_dir.exists():
-                cmd.extend(["-v", f"{logs_dir}:/app/logs:ro"])
-
-    # Combine persistent mounts (from metadata) with transient mounts (from --mount)
-    all_mounts = list(metadata.get("mounts", []))
-    if extra_mounts:
-        all_mounts.extend(extra_mounts)
-    for mount in all_mounts:
-        cmd.extend(["-v", mount])
-
-    # Combine persistent ports (from metadata) with transient ports (from --port)
-    all_ports = list(metadata.get("ports", []))
-    if extra_ports:
-        all_ports.extend(extra_ports)
-    for port in all_ports:
-        cmd.extend(["-p", port])
-
-    cmd.append(service_name)
-
-    # Add agent-specific args (passthrough or defaults)
-    # Must prepend binary name since docker replaces CMD with these args
+    # Build agent args string for guest env
+    agent_args_str = ""
     if agent_args:
-        if binary:
-            cmd.append(binary)
-        cmd.extend(agent_args)
+        agent_args_str = " ".join(agent_args)
     elif not skip_default_args and metadata.get("user_default_args"):
-        if binary:
-            cmd.append(binary)
-        cmd.extend(metadata["user_default_args"])
+        agent_args_str = " ".join(metadata["user_default_args"])
 
+    # Extra env for yolo mode
+    extra_env = {}
+    if yolo:
+        extra_env["SAFEYOLO_YOLO_MODE"] = "1"
+
+    # Get mise package from template
+    mise_package = ""
+    template_name = metadata.get("template", "")
+    if template_name:
+        try:
+            agent_config = get_agent_config(template_name)
+            mise_package = agent_config.install.mise
+        except TemplateError:
+            pass
+
+    # Prepare config share (proxy env, CA cert, SSH key, agent env)
+    try:
+        prepare_config_share(
+            name=name,
+            workspace_path=str(workspace_path),
+            agent_binary=binary or "",
+            mise_package=mise_package,
+            agent_args=agent_args_str,
+            extra_env=extra_env,
+        )
+    except Exception as err:
+        console.print(f"[red]Failed to prepare VM config:[/red] {err}")
+        raise typer.Exit(1)
+
+    console.print(f"Starting {name}...\n")
+
+    # Start VM with serial console on stdin/stdout
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
-    result = subprocess.run(cmd, cwd=agent_dir, env=compose_env)
-    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {result.returncode})", agent=name, details={"exit_code": result.returncode})
-    return result.returncode
+    try:
+        proc = start_vm(
+            name=name,
+            workspace_path=str(workspace_path),
+        )
+        # Register VM IP in agent map (for service_discovery addon)
+        register_vm_ip(name)
+        # Wait for VM process to exit (interactive — serial console on stdin/stdout)
+        proc.wait()
+        exit_code = proc.returncode
+    except VMError as err:
+        console.print(f"[red]VM error:[/red] {err}")
+        exit_code = 1
+    except KeyboardInterrupt:
+        exit_code = 130
+
+    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
+
+    # Clean up PID file
+    pid_path = get_agents_dir() / name / "vm.pid"
+    pid_path.unlink(missing_ok=True)
+
+    return exit_code
 
 
 def _parse_user_default_args(value: str | None) -> list[str] | None:
@@ -529,16 +514,12 @@ def add(
     # Ensure host config directories exist
     _ensure_host_config(template, ephemeral)
 
-    # Render template
+    # Clone base rootfs for this agent
     try:
-        files = render_template(
-            template_name=template,
-            output_dir=agent_dir,
-            project_dir=folder_str,
-            instance_name=name,
-        )
-    except TemplateError as err:
-        console.print(f"[red]Template error:[/red] {escape(str(err))}")
+        rootfs = create_agent_rootfs(name)
+        console.print(f"  [green]Created[/green] {rootfs}")
+    except VMError as err:
+        console.print(f"[red]Failed to create agent rootfs:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
     # Validate and normalize mount specs
@@ -558,14 +539,11 @@ def add(
         metadata["ports"] = parsed_ports
     save_agent(name, metadata)
 
-    # Show created files
-    for filepath in files:
-        console.print(f"  [green]Created[/green] {filepath}")
-
     panel_lines = [
         f"[green]Agent '{name}' added![/green]\n",
         f"Template: {template}",
         f"Folder: {folder_str}",
+        f"Rootfs: {rootfs}",
     ]
     if parsed_args:
         panel_lines.append(f"Default args: {' '.join(parsed_args)}")
@@ -573,16 +551,7 @@ def add(
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
-    if parsed_ports:
-        panel_lines.append(f"Ports: {len(parsed_ports)}")
-        for p in parsed_ports:
-            panel_lines.append(f"  {p}")
-    panel_lines.extend(
-        [
-            f"Network: {COMPOSE_NETWORK_NAME}",
-            "Proxy: http://safeyolo:8080 (Docker DNS)",
-        ]
-    )
+    panel_lines.append("Proxy: http://192.168.64.1:8080 (host mitmproxy)")
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})
@@ -658,14 +627,10 @@ def remove(
         console.print(f"[yellow]Agent not found: {escape(name)}[/yellow]")
         raise typer.Exit(1)
 
-    if clean:
-        console.print(f"[dim]Stopping containers and removing images for {name}...[/dim]")
-        subprocess.run(
-            ["docker", "compose", "down", "--rmi", "local", "-v", "--remove-orphans"],
-            cwd=agent_dir,
-            capture_output=True,
-            timeout=DOCKER_COMPOSE_TIMEOUT_SECONDS,
-        )
+    # Stop VM if running
+    if is_vm_running(name):
+        console.print(f"  Stopping VM for {name}...")
+        stop_vm(name)
 
     shutil.rmtree(agent_dir)
     _store_remove_agent(name)
@@ -755,7 +720,7 @@ def shell(
         help="Open shell as root (default: non-root agent user)",
     ),
 ) -> None:
-    """Open a shell in a running agent container.
+    """Open a shell in a running agent VM via SSH.
 
     By default, opens as the non-root agent user. Use --root for root access.
 
@@ -766,29 +731,34 @@ def shell(
     """
     _validate_instance_name(name)
 
-    config_dir = find_config_dir()
-    if not config_dir:
-        console.print("[red]No SafeYolo configuration found.[/red]")
+    if not is_vm_running(name):
+        console.print(f"[red]Agent '{name}' is not running.[/red]")
+        console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
         raise typer.Exit(1)
 
-    agent_dir = get_agents_dir() / name
-    compose_file = agent_dir / "docker-compose.yml"
+    from ..vm import get_vm_ip, get_agent_config_share_dir
+    from ..config import get_ssh_key_path
 
-    if not compose_file.exists():
-        console.print(f"[red]Agent not found: {escape(name)}[/red]")
+    # Get VM IP
+    ip_file = get_agent_config_share_dir(name) / "vm-ip"
+    if not ip_file.exists():
+        console.print(f"[red]Cannot find VM IP for '{name}'.[/red]")
         raise typer.Exit(1)
+    ip = ip_file.read_text().strip()
 
-    # Get service name from instance name
-    service_name = _get_service_name(name)
+    key_path = get_ssh_key_path()
+    user = "root" if root else "agent"
 
-    # Build exec command - default to non-root agent user
-    cmd = ["docker", "compose", "-f", str(compose_file), "exec"]
-    if not root:
-        cmd.extend(["--user", "agent"])
-    cmd.extend([service_name, "bash"])
+    cmd = [
+        "ssh",
+        "-i", str(key_path),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        f"{user}@{ip}",
+    ]
 
-    result = subprocess.run(cmd, cwd=agent_dir)
-
+    result = subprocess.run(cmd)
     raise typer.Exit(result.returncode)
 
 
@@ -796,7 +766,7 @@ def shell(
 def stop(
     name: str = typer.Argument(..., help="Agent instance name to stop"),
 ) -> None:
-    """Stop a running agent container.
+    """Stop a running agent VM.
 
     Examples:
 
@@ -804,26 +774,12 @@ def stop(
     """
     _validate_instance_name(name)
 
-    agent_dir = get_agents_dir() / name
-    compose_file = agent_dir / "docker-compose.yml"
-
-    if not compose_file.exists():
-        console.print(f"[red]Agent not found: {escape(name)}[/red]")
-        raise typer.Exit(1)
-
-    # Check if actually running
-    check = subprocess.run(
-        ["docker", "ps", "-q", "-f", f"name=^/{name}$"],
-        capture_output=True,
-        text=True,
-    )
-    if not check.stdout.strip():
+    if not is_vm_running(name):
         console.print(f"Agent '{name}' is not running.")
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")
-    subprocess.run(["docker", "stop", name], capture_output=True)
-    subprocess.run(["docker", "rm", name], capture_output=True)
+    stop_vm(name)
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 
