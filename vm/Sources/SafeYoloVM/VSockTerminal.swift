@@ -9,6 +9,9 @@ class VSockTerminal {
     private let queue: DispatchQueue
     private var dataFD: Int32 = -1
     private var ctrlFD: Int32 = -1
+    // Must retain connection objects or the fds get closed on dealloc
+    private var dataConnection: VZVirtioSocketConnection?
+    private var ctrlConnection: VZVirtioSocketConnection?
     private var originalTermios: termios?
     private var bridgeRunning = false
 
@@ -25,10 +28,12 @@ class VSockTerminal {
         guard let dataConn = connectToPort(VSockTerminal.DATA_PORT) else {
             return false
         }
+        dataConnection = dataConn  // Retain to keep fd alive
         dataFD = dataConn.fileDescriptor
 
         // Control channel is non-fatal
         if let ctrlConn = connectToPort(VSockTerminal.CTRL_PORT) {
+            ctrlConnection = ctrlConn  // Retain to keep fd alive
             ctrlFD = ctrlConn.fileDescriptor
         }
         return true
