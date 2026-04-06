@@ -178,12 +178,18 @@ def host_deny(
     doc, path = _load_toml()
     hosts = _get_hosts_table(doc, agent)
 
-    config = tomlkit.inline_table()
-    config.append("egress", "deny")
-    if expires is not None:
-        config.append("expires", _parse_expires(expires))
-
-    hosts[host] = config
+    # Merge into existing entry to preserve other fields (rate, credentials, etc.)
+    existing = hosts.get(host)
+    if isinstance(existing, dict):
+        existing["egress"] = "deny"
+        if expires is not None:
+            existing["expires"] = _parse_expires(expires)
+    else:
+        config = tomlkit.inline_table()
+        config.append("egress", "deny")
+        if expires is not None:
+            config.append("expires", _parse_expires(expires))
+        hosts[host] = config
     _save_toml(doc, path)
 
     dur = expires or "permanent"

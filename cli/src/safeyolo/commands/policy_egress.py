@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import tomlkit
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -41,8 +42,6 @@ def egress_set(
 
     if agent:
         # Agent-level egress
-        import tomlkit
-
         agents = doc.get("agents")
         if agents is None:
             agents = tomlkit.table()
@@ -54,17 +53,21 @@ def egress_set(
         agent_section["egress"] = posture
         label = f"Agent [bold]{escape(agent)}[/bold]"
     else:
-        # Proxy-wide: update wildcard "*" entry
-        hosts = doc.get("hosts", {})
+        # Proxy-wide: update wildcard "*" entry, creating it if needed
+        if "hosts" not in doc:
+            doc.add("hosts", tomlkit.table())
+        hosts = doc["hosts"]
         if "*" not in hosts:
-            console.print("[red]Error:[/red] No wildcard '*' entry in [hosts]")
-            raise typer.Exit(1)
-        wildcard = hosts["*"]
-        if isinstance(wildcard, dict):
-            wildcard["egress"] = posture
+            it = tomlkit.inline_table()
+            it.append("egress", posture)
+            hosts["*"] = it
         else:
-            console.print("[red]Error:[/red] Wildcard '*' entry is not a table")
-            raise typer.Exit(1)
+            wildcard = hosts["*"]
+            if isinstance(wildcard, dict):
+                wildcard["egress"] = posture
+            else:
+                console.print("[red]Error:[/red] Wildcard '*' entry is not a table")
+                raise typer.Exit(1)
         label = "Proxy-wide"
 
     _save_toml(doc, path)
@@ -88,7 +91,13 @@ def egress_show(
     # Proxy-wide posture
     hosts = doc.get("hosts", {})
     wildcard = hosts.get("*", {})
-    proxy_egress = wildcard.get("egress", "allow") if isinstance(wildcard, dict) else "allow"
+    if "*" not in hosts:
+        # No wildcard = network-guard blocks everything = effective deny
+        proxy_egress = "deny"
+    elif isinstance(wildcard, dict):
+        proxy_egress = wildcard.get("egress", "allow")
+    else:
+        proxy_egress = "allow"
 
     if agent:
         agents = doc.get("agents", {})
