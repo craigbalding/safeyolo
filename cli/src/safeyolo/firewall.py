@@ -101,10 +101,13 @@ def load_rules(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     # Without this, pf rules on the bridge are ignored entirely.
     bridge = _detect_vm_bridge()
     if bridge:
-        from .vm import find_vm_helper
         try:
-            helper = find_vm_helper()
-            _sudo_run([str(helper), "bridge-filter", bridge])
+            from .config import get_config_dir
+            bridge_filter = get_config_dir() / "bin" / "bridge-filter"
+            if bridge_filter.exists():
+                _sudo_run([str(bridge_filter), bridge])
+            else:
+                log.warning("bridge-filter not found at %s — pf rules may not work", bridge_filter)
         except Exception as err:
             log.warning("Could not enable bridge ipfilter: %s", err)
 
