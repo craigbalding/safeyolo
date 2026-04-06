@@ -188,7 +188,9 @@ class VSockTerminal {
         var raw = termios()
         tcgetattr(STDIN_FILENO, &raw)
         originalTermios = raw
-        raw.c_lflag &= ~tcflag_t(ICANON | ECHO)
+        // Disable ICANON (line buffering), ECHO, and ISIG (so Ctrl-C passes
+        // through to the guest as 0x03 instead of generating host SIGINT)
+        raw.c_lflag &= ~tcflag_t(ICANON | ECHO | ISIG)
         raw.c_iflag &= ~tcflag_t(IXON | ICRNL)
         withUnsafeMutablePointer(to: &raw.c_cc) { ptr in
             let cc = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: cc_t.self)
