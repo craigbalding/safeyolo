@@ -172,7 +172,7 @@ def _build_command(
     # Override container-default paths for host execution
     data_dir = config_dir / "data"
     cmd.extend(["--set", f"circuit_state_file={data_dir / 'circuit_breaker_state.json'}"])
-    cmd.extend(["--set", f"flow_store_path={logs_dir / 'flows.sqlite3'}"])
+    cmd.extend(["--set", f"flow_store_db_path={logs_dir / 'flows.sqlite3'}"])
 
     # Policy file
     policy_toml = config_dir / "policy.toml"
