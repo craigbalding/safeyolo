@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# SafeYolo initramfs init script.
+# Runs before the real rootfs is available.
+# Tasks: fsck, resize, mount root, set up network, switch_root.
+#
+set -e
+
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+
+# Ensure root disk is clean
+echo "Checking root filesystem..."
+/sbin/e2fsck -fp /dev/vda >/dev/null 2>&1 || true
+
+# Grow filesystem to fill disk (handles first boot and disk resize)
+/usr/sbin/resize2fs /dev/vda >/dev/null 2>&1 || true
+
+# Mount root filesystem
+mount -t ext4 /dev/vda /mnt/root
+
+# Set up networking via DHCP (VZNATNetworkDeviceAttachment provides DHCP)
+if ip link show eth0 >/dev/null 2>&1; then
+    ip link set eth0 up
+    mkdir -p /etc
+    udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n -t 5 2>/dev/null || true
+fi
+
+# Clean up before switch_root
+umount /proc /sys
+
+# Switch to real root and exec guest init
+exec switch_root /mnt/root /usr/local/bin/safeyolo-guest-init

@@ -1,0 +1,129 @@
+#!/bin/bash
+#
+# SafeYolo guest init — runs as PID 1 inside the microVM.
+#
+# Responsibilities:
+# 1. Mount remaining filesystems
+# 2. Mount VirtioFS shares (workspace, config)
+# 3. Configure proxy environment from config share
+# 4. Trust SafeYolo CA certificate
+# 5. Start sshd for `safeyolo agent shell`
+# 6. Install agent binary via mise if missing
+# 7. Run user init hook
+# 8. Exec agent command or login shell
+#
+set -e
+
+# --------------------------------------------------------------------------
+# 1. Mount remaining filesystems
+# --------------------------------------------------------------------------
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+
+# Bring up loopback
+ip link set lo up 2>/dev/null || true
+
+# Bring up eth0 if not already configured (initramfs may have done this)
+if ! ip addr show eth0 2>/dev/null | grep -q 'inet '; then
+    ip link set eth0 up 2>/dev/null || true
+    udhcpc -i eth0 -q -n -t 5 2>/dev/null || dhclient -1 eth0 2>/dev/null || true
+fi
+
+# --------------------------------------------------------------------------
+# 2. Mount VirtioFS shares
+# --------------------------------------------------------------------------
+mkdir -p /workspace /safeyolo
+
+# Workspace (host project directory, typically read-write)
+mount -t virtiofs workspace /workspace 2>/dev/null || true
+
+# Config share (proxy env, CA cert, SSH keys — read-only)
+mount -t virtiofs config /safeyolo 2>/dev/null || true
+
+# --------------------------------------------------------------------------
+# 3. Configure proxy environment
+# --------------------------------------------------------------------------
+if [ -f /safeyolo/proxy.env ]; then
+    # Export proxy vars for all processes
+    set -a
+    . /safeyolo/proxy.env
+    set +a
+    # Also write to /etc/environment for SSH sessions
+    cp /safeyolo/proxy.env /etc/environment
+fi
+
+if [ -f /safeyolo/agent.env ]; then
+    set -a
+    . /safeyolo/agent.env
+    set +a
+fi
+
+# --------------------------------------------------------------------------
+# 4. Trust SafeYolo CA certificate
+# --------------------------------------------------------------------------
+if [ -f /safeyolo/mitmproxy-ca-cert.pem ]; then
+    cp /safeyolo/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/safeyolo.crt
+    update-ca-certificates --fresh >/dev/null 2>&1 || true
+fi
+
+# --------------------------------------------------------------------------
+# 5. Set up SSH and start sshd
+# --------------------------------------------------------------------------
+if [ -f /safeyolo/authorized_keys ]; then
+    mkdir -p /home/agent/.ssh
+    cp /safeyolo/authorized_keys /home/agent/.ssh/authorized_keys
+    chown -R agent:agent /home/agent/.ssh
+    chmod 700 /home/agent/.ssh
+    chmod 600 /home/agent/.ssh/authorized_keys
+fi
+
+# Generate host keys if missing (first boot)
+if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+    ssh-keygen -A >/dev/null 2>&1 || true
+fi
+
+# Start sshd in the background (for `safeyolo agent shell`)
+mkdir -p /run/sshd
+/usr/sbin/sshd -D &
+
+# --------------------------------------------------------------------------
+# Write VM IP to config share so the CLI can discover it
+# --------------------------------------------------------------------------
+VM_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo "")
+if [ -n "$VM_IP" ]; then
+    echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
+    echo "VM IP: $VM_IP"
+fi
+
+# --------------------------------------------------------------------------
+# 6. Install agent binary via mise if missing
+# --------------------------------------------------------------------------
+if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
+    if ! su agent -c "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
+        echo "Installing $SAFEYOLO_MISE_PACKAGE via mise..."
+        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" 2>&1 || {
+            echo "Warning: mise install failed or timed out"
+        }
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# 7. Run user init hook
+# --------------------------------------------------------------------------
+if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
+    su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
+fi
+
+# --------------------------------------------------------------------------
+# 8. Exec agent command or drop to login shell
+# --------------------------------------------------------------------------
+if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
+    echo "Starting ${SAFEYOLO_AGENT_CMD}..."
+    exec su agent -lc "cd /workspace && mise exec -- ${SAFEYOLO_AGENT_CMD} ${SAFEYOLO_AGENT_ARGS:-}"
+else
+    exec su agent -lc "cd /workspace && exec bash -l"
+fi
