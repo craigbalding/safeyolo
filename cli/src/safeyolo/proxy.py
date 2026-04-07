@@ -100,6 +100,7 @@ def _ensure_certs(cert_dir: Path) -> Path:
         for f in cert_dir.iterdir():
             if f.suffix in (".pem", ".p12"):
                 f.chmod(0o600)
+        cert_dir.chmod(0o700)
 
     return ca_cert
 
@@ -165,9 +166,35 @@ def _build_command(
     cmd.extend(["--set", f"admin_port={admin_port}"])
     cmd.extend(["--set", f"admin_api_token={admin_token}"])
 
-    # Blocking modes (defaults match start-safeyolo.sh)
-    cmd.extend(["--set", "network_guard_block=true"])
-    cmd.extend(["--set", "credguard_block=true"])
+    # TLS passthrough for frpc — frp protocol doesn't work through MITM
+    cmd.extend(["--ignore-hosts", r"^api\.asterfold\.ai:7000$"])
+
+    # -------------------------------------------------------------------------
+    # Blocking mode configuration
+    # Each addon has its own default. SAFEYOLO_BLOCK=true overrides all to block.
+    # Individual env vars provide fine-grained control.
+    # NOTE: Runtime mode changes via admin API are in-memory only.
+    # On restart, SafeYolo returns to these startup defaults.
+    # -------------------------------------------------------------------------
+    force_block = os.environ.get("SAFEYOLO_BLOCK") == "true"
+
+    # network-guard: defaults to BLOCK
+    ng_block = force_block or os.environ.get("NETWORK_GUARD_BLOCK", "true").lower() == "true"
+    cmd.extend(["--set", f"network_guard_block={'true' if ng_block else 'false'}"])
+
+    # credential-guard: defaults to BLOCK
+    cg_block = force_block or os.environ.get("CREDGUARD_BLOCK", "true").lower() == "true"
+    cmd.extend(["--set", f"credguard_block={'true' if cg_block else 'false'}"])
+
+    # pattern-scanner: defaults to WARN-ONLY
+    ps_block = force_block or os.environ.get("PATTERN_BLOCK", "false").lower() == "true"
+    if ps_block:
+        cmd.extend(["--set", "pattern_block_input=true"])
+        cmd.extend(["--set", "pattern_block_output=true"])
+
+    # test-context: defaults to BLOCK (428 soft-reject for missing context)
+    tc_block = force_block or os.environ.get("TEST_CONTEXT_BLOCK", "true").lower() == "true"
+    cmd.extend(["--set", f"test_context_block={'true' if tc_block else 'false'}"])
 
     # Override container-default paths for host execution
     data_dir = config_dir / "data"
@@ -184,6 +211,11 @@ def _build_command(
     else:
         raise RuntimeError(f"No policy file found in {config_dir}")
 
+    # Rate limit config (optional)
+    ratelimit_config = config_dir / "rate_limits.json"
+    if ratelimit_config.exists():
+        cmd.extend(["--set", f"ratelimit_config={ratelimit_config}"])
+
     # Service gateway — auto-enable when vault exists
     vault_key = config_dir / "data" / "vault.key"
     vault_enc = config_dir / "data" / "vault.yaml.enc"
@@ -197,7 +229,67 @@ def _build_command(
     agent_map = config_dir / "data" / "agent_map.json"
     cmd.extend(["--set", f"agent_map_file={agent_map}"])
 
+    # Custom upstream CA trust (SAFEYOLO_CA_CERT)
+    # Used for: blackbox tests (test CA), corporate environments (internal CA)
+    # Only affects mitmproxy's upstream TLS verification
+    ca_cert = os.environ.get("SAFEYOLO_CA_CERT")
+    if ca_cert:
+        ca_path = Path(ca_cert)
+        if not ca_path.exists():
+            raise RuntimeError(f"SAFEYOLO_CA_CERT set but file not found: {ca_cert}")
+        log.info("Trusting upstream CA: %s", ca_cert)
+        cmd.extend(["--set", f"ssl_verify_upstream_trusted_ca={ca_cert}"])
+
     return cmd
+
+
+def _merge_system_cas_into_certifi() -> None:
+    """Merge system CA bundle into certifi so mitmproxy trusts all roots.
+
+    Cross-signed chains (e.g. Cloudflare → SSL.com → Comodo "AAA Certificate
+    Services") may chain to roots present in only one bundle.  Merging both
+    prevents upstream TLS failures when either bundle drops a root the other
+    still carries.  This mirrors the Dockerfile RUN step that was lost in the
+    Docker-to-host migration.
+    """
+    try:
+        import certifi
+
+        certifi_bundle = Path(certifi.where())
+    except (ImportError, Exception) as exc:
+        log.warning("Cannot locate certifi bundle, skipping CA merge: %s", exc)
+        return
+
+    # Collect candidate system CA bundle paths (Linux + macOS)
+    system_bundles = [
+        Path("/etc/ssl/certs/ca-certificates.crt"),   # Debian/Ubuntu
+        Path("/etc/pki/tls/certs/ca-bundle.crt"),      # RHEL/Fedora
+        Path("/etc/ssl/cert.pem"),                      # macOS / Alpine
+    ]
+    system_bundle = next((p for p in system_bundles if p.exists()), None)
+    if not system_bundle:
+        log.debug("No system CA bundle found, skipping merge")
+        return
+
+    # Read both bundles and check if merge is needed
+    system_pems = system_bundle.read_text()
+    certifi_pems = certifi_bundle.read_text()
+
+    # Simple dedup: only append certs not already present
+    new_certs = []
+    for block in system_pems.split("-----END CERTIFICATE-----"):
+        block = block.strip()
+        if block and block not in certifi_pems:
+            new_certs.append(block + "\n-----END CERTIFICATE-----\n")
+
+    if not new_certs:
+        log.debug("System CAs already present in certifi bundle")
+        return
+
+    with certifi_bundle.open("a") as f:
+        f.write("\n")
+        f.writelines(new_certs)
+    log.info("Merged %d system CA certs into certifi bundle", len(new_certs))
 
 
 def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
@@ -224,6 +316,9 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     _ensure_certs(cert_dir)
     admin_token, _agent_token = _ensure_tokens(data_dir)
     logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Merge system CAs into certifi so mitmproxy can verify all upstream chains
+    _merge_system_cas_into_certifi()
 
     # Build command
     cmd = _build_command(

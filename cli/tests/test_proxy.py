@@ -270,6 +270,244 @@ class TestEnsureCerts:
 
 
 # ---------------------------------------------------------------------------
+# TestMergeSystemCasIntoCertifi
+# ---------------------------------------------------------------------------
+
+# Reusable PEM-like blocks for CA merge tests.  The function splits on
+# "-----END CERTIFICATE-----" boundaries, so these need valid bookends.
+_CERT_A = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "AAAA-certifi-root-one\n"
+    "-----END CERTIFICATE-----\n"
+)
+_CERT_B = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "BBBB-certifi-root-two\n"
+    "-----END CERTIFICATE-----\n"
+)
+_CERT_C = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "CCCC-system-only-root\n"
+    "-----END CERTIFICATE-----\n"
+)
+_CERT_D = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "DDDD-system-only-extra\n"
+    "-----END CERTIFICATE-----\n"
+)
+
+
+class TestMergeSystemCasIntoCertifi:
+    """Tests for _merge_system_cas_into_certifi() — system CA merge into certifi."""
+
+    def test_merges_new_certs_into_certifi_bundle(self, tmp_path):
+        """System bundle has certs not in certifi -> they get appended."""
+        from safeyolo.proxy import _merge_system_cas_into_certifi
+
+        certifi_file = tmp_path / "certifi_bundle.pem"
+        certifi_file.write_text(_CERT_A)
+
+        fake_certifi = MagicMock()
+        fake_certifi.where.return_value = str(certifi_file)
+
+        original_exists = Path.exists
+        original_read_text = Path.read_text
+
+        def fake_exists(self):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return True
+            return original_exists(self)
+
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return _CERT_C + _CERT_D
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
+             patch.object(Path, "exists", fake_exists), \
+             patch.object(Path, "read_text", fake_read_text):
+            _merge_system_cas_into_certifi()
+
+        result = certifi_file.read_text()
+        assert "CCCC-system-only-root" in result
+        assert "DDDD-system-only-extra" in result
+        assert "AAAA-certifi-root-one" in result
+
+    def test_skips_when_certs_already_present(self, tmp_path):
+        """System bundle certs already in certifi -> no write occurs."""
+        from safeyolo.proxy import _merge_system_cas_into_certifi
+
+        both_certs = _CERT_A + _CERT_B
+        certifi_file = tmp_path / "certifi_bundle.pem"
+        certifi_file.write_text(both_certs)
+
+        fake_certifi = MagicMock()
+        fake_certifi.where.return_value = str(certifi_file)
+
+        original_exists = Path.exists
+
+        def fake_exists(self):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return True
+            return original_exists(self)
+
+        original_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                # System bundle has same certs as certifi
+                return _CERT_A + _CERT_B
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
+             patch.object(Path, "exists", fake_exists), \
+             patch.object(Path, "read_text", fake_read_text):
+            _merge_system_cas_into_certifi()
+
+        # File should be unchanged — no new certs appended
+        assert certifi_file.read_text() == both_certs
+
+    def test_skips_when_no_system_bundle_found(self, tmp_path):
+        """None of the 3 well-known paths exist -> returns silently."""
+        from safeyolo.proxy import _merge_system_cas_into_certifi
+
+        certifi_file = tmp_path / "certifi_bundle.pem"
+        certifi_file.write_text(_CERT_A)
+
+        fake_certifi = MagicMock()
+        fake_certifi.where.return_value = str(certifi_file)
+
+        original_exists = Path.exists
+
+        def fake_exists(self):
+            # None of the system paths exist
+            if str(self) in (
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/etc/pki/tls/certs/ca-bundle.crt",
+                "/etc/ssl/cert.pem",
+            ):
+                return False
+            return original_exists(self)
+
+        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
+             patch.object(Path, "exists", fake_exists):
+            _merge_system_cas_into_certifi()
+
+        # certifi bundle should be unchanged
+        assert certifi_file.read_text() == _CERT_A
+
+    def test_skips_when_certifi_not_importable(self, tmp_path):
+        """certifi import raises ImportError -> returns with warning log."""
+        from safeyolo.proxy import _merge_system_cas_into_certifi
+
+        # Remove certifi from sys.modules so the function's `import certifi`
+        # hits our patched importer.
+        import builtins
+
+        original_import = builtins.__import__
+
+        def fail_certifi(name, *args, **kwargs):
+            if name == "certifi":
+                raise ImportError("No module named 'certifi'")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fail_certifi), \
+             patch("safeyolo.proxy.log") as mock_log:
+            _merge_system_cas_into_certifi()
+
+        mock_log.warning.assert_called_once()
+        assert "certifi" in mock_log.warning.call_args[0][0].lower() or \
+               "certifi" in str(mock_log.warning.call_args[0])
+
+    def test_deduplicates_certs(self, tmp_path):
+        """System bundle has 3 certs, 1 already in certifi -> only 2 appended."""
+        from safeyolo.proxy import _merge_system_cas_into_certifi
+
+        certifi_file = tmp_path / "certifi_bundle.pem"
+        certifi_file.write_text(_CERT_A)
+
+        fake_certifi = MagicMock()
+        fake_certifi.where.return_value = str(certifi_file)
+
+        # System has CERT_A (already in certifi) + CERT_C + CERT_D (new)
+        system_content = _CERT_A + _CERT_C + _CERT_D
+
+        original_exists = Path.exists
+
+        def fake_exists(self):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return True
+            return original_exists(self)
+
+        original_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return system_content
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
+             patch.object(Path, "exists", fake_exists), \
+             patch.object(Path, "read_text", fake_read_text), \
+             patch("safeyolo.proxy.log") as mock_log:
+            _merge_system_cas_into_certifi()
+
+        result = certifi_file.read_text()
+        # Original cert still there
+        assert "AAAA-certifi-root-one" in result
+        # Two new certs appended
+        assert "CCCC-system-only-root" in result
+        assert "DDDD-system-only-extra" in result
+        # The log message should say 2 certs merged
+        mock_log.info.assert_called_once()
+        assert mock_log.info.call_args[0][1] == 2
+
+    def test_tries_debian_path_first(self, tmp_path):
+        """Debian path exists -> uses it even if macOS path also exists."""
+        from safeyolo.proxy import _merge_system_cas_into_certifi
+
+        certifi_file = tmp_path / "certifi_bundle.pem"
+        certifi_file.write_text(_CERT_A)
+
+        fake_certifi = MagicMock()
+        fake_certifi.where.return_value = str(certifi_file)
+
+        debian_content = _CERT_C  # Unique to Debian bundle
+        macos_content = _CERT_D   # Unique to macOS bundle
+
+        original_exists = Path.exists
+
+        def fake_exists(self):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return True  # Debian exists
+            if str(self) == "/etc/ssl/cert.pem":
+                return True  # macOS also exists
+            if str(self) == "/etc/pki/tls/certs/ca-bundle.crt":
+                return False
+            return original_exists(self)
+
+        original_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            if str(self) == "/etc/ssl/certs/ca-certificates.crt":
+                return debian_content
+            if str(self) == "/etc/ssl/cert.pem":
+                return macos_content
+            return original_read_text(self, *args, **kwargs)
+
+        with patch.dict("sys.modules", {"certifi": fake_certifi}), \
+             patch.object(Path, "exists", fake_exists), \
+             patch.object(Path, "read_text", fake_read_text):
+            _merge_system_cas_into_certifi()
+
+        result = certifi_file.read_text()
+        # Debian cert was used (CERT_C)
+        assert "CCCC-system-only-root" in result
+        # macOS cert NOT used — Debian was found first
+        assert "DDDD-system-only-extra" not in result
+
+
+# ---------------------------------------------------------------------------
 # TestEnsureTokens
 # ---------------------------------------------------------------------------
 
@@ -630,6 +868,339 @@ class TestBuildCommand:
             )
 
         assert cmd[0] == "mitmdump"
+
+
+# ---------------------------------------------------------------------------
+# TestBlockingModes
+# ---------------------------------------------------------------------------
+
+class TestBlockingModes:
+    """Tests for blocking mode configuration in _build_command() (lines 172-197).
+
+    Each addon has a default mode controlled by an env var.
+    SAFEYOLO_BLOCK=true overrides all addons to block mode.
+    """
+
+    @pytest.fixture
+    def cmd_env(self, tmp_path):
+        """Set up minimal filesystem for _build_command."""
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            (addons_dir / addon).touch()
+
+        (config_dir / "policy.toml").touch()
+
+        return {
+            "addons_dir": addons_dir,
+            "cert_dir": cert_dir,
+            "config_dir": config_dir,
+            "logs_dir": logs_dir,
+        }
+
+    def test_default_blocking_modes(self, cmd_env, monkeypatch):
+        """With no env vars, defaults are: network_guard=true, credguard=true,
+        pattern not set, test_context=true."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.delenv("NETWORK_GUARD_BLOCK", raising=False)
+        monkeypatch.delenv("CREDGUARD_BLOCK", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK", raising=False)
+        monkeypatch.delenv("TEST_CONTEXT_BLOCK", raising=False)
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "network_guard_block=true" in cmd_str
+        assert "credguard_block=true" in cmd_str
+        assert "pattern_block_input" not in cmd_str
+        assert "pattern_block_output" not in cmd_str
+        assert "test_context_block=true" in cmd_str
+
+    def test_safeyolo_block_forces_all_to_block(self, cmd_env, monkeypatch):
+        """SAFEYOLO_BLOCK=true forces all four addons to block mode,
+        including pattern_block_input and pattern_block_output."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.setenv("SAFEYOLO_BLOCK", "true")
+        monkeypatch.delenv("NETWORK_GUARD_BLOCK", raising=False)
+        monkeypatch.delenv("CREDGUARD_BLOCK", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK", raising=False)
+        monkeypatch.delenv("TEST_CONTEXT_BLOCK", raising=False)
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "network_guard_block=true" in cmd_str
+        assert "credguard_block=true" in cmd_str
+        assert "pattern_block_input=true" in cmd_str
+        assert "pattern_block_output=true" in cmd_str
+        assert "test_context_block=true" in cmd_str
+
+    def test_network_guard_warn_only(self, cmd_env, monkeypatch):
+        """NETWORK_GUARD_BLOCK=false sets network_guard_block=false."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.setenv("NETWORK_GUARD_BLOCK", "false")
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "network_guard_block=false" in cmd_str
+
+    def test_credguard_warn_only(self, cmd_env, monkeypatch):
+        """CREDGUARD_BLOCK=false sets credguard_block=false."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.setenv("CREDGUARD_BLOCK", "false")
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "credguard_block=false" in cmd_str
+
+    def test_pattern_block_enabled(self, cmd_env, monkeypatch):
+        """PATTERN_BLOCK=true adds pattern_block_input=true and pattern_block_output=true."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.setenv("PATTERN_BLOCK", "true")
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "pattern_block_input=true" in cmd_str
+        assert "pattern_block_output=true" in cmd_str
+
+    def test_pattern_block_default_not_in_command(self, cmd_env, monkeypatch):
+        """When PATTERN_BLOCK is not set, pattern_block_input and
+        pattern_block_output do not appear in the command at all."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.delenv("PATTERN_BLOCK", raising=False)
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "pattern_block_input" not in cmd_str
+        assert "pattern_block_output" not in cmd_str
+
+    def test_test_context_warn_only(self, cmd_env, monkeypatch):
+        """TEST_CONTEXT_BLOCK=false sets test_context_block=false."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_BLOCK", raising=False)
+        monkeypatch.setenv("TEST_CONTEXT_BLOCK", "false")
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "test_context_block=false" in cmd_str
+
+    def test_safeyolo_block_overrides_individual_false(self, cmd_env, monkeypatch):
+        """SAFEYOLO_BLOCK=true overrides CREDGUARD_BLOCK=false -- credguard stays in block mode."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.setenv("SAFEYOLO_BLOCK", "true")
+        monkeypatch.setenv("CREDGUARD_BLOCK", "false")
+
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        cmd_str = " ".join(cmd)
+
+        assert "credguard_block=true" in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# TestTlsPassthrough
+# ---------------------------------------------------------------------------
+
+class TestTlsPassthrough:
+    """Tests for TLS passthrough (--ignore-hosts) in _build_command()."""
+
+    @pytest.fixture
+    def cmd_env(self, tmp_path):
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            (addons_dir / addon).touch()
+        (config_dir / "policy.toml").touch()
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "logs_dir": logs_dir}
+
+    def test_ignore_hosts_always_present(self, cmd_env):
+        """--ignore-hosts with the frp pattern is in every command."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        assert "--ignore-hosts" in cmd
+        idx = cmd.index("--ignore-hosts")
+        assert cmd[idx + 1] == r"^api\.asterfold\.ai:7000$"
+
+
+# ---------------------------------------------------------------------------
+# TestRateLimitConfig
+# ---------------------------------------------------------------------------
+
+class TestRateLimitConfig:
+    """Tests for rate_limits.json conditional loading in _build_command()."""
+
+    @pytest.fixture
+    def cmd_env(self, tmp_path):
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            (addons_dir / addon).touch()
+        (config_dir / "policy.toml").touch()
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "logs_dir": logs_dir}
+
+    def test_ratelimit_config_loaded_when_file_exists(self, cmd_env):
+        """rate_limits.json present -> ratelimit_config option in command."""
+        from safeyolo.proxy import _build_command
+
+        ratelimit_file = cmd_env["config_dir"] / "rate_limits.json"
+        ratelimit_file.write_text("{}")
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert f"ratelimit_config={ratelimit_file}" in cmd_str
+
+    def test_ratelimit_config_absent_when_no_file(self, cmd_env):
+        """No rate_limits.json -> ratelimit_config option not in command."""
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "ratelimit_config=" not in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# TestSafeyoloCaCert
+# ---------------------------------------------------------------------------
+
+class TestSafeyoloCaCert:
+    """Tests for SAFEYOLO_CA_CERT env var handling in _build_command()."""
+
+    @pytest.fixture
+    def cmd_env(self, tmp_path):
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            (addons_dir / addon).touch()
+        (config_dir / "policy.toml").touch()
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "logs_dir": logs_dir}
+
+    def test_upstream_ca_set_when_env_var_and_file_exist(self, cmd_env, tmp_path, monkeypatch):
+        """SAFEYOLO_CA_CERT points to existing file -> ssl_verify_upstream_trusted_ca in command."""
+        from safeyolo.proxy import _build_command
+
+        ca_file = tmp_path / "custom-ca.pem"
+        ca_file.write_text("CUSTOM CA CERT")
+        monkeypatch.setenv("SAFEYOLO_CA_CERT", str(ca_file))
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert f"ssl_verify_upstream_trusted_ca={ca_file}" in cmd_str
+
+    def test_raises_when_ca_cert_file_missing(self, cmd_env, tmp_path, monkeypatch):
+        """SAFEYOLO_CA_CERT points to nonexistent file -> RuntimeError."""
+        from safeyolo.proxy import _build_command
+
+        nonexistent = tmp_path / "does-not-exist.pem"
+        monkeypatch.setenv("SAFEYOLO_CA_CERT", str(nonexistent))
+
+        with pytest.raises(RuntimeError, match="SAFEYOLO_CA_CERT set but file not found"):
+            _build_command(admin_token="tok", **cmd_env)
+
+    def test_no_upstream_ca_when_env_var_unset(self, cmd_env, monkeypatch):
+        """No SAFEYOLO_CA_CERT env var -> ssl_verify_upstream_trusted_ca not in command."""
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_CA_CERT", raising=False)
+
+        cmd = _build_command(
+            admin_token="tok",
+            **cmd_env,
+        )
+
+        cmd_str = " ".join(cmd)
+        assert "ssl_verify_upstream_trusted_ca" not in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# TestCertDirPermissions
+# ---------------------------------------------------------------------------
+
+class TestCertDirPermissions:
+    """Tests for cert directory permission hardening in _ensure_certs()."""
+
+    def test_cert_dir_gets_700_on_generation(self, tmp_path):
+        """After generating certs, cert_dir mode is 0o700."""
+        from safeyolo.proxy import _ensure_certs
+
+        cert_dir = tmp_path / "certs"
+
+        def create_cert_files(*args, **kwargs):
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
+            (cert_dir / "mitmproxy-ca.pem").write_text("ca-key")
+            return MagicMock(returncode=0)
+
+        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert_files):
+            _ensure_certs(cert_dir)
+
+        assert cert_dir.stat().st_mode & 0o777 == 0o700
 
 
 # ---------------------------------------------------------------------------
