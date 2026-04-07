@@ -117,6 +117,7 @@ safeyolo agent run work       # Each agent gets its own VM and subnet
 |----------|-------|
 | `claude-code` | Anthropic Claude Code CLI |
 | `openai-codex` | OpenAI Codex CLI |
+| `byoa` | Bring Your Own Agent — bash shell for custom agent installation |
 
 If you've already authenticated on your host (via `claude` or `codex`), credentials are mounted automatically via VirtioFS.
 
