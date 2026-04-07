@@ -2,10 +2,10 @@
 #
 # Tuning knobs for credential detection, circuit breaker, pattern scanning, etc.
 # Most users never need to edit this file — the defaults are sensible.
-# Policy (hosts, credentials, rate limits) lives in policy.yaml.
+# Policy (hosts, credentials, rate limits) lives in policy.toml.
 
 addons:
-  # network_guard — blocks requests to domains not in policy.yaml.
+  # network_guard — blocks requests to domains not in policy.toml.
   # Change if you need to allow additional hosts.
   network_guard:
     enabled: true

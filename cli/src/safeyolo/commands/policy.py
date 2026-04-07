@@ -80,8 +80,8 @@ def _merge_siblings(raw: dict, policy_path: Path) -> dict:
     """Merge sibling addons.yaml into the policy dict.
 
     Replicates PolicyLoader._merge_addons():
-    - addons.yaml keys are defaults (policy.yaml overrides)
-    - addons key gets deep-merged (addons.yaml defaults, policy.yaml overrides)
+    - addons.yaml keys are defaults (policy.toml overrides)
+    - addons key gets deep-merged (addons.yaml defaults, policy.toml overrides)
     """
     parent = policy_path.parent
 

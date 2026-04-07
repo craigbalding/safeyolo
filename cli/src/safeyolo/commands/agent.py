@@ -1371,11 +1371,11 @@ def authorize(
         if isinstance(host_config, dict) and host_config.get("service") == service_name:
             console.print(f"[green]Host binding found:[/green] {esc_host}")
         else:
-            console.print("\n[yellow]Next step:[/yellow] Add to policy.yaml under hosts:")
+            console.print("\n[yellow]Next step:[/yellow] Add to policy.toml under [hosts]:")
             console.print(f"    [bold]{esc_host}: {{ service: {esc_svc} }}[/bold]")
             console.print(f"\n  [dim]Verify with: safeyolo policy show --section hosts | grep {esc_svc}[/dim]")
     else:
-        console.print("\n[yellow]Next step:[/yellow] Map the service host in policy.yaml under hosts:")
+        console.print("\n[yellow]Next step:[/yellow] Map the service host in policy.toml under [hosts]:")
         console.print(f"    [bold]<your-host>: {{ service: {esc_svc} }}[/bold]")
         console.print(f"\n  [dim]Verify with: safeyolo policy show --section hosts | grep {esc_svc}[/dim]")
 
