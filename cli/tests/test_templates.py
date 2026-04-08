@@ -307,7 +307,7 @@ class TestGetAvailableTemplates:
     def test_returns_exact_known_templates(self):
         """Returns exactly the set of known templates (no surprise additions)."""
         templates = get_available_templates()
-        assert set(templates.keys()) == {"claude-code", "openai-codex"}
+        assert set(templates.keys()) == {"claude-code", "openai-codex", "byoa"}
 
     def test_descriptions_are_non_empty(self):
         """All templates have non-empty descriptions."""
@@ -467,6 +467,22 @@ class TestRealAgentTomlFiles:
 
         assert config.name == "openai-codex"
         assert config.schema_version == 1
+
+    def test_byoa_toml_parses(self):
+        """byoa agent.toml parses successfully."""
+        config = get_agent_config("byoa")
+
+        assert config.name == "byoa"
+        assert config.schema_version == 1
+
+    def test_byoa_boots_into_bash(self):
+        """byoa runs bash as its command (no pre-installed agent)."""
+        config = get_agent_config("byoa")
+
+        assert config.run.command == "bash"
+        assert config.run.auto_args == []
+        assert config.instructions.content, "instructions content empty"
+        assert "install" in config.instructions.content.lower()
 
     def test_claude_code_has_required_fields(self):
         """claude-code has all required fields populated."""
