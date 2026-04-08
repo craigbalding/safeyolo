@@ -308,6 +308,22 @@ def _run_agent(
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
 
+    # Check BPF access before starting VM (feth-bridge needs /dev/bpf*)
+    from .setup import check_bpf_access
+    has_bpf, bpf_reason = check_bpf_access()
+    if not has_bpf:
+        console.print(f"[red]BPF access denied:[/red] {bpf_reason}")
+        console.print()
+        console.print("  feth-bridge needs BPF to forward VM network traffic.")
+        console.print("  Without it, the VM boots but has no network connectivity.")
+        console.print()
+        console.print("  Fix:")
+        console.print("    Install [bold]Wireshark[/bold] or [bold]OrbStack[/bold] (adds access_bpf group)")
+        console.print("    Then log out and back in for group membership to take effect.")
+        console.print()
+        console.print("  Verify: [dim]groups | grep access_bpf[/dim]")
+        raise typer.Exit(1)
+
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
         # Show progress as the VM boots
