@@ -497,7 +497,7 @@ def add(
     ),
     template: str = typer.Argument(
         ...,
-        help="Agent template (e.g., claude-code, openai-codex)",
+        help="Agent template (e.g., claude-code, openai-codex, byoa)",
     ),
     folder: str = typer.Argument(
         ...,

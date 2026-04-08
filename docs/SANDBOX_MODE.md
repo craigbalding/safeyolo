@@ -47,6 +47,7 @@ safeyolo sandbox list
 |----------|-------------|
 | `claude-code` | Claude Code with Node.js, mise, git, gh |
 | `openai-codex` | OpenAI Codex CLI with similar tooling |
+| `byoa` | Bring Your Own Agent — bash shell for custom agent installation |
 
 ## Verification
 

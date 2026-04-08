@@ -140,6 +140,7 @@ safeyolo agent run myproject --fresh
 **Available templates:**
 - `claude-code` - Anthropic's Claude Code CLI
 - `openai-codex` - OpenAI Codex CLI
+- `byoa` - Bring Your Own Agent (bash shell, install your own agent via mise)
 
 **Notes:**
 - Agent names must be lowercase alphanumeric with hyphens (hostname rules)
