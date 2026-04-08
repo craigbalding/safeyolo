@@ -240,6 +240,17 @@ def _build_command(
         log.info("Trusting upstream CA: %s", ca_cert)
         cmd.extend(["--set", f"ssl_verify_upstream_trusted_ca={ca_cert}"])
 
+    # Blackbox test sinkhole routing (SAFEYOLO_SINKHOLE_ROUTER)
+    # When set, loads the sinkhole_router addon LAST so upstream connections
+    # are redirected to the test sinkhole after all security addons have run.
+    sinkhole_router = os.environ.get("SAFEYOLO_SINKHOLE_ROUTER")
+    if sinkhole_router:
+        router_path = Path(sinkhole_router)
+        if not router_path.exists():
+            raise RuntimeError(f"SAFEYOLO_SINKHOLE_ROUTER set but file not found: {sinkhole_router}")
+        log.info("Loading sinkhole router addon: %s", sinkhole_router)
+        cmd.extend(["-s", str(router_path)])
+
     return cmd
 
 

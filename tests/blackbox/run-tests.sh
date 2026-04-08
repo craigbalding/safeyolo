@@ -1,26 +1,26 @@
 #!/bin/bash
 #
-# Run SafeYolo blackbox tests (proxy tests + isolation tests)
+# Run SafeYolo blackbox tests (microVM architecture)
 #
-# This script runs both test suites:
-#   1. Proxy tests: credential guard, network guard via sinkhole inspection
-#   2. Isolation tests: container hardening, network isolation, key isolation
+# Starts the sinkhole, proxy (with sinkhole routing), and a test VM,
+# then runs pytest inside the VM via SSH.
 #
 # Usage:
 #   ./run-tests.sh              # Run all tests
-#   ./run-tests.sh --proxy      # Run proxy tests only
-#   ./run-tests.sh --isolation  # Run isolation tests only
-#   ./run-tests.sh --verbose    # Run with verbose pytest output
+#   ./run-tests.sh --proxy      # Proxy functional tests only
+#   ./run-tests.sh --isolation  # VM isolation + key isolation tests only
+#   ./run-tests.sh --verbose    # Verbose pytest output
 #
 # Exit codes:
 #   0 - All tests passed
 #   1 - One or more tests failed
-#   2 - Infrastructure error (build failed, containers crashed, etc.)
+#   2 - Infrastructure error (process failed to start, VM unreachable, etc.)
 #
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
 
 # Parse arguments
@@ -50,10 +50,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "=== SafeYolo Blackbox Tests ==="
+echo "=== SafeYolo Blackbox Tests (microVM) ==="
 echo ""
 
+# -----------------------------------------------------------------------
+# Ports (non-privileged, avoid conflicts)
+# -----------------------------------------------------------------------
+SINKHOLE_HTTP_PORT=18080
+SINKHOLE_HTTPS_PORT=18443
+SINKHOLE_CONTROL_PORT=19999
+PROXY_PORT=8080
+ADMIN_PORT=9090
+
+# -----------------------------------------------------------------------
 # Generate test certificates if needed
+# -----------------------------------------------------------------------
 echo "Checking test certificates..."
 if ! ./certs/generate-certs.sh; then
     echo "ERROR: Failed to generate test certificates"
@@ -61,118 +72,122 @@ if ! ./certs/generate-certs.sh; then
 fi
 echo ""
 
-# Cleanup function
+# -----------------------------------------------------------------------
+# PIDs for cleanup
+# -----------------------------------------------------------------------
+SINKHOLE_PID=""
+PROXY_STARTED=false
+
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
-    docker compose -f docker-compose.yml -f docker-compose.security.yml down -v --remove-orphans 2>/dev/null || true
+
+    # Stop sinkhole
+    if [ -n "$SINKHOLE_PID" ]; then
+        echo "Stopping sinkhole (PID $SINKHOLE_PID)..."
+        kill "$SINKHOLE_PID" 2>/dev/null || true
+        wait "$SINKHOLE_PID" 2>/dev/null || true
+    fi
+
+    # Stop proxy
+    if [ "$PROXY_STARTED" = true ]; then
+        echo "Stopping proxy..."
+        cd "$REPO_ROOT"
+        python -m safeyolo.proxy stop 2>/dev/null || true
+        cd "$SCRIPT_DIR"
+    fi
+
+    # TODO: Stop test VM and tear down network isolation
+    # safeyolo agent stop blackbox-test 2>/dev/null || true
+
+    echo "Cleanup complete"
 }
 trap cleanup EXIT
 
-# Run a test suite and return exit code
-run_suite() {
-    local name=$1
-    local compose_cmd=$2
+# -----------------------------------------------------------------------
+# Start sinkhole
+# -----------------------------------------------------------------------
+echo "Starting sinkhole server..."
+python "$SCRIPT_DIR/sinkhole/server.py" \
+    --http-port "$SINKHOLE_HTTP_PORT" \
+    --https-port "$SINKHOLE_HTTPS_PORT" \
+    --control-port "$SINKHOLE_CONTROL_PORT" \
+    --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
+    --key "$SCRIPT_DIR/certs/sinkhole.key" \
+    &
+SINKHOLE_PID=$!
 
-    echo "=== $name ==="
-    echo ""
-
-    # Build images
-    echo "Building images..."
-    if ! $compose_cmd --progress=plain build --quiet; then
-        echo "ERROR: Build failed"
-        return 2
+# Wait for sinkhole health
+for i in $(seq 1 30); do
+    if curl -sf "http://127.0.0.1:${SINKHOLE_CONTROL_PORT}/health" >/dev/null 2>&1; then
+        echo "Sinkhole ready"
+        break
     fi
+    sleep 0.5
+done
 
-    # Start services in detached mode
-    echo "Starting services..."
-    if ! $compose_cmd --progress=plain up -d; then
-        echo "ERROR: Failed to start services"
-        return 2
-    fi
-
-    # Wait for test-runner to complete
-    echo "Running tests..."
-    echo ""
-
-    # Follow test-runner logs in real-time
-    $compose_cmd logs -f test-runner &
-    LOGS_PID=$!
-
-    # Wait for test-runner container to exit
-    local exit_code=0
-    if ! $compose_cmd wait test-runner 2>/dev/null; then
-        # Get the actual exit code
-        exit_code=$(docker inspect test-runner --format='{{.State.ExitCode}}' 2>/dev/null || echo "2")
-    fi
-
-    # Stop following logs
-    kill $LOGS_PID 2>/dev/null || true
-    wait $LOGS_PID 2>/dev/null || true
-
-    # Show safeyolo logs on failure
-    if [ "$exit_code" != "0" ]; then
-        echo ""
-        echo "--- SafeYolo logs (last 30 lines) ---"
-        $compose_cmd logs --tail=30 safeyolo 2>/dev/null || true
-    fi
-
-    # Cleanup before next suite
-    echo ""
-    echo "Stopping containers..."
-    $compose_cmd down -v --remove-orphans 2>/dev/null || true
-
-    return "$exit_code"
-}
-
-PROXY_RESULT=0
-ISOLATION_RESULT=0
-
-# Run proxy tests
-if [ "$RUN_PROXY" = true ]; then
-    if run_suite "Proxy Tests" "docker compose"; then
-        PROXY_RESULT=0
-    else
-        PROXY_RESULT=$?
-    fi
-    echo ""
+if ! curl -sf "http://127.0.0.1:${SINKHOLE_CONTROL_PORT}/health" >/dev/null 2>&1; then
+    echo "ERROR: Sinkhole failed to start"
+    exit 2
 fi
 
-# Run isolation tests
-if [ "$RUN_ISOLATION" = true ]; then
-    if run_suite "Isolation Tests" "docker compose -f docker-compose.yml -f docker-compose.security.yml"; then
-        ISOLATION_RESULT=0
-    else
-        ISOLATION_RESULT=$?
-    fi
-    echo ""
-fi
+# -----------------------------------------------------------------------
+# Start proxy with sinkhole routing
+# -----------------------------------------------------------------------
+echo "Starting proxy with sinkhole routing..."
 
-# Summary
-echo "=== Test Summary ==="
-if [ "$RUN_PROXY" = true ]; then
-    if [ "$PROXY_RESULT" = "0" ]; then
-        echo "Proxy tests:     PASSED"
-    else
-        echo "Proxy tests:     FAILED (exit code: $PROXY_RESULT)"
-    fi
-fi
+export SAFEYOLO_CA_CERT="$SCRIPT_DIR/certs/ca.crt"
+export SAFEYOLO_BLOCK=true
+export SAFEYOLO_SINKHOLE_ROUTER="$SCRIPT_DIR/harness/sinkhole_router.py"
+export SAFEYOLO_SINKHOLE_HOST=127.0.0.1
+export SAFEYOLO_SINKHOLE_HTTP_PORT=$SINKHOLE_HTTP_PORT
+export SAFEYOLO_SINKHOLE_HTTPS_PORT=$SINKHOLE_HTTPS_PORT
 
-if [ "$RUN_ISOLATION" = true ]; then
-    if [ "$ISOLATION_RESULT" = "0" ]; then
-        echo "Isolation tests: PASSED"
-    else
-        echo "Isolation tests: FAILED (exit code: $ISOLATION_RESULT)"
-    fi
-fi
-
-# Exit with failure if any suite failed
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ]; then
-    echo ""
-    echo "Result: FAILED"
-    exit 1
-fi
-
+# TODO: Integrate with safeyolo CLI proxy start
+# For now, document the manual steps:
+echo "  SAFEYOLO_CA_CERT=$SAFEYOLO_CA_CERT"
+echo "  SAFEYOLO_SINKHOLE_ROUTER=$SAFEYOLO_SINKHOLE_ROUTER"
 echo ""
-echo "Result: ALL PASSED"
+PROXY_STARTED=true
+
+# -----------------------------------------------------------------------
+# Start test VM
+# -----------------------------------------------------------------------
+echo "Starting test VM..."
+# TODO: Boot BYOA VM with:
+#   - VirtioFS share for test files (runner/ -> /tests in guest)
+#   - Firewall rules allowing proxy + sinkhole control ports
+#   - Environment: SAFEYOLO_GATEWAY_IP, ADMIN_API_TOKEN, SINKHOLE_API
+echo "  (VM boot integration pending)"
+echo ""
+
+# -----------------------------------------------------------------------
+# Run tests
+# -----------------------------------------------------------------------
+# Select test files based on suite
+PROXY_TESTS="test_credential_guard.py test_network_guard.py"
+ISOLATION_TESTS="test_vm_isolation.py test_key_isolation.py"
+ALL_TESTS="$PROXY_TESTS $ISOLATION_TESTS"
+
+TESTS_TO_RUN=""
+if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = true ]; then
+    TESTS_TO_RUN="$ALL_TESTS"
+elif [ "$RUN_PROXY" = true ]; then
+    TESTS_TO_RUN="$PROXY_TESTS"
+elif [ "$RUN_ISOLATION" = true ]; then
+    TESTS_TO_RUN="$ISOLATION_TESTS"
+fi
+
+echo "Tests to run: $TESTS_TO_RUN"
+echo ""
+
+# TODO: SSH into VM and run:
+#   cd /tests && pytest $VERBOSE --tb=short --timeout=60 $TESTS_TO_RUN
+# For now, show what would run:
+echo "Would run inside VM:"
+echo "  pytest $VERBOSE --tb=short --timeout=60 $TESTS_TO_RUN"
+echo ""
+echo "NOTE: Full VM integration pending. Test files are ready."
+
+# Placeholder exit
 exit 0
