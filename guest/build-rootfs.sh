@@ -78,6 +78,7 @@ chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     git curl jq ca-certificates build-essential gnupg \
     openssh-server iproute2 iputils-ping procps \
     less xz-utils libgomp1 libatomic1 \
+    python3 python3-pip \
     busybox-static >/dev/null
 
 # Create agent user
@@ -128,6 +129,10 @@ rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_arm64
 chroot /mnt/rootfs env $MISE_ENV mise reshim || true
 # Make shared dir writable by agent user (for installing additional tools)
 chroot /mnt/rootfs chmod -R 777 /opt/mise
+
+# Install Python packages (before apt intercepts are set up)
+echo "--- Installing Python packages ---"
+chroot /mnt/rootfs pip3 install --break-system-packages pytest httpx pytest-timeout
 
 # Clean up apt BEFORE installing package-manager intercepts
 echo "--- Cleaning up ---"

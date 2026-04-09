@@ -135,7 +135,12 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 9. Run agent or stay alive for SSH access
+# 9. Remount config share read-only (all writes complete)
+# --------------------------------------------------------------------------
+mount -o remount,ro /safeyolo 2>/dev/null || true
+
+# --------------------------------------------------------------------------
+# 10. Run agent or stay alive for SSH access
 # --------------------------------------------------------------------------
 
 YOLO_ARGS=""

