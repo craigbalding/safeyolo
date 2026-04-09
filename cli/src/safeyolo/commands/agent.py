@@ -190,8 +190,9 @@ def _run_agent(
             console.print(f"[red]Failed to start SafeYolo:[/red] {escape(str(err))}")
             raise typer.Exit(1)
 
-    # Check if VM is already running
-    if is_vm_running(name):
+    # Check if sandbox is already running
+    from ..platform import get_platform as _get_plat
+    if _get_plat().is_sandbox_running(name):
         console.print(f"[red]Agent '{name}' is already running.[/red]")
         console.print(
             f"To open a shell in it:  [bold]safeyolo agent shell {name}[/bold]\n"
