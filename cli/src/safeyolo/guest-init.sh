@@ -138,14 +138,6 @@ fi
 # 9. Run agent or stay alive for SSH access
 # --------------------------------------------------------------------------
 
-# Detach mode: skip vsock terminal, keep VM alive for SSH access.
-# Set by 'safeyolo agent run --detach' via config share.
-if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
-    echo "Detach mode: VM running, SSH ready" >&2
-    # sshd is already running in background — wait forever
-    exec sleep infinity
-fi
-
 YOLO_ARGS=""
 if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
     YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"
@@ -156,6 +148,19 @@ VSOCK_TERM="/safeyolo/vsock-term"
 if [ ! -x "$VSOCK_TERM" ]; then
     # Fallback to rootfs copy if config share version not present
     VSOCK_TERM="/usr/local/bin/vsock-term"
+fi
+
+# Detach mode: run 'sleep infinity' via vsock-term so the host-side VM
+# process stays alive (it waits for vsock connection). SSH is the primary
+# access method in detach mode.
+if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
+    echo "Detach mode: VM running, SSH ready" >&2
+    if [ -x "$VSOCK_TERM" ]; then
+        "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
+            sleep infinity || true
+    fi
+    # Fallback: keep alive even if vsock-term exits
+    exec sleep infinity
 fi
 
 if [ -x "$VSOCK_TERM" ]; then
