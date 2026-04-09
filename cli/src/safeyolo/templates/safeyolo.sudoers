@@ -1,0 +1,52 @@
+# SafeYolo sudoers configuration
+#
+# Grants the operator passwordless sudo for the specific commands
+# SafeYolo needs to manage network isolation (pf firewall and feth
+# interfaces). No other commands are permitted.
+#
+# Install:
+#   sudo cp safeyolo.sudoers /etc/sudoers.d/safeyolo
+#   sudo chmod 0440 /etc/sudoers.d/safeyolo
+#   sudo visudo -c   # validate syntax
+#
+# Or: safeyolo setup sudoers
+#
+# Replace %staff with a specific user or group if preferred:
+#   craigb ALL=(root) NOPASSWD: ...
+#
+# -----------------------------------------------------------------
+# Why each command is needed:
+#
+#   pfctl -a com.safeyolo -f *   Load anchor rules (VM egress control)
+#   pfctl -a com.safeyolo -F all Flush anchor rules (cleanup)
+#   pfctl -a com.safeyolo -s *   Show anchor rules/info (diagnostics)
+#   pfctl -e                     Enable pf if disabled
+#   pfctl -s info                Check pf status
+#   ifconfig feth* create        Create feth pair for VM networking
+#   ifconfig feth* destroy       Tear down feth pair
+#   ifconfig feth* peer *        Link feth pair
+#   ifconfig feth* * netmask *   Assign IP to feth interface
+#   ifconfig feth* up            Bring feth interface up
+#   sysctl -w net.inet.ip.forwarding=1  Enable IP forwarding
+#   tee /etc/pf.anchors/*        Write anchor rule file
+#   cat /etc/pf.conf             Read pf config (check anchor exists)
+#   tee -a /etc/pf.conf          Append anchor to pf config
+# -----------------------------------------------------------------
+
+# pf firewall management
+%staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo -f *, \
+                            /sbin/pfctl -a com.safeyolo -F all, \
+                            /sbin/pfctl -a com.safeyolo -s *, \
+                            /sbin/pfctl -e, \
+                            /sbin/pfctl -s info
+
+# feth interface lifecycle (create, destroy, configure)
+%staff ALL=(root) NOPASSWD: /sbin/ifconfig feth*
+
+# IP forwarding (required for VM traffic to reach proxy)
+%staff ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.inet.ip.forwarding=1
+
+# pf anchor file management
+%staff ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.anchors/com.safeyolo, \
+                            /bin/cat /etc/pf.conf, \
+                            /usr/bin/tee -a /etc/pf.conf

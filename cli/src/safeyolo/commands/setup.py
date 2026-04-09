@@ -154,3 +154,77 @@ def bpf() -> None:
     console.print("\n[green]BPF access configured.[/green]")
     console.print("[yellow]Log out and back in[/yellow] for group membership to take effect.")
     console.print(f"Verify: [dim]groups | grep access_bpf[/dim]")
+
+
+@setup_app.command()
+def sudoers() -> None:
+    """Install sudoers rules for passwordless pf/feth management.
+
+    Copies the SafeYolo sudoers template to /etc/sudoers.d/safeyolo,
+    granting passwordless sudo for only the specific commands SafeYolo
+    needs: pfctl, ifconfig feth*, sysctl, and pf.conf management.
+
+    Review the template before installing:
+
+        safeyolo setup sudoers --show
+
+    Examples:
+
+        safeyolo setup sudoers
+    """
+    import platform
+    import shutil
+
+    if platform.system() != "Darwin":
+        console.print("[yellow]sudoers setup is macOS-only.[/yellow]")
+        console.print("On Linux, pf/feth are not used — different firewall rules apply.")
+        raise typer.Exit(0)
+
+    template = Path(__file__).parent.parent / "templates" / "safeyolo.sudoers"
+    if not template.exists():
+        console.print(f"[red]Template not found:[/red] {template}")
+        raise typer.Exit(1)
+
+    dest = Path("/etc/sudoers.d/safeyolo")
+
+    # Show the template so the user knows what they're installing
+    console.print("[bold]SafeYolo sudoers template:[/bold]\n")
+    console.print(template.read_text())
+
+    if dest.exists():
+        console.print(f"[yellow]{dest} already exists.[/yellow]")
+        console.print("Remove it first if you want to reinstall: sudo rm /etc/sudoers.d/safeyolo")
+        raise typer.Exit(0)
+
+    console.print(f"Installing to [bold]{dest}[/bold] (requires sudo)...\n")
+
+    try:
+        # Write via sudo tee (can't write directly to /etc/sudoers.d/)
+        content = template.read_text()
+        proc = subprocess.run(
+            ["sudo", "tee", str(dest)],
+            input=content.encode(),
+            capture_output=True,
+            check=True,
+        )
+
+        # Set required permissions (sudoers files must be 0440)
+        subprocess.run(["sudo", "chmod", "0440", str(dest)], check=True)
+
+        # Validate syntax
+        result = subprocess.run(
+            ["sudo", "visudo", "-c", "-f", str(dest)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]Syntax validation failed:[/red] {result.stderr}")
+            console.print("Removing invalid file...")
+            subprocess.run(["sudo", "rm", str(dest)], check=True)
+            raise typer.Exit(1)
+
+    except subprocess.CalledProcessError as err:
+        console.print(f"\n[red]Failed:[/red] {err}")
+        raise typer.Exit(1)
+
+    console.print("[green]Sudoers rules installed.[/green]")
+    console.print("SafeYolo commands (pfctl, ifconfig feth, sysctl) no longer require a password.")

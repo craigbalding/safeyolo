@@ -66,6 +66,7 @@ include = [
     "src/safeyolo/templates/**/*.yaml",
     "src/safeyolo/templates/**/*.toml",
     "src/safeyolo/templates/**/.env.example",
+    "src/safeyolo/templates/*.sudoers",
 ]
 
 [tool.pytest.ini_options]
