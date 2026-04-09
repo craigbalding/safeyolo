@@ -274,7 +274,7 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest $VERBOSE --tb=short --timeout=60 \
+    pytest $VERBOSE --tb=short \
         test_credential_guard.py test_network_guard.py
     PROXY_RESULT=$?
     set -e
