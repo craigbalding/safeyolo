@@ -150,16 +150,11 @@ if [ ! -x "$VSOCK_TERM" ]; then
     VSOCK_TERM="/usr/local/bin/vsock-term"
 fi
 
-# Detach mode: run 'sleep infinity' via vsock-term so the host-side VM
-# process stays alive (it waits for vsock connection). SSH is the primary
-# access method in detach mode.
+# Detach mode: skip vsock terminal, keep VM alive for SSH access.
+# The host-side safeyolo-vm runs with --no-terminal so it doesn't
+# try to connect vsock. sshd is already running in background.
 if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
     echo "Detach mode: VM running, SSH ready" >&2
-    if [ -x "$VSOCK_TERM" ]; then
-        "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
-            sleep infinity || true
-    fi
-    # Fallback: keep alive even if vsock-term exits
     exec sleep infinity
 fi
 

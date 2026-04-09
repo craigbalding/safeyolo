@@ -335,6 +335,7 @@ def start_vm(
             cmd.extend(["--share", f"{host_path}:{tag}:{mode}"])
 
     if background:
+        cmd.append("--no-terminal")
         serial_log = get_agents_dir() / name / "serial.log"
         serial_fh = open(serial_log, "w")
         proc = subprocess.Popen(

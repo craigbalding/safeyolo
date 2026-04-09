@@ -16,6 +16,7 @@ struct RunConfig {
     var feth: String = ""            // feth interface name (e.g., "feth0")
     var fethBridgePath: String = ""  // path to feth-bridge binary
     var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
+    var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
 }
 
 func printUsage() {
@@ -32,6 +33,7 @@ func printUsage() {
       --share HOST:TAG:MODE  VirtioFS share (MODE = ro or rw, repeatable)
       --feth IFACE        feth interface for network isolation
       --feth-bridge PATH  Path to feth-bridge binary
+      --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
       --help              Show this help
 
     Example:
@@ -98,6 +100,8 @@ func parseArguments() -> RunConfig? {
         case "--feth-bridge":
             i += 1; guard i < args.count else { fputs("Error: --feth-bridge requires path\n", stderr); return nil }
             config.fethBridgePath = args[i]
+        case "--no-terminal":
+            config.noTerminal = true
         case "--help":
             printUsage()
             return nil
@@ -177,29 +181,35 @@ do {
     runner.installSignalHandlers()
     try runner.start()
 
-    // Wait for guest vsock-term daemon to be ready, then connect.
-    // The guest needs time to boot, run init, install agent binary, and start vsock-term.
-    let terminal = VSockTerminal(vm: vm, queue: vmQueue)
+    if config.noTerminal {
+        // Detach mode: no vsock terminal. VM stays alive until SIGTERM.
+        // Access via SSH ('safeyolo agent shell <name>').
+        runner.installSignalHandlers()
+    } else {
+        // Wait for guest vsock-term daemon to be ready, then connect.
+        // The guest needs time to boot, run init, install agent binary, and start vsock-term.
+        let terminal = VSockTerminal(vm: vm, queue: vmQueue)
 
-    DispatchQueue.global().async {
-        // Retry vsock connection until guest is ready (up to 120s for first boot with npm install)
-        var connected = false
-        for attempt in 1...60 {
-            sleep(2)
-            // Check VM is still running
-            if vm.state != .running { break }
+        DispatchQueue.global().async {
+            // Retry vsock connection until guest is ready (up to 120s for first boot with npm install)
+            var connected = false
+            for attempt in 1...60 {
+                sleep(2)
+                // Check VM is still running
+                if vm.state != .running { break }
 
-            if terminal.tryConnect() {
-                connected = true
-                break
+                if terminal.tryConnect() {
+                    connected = true
+                    break
+                }
             }
-        }
 
-        if connected {
-            terminal.run()
+            if connected {
+                terminal.run()
+            }
+            // Terminal session ended — stop VM
+            runner.requestStopFromMain()
         }
-        // Terminal session ended — stop VM
-        runner.requestStopFromMain()
     }
 
     // Run until VM exits
