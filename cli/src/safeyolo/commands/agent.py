@@ -328,7 +328,7 @@ def _run_agent(
         console.print("  Verify: [dim]groups | grep access_bpf[/dim]")
         raise typer.Exit(1)
 
-    run_background = detach or prompt is not None
+    run_background = detach
 
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
