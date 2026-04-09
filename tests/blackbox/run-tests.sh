@@ -89,7 +89,7 @@ fi
 # Initialize test config dir on first run
 if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
-    safeyolo init --sandbox
+    safeyolo init --no-interactive
     echo ""
 fi
 
