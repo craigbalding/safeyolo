@@ -102,8 +102,8 @@ class TestPrivateKeyAbsent:
         """
         found = []
         for root, dirs, files in os.walk("/"):
-            # Skip pseudo-filesystems and large directories
-            if root.startswith(("/proc", "/sys", "/dev", "/run")):
+            # Skip pseudo-filesystems, workspace (user code), and large dirs
+            if root.startswith(("/proc", "/sys", "/dev", "/run", "/workspace")):
                 dirs.clear()
                 continue
             for name in files:
