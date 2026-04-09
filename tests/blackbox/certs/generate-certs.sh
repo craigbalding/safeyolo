@@ -85,6 +85,7 @@ DNS.7 = httpbin.org
 DNS.8 = failing.test
 DNS.9 = legitimate-api.com
 DNS.10 = localhost
+IP.1 = 127.0.0.1
 EOF
 
 # Generate key and CSR
