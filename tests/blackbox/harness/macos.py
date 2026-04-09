@@ -21,7 +21,6 @@ log = logging.getLogger("blackbox.harness.macos")
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BLACKBOX_DIR = REPO_ROOT / "tests" / "blackbox"
 SINKHOLE_DIR = BLACKBOX_DIR / "sinkhole"
-RUNNER_DIR = BLACKBOX_DIR / "runner"
 CERTS_DIR = BLACKBOX_DIR / "certs"
 HARNESS_DIR = BLACKBOX_DIR / "harness"
 
