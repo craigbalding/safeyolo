@@ -81,6 +81,11 @@ def start(
         "--dev",
         help="Mount source code and auto-restart on changes (requires repo checkout)",
     ),
+    test: bool = typer.Option(
+        False,
+        "--test",
+        help="Enable test mode (sinkhole routing, test CA — reads test section from config.yaml)",
+    ),
 ) -> None:
     """Start SafeYolo proxy and firewall."""
     first_run = False
@@ -111,7 +116,26 @@ def start(
     proxy_port = config["proxy"]["port"]
     admin_port = config["proxy"]["admin_port"]
 
-    console.print("[bold]Starting SafeYolo...[/bold]")
+    # Enable test mode if --test flag passed
+    if test:
+        test_cfg = config.get("test", {})
+        if not test_cfg.get("sinkhole_router"):
+            console.print("[red]--test requires test.sinkhole_router in config.yaml[/red]")
+            console.print("  Add to ~/.safeyolo/config.yaml:")
+            console.print("    test:")
+            console.print("      enabled: true")
+            console.print("      sinkhole_router: /path/to/sinkhole_router.py")
+            console.print("      ca_cert: /path/to/test-ca.crt")
+            raise typer.Exit(1)
+        config["test"]["enabled"] = True
+        save_config(config)
+        console.print("[bold]Starting SafeYolo (test mode)...[/bold]")
+    else:
+        # Ensure test mode is off
+        if config.get("test", {}).get("enabled"):
+            config["test"]["enabled"] = False
+            save_config(config)
+        console.print("[bold]Starting SafeYolo...[/bold]")
 
     # Start host mitmproxy
     try:

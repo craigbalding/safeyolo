@@ -137,6 +137,7 @@ def _build_command(
     admin_token: str,
     proxy_port: int = 8080,
     admin_port: int = 9090,
+    test_config: dict | None = None,
 ) -> list[str]:
     """Build the mitmdump command line."""
     # Find mitmdump in the same venv/prefix as this Python process
@@ -229,25 +230,33 @@ def _build_command(
     agent_map = config_dir / "data" / "agent_map.json"
     cmd.extend(["--set", f"agent_map_file={agent_map}"])
 
-    # Custom upstream CA trust (SAFEYOLO_CA_CERT)
+    # Custom upstream CA trust
+    # Sources: test config (test.ca_cert) > env var (SAFEYOLO_CA_CERT)
     # Used for: blackbox tests (test CA), corporate environments (internal CA)
-    # Only affects mitmproxy's upstream TLS verification
-    ca_cert = os.environ.get("SAFEYOLO_CA_CERT")
+    ca_cert = None
+    if test_config and test_config.get("ca_cert"):
+        ca_cert = test_config["ca_cert"]
+    elif os.environ.get("SAFEYOLO_CA_CERT"):
+        ca_cert = os.environ["SAFEYOLO_CA_CERT"]
     if ca_cert:
         ca_path = Path(ca_cert)
         if not ca_path.exists():
-            raise RuntimeError(f"SAFEYOLO_CA_CERT set but file not found: {ca_cert}")
+            raise RuntimeError(f"CA cert not found: {ca_cert}")
         log.info("Trusting upstream CA: %s", ca_cert)
         cmd.extend(["--set", f"ssl_verify_upstream_trusted_ca={ca_cert}"])
 
-    # Blackbox test sinkhole routing (SAFEYOLO_SINKHOLE_ROUTER)
-    # When set, loads the sinkhole_router addon LAST so upstream connections
-    # are redirected to the test sinkhole after all security addons have run.
-    sinkhole_router = os.environ.get("SAFEYOLO_SINKHOLE_ROUTER")
+    # Blackbox test sinkhole routing
+    # Sources: test config (test.sinkhole_router) > env var (SAFEYOLO_SINKHOLE_ROUTER)
+    # Loads LAST so upstream connections are redirected after security addons run.
+    sinkhole_router = None
+    if test_config and test_config.get("sinkhole_router"):
+        sinkhole_router = test_config["sinkhole_router"]
+    elif os.environ.get("SAFEYOLO_SINKHOLE_ROUTER"):
+        sinkhole_router = os.environ["SAFEYOLO_SINKHOLE_ROUTER"]
     if sinkhole_router:
         router_path = Path(sinkhole_router)
         if not router_path.exists():
-            raise RuntimeError(f"SAFEYOLO_SINKHOLE_ROUTER set but file not found: {sinkhole_router}")
+            raise RuntimeError(f"Sinkhole router addon not found: {sinkhole_router}")
         log.info("Loading sinkhole router addon: %s", sinkhole_router)
         cmd.extend(["-s", str(router_path)])
 
@@ -331,6 +340,15 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     # Merge system CAs into certifi so mitmproxy can verify all upstream chains
     _merge_system_cas_into_certifi()
 
+    # Load test config if enabled
+    from .config import load_config
+    full_config = load_config()
+    test_config = full_config.get("test", {})
+    if not test_config.get("enabled"):
+        test_config = None
+    else:
+        log.info("Test mode enabled via config.yaml")
+
     # Build command
     cmd = _build_command(
         addons_dir=addons_dir,
@@ -340,6 +358,7 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
         admin_token=admin_token,
         proxy_port=proxy_port,
         admin_port=admin_port,
+        test_config=test_config,
     )
 
     # Environment: set PYTHONPATH so addons can import pdp, models, etc.
@@ -359,6 +378,12 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     env["MITMPROXY_LOG_PATH"] = str(logs_dir / "mitmproxy.log")
     env["SAFEYOLO_DATA_DIR"] = str(config_dir / "data")
     env["SAFEYOLO_SERVICES_DIR"] = str(config_dir / "services")
+
+    # Pass test sinkhole config to child process (read by sinkhole_router addon)
+    if test_config:
+        env["SAFEYOLO_SINKHOLE_HOST"] = str(test_config.get("sinkhole_host", "127.0.0.1"))
+        env["SAFEYOLO_SINKHOLE_HTTP_PORT"] = str(test_config.get("sinkhole_http_port", 18080))
+        env["SAFEYOLO_SINKHOLE_HTTPS_PORT"] = str(test_config.get("sinkhole_https_port", 18443))
 
     # Start as background process
     log_file = logs_dir / "mitmproxy.log"

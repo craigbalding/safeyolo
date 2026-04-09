@@ -37,6 +37,16 @@ DEFAULT_CONFIG = {
     "notifications": {
         "method": "none",
     },
+    "test": {
+        "enabled": False,
+        # Sinkhole routing: redirect upstream to local test sinkhole
+        "sinkhole_router": "",  # path to sinkhole_router.py addon
+        "sinkhole_host": "127.0.0.1",
+        "sinkhole_http_port": 18080,
+        "sinkhole_https_port": 18443,
+        # Upstream CA: trust test CA for sinkhole TLS verification
+        "ca_cert": "",  # path to test CA cert
+    },
 }
 
 
