@@ -46,18 +46,30 @@ docker run --rm safeyolo:local id
 
 ## Automated Security Testing
 
-The [blackbox test suite](../tests/blackbox/) runs container security verification on every CI build using [CDK (Container Development Kit)](https://github.com/cdk-team/CDK):
+The [blackbox test suite](../tests/blackbox/) verifies SafeYolo's security guarantees end-to-end using real microVMs. Tests are split across two domains:
+
+**Host-side proxy tests** (`tests/blackbox/host/`):
 
 | Test | Verifies |
 |------|----------|
-| Non-root execution | UID/GID != 0 |
-| No privileged mode | `--privileged` not set |
-| No dangerous capabilities | SYS_ADMIN, SYS_MODULE, DAC_READ_SEARCH absent |
-| Seccomp enabled | Syscall filtering active |
-| No Docker socket | `/var/run/docker.sock` not mounted |
-| Network isolation | Direct internet access blocked, DNS blocked, proxy-only egress |
+| Credential routing | API keys only forwarded to authorized hosts |
+| Credential blocking | Exfiltration attempts blocked, sinkhole receives nothing |
+| Access control | Allowed domains pass, rate limits enforced |
+| Header stripping | Proxy-Authorization removed before forwarding |
 
-See [`test_runtime_security.py`](../tests/blackbox/runner/test_runtime_security.py) and [`test_sandbox_isolation.py`](../tests/blackbox/runner/test_sandbox_isolation.py).
+**VM-side isolation tests** (`tests/blackbox/isolation/`):
+
+| Test | Verifies |
+|------|----------|
+| Non-root execution | `setuid(0)` fails with PermissionError |
+| Network isolation | Direct HTTP/HTTPS/DNS blocked, proxy-only egress |
+| Kernel modules disabled | `init_module` syscall returns ENOSYS |
+| No /dev/mem | Physical memory device does not exist |
+| No eBPF | BPF syscall blocked |
+| Key isolation | No private key material anywhere in the VM filesystem |
+| Config share read-only | Agent cannot write to /safeyolo mount |
+
+See [`test_vm_isolation.py`](../tests/blackbox/isolation/test_vm_isolation.py) and [`test_key_isolation.py`](../tests/blackbox/isolation/test_key_isolation.py).
 
 ## Dependency Trust
 
