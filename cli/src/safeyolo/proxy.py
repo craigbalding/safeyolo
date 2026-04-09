@@ -133,6 +133,7 @@ def _build_command(
     addons_dir: Path,
     cert_dir: Path,
     config_dir: Path,
+    data_dir: Path,
     logs_dir: Path,
     admin_token: str,
     proxy_port: int = 8080,
@@ -233,8 +234,10 @@ def _build_command(
     # Custom upstream CA trust
     # Sources: test config (test.ca_cert) > env var (SAFEYOLO_CA_CERT)
     # Used for: blackbox tests (test CA), corporate environments (internal CA)
-    # Merged into certifi bundle so mitmproxy trusts BOTH the custom CA
-    # and real CAs (ssl_verify_upstream_trusted_ca would replace the bundle).
+    #
+    # Creates a combined CA bundle (certifi CAs + custom CA) and passes it
+    # to mitmproxy via ssl_verify_upstream_trusted_ca. This is deterministic
+    # — no mutating the certifi package, survives uv sync/pip install.
     ca_cert = None
     if test_config and test_config.get("ca_cert"):
         ca_cert = test_config["ca_cert"]
@@ -244,7 +247,9 @@ def _build_command(
         ca_path = Path(ca_cert)
         if not ca_path.exists():
             raise RuntimeError(f"CA cert not found: {ca_cert}")
-        log.info("Trusting upstream CA: %s (merged into certifi)", ca_cert)
+        combined_bundle = _build_combined_ca_bundle(ca_path, data_dir)
+        cmd.extend(["--set", f"ssl_verify_upstream_trusted_ca={combined_bundle}"])
+        log.info("Trusting upstream CA: %s (combined bundle at %s)", ca_cert, combined_bundle)
 
     # Blackbox test sinkhole routing
     # Sources: test config (test.sinkhole_router) > env var (SAFEYOLO_SINKHOLE_ROUTER)
@@ -313,24 +318,21 @@ def _merge_system_cas_into_certifi() -> None:
     log.info("Merged %d system CA certs into certifi bundle", len(new_certs))
 
 
-def _merge_ca_into_certifi(ca_path: Path) -> None:
-    """Append a CA certificate to certifi's bundle."""
-    try:
-        import certifi
-        certifi_bundle = Path(certifi.where())
-    except (ImportError, Exception) as exc:
-        log.warning("Cannot locate certifi bundle, skipping CA merge: %s", exc)
-        return
+def _build_combined_ca_bundle(custom_ca: Path, data_dir: Path) -> Path:
+    """Create a CA bundle combining certifi CAs + a custom CA.
 
-    ca_pem = ca_path.read_text().strip()
-    existing = certifi_bundle.read_text()
-    if ca_pem in existing:
-        log.debug("CA already in certifi bundle: %s", ca_path)
-        return
+    Returns the path to the combined bundle. The bundle is written to
+    data_dir/combined-ca-bundle.pem and recreated each time to ensure
+    it always reflects the current certifi bundle + custom CA.
+    """
+    import certifi
+    certifi_bundle = Path(certifi.where())
 
-    with certifi_bundle.open("a") as f:
-        f.write("\n" + ca_pem + "\n")
-    log.info("Merged CA into certifi bundle: %s", ca_path)
+    combined = data_dir / "combined-ca-bundle.pem"
+    combined.write_text(
+        certifi_bundle.read_text() + "\n" + custom_ca.read_text()
+    )
+    return combined
 
 
 def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
@@ -369,17 +371,13 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
         test_config = None
     else:
         log.info("Test mode enabled via config.yaml")
-        # Merge test CA into certifi so mitmproxy trusts both the test
-        # sinkhole certs AND real upstream certs (e.g., python.org for mise)
-        test_ca = test_config.get("ca_cert")
-        if test_ca:
-            _merge_ca_into_certifi(Path(test_ca))
 
     # Build command
     cmd = _build_command(
         addons_dir=addons_dir,
         cert_dir=cert_dir,
         config_dir=config_dir,
+        data_dir=data_dir,
         logs_dir=logs_dir,
         admin_token=admin_token,
         proxy_port=proxy_port,
