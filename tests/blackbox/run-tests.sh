@@ -106,12 +106,23 @@ config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
 "
 
-# Symlink shared guest artifacts (rootfs, kernel) from production
+# Symlink shared guest artifacts (rootfs, kernel) from production.
+# init creates an empty share/ dir — replace it with a symlink.
 PROD_SHARE="$HOME/.safeyolo/share"
 TEST_SHARE="$SAFEYOLO_CONFIG_DIR/share"
-if [ -d "$PROD_SHARE" ] && [ ! -e "$TEST_SHARE" ]; then
+if [ -d "$PROD_SHARE" ] && [ ! -L "$TEST_SHARE" ]; then
+    rm -rf "$TEST_SHARE"
     ln -s "$PROD_SHARE" "$TEST_SHARE"
     echo "  Linked guest artifacts: $TEST_SHARE -> $PROD_SHARE"
+fi
+
+# Symlink host binaries (safeyolo-vm, feth-bridge) from production
+PROD_BIN="$HOME/.safeyolo/bin"
+TEST_BIN="$SAFEYOLO_CONFIG_DIR/bin"
+if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then
+    rm -rf "$TEST_BIN"
+    ln -s "$PROD_BIN" "$TEST_BIN"
+    echo "  Linked binaries: $TEST_BIN -> $PROD_BIN"
 fi
 
 echo "Generating test certificates..."
