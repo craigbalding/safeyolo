@@ -68,8 +68,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
 # 4. Trust SafeYolo CA certificate
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/mitmproxy-ca-cert.pem ]; then
-    cp /safeyolo/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/safeyolo.crt
-    chmod 644 /usr/local/share/ca-certificates/safeyolo.crt
+    install -m 644 /safeyolo/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/safeyolo.crt
     update-ca-certificates --fresh >/dev/null 2>&1 || true
 fi
 
