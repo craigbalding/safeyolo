@@ -160,10 +160,15 @@ def _run_agent(
     skip_default_args: bool = False,
     extra_mounts: list[str] | None = None,
     extra_ports: list[str] | None = None,
+    detach: bool = False,
+    prompt: str | None = None,
 ) -> int:
     """Run an agent VM. Returns exit code.
 
     Shared logic used by both `add` (auto-run) and `run` commands.
+
+    detach: Boot VM in background and return after boot confirmation.
+    prompt: Run a one-shot command in the VM via SSH, then stop it.
     """
     _validate_instance_name(name)
 
@@ -323,6 +328,8 @@ def _run_agent(
         console.print("  Verify: [dim]groups | grep access_bpf[/dim]")
         raise typer.Exit(1)
 
+    run_background = detach or prompt is not None
+
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
         # Show progress as the VM boots
@@ -332,6 +339,7 @@ def _run_agent(
             workspace_path=str(workspace_path),
             extra_shares=host_shares if host_shares else None,
             feth_vm=feth_alloc["feth_vm"] if feth_alloc else "",
+            background=run_background,
         )
         _update_agent_map(name, ip=guest_ip)
 
@@ -374,6 +382,28 @@ def _run_agent(
                     break  # No install needed
                 _time.sleep(1)
 
+            if detach:
+                # Detach mode: VM is running in background, return immediately
+                console.print(f"  VM running (detached)")
+                console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
+                console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
+                return 0
+
+            if prompt is not None:
+                # Batch mode: run command via SSH, then stop
+                console.print(f"  Running: {prompt}")
+                from ..vm import ssh_exec
+                exit_code = ssh_exec(name, prompt)
+                console.print(f"  Exit code: {exit_code}")
+                # Stop the VM
+                from ..vm import stop_vm
+                stop_vm(name)
+                _update_agent_map(name, remove=True)
+                write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW,
+                            summary=f"Agent {name} stopped (prompt mode, exit {exit_code})",
+                            agent=name, details={"exit_code": exit_code})
+                return exit_code
+
             console.print(f"  Connecting terminal...")
             # Clear progress and hand over the screen
             console.print()
@@ -389,9 +419,10 @@ def _run_agent(
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
 
-    # Clean up PID file
-    pid_path = get_agents_dir() / name / "vm.pid"
-    pid_path.unlink(missing_ok=True)
+    # Clean up PID file (not for detach — VM is still running)
+    if not detach:
+        pid_path = get_agents_dir() / name / "vm.pid"
+        pid_path.unlink(missing_ok=True)
 
     return exit_code
 
@@ -769,6 +800,8 @@ def run(
     folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
     yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
+    detach: bool = typer.Option(False, "--detach", "-d", help="Boot VM in background and return (use 'agent shell' to connect)"),
+    prompt: str = typer.Option(None, "--prompt", "-p", help="Run a one-shot command in the VM and exit (batch mode)"),
     mount: list[str] = typer.Option(
         [],
         "--mount",
@@ -797,6 +830,15 @@ def run(
         safeyolo agent run boris -- --continue
         safeyolo agent run boris -- --resume my-session
 
+    Detach mode boots the VM in the background:
+
+        safeyolo agent run myproject --detach
+        safeyolo agent shell myproject  # connect later
+
+    Batch mode runs a single command and exits:
+
+        safeyolo agent run myproject -p "pytest -v /tests"
+
     If user_default_args is configured (via 'agent config'), those args
     are used by default. Use --fresh to ignore them.
 
@@ -808,6 +850,8 @@ def run(
         safeyolo agent run myproject
         safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --no-yolo
+        safeyolo agent run myproject --detach
+        safeyolo agent run myproject -p "pytest -v /tests"
         safeyolo agent run myproject --mount ~/data:/data:ro
         safeyolo agent run myproject --port 6080:6080
         safeyolo agent run myproject -- --continue
@@ -831,6 +875,8 @@ def run(
         skip_default_args=fresh,
         extra_mounts=parsed_mounts if parsed_mounts else None,
         extra_ports=parsed_ports if parsed_ports else None,
+        detach=detach,
+        prompt=prompt,
     )
     raise typer.Exit(exit_code)
 

@@ -524,6 +524,17 @@ def ssh_into_vm(ip: str, command: str = "", user: str = "agent") -> int:
     return result.returncode
 
 
+def ssh_exec(name: str, command: str, user: str = "agent", timeout: int = 60) -> int:
+    """Execute a command in a VM via SSH. Waits for SSH readiness first.
+
+    Returns the command's exit code.
+    """
+    if not wait_for_ssh(name, timeout=timeout):
+        raise VMError(f"SSH not available on VM '{name}' after {timeout}s")
+    ip = get_vm_ip(name)
+    return ssh_into_vm(ip, command=command, user=user)
+
+
 # ---------------------------------------------------------------------------
 # Agent map (for service_discovery addon)
 # ---------------------------------------------------------------------------
