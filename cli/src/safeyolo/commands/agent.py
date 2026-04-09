@@ -861,6 +861,7 @@ def run(
 @agent_app.command()
 def shell(
     name: str = typer.Argument(..., help="Agent instance name"),
+    command: str = typer.Option(None, "--command", "-c", help="Run a command instead of interactive shell"),
     root: bool = typer.Option(
         False,
         "--root",
@@ -870,11 +871,14 @@ def shell(
     """Open a shell in a running agent VM via SSH.
 
     By default, opens as the non-root agent user. Use --root for root access.
+    Use -c to run a single command and return its exit code.
 
     Examples:
 
         safeyolo agent shell myproject
         safeyolo agent shell myproject --root
+        safeyolo agent shell myproject -c "uname -a"
+        safeyolo agent shell myproject -c "pytest -v /tests"
     """
     _validate_instance_name(name)
 
@@ -902,8 +906,12 @@ def shell(
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
-        f"{user}@{ip}",
     ]
+    if not command:
+        cmd.append("-t")  # Force PTY for interactive shell
+    cmd.append(f"{user}@{ip}")
+    if command:
+        cmd.append(command)
 
     result = subprocess.run(cmd)
     raise typer.Exit(result.returncode)
