@@ -1,19 +1,15 @@
 #!/bin/bash
-# Stop the sinkhole server.
+# Stop the sinkhole server via launchd.
 set -e
 
-PID_FILE="$HOME/.config/safeyolo-test/sinkhole.pid"
+LABEL="com.safeyolo.test.sinkhole"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
-if [ ! -f "$PID_FILE" ]; then
-    echo "Sinkhole not running (no PID file)"
-    exit 0
-fi
-
-pid=$(cat "$PID_FILE")
-if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid"
-    echo "Sinkhole stopped (PID $pid)"
+if launchctl list "$LABEL" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    echo "Sinkhole stopped ($LABEL)"
 else
-    echo "Sinkhole already dead (PID $pid)"
+    echo "Sinkhole not running"
 fi
-rm -f "$PID_FILE"
+
+rm -f "$PLIST"
