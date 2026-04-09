@@ -159,9 +159,26 @@ class TestLifecycleStop:
         assert result.exit_code == 0
         assert "not running" in result.output.lower()
 
-    def test_stops_running_agent_vms(self, runner, config_dir):
-        """Iterates agent dirs and stops running VMs."""
-        # Create a fake agent dir
+    def test_stop_does_not_stop_agents(self, runner, config_dir):
+        """Plain stop does NOT stop running VMs."""
+        agent_dir = config_dir / "agents" / "test-agent"
+        agent_dir.mkdir(parents=True)
+
+        mock_stop_vm = MagicMock()
+        with (
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
+            patch("safeyolo.vm.is_vm_running", return_value=True),
+            patch("safeyolo.vm.stop_vm", mock_stop_vm),
+            patch("safeyolo.commands.lifecycle.stop_proxy"),
+        ):
+            result = runner.invoke(app, ["stop"])
+
+        assert result.exit_code == 0
+        mock_stop_vm.assert_not_called()
+        assert "still running" in result.output.lower()
+
+    def test_stop_all_stops_agent_vms(self, runner, config_dir):
+        """stop --all iterates agent dirs and stops running VMs."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir(parents=True)
 
@@ -174,14 +191,13 @@ class TestLifecycleStop:
             patch("safeyolo.firewall.unload_rules"),
             patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
-            result = runner.invoke(app, ["stop"])
+            result = runner.invoke(app, ["stop", "--all"])
 
         assert result.exit_code == 0
         mock_stop_vm.assert_called_once_with("test-agent")
-        assert "stopped" in result.output.lower()
 
-    def test_unloads_pf_rules(self, runner, config_dir):
-        """Unloads pf rules during stop."""
+    def test_stop_all_unloads_pf_rules(self, runner, config_dir):
+        """stop --all unloads pf rules."""
         mock_unload = MagicMock()
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
@@ -189,20 +205,20 @@ class TestLifecycleStop:
             patch("safeyolo.firewall.unload_rules", mock_unload),
             patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
-            result = runner.invoke(app, ["stop"])
+            result = runner.invoke(app, ["stop", "--all"])
 
         assert result.exit_code == 0
         mock_unload.assert_called_once()
 
-    def test_pf_unload_failure_is_nonfatal(self, runner, config_dir):
-        """pf unload failure doesn't prevent stop from completing."""
+    def test_stop_all_pf_unload_failure_is_nonfatal(self, runner, config_dir):
+        """pf unload failure doesn't prevent stop --all from completing."""
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
             patch("safeyolo.commands.lifecycle.stop_proxy"),
             patch("safeyolo.firewall.unload_rules", side_effect=RuntimeError("pf error")),
             patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
-            result = runner.invoke(app, ["stop"])
+            result = runner.invoke(app, ["stop", "--all"])
 
         assert result.exit_code == 0
         assert "stopped" in result.output.lower()
