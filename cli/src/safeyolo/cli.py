@@ -100,9 +100,11 @@ def up_alias(
 
 
 @app.command(name="down")
-def down_alias():
+def down_alias(
+    all: bool = typer.Option(False, "--all", help="Also stop all agents and tear down networking"),
+):
     """Alias for 'stop'."""
-    stop()
+    stop(all=all)
 
 
 if __name__ == "__main__":

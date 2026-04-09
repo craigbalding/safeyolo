@@ -176,12 +176,44 @@ def start(
         )
 
 
-def stop() -> None:
-    """Stop SafeYolo proxy and firewall."""
+def stop(
+    all: bool = typer.Option(False, "--all", help="Also stop all agents and tear down networking"),
+) -> None:
+    """Stop SafeYolo proxy. Agents keep running unless --all is passed."""
+
+    if all:
+        stop_all()
+        return
 
     if not is_proxy_running():
         console.print("[yellow]SafeYolo proxy is not running.[/yellow]")
         raise typer.Exit(0)
+
+    console.print("[bold]Stopping SafeYolo...[/bold]")
+
+    # Stop proxy only — agents, feth interfaces, and pf rules stay intact.
+    # Agents get "connection refused" on the proxy port but remain alive
+    # and accessible via SSH. When the proxy restarts, connectivity resumes.
+    stop_proxy()
+    console.print("[green]Stopped.[/green]")
+
+    # Hint if agents are still running
+    from ..vm import is_vm_running
+    from ..config import get_agents_dir
+    agents_dir = get_agents_dir()
+    running = []
+    if agents_dir.exists():
+        for agent_dir in agents_dir.iterdir():
+            if agent_dir.is_dir() and is_vm_running(agent_dir.name):
+                running.append(agent_dir.name)
+    if running:
+        names = ", ".join(running)
+        console.print(f"  Agents still running: [bold]{names}[/bold]")
+        console.print("  [dim]Stop all: safeyolo stop --all[/dim]")
+
+
+def stop_all() -> None:
+    """Stop SafeYolo proxy, all agents, and tear down networking."""
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
@@ -194,13 +226,13 @@ def stop() -> None:
             if agent_dir.is_dir():
                 name = agent_dir.name
                 if is_vm_running(name):
-                    console.print(f"  Stopping agent '{name}'...")
+                    console.print(f"  Stopping {name}...")
                     stop_vm(name)
 
     # Kill any orphaned feth-bridge processes
     import subprocess as _sp
     try:
-        result = _sp.run(["pkill", "-f", "feth-bridge"], capture_output=True)
+        _sp.run(["pkill", "-f", "feth-bridge"], capture_output=True)
     except Exception:
         pass
 
@@ -222,7 +254,8 @@ def stop() -> None:
         pass  # Non-fatal
 
     # Stop proxy
-    stop_proxy()
+    if is_proxy_running():
+        stop_proxy()
     console.print("[green]Stopped.[/green]")
 
 
