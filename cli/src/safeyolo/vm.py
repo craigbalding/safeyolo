@@ -490,6 +490,7 @@ def wait_for_ssh(name: str, timeout: int = 30) -> bool:
             [
                 "ssh",
                 "-i", str(key_path),
+                "-p", "22",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "ConnectTimeout=2",
@@ -512,6 +513,7 @@ def ssh_into_vm(ip: str, command: str = "", user: str = "agent") -> int:
     cmd = [
         "ssh",
         "-i", str(key_path),
+        "-p", "22",  # Explicit port to override ~/.ssh/config
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",

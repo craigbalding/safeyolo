@@ -905,6 +905,7 @@ def shell(
     cmd = [
         "ssh",
         "-i", str(key_path),
+        "-p", "22",  # Explicit port to override ~/.ssh/config
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
