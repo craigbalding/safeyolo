@@ -407,7 +407,7 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
 
     # Pass test sinkhole config to child process (read by sinkhole_router addon)
     if test_config:
-        env["SAFEYOLO_SINKHOLE_HOST"] = str(test_config.get("sinkhole_host", "127.0.0.1"))
+        env["SAFEYOLO_SINKHOLE_HOST"] = str(test_config.get("sinkhole_host", "localhost"))
         env["SAFEYOLO_SINKHOLE_HTTP_PORT"] = str(test_config.get("sinkhole_http_port", 18080))
         env["SAFEYOLO_SINKHOLE_HTTPS_PORT"] = str(test_config.get("sinkhole_https_port", 18443))
 

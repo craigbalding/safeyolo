@@ -18,7 +18,7 @@ import os
 
 log = logging.getLogger("safeyolo.sinkhole_router")
 
-SINKHOLE_HOST = os.environ.get("SAFEYOLO_SINKHOLE_HOST", "127.0.0.1")
+SINKHOLE_HOST = os.environ.get("SAFEYOLO_SINKHOLE_HOST", "localhost")
 SINKHOLE_HTTP_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_HTTP_PORT", "18080"))
 SINKHOLE_HTTPS_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_HTTPS_PORT", "18443"))
 
