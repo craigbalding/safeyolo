@@ -5,15 +5,18 @@
 # Host-side pytest: proxy functional tests (credential guard, network guard)
 # VM-side pytest:   isolation tests (network escape, privilege escalation, key isolation)
 #
+# Runs as an ISOLATED INSTANCE alongside production SafeYolo:
+#   - Separate config dir (~/.safeyolo-test)
+#   - Separate ports (proxy 8180, admin 9190)
+#   - Separate pf anchor (com.safeyolo-test)
+#   - Separate subnets (192.168.75.0/24)
+#   - Production agents are unaffected
+#
 # Usage:
 #   ./run-tests.sh              # Run all tests
 #   ./run-tests.sh --proxy      # Proxy functional tests only
 #   ./run-tests.sh --isolation  # VM isolation tests only
 #   ./run-tests.sh --verbose    # Verbose pytest output
-#
-# The script is idempotent: it reuses already-running services (sinkhole,
-# proxy, VM) instead of failing on port conflicts or "already running" errors.
-# Cleanup only stops services this script started.
 #
 # Exit codes:
 #   0 - All tests passed
@@ -26,6 +29,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
+
+# --- Isolated test instance configuration ---
+# These env vars scope all SafeYolo operations to a separate instance
+# so blackbox tests don't interfere with production agents.
+export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
+export SAFEYOLO_SUBNET_BASE=75
+export SAFEYOLO_PF_ANCHOR=com.safeyolo-test
+
+# Test instance ports (different from production 8080/9090)
+TEST_PROXY_PORT=8180
+TEST_ADMIN_PORT=9190
+
+# Export for host-side pytest (conftest.py reads these)
+export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
+export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
 
 # Parse arguments
 RUN_PROXY=true
@@ -56,18 +74,49 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=== SafeYolo Blackbox Tests ==="
+echo "  Instance: $SAFEYOLO_CONFIG_DIR"
+echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT"
+echo "  Subnet:   192.168.${SAFEYOLO_SUBNET_BASE}.0/24"
 echo ""
 
 # --- Phase 0: Prerequisites ---
 
-echo "Generating test certificates..."
-if ! ./certs/generate-certs.sh --force; then
-    echo "ERROR: Failed to generate test certificates"
+if ! command -v safeyolo &>/dev/null; then
+    echo "ERROR: safeyolo CLI not found. Activate the venv or install."
     exit 2
 fi
 
-if ! command -v safeyolo &>/dev/null; then
-    echo "ERROR: safeyolo CLI not found. Activate the venv or install."
+# Initialize test config dir on first run
+if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
+    echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
+    safeyolo init --sandbox
+    echo ""
+fi
+
+# Configure test-specific ports in config.yaml
+python3 -c "
+import yaml
+from pathlib import Path
+config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
+config = yaml.safe_load(config_path.read_text())
+config['proxy']['port'] = $TEST_PROXY_PORT
+config['proxy']['admin_port'] = $TEST_ADMIN_PORT
+config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
+config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
+config_path.write_text(yaml.dump(config, default_flow_style=False))
+"
+
+# Symlink shared guest artifacts (rootfs, kernel) from production
+PROD_SHARE="$HOME/.safeyolo/share"
+TEST_SHARE="$SAFEYOLO_CONFIG_DIR/share"
+if [ -d "$PROD_SHARE" ] && [ ! -e "$TEST_SHARE" ]; then
+    ln -s "$PROD_SHARE" "$TEST_SHARE"
+    echo "  Linked guest artifacts: $TEST_SHARE -> $PROD_SHARE"
+fi
+
+echo "Generating test certificates..."
+if ! ./certs/generate-certs.sh --force; then
+    echo "ERROR: Failed to generate test certificates"
     exit 2
 fi
 
@@ -94,7 +143,7 @@ cleanup() {
     fi
 
     if [ "$STARTED_PROXY" = true ]; then
-        echo "Stopping proxy..."
+        echo "Stopping test proxy..."
         safeyolo stop 2>/dev/null || true
     fi
 
@@ -104,7 +153,7 @@ trap cleanup EXIT
 
 # --- Phase 1: Start infrastructure (idempotent) ---
 
-# Sinkhole
+# Sinkhole (shared — not instance-specific)
 if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
     echo "Sinkhole already running"
 else
@@ -132,23 +181,23 @@ else
     fi
 fi
 
-# Proxy
-ADMIN_TOKEN=$(cat ~/.safeyolo/data/admin_token 2>/dev/null || echo "")
-if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090/health" >/dev/null 2>&1; then
-    echo "Proxy already running"
+# Proxy (test instance on separate ports)
+ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
+if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+    echo "Test proxy already running"
 else
-    echo "Starting proxy (test mode)..."
+    echo "Starting test proxy (port $TEST_PROXY_PORT, test mode)..."
     safeyolo start --test --no-wait
     STARTED_PROXY=true
 
     for i in $(seq 1 30); do
-        ADMIN_TOKEN=$(cat ~/.safeyolo/data/admin_token 2>/dev/null || echo "")
-        if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090/health" >/dev/null 2>&1; then
+        ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
+        if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
             break
         fi
         sleep 1
     done
-    echo "  Proxy ready"
+    echo "  Test proxy ready"
 fi
 
 # VM (only needed for isolation tests)
@@ -157,8 +206,8 @@ if [ "$RUN_ISOLATION" = true ]; then
     safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run 2>/dev/null || true
 
     # Check if already running by looking for vm-ip
-    VM_IP=$(cat ~/.safeyolo/agents/$AGENT_NAME/config-share/vm-ip 2>/dev/null || echo "")
-    SSH_KEY="$HOME/.safeyolo/data/vm_ssh_key"
+    VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+    SSH_KEY="$SAFEYOLO_CONFIG_DIR/data/vm_ssh_key"
 
     VM_RUNNING=false
     if [ -n "$VM_IP" ]; then
@@ -178,12 +227,11 @@ if [ "$RUN_ISOLATION" = true ]; then
 
         # Wait for SSH
         echo "  Waiting for SSH..."
-        VM_IP=$(cat ~/.safeyolo/agents/$AGENT_NAME/config-share/vm-ip 2>/dev/null || echo "")
+        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
         if [ -z "$VM_IP" ]; then
-            # vm-ip may take a moment to appear
             for i in $(seq 1 15); do
                 sleep 1
-                VM_IP=$(cat ~/.safeyolo/agents/$AGENT_NAME/config-share/vm-ip 2>/dev/null || echo "")
+                VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
                 [ -n "$VM_IP" ] && break
             done
         fi

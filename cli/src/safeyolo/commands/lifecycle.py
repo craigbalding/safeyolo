@@ -229,21 +229,29 @@ def stop_all() -> None:
                     console.print(f"  Stopping {name}...")
                     stop_vm(name)
 
-    # Kill any orphaned feth-bridge processes
+    # Destroy feth interfaces belonging to this instance only.
+    # Derives interface names from the agent index and SUBNET_BASE
+    # so a test instance (SUBNET_BASE=75) won't destroy production's
+    # feth0/feth1 (SUBNET_BASE=65).
     import subprocess as _sp
-    try:
-        _sp.run(["pkill", "-f", "feth-bridge"], capture_output=True)
-    except Exception:
-        pass
-
-    # Destroy all safeyolo feth interfaces
-    try:
-        result = _sp.run(["ifconfig", "-a"], capture_output=True, text=True)
-        import re
-        for feth in re.findall(r"^(feth\d+):", result.stdout, re.MULTILINE):
-            _sp.run(["sudo", "ifconfig", feth, "destroy"], capture_output=True)
-    except Exception:
-        pass
+    from ..firewall import allocate_subnet
+    if agents_dir.exists():
+        for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
+            if agent_dir.is_dir():
+                alloc = allocate_subnet(idx)
+                for feth in (alloc["feth_vm"], alloc["feth_host"]):
+                    # Kill feth-bridge for this interface
+                    try:
+                        _sp.run(["pkill", "-f", f"feth-bridge.*{feth}"],
+                                capture_output=True)
+                    except Exception:
+                        pass
+                    # Destroy the interface
+                    try:
+                        _sp.run(["sudo", "ifconfig", feth, "destroy"],
+                                capture_output=True)
+                    except Exception:
+                        pass
 
     # Unload pf rules
     try:

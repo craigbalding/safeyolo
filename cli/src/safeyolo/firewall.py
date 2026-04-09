@@ -4,20 +4,26 @@ Creates feth (fake Ethernet) interface pairs for VM networking. Unlike vmnet
 bridge interfaces, feth interfaces are regular network interfaces where pf
 rules work. Each VM gets its own feth pair and /24 subnet.
 
-Subnet allocation: agent index → 192.168.(65+index).0/24
+Subnet allocation: agent index → 192.168.(SUBNET_BASE+index).0/24
+
+Multiple instances can coexist on the same host by setting:
+  SAFEYOLO_PF_ANCHOR   — pf anchor name (default: com.safeyolo)
+  SAFEYOLO_SUBNET_BASE — third octet base (default: 65)
 """
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 
 log = logging.getLogger("safeyolo.firewall")
 
-ANCHOR_NAME = "com.safeyolo"
+ANCHOR_NAME = os.environ.get("SAFEYOLO_PF_ANCHOR", "com.safeyolo")
 ANCHOR_FILE = Path("/etc/pf.anchors") / ANCHOR_NAME
 
 # Base subnet: 192.168.65.0/24 for first VM, .66 for second, etc.
-SUBNET_BASE = 65
+# Override with SAFEYOLO_SUBNET_BASE for multi-instance setups.
+SUBNET_BASE = int(os.environ.get("SAFEYOLO_SUBNET_BASE", "65"))
 
 
 def allocate_subnet(agent_index: int) -> dict:
@@ -26,7 +32,7 @@ def allocate_subnet(agent_index: int) -> dict:
     Returns dict with host_ip, guest_ip, subnet, feth_vm, feth_host.
     """
     third_octet = SUBNET_BASE + agent_index
-    feth_idx = agent_index * 2
+    feth_idx = (SUBNET_BASE - 65 + agent_index) * 2
     return {
         "host_ip": f"192.168.{third_octet}.1",
         "guest_ip": f"192.168.{third_octet}.2",
