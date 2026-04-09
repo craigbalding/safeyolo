@@ -59,10 +59,17 @@ class SinkholeRouter:
             flow.request.host = SINKHOLE_HOST
             flow.request.port = SINKHOLE_HTTP_PORT
 
+        # Preserve the original Host header so the sinkhole can identify
+        # which test hostname was requested. Setting flow.request.host
+        # changes both the connection target AND the Host header —
+        # we only want to change the connection target.
+        flow.request.host_header = original_host
+
         log.debug(
-            "Routed %s:%d -> %s:%d",
+            "Routed %s:%d -> %s:%d (Host: %s)",
             original_host, original_port,
             flow.request.host, flow.request.port,
+            original_host,
         )
 
 
