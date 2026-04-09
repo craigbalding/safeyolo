@@ -26,12 +26,9 @@ from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..vm import (
     VMError,
     _update_agent_map,
-    create_agent_rootfs,
+    get_agent_config_share_dir,
     get_agent_rootfs_path,
-    is_vm_running,
     prepare_config_share,
-    start_vm,
-    stop_vm,
 )
 from ._service_discovery import find_service
 from .mount import is_path_protected
@@ -257,39 +254,33 @@ def _run_agent(
         except TemplateError:
             pass
 
-    # Set up feth pair for network isolation
+    # Set up network isolation (platform-specific: feth+pf on macOS, veth+iptables on Linux)
     config = load_config()
     proxy_port = config.get("proxy", {}).get("port", 8080)
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
 
-    from ..firewall import setup_feth, load_rules
-    # Allocate agent index from name (simple: hash-based or sequential)
+    from ..platform import get_platform
+    plat = get_platform()
+
     agents_dir = get_agents_dir()
     existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
     agent_index = existing.index(name) if name in existing else len(existing)
 
     try:
-        feth_alloc = setup_feth(agent_index)
-        load_rules(
+        fw_alloc = plat.setup_networking(agent_index)
+        plat.load_firewall_rules(
             proxy_port=proxy_port,
             admin_port=admin_port,
-            active_subnets=[feth_alloc["subnet"]],
+            active_subnets=[fw_alloc["subnet"]],
         )
     except Exception as err:
         console.print(f"[red]Network isolation failed:[/red] {err}")
         console.print()
         console.print("  SafeYolo will not start an agent without enforced egress control.")
-        console.print("  This typically means sudo is needed for feth/pf setup.")
-        console.print()
-        console.print("  Try:")
-        console.print("    1. Run again (sudo password may be needed for pf)")
-        console.print("    2. Check feth-bridge is installed: ls ~/.safeyolo/bin/feth-bridge")
-        console.print("    3. Check BPF access: groups | grep access_bpf")
-        console.print("    4. Run [bold]safeyolo setup[/bold] to check all prerequisites")
         raise typer.Exit(1)
 
-    gateway_ip = feth_alloc["host_ip"]
-    guest_ip = feth_alloc["guest_ip"]
+    gateway_ip = fw_alloc["host_ip"]
+    guest_ip = fw_alloc["guest_ip"]
 
     # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
     try:
@@ -313,53 +304,53 @@ def _run_agent(
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
 
-    # Check BPF access before starting VM (feth-bridge needs /dev/bpf*)
-    from .setup import check_bpf_access
-    has_bpf, bpf_reason = check_bpf_access()
-    if not has_bpf:
-        console.print(f"[red]BPF access denied:[/red] {bpf_reason}")
-        console.print()
-        console.print("  feth-bridge needs BPF to forward VM network traffic.")
-        console.print("  Without it, the VM boots but has no network connectivity.")
-        console.print()
-        console.print("  Fix: [bold]safeyolo setup bpf[/bold]")
-        console.print("  Then log out and back in for group membership to take effect.")
-        console.print()
-        console.print("  Verify: [dim]groups | grep access_bpf[/dim]")
-        raise typer.Exit(1)
+    # macOS-specific: check BPF access (feth-bridge needs /dev/bpf*)
+    import platform as _plat
+    if _plat.system() == "Darwin":
+        from .setup import check_bpf_access
+        has_bpf, bpf_reason = check_bpf_access()
+        if not has_bpf:
+            console.print(f"[red]BPF access denied:[/red] {bpf_reason}")
+            console.print()
+            console.print("  feth-bridge needs BPF to forward VM network traffic.")
+            console.print("  Fix: [bold]safeyolo setup bpf[/bold]")
+            raise typer.Exit(1)
 
     run_background = detach
 
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
-        # Show progress as the VM boots
+        # Show progress as the sandbox boots
         console.print(f"  Booting VM...", end="")
-        proc = start_vm(
+        config_share = get_agent_config_share_dir(name)
+        pid = plat.start_sandbox(
             name=name,
             workspace_path=str(workspace_path),
+            config_share=config_share,
+            fw_alloc=fw_alloc,
+            cpus=4,
+            memory_mb=4096,
             extra_shares=host_shares if host_shares else None,
-            feth_vm=feth_alloc["feth_vm"] if feth_alloc else "",
             background=run_background,
         )
         _update_agent_map(name, ip=guest_ip)
 
         # Monitor boot progress by watching config share for milestones
-        from ..vm import get_agent_config_share_dir
         import time as _time
         config_share_dir = get_agent_config_share_dir(name)
         ip_file = config_share_dir / "vm-ip"
 
         # Wait for VM IP (indicates guest init is running)
         deadline = _time.time() + 120
-        while _time.time() < deadline and proc.poll() is None:
+        while _time.time() < deadline and plat.is_sandbox_running(name):
             if ip_file.exists() and ip_file.read_text().strip():
                 break
             _time.sleep(0.5)
 
-        if proc.poll() is not None:
+        if not plat.is_sandbox_running(name):
             console.print(" [red]failed[/red]")
             console.print(f"  Check logs: ~/.safeyolo/agents/{name}/serial.log")
-            exit_code = proc.returncode
+            exit_code = 1
         else:
             console.print(f" {guest_ip}")
 
@@ -367,7 +358,7 @@ def _run_agent(
             status_file = config_share_dir / "vm-status"
             shown_installing = False
             deadline2 = _time.time() + 120
-            while _time.time() < deadline2 and proc.poll() is None:
+            while _time.time() < deadline2 and plat.is_sandbox_running(name):
                 status = status_file.read_text().strip() if status_file.exists() else ""
                 if status == "installing" and not shown_installing:
                     agent_label = binary or template_name
@@ -383,19 +374,19 @@ def _run_agent(
                 _time.sleep(1)
 
             if detach:
-                # Detach mode: VM is running in background, return immediately
                 console.print(f"  VM running (detached)")
                 console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
                 console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
                 return 0
 
             console.print(f"  Connecting terminal...")
-            # Clear progress and hand over the screen
             console.print()
-            proc.wait()
-            exit_code = proc.returncode
+            # Wait for sandbox to exit (interactive mode)
+            while plat.is_sandbox_running(name):
+                _time.sleep(0.5)
+            exit_code = 0
 
-    except VMError as err:
+    except Exception as err:
         console.print(f" [red]error[/red]")
         console.print(f"  {err}")
         exit_code = 1
@@ -653,11 +644,12 @@ def add(
     # Ensure host config directories exist
     _ensure_host_config(template, ephemeral)
 
-    # Clone base rootfs for this agent
+    # Create rootfs for this agent (platform-specific: APFS clone on macOS, overlayfs on Linux)
+    from ..platform import get_platform
     try:
-        rootfs = create_agent_rootfs(name)
+        rootfs = get_platform().prepare_rootfs(name)
         console.print(f"  [green]Created[/green] {rootfs}")
-    except VMError as err:
+    except Exception as err:
         console.print(f"[red]Failed to create agent rootfs:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
@@ -767,10 +759,12 @@ def remove(
         console.print(f"[yellow]Agent not found: {escape(name)}[/yellow]")
         raise typer.Exit(1)
 
-    # Stop VM if running
-    if is_vm_running(name):
-        console.print(f"  Stopping VM for {name}...")
-        stop_vm(name)
+    # Stop sandbox if running
+    from ..platform import get_platform
+    plat = get_platform()
+    if plat.is_sandbox_running(name):
+        console.print(f"  Stopping {name}...")
+        plat.stop_sandbox(name)
 
     shutil.rmtree(agent_dir)
     _store_remove_agent(name)
@@ -870,7 +864,7 @@ def shell(
         help="Open shell as root (default: non-root agent user)",
     ),
 ) -> None:
-    """Open a shell in a running agent VM via SSH.
+    """Open a shell in a running agent sandbox.
 
     By default, opens as the non-root agent user. Use --root for root access.
     Use -c to run a single command and return its exit code.
@@ -884,47 +878,26 @@ def shell(
     """
     _validate_instance_name(name)
 
-    if not is_vm_running(name):
+    from ..platform import get_platform
+    plat = get_platform()
+
+    if not plat.is_sandbox_running(name):
         console.print(f"[red]Agent '{name}' is not running.[/red]")
         console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
         raise typer.Exit(1)
 
-    from ..vm import get_vm_ip, get_agent_config_share_dir
-    from ..config import get_ssh_key_path
-
-    # Get VM IP
-    ip_file = get_agent_config_share_dir(name) / "vm-ip"
-    if not ip_file.exists():
-        console.print(f"[red]Cannot find VM IP for '{name}'.[/red]")
-        raise typer.Exit(1)
-    ip = ip_file.read_text().strip()
-
-    key_path = get_ssh_key_path()
     user = "root" if root else "agent"
-
-    cmd = [
-        "ssh",
-        "-i", str(key_path),
-        "-p", "22",  # Explicit port to override ~/.ssh/config
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-    ]
-    if not command:
-        cmd.append("-t")  # Force PTY for interactive shell
-    cmd.append(f"{user}@{ip}")
-    if command:
-        cmd.append(command)
-
-    result = subprocess.run(cmd)
-    raise typer.Exit(result.returncode)
+    exit_code = plat.exec_in_sandbox(
+        name, command, user=user, interactive=not command,
+    )
+    raise typer.Exit(exit_code)
 
 
 @agent_app.command()
 def stop(
     name: str = typer.Argument(..., help="Agent instance name to stop"),
 ) -> None:
-    """Stop a running agent VM.
+    """Stop a running agent sandbox.
 
     Examples:
 
@@ -932,12 +905,15 @@ def stop(
     """
     _validate_instance_name(name)
 
-    if not is_vm_running(name):
+    from ..platform import get_platform
+    plat = get_platform()
+
+    if not plat.is_sandbox_running(name):
         console.print(f"Agent '{name}' is not running.")
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")
-    stop_vm(name)
+    plat.stop_sandbox(name)
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 

@@ -198,13 +198,14 @@ def stop(
     console.print("[green]Stopped.[/green]")
 
     # Hint if agents are still running
-    from ..vm import is_vm_running
+    from ..platform import get_platform
     from ..config import get_agents_dir
+    plat = get_platform()
     agents_dir = get_agents_dir()
     running = []
     if agents_dir.exists():
         for agent_dir in agents_dir.iterdir():
-            if agent_dir.is_dir() and is_vm_running(agent_dir.name):
+            if agent_dir.is_dir() and plat.is_sandbox_running(agent_dir.name):
                 running.append(agent_dir.name)
     if running:
         names = ", ".join(running)
@@ -217,46 +218,30 @@ def stop_all() -> None:
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
-    # Stop all running agent VMs
-    from ..vm import is_vm_running, stop_vm
+    from ..platform import get_platform
     from ..config import get_agents_dir
+
+    plat = get_platform()
     agents_dir = get_agents_dir()
+
+    # Stop all running agents
     if agents_dir.exists():
         for agent_dir in agents_dir.iterdir():
             if agent_dir.is_dir():
                 name = agent_dir.name
-                if is_vm_running(name):
+                if plat.is_sandbox_running(name):
                     console.print(f"  Stopping {name}...")
-                    stop_vm(name)
+                    plat.stop_sandbox(name)
 
-    # Destroy feth interfaces belonging to this instance only.
-    # Derives interface names from the agent index and SUBNET_BASE
-    # so a test instance (SUBNET_BASE=75) won't destroy production's
-    # feth0/feth1 (SUBNET_BASE=65).
-    import subprocess as _sp
-    from ..firewall import allocate_subnet
-    if agents_dir.exists():
-        for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
-            if agent_dir.is_dir():
-                alloc = allocate_subnet(idx)
-                for feth in (alloc["feth_vm"], alloc["feth_host"]):
-                    # Kill feth-bridge for this interface
-                    try:
-                        _sp.run(["pkill", "-f", f"feth-bridge.*{feth}"],
-                                capture_output=True)
-                    except Exception:
-                        pass
-                    # Destroy the interface
-                    try:
-                        _sp.run(["sudo", "ifconfig", feth, "destroy"],
-                                capture_output=True)
-                    except Exception:
-                        pass
-
-    # Unload pf rules
+    # Clean up all networking for this instance
     try:
-        from ..firewall import unload_rules
-        unload_rules()
+        plat.cleanup_all(agents_dir)
+    except Exception:
+        pass
+
+    # Unload firewall rules
+    try:
+        plat.unload_firewall_rules()
         console.print("  pf rules unloaded")
     except Exception:
         pass  # Non-fatal
@@ -355,13 +340,14 @@ def status() -> None:
         pass
 
     # Running agents
-    from ..vm import is_vm_running, get_vm_ip
+    from ..platform import get_platform
     from ..config import get_agents_dir
+    plat = get_platform()
     agents_dir = get_agents_dir()
     if agents_dir.exists():
         running = []
         for agent_dir in agents_dir.iterdir():
-            if agent_dir.is_dir() and is_vm_running(agent_dir.name):
+            if agent_dir.is_dir() and plat.is_sandbox_running(agent_dir.name):
                 ip_file = agent_dir / "config-share" / "vm-ip"
                 ip = ip_file.read_text().strip() if ip_file.exists() else "?"
                 running.append((agent_dir.name, ip))
