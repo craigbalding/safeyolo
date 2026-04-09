@@ -3,11 +3,15 @@
 # Build all SafeYolo guest image artifacts.
 #
 # Output (in ./out/):
-#   Image              - ARM64 Linux kernel
-#   initramfs.cpio.gz  - Minimal initramfs
+#   Image              - Linux kernel (macOS microVMs only, not needed for gVisor)
+#   initramfs.cpio.gz  - Minimal initramfs (macOS microVMs only)
 #   rootfs-base.ext4   - Debian trixie rootfs with mise + node@22
 #
-# Prerequisites: Docker with linux/arm64/v8 platform support
+# Architecture:
+#   Default: host architecture (arm64 on Apple Silicon, amd64 on x86_64)
+#   Override: ARCH=amd64 ./build-all.sh
+#
+# Prerequisites: Docker with cross-platform support
 #
 set -euo pipefail
 
@@ -25,11 +29,20 @@ if ! docker version >/dev/null 2>&1; then
     exit 1
 fi
 
-# Build in order: kernel, initramfs, rootfs
-"$SCRIPT_DIR/build-kernel.sh"
-echo ""
-"$SCRIPT_DIR/build-initramfs.sh"
-echo ""
+# Kernel and initramfs are only needed for macOS microVMs (Virtualization.framework).
+# On Linux, gVisor provides its own kernel — only the rootfs is needed.
+if [ "$(uname)" = "Darwin" ] || [ "${BUILD_KERNEL:-}" = "1" ]; then
+    "$SCRIPT_DIR/build-kernel.sh"
+    echo ""
+    "$SCRIPT_DIR/build-initramfs.sh"
+    echo ""
+else
+    echo "Skipping kernel + initramfs (not needed for gVisor on Linux)"
+    echo "Set BUILD_KERNEL=1 to build anyway"
+    echo ""
+fi
+
+# Rootfs is always needed (both macOS VMs and Linux gVisor containers)
 "$SCRIPT_DIR/build-rootfs.sh"
 
 echo ""

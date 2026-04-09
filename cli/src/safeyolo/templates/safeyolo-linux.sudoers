@@ -1,0 +1,62 @@
+# SafeYolo Linux sudoers configuration
+#
+# Grants the operator passwordless sudo for the specific commands
+# SafeYolo needs to manage gVisor containers, network namespaces,
+# and iptables firewall rules. No other commands are permitted.
+#
+# Install:
+#   sudo cp safeyolo-linux.sudoers /etc/sudoers.d/safeyolo
+#   sudo chmod 0440 /etc/sudoers.d/safeyolo
+#   sudo visudo -c   # validate syntax
+#
+# Or: safeyolo setup sudoers
+#
+# Replace %safeyolo with a specific user or group if preferred.
+#
+# -----------------------------------------------------------------
+# Why each command is needed:
+#
+#   ip netns *         Create/delete network namespaces for agent isolation
+#   ip link *          Create/delete veth pairs for agent networking
+#   ip addr *          Assign IPs to veth interfaces
+#   iptables *         Firewall rules: proxy-only egress per agent
+#   sysctl             Enable IP forwarding for NAT
+#   mount              Overlayfs for agent rootfs, loop mount for base extraction
+#   umount             Clean up overlayfs on agent removal
+#   runsc              gVisor container lifecycle (create, start, stop, exec)
+#   mkdir -p /run/*    Create runsc state directory
+#   cp -a *            Copy base rootfs for extraction
+# -----------------------------------------------------------------
+
+# Network namespace and veth management
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip netns *, \
+                                /usr/sbin/ip link *, \
+                                /usr/sbin/ip addr *, \
+                                /sbin/ip netns *, \
+                                /sbin/ip link *, \
+                                /sbin/ip addr *
+
+# Firewall rules
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/iptables *, \
+                                /sbin/iptables *
+
+# IP forwarding
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.ipv4.ip_forward=1, \
+                                /sbin/sysctl -w net.ipv4.ip_forward=1
+
+# Rootfs management (overlayfs mount/umount, loop mount for extraction)
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/mount *, \
+                                /bin/mount *, \
+                                /usr/bin/umount *, \
+                                /bin/umount *
+
+# gVisor container runtime
+%safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc *, \
+                                /usr/bin/runsc *
+
+# State directory creation
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/safeyolo*, \
+                                /bin/mkdir -p /run/safeyolo*
+
+# Base rootfs extraction
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/cp -a *

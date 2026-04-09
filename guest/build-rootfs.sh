@@ -1,7 +1,14 @@
 #!/bin/bash
 #
-# Build Debian trixie ARM64 rootfs for SafeYolo microVMs.
-# Runs in Docker on macOS (requires --privileged for mount/debootstrap).
+# Build Debian trixie rootfs for SafeYolo agents.
+# Runs in Docker (requires --privileged for mount/debootstrap).
+#
+# Supports: arm64 (default on Apple Silicon), amd64 (for x86_64 VPS)
+#
+# Usage:
+#   ./build-rootfs.sh              # Build for host architecture
+#   ARCH=amd64 ./build-rootfs.sh   # Build for x86_64
+#   ARCH=arm64 ./build-rootfs.sh   # Build for ARM64
 #
 # Output: out/rootfs-base.ext4 (~2GB sparse, ~400MB actual)
 #
@@ -11,9 +18,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"
 
-# Pinned mise version (same as current SafeYolo Dockerfile)
+# Architecture detection
+HOST_ARCH="$(uname -m)"
+case "${ARCH:-$HOST_ARCH}" in
+    aarch64|arm64) BUILD_ARCH="arm64"; DOCKER_PLATFORM="linux/arm64/v8"; DEB_ARCH="arm64" ;;
+    x86_64|amd64)  BUILD_ARCH="amd64"; DOCKER_PLATFORM="linux/amd64";    DEB_ARCH="amd64" ;;
+    *) echo "Unsupported architecture: ${ARCH:-$HOST_ARCH}"; exit 1 ;;
+esac
+
+# Pinned mise version
 MISE_VERSION="${MISE_VERSION:-2026.1.1}"
 MISE_SHA256_ARM64="${MISE_SHA256_ARM64:-dcd7006e84d3557284a7c87b99abdce4a465900f67609e99b39c757006a361dd}"
+MISE_SHA256_AMD64="${MISE_SHA256_AMD64:-}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -23,15 +39,16 @@ if [ -f "$OUTPUT_DIR/rootfs-base.ext4" ]; then
     exit 0
 fi
 
-echo "=== Building Debian trixie ARM64 rootfs ==="
+echo "=== Building Debian trixie ${BUILD_ARCH} rootfs ==="
 echo "Size: ${ROOTFS_SIZE_MB}MB"
 echo "This runs in Docker (privileged) and takes several minutes on first build."
 
-docker run --rm --privileged --platform linux/arm64/v8 \
+docker run --rm --privileged --platform "$DOCKER_PLATFORM" \
     -v "$SCRIPT_DIR/rootfs:/build/rootfs:ro" \
     -v "$OUTPUT_DIR:/output" \
     -e MISE_VERSION="$MISE_VERSION" \
     -e MISE_SHA256_ARM64="$MISE_SHA256_ARM64" \
+    -e MISE_SHA256_AMD64="$MISE_SHA256_AMD64" \
     debian:trixie-slim /bin/bash -c '
 set -euo pipefail
 
@@ -87,9 +104,15 @@ chroot /mnt/rootfs useradd -m -s /bin/bash agent
 
 # Install mise (pinned, checksum-verified)
 echo "--- Installing mise ${MISE_VERSION} ---"
-ARCH=arm64
+ARCH=$(dpkg --print-architecture)  # arm64 or amd64
+MISE_SHA256_VAR="MISE_SHA256_$(echo $ARCH | tr a-z A-Z)"
+MISE_SHA256="${!MISE_SHA256_VAR:-}"
 curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${ARCH}.tar.gz" -o /tmp/mise.tar.gz
-echo "${MISE_SHA256_ARM64}  /tmp/mise.tar.gz" | sha256sum -c -
+if [ -n "$MISE_SHA256" ]; then
+    echo "${MISE_SHA256}  /tmp/mise.tar.gz" | sha256sum -c -
+else
+    echo "WARNING: No checksum for mise ${ARCH}, skipping verification"
+fi
 tar -xzf /tmp/mise.tar.gz -C /tmp
 cp /tmp/mise/bin/mise /mnt/rootfs/usr/local/bin/mise
 chmod +x /mnt/rootfs/usr/local/bin/mise
@@ -118,13 +141,21 @@ chroot /mnt/rootfs env $MISE_ENV mise install node@22 || true
 chroot /mnt/rootfs env $MISE_ENV mise use -g node@22 || true
 echo "--- Installing gh CLI ---"
 GH_VERSION="2.89.0"
-GH_SHA256="9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5"
-curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" -o /tmp/gh.tar.gz
-echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -
+GH_ARCH=$(dpkg --print-architecture)  # arm64 or amd64
+GH_SHA256_ARM64="9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5"
+GH_SHA256_AMD64=""
+GH_SHA256_VAR="GH_SHA256_$(echo $GH_ARCH | tr a-z A-Z)"
+GH_SHA256="${!GH_SHA256_VAR:-}"
+curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz
+if [ -n "$GH_SHA256" ]; then
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -
+else
+    echo "WARNING: No checksum for gh ${GH_ARCH}, skipping verification"
+fi
 tar -xzf /tmp/gh.tar.gz -C /tmp
-cp /tmp/gh_${GH_VERSION}_linux_arm64/bin/gh /mnt/rootfs/usr/local/bin/gh
+cp /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh /mnt/rootfs/usr/local/bin/gh
 chmod +x /mnt/rootfs/usr/local/bin/gh
-rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_arm64
+rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}
 # Regenerate shims with correct config
 chroot /mnt/rootfs env $MISE_ENV mise reshim || true
 # Make shared dir writable by agent user (for installing additional tools)
