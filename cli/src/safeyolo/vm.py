@@ -399,7 +399,8 @@ def _cleanup_feth_bridge(name: str) -> None:
 
     # Kill any feth-bridge process on this agent's feth interface
     if agent_index >= 0:
-        feth_vm = f"feth{agent_index * 2}"
+        from .firewall import allocate_subnet
+        feth_vm = allocate_subnet(agent_index)["feth_vm"]
         try:
             result = subprocess.run(
                 ["pgrep", "-f", f"feth-bridge.*{feth_vm}"],

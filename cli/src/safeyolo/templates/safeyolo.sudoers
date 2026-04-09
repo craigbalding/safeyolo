@@ -17,9 +17,9 @@
 # -----------------------------------------------------------------
 # Why each command is needed:
 #
-#   pfctl -a com.safeyolo -f *   Load anchor rules (VM egress control)
-#   pfctl -a com.safeyolo -F all Flush anchor rules (cleanup)
-#   pfctl -a com.safeyolo -s *   Show anchor rules/info (diagnostics)
+#   pfctl -a com.safeyolo* -f *   Load anchor rules (VM egress control)
+#   pfctl -a com.safeyolo* -F all Flush anchor rules (cleanup)
+#   pfctl -a com.safeyolo* -s *   Show anchor rules/info (diagnostics)
 #   pfctl -e                     Enable pf if disabled
 #   pfctl -s info                Check pf status
 #   ifconfig feth* create        Create feth pair for VM networking
@@ -34,9 +34,9 @@
 # -----------------------------------------------------------------
 
 # pf firewall management
-%staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo -f *, \
-                            /sbin/pfctl -a com.safeyolo -F all, \
-                            /sbin/pfctl -a com.safeyolo -s *, \
+%staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo* -f *, \
+                            /sbin/pfctl -a com.safeyolo* -F all, \
+                            /sbin/pfctl -a com.safeyolo* -s *, \
                             /sbin/pfctl -e, \
                             /sbin/pfctl -s info
 
@@ -47,6 +47,6 @@
 %staff ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.inet.ip.forwarding=1
 
 # pf anchor file management
-%staff ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.anchors/com.safeyolo, \
+%staff ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.anchors/com.safeyolo*, \
                             /bin/cat /etc/pf.conf, \
                             /usr/bin/tee -a /etc/pf.conf
