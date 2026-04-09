@@ -1,9 +1,8 @@
-"""mitmproxy addon: redirect upstream connections to the test sinkhole.
+"""mitmproxy addon: redirect test traffic to the local sinkhole.
 
-Loaded ONLY during blackbox tests via the SAFEYOLO_SINKHOLE env var.
-Replaces Docker's DNS aliasing — instead of resolving api.openai.com
-to the sinkhole container, we rewrite the upstream address after
-all security addons have made their policy decisions.
+Loaded ONLY during blackbox tests. Redirects upstream connections for
+specific test hostnames to the sinkhole server. All other traffic
+passes through to real upstreams normally.
 
 This addon MUST be loaded last in the addon chain so that
 credential_guard and network_guard see the original host/URL.
@@ -23,20 +22,34 @@ SINKHOLE_HOST = os.environ.get("SAFEYOLO_SINKHOLE_HOST", "127.0.0.1")
 SINKHOLE_HTTP_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_HTTP_PORT", "18080"))
 SINKHOLE_HTTPS_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_HTTPS_PORT", "18443"))
 
+# Only redirect these hostnames — must match sinkhole cert SANs.
+# All other traffic passes through to real upstreams.
+SINKHOLE_HOSTS = {
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.github.com",
+    "evil.com",
+    "attacker.com",
+    "httpbin.org",
+    "failing.test",
+    "legitimate-api.com",
+}
+
 
 class SinkholeRouter:
-    """Redirect all upstream connections to the local sinkhole.
+    """Redirect test hostnames to the local sinkhole.
 
     In the request hook (after all security addons have run), rewrites
-    flow.request.host and flow.request.port so mitmproxy connects to
-    the sinkhole instead of the real upstream.
-
-    The original Host header is preserved by mitmproxy, so the sinkhole
-    sees the correct hostname for routing and capture.
+    flow.request.host and flow.request.port for test hostnames only.
+    Non-test traffic (mise downloads, npm, etc.) passes through normally.
     """
 
     def request(self, flow):
         original_host = flow.request.host
+
+        if original_host not in SINKHOLE_HOSTS:
+            return
+
         original_port = flow.request.port
 
         if flow.request.scheme == "https":
