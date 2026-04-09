@@ -11,10 +11,9 @@
 #   ./run-tests.sh --isolation  # VM isolation tests only
 #   ./run-tests.sh --verbose    # Verbose pytest output
 #
-# Prerequisites:
-#   - safeyolo CLI installed (in venv or PATH)
-#   - Guest images built (cd guest && ./build-all.sh)
-#   - Test certs generated (auto-generated if missing)
+# The script is idempotent: it reuses already-running services (sinkhole,
+# proxy, VM) instead of failing on port conflicts or "already running" errors.
+# Cleanup only stops services this script started.
 #
 # Exit codes:
 #   0 - All tests passed
@@ -22,7 +21,7 @@
 #   2 - Infrastructure error
 #
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -72,92 +71,136 @@ if ! command -v safeyolo &>/dev/null; then
     exit 2
 fi
 
-# --- Cleanup trap ---
+# --- Track what we started (only clean up our own) ---
 
+STARTED_SINKHOLE=false
+STARTED_PROXY=false
+STARTED_VM=false
 SINKHOLE_PID=""
+
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
 
-    # Stop test VM
-    safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
+    if [ "$STARTED_VM" = true ]; then
+        echo "Stopping $AGENT_NAME..."
+        safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
+    fi
 
-    # Stop sinkhole
-    if [ -n "$SINKHOLE_PID" ]; then
+    if [ -n "$SINKHOLE_PID" ] && [ "$STARTED_SINKHOLE" = true ]; then
+        echo "Stopping sinkhole (PID $SINKHOLE_PID)..."
         kill "$SINKHOLE_PID" 2>/dev/null || true
         wait "$SINKHOLE_PID" 2>/dev/null || true
     fi
 
-    # Stop proxy (but don't tear down agents — they're already stopped)
-    safeyolo stop 2>/dev/null || true
+    if [ "$STARTED_PROXY" = true ]; then
+        echo "Stopping proxy..."
+        safeyolo stop 2>/dev/null || true
+    fi
 
     echo "Cleanup complete"
 }
 trap cleanup EXIT
 
-# --- Phase 1: Start infrastructure ---
+# --- Phase 1: Start infrastructure (idempotent) ---
 
-echo "Starting sinkhole..."
-python3 "$SCRIPT_DIR/sinkhole/server.py" \
-    --http-port 18080 \
-    --https-port 18443 \
-    --control-port 19999 \
-    --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
-    --key "$SCRIPT_DIR/certs/sinkhole.key" \
-    &
-SINKHOLE_PID=$!
+# Sinkhole
+if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+    echo "Sinkhole already running"
+else
+    echo "Starting sinkhole..."
+    python3 "$SCRIPT_DIR/sinkhole/server.py" \
+        --http-port 18080 \
+        --https-port 18443 \
+        --control-port 19999 \
+        --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
+        --key "$SCRIPT_DIR/certs/sinkhole.key" \
+        &
+    SINKHOLE_PID=$!
+    STARTED_SINKHOLE=true
 
-# Wait for sinkhole
-for i in $(seq 1 30); do
-    if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
-        echo "  Sinkhole ready"
-        break
+    for i in $(seq 1 30); do
+        if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+            echo "  Sinkhole ready"
+            break
+        fi
+        sleep 0.5
+    done
+    if ! curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+        echo "ERROR: Sinkhole failed to start"
+        exit 2
     fi
-    sleep 0.5
-done
-if ! curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
-    echo "ERROR: Sinkhole failed to start"
-    exit 2
 fi
 
-echo "Starting proxy (test mode)..."
-safeyolo start --test --no-wait
-if ! safeyolo doctor 2>/dev/null | grep -q "running"; then
-    # Wait for proxy health
+# Proxy
+ADMIN_TOKEN=$(cat ~/.safeyolo/data/admin_token 2>/dev/null || echo "")
+if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090/health" >/dev/null 2>&1; then
+    echo "Proxy already running"
+else
+    echo "Starting proxy (test mode)..."
+    safeyolo start --test --no-wait
+    STARTED_PROXY=true
+
     for i in $(seq 1 30); do
-        if curl -sf -H "Authorization: Bearer $(cat ~/.safeyolo/data/admin_token 2>/dev/null)" \
-            "http://127.0.0.1:9090/health" >/dev/null 2>&1; then
+        ADMIN_TOKEN=$(cat ~/.safeyolo/data/admin_token 2>/dev/null || echo "")
+        if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:9090/health" >/dev/null 2>&1; then
             break
         fi
         sleep 1
     done
+    echo "  Proxy ready"
 fi
-echo "  Proxy ready"
 
+# VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
-    echo "Booting test VM ($AGENT_NAME)..."
     # Create agent if not exists
     safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run 2>/dev/null || true
-    # Boot in detach mode
-    safeyolo agent run "$AGENT_NAME" --detach
 
-    # Wait for SSH
-    echo "  Waiting for SSH..."
+    # Check if already running by looking for vm-ip
     VM_IP=$(cat ~/.safeyolo/agents/$AGENT_NAME/config-share/vm-ip 2>/dev/null || echo "")
-    if [ -z "$VM_IP" ]; then
-        echo "ERROR: Could not determine VM IP"
-        exit 2
-    fi
     SSH_KEY="$HOME/.safeyolo/data/vm_ssh_key"
-    for i in $(seq 1 60); do
+
+    VM_RUNNING=false
+    if [ -n "$VM_IP" ]; then
         if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
             -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
-            echo "  SSH ready ($VM_IP)"
-            break
+            VM_RUNNING=true
         fi
-        sleep 1
-    done
+    fi
+
+    if [ "$VM_RUNNING" = true ]; then
+        echo "VM already running ($VM_IP)"
+    else
+        echo "Booting test VM ($AGENT_NAME)..."
+        safeyolo agent run "$AGENT_NAME" --detach
+        STARTED_VM=true
+
+        # Wait for SSH
+        echo "  Waiting for SSH..."
+        VM_IP=$(cat ~/.safeyolo/agents/$AGENT_NAME/config-share/vm-ip 2>/dev/null || echo "")
+        if [ -z "$VM_IP" ]; then
+            # vm-ip may take a moment to appear
+            for i in $(seq 1 15); do
+                sleep 1
+                VM_IP=$(cat ~/.safeyolo/agents/$AGENT_NAME/config-share/vm-ip 2>/dev/null || echo "")
+                [ -n "$VM_IP" ] && break
+            done
+        fi
+        if [ -z "$VM_IP" ]; then
+            echo "ERROR: Could not determine VM IP"
+            exit 2
+        fi
+        for i in $(seq 1 60); do
+            if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
+                -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
+                echo "  SSH ready ($VM_IP)"
+                break
+            fi
+            sleep 1
+        done
+    fi
 fi
 
 echo ""
@@ -171,12 +214,11 @@ if [ "$RUN_PROXY" = true ]; then
     echo "=== Proxy Functional Tests (host-side) ==="
     echo ""
     cd "$SCRIPT_DIR/host"
-    if pytest $VERBOSE --tb=short --timeout=60 \
-        test_credential_guard.py test_network_guard.py; then
-        PROXY_RESULT=0
-    else
-        PROXY_RESULT=$?
-    fi
+    set +e
+    pytest $VERBOSE --tb=short --timeout=60 \
+        test_credential_guard.py test_network_guard.py
+    PROXY_RESULT=$?
+    set -e
     cd "$SCRIPT_DIR"
     echo ""
 fi
@@ -184,9 +226,11 @@ fi
 if [ "$RUN_ISOLATION" = true ]; then
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
+    set +e
     safeyolo agent shell "$AGENT_NAME" -c \
         "cd /workspace/tests/blackbox/isolation && pytest $VERBOSE --tb=short --timeout=60"
     ISOLATION_RESULT=$?
+    set -e
     echo ""
 fi
 
