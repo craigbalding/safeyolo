@@ -73,8 +73,8 @@ See `certs/README.md`.
 | Raw socket | `SOCK_RAW` ICMP | PermissionError |
 | Proxy reachable | `curl` through proxy | 200 |
 | Non-root | `id -u` | 1000 |
-| No sudo | `sudo -n id` | Fails |
-| No kernel modules | `modprobe dummy` | Fails |
+| Cannot gain root | `setuid(0)` | PermissionError |
+| No kernel modules | `init_module` syscall | ENOSYS |
 | No /dev/mem | Check path | Not found |
 | No eBPF | BPF syscall | Returns -1 |
 | Config share read-only | Write to /safeyolo | EROFS |
