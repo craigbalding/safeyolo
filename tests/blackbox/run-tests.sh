@@ -60,8 +60,8 @@ echo ""
 
 # --- Phase 0: Prerequisites ---
 
-echo "Checking test certificates..."
-if ! ./certs/generate-certs.sh; then
+echo "Generating test certificates..."
+if ! ./certs/generate-certs.sh --force; then
     echo "ERROR: Failed to generate test certificates"
     exit 2
 fi
