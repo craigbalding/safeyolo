@@ -203,7 +203,7 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
 
-def load_tls_cert(cert_path: Path, key_path: Path) -> ssl.SSLContext | None:
+def load_tls_cert(cert_path: Path, key_path: Path) -> Optional[ssl.SSLContext]:
     """Load TLS certificate for HTTPS server.
 
     The certificate should be pre-generated and signed by the test CA.
