@@ -79,6 +79,7 @@ chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     openssh-server iproute2 iputils-ping procps \
     less xz-utils libgomp1 libatomic1 \
     python3 python3-pip \
+    sudo kmod \
     busybox-static >/dev/null
 
 # Create agent user

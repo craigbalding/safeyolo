@@ -160,6 +160,10 @@ CONFIG_RTC_INTF_SYSFS=y
 CONFIG_RTC_INTF_DEV=y
 CONFIG_RTC_DRV_PL031=y
 
+# Hardening: disable /dev/mem (no physical memory access)
+# CONFIG_DEVMEM is not set
+# CONFIG_DEVKMEM is not set
+
 # Disable unnecessary subsystems
 # CONFIG_SOUND is not set
 # CONFIG_USB_SUPPORT is not set

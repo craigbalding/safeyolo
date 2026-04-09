@@ -114,7 +114,7 @@ else
         --https-port 18443 \
         --control-port 19999 \
         --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
-        --key "$SCRIPT_DIR/certs/sinkhole.key" \
+        --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true

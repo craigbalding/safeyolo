@@ -51,7 +51,7 @@ class MacOSHarness(BlackboxHarness):
                 "--https-port", str(SINKHOLE_HTTPS_PORT),
                 "--control-port", str(SINKHOLE_CONTROL_PORT),
                 "--cert", str(CERTS_DIR / "sinkhole.crt"),
-                "--key", str(CERTS_DIR / "sinkhole.key"),
+                "--key", str(Path.home() / ".safeyolo" / "test-certs" / "sinkhole.key"),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

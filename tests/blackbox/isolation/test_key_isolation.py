@@ -95,15 +95,25 @@ class TestPrivateKeyAbsent:
         )
 
     def test_full_filesystem_scan_for_private_keys(self):
-        """Deep scan: no file on any mounted filesystem contains the private key.
+        """Deep scan: no SafeYolo-related private key exists anywhere in the VM.
 
         Walks the entire filesystem (skipping pseudo-filesystems) looking
-        for PEM private key markers. This is the most thorough check.
+        for PEM private key markers in SafeYolo-managed locations and any
+        .key files. Third-party package test fixtures (e.g. in .venv)
+        are excluded — they are not useful for TLS interception.
+
+        The targeted checks above (trust store, config share, cert dirs)
+        already cover the critical paths. This scan catches anything that
+        leaked to unexpected locations.
         """
         found = []
         for root, dirs, files in os.walk("/"):
-            # Skip pseudo-filesystems, workspace (user code), and large dirs
-            if root.startswith(("/proc", "/sys", "/dev", "/run", "/workspace")):
+            # Skip pseudo-filesystems
+            if root.startswith(("/proc", "/sys", "/dev", "/run")):
+                dirs.clear()
+                continue
+            # Skip third-party package directories (contain test fixtures)
+            if "site-packages" in root or "dist-packages" in root:
                 dirs.clear()
                 continue
             for name in files:
