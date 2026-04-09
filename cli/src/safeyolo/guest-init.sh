@@ -135,8 +135,17 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 9. Run agent via vsock terminal (proper PTY with resize support)
+# 9. Run agent or stay alive for SSH access
 # --------------------------------------------------------------------------
+
+# Detach mode: skip vsock terminal, keep VM alive for SSH access.
+# Set by 'safeyolo agent run --detach' via config share.
+if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
+    echo "Detach mode: VM running, SSH ready" >&2
+    # sshd is already running in background — wait forever
+    exec sleep infinity
+fi
+
 YOLO_ARGS=""
 if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
     YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"

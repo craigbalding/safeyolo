@@ -222,6 +222,8 @@ def _run_agent(
     extra_env = {}
     if yolo:
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
+    if detach:
+        extra_env["SAFEYOLO_DETACH"] = "1"
 
     # Get mise package, host config, instructions, and auto_args from template
     mise_package = ""
