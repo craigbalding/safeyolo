@@ -7,22 +7,22 @@ interface. No new functionality — just delegation.
 import subprocess
 from pathlib import Path
 
-from . import AgentPlatform
-from ..config import get_agents_dir, get_ssh_key_path
+from ..config import get_ssh_key_path
 from ..firewall import (
     allocate_subnet,
+    load_rules,
     setup_feth,
     teardown_feth,
-    load_rules,
     unload_rules,
 )
 from ..vm import (
     create_agent_rootfs,
+    get_agent_config_share_dir,
+    is_vm_running,
     start_vm,
     stop_vm,
-    is_vm_running,
-    get_agent_config_share_dir,
 )
+from . import AgentPlatform
 
 
 class DarwinPlatform(AgentPlatform):

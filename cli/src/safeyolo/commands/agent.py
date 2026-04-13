@@ -6,7 +6,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 from pathlib import Path
 
 import typer
@@ -24,7 +23,6 @@ from ..events import EventKind, Severity, write_event
 from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
 from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..vm import (
-    VMError,
     _update_agent_map,
     get_agent_config_share_dir,
     get_agent_rootfs_path,
@@ -322,9 +320,9 @@ def _run_agent(
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
         # Show progress as the sandbox boots
-        console.print(f"  Booting VM...", end="")
+        console.print("  Booting VM...", end="")
         config_share = get_agent_config_share_dir(name)
-        pid = plat.start_sandbox(
+        plat.start_sandbox(
             name=name,
             workspace_path=str(workspace_path),
             config_share=config_share,
@@ -366,7 +364,7 @@ def _run_agent(
                     console.print(f"  Installing {agent_label}...")
                     shown_installing = True
                 elif status == "install-failed":
-                    console.print(f"  [red]Install failed[/red]")
+                    console.print("  [red]Install failed[/red]")
                     break
                 elif status == "" and shown_installing:
                     break  # Install finished (file removed or empty)
@@ -375,12 +373,12 @@ def _run_agent(
                 _time.sleep(1)
 
             if detach:
-                console.print(f"  VM running (detached)")
+                console.print("  VM running (detached)")
                 console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
                 console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
                 return 0
 
-            console.print(f"  Connecting terminal...")
+            console.print("  Connecting terminal...")
             console.print()
             # Wait for sandbox to exit (interactive mode)
             while plat.is_sandbox_running(name):
@@ -388,7 +386,7 @@ def _run_agent(
             exit_code = 0
 
     except Exception as err:
-        console.print(f" [red]error[/red]")
+        console.print(" [red]error[/red]")
         console.print(f"  {err}")
         exit_code = 1
     except KeyboardInterrupt:

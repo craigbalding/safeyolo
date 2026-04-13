@@ -14,12 +14,11 @@ import time
 from pathlib import Path
 
 from .config import (
+    get_agent_map_path,
     get_agents_dir,
     get_config_dir,
-    get_data_dir,
     get_share_dir,
     get_ssh_key_path,
-    get_agent_map_path,
 )
 
 log = logging.getLogger("safeyolo.vm")

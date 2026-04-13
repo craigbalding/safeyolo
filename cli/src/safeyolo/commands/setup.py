@@ -30,7 +30,7 @@ def check_bpf_access() -> tuple[bool, str]:
     user_groups = os.getgroups()
     if bpf_gid in user_groups:
         return True, "User is in access_bpf group"
-    return False, f"Not in access_bpf group (run: safeyolo setup bpf)"
+    return False, "Not in access_bpf group (run: safeyolo setup bpf)"
 
 
 @setup_app.callback(invoke_without_command=True)
@@ -67,7 +67,7 @@ def setup() -> None:
         console.print("    Run [bold]safeyolo setup bpf[/bold] to fix")
 
     # VM helper
-    from ..vm import find_vm_helper, VMError
+    from ..vm import VMError, find_vm_helper
     try:
         helper = find_vm_helper()
         console.print(f"  [green]OK[/green]  safeyolo-vm at {helper}")
@@ -113,7 +113,6 @@ def bpf() -> None:
         safeyolo setup bpf
     """
     import platform
-    import sys
 
     if platform.system() != "Darwin":
         console.print("[yellow]BPF setup is macOS-only.[/yellow]")
@@ -169,7 +168,7 @@ def bpf() -> None:
 
     console.print("\n[green]BPF access configured.[/green]")
     console.print("[yellow]Log out and back in[/yellow] for group membership to take effect.")
-    console.print(f"Verify: [dim]groups | grep access_bpf[/dim]")
+    console.print("Verify: [dim]groups | grep access_bpf[/dim]")
 
 
 @setup_app.command()
@@ -193,7 +192,6 @@ def sudoers() -> None:
         safeyolo setup sudoers
     """
     import platform
-    import shutil
 
     if platform.system() != "Darwin":
         console.print("[yellow]sudoers setup is macOS-only.[/yellow]")
@@ -221,7 +219,7 @@ def sudoers() -> None:
     try:
         # Write via sudo tee (can't write directly to /etc/sudoers.d/)
         content = template.read_text()
-        proc = subprocess.run(
+        subprocess.run(
             ["sudo", "tee", str(dest)],
             input=content.encode(),
             capture_output=True,

@@ -15,14 +15,13 @@ import json
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
 
-from . import AgentPlatform
-from ..config import get_agents_dir, get_config_dir, get_data_dir, get_share_dir
+from ..config import get_agents_dir, get_share_dir
 from ..firewall import SUBNET_BASE, allocate_subnet
+from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
@@ -442,7 +441,6 @@ class LinuxPlatform(AgentPlatform):
         cgroup_version: int,
     ) -> dict:
         """Generate an OCI runtime spec for runsc."""
-        config_dir = get_config_dir()
         proxy_port = 8080
         try:
             from ..config import load_config

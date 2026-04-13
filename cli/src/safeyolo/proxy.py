@@ -5,7 +5,6 @@ The addon stack, options, and behavior are identical — only the
 execution environment changes (host process vs. container).
 """
 
-import json
 import logging
 import os
 import shutil
@@ -364,7 +363,6 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     _merge_system_cas_into_certifi()
 
     # Load test config if enabled
-    from .config import load_config
     full_config = load_config()
     test_config = full_config.get("test", {})
     if not test_config.get("enabled"):
@@ -477,8 +475,8 @@ def is_proxy_running() -> bool:
 
 def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
     """Wait for mitmproxy admin API to become healthy."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     data_dir = get_data_dir()
     admin_token_file = data_dir / "admin_token"

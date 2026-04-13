@@ -598,7 +598,8 @@ class TestBuildCommand:
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        (config_dir / "data").mkdir()
+        data_dir = config_dir / "data"
+        data_dir.mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -614,6 +615,7 @@ class TestBuildCommand:
             "addons_dir": addons_dir,
             "cert_dir": cert_dir,
             "config_dir": config_dir,
+            "data_dir": data_dir,
             "logs_dir": logs_dir,
         }
 
@@ -890,7 +892,8 @@ class TestBlockingModes:
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        (config_dir / "data").mkdir()
+        data_dir = config_dir / "data"
+        data_dir.mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -904,6 +907,7 @@ class TestBlockingModes:
             "addons_dir": addons_dir,
             "cert_dir": cert_dir,
             "config_dir": config_dir,
+            "data_dir": data_dir,
             "logs_dir": logs_dir,
         }
 
@@ -1038,14 +1042,15 @@ class TestTlsPassthrough:
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        (config_dir / "data").mkdir()
+        data_dir = config_dir / "data"
+        data_dir.mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
         from safeyolo.proxy import ADDON_CHAIN
         for addon in ADDON_CHAIN:
             (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "logs_dir": logs_dir}
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": data_dir, "logs_dir": logs_dir}
 
     def test_ignore_hosts_always_present(self, cmd_env):
         """--ignore-hosts with the frp pattern is in every command."""
@@ -1076,14 +1081,15 @@ class TestRateLimitConfig:
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        (config_dir / "data").mkdir()
+        data_dir = config_dir / "data"
+        data_dir.mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
         from safeyolo.proxy import ADDON_CHAIN
         for addon in ADDON_CHAIN:
             (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "logs_dir": logs_dir}
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": data_dir, "logs_dir": logs_dir}
 
     def test_ratelimit_config_loaded_when_file_exists(self, cmd_env):
         """rate_limits.json present -> ratelimit_config option in command."""
@@ -1128,17 +1134,18 @@ class TestSafeyoloCaCert:
         cert_dir.mkdir()
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        (config_dir / "data").mkdir()
+        data_dir = config_dir / "data"
+        data_dir.mkdir()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
         from safeyolo.proxy import ADDON_CHAIN
         for addon in ADDON_CHAIN:
             (addons_dir / addon).touch()
         (config_dir / "policy.toml").touch()
-        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "logs_dir": logs_dir}
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": data_dir, "logs_dir": logs_dir}
 
     def test_upstream_ca_set_when_env_var_and_file_exist(self, cmd_env, tmp_path, monkeypatch):
-        """SAFEYOLO_CA_CERT points to existing file -> ssl_verify_upstream_trusted_ca in command."""
+        """SAFEYOLO_CA_CERT points to existing file -> ssl_verify_upstream_trusted_ca uses the combined bundle."""
         from safeyolo.proxy import _build_command
 
         ca_file = tmp_path / "custom-ca.pem"
@@ -1151,7 +1158,11 @@ class TestSafeyoloCaCert:
         )
 
         cmd_str = " ".join(cmd)
-        assert f"ssl_verify_upstream_trusted_ca={ca_file}" in cmd_str
+        # Implementation builds a combined bundle (certifi CAs + custom CA)
+        # and points mitmproxy at that, not the raw user-provided file.
+        combined = cmd_env["data_dir"] / "combined-ca-bundle.pem"
+        assert f"ssl_verify_upstream_trusted_ca={combined}" in cmd_str
+        assert combined.exists()
 
     def test_raises_when_ca_cert_file_missing(self, cmd_env, tmp_path, monkeypatch):
         """SAFEYOLO_CA_CERT points to nonexistent file -> RuntimeError."""
@@ -1160,7 +1171,7 @@ class TestSafeyoloCaCert:
         nonexistent = tmp_path / "does-not-exist.pem"
         monkeypatch.setenv("SAFEYOLO_CA_CERT", str(nonexistent))
 
-        with pytest.raises(RuntimeError, match="SAFEYOLO_CA_CERT set but file not found"):
+        with pytest.raises(RuntimeError, match="CA cert not found"):
             _build_command(admin_token="tok", **cmd_env)
 
     def test_no_upstream_ca_when_env_var_unset(self, cmd_env, monkeypatch):
