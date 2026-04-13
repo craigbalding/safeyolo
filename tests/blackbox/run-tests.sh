@@ -86,6 +86,18 @@ if ! command -v safeyolo &>/dev/null; then
     exit 2
 fi
 
+# Ensure the blackbox test pf anchor hook is installed in /etc/pf.conf.
+# `safeyolo setup pf --test` is idempotent: it's a no-op after the first run.
+# The first run will prompt for sudo once to write the hook; the runtime
+# never mutates /etc/pf.conf.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "Ensuring pf anchor hook for com.safeyolo-test is installed..."
+    if ! safeyolo setup pf --test; then
+        echo "ERROR: failed to install com.safeyolo-test anchor hook" >&2
+        exit 2
+    fi
+fi
+
 # Initialize test config dir on first run
 if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."

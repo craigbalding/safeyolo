@@ -6,8 +6,20 @@ rules work. Each VM gets its own feth pair and /24 subnet.
 
 Subnet allocation: agent index → 192.168.(SUBNET_BASE+index).0/24
 
+PF anchor model (security-tightened):
+  SafeYolo manages a single fixed anchor file per instance:
+
+      /etc/pf.anchors/com.safeyolo        (production default)
+      /etc/pf.anchors/com.safeyolo-test   (blackbox test harness only)
+
+  The anchor hook must be pre-installed in /etc/pf.conf via `safeyolo setup pf`
+  (or `safeyolo setup pf --test` for the blackbox test harness). Runtime code
+  never reads or mutates /etc/pf.conf — only the fixed anchor file is managed
+  and flushed/loaded via `pfctl -a <name>`.
+
 Multiple instances can coexist on the same host by setting:
-  SAFEYOLO_PF_ANCHOR   — pf anchor name (default: com.safeyolo)
+  SAFEYOLO_PF_ANCHOR   — pf anchor name (default: com.safeyolo; allowed:
+                         com.safeyolo, com.safeyolo-test)
   SAFEYOLO_SUBNET_BASE — third octet base (default: 65)
 """
 
@@ -18,8 +30,27 @@ from pathlib import Path
 
 log = logging.getLogger("safeyolo.firewall")
 
-ANCHOR_NAME = os.environ.get("SAFEYOLO_PF_ANCHOR", "com.safeyolo")
+# Exactly two anchor names are permitted. This is an allowlist, not a wildcard:
+# production uses com.safeyolo; the blackbox test harness uses com.safeyolo-test.
+# Any other value is rejected at import time to prevent arbitrary anchor names
+# leaking into sudo-privileged pfctl calls.
+ALLOWED_ANCHORS = ("com.safeyolo", "com.safeyolo-test")
+DEFAULT_ANCHOR = "com.safeyolo"
+
+
+def _resolve_anchor_name() -> str:
+    name = os.environ.get("SAFEYOLO_PF_ANCHOR", DEFAULT_ANCHOR)
+    if name not in ALLOWED_ANCHORS:
+        raise RuntimeError(
+            f"SAFEYOLO_PF_ANCHOR={name!r} is not permitted. "
+            f"Allowed values: {', '.join(ALLOWED_ANCHORS)}"
+        )
+    return name
+
+
+ANCHOR_NAME = _resolve_anchor_name()
 ANCHOR_FILE = Path("/etc/pf.anchors") / ANCHOR_NAME
+PF_CONF = Path("/etc/pf.conf")
 
 # Base subnet: 192.168.65.0/24 for first VM, .66 for second, etc.
 # Override with SAFEYOLO_SUBNET_BASE for multi-instance setups.
@@ -116,11 +147,17 @@ def generate_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnet
 
 
 def load_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnets: list[str] | None = None) -> None:
-    """Write and load pf anchor rules. Requires sudo."""
+    """Write and load pf anchor rules. Requires sudo.
+
+    Does NOT mutate /etc/pf.conf. The caller must have run `safeyolo setup pf`
+    once so that the anchor hook is declared in pf.conf. If the hook is missing,
+    this function raises RuntimeError rather than attempting a privileged
+    append.
+    """
+    _require_pf_conf_hook()
     rules = generate_rules(proxy_port=proxy_port, admin_port=admin_port, active_subnets=active_subnets)
 
     _sudo_write_file(ANCHOR_FILE, rules)
-    _ensure_anchor_in_pf_conf()
     _sudo_run(["pfctl", "-a", ANCHOR_NAME, "-f", str(ANCHOR_FILE)], capture=True)
 
     # Enable pf if not already
@@ -184,32 +221,51 @@ def _sudo_write_file(path: Path, content: str) -> None:
         raise RuntimeError(f"Failed to write {path}: {proc.stderr}")
 
 
-def _ensure_anchor_in_pf_conf() -> None:
-    pf_conf = Path("/etc/pf.conf")
+def _pf_conf_declares_anchor() -> bool:
+    """Return True iff /etc/pf.conf declares the SafeYolo anchor hook.
+
+    The hook is two lines:
+        anchor "com.safeyolo"
+        load anchor "com.safeyolo" from "/etc/pf.anchors/com.safeyolo"
+
+    Each must appear as a complete, non-commented line. We match line-aware to
+    avoid false positives (e.g. `load anchor "com.safeyolo" ...` contains the
+    substring `anchor "com.safeyolo"`).
+
+    pf.conf is world-readable on stock macOS (0644 root:wheel), so this
+    does not require sudo.
+    """
     anchor_line = f'anchor "{ANCHOR_NAME}"'
-    nat_anchor_line = f'nat-anchor "{ANCHOR_NAME}"'
     load_line = f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"'
-
     try:
-        content = pf_conf.read_text()
-    except PermissionError:
-        result = _sudo_run(["cat", "/etc/pf.conf"], capture=True)
-        content = result.stdout or ""
+        content = PF_CONF.read_text()
+    except FileNotFoundError:
+        return False
 
-    needs_update = False
-    addition = ""
+    has_anchor = False
+    has_load = False
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line == anchor_line:
+            has_anchor = True
+        elif line == load_line:
+            has_load = True
+    return has_anchor and has_load
 
-    if nat_anchor_line not in content:
-        addition += f"\n# SafeYolo VM isolation (NAT)\n{nat_anchor_line}\n"
-        needs_update = True
 
-    if anchor_line not in content:
-        addition += f"# SafeYolo VM isolation (filter)\n{anchor_line}\n{load_line}\n"
-        needs_update = True
+def _require_pf_conf_hook() -> None:
+    """Ensure the SafeYolo anchor hook is present in pf.conf. Fail loudly otherwise.
 
-    if needs_update:
-        subprocess.run(
-            ["sudo", "tee", "-a", str(pf_conf)],
-            input=addition, capture_output=True, text=True,
-        )
-        log.info("Added SafeYolo anchors to /etc/pf.conf")
+    Runtime must not attempt to modify /etc/pf.conf — that requires a broad
+    sudoers grant (tee -a /etc/pf.conf) that we deliberately no longer hold.
+    """
+    if _pf_conf_declares_anchor():
+        return
+    raise RuntimeError(
+        f"SafeYolo anchor hook for {ANCHOR_NAME!r} is not installed in "
+        f"{PF_CONF}. Run `safeyolo setup pf"
+        f"{' --test' if ANCHOR_NAME == 'com.safeyolo-test' else ''}` once to "
+        f"install it. SafeYolo no longer modifies {PF_CONF} at runtime."
+    )

@@ -76,6 +76,21 @@ def setup() -> None:
         console.print("    Build with: cd vm && make install")
         all_ok = False
 
+    # pf anchor hook (macOS only). Runtime no longer installs this — must be
+    # present in /etc/pf.conf before the first VM starts.
+    import platform as _platform
+    if _platform.system() == "Darwin":
+        state = _pf_conf_state("com.safeyolo")
+        if state == "present":
+            console.print(f"  [green]OK[/green]  pf anchor hook installed in {_PF_CONF_PATH}")
+        elif state == "absent":
+            console.print(f"  [yellow]WARN[/yellow]  pf anchor hook not installed in {_PF_CONF_PATH}")
+            console.print("    Run [bold]safeyolo setup pf[/bold] to install")
+            all_ok = False
+        else:
+            console.print(f"  [red]MISSING[/red]  pf anchor hook: {state}")
+            all_ok = False
+
     if all_ok:
         console.print("\n[green]All prerequisites met.[/green]")
     else:
@@ -163,7 +178,11 @@ def sudoers() -> None:
 
     Copies the SafeYolo sudoers template to /etc/sudoers.d/safeyolo,
     granting passwordless sudo for only the specific commands SafeYolo
-    needs: pfctl, ifconfig feth*, sysctl, and pf.conf management.
+    needs at runtime: pfctl on the fixed com.safeyolo anchor, ifconfig
+    feth*, sysctl IP forwarding, and writes to the fixed anchor file
+    /etc/pf.anchors/com.safeyolo. The sudoers rules do NOT grant write
+    access to /etc/pf.conf — install the static anchor hook once with
+    `safeyolo setup pf` instead.
 
     Review the template before installing:
 
@@ -229,3 +248,186 @@ def sudoers() -> None:
 
     console.print("[green]Sudoers rules installed.[/green]")
     console.print("SafeYolo commands (pfctl, ifconfig feth, sysctl) no longer require a password.")
+
+
+# ---------------------------------------------------------------------------
+# pf anchor hook install
+# ---------------------------------------------------------------------------
+
+# The exact two lines SafeYolo expects in /etc/pf.conf for each anchor.
+# Anything else (missing, partial, or with a different load path) is treated
+# as an unexpected state and we refuse to modify pf.conf automatically.
+_PF_CONF_PATH = Path("/etc/pf.conf")
+_PF_ANCHORS_DIR = Path("/etc/pf.anchors")
+
+
+def _pf_hook_lines(anchor: str) -> tuple[str, str]:
+    """Return the (anchor, load) lines for the given anchor name."""
+    anchor_file = _PF_ANCHORS_DIR / anchor
+    return (
+        f'anchor "{anchor}"',
+        f'load anchor "{anchor}" from "{anchor_file}"',
+    )
+
+
+def _pf_conf_state(anchor: str) -> str:
+    """Return 'present', 'absent', or a description of an unexpected state.
+
+    Matches lines exactly (after stripping whitespace and skipping comments).
+    This matters because `anchor "com.safeyolo"` is a substring of
+    `load anchor "com.safeyolo" from "..."`, so substring matching would
+    misreport a pf.conf that has only the load line as "present".
+    """
+    anchor_line, load_line = _pf_hook_lines(anchor)
+    try:
+        content = _PF_CONF_PATH.read_text()
+    except FileNotFoundError:
+        return f"missing: {_PF_CONF_PATH} does not exist"
+    except PermissionError as err:
+        return f"unreadable: {err}"
+
+    has_anchor = False
+    has_load = False
+    has_conflicting_load = False
+    load_prefix = f'load anchor "{anchor}" from '
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line == anchor_line:
+            has_anchor = True
+        elif line == load_line:
+            has_load = True
+        elif line.startswith(load_prefix):
+            has_conflicting_load = True
+
+    if has_anchor and has_load:
+        return "present"
+    if not has_anchor and not has_load:
+        if has_conflicting_load:
+            return (
+                f"conflict: {_PF_CONF_PATH} already loads anchor "
+                f"{anchor!r} from a different path"
+            )
+        return "absent"
+    # Partial: one line present, the other missing — don't guess, fail loudly.
+    missing = "anchor" if not has_anchor else "load anchor"
+    return (
+        f"partial: {_PF_CONF_PATH} contains one of the two expected hook "
+        f"lines for {anchor!r} but not the other (missing {missing!r} line)"
+    )
+
+
+def _install_pf_hook(anchor: str) -> tuple[bool, str]:
+    """Install the static pf.conf hook for an anchor if not already present.
+
+    Returns (changed, message). Raises RuntimeError on unexpected pf.conf state
+    so the caller can surface a clear error without leaving things half-done.
+    """
+    state = _pf_conf_state(anchor)
+    if state == "present":
+        return False, f"already installed in {_PF_CONF_PATH}"
+    if state != "absent":
+        raise RuntimeError(f"Refusing to modify {_PF_CONF_PATH}: {state}")
+
+    anchor_line, load_line = _pf_hook_lines(anchor)
+    block = (
+        f"\n# SafeYolo VM isolation — managed by `safeyolo setup pf`\n"
+        f"{anchor_line}\n"
+        f"{load_line}\n"
+    )
+
+    # Read current content and produce a new version; write the full file via
+    # a single `tee` (not `tee -a`) so sudoers can narrowly allow writes only
+    # to /etc/pf.conf. Callers may assume this is idempotent: if the lines are
+    # already present we never get here.
+    try:
+        current = _PF_CONF_PATH.read_text()
+    except FileNotFoundError:
+        raise RuntimeError(f"{_PF_CONF_PATH} does not exist")
+
+    if not current.endswith("\n"):
+        current += "\n"
+    new_content = current + block
+
+    proc = subprocess.run(
+        ["sudo", "tee", str(_PF_CONF_PATH)],
+        input=new_content, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to write {_PF_CONF_PATH}: {proc.stderr}")
+    return True, f"added anchor hook for {anchor!r} to {_PF_CONF_PATH}"
+
+
+def _ensure_empty_anchor_file(anchor: str) -> tuple[bool, str]:
+    """Ensure /etc/pf.anchors/<anchor> exists. Create empty if missing."""
+    anchor_file = _PF_ANCHORS_DIR / anchor
+    if anchor_file.exists():
+        return False, f"{anchor_file} already exists"
+    placeholder = f"# SafeYolo anchor {anchor} — populated at runtime\n"
+    proc = subprocess.run(
+        ["sudo", "tee", str(anchor_file)],
+        input=placeholder, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to create {anchor_file}: {proc.stderr}")
+    return True, f"created empty {anchor_file}"
+
+
+@setup_app.command()
+def pf(
+    test: bool = typer.Option(
+        False,
+        "--test",
+        help="Install the com.safeyolo-test anchor hook (blackbox test harness).",
+    ),
+) -> None:
+    """Install the static SafeYolo pf anchor hook in /etc/pf.conf.
+
+    Idempotent: re-running this command is a no-op if the anchor hook is
+    already present. If /etc/pf.conf is in an unexpected state (partial or
+    conflicting hook) the command refuses to modify it and prints the
+    remediation.
+
+    After this runs once, SafeYolo only manages the anchor file at
+    /etc/pf.anchors/com.safeyolo and never touches /etc/pf.conf again.
+
+    Examples:
+
+        safeyolo setup pf
+        safeyolo setup pf --test   # for the blackbox test harness
+    """
+    import platform as _platform
+
+    if _platform.system() != "Darwin":
+        console.print("[yellow]pf setup is macOS-only.[/yellow]")
+        raise typer.Exit(0)
+
+    anchor = "com.safeyolo-test" if test else "com.safeyolo"
+    console.print(f"[bold]Installing pf anchor hook for {anchor!r}[/bold]\n")
+
+    try:
+        changed_conf, msg_conf = _install_pf_hook(anchor)
+        if changed_conf:
+            console.print(f"  [green]OK[/green]  {msg_conf}")
+        else:
+            console.print(f"  [dim]skip[/dim]  {msg_conf}")
+
+        changed_anchor, msg_anchor = _ensure_empty_anchor_file(anchor)
+        if changed_anchor:
+            console.print(f"  [green]OK[/green]  {msg_anchor}")
+        else:
+            console.print(f"  [dim]skip[/dim]  {msg_anchor}")
+
+    except RuntimeError as err:
+        console.print(f"\n[red]Failed:[/red] {err}")
+        console.print(
+            "\nFix /etc/pf.conf manually (e.g. remove stale SafeYolo lines) "
+            "and re-run `safeyolo setup pf`."
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[green]pf anchor hook installed.[/green] "
+        f"SafeYolo will manage {_PF_ANCHORS_DIR / anchor} only."
+    )

@@ -2,16 +2,21 @@
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, call
 
 import pytest
 
 from safeyolo.firewall import (
+    ALLOWED_ANCHORS,
     ANCHOR_FILE,
     ANCHOR_NAME,
+    DEFAULT_ANCHOR,
+    PF_CONF,
     SUBNET_BASE,
     _detect_outbound_interface,
-    _ensure_anchor_in_pf_conf,
+    _pf_conf_declares_anchor,
+    _require_pf_conf_hook,
+    _resolve_anchor_name,
     _sudo_run,
     _sudo_write_file,
     allocate_subnet,
@@ -315,33 +320,42 @@ class TestGenerateRules:
 class TestLoadRules:
     @pytest.fixture()
     def mock_helpers(self, monkeypatch):
-        """Mock all helpers that load_rules depends on."""
+        """Mock helpers that load_rules depends on.
+
+        The runtime load_rules path no longer mutates /etc/pf.conf; it only
+        verifies the hook is present, writes the anchor file, and loads it
+        via pfctl. We mock:
+          - _require_pf_conf_hook (assumed present by default)
+          - generate_rules
+          - _sudo_write_file
+          - _sudo_run (for pfctl calls)
+        """
+        mock_require = MagicMock()
         mock_generate = MagicMock(return_value="# test rules\n")
         mock_write = MagicMock()
-        mock_ensure = MagicMock()
         mock_sudo = MagicMock(
             return_value=subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="Status: Enabled", stderr=""
             )
         )
+        monkeypatch.setattr("safeyolo.firewall._require_pf_conf_hook", mock_require)
         monkeypatch.setattr("safeyolo.firewall.generate_rules", mock_generate)
         monkeypatch.setattr("safeyolo.firewall._sudo_write_file", mock_write)
-        monkeypatch.setattr("safeyolo.firewall._ensure_anchor_in_pf_conf", mock_ensure)
         monkeypatch.setattr("safeyolo.firewall._sudo_run", mock_sudo)
         return {
+            "require": mock_require,
             "generate": mock_generate,
             "write": mock_write,
-            "ensure": mock_ensure,
             "sudo_run": mock_sudo,
         }
+
+    def test_requires_pf_conf_hook_present(self, mock_helpers):
+        load_rules()
+        mock_helpers["require"].assert_called_once()
 
     def test_writes_rules_to_anchor_file(self, mock_helpers):
         load_rules(proxy_port=8080, admin_port=9090, active_subnets=["192.168.65.0/24"])
         mock_helpers["write"].assert_called_once_with(ANCHOR_FILE, "# test rules\n")
-
-    def test_ensures_anchor_in_pf_conf(self, mock_helpers):
-        load_rules()
-        mock_helpers["ensure"].assert_called_once()
 
     def test_loads_anchor_via_pfctl(self, mock_helpers):
         load_rules()
@@ -376,6 +390,58 @@ class TestLoadRules:
         mock_helpers["generate"].assert_called_once_with(
             proxy_port=3128, admin_port=7070, active_subnets=["192.168.65.0/24"]
         )
+
+    def test_no_pf_conf_read_or_append(self, monkeypatch):
+        """Runtime load_rules must not read or mutate /etc/pf.conf.
+
+        We fail read_text/sudo cat/sudo tee -a if anything tries to touch it.
+        """
+        monkeypatch.setattr("safeyolo.firewall._require_pf_conf_hook", lambda: None)
+        monkeypatch.setattr("safeyolo.firewall.generate_rules", lambda **kw: "# test\n")
+        monkeypatch.setattr("safeyolo.firewall._sudo_write_file", lambda *a, **kw: None)
+
+        pfctl_calls = []
+
+        def fake_sudo_run(cmd, capture=False, check=True):
+            pfctl_calls.append(cmd)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="Status: Enabled", stderr="")
+
+        monkeypatch.setattr("safeyolo.firewall._sudo_run", fake_sudo_run)
+
+        # subprocess.run must never be called with tee -a on pf.conf or cat pf.conf.
+        original_run = subprocess.run
+
+        def guarded_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                joined = " ".join(str(c) for c in cmd)
+                assert "tee -a" not in joined, f"load_rules must not append to pf.conf: {cmd}"
+                assert "/etc/pf.conf" not in joined, f"load_rules must not touch pf.conf: {cmd}"
+            return original_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("subprocess.run", guarded_run)
+
+        load_rules(active_subnets=["192.168.65.0/24"])
+
+        # None of the recorded pfctl calls should touch pf.conf either.
+        for cmd in pfctl_calls:
+            assert "/etc/pf.conf" not in " ".join(str(c) for c in cmd)
+
+    def test_fails_loudly_when_hook_missing(self, monkeypatch):
+        """If the pf.conf hook is missing, load_rules must not attempt to add it."""
+        def missing_hook():
+            raise RuntimeError("anchor hook for 'com.safeyolo' is not installed")
+
+        monkeypatch.setattr("safeyolo.firewall._require_pf_conf_hook", missing_hook)
+
+        # _sudo_write_file and _sudo_run must never be called
+        def explode(*a, **kw):
+            pytest.fail("runtime must not attempt privileged writes when hook is missing")
+
+        monkeypatch.setattr("safeyolo.firewall._sudo_write_file", explode)
+        monkeypatch.setattr("safeyolo.firewall._sudo_run", explode)
+
+        with pytest.raises(RuntimeError, match="not installed"):
+            load_rules(active_subnets=["192.168.65.0/24"])
 
 
 # ---------------------------------------------------------------------------
@@ -524,131 +590,54 @@ class TestDetectOutboundInterface:
 
 
 # ---------------------------------------------------------------------------
-# _ensure_anchor_in_pf_conf
+# _pf_conf_declares_anchor / _require_pf_conf_hook
 # ---------------------------------------------------------------------------
 
 
-class TestEnsureAnchorInPfConf:
-    def test_adds_nat_anchor_and_filter_anchor_when_both_missing(self, monkeypatch):
-        """When pf.conf has neither anchor, both are appended."""
-        existing_content = "# Default pf rules\nscrub-anchor \"com.apple/*\"\n"
-
-        # Make Path("/etc/pf.conf").read_text() return our content
-        original_read_text = Path.read_text
-
-        def mock_read_text(self):
-            if str(self) == "/etc/pf.conf":
-                return existing_content
-            return original_read_text(self)
-
-        monkeypatch.setattr(Path, "read_text", mock_read_text)
-
-        tee_calls = []
-
-        def mock_run(cmd, **kwargs):
-            tee_calls.append((cmd, kwargs))
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr("subprocess.run", mock_run)
-
-        _ensure_anchor_in_pf_conf()
-
-        # Should call sudo tee -a /etc/pf.conf
-        assert len(tee_calls) == 1
-        cmd, kwargs = tee_calls[0]
-        assert cmd == ["sudo", "tee", "-a", "/etc/pf.conf"]
-        appended = kwargs["input"]
-        assert f'nat-anchor "{ANCHOR_NAME}"' in appended
-        assert f'anchor "{ANCHOR_NAME}"' in appended
-        assert f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"' in appended
-
-    def test_skips_when_anchors_already_present(self, monkeypatch):
-        existing_content = (
-            f'nat-anchor "{ANCHOR_NAME}"\n'
+class TestPfConfDeclaresAnchor:
+    def test_true_when_both_hook_lines_present(self, monkeypatch):
+        content = (
             f'anchor "{ANCHOR_NAME}"\n'
             f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"\n'
         )
+        monkeypatch.setattr(Path, "read_text", lambda self: content if str(self) == str(PF_CONF) else "")
+        assert _pf_conf_declares_anchor() is True
 
-        def mock_read_text(self):
-            if str(self) == "/etc/pf.conf":
-                return existing_content
+    def test_false_when_missing(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self: "# empty pf.conf\n")
+        assert _pf_conf_declares_anchor() is False
+
+    def test_false_when_only_anchor_declared(self, monkeypatch):
+        # Declared but no load line — incomplete.
+        content = f'anchor "{ANCHOR_NAME}"\n'
+        monkeypatch.setattr(Path, "read_text", lambda self: content)
+        assert _pf_conf_declares_anchor() is False
+
+    def test_false_when_only_load_declared(self, monkeypatch):
+        content = f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"\n'
+        monkeypatch.setattr(Path, "read_text", lambda self: content)
+        assert _pf_conf_declares_anchor() is False
+
+    def test_false_when_pf_conf_missing(self, monkeypatch):
+        def raise_fnf(self):
             raise FileNotFoundError
+        monkeypatch.setattr(Path, "read_text", raise_fnf)
+        assert _pf_conf_declares_anchor() is False
 
-        monkeypatch.setattr(Path, "read_text", mock_read_text)
 
-        tee_calls = []
+class TestRequirePfConfHook:
+    def test_passes_silently_when_present(self, monkeypatch):
+        monkeypatch.setattr("safeyolo.firewall._pf_conf_declares_anchor", lambda: True)
+        _require_pf_conf_hook()  # must not raise
 
-        def mock_run(cmd, **kwargs):
-            tee_calls.append(cmd)
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr("subprocess.run", mock_run)
-
-        _ensure_anchor_in_pf_conf()
-
-        # No tee call because nothing needs adding
-        assert len(tee_calls) == 0
-
-    def test_falls_back_to_sudo_cat_on_permission_error(self, monkeypatch):
-        def mock_read_text(self):
-            if str(self) == "/etc/pf.conf":
-                raise PermissionError("Operation not permitted")
-            raise FileNotFoundError
-
-        monkeypatch.setattr(Path, "read_text", mock_read_text)
-
-        sudo_calls = []
-
-        def mock_sudo_run(cmd, **kwargs):
-            sudo_calls.append(cmd)
-            if cmd == ["cat", "/etc/pf.conf"]:
-                # Return content that already has both anchors
-                return subprocess.CompletedProcess(
-                    args=cmd, returncode=0,
-                    stdout=f'nat-anchor "{ANCHOR_NAME}"\nanchor "{ANCHOR_NAME}"\n',
-                    stderr="",
-                )
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr("safeyolo.firewall._sudo_run", mock_sudo_run)
-
-        tee_calls = []
-        monkeypatch.setattr(
-            "subprocess.run",
-            lambda cmd, **kw: (tee_calls.append(cmd), subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr=""))[1],
-        )
-
-        _ensure_anchor_in_pf_conf()
-
-        # Should have called sudo cat
-        assert ["cat", "/etc/pf.conf"] in sudo_calls
-
-    def test_adds_only_nat_anchor_when_filter_already_present(self, monkeypatch):
-        """When filter anchor exists but nat-anchor is missing, only nat-anchor is added."""
-        existing_content = f'anchor "{ANCHOR_NAME}"\nload anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"\n'
-
-        def mock_read_text(self):
-            if str(self) == "/etc/pf.conf":
-                return existing_content
-            raise FileNotFoundError
-
-        monkeypatch.setattr(Path, "read_text", mock_read_text)
-
-        tee_calls = []
-
-        def mock_run(cmd, **kwargs):
-            tee_calls.append((cmd, kwargs))
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr("subprocess.run", mock_run)
-
-        _ensure_anchor_in_pf_conf()
-
-        assert len(tee_calls) == 1
-        appended = tee_calls[0][1]["input"]
-        assert f'nat-anchor "{ANCHOR_NAME}"' in appended
-        # Should NOT re-add the filter anchor
-        assert f'\nanchor "{ANCHOR_NAME}"' not in appended
+    def test_raises_runtime_error_when_missing(self, monkeypatch):
+        monkeypatch.setattr("safeyolo.firewall._pf_conf_declares_anchor", lambda: False)
+        with pytest.raises(RuntimeError) as exc:
+            _require_pf_conf_hook()
+        msg = str(exc.value)
+        assert "not installed" in msg
+        assert "safeyolo setup pf" in msg
+        assert str(PF_CONF) in msg
 
 
 # ---------------------------------------------------------------------------
@@ -758,16 +747,45 @@ class TestSudoRun:
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# _resolve_anchor_name / constants
 # ---------------------------------------------------------------------------
 
 
+class TestResolveAnchorName:
+    def test_default_is_com_safeyolo(self, monkeypatch):
+        monkeypatch.delenv("SAFEYOLO_PF_ANCHOR", raising=False)
+        assert _resolve_anchor_name() == "com.safeyolo"
+
+    def test_accepts_blackbox_test_anchor(self, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_PF_ANCHOR", "com.safeyolo-test")
+        assert _resolve_anchor_name() == "com.safeyolo-test"
+
+    def test_rejects_arbitrary_value(self, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_PF_ANCHOR", "com.attacker")
+        with pytest.raises(RuntimeError, match="not permitted"):
+            _resolve_anchor_name()
+
+    def test_rejects_wildcard_style_value(self, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_PF_ANCHOR", "com.safeyolo*")
+        with pytest.raises(RuntimeError, match="not permitted"):
+            _resolve_anchor_name()
+
+
 class TestConstants:
-    def test_anchor_name(self):
-        assert ANCHOR_NAME == "com.safeyolo"
+    def test_default_anchor(self):
+        assert DEFAULT_ANCHOR == "com.safeyolo"
+
+    def test_allowed_anchors_is_exactly_two(self):
+        assert ALLOWED_ANCHORS == ("com.safeyolo", "com.safeyolo-test")
+
+    def test_anchor_name_is_in_allowlist(self):
+        assert ANCHOR_NAME in ALLOWED_ANCHORS
 
     def test_anchor_file_path(self):
-        assert ANCHOR_FILE == Path("/etc/pf.anchors/com.safeyolo")
+        assert ANCHOR_FILE == Path("/etc/pf.anchors") / ANCHOR_NAME
+
+    def test_pf_conf_path(self):
+        assert PF_CONF == Path("/etc/pf.conf")
 
     def test_subnet_base(self):
         assert SUBNET_BASE == 65
