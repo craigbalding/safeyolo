@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -232,7 +233,8 @@ class CredentialGuard(SecurityAddon):
     def configure(self, updates):
         """Handle configuration updates."""
         if not self.hmac_secret:
-            self.hmac_secret = load_hmac_secret(Path("/safeyolo/data/hmac_secret"))
+            data_dir = os.environ.get("SAFEYOLO_DATA_DIR", "/safeyolo/data")
+            self.hmac_secret = load_hmac_secret(Path(data_dir) / "hmac_secret")
 
     def _load_config_from_pdp(self, sensor_config: dict):
         """Load config from PDP sensor config.

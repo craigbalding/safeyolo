@@ -2,7 +2,6 @@
 
 import httpx
 import typer
-import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -15,7 +14,7 @@ from ..config import (
     get_config_path,
     load_config,
 )
-from ..docker import check_docker, get_container_status
+from ..proxy import is_proxy_running
 
 console = Console()
 
@@ -23,7 +22,7 @@ console = Console()
 def check() -> None:
     """Verify SafeYolo setup is working correctly.
 
-    Checks configuration, Docker, container, API, and HTTPS inspection.
+    Checks configuration, proxy, API, and HTTPS inspection.
 
     Examples:
 
@@ -52,34 +51,17 @@ def check() -> None:
             console.print("  [red]✗[/red]  Config file missing")
             all_ok = False
 
-    # 3. Check policy.yaml (policy file) - CRITICAL
+    # 3. Check policy file (TOML preferred, YAML fallback) - CRITICAL
     if config_dir:
-        baseline_path = config_dir / "policy.yaml"
-        if baseline_path.exists():
-            try:
-                with open(baseline_path) as f:
-                    policy = yaml.safe_load(f)
-                if policy and isinstance(policy, dict):
-                    if "hosts" in policy:
-                        host_count = len(policy.get("hosts", {}))
-                        console.print(f"  [green]✓[/green]  Policy file: policy.yaml ({host_count} hosts)")
-                    elif "permissions" in policy:
-                        perm_count = len(policy.get("permissions", []))
-                        console.print(f"  [green]✓[/green]  Policy file: policy.yaml ({perm_count} permissions)")
-                    else:
-                        console.print(
-                            "  [yellow]![/yellow]  Policy file: policy.yaml (no hosts or permissions section)"
-                        )
-                else:
-                    console.print("  [yellow]![/yellow]  Policy file: policy.yaml (empty or invalid)")
-            except yaml.YAMLError as e:
-                console.print(f"  [red]✗[/red]  Policy file: invalid YAML - {e}")
-                all_ok = False
-            except Exception as e:
-                console.print(f"  [red]✗[/red]  Policy file: error reading - {e}")
-                all_ok = False
+        toml_path = config_dir / "policy.toml"
+        yaml_path = config_dir / "policy.yaml"
+        if toml_path.exists():
+            console.print("  [green]✓[/green]  Policy file: policy.toml")
+        elif yaml_path.exists():
+            console.print("  [green]✓[/green]  Policy file: policy.yaml")
         else:
-            console.print("  [red]✗[/red]  Policy file: policy.yaml NOT FOUND")
+            console.print("  [red]✗[/red]  Policy file: not found (expected policy.toml)")
+            all_ok = False
             console.print("        Run: [bold]safeyolo init[/bold] to create default policy")
             console.print("        [dim]The proxy will refuse to start without a policy file.[/dim]")
             all_ok = False
@@ -92,24 +74,13 @@ def check() -> None:
     else:
         console.print(f"  [dim]–[/dim]  Admin token not set (expected at {token_path})")
 
-    # 6. Check Docker
-    if check_docker():
-        console.print("  [green]✓[/green]  Docker available")
+    # 6. Check proxy process
+    if is_proxy_running():
+        console.print("  [green]✓[/green]  Proxy running")
+        proxy_running = True
     else:
-        console.print("  [red]✗[/red]  Docker not available")
-        all_ok = False
-
-    # 7. Check container status
-    status = get_container_status()
-    if status:
-        if status.get("status") == "running":
-            console.print("  [green]✓[/green]  Container running")
-            proxy_running = True
-        else:
-            console.print("  [yellow]![/yellow]  Container not running")
-            console.print("        Run: [bold]safeyolo start[/bold]")
-    else:
-        console.print("  [dim]–[/dim]  Container not created yet")
+        console.print("  [yellow]![/yellow]  Proxy not running")
+        console.print("        Run: [bold]safeyolo start[/bold]")
 
     # 8. Check API connectivity
     if proxy_running:

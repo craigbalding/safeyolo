@@ -22,6 +22,7 @@ import base64
 import hmac
 import json
 import logging
+import os
 import re
 import urllib.parse
 
@@ -89,7 +90,8 @@ class AgentAPI:
 
         from pdp.tokens import read_active_token
 
-        active_token = read_active_token(Path("/safeyolo/data/agent_token"))
+        data_dir = os.environ.get("SAFEYOLO_DATA_DIR", "/safeyolo/data")
+        active_token = read_active_token(Path(data_dir) / "agent_token")
         if active_token is None:
             self._respond(flow, 503, {"error": "Agent token not configured"})
             return
@@ -761,7 +763,7 @@ class AgentAPI:
         # Search JSONL log for matching events
         from pathlib import Path
 
-        log_path = Path("/app/logs/safeyolo.jsonl")
+        log_path = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
         if not log_path.exists():
             self._respond(flow, 200, {"request_id": request_id, "events": []})
             return

@@ -6,7 +6,6 @@ import typer
 from rich.console import Console
 
 from ..config import find_config_dir, get_certs_dir, load_config
-from ..docker import copy_ca_cert_to_host, is_running
 
 console = Console()
 
@@ -46,9 +45,7 @@ def env() -> None:
     ca_cert = get_ca_cert_path()
 
     # If cert not on host, try to copy from running container
-    if not ca_cert and is_running():
-        copy_ca_cert_to_host()
-        ca_cert = get_ca_cert_path()
+    # Cert is generated on host by proxy.start_proxy(), no copy needed
 
     if not ca_cert:
         console.print("[red]CA certificate not found.[/red]")
@@ -91,9 +88,7 @@ def show() -> None:
     ca_cert = get_ca_cert_path()
 
     # If cert not on host, try to copy from running container
-    if not ca_cert and is_running():
-        copy_ca_cert_to_host()
-        ca_cert = get_ca_cert_path()
+    # Cert is generated on host by proxy.start_proxy(), no copy needed
 
     config = load_config()
     sandbox = config.get("sandbox", False)
@@ -118,8 +113,7 @@ def show() -> None:
             pass  # Skip fingerprint display on any error
 
         if sandbox:
-            console.print("\n[dim]Sandbox Mode: Agents access the CA via Docker volume mount.[/dim]")
-            console.print("[dim]Host access is available for diagnostics but not recommended for agents.[/dim]")
+            console.print("\n[dim]Sandbox Mode: Agents access the CA via VirtioFS config share.[/dim]")
 
         console.print("\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
     else:

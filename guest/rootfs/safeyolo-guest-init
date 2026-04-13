@@ -1,0 +1,34 @@
+#!/bin/bash
+#
+# SafeYolo guest init STUB — baked into rootfs, rarely changes.
+#
+# Mounts the VirtioFS config share and execs the real init from there.
+# All SafeYolo-specific logic lives on the config share so it can be
+# updated without rebuilding the rootfs.
+#
+set -e
+
+# Mount minimal filesystems needed for VirtioFS
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts -o gid=5,mode=620 2>/dev/null || true
+ln -sf pts/ptmx /dev/ptmx 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+
+# Mount config share (contains the real init script, vsock-term, env files)
+mkdir -p /safeyolo
+mount -t virtiofs config /safeyolo 2>/dev/null || {
+    echo "FATAL: cannot mount config share" >&2
+    exec sleep infinity
+}
+
+# Hand off to the real init from the config share
+if [ -x /safeyolo/guest-init ]; then
+    exec /safeyolo/guest-init
+else
+    echo "FATAL: /safeyolo/guest-init not found on config share" >&2
+    exec sleep infinity
+fi

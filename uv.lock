@@ -9,7 +9,6 @@ resolution-markers = [
 [manifest]
 members = [
     "safeyolo",
-    "safeyolo-blackbox-runner",
     "safeyolo-blackbox-sinkhole",
     "safeyolo-proxy",
 ]
@@ -1901,23 +1900,6 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "safeyolo-blackbox-runner"
-version = "0.1.0"
-source = { virtual = "tests/blackbox/runner" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pytest" },
-    { name = "pytest-timeout" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.25.0" },
-    { name = "pytest", specifier = ">=7.0.0" },
-    { name = "pytest-timeout", specifier = ">=2.0.0" },
-]
-
-[[package]]
 name = "safeyolo-blackbox-sinkhole"
 version = "0.1.0"
 source = { virtual = "tests/blackbox/sinkhole" }
@@ -1939,7 +1921,6 @@ dependencies = [
     { name = "mitmproxy" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "ruamel-yaml" },
     { name = "tenacity" },
     { name = "tomlkit" },
     { name = "yarl" },
@@ -1951,6 +1932,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pytest-timeout" },
     { name = "ruff" },
 ]
 sbom = [
@@ -1965,7 +1947,6 @@ requires-dist = [
     { name = "mitmproxy", specifier = ">=12.0.0" },
     { name = "pydantic", specifier = ">=2.10.0,<2.12" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tomlkit", specifier = ">=0.12.0" },
     { name = "yarl", specifier = ">=1.9.0" },
@@ -1977,6 +1958,7 @@ dev = [
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
+    { name = "pytest-timeout", specifier = ">=2.0.0" },
     { name = "ruff", specifier = ">=0.9.4" },
 ]
 sbom = [{ name = "cyclonedx-bom", specifier = ">=5.1.0" }]

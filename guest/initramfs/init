@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# SafeYolo initramfs init script.
+# Runs before the real rootfs is available.
+# Tasks: fsck, resize, mount root, set up static network, switch_root.
+#
+set -e
+
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+
+# Ensure root disk is clean
+echo "Checking root filesystem..."
+/sbin/e2fsck -fp /dev/vda >/dev/null 2>&1 || true
+
+# Grow filesystem to fill disk (handles first boot and disk resize)
+/usr/sbin/resize2fs /dev/vda >/dev/null 2>&1 || true
+
+# Mount root filesystem
+mount -t ext4 /dev/vda /mnt/root
+
+# Mount config share to read network config
+mkdir -p /mnt/config
+mount -t virtiofs config /mnt/config 2>/dev/null || true
+
+# Set up static networking from config share
+if ip link show eth0 >/dev/null 2>&1; then
+    ip link set eth0 up
+
+    if [ -f /mnt/config/network.env ]; then
+        . /mnt/config/network.env
+        ip addr add ${GUEST_IP}/${NETMASK:-255.255.255.0} dev eth0
+        ip route add default via ${GATEWAY_IP}
+    fi
+fi
+
+umount /mnt/config 2>/dev/null || true
+
+# Clean up before switch_root
+umount /proc /sys
+
+# Switch to real root and exec guest init
+exec switch_root /mnt/root /usr/local/bin/safeyolo-guest-init

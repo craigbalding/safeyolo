@@ -291,7 +291,7 @@ class TestExplain:
             api.request(flow)
             assert flow.response.status_code == 400
 
-    def test_explain_finds_matching_events_in_jsonl(self, api, agent_token, tmp_path):
+    def test_explain_finds_matching_events_in_jsonl(self, api, agent_token, tmp_path, monkeypatch):
         """Explain searches JSONL log and returns only events matching request_id."""
         target_id = "req-aabbccdd11223344aabbccdd11223344"
         other_id = "req-00000000000000000000000000000000"
@@ -302,15 +302,9 @@ class TestExplain:
             + json.dumps({"request_id": target_id, "event": "traffic.response", "status_code": 200}) + "\n"
             + "not valid json\n"
         )
-        from pathlib import Path as RealPath
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
-        def fake_path(arg):
-            if arg == "/app/logs/safeyolo.jsonl":
-                return RealPath(str(log_file))
-            return RealPath(arg)
-
-        with _patch_active_token(agent_token), \
-             patch("pathlib.Path", side_effect=fake_path):
+        with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             api.request(flow)
 
@@ -322,7 +316,7 @@ class TestExplain:
         assert body["events"][1]["status_code"] == 200
         assert "truncated" not in body
 
-    def test_explain_sets_truncated_flag_when_log_exceeds_limit(self, api, agent_token, tmp_path):
+    def test_explain_sets_truncated_flag_when_log_exceeds_limit(self, api, agent_token, tmp_path, monkeypatch):
         """When log exceeds MAX_EXPLAIN_LINES, truncated flag is set."""
         target_id = "req-aabbccdd11223344aabbccdd11223344"
         log_file = tmp_path / "safeyolo.jsonl"
@@ -334,15 +328,9 @@ class TestExplain:
         lines.append(json.dumps({"request_id": target_id, "event": "traffic.request"}))
         log_file.write_text("\n".join(lines) + "\n")
 
-        from pathlib import Path as RealPath
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
-        def fake_path(arg):
-            if arg == "/app/logs/safeyolo.jsonl":
-                return RealPath(str(log_file))
-            return RealPath(arg)
-
-        with _patch_active_token(agent_token), \
-             patch("pathlib.Path", side_effect=fake_path):
+        with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             api.request(flow)
 
@@ -1025,6 +1013,83 @@ class TestFlowStoreAPI:
             assert flow.response.status_code == 400
             body = json.loads(flow.response.content)
             assert body == {"error": "Invalid JSON body"}
+
+
+class TestEnvVarPaths:
+    """Tests for SAFEYOLO_DATA_DIR and SAFEYOLO_LOG_PATH env var support.
+
+    Contract:
+    - Token path: SAFEYOLO_DATA_DIR/agent_token (falls back to /safeyolo/data/agent_token)
+    - Log path: SAFEYOLO_LOG_PATH (falls back to /app/logs/safeyolo.jsonl)
+    """
+
+    def test_token_path_uses_safeyolo_data_dir(self, api, monkeypatch):
+        """When SAFEYOLO_DATA_DIR is set, token is read from $SAFEYOLO_DATA_DIR/agent_token."""
+        from pathlib import Path
+
+        monkeypatch.setenv("SAFEYOLO_DATA_DIR", "/custom/data")
+        captured_path = None
+
+        def capture_read_active_token(path):
+            nonlocal captured_path
+            captured_path = path
+            return "test-token-value"
+
+        with patch("pdp.tokens.read_active_token", side_effect=capture_read_active_token):
+            flow = _make_api_flow("/health", token="test-token-value")
+            api.request(flow)
+
+        assert captured_path == Path("/custom/data/agent_token")
+
+    def test_token_path_falls_back_to_default(self, api, monkeypatch):
+        """When SAFEYOLO_DATA_DIR is not set, token is read from /safeyolo/data/agent_token."""
+        from pathlib import Path
+
+        monkeypatch.delenv("SAFEYOLO_DATA_DIR", raising=False)
+        captured_path = None
+
+        def capture_read_active_token(path):
+            nonlocal captured_path
+            captured_path = path
+            return "test-token-value"
+
+        with patch("pdp.tokens.read_active_token", side_effect=capture_read_active_token):
+            flow = _make_api_flow("/health", token="test-token-value")
+            api.request(flow)
+
+        assert captured_path == Path("/safeyolo/data/agent_token")
+
+    def test_log_path_uses_safeyolo_log_path_env(self, api, agent_token, tmp_path, monkeypatch):
+        """When SAFEYOLO_LOG_PATH is set, explain reads from that path."""
+        target_id = "req-aabbccdd11223344aabbccdd11223344"
+        log_file = tmp_path / "custom.jsonl"
+        log_file.write_text(
+            json.dumps({"request_id": target_id, "event": "traffic.request", "host": "custom.com"}) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        with _patch_active_token(agent_token):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            api.request(flow)
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert len(body["events"]) == 1
+        assert body["events"][0]["host"] == "custom.com"
+
+    def test_log_path_falls_back_to_default(self, api, agent_token, monkeypatch):
+        """When SAFEYOLO_LOG_PATH is not set, explain reads from /app/logs/safeyolo.jsonl."""
+        monkeypatch.delenv("SAFEYOLO_LOG_PATH", raising=False)
+
+        # The default path won't exist in test, so we get empty events (not an error)
+        with _patch_active_token(agent_token):
+            valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
+            api.request(flow)
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert body["events"] == []
 
 
 # -- Gateway endpoint tests --

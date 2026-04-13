@@ -286,10 +286,10 @@ the core approval loop is validated.
 
 ### Blackbox test suite for gateway grants
 
-End-to-end tests using the existing blackbox infrastructure (Docker
-Compose, sinkhole, admin API). Requires a test-specific service
-definition with a sinkhole-aliased host (e.g. `gateway-test.sinkhole`
-added as a network alias on the sinkhole container).
+End-to-end tests using the existing blackbox infrastructure (sinkhole,
+admin API, host-side pytest). Requires a test-specific service
+definition with a sinkhole-aliased host added to the sinkhole router's
+`SINKHOLE_HOSTS` set and the cert SANs.
 
 **Test service setup:**
 - Service `test-gateway-svc` with auth type `api_key`, header `X-Auth-Token`

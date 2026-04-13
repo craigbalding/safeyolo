@@ -8,9 +8,19 @@
 #   For tests, we create a test CA that SafeYolo trusts, and sinkhole presents
 #   certificates signed by this CA. No TLS shortcuts, no ssl_insecure flags.
 #
-# Generated files:
-#   ca.crt / ca.key       - Test CA (added to SafeYolo's trust store)
-#   sinkhole.crt / .key   - Sinkhole cert (signed by test CA, multi-SAN)
+# Generated files (public — in repo, visible to VM):
+#   certs/ca.crt          - Test CA certificate
+#   certs/sinkhole.crt    - Sinkhole certificate
+#
+# Generated files (private — outside repo, NOT visible to VM):
+#   ~/.safeyolo/test-certs/ca.key          - Test CA private key
+#   ~/.safeyolo/test-certs/sinkhole.key    - Sinkhole private key
+#
+# Why the split:
+#   The workspace is mounted into agent VMs via VirtioFS. Private keys in
+#   the repo tree would be accessible to the agent — violating the security
+#   contract that blackbox tests verify. Keeping keys outside the repo
+#   ensures the key isolation test passes for the right reason.
 #
 # Usage:
 #   ./generate-certs.sh           # Generate if missing
@@ -20,15 +30,19 @@
 set -e
 
 CERT_DIR="$(cd "$(dirname "$0")" && pwd)"
+KEY_DIR="$HOME/.safeyolo/test-certs"
+mkdir -p "$KEY_DIR"
+
 cd "$CERT_DIR"
 
 # Check if regeneration requested
 if [ "$1" = "--force" ]; then
-    rm -f ca.crt ca.key sinkhole.crt sinkhole.key sinkhole.csr
+    rm -f ca.crt sinkhole.crt sinkhole.csr
+    rm -f "$KEY_DIR/ca.key" "$KEY_DIR/sinkhole.key"
 fi
 
 # Skip if certs already exist
-if [ -f ca.crt ] && [ -f sinkhole.crt ]; then
+if [ -f ca.crt ] && [ -f sinkhole.crt ] && [ -f "$KEY_DIR/ca.key" ] && [ -f "$KEY_DIR/sinkhole.key" ]; then
     echo "Certificates already exist. Use --force to regenerate."
     exit 0
 fi
@@ -42,15 +56,15 @@ echo ""
 
 # 1. Generate Test CA
 echo "1. Generating Test CA..."
-openssl genrsa -out ca.key 4096
+openssl genrsa -out "$KEY_DIR/ca.key" 4096
 openssl req -x509 -new -nodes \
-    -key ca.key \
+    -key "$KEY_DIR/ca.key" \
     -sha256 \
     -days 3650 \
     -out ca.crt \
     -subj "/CN=SafeYolo Blackbox Test CA/O=SafeYolo Test/C=US"
 
-echo "   Created: ca.crt, ca.key"
+echo "   Created: ca.crt (public), ~/.safeyolo/test-certs/ca.key (private)"
 
 # 2. Generate sinkhole certificate with SANs for all test hostnames
 echo "2. Generating sinkhole certificate..."
@@ -85,12 +99,13 @@ DNS.7 = httpbin.org
 DNS.8 = failing.test
 DNS.9 = legitimate-api.com
 DNS.10 = localhost
+IP.1 = 127.0.0.1
 EOF
 
 # Generate key and CSR
-openssl genrsa -out sinkhole.key 2048
+openssl genrsa -out "$KEY_DIR/sinkhole.key" 2048
 openssl req -new \
-    -key sinkhole.key \
+    -key "$KEY_DIR/sinkhole.key" \
     -out sinkhole.csr \
     -config sinkhole-openssl.cnf
 
@@ -98,7 +113,7 @@ openssl req -new \
 openssl x509 -req \
     -in sinkhole.csr \
     -CA ca.crt \
-    -CAkey ca.key \
+    -CAkey "$KEY_DIR/ca.key" \
     -CAcreateserial \
     -out sinkhole.crt \
     -days 365 \
@@ -106,18 +121,23 @@ openssl x509 -req \
     -extensions v3_req \
     -extfile sinkhole-openssl.cnf
 
-# Cleanup
+# Cleanup temporaries
 rm -f sinkhole.csr sinkhole-openssl.cnf ca.srl
 
-echo "   Created: sinkhole.crt, sinkhole.key"
+# Remove any legacy key files from the repo directory
+rm -f ca.key sinkhole.key
+
+echo "   Created: sinkhole.crt (public), ~/.safeyolo/test-certs/sinkhole.key (private)"
 echo ""
 echo "=== Certificate Generation Complete ==="
 echo ""
-echo "Files:"
-echo "  ca.crt        - Test CA certificate (mount into SafeYolo, add to trust store)"
-echo "  ca.key        - Test CA private key (keep secure, not needed at runtime)"
-echo "  sinkhole.crt  - Sinkhole certificate (mount into sinkhole)"
-echo "  sinkhole.key  - Sinkhole private key (mount into sinkhole)"
+echo "Public (in repo — visible to VM):"
+echo "  $CERT_DIR/ca.crt"
+echo "  $CERT_DIR/sinkhole.crt"
+echo ""
+echo "Private (outside repo — NOT visible to VM):"
+echo "  $KEY_DIR/ca.key"
+echo "  $KEY_DIR/sinkhole.key"
 echo ""
 echo "The sinkhole cert includes SANs for: api.openai.com, api.anthropic.com,"
-echo "evil.com, attacker.com, httpbin.org, and other test hostnames."
+echo "evil.com, attacker.com, httpbin.org, localhost, 127.0.0.1, and other test hostnames."

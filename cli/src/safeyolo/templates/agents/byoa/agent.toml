@@ -1,0 +1,36 @@
+schema_version = 1
+
+[agent]
+name = "byoa"
+description = "Bring Your Own Agent - sandboxed shell for custom agent installation"
+
+[install]
+mise = ""
+binary = "bash"
+
+[run]
+command = "bash"
+args = ["--login"]
+auto_args = []
+help_arg = "--help"
+
+[auth]
+env_var = ""
+oauth_file = ""
+setup_hint = "Install your preferred agent and configure its authentication"
+
+[host]
+config_dirs = [".safeyolo-hooks"]
+config_files = []
+
+[vm]
+cpus = 4
+memory = 4096
+env = {}
+
+[instructions]
+content_file = "instructions.md"
+
+[instructions.injection]
+type = "system_file"
+path = "/etc/motd"

@@ -6,16 +6,6 @@ from typing import Any
 
 import yaml
 
-# Secure mode network constants
-COMPOSE_PROJECT_NAME = "safeyolo"  # Explicit project name for docker compose -p
-INTERNAL_NETWORK_NAME = "internal"
-COMPOSE_NETWORK_NAME = "safeyolo_internal"  # Full network name (project_internal)
-# Proxy container name - used for Docker DNS resolution (agents use http://safeyolo:8080)
-PROXY_CONTAINER_NAME = "safeyolo"
-# Cert volumes (split for security: private key separate from public CA)
-PRIVATE_CERTS_VOLUME_NAME = "safeyolo-certs-private"  # Private key material (600 perms)
-CA_VOLUME_NAME = "safeyolo-ca"  # Public CA cert only (agents mount read-only)
-
 # Environment variable names for path overrides (useful for testing and custom setups)
 _CONFIG_DIR_ENV = "SAFEYOLO_CONFIG_DIR"
 _LOGS_DIR_ENV = "SAFEYOLO_LOGS_DIR"
@@ -36,8 +26,6 @@ DEFAULT_CONFIG = {
     "proxy": {
         "port": 8080,
         "admin_port": 9090,
-        "image": "safeyolo:latest",
-        "container_name": "safeyolo",
     },
     "modes": {
         "credential_guard": "block",
@@ -46,6 +34,16 @@ DEFAULT_CONFIG = {
     },
     "notifications": {
         "method": "none",
+    },
+    "test": {
+        "enabled": False,
+        # Sinkhole routing: redirect upstream to local test sinkhole
+        "sinkhole_router": "",  # path to sinkhole_router.py addon
+        "sinkhole_host": "127.0.0.1",
+        "sinkhole_http_port": 18080,
+        "sinkhole_https_port": 18443,
+        # Upstream CA: trust test CA for sinkhole TLS verification
+        "ca_cert": "",  # path to test CA cert
     },
 }
 
@@ -176,6 +174,31 @@ def get_admin_token() -> str | None:
     return None
 
 
+def get_share_dir() -> Path:
+    """Get path to shared VM assets (kernel, initramfs, base rootfs)."""
+    return get_config_dir() / "share"
+
+
+def get_vm_helper_path() -> Path:
+    """Get path to the safeyolo-vm binary."""
+    return get_config_dir() / "bin" / "safeyolo-vm"
+
+
+def get_ssh_key_path() -> Path:
+    """Get path to the VM SSH private key."""
+    return get_data_dir() / "vm_ssh_key"
+
+
+def get_agent_map_path() -> Path:
+    """Get path to the agent-IP map file (read by service_discovery addon)."""
+    return get_data_dir() / "agent_map.json"
+
+
+def get_proxy_pid_path() -> Path:
+    """Get path to the mitmproxy PID file."""
+    return get_data_dir() / "proxy.pid"
+
+
 def ensure_directories() -> None:
     """Ensure all required directories exist."""
     config_dir = get_config_dir(create=True)
@@ -183,3 +206,5 @@ def ensure_directories() -> None:
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
     (config_dir / "logs").mkdir(exist_ok=True)
+    (config_dir / "share").mkdir(exist_ok=True)
+    (config_dir / "bin").mkdir(exist_ok=True)

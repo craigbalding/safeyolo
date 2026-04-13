@@ -55,13 +55,13 @@ class HostConfig:
 
 
 @dataclass
-class DockerConfig:
-    """Docker escape hatch for custom configuration."""
+class VMConfig:
+    """VM configuration."""
 
+    cpus: int = 4
+    memory: int = 4096  # MB
+    disk_size: int = 4096  # MB
     env: dict[str, str] = field(default_factory=dict)
-    capabilities: list[str] = field(default_factory=list)
-    sysctls: dict[str, str] = field(default_factory=dict)
-    image: str | None = None  # Override base image
 
 
 @dataclass
@@ -89,7 +89,7 @@ class AgentConfig:
     run: RunConfig
     auth: AuthConfig
     host: HostConfig
-    docker: DockerConfig
+    vm: VMConfig
     instructions: InstructionsConfig
     schema_version: int = CURRENT_SCHEMA_VERSION
 
@@ -134,7 +134,7 @@ def load_agent_config(agent_dir: Path) -> AgentConfig:
     run = data.get("run", {})
     auth = data.get("auth", {})
     host = data.get("host", {})
-    docker = data.get("docker", {})
+    vm = data.get("vm", data.get("docker", {}))
     instructions = data.get("instructions", {})
     injection = instructions.get("injection", {})
 
@@ -168,11 +168,11 @@ def load_agent_config(agent_dir: Path) -> AgentConfig:
             config_dirs=host.get("config_dirs", []),
             config_files=host.get("config_files", []),
         ),
-        docker=DockerConfig(
-            env=docker.get("env", {}),
-            capabilities=docker.get("capabilities", []),
-            sysctls=docker.get("sysctls", {}),
-            image=docker.get("image"),
+        vm=VMConfig(
+            cpus=vm.get("cpus", 4),
+            memory=vm.get("memory", 4096),
+            disk_size=vm.get("disk_size", 4096),
+            env=vm.get("env", {}),
         ),
         instructions=InstructionsConfig(
             content=content,

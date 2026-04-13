@@ -105,6 +105,6 @@ We welcome security research on SafeYolo.
 
 ## Further Reading
 
-- [Security verification](docs/security-verification.md) — container hardening, dependency trust, automated testing, build verification
+- [Security verification](docs/security-verification.md) — VM isolation, dependency trust, automated testing, build verification
 - [Architecture](docs/ARCHITECTURE.md)
 - [Service gateway v2 design](docs/service-gateway-v2-design.md)

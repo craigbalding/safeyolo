@@ -66,11 +66,11 @@ class AdminAPI:
         except httpx.RemoteProtocolError:
             raise APIError(
                 "Server disconnected unexpectedly - admin API may have crashed. "
-                "Check 'docker logs safeyolo' for details."
+                "Check ~/.local/state/safeyolo/mitmproxy.log for details."
             )
         except httpx.ReadError:
             raise APIError(
-                f"Connection lost while reading response from {self.base_url}. Check 'docker logs safeyolo' for errors."
+                f"Connection lost while reading response from {self.base_url}. Check ~/.local/state/safeyolo/mitmproxy.log for errors."
             )
         except httpx.TimeoutException:
             raise APIError(

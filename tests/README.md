@@ -1,4 +1,16 @@
-# SafeYolo Addon Tests
+# SafeYolo Tests
+
+## Blackbox Tests (`blackbox/`)
+
+End-to-end security verification — SafeYolo's trust anchor. Runs the real
+proxy, real firewall, real microVM. Split across two execution domains:
+
+- **Host pytest** (`blackbox/host/`) — proxy functional tests (credential guard, network guard)
+- **VM pytest** (`blackbox/isolation/`) — isolation tests run inside a real microVM (network escape, privilege escalation, key isolation)
+
+See [`blackbox/README.md`](blackbox/README.md) for architecture and running instructions.
+
+## Addon Unit Tests
 
 Unit and integration tests for native mitmproxy addons.
 

@@ -1,55 +1,103 @@
 # SafeYolo
 
 [![CI](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/ci.yml)
-[![Blackbox Tests](https://github.com/craigbalding/safeyolo/actions/workflows/blackbox.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/blackbox.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/craigbalding/safeyolo/badge)](https://scorecard.dev/viewer/?uri=github.com/craigbalding/safeyolo)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11693/badge)](https://www.bestpractices.dev/projects/11693)
 [![CodeQL](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml)
 
 **Don't slow your agents down, just scope their access.**
 
-SafeYolo is a security proxy that gives operators scoped control over what AI agents can access.
+SafeYolo is a security proxy that gives operators scoped control over what AI agents can access. Agents run in isolated Linux microVMs with enforced network egress control — bypass is impossible.
 
-Most agent sandbox projects focus on host isolation: run the agent in a locked-down container, restrict the filesystem, limit network access.
-
-That helps, but it doesn't solve the real problem.
-
-Agents need to reach your external services — your email, your project tracker, your cloud APIs. But an agent with access to your inbox can read password reset emails, 2FA codes, and security notifications. An agent with a cloud API key may be able to create more keys — giving itself or an attacker silent, ongoing access. In error or if prompt-injected, these are paths to account takeover.
-
-SafeYolo gives you scoped control over what your agents can access, so they get what they need to do their job and nothing more.
-
-Built on the fantastic [mitmproxy](https://mitmproxy.org/) project.
+Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patterns informed by [Shuru](https://github.com/superhq-ai/shuru/).
 
 ## Quick Start
 
-```bash
-# Install from source
-git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo/cli && uv tool install -e .
+### Prerequisites
 
-# Initialize and start the proxy
-safeyolo init
+- macOS with Apple Silicon (M1+)
+- [OrbStack](https://orbstack.dev/) or Docker Desktop (for guest image build only — not used at runtime)
+- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+
+### Build
+
+```bash
+git clone -b microvm https://github.com/craigbalding/safeyolo.git
+cd safeyolo
+
+# Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min
+cd guest && ./build-all.sh && cd ..
+mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
+
+# Build host binaries (Swift VM helper + feth-bridge + vsock-term)
+cd vm && make install && cd ..
+
+# Install CLI and dependencies
+uv sync --all-packages
+```
+
+### Run
+
+```bash
+# Start the proxy
 safeyolo start
 
-# Run Claude Code in a secure sandbox
+# Run Claude Code in an isolated microVM
 safeyolo agent add myproject claude-code ~/code
 ```
 
-The last argument (`~/code`) is where your project files live on the host - the agent works on these files but runs in an isolated container where:
+The last argument (`~/code`) is your project directory — mounted read-write into the VM via VirtioFS. The agent runs in a hardware-isolated Linux microVM where:
 
-- **All traffic routes through SafeYolo proxy** - no direct internet access
-- **API keys are protected** - credentials only reach their intended hosts
-- **Everything is logged** - JSONL audit trail for review
-- **Dev-ready containers** - agents install their own toolchains via mise — no root needed
+- **All traffic routes through SafeYolo proxy** — pf firewall blocks direct internet access
+- **API keys are protected** — credentials only reach their intended hosts
+- **Everything is logged** — JSONL audit trail for review
+- **Dev-ready VMs** — agents install toolchains via mise, state persists across restarts
+
+### Verify isolation
+
+From inside the agent:
+
+```bash
+# This works (routed through proxy):
+curl https://httpbin.org/ip
+
+# This is blocked (pf drops it):
+curl --noproxy '*' https://ifconfig.co
+# Error: Could not resolve host
+```
+
+## How It Works
+
+Each agent runs in a persistent Linux microVM (Apple Virtualization.framework) with a dedicated network segment:
+
+```
+Agent VM (192.168.68.2)
+    │
+    │  HTTP_PROXY → host feth IP
+    ▼
+feth pair (pf: allow proxy port, block all else)
+    │
+    ▼
+SafeYolo mitmproxy (host process)
+    │  policy, credential guard, rate limits, audit
+    ▼
+Internet
+```
+
+If the agent unsets proxy vars → blocked by pf. Raw TCP → blocked by pf. DNS → blocked (no DNS from VM). The enforcement is at the network level, not the process level.
 
 ## Key Features
 
 - **One-command agent setup** — pre-configured templates for Claude Code and Codex
-- **Scoped API access** — grant agents specific capabilities per service, block everything else
-- **Credential isolation** — agents access your services without ever seeing your keys
-- **Human-in-the-loop** — risky actions need your approval via `safeyolo watch`
+- **Hardware isolation** — each agent in its own microVM (stronger than containers)
+- **Enforced egress** — pf firewall on feth interfaces, not just env vars
+- **Scoped API access** — grant agents specific capabilities per service
+- **Credential isolation** — agents access your services without seeing your keys
+- **Human-in-the-loop** — risky actions need approval via `safeyolo watch`
 - **Rate limiting** — prevent runaway loops from harming your IP reputation
 - **Audit trail** — every request logged with decisions and correlation
+- **Persistent VMs** — mise installs, shell history, agent state survive restarts
+- **Proper terminal** — vsock PTY bridge with resize support
 
 ## Multiple Agents
 
@@ -60,7 +108,7 @@ safeyolo agent add work claude-code ~/work
 safeyolo agent add side-project claude-code ~/side-project
 safeyolo agent add codex openai-codex ~/experiments
 
-safeyolo agent run work       # Each agent gets isolated policy
+safeyolo agent run work       # Each agent gets its own VM and subnet
 ```
 
 ## Templates
@@ -69,15 +117,15 @@ safeyolo agent run work       # Each agent gets isolated policy
 |----------|-------|
 | `claude-code` | Anthropic Claude Code CLI |
 | `openai-codex` | OpenAI Codex CLI |
+| `byoa` | Bring Your Own Agent — bash shell for custom agent installation |
 
-If you've already authenticated on your host (via `claude` or `codex`), credentials are mounted automatically.
+If you've already authenticated on your host (via `claude` or `codex`), credentials are mounted automatically via VirtioFS.
 
 ## Controlling Agent Access
 
 Grant agents access to specific services with specific capabilities. Your credentials stay in SafeYolo's vault — agents make requests, SafeYolo handles authentication.
 
 ```bash
-# Authorize an agent to access Gmail with a specific capability
 safeyolo agent authorize boris gmail --capability read_agent_folder --token-env GMAIL_TOKEN
 ```
 
@@ -96,49 +144,43 @@ $ safeyolo watch
 ╰───────────────────────────────────────────────────────────╯
 ```
 
-Within a granted capability, destructive or sensitive actions still need your approval — scoped to once, for the session, or permanently.
-
 **Try it yourself:** Run `safeyolo demo` for a guided tour, with `safeyolo watch` in a second terminal.
 
----
+## Architecture
 
-## Try Mode (Evaluation Only)
+See [docs/microvm-architecture.md](docs/microvm-architecture.md) for the full technical design:
 
-For quick evaluation without container isolation, you can run SafeYolo as a local proxy:
-
-```bash
-safeyolo start
-eval "$(safeyolo cert env)"
-claude
-```
-
-**Limitation:** In Try Mode, agents can bypass the proxy by unsetting environment variables or opening direct sockets. Use Sandbox Mode (the default) for actual protection.
-
----
+- **Networking**: VZFileHandleNetworkDeviceAttachment + feth pairs + pf (not VZNATNetworkDeviceAttachment — Apple blocks pf on bridge interfaces)
+- **Terminal**: vsock PTY bridge with proper resize (not serial console)
+- **Guest init**: served from VirtioFS config share (changes without rootfs rebuild)
+- **Service discovery**: file-based agent IP map (not Docker DNS)
 
 ## Trust Model
 
 **What SafeYolo does NOT do:**
-- Eliminate prompt injection — but it reduces the blast radius by constraining what a compromised agent can access
-- Defend against determined adversaries with arbitrary code execution on the host
+- Eliminate prompt injection — but it constrains the blast radius
+- Defend against determined adversaries with host code execution
 - Replace application-layer auth
 
 See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, and enforcement details.
 
----
-
 ## Requirements
 
-- Python 3.10+
-- Docker
+- macOS Apple Silicon (M1+)
+- Python 3.12+
+- OrbStack or Docker Desktop (build-time only)
+- User in `access_bpf` group (OrbStack or Wireshark adds this)
+
+Run `safeyolo setup` to check all prerequisites.
 
 ## Status
 
-SafeYolo is **pre-v1**. The CLI works from source (as shown above). PyPI package coming soon.
+SafeYolo is **pre-v1**. The `microvm` branch replaces Docker with hardware-isolated microVMs. No backward compatibility with the Docker-based `master` branch.
 
 ## Documentation
 
-- [CLI Reference](cli/README.md)
+- [MicroVM Architecture](docs/microvm-architecture.md)
+- [Sandbox Mode](docs/SANDBOX_MODE.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Architecture & Addons](docs/ADDONS.md)
 - [Security & Threat Model](SECURITY.md)

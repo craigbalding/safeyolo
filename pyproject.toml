@@ -36,6 +36,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.0.0",
     "pre-commit>=3.0.0",
     "ruff>=0.9.4",
 ]
@@ -67,7 +68,6 @@ members = [
     "cli",
     # Note: .clusterfuzzlite is NOT a workspace member.
     # It has its own lockfile for OSS-Fuzz/ClusterFuzzLite compatibility.
-    "tests/blackbox/runner",
     "tests/blackbox/sinkhole",
 ]
 

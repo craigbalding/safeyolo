@@ -13,13 +13,12 @@ from safeyolo.templates import (
     detect_host_config_for_agent,
     get_agent_config,
     get_available_templates,
-    render_template,
 )
 from safeyolo.templates.loader import (
     AgentConfig,
     AgentConfigError,
     AuthConfig,
-    DockerConfig,
+    VMConfig,
     HostConfig,
     InstallConfig,
     InstructionsConfig,
@@ -64,7 +63,7 @@ setup_hint = "Set TEST_API_KEY"
 config_dirs = [".test"]
 config_files = [".testrc"]
 
-[docker]
+[vm]
 env = { TEST_VAR = "value" }
 
 [instructions]
@@ -88,7 +87,7 @@ path = "/etc/test/config.md"
         assert config.auth.oauth_file == ".test/auth.json"
         assert config.host.config_dirs == [".test"]
         assert config.host.config_files == [".testrc"]
-        assert config.docker.env == {"TEST_VAR": "value"}
+        assert config.vm.env == {"TEST_VAR": "value"}
         assert config.instructions.content == "Test instructions"
         assert config.instructions.injection_type == "system_file"
         assert config.instructions.path == "/etc/test/config.md"
@@ -148,7 +147,10 @@ name = "minimal"
         assert config.auth.env_var == ""
         assert config.host.config_dirs == []
         assert config.host.config_files == []
-        assert config.docker.env == {}
+        assert config.vm.cpus == 4
+        assert config.vm.memory == 4096
+        assert config.vm.disk_size == 4096
+        assert config.vm.env == {}
         assert config.instructions.content == ""
 
     def test_uses_dirname_when_name_missing(self, tmp_path):
@@ -162,6 +164,103 @@ description = "No name specified"
 
         config = load_agent_config(agent_dir)
         assert config.name == "dirname-fallback"
+
+    def test_vm_section_populates_all_fields(self, tmp_path):
+        """Reads cpus, memory, disk_size, env from [vm] section."""
+        agent_dir = tmp_path / "vm-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "vm-test"
+
+[vm]
+cpus = 8
+memory = 8192
+disk_size = 16384
+env = { GPU = "true", WORKERS = "4" }
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 8
+        assert config.vm.memory == 8192
+        assert config.vm.disk_size == 16384
+        assert config.vm.env == {"GPU": "true", "WORKERS": "4"}
+
+    def test_docker_section_falls_back_to_vm(self, tmp_path):
+        """[docker] section is read when [vm] is absent (migration path)."""
+        agent_dir = tmp_path / "legacy-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "legacy"
+
+[docker]
+cpus = 2
+memory = 2048
+env = { LEGACY = "yes" }
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 2
+        assert config.vm.memory == 2048
+        assert config.vm.env == {"LEGACY": "yes"}
+
+    def test_vm_section_takes_precedence_over_docker(self, tmp_path):
+        """When both [vm] and [docker] exist, [vm] wins."""
+        agent_dir = tmp_path / "both-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "both"
+
+[docker]
+cpus = 2
+memory = 2048
+env = { FROM = "docker" }
+
+[vm]
+cpus = 8
+memory = 8192
+env = { FROM = "vm" }
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 8
+        assert config.vm.memory == 8192
+        assert config.vm.env == {"FROM": "vm"}
+
+    def test_vm_defaults_when_neither_section_present(self, tmp_path):
+        """VMConfig uses dataclass defaults when no [vm] or [docker] section."""
+        agent_dir = tmp_path / "no-vm-agent"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "no-vm"
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 4
+        assert config.vm.memory == 4096
+        assert config.vm.disk_size == 4096
+        assert config.vm.env == {}
+
+    def test_vm_partial_fields_get_defaults(self, tmp_path):
+        """Missing fields in [vm] section get defaults."""
+        agent_dir = tmp_path / "partial-vm"
+        agent_dir.mkdir()
+        (agent_dir / "agent.toml").write_text("""
+[agent]
+name = "partial"
+
+[vm]
+cpus = 2
+""")
+
+        config = load_agent_config(agent_dir)
+        assert config.vm.cpus == 2
+        assert config.vm.memory == 4096
+        assert config.vm.disk_size == 4096
+        assert config.vm.env == {}
 
 
 class TestRunConfig:
@@ -208,7 +307,7 @@ class TestGetAvailableTemplates:
     def test_returns_exact_known_templates(self):
         """Returns exactly the set of known templates (no surprise additions)."""
         templates = get_available_templates()
-        assert set(templates.keys()) == {"claude-code", "openai-codex"}
+        assert set(templates.keys()) == {"claude-code", "openai-codex", "byoa"}
 
     def test_descriptions_are_non_empty(self):
         """All templates have non-empty descriptions."""
@@ -255,15 +354,16 @@ class TestGetAgentConfig:
 
 
 class TestDetectHostConfigForAgent:
-    """Tests for detect_host_config_for_agent()."""
+    """Tests for detect_host_config_for_agent().
 
-    def test_finds_existing_dirs(self, tmp_path, monkeypatch):
-        """Detects existing host config directories."""
-        # Create fake home with config dir
+    Returns a list of config_dirs names that exist under $HOME.
+    """
+
+    def test_returns_existing_dirs(self, tmp_path, monkeypatch):
+        """Returns names of config_dirs that exist under home."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         (fake_home / ".test-config").mkdir()
-        monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(Path, "home", lambda: fake_home)
 
         config = AgentConfig(
@@ -273,20 +373,18 @@ class TestDetectHostConfigForAgent:
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
             host=HostConfig(config_dirs=[".test-config", ".missing"], config_files=[]),
-            docker=DockerConfig(),
+            vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
-        status = detect_host_config_for_agent(config)
+        found = detect_host_config_for_agent(config)
 
-        assert ".test-config" in status.found_dirs
-        assert ".missing" not in status.found_dirs
+        assert found == [".test-config"]
 
-    def test_finds_existing_files(self, tmp_path, monkeypatch):
-        """Detects existing host config files."""
+    def test_excludes_missing_dirs(self, tmp_path, monkeypatch):
+        """Dirs that do not exist are not in the returned list."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        (fake_home / ".testrc").write_text("config")
         monkeypatch.setattr(Path, "home", lambda: fake_home)
 
         config = AgentConfig(
@@ -295,18 +393,17 @@ class TestDetectHostConfigForAgent:
             install=InstallConfig(mise="", binary=""),
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
-            host=HostConfig(config_dirs=[], config_files=[".testrc", ".missingrc"]),
-            docker=DockerConfig(),
+            host=HostConfig(config_dirs=[".no-such-dir"], config_files=[]),
+            vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
-        status = detect_host_config_for_agent(config)
+        found = detect_host_config_for_agent(config)
 
-        assert ".testrc" in status.found_files
-        assert ".missingrc" not in status.found_files
+        assert found == []
 
-    def test_handles_empty_host_config(self, tmp_path, monkeypatch):
-        """Returns empty status when no host config specified."""
+    def test_returns_empty_list_when_no_dirs_configured(self, tmp_path, monkeypatch):
+        """Returns empty list when agent has no config_dirs."""
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: fake_home)
@@ -318,120 +415,35 @@ class TestDetectHostConfigForAgent:
             run=RunConfig(command="", args=[], auto_args=[]),
             auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
             host=HostConfig(config_dirs=[], config_files=[]),
-            docker=DockerConfig(),
+            vm=VMConfig(),
             instructions=InstructionsConfig(),
         )
 
-        status = detect_host_config_for_agent(config)
+        found = detect_host_config_for_agent(config)
 
-        assert status.found_dirs == []
-        assert status.found_files == []
+        assert found == []
 
+    def test_does_not_match_files_as_dirs(self, tmp_path, monkeypatch):
+        """A file with the same name as a config_dir is not returned (only dirs count)."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / ".is-a-file").write_text("not a directory")
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
 
-class TestRenderTemplate:
-    """Tests for render_template()."""
+        config = AgentConfig(
+            name="test",
+            description="",
+            install=InstallConfig(mise="", binary=""),
+            run=RunConfig(command="", args=[], auto_args=[]),
+            auth=AuthConfig(env_var="", oauth_file="", setup_hint=""),
+            host=HostConfig(config_dirs=[".is-a-file"], config_files=[]),
+            vm=VMConfig(),
+            instructions=InstructionsConfig(),
+        )
 
-    def test_creates_env_file(self, tmp_config_dir, tmp_path):
-        """Creates .env file with UID/GID and project info."""
-        output_dir = tmp_path / "output"
-        project_dir = "/home/user/myproject"
+        found = detect_host_config_for_agent(config)
 
-        files = render_template("claude-code", output_dir, project_dir)
-
-        env_path = output_dir / ".env"
-        assert env_path.exists()
-        assert env_path in files
-
-        content = env_path.read_text()
-        assert f"SAFEYOLO_UID={os.getuid()}" in content
-        assert f"SAFEYOLO_GID={os.getgid()}" in content
-        assert f"USER_DIR={project_dir}" in content
-        assert "USER_DIRNAME=myproject" in content
-
-    def test_creates_compose_file(self, tmp_config_dir, tmp_path):
-        """Creates docker-compose.yml from template."""
-        output_dir = tmp_path / "output"
-
-        files = render_template("claude-code", output_dir, "/tmp/project")
-
-        compose_path = output_dir / "docker-compose.yml"
-        assert compose_path.exists()
-        assert compose_path in files
-
-    def test_skips_agent_toml(self, tmp_config_dir, tmp_path):
-        """Does not copy agent.toml to output."""
-        output_dir = tmp_path / "output"
-
-        render_template("claude-code", output_dir, "/tmp/project")
-
-        assert not (output_dir / "agent.toml").exists()
-
-    def test_accepts_instance_name_parameter(self, tmp_config_dir, tmp_path):
-        """Accepts instance_name parameter without error.
-
-        Note: instance_name is passed to template context but current templates
-        use agent_name for service naming. This test verifies the parameter
-        is accepted and rendering succeeds.
-        """
-        output_dir = tmp_path / "output"
-
-        # Should not raise
-        files = render_template("claude-code", output_dir, "/tmp/project", instance_name="myinstance")
-
-        # Files should be created
-        assert len(files) >= 2  # At least .env and docker-compose.yml
-        assert (output_dir / "docker-compose.yml").exists()
-
-    def test_raises_on_unknown_template(self, tmp_config_dir, tmp_path):
-        """Raises TemplateError for unknown template."""
-        output_dir = tmp_path / "output"
-
-        with pytest.raises(TemplateError, match="Unknown template"):
-            render_template("nonexistent", output_dir, "/tmp/project")
-
-    def test_renders_guarded_agent_install_in_init_script(self, tmp_config_dir, tmp_path):
-        """Rendered init script should only install when the agent binary is missing."""
-        output_dir = tmp_path / "output"
-
-        render_template("openai-codex", output_dir, "/tmp/myproject")
-
-        init_script = (output_dir / "safeyolo-init.sh").read_text()
-
-        assert "{{ binary }}" not in init_script
-        assert "command -v codex >/dev/null 2>&1" in init_script
-        assert "Installing codex with mise..." in init_script
-        assert "timeout 120 bash -lc 'mise use -g npm:@openai/codex@latest'" in init_script
-        assert "Warning: codex installation failed or timed out" in init_script
-
-    def test_renders_guarded_agent_install_in_claude_init_script(self, tmp_config_dir, tmp_path):
-        """Claude template should render the binary name in the guarded install block."""
-        output_dir = tmp_path / "output"
-
-        render_template("claude-code", output_dir, "/tmp/myproject")
-
-        init_script = (output_dir / "safeyolo-init.sh").read_text()
-
-        assert "command -v claude >/dev/null 2>&1" in init_script
-        assert "Installing claude with mise..." in init_script
-        assert "timeout 120 bash -lc 'mise use -g npm:@anthropic-ai/claude-code@latest'" in init_script
-        assert "Warning: claude installation failed or timed out" in init_script
-
-    def test_populates_template_variables(self, tmp_config_dir, tmp_path):
-        """Template variables are correctly populated in output."""
-        output_dir = tmp_path / "output"
-
-        render_template("claude-code", output_dir, "/tmp/myproject")
-
-        compose_content = (output_dir / "docker-compose.yml").read_text()
-
-        # Should not contain raw Jinja2 placeholders
-        assert "{{" not in compose_content, "Unrendered Jinja2 variable found"
-        assert "}}" not in compose_content, "Unrendered Jinja2 variable found"
-        assert "{%" not in compose_content, "Unrendered Jinja2 block found"
-
-        # Verify specific substitutions happened
-        assert "HTTP_PROXY=http://safeyolo:8080" in compose_content, "proxy_hostname not substituted"
-        assert "claude-code:" in compose_content, "instance_name not substituted in service definition"
+        assert found == []
 
 
 # =============================================================================
@@ -455,6 +467,22 @@ class TestRealAgentTomlFiles:
 
         assert config.name == "openai-codex"
         assert config.schema_version == 1
+
+    def test_byoa_toml_parses(self):
+        """byoa agent.toml parses successfully."""
+        config = get_agent_config("byoa")
+
+        assert config.name == "byoa"
+        assert config.schema_version == 1
+
+    def test_byoa_boots_into_bash(self):
+        """byoa runs bash as its command (no pre-installed agent)."""
+        config = get_agent_config("byoa")
+
+        assert config.run.command == "bash"
+        assert config.run.auto_args == []
+        assert config.instructions.content, "instructions content empty"
+        assert "install" in config.instructions.content.lower()
 
     def test_claude_code_has_required_fields(self):
         """claude-code has all required fields populated."""

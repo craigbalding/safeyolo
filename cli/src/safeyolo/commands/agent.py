@@ -6,7 +6,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 from pathlib import Path
 
 import typer
@@ -19,19 +18,22 @@ from rich.table import Table
 from ..agents_store import load_agent as _store_load_agent
 from ..agents_store import load_all_agents, save_agent
 from ..agents_store import remove_agent as _store_remove_agent
-from ..config import COMPOSE_NETWORK_NAME, find_config_dir, get_agents_dir, load_config
-from ..docker import is_running, wait_for_healthy
-from ..docker import start as docker_start
+from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
-from ..templates import TemplateError, get_agent_config, get_available_templates, render_template
+from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
+from ..templates import TemplateError, get_agent_config, get_available_templates
+from ..vm import (
+    _update_agent_map,
+    get_agent_config_share_dir,
+    get_agent_rootfs_path,
+    prepare_config_share,
+)
 from ._service_discovery import find_service
 from .mount import is_path_protected
 
 log = logging.getLogger("safeyolo.agent")
 console = Console()
 
-# Subprocess timeout (seconds)
-DOCKER_COMPOSE_TIMEOUT_SECONDS = 30
 
 
 def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
@@ -56,7 +58,7 @@ def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
             console.print(f"  [green]Found[/green] {dir_path} (will mount)")
             has_any = True
         elif ephemeral:
-            console.print("  [yellow]Ephemeral mode[/yellow] - settings lost on container exit")
+            console.print("  [yellow]Ephemeral mode[/yellow] - settings lost when the agent VM exits")
         else:
             dir_path.mkdir(mode=0o700, exist_ok=True)
             console.print(f"  [green]Created[/green] {dir_path}")
@@ -77,7 +79,7 @@ def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
 
 agent_app = typer.Typer(
     name="agent",
-    help="Manage AI agent containers for Sandbox Mode.",
+    help="Manage AI agent microVMs for Sandbox Mode.",
     no_args_is_help=True,
 )
 
@@ -102,7 +104,7 @@ def _check_project_ownership(project_path: Path, allow_unowned: bool) -> None:
 def _get_service_name(instance_name: str) -> str:
     """Get service name for an instance.
 
-    Service name equals instance name (used in docker-compose).
+    Service name equals instance name.
     """
     return instance_name
 
@@ -153,23 +155,18 @@ def _run_agent(
     skip_default_args: bool = False,
     extra_mounts: list[str] | None = None,
     extra_ports: list[str] | None = None,
+    detach: bool = False,
 ) -> int:
-    """Run an agent container. Returns exit code.
+    """Run an agent VM. Returns exit code.
 
     Shared logic used by both `add` (auto-run) and `run` commands.
 
-    Args:
-        agent_args: Extra arguments to pass to the agent CLI (after --)
-        skip_default_args: If True, ignore user_default_args even if no agent_args
-        extra_mounts: Transient mount specs (/local/path:/container/path[:ro]) for this run only
-        extra_ports: Transient port specs (127.0.0.1:host:container) for this run only
+    detach: Boot VM in background and return after boot confirmation.
     """
     _validate_instance_name(name)
 
-    agent_dir = get_agents_dir() / name
-    compose_file = agent_dir / "docker-compose.yml"
-
-    if not compose_file.exists():
+    rootfs = get_agent_rootfs_path(name)
+    if not rootfs.exists():
         console.print(f"[red]Agent not found: {escape(name)}[/red]")
         console.print("Run [bold]safeyolo agent add <name> <template> <folder>[/bold] first.")
         raise typer.Exit(1)
@@ -178,54 +175,22 @@ def _run_agent(
     metadata = _load_agent_metadata(name)
     binary = _get_agent_binary(metadata)
 
-    # Check SafeYolo is running
-    if not is_running():
-        console.print("[yellow]SafeYolo is not running. Starting...[/yellow]")
+    # Check SafeYolo proxy is running
+    if not is_proxy_running():
+        console.print("[yellow]SafeYolo proxy is not running. Starting...[/yellow]")
         try:
-            docker_start()
+            start_proxy()
             if not wait_for_healthy(timeout=30):
-                console.print("[red]SafeYolo failed to start.[/red]")
+                console.print("[red]SafeYolo proxy failed to start.[/red]")
                 raise typer.Exit(1)
-            console.print("[green]SafeYolo started.[/green]\n")
-
+            console.print("[green]SafeYolo proxy started.[/green]\n")
         except Exception as err:
             console.print(f"[red]Failed to start SafeYolo:[/red] {escape(str(err))}")
             raise typer.Exit(1)
 
-    # Run the agent container
-    console.print(f"Starting {name}...\n")
-
-    # Build compose env: override USER_DIR/USER_DIRNAME for volume interpolation
-    compose_env = os.environ.copy()
-    if folder_override:
-        folder_path = Path(folder_override).expanduser().resolve()
-        if not folder_path.is_dir():
-            console.print(f"[red]Folder not found: {folder_path}[/red]")
-            raise typer.Exit(1)
-        _check_project_ownership(folder_path, dangerously_allow_unowned)
-        compose_env["USER_DIR"] = str(folder_path)
-        compose_env["USER_DIRNAME"] = folder_path.name
-
-    # Build image quietly (only shows output on actual build, not cache hits)
-    build_result = subprocess.run(
-        ["docker", "compose", "--progress=quiet", "-f", str(compose_file), "build"],
-        cwd=agent_dir,
-        env=compose_env,
-    )
-    if build_result.returncode != 0:
-        console.print("[red]Failed to build agent image.[/red]")
-        raise typer.Exit(build_result.returncode)
-
-    # Get service name from instance name
-    service_name = _get_service_name(name)
-
-    # Check if a container with this name is already running
-    check_running = subprocess.run(
-        ["docker", "ps", "-q", "-f", f"name=^/{name}$"],
-        capture_output=True,
-        text=True,
-    )
-    if check_running.stdout.strip():
+    # Check if sandbox is already running
+    from ..platform import get_platform as _get_plat
+    if _get_plat().is_sandbox_running(name):
         console.print(f"[red]Agent '{name}' is already running.[/red]")
         console.print(
             f"To open a shell in it:  [bold]safeyolo agent shell {name}[/bold]\n"
@@ -234,58 +199,207 @@ def _run_agent(
         )
         raise typer.Exit(1)
 
-    # Clean up stale container from unclean shutdown (no-op if absent)
-    subprocess.run(
-        ["docker", "rm", name],
-        capture_output=True,
-    )
+    # Resolve workspace path
+    workspace = folder_override or metadata.get("folder", ".")
+    workspace_path = Path(workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        console.print(f"[red]Folder not found: {workspace_path}[/red]")
+        raise typer.Exit(1)
+    _check_project_ownership(workspace_path, dangerously_allow_unowned)
 
-    # Run with inherited stdin/stdout for interactive use
-    cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm", "--name", name]
-    if yolo:
-        cmd.extend(["-e", "SAFEYOLO_YOLO_MODE=1"])
-
-    # Dev mode: mount logs so agent can read proxy events
-    proxy_compose = find_config_dir()
-    if proxy_compose:
-        proxy_compose_file = Path(proxy_compose) / "docker-compose.yml"
-        if proxy_compose_file.exists() and "/app/addons" in proxy_compose_file.read_text():
-            from ..config import get_logs_dir
-            logs_dir = get_logs_dir()
-            if logs_dir.exists():
-                cmd.extend(["-v", f"{logs_dir}:/app/logs:ro"])
-
-    # Combine persistent mounts (from metadata) with transient mounts (from --mount)
-    all_mounts = list(metadata.get("mounts", []))
-    if extra_mounts:
-        all_mounts.extend(extra_mounts)
-    for mount in all_mounts:
-        cmd.extend(["-v", mount])
-
-    # Combine persistent ports (from metadata) with transient ports (from --port)
-    all_ports = list(metadata.get("ports", []))
-    if extra_ports:
-        all_ports.extend(extra_ports)
-    for port in all_ports:
-        cmd.extend(["-p", port])
-
-    cmd.append(service_name)
-
-    # Add agent-specific args (passthrough or defaults)
-    # Must prepend binary name since docker replaces CMD with these args
+    # Build agent args string for guest env
+    agent_args_str = ""
     if agent_args:
-        if binary:
-            cmd.append(binary)
-        cmd.extend(agent_args)
+        agent_args_str = " ".join(agent_args)
     elif not skip_default_args and metadata.get("user_default_args"):
-        if binary:
-            cmd.append(binary)
-        cmd.extend(metadata["user_default_args"])
+        agent_args_str = " ".join(metadata["user_default_args"])
+
+    # Extra env for yolo mode
+    extra_env = {}
+    if yolo:
+        extra_env["SAFEYOLO_YOLO_MODE"] = "1"
+    if detach:
+        extra_env["SAFEYOLO_DETACH"] = "1"
+
+    # Get mise package, host config, instructions, and auto_args from template
+    mise_package = ""
+    host_shares = []  # (host_path, tag, read_only) for VirtioFS mounts
+    host_config_files = []  # Individual files to copy into config share
+    instructions_content = ""
+    instructions_path = ""
+    auto_args = ""
+    template_name = metadata.get("template", "")
+    if template_name:
+        try:
+            agent_config = get_agent_config(template_name)
+            mise_package = agent_config.install.mise
+            auto_args = agent_config.run.auto_args_str
+            # Instructions injection (e.g., CLAUDE.md)
+            if agent_config.instructions.content and agent_config.instructions.path:
+                instructions_content = agent_config.instructions.content
+                instructions_path = agent_config.instructions.path
+            # Mount host config dirs into guest /home/agent/
+            home = Path.home()
+            share_idx = 0
+            for dir_name in agent_config.host.config_dirs:
+                host_path = home / dir_name
+                if host_path.is_dir():
+                    host_shares.append((str(host_path), f"hostcfg{share_idx}", False))
+                    share_idx += 1
+            # Individual config files: copy into config share (not VirtioFS,
+            # since mounting parent dir could expose $HOME)
+            host_config_files = [f for f in agent_config.host.config_files
+                                 if (home / f).exists()]
+        except TemplateError:
+            pass
+
+    # Set up network isolation (platform-specific: feth+pf on macOS, veth+iptables on Linux)
+    config = load_config()
+    proxy_port = config.get("proxy", {}).get("port", 8080)
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+
+    from ..platform import get_platform
+    plat = get_platform()
+
+    agents_dir = get_agents_dir()
+    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
+    agent_index = existing.index(name) if name in existing else len(existing)
+
+    try:
+        fw_alloc = plat.setup_networking(agent_index)
+        plat.load_firewall_rules(
+            proxy_port=proxy_port,
+            admin_port=admin_port,
+            active_subnets=[fw_alloc["subnet"]],
+        )
+    except Exception as err:
+        console.print(f"[red]Network isolation failed:[/red] {err}")
+        console.print()
+        console.print("  SafeYolo will not start an agent without enforced egress control.")
+        raise typer.Exit(1)
+
+    gateway_ip = fw_alloc["host_ip"]
+    guest_ip = fw_alloc["guest_ip"]
+
+    # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
+    try:
+        prepare_config_share(
+            name=name,
+            workspace_path=str(workspace_path),
+            agent_binary=binary or "",
+            mise_package=mise_package,
+            agent_args=agent_args_str,
+            extra_env=extra_env,
+            proxy_port=proxy_port,
+            host_mounts=host_shares if host_shares else None,
+            host_config_files=host_config_files if host_config_files else None,
+            instructions_content=instructions_content,
+            instructions_path=instructions_path,
+            auto_args=auto_args,
+            gateway_ip=gateway_ip,
+            guest_ip=guest_ip,
+        )
+    except Exception as err:
+        console.print(f"[red]Failed to prepare VM config:[/red] {err}")
+        raise typer.Exit(1)
+
+    # macOS-specific: check BPF access (feth-bridge needs /dev/bpf*)
+    import platform as _plat
+    if _plat.system() == "Darwin":
+        from .setup import check_bpf_access
+        has_bpf, bpf_reason = check_bpf_access()
+        if not has_bpf:
+            console.print(f"[red]BPF access denied:[/red] {bpf_reason}")
+            console.print()
+            console.print("  feth-bridge needs BPF to forward VM network traffic.")
+            console.print("  Fix: [bold]safeyolo setup bpf[/bold]")
+            raise typer.Exit(1)
+
+    run_background = detach
 
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
-    result = subprocess.run(cmd, cwd=agent_dir, env=compose_env)
-    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {result.returncode})", agent=name, details={"exit_code": result.returncode})
-    return result.returncode
+    try:
+        # Show progress as the sandbox boots
+        console.print("  Booting VM...", end="")
+        config_share = get_agent_config_share_dir(name)
+        plat.start_sandbox(
+            name=name,
+            workspace_path=str(workspace_path),
+            config_share=config_share,
+            fw_alloc=fw_alloc,
+            cpus=4,
+            memory_mb=4096,
+            extra_shares=host_shares if host_shares else None,
+            background=run_background,
+        )
+        _update_agent_map(name, ip=guest_ip)
+
+        # Monitor boot progress by watching config share for milestones
+        import time as _time
+        config_share_dir = get_agent_config_share_dir(name)
+        ip_file = config_share_dir / "vm-ip"
+
+        # Wait for VM IP (indicates guest init is running)
+        deadline = _time.time() + 120
+        while _time.time() < deadline and plat.is_sandbox_running(name):
+            if ip_file.exists() and ip_file.read_text().strip():
+                break
+            _time.sleep(0.5)
+
+        if not plat.is_sandbox_running(name):
+            console.print(" [red]failed[/red]")
+            console.print(f"  Check logs: ~/.safeyolo/agents/{name}/serial.log")
+            exit_code = 1
+        else:
+            console.print(f" {guest_ip}")
+
+            # Watch for agent install (first run only)
+            status_file = config_share_dir / "vm-status"
+            shown_installing = False
+            deadline2 = _time.time() + 120
+            while _time.time() < deadline2 and plat.is_sandbox_running(name):
+                status = status_file.read_text().strip() if status_file.exists() else ""
+                if status == "installing" and not shown_installing:
+                    agent_label = binary or template_name
+                    console.print(f"  Installing {agent_label}...")
+                    shown_installing = True
+                elif status == "install-failed":
+                    console.print("  [red]Install failed[/red]")
+                    break
+                elif status == "" and shown_installing:
+                    break  # Install finished (file removed or empty)
+                if not shown_installing and status == "":
+                    break  # No install needed
+                _time.sleep(1)
+
+            if detach:
+                console.print("  VM running (detached)")
+                console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
+                console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
+                return 0
+
+            console.print("  Connecting terminal...")
+            console.print()
+            # Wait for sandbox to exit (interactive mode)
+            while plat.is_sandbox_running(name):
+                _time.sleep(0.5)
+            exit_code = 0
+
+    except Exception as err:
+        console.print(" [red]error[/red]")
+        console.print(f"  {err}")
+        exit_code = 1
+    except KeyboardInterrupt:
+        exit_code = 130
+
+    write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
+
+    # Clean up PID file (not for detach — VM is still running)
+    if not detach:
+        pid_path = get_agents_dir() / name / "vm.pid"
+        pid_path.unlink(missing_ok=True)
+
+    return exit_code
 
 
 def _parse_user_default_args(value: str | None) -> list[str] | None:
@@ -404,7 +518,7 @@ def add(
     ),
     template: str = typer.Argument(
         ...,
-        help="Agent template (e.g., claude-code, openai-codex)",
+        help="Agent template (e.g., claude-code, openai-codex, byoa)",
     ),
     folder: str = typer.Argument(
         ...,
@@ -424,7 +538,7 @@ def add(
     ephemeral: bool = typer.Option(
         False,
         "--ephemeral",
-        help="Don't persist config (credentials lost on container exit)",
+        help="Don't persist config (credentials lost when the agent VM exits)",
     ),
     user_default_args: str = typer.Option(
         None,
@@ -472,7 +586,7 @@ def add(
     if not config.get("sandbox"):
         console.print(
             "[yellow]Warning: SafeYolo is not in Sandbox Mode.[/yellow]\n"
-            "Agent containers may be able to bypass the proxy.\n"
+            "Agents may be able to bypass the proxy.\n"
             "Run [bold]safeyolo init[/bold] to enable network isolation (sandbox is the default).\n"
         )
 
@@ -529,16 +643,13 @@ def add(
     # Ensure host config directories exist
     _ensure_host_config(template, ephemeral)
 
-    # Render template
+    # Create rootfs for this agent (platform-specific: APFS clone on macOS, overlayfs on Linux)
+    from ..platform import get_platform
     try:
-        files = render_template(
-            template_name=template,
-            output_dir=agent_dir,
-            project_dir=folder_str,
-            instance_name=name,
-        )
-    except TemplateError as err:
-        console.print(f"[red]Template error:[/red] {escape(str(err))}")
+        rootfs = get_platform().prepare_rootfs(name)
+        console.print(f"  [green]Created[/green] {rootfs}")
+    except Exception as err:
+        console.print(f"[red]Failed to create agent rootfs:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
     # Validate and normalize mount specs
@@ -558,14 +669,11 @@ def add(
         metadata["ports"] = parsed_ports
     save_agent(name, metadata)
 
-    # Show created files
-    for filepath in files:
-        console.print(f"  [green]Created[/green] {filepath}")
-
     panel_lines = [
         f"[green]Agent '{name}' added![/green]\n",
         f"Template: {template}",
         f"Folder: {folder_str}",
+        f"Rootfs: {rootfs}",
     ]
     if parsed_args:
         panel_lines.append(f"Default args: {' '.join(parsed_args)}")
@@ -573,16 +681,8 @@ def add(
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
-    if parsed_ports:
-        panel_lines.append(f"Ports: {len(parsed_ports)}")
-        for p in parsed_ports:
-            panel_lines.append(f"  {p}")
-    panel_lines.extend(
-        [
-            f"Network: {COMPOSE_NETWORK_NAME}",
-            "Proxy: http://safeyolo:8080 (Docker DNS)",
-        ]
-    )
+    cfg = load_config()
+    panel_lines.append(f"Proxy: http://192.168.64.1:{cfg.get('proxy', {}).get('port', 8080)} (host mitmproxy)")
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})
@@ -613,7 +713,7 @@ def list_agents() -> None:
     all_agents = load_all_agents()
 
     if agents_dir.exists():
-        instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()]
+        instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "rootfs.ext4").exists()]
 
         if instances:
             table = Table(title="Configured Agents")
@@ -635,16 +735,16 @@ def list_agents() -> None:
 @agent_app.command()
 def remove(
     name: str = typer.Argument(..., help="Agent instance name to remove"),
-    clean: bool = typer.Option(False, "--clean", help="Also stop containers and remove images/volumes"),
+    clean: bool = typer.Option(False, "--clean", help="(deprecated, no-op) retained for compatibility"),
 ) -> None:
     """Remove an agent configuration.
 
-    Deletes the agent's compose file and configuration directory.
+    Stops the agent VM if running, then deletes the agent's configuration
+    directory.
 
     Examples:
 
         safeyolo agent remove claude-code
-        safeyolo agent remove claude-code --clean  # Also remove containers/images
     """
     _validate_instance_name(name)
 
@@ -658,14 +758,12 @@ def remove(
         console.print(f"[yellow]Agent not found: {escape(name)}[/yellow]")
         raise typer.Exit(1)
 
-    if clean:
-        console.print(f"[dim]Stopping containers and removing images for {name}...[/dim]")
-        subprocess.run(
-            ["docker", "compose", "down", "--rmi", "local", "-v", "--remove-orphans"],
-            cwd=agent_dir,
-            capture_output=True,
-            timeout=DOCKER_COMPOSE_TIMEOUT_SECONDS,
-        )
+    # Stop sandbox if running
+    from ..platform import get_platform
+    plat = get_platform()
+    if plat.is_sandbox_running(name):
+        console.print(f"  Stopping {name}...")
+        plat.stop_sandbox(name)
 
     shutil.rmtree(agent_dir)
     _store_remove_agent(name)
@@ -680,6 +778,7 @@ def run(
     folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
     yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
+    detach: bool = typer.Option(False, "--detach", "-d", help="Boot VM in background and return (use 'agent shell' to connect)"),
     mount: list[str] = typer.Option(
         [],
         "--mount",
@@ -697,9 +796,9 @@ def run(
         help="Allow mounting directories you don't own",
     ),
 ) -> None:
-    """Run an existing agent container.
+    """Run an existing agent.
 
-    Starts SafeYolo if not running, then launches the agent container.
+    Starts SafeYolo if not running, then launches the agent microVM.
     Yolo mode is on by default (auto-accepts permission prompts).
     Use --no-yolo to require manual approval.
 
@@ -707,6 +806,12 @@ def run(
 
         safeyolo agent run boris -- --continue
         safeyolo agent run boris -- --resume my-session
+
+    Detach mode boots the VM in the background:
+
+        safeyolo agent run myproject --detach
+        safeyolo agent shell myproject  # connect later
+        safeyolo agent stop myproject   # stop when done
 
     If user_default_args is configured (via 'agent config'), those args
     are used by default. Use --fresh to ignore them.
@@ -719,6 +824,7 @@ def run(
         safeyolo agent run myproject
         safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --no-yolo
+        safeyolo agent run myproject --detach
         safeyolo agent run myproject --mount ~/data:/data:ro
         safeyolo agent run myproject --port 6080:6080
         safeyolo agent run myproject -- --continue
@@ -742,6 +848,7 @@ def run(
         skip_default_args=fresh,
         extra_mounts=parsed_mounts if parsed_mounts else None,
         extra_ports=parsed_ports if parsed_ports else None,
+        detach=detach,
     )
     raise typer.Exit(exit_code)
 
@@ -749,54 +856,47 @@ def run(
 @agent_app.command()
 def shell(
     name: str = typer.Argument(..., help="Agent instance name"),
+    command: str = typer.Option(None, "--command", "-c", help="Run a command instead of interactive shell"),
     root: bool = typer.Option(
         False,
         "--root",
         help="Open shell as root (default: non-root agent user)",
     ),
 ) -> None:
-    """Open a shell in a running agent container.
+    """Open a shell in a running agent sandbox.
 
     By default, opens as the non-root agent user. Use --root for root access.
+    Use -c to run a single command and return its exit code.
 
     Examples:
 
         safeyolo agent shell myproject
         safeyolo agent shell myproject --root
+        safeyolo agent shell myproject -c "uname -a"
+        safeyolo agent shell myproject -c "pytest -v /tests"
     """
     _validate_instance_name(name)
 
-    config_dir = find_config_dir()
-    if not config_dir:
-        console.print("[red]No SafeYolo configuration found.[/red]")
+    from ..platform import get_platform
+    plat = get_platform()
+
+    if not plat.is_sandbox_running(name):
+        console.print(f"[red]Agent '{name}' is not running.[/red]")
+        console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
         raise typer.Exit(1)
 
-    agent_dir = get_agents_dir() / name
-    compose_file = agent_dir / "docker-compose.yml"
-
-    if not compose_file.exists():
-        console.print(f"[red]Agent not found: {escape(name)}[/red]")
-        raise typer.Exit(1)
-
-    # Get service name from instance name
-    service_name = _get_service_name(name)
-
-    # Build exec command - default to non-root agent user
-    cmd = ["docker", "compose", "-f", str(compose_file), "exec"]
-    if not root:
-        cmd.extend(["--user", "agent"])
-    cmd.extend([service_name, "bash"])
-
-    result = subprocess.run(cmd, cwd=agent_dir)
-
-    raise typer.Exit(result.returncode)
+    user = "root" if root else "agent"
+    exit_code = plat.exec_in_sandbox(
+        name, command, user=user, interactive=not command,
+    )
+    raise typer.Exit(exit_code)
 
 
 @agent_app.command()
 def stop(
     name: str = typer.Argument(..., help="Agent instance name to stop"),
 ) -> None:
-    """Stop a running agent container.
+    """Stop a running agent sandbox.
 
     Examples:
 
@@ -804,26 +904,15 @@ def stop(
     """
     _validate_instance_name(name)
 
-    agent_dir = get_agents_dir() / name
-    compose_file = agent_dir / "docker-compose.yml"
+    from ..platform import get_platform
+    plat = get_platform()
 
-    if not compose_file.exists():
-        console.print(f"[red]Agent not found: {escape(name)}[/red]")
-        raise typer.Exit(1)
-
-    # Check if actually running
-    check = subprocess.run(
-        ["docker", "ps", "-q", "-f", f"name=^/{name}$"],
-        capture_output=True,
-        text=True,
-    )
-    if not check.stdout.strip():
+    if not plat.is_sandbox_running(name):
         console.print(f"Agent '{name}' is not running.")
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")
-    subprocess.run(["docker", "stop", name], capture_output=True)
-    subprocess.run(["docker", "rm", name], capture_output=True)
+    plat.stop_sandbox(name)
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 
@@ -1019,7 +1108,7 @@ def agent_help(
 ) -> None:
     """Show agent CLI help.
 
-    Runs the agent's --help command inside the container to show available flags.
+    Runs the agent's --help command inside the agent VM to show available flags.
     Use 'safeyolo agent shell <name>' to experiment with other flags interactively.
 
     Examples:
@@ -1306,11 +1395,11 @@ def authorize(
         if isinstance(host_config, dict) and host_config.get("service") == service_name:
             console.print(f"[green]Host binding found:[/green] {esc_host}")
         else:
-            console.print("\n[yellow]Next step:[/yellow] Add to policy.yaml under hosts:")
+            console.print("\n[yellow]Next step:[/yellow] Add to policy.toml under [hosts]:")
             console.print(f"    [bold]{esc_host}: {{ service: {esc_svc} }}[/bold]")
             console.print(f"\n  [dim]Verify with: safeyolo policy show --section hosts | grep {esc_svc}[/dim]")
     else:
-        console.print("\n[yellow]Next step:[/yellow] Map the service host in policy.yaml under hosts:")
+        console.print("\n[yellow]Next step:[/yellow] Map the service host in policy.toml under [hosts]:")
         console.print(f"    [bold]<your-host>: {{ service: {esc_svc} }}[/bold]")
         console.print(f"\n  [dim]Verify with: safeyolo policy show --section hosts | grep {esc_svc}[/dim]")
 

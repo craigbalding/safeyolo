@@ -5,11 +5,24 @@ import yaml
 from safeyolo.config import (
     DEFAULT_CONFIG,
     _deep_merge,
+    ensure_directories,
     find_config_dir,
     get_admin_token,
+    get_admin_token_path,
+    get_agent_map_path,
+    get_agent_token_path,
+    get_agents_dir,
+    get_certs_dir,
     get_config_dir,
     get_config_path,
+    get_data_dir,
     get_logs_dir,
+    get_policies_dir,
+    get_policy_toml_path,
+    get_proxy_pid_path,
+    get_share_dir,
+    get_ssh_key_path,
+    get_vm_helper_path,
     load_config,
     save_config,
 )
@@ -213,3 +226,128 @@ class TestGetAdminTokenEdgeCases:
         token_path.write_text("from-file")
         result = get_admin_token()
         assert result == "from-env"
+
+
+# =============================================================================
+# Path helpers (pre-existing, previously untested)
+# =============================================================================
+
+
+class TestPathHelpers:
+    """Tests for path-building functions under config_dir."""
+
+    def test_get_certs_dir(self, tmp_config_dir):
+        """Returns certs/ under config dir."""
+        assert get_certs_dir() == tmp_config_dir / "certs"
+
+    def test_get_policies_dir(self, tmp_config_dir):
+        """Returns policies/ under config dir."""
+        assert get_policies_dir() == tmp_config_dir / "policies"
+
+    def test_get_data_dir(self, tmp_config_dir):
+        """Returns data/ under config dir."""
+        assert get_data_dir() == tmp_config_dir / "data"
+
+    def test_get_agents_dir(self, tmp_config_dir):
+        """Returns agents/ under config dir."""
+        assert get_agents_dir() == tmp_config_dir / "agents"
+
+    def test_get_policy_toml_path(self, tmp_config_dir):
+        """Returns policy.toml under config dir."""
+        assert get_policy_toml_path() == tmp_config_dir / "policy.toml"
+
+    def test_get_admin_token_path(self, tmp_config_dir):
+        """Returns data/admin_token under config dir."""
+        assert get_admin_token_path() == tmp_config_dir / "data" / "admin_token"
+
+    def test_get_agent_token_path(self, tmp_config_dir):
+        """Returns data/agent_token under config dir."""
+        assert get_agent_token_path() == tmp_config_dir / "data" / "agent_token"
+
+
+# =============================================================================
+# VM-specific path helpers (new on microvm branch)
+# =============================================================================
+
+
+class TestVMPathHelpers:
+    """Tests for VM-specific path functions added on the microvm branch."""
+
+    def test_get_share_dir(self, tmp_config_dir):
+        """Returns share/ under config dir for VM assets."""
+        assert get_share_dir() == tmp_config_dir / "share"
+
+    def test_get_vm_helper_path(self, tmp_config_dir):
+        """Returns bin/safeyolo-vm under config dir."""
+        assert get_vm_helper_path() == tmp_config_dir / "bin" / "safeyolo-vm"
+
+    def test_get_ssh_key_path(self, tmp_config_dir):
+        """Returns data/vm_ssh_key under config dir."""
+        assert get_ssh_key_path() == tmp_config_dir / "data" / "vm_ssh_key"
+
+    def test_get_agent_map_path(self, tmp_config_dir):
+        """Returns data/agent_map.json under config dir."""
+        assert get_agent_map_path() == tmp_config_dir / "data" / "agent_map.json"
+
+    def test_get_proxy_pid_path(self, tmp_config_dir):
+        """Returns data/proxy.pid under config dir."""
+        assert get_proxy_pid_path() == tmp_config_dir / "data" / "proxy.pid"
+
+    def test_all_vm_paths_respect_config_dir_override(self, tmp_path, monkeypatch):
+        """All VM path helpers use the overridden config dir, not the real home."""
+        custom = tmp_path / "custom-safeyolo"
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(custom))
+
+        assert get_share_dir() == custom / "share"
+        assert get_vm_helper_path() == custom / "bin" / "safeyolo-vm"
+        assert get_ssh_key_path() == custom / "data" / "vm_ssh_key"
+        assert get_agent_map_path() == custom / "data" / "agent_map.json"
+        assert get_proxy_pid_path() == custom / "data" / "proxy.pid"
+
+
+# =============================================================================
+# ensure_directories()
+# =============================================================================
+
+
+class TestEnsureDirectories:
+    """Tests for ensure_directories()."""
+
+    def test_creates_all_required_subdirectories(self, tmp_path, monkeypatch):
+        """Creates config dir and all required subdirectories."""
+        config_dir = tmp_path / ".safeyolo"
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+        ensure_directories()
+
+        assert config_dir.is_dir()
+        assert (config_dir / "certs").is_dir()
+        assert (config_dir / "policies").is_dir()
+        assert (config_dir / "data").is_dir()
+        assert (config_dir / "logs").is_dir()
+        assert (config_dir / "share").is_dir()
+        assert (config_dir / "bin").is_dir()
+
+    def test_idempotent_when_dirs_already_exist(self, tmp_path, monkeypatch):
+        """Calling ensure_directories twice does not raise."""
+        config_dir = tmp_path / ".safeyolo"
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+        ensure_directories()
+        # Put a file in one of the dirs to verify it survives a second call
+        marker = config_dir / "data" / "marker.txt"
+        marker.write_text("keep me")
+
+        ensure_directories()
+
+        assert marker.read_text() == "keep me"
+
+    def test_creates_exactly_six_subdirectories(self, tmp_path, monkeypatch):
+        """Creates exactly the expected set of subdirectories, no more."""
+        config_dir = tmp_path / ".safeyolo"
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+        ensure_directories()
+
+        subdirs = {p.name for p in config_dir.iterdir() if p.is_dir()}
+        assert subdirs == {"certs", "policies", "data", "logs", "share", "bin"}

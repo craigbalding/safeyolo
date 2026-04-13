@@ -1,32 +1,55 @@
 #!/bin/bash
 #
-# Run SafeYolo blackbox tests (proxy tests + isolation tests)
+# Run SafeYolo blackbox tests (split execution model)
 #
-# This script runs both test suites:
-#   1. Proxy tests: credential guard, network guard via sinkhole inspection
-#   2. Isolation tests: container hardening, network isolation, key isolation
+# Host-side pytest: proxy functional tests (credential guard, network guard)
+# VM-side pytest:   isolation tests (network escape, privilege escalation, key isolation)
+#
+# Runs as an ISOLATED INSTANCE alongside production SafeYolo:
+#   - Separate config dir (~/.safeyolo-test)
+#   - Separate ports (proxy 8180, admin 9190)
+#   - Separate pf anchor (com.safeyolo-test)
+#   - Separate subnets (192.168.75.0/24)
+#   - Production agents are unaffected
 #
 # Usage:
 #   ./run-tests.sh              # Run all tests
-#   ./run-tests.sh --proxy      # Run proxy tests only
-#   ./run-tests.sh --isolation  # Run isolation tests only
-#   ./run-tests.sh --verbose    # Run with verbose pytest output
+#   ./run-tests.sh --proxy      # Proxy functional tests only
+#   ./run-tests.sh --isolation  # VM isolation tests only
+#   ./run-tests.sh --verbose    # Verbose pytest output
 #
 # Exit codes:
 #   0 - All tests passed
 #   1 - One or more tests failed
-#   2 - Infrastructure error (build failed, containers crashed, etc.)
+#   2 - Infrastructure error
 #
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
+
+# --- Isolated test instance configuration ---
+# These env vars scope all SafeYolo operations to a separate instance
+# so blackbox tests don't interfere with production agents.
+export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
+export SAFEYOLO_SUBNET_BASE=75
+export SAFEYOLO_PF_ANCHOR=com.safeyolo-test
+
+# Test instance ports (different from production 8080/9090)
+TEST_PROXY_PORT=8180
+TEST_ADMIN_PORT=9190
+
+# Export for host-side pytest (conftest.py reads these)
+export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
+export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
 
 # Parse arguments
 RUN_PROXY=true
 RUN_ISOLATION=true
 VERBOSE=""
+AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -51,104 +74,239 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=== SafeYolo Blackbox Tests ==="
+echo "  Instance: $SAFEYOLO_CONFIG_DIR"
+echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT"
+echo "  Subnet:   192.168.${SAFEYOLO_SUBNET_BASE}.0/24"
 echo ""
 
-# Generate test certificates if needed
-echo "Checking test certificates..."
-if ! ./certs/generate-certs.sh; then
+# --- Phase 0: Prerequisites ---
+
+if ! command -v safeyolo &>/dev/null; then
+    echo "ERROR: safeyolo CLI not found. Activate the venv or install."
+    exit 2
+fi
+
+# Ensure the blackbox test pf anchor hook is installed in /etc/pf.conf.
+# `safeyolo setup pf --test` is idempotent: it's a no-op after the first run.
+# The first run will prompt for sudo once to write the hook; the runtime
+# never mutates /etc/pf.conf.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "Ensuring pf anchor hook for com.safeyolo-test is installed..."
+    if ! safeyolo setup pf --test; then
+        echo "ERROR: failed to install com.safeyolo-test anchor hook" >&2
+        exit 2
+    fi
+fi
+
+# Initialize test config dir on first run
+if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
+    echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
+    safeyolo init --no-interactive
+    echo ""
+fi
+
+# Configure test-specific ports in config.yaml
+python3 -c "
+import yaml
+from pathlib import Path
+config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
+config = yaml.safe_load(config_path.read_text())
+config['proxy']['port'] = $TEST_PROXY_PORT
+config['proxy']['admin_port'] = $TEST_ADMIN_PORT
+config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
+config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
+config_path.write_text(yaml.dump(config, default_flow_style=False))
+"
+
+# Symlink shared guest artifacts (rootfs, kernel) from production.
+# init creates an empty share/ dir — replace it with a symlink.
+PROD_SHARE="$HOME/.safeyolo/share"
+TEST_SHARE="$SAFEYOLO_CONFIG_DIR/share"
+if [ -d "$PROD_SHARE" ] && [ ! -L "$TEST_SHARE" ]; then
+    rm -rf "$TEST_SHARE"
+    ln -s "$PROD_SHARE" "$TEST_SHARE"
+    echo "  Linked guest artifacts: $TEST_SHARE -> $PROD_SHARE"
+fi
+
+# Symlink host binaries (safeyolo-vm, feth-bridge) from production
+PROD_BIN="$HOME/.safeyolo/bin"
+TEST_BIN="$SAFEYOLO_CONFIG_DIR/bin"
+if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then
+    rm -rf "$TEST_BIN"
+    ln -s "$PROD_BIN" "$TEST_BIN"
+    echo "  Linked binaries: $TEST_BIN -> $PROD_BIN"
+fi
+
+echo "Generating test certificates..."
+if ! ./certs/generate-certs.sh --force; then
     echo "ERROR: Failed to generate test certificates"
     exit 2
 fi
-echo ""
 
-# Cleanup function
+# --- Track what we started (only clean up our own) ---
+
+STARTED_SINKHOLE=false
+STARTED_PROXY=false
+STARTED_VM=false
+SINKHOLE_PID=""
+
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
-    docker compose -f docker-compose.yml -f docker-compose.security.yml down -v --remove-orphans 2>/dev/null || true
+
+    if [ "$STARTED_VM" = true ]; then
+        echo "Stopping $AGENT_NAME..."
+        safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
+    fi
+
+    if [ -n "$SINKHOLE_PID" ] && [ "$STARTED_SINKHOLE" = true ]; then
+        echo "Stopping sinkhole (PID $SINKHOLE_PID)..."
+        kill "$SINKHOLE_PID" 2>/dev/null || true
+        wait "$SINKHOLE_PID" 2>/dev/null || true
+    fi
+
+    if [ "$STARTED_PROXY" = true ]; then
+        echo "Stopping test proxy..."
+        safeyolo stop 2>/dev/null || true
+    fi
+
+    echo "Cleanup complete"
 }
 trap cleanup EXIT
 
-# Run a test suite and return exit code
-run_suite() {
-    local name=$1
-    local compose_cmd=$2
+# --- Phase 1: Start infrastructure (idempotent) ---
 
-    echo "=== $name ==="
-    echo ""
+# Sinkhole (shared — not instance-specific)
+if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+    echo "Sinkhole already running"
+else
+    echo "Starting sinkhole..."
+    python3 "$SCRIPT_DIR/sinkhole/server.py" \
+        --http-port 18080 \
+        --https-port 18443 \
+        --control-port 19999 \
+        --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
+        --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
+        &
+    SINKHOLE_PID=$!
+    STARTED_SINKHOLE=true
 
-    # Build images
-    echo "Building images..."
-    if ! $compose_cmd --progress=plain build --quiet; then
-        echo "ERROR: Build failed"
-        return 2
+    for i in $(seq 1 30); do
+        if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+            echo "  Sinkhole ready"
+            break
+        fi
+        sleep 0.5
+    done
+    if ! curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+        echo "ERROR: Sinkhole failed to start"
+        exit 2
+    fi
+fi
+
+# Proxy (test instance on separate ports)
+ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
+if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+    echo "Test proxy already running"
+else
+    echo "Starting test proxy (port $TEST_PROXY_PORT, test mode)..."
+    safeyolo start --test --no-wait
+    STARTED_PROXY=true
+
+    for i in $(seq 1 30); do
+        ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
+        if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    echo "  Test proxy ready"
+fi
+
+# VM (only needed for isolation tests)
+if [ "$RUN_ISOLATION" = true ]; then
+    # Create agent if not exists
+    safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run 2>/dev/null || true
+
+    # Check if already running by looking for vm-ip
+    VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+    SSH_KEY="$SAFEYOLO_CONFIG_DIR/data/vm_ssh_key"
+
+    VM_RUNNING=false
+    if [ -n "$VM_IP" ]; then
+        if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
+            -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
+            VM_RUNNING=true
+        fi
     fi
 
-    # Start services in detached mode
-    echo "Starting services..."
-    if ! $compose_cmd --progress=plain up -d; then
-        echo "ERROR: Failed to start services"
-        return 2
+    if [ "$VM_RUNNING" = true ]; then
+        echo "VM already running ($VM_IP)"
+    else
+        echo "Booting test VM ($AGENT_NAME)..."
+        safeyolo agent run "$AGENT_NAME" --detach
+        STARTED_VM=true
+
+        # Wait for SSH
+        echo "  Waiting for SSH..."
+        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+        if [ -z "$VM_IP" ]; then
+            for i in $(seq 1 15); do
+                sleep 1
+                VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+                [ -n "$VM_IP" ] && break
+            done
+        fi
+        if [ -z "$VM_IP" ]; then
+            echo "ERROR: Could not determine VM IP"
+            exit 2
+        fi
+        for i in $(seq 1 60); do
+            if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
+                -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
+                echo "  SSH ready ($VM_IP)"
+                break
+            fi
+            sleep 1
+        done
     fi
+fi
 
-    # Wait for test-runner to complete
-    echo "Running tests..."
-    echo ""
+echo ""
 
-    # Follow test-runner logs in real-time
-    $compose_cmd logs -f test-runner &
-    LOGS_PID=$!
-
-    # Wait for test-runner container to exit
-    local exit_code=0
-    if ! $compose_cmd wait test-runner 2>/dev/null; then
-        # Get the actual exit code
-        exit_code=$(docker inspect test-runner --format='{{.State.ExitCode}}' 2>/dev/null || echo "2")
-    fi
-
-    # Stop following logs
-    kill $LOGS_PID 2>/dev/null || true
-    wait $LOGS_PID 2>/dev/null || true
-
-    # Show safeyolo logs on failure
-    if [ "$exit_code" != "0" ]; then
-        echo ""
-        echo "--- SafeYolo logs (last 30 lines) ---"
-        $compose_cmd logs --tail=30 safeyolo 2>/dev/null || true
-    fi
-
-    # Cleanup before next suite
-    echo ""
-    echo "Stopping containers..."
-    $compose_cmd down -v --remove-orphans 2>/dev/null || true
-
-    return "$exit_code"
-}
+# --- Phase 2: Run tests ---
 
 PROXY_RESULT=0
 ISOLATION_RESULT=0
 
-# Run proxy tests
 if [ "$RUN_PROXY" = true ]; then
-    if run_suite "Proxy Tests" "docker compose"; then
-        PROXY_RESULT=0
-    else
-        PROXY_RESULT=$?
-    fi
+    echo "=== Proxy Functional Tests (host-side) ==="
+    echo ""
+    cd "$SCRIPT_DIR/host"
+    set +e
+    pytest $VERBOSE --tb=short --timeout=60 \
+        test_credential_guard.py test_network_guard.py
+    PROXY_RESULT=$?
+    set -e
+    cd "$SCRIPT_DIR"
     echo ""
 fi
 
-# Run isolation tests
 if [ "$RUN_ISOLATION" = true ]; then
-    if run_suite "Isolation Tests" "docker compose -f docker-compose.yml -f docker-compose.security.yml"; then
-        ISOLATION_RESULT=0
-    else
-        ISOLATION_RESULT=$?
-    fi
+    echo "=== VM Isolation Tests (in-VM) ==="
+    echo ""
+    set +e
+    safeyolo agent shell "$AGENT_NAME" -c \
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE --tb=short --timeout=60"
+    ISOLATION_RESULT=$?
+    set -e
     echo ""
 fi
 
-# Summary
+# --- Phase 3: Summary ---
+
 echo "=== Test Summary ==="
 if [ "$RUN_PROXY" = true ]; then
     if [ "$PROXY_RESULT" = "0" ]; then
@@ -166,7 +324,6 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
-# Exit with failure if any suite failed
 if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ]; then
     echo ""
     echo "Result: FAILED"

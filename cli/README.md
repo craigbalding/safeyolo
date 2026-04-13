@@ -36,24 +36,23 @@ safeyolo doctor
 | Command | Description |
 |---------|-------------|
 | `safeyolo init` | Initialize configuration with interactive wizard |
-| `safeyolo start` | Start the proxy container |
-| `safeyolo stop` | Stop the proxy container |
+| `safeyolo start` | Start the proxy (mitmproxy host process) and firewall |
+| `safeyolo stop` | Stop the proxy; agents keep running unless `--all` is passed |
 | `safeyolo status` | Show proxy status, addon stats, and memory usage |
-| `safeyolo build` | Build SafeYolo Docker image from source |
+| `safeyolo build` | Build guest VM images (kernel, initramfs, rootfs) — requires Docker for cross-compilation |
 | `safeyolo check` | Verify setup is working correctly |
-| `safeyolo doctor` | Run 11-check diagnostic cascade (config, Docker, proxy, addons) |
+| `safeyolo doctor` | Run diagnostic cascade (config, proxy, admin API, addons, tokens, policy, logs) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |
 
-**Aliases:** `safeyolo up` (start with `--pull` and `--wait` only), `safeyolo down` = `stop`
+**Aliases:** `safeyolo up` = `start` (honors `--wait`), `safeyolo down` = `stop`
 
 **Start options:**
 
 ```bash
 safeyolo start              # Normal start
-safeyolo start --dev        # Dev mode: mount addons/ and pdp/ from local repo
-safeyolo start --build      # Rebuild image before starting
-safeyolo start --headless   # Force headless mode (no TUI)
-safeyolo start --pull       # Pull latest image before starting
+safeyolo start --no-wait    # Don't wait for healthy status
+safeyolo start --dev        # Dev mode: load addons/ and pdp/ from the repo checkout
+safeyolo start --test       # Test mode: sinkhole routing and test CA (see config.yaml)
 ```
 
 **Doctor options:**
@@ -96,7 +95,7 @@ Watch handles both credential routing approvals and risky route grant approvals.
 
 ### Agent Management (Sandbox Mode)
 
-Sandbox Mode runs AI agents in isolated Docker containers with all traffic routed through SafeYolo.
+Sandbox Mode runs AI agents in isolated Linux microVMs (Apple Virtualization.framework) with all traffic routed through SafeYolo via a pf-enforced feth bridge.
 
 | Command | Description |
 |---------|-------------|
@@ -106,7 +105,7 @@ Sandbox Mode runs AI agents in isolated Docker containers with all traffic route
 | `safeyolo agent list` | List templates and configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
 | `safeyolo agent config <name>` | View or update agent configuration |
-| `safeyolo agent help <name>` | Show agent CLI help (runs `--help` inside container) |
+| `safeyolo agent help <name>` | Show agent CLI help (runs `--help` inside the agent VM) |
 | `safeyolo agent remove <name>` | Remove an agent |
 
 **Quick start:**
@@ -133,19 +132,20 @@ safeyolo agent run myproject
 # Disable yolo mode (requires manual approval of prompts)
 safeyolo agent run myproject --no-yolo
 
-# Fresh session (new container, no state from previous runs)
+# Fresh session (ignore configured user_default_args)
 safeyolo agent run myproject --fresh
 ```
 
 **Available templates:**
 - `claude-code` - Anthropic's Claude Code CLI
 - `openai-codex` - OpenAI Codex CLI
+- `byoa` - Bring Your Own Agent (bash shell, install your own agent via mise)
 
 **Notes:**
 - Agent names must be lowercase alphanumeric with hyphens (hostname rules)
 - `add` is idempotent: running it twice just runs the existing agent
 - Use `--no-run` with `add` to create config without running
-- Use `--ephemeral` with `add` for throwaway containers
+- Use `--ephemeral` with `add` for throwaway agents (config is not persisted)
 
 ### Service Gateway
 
@@ -302,7 +302,10 @@ eval $(safeyolo cert env)
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo setup check` | Check system prerequisites (Docker group, network) |
+| `safeyolo setup` | Check prerequisites (guest images, BPF access, VM helper, pf anchor) |
+| `safeyolo setup bpf` | Create `access_bpf` group and grant current user BPF access (macOS) |
+| `safeyolo setup sudoers` | Install sudoers rules for passwordless pf/feth/sysctl commands (macOS) |
+| `safeyolo setup pf` | Install the static SafeYolo pf anchor hook in `/etc/pf.conf` (macOS) |
 
 ## Configuration
 
@@ -313,8 +316,8 @@ safeyolo/
 ├── config.yaml          # Main configuration
 ├── policy.toml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
-├── docker-compose.yml   # Generated compose file
 ├── services/            # User service definitions (one YAML per service)
+├── share/               # Guest VM images (kernel, initramfs, rootfs)
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
 ├── policies/            # Approved credentials
@@ -330,8 +333,6 @@ version: 1
 proxy:
   port: 8080           # Proxy port for agents
   admin_port: 9090     # Admin API port
-  image: safeyolo:latest
-  container_name: safeyolo
 modes:
   credential_guard: block
   network_guard: block
@@ -378,7 +379,7 @@ addons:
 ## Workflow
 
 1. **Initialize** - Run `safeyolo init` to create configuration
-2. **Start** - Run `safeyolo start` to launch the proxy container
+2. **Start** - Run `safeyolo start` to launch the proxy (mitmproxy host process)
 3. **Configure agent** - Point your AI coding agent at `http://localhost:8080`
 4. **Watch** - Run `safeyolo watch` to handle credential approval requests
 5. **Monitor** - Use `safeyolo logs -f` to watch activity
@@ -392,8 +393,9 @@ When a credential is blocked:
 
 ## Requirements
 
-- Python 3.10+
-- Docker
+- Python 3.12+ — mitmproxy is installed as a Python dependency (provides the `mitmdump` binary the proxy spawns)
+- macOS Apple Silicon (M1+) — required for agent microVMs (Apple Virtualization.framework)
+- OrbStack or Docker Desktop — build-time only, used by `safeyolo build` to cross-compile guest VM images
 
 ## Environment Variables
 
@@ -401,7 +403,6 @@ When a credential is blocked:
 |----------|-------------|
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
-| `SAFEYOLO_TUI` | Set to `true` for mitmproxy TUI mode (default: headless) |
 | `SAFEYOLO_BLOCK` | Set to `true` to enable blocking for all security addons |
 
 ## License
