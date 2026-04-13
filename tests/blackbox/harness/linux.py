@@ -84,7 +84,8 @@ class LinuxHarness(BlackboxHarness):
         if suite in ("all", "isolation"):
             result = subprocess.run(
                 ["safeyolo", "agent", "shell", "bbtest", "-c",
-                 "cd /workspace/tests/blackbox/isolation && pytest -v --tb=short --timeout=60"],
+                 "cd /workspace/tests/blackbox/isolation && "
+                 "SAFEYOLO_BLACKBOX_ISOLATION=1 pytest -v --tb=short --timeout=60"],
             )
             results.append(result.returncode)
 
