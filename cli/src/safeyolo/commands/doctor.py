@@ -5,10 +5,8 @@ import shutil
 import socket
 import sqlite3
 import ssl
-import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Optional
 
 import typer
 import yaml
@@ -69,8 +67,8 @@ def _check_config_dir() -> DiagResult:
     )
 
 
-def _check_docker() -> DiagResult:
-    """Check if proxy is running (replaces Docker check)."""
+def _check_proxy_running() -> DiagResult:
+    """Check if the mitmproxy host process is running."""
     if not is_proxy_running():
         return DiagResult(
             name="Proxy running",
@@ -79,145 +77,6 @@ def _check_docker() -> DiagResult:
             remediation="Run: safeyolo start",
         )
     return DiagResult(name="Proxy running", status="pass", message="mitmproxy is running")
-
-def _check_docker_DISABLED() -> DiagResult:
-    """DISABLED — original Docker check preserved for reference."""
-    if False:
-        pass
-    try:
-        result = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        version = result.stdout.strip() if result.returncode == 0 else "unknown"
-    except Exception:
-        version = "unknown"
-    return DiagResult(
-        name="Docker available",
-        status="pass",
-        message=f"Docker {version}",
-    )
-
-
-def _check_container() -> DiagResult:
-    """Check if SafeYolo container is running."""
-    status = get_container_status()
-    if not status:
-        return DiagResult(
-            name="Container running",
-            status="fail",
-            message="Container not found",
-            remediation="safeyolo start",
-        )
-    container_status = status.get("status", "unknown")
-    health = status.get("health", "none")
-    started = status.get("started_at", "")[:19]
-    if container_status == "running":
-        msg = f"Running (health: {health})"
-        if started:
-            msg += f", started {started}"
-        return DiagResult(
-            name="Container running",
-            status="pass",
-            message=msg,
-        )
-    return DiagResult(
-        name="Container running",
-        status="fail",
-        message=f"Container status: {container_status}",
-        remediation="safeyolo start",
-    )
-
-
-def _check_mitmproxy_process() -> DiagResult:
-    """Check if mitmproxy process is alive inside the container.
-
-    Uses /proc/1/cmdline (always available) instead of pgrep (not installed
-    in minimal containers). In headless mode, mitmdump runs as PID 1 via exec.
-    In TUI mode, checks /proc/*/cmdline for any mitmproxy process.
-    """
-    name = get_container_name()
-    last_error: Optional[str] = None
-
-    # Check PID 1 cmdline (headless mode: exec mitmdump replaces shell)
-    try:
-        result = subprocess.run(
-            ["docker", "exec", name, "cat", "/proc/1/cmdline"],
-            capture_output=True,
-            timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
-        )
-        if result.returncode == 0:
-            # cmdline uses null bytes as separators
-            cmdline = result.stdout.replace(b"\x00", b" ").decode(errors="replace").strip()
-            if "mitmdump" in cmdline:
-                return DiagResult(
-                    name="mitmproxy process",
-                    status="pass",
-                    message="Running (PID 1)",
-                )
-            if "mitmproxy" in cmdline:
-                return DiagResult(
-                    name="mitmproxy process",
-                    status="pass",
-                    message="Running in TUI mode (PID 1)",
-                )
-    except subprocess.TimeoutExpired as exc:
-        last_error = f"Timeout checking PID 1: {exc}"
-    except FileNotFoundError as exc:
-        last_error = f"docker not found: {exc}"
-
-    # TUI mode: mitmproxy runs under tmux, not as PID 1.
-    # Scan /proc/*/cmdline for any mitmproxy/mitmdump process.
-    try:
-        # Shell glob /proc/[0-9]*/cmdline and grep - works without pgrep/ps
-        result = subprocess.run(
-            [
-                "docker",
-                "exec",
-                name,
-                "sh",
-                "-c",
-                (
-                    "for f in /proc/[0-9]*/cmdline; do "
-                    + "cat \"$f\" 2>/dev/null | tr '\\0' ' '; echo \" $f\"; "
-                    + "done | grep -E 'mitmdump|mitmproxy' | head -1"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            line = result.stdout.strip()
-            # Extract PID from /proc/<pid>/cmdline path at end of line
-            pid = "unknown"
-            if "/proc/" in line:
-                parts = line.rsplit("/proc/", 1)[-1]
-                pid = parts.split("/")[0]
-            mode = "TUI mode" if "mitmproxy" in line and "mitmdump" not in line else "headless"
-            return DiagResult(
-                name="mitmproxy process",
-                status="pass",
-                message=f"Running in {mode} (PID {pid})",
-            )
-    except subprocess.TimeoutExpired as exc:
-        last_error = f"Timeout scanning /proc: {exc}"
-    except FileNotFoundError as exc:
-        last_error = f"docker not found: {exc}"
-
-    detail = "The proxy process may have crashed."
-    if last_error:
-        detail = f"{detail} Last error: {last_error}"
-
-    return DiagResult(
-        name="mitmproxy process",
-        status="fail",
-        message="mitmproxy not running inside container",
-        detail=detail,
-        remediation="safeyolo stop && safeyolo start",
-    )
 
 
 def _check_admin_api() -> DiagResult:
@@ -232,7 +91,7 @@ def _check_admin_api() -> DiagResult:
             name="Admin API",
             status="fail",
             message=f"Cannot connect to localhost:{admin_port}",
-            remediation="Check: docker logs safeyolo",
+            remediation="Check: safeyolo logs --tail 50",
         )
     # Try a health check
     from ..config import get_admin_token
@@ -289,7 +148,7 @@ def _check_proxy_port() -> DiagResult:
             name="Proxy port",
             status="fail",
             message=f"Cannot connect to localhost:{proxy_port}",
-            remediation="Check: docker logs safeyolo",
+            remediation="Check: safeyolo logs --tail 50",
         )
 
 
@@ -653,38 +512,8 @@ def _check_addon_loading() -> DiagResult:
         )
 
 
-def _check_docker_network() -> DiagResult:
-    """Check if the SafeYolo Docker network exists."""
-    try:
-        result = subprocess.run(
-            ["docker", "network", "inspect", COMPOSE_NETWORK_NAME],
-            capture_output=True,
-            text=True,
-            timeout=DOCKER_INSPECT_TIMEOUT_SECONDS,
-        )
-        if result.returncode == 0:
-            return DiagResult(
-                name="Docker network",
-                status="pass",
-                message=f"Network '{COMPOSE_NETWORK_NAME}' exists",
-            )
-        return DiagResult(
-            name="Docker network",
-            status="fail",
-            message=f"Network '{COMPOSE_NETWORK_NAME}' not found",
-            remediation="safeyolo stop && safeyolo start",
-        )
-    except Exception as exc:
-        return DiagResult(
-            name="Docker network",
-            status="warn",
-            message=f"Could not inspect: {type(exc).__name__}",
-        )
-
-
 # Dependency map: check_name -> list of check_names it depends on
 _DEPENDS_ON = {
-    "mitmproxy process": ["Container running"],
     "Admin API": ["Proxy running"],
     "Addon loading": ["Admin API"],
     "Proxy port": ["Proxy running"],
@@ -695,7 +524,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     """Run all diagnostic checks with cascade logic."""
     checks_funcs = [
         ("Config directory", _check_config_dir),
-        ("Proxy running", _check_docker),  # Reused — now checks proxy, not Docker
+        ("Proxy running", _check_proxy_running),
         ("Admin API", _check_admin_api),
         ("Addon loading", _check_addon_loading),
         ("Proxy port", _check_proxy_port),
@@ -779,20 +608,6 @@ def _print_results(results: list[DiagResult], verbose: bool = False) -> None:
 
 def _build_bundle(results: list[DiagResult]) -> dict:
     """Build JSON diagnostic bundle."""
-    # Get docker version
-    docker_version = "unknown"
-    try:
-        result = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            docker_version = result.stdout.strip()
-    except Exception:
-        pass  # docker may not be installed or accessible; fall back to "unknown"
-
     import platform
 
     counts = {"pass": 0, "fail": 0, "warn": 0, "skip": 0}
@@ -804,13 +619,21 @@ def _build_bundle(results: list[DiagResult]) -> dict:
         if res.name == "Crash detection" and res.detail:
             crash_tb = res.detail
 
+    mitmproxy_version = "unknown"
+    try:
+        from mitmproxy import version as mitm_version
+
+        mitmproxy_version = mitm_version.VERSION
+    except Exception:
+        pass  # mitmproxy should always be importable, but don't crash the bundle
+
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "checks": [asdict(r) for r in results],
         "summary": counts,
         "crash_traceback": crash_tb,
         "system": {
-            "docker_version": docker_version,
+            "mitmproxy_version": mitmproxy_version,
             "platform": platform.platform(),
         },
     }

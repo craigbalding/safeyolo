@@ -1,7 +1,6 @@
 """Shared fixtures for SafeYolo CLI tests."""
 
 import json
-import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -33,7 +32,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 
     # Write minimal config
     (config_dir / "config.yaml").write_text(
-        "version: 1\nproxy:\n  port: 8080\n  admin_port: 9090\n  container_name: safeyolo-test\n"
+        "version: 1\nproxy:\n  port: 8080\n  admin_port: 9090\n"
     )
 
     # Write minimal policy.toml (agents_store reads/writes [agents] here)
@@ -46,15 +45,6 @@ def tmp_config_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
 
     return config_dir
-
-
-@pytest.fixture
-def mock_subprocess(monkeypatch):
-    """Mock subprocess.run for docker commands."""
-    mock_run = MagicMock()
-    mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-    monkeypatch.setattr("subprocess.run", mock_run)
-    return mock_run
 
 
 @pytest.fixture

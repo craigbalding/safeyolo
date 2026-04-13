@@ -26,8 +26,6 @@ DEFAULT_CONFIG = {
     "proxy": {
         "port": 8080,
         "admin_port": 9090,
-        "image": "safeyolo:latest",
-        "container_name": "safeyolo",
     },
     "modes": {
         "credential_guard": "block",

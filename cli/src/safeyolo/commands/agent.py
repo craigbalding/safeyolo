@@ -60,7 +60,7 @@ def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
             console.print(f"  [green]Found[/green] {dir_path} (will mount)")
             has_any = True
         elif ephemeral:
-            console.print("  [yellow]Ephemeral mode[/yellow] - settings lost on container exit")
+            console.print("  [yellow]Ephemeral mode[/yellow] - settings lost when the agent VM exits")
         else:
             dir_path.mkdir(mode=0o700, exist_ok=True)
             console.print(f"  [green]Created[/green] {dir_path}")
@@ -81,7 +81,7 @@ def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
 
 agent_app = typer.Typer(
     name="agent",
-    help="Manage AI agent containers for Sandbox Mode.",
+    help="Manage AI agent microVMs for Sandbox Mode.",
     no_args_is_help=True,
 )
 
@@ -106,7 +106,7 @@ def _check_project_ownership(project_path: Path, allow_unowned: bool) -> None:
 def _get_service_name(instance_name: str) -> str:
     """Get service name for an instance.
 
-    Service name equals instance name (used in docker-compose).
+    Service name equals instance name.
     """
     return instance_name
 
@@ -540,7 +540,7 @@ def add(
     ephemeral: bool = typer.Option(
         False,
         "--ephemeral",
-        help="Don't persist config (credentials lost on container exit)",
+        help="Don't persist config (credentials lost when the agent VM exits)",
     ),
     user_default_args: str = typer.Option(
         None,
@@ -588,7 +588,7 @@ def add(
     if not config.get("sandbox"):
         console.print(
             "[yellow]Warning: SafeYolo is not in Sandbox Mode.[/yellow]\n"
-            "Agent containers may be able to bypass the proxy.\n"
+            "Agents may be able to bypass the proxy.\n"
             "Run [bold]safeyolo init[/bold] to enable network isolation (sandbox is the default).\n"
         )
 
@@ -737,16 +737,16 @@ def list_agents() -> None:
 @agent_app.command()
 def remove(
     name: str = typer.Argument(..., help="Agent instance name to remove"),
-    clean: bool = typer.Option(False, "--clean", help="Also stop containers and remove images/volumes"),
+    clean: bool = typer.Option(False, "--clean", help="(deprecated, no-op) retained for compatibility"),
 ) -> None:
     """Remove an agent configuration.
 
-    Deletes the agent's compose file and configuration directory.
+    Stops the agent VM if running, then deletes the agent's configuration
+    directory.
 
     Examples:
 
         safeyolo agent remove claude-code
-        safeyolo agent remove claude-code --clean  # Also remove containers/images
     """
     _validate_instance_name(name)
 
@@ -798,9 +798,9 @@ def run(
         help="Allow mounting directories you don't own",
     ),
 ) -> None:
-    """Run an existing agent container.
+    """Run an existing agent.
 
-    Starts SafeYolo if not running, then launches the agent container.
+    Starts SafeYolo if not running, then launches the agent microVM.
     Yolo mode is on by default (auto-accepts permission prompts).
     Use --no-yolo to require manual approval.
 
@@ -1110,7 +1110,7 @@ def agent_help(
 ) -> None:
     """Show agent CLI help.
 
-    Runs the agent's --help command inside the container to show available flags.
+    Runs the agent's --help command inside the agent VM to show available flags.
     Use 'safeyolo agent shell <name>' to experiment with other flags interactively.
 
     Examples:
