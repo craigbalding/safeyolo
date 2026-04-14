@@ -160,33 +160,33 @@ class TestLifecycleStop:
         assert "not running" in result.output.lower()
 
     def test_stop_does_not_stop_agents(self, runner, config_dir):
-        """Plain stop does NOT stop running VMs."""
+        """Plain stop does NOT stop running agents."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir(parents=True)
 
-        mock_stop_vm = MagicMock()
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.vm.is_vm_running", return_value=True),
-            patch("safeyolo.vm.stop_vm", mock_stop_vm),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.lifecycle.stop_proxy"),
         ):
             result = runner.invoke(app, ["stop"])
 
         assert result.exit_code == 0
-        mock_stop_vm.assert_not_called()
+        mock_platform.stop_sandbox.assert_not_called()
         assert "still running" in result.output.lower()
 
     def test_stop_all_stops_agent_vms(self, runner, config_dir):
-        """stop --all iterates agent dirs and stops running VMs."""
+        """stop --all iterates agent dirs and stops running agents."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir(parents=True)
 
-        mock_stop_vm = MagicMock()
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
-            patch("safeyolo.vm.is_vm_running", return_value=True),
-            patch("safeyolo.vm.stop_vm", mock_stop_vm),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.lifecycle.stop_proxy"),
             patch("safeyolo.firewall.unload_rules"),
             patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
@@ -194,7 +194,7 @@ class TestLifecycleStop:
             result = runner.invoke(app, ["stop", "--all"])
 
         assert result.exit_code == 0
-        mock_stop_vm.assert_called_once_with("test-agent")
+        mock_platform.stop_sandbox.assert_called_once_with("test-agent")
 
     def test_stop_all_unloads_pf_rules(self, runner, config_dir):
         """stop --all unloads pf rules."""
