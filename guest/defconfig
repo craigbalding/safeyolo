@@ -152,6 +152,12 @@ CONFIG_USER_NS=y
 # inotify (used by many tools)
 CONFIG_INOTIFY_USER=y
 
+# PSCI (ARM64 power management — required for the guest to tell VZ
+# "power off" when the agent exits. Without this, `reboot()` syscall
+# has nowhere to go and the kernel just spins in halt(), forcing VZ
+# to hard-kill the VM after its 5s deadline.)
+CONFIG_ARM_PSCI_FW=y
+
 # RTC (PL031 — exposed by Virtualization.framework device tree)
 CONFIG_RTC_CLASS=y
 CONFIG_RTC_HCTOSYS=y
