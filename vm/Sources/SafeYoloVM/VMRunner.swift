@@ -41,6 +41,9 @@ class VMRunner: NSObject {
     }
 
     private func handleStateChange(_ state: VZVirtualMachine.State) {
+        // Diagnostic: log every state transition to stderr so we can see
+        // exactly what VZ is doing during cold-boot, save, and restore.
+        fputs("[vm state] → \(state.rawValue) (\(stateName(state)))\n", stderr)
         switch state {
         case .stopped:
             exitClean(code: 0)
@@ -56,6 +59,22 @@ class VMRunner: NSObject {
             break
         @unknown default:
             break
+        }
+    }
+
+    private func stateName(_ state: VZVirtualMachine.State) -> String {
+        switch state {
+        case .stopped:    return "stopped"
+        case .running:    return "running"
+        case .paused:     return "paused"
+        case .error:      return "error"
+        case .starting:   return "starting"
+        case .pausing:    return "pausing"
+        case .resuming:   return "resuming"
+        case .stopping:   return "stopping"
+        case .saving:     return "saving"
+        case .restoring:  return "restoring"
+        @unknown default: return "unknown"
         }
     }
 
@@ -155,6 +174,7 @@ class VMRunner: NSObject {
     private func exitClean(code: Int32) {
         guard !hasExited else { return }
         hasExited = true
+        fputs("[exitClean] code=\(code)\n", stderr)
         restoreTerminal()
         exit(code)
     }
