@@ -17,7 +17,11 @@ struct RunConfig {
     var fethBridgePath: String = ""  // path to feth-bridge binary
     var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
     var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
+    var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
+    var restoreFrom: String = ""      // path to snapshot file to restore from
 }
+
+let helperVersion = "0.2.0"
 
 func printUsage() {
     let usage = """
@@ -34,6 +38,13 @@ func printUsage() {
       --feth IFACE        feth interface for network isolation
       --feth-bridge PATH  Path to feth-bridge binary
       --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
+      --snapshot-on-signal PATH
+                          Write a VM snapshot to PATH when SIGUSR1 is received.
+                          Sidecar metadata is written to PATH.meta.json.
+      --restore-from PATH Restore VM from a previously-saved snapshot at PATH
+                          instead of cold-booting. Must pass the same
+                          --kernel / --initrd / --memory / --cpus values that
+                          were used when the snapshot was created.
       --help              Show this help
 
     Example:
@@ -56,7 +67,7 @@ func parseArguments() -> RunConfig? {
             return nil
         }
         if args.count > 1 && args[1] == "version" {
-            print("safeyolo-vm 0.1.0")
+            print("safeyolo-vm \(helperVersion)")
             return nil
         }
         fputs("Error: expected 'run' subcommand\n", stderr)
@@ -102,6 +113,12 @@ func parseArguments() -> RunConfig? {
             config.fethBridgePath = args[i]
         case "--no-terminal":
             config.noTerminal = true
+        case "--snapshot-on-signal":
+            i += 1; guard i < args.count else { fputs("Error: --snapshot-on-signal requires a path\n", stderr); return nil }
+            config.snapshotOnSignal = args[i]
+        case "--restore-from":
+            i += 1; guard i < args.count else { fputs("Error: --restore-from requires a path\n", stderr); return nil }
+            config.restoreFrom = args[i]
         case "--help":
             printUsage()
             return nil
@@ -172,33 +189,106 @@ do {
         close(hostFD)  // Parent no longer needs it
     }
 
-    let vmConfig = try VMConfiguration.build(from: config)
+    // Determine the machine identifier BEFORE building the VM config.
+    // On restore, VZ requires the restored VM to have the same identifier
+    // it had at save time (otherwise restoreMachineStateFrom fails with
+    // EINVAL), so we read the sidecar early to recover it. On cold boot
+    // we mint a fresh identifier and persist it via the save-time sidecar.
+    let machineIdentifier: VZGenericMachineIdentifier
+    if !config.restoreFrom.isEmpty {
+        let snapURL = URL(fileURLWithPath: NSString(string: config.restoreFrom).expandingTildeInPath)
+        let sidecarURL = VMSnapshot.sidecarURL(for: snapURL)
+        guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
+            throw VMSnapshot.Error.sidecarMissing(sidecarURL)
+        }
+        let sidecarData = try Data(contentsOf: sidecarURL)
+        let savedFingerprint: VMSnapshot.Fingerprint
+        do {
+            savedFingerprint = try JSONDecoder().decode(VMSnapshot.Fingerprint.self, from: sidecarData)
+        } catch {
+            throw VMSnapshot.Error.sidecarParseFailed(error)
+        }
+        guard let idData = Data(base64Encoded: savedFingerprint.machineIdentifier),
+              let decoded = VZGenericMachineIdentifier(dataRepresentation: idData) else {
+            throw VMSnapshot.Error.sidecarParseFailed(NSError(
+                domain: "VMSnapshot",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "sidecar machineIdentifier is not a valid VZGenericMachineIdentifier"]
+            ))
+        }
+        machineIdentifier = decoded
+    } else {
+        machineIdentifier = VZGenericMachineIdentifier()
+    }
+
+    let vmConfig = try VMConfiguration.build(from: config, machineIdentifier: machineIdentifier)
     try vmConfig.validate()
 
     let vmQueue = DispatchQueue(label: "com.safeyolo.vm", qos: .userInteractive)
     let vm = VZVirtualMachine(configuration: vmConfig, queue: vmQueue)
     let runner = VMRunner(vm: vm, queue: vmQueue)
-    runner.installSignalHandlers()
-    try runner.start()
 
-    if config.noTerminal {
-        // Detach mode: no vsock terminal. VM stays alive until SIGTERM.
-        // Access via SSH ('safeyolo agent shell <name>').
-        runner.installSignalHandlers()
+    // Compute the hardware fingerprint we'll need for save (sidecar) and
+    // restore (sidecar validation). Done once here so a SIGUSR1 mid-run
+    // doesn't have to recompute kernel/initrd hashes.
+    let fingerprint = VMSnapshot.Fingerprint(
+        memoryMB: config.memoryMB,
+        cpus: config.cpus,
+        kernelSHA256: try VMSnapshot.sha256(ofFileAt: config.kernelPath),
+        initrdSHA256: try VMSnapshot.sha256(ofFileAt: config.initrdPath),
+        vmHelperVersion: helperVersion,
+        machineIdentifier: machineIdentifier.dataRepresentation.base64EncodedString()
+    )
+
+    if !config.snapshotOnSignal.isEmpty {
+        let url = URL(fileURLWithPath: NSString(string: config.snapshotOnSignal).expandingTildeInPath)
+        let rootfsURL = URL(fileURLWithPath: NSString(string: config.rootfsPath).expandingTildeInPath)
+        // Auto-derive clone path: <snapshot>.rootfs. Restore must use this
+        // clone (via --rootfs <X>.rootfs --restore-from <X>) to satisfy
+        // VZ's requirement that the disk match its save-time state.
+        let cloneURL = url.appendingPathExtension("rootfs")
+        runner.configureSnapshotOnSignal(
+            url: url,
+            rootfsURL: rootfsURL,
+            rootfsCloneURL: cloneURL,
+            fingerprint: fingerprint
+        )
+    }
+
+    runner.installSignalHandlers()
+
+    let isRestoring = !config.restoreFrom.isEmpty
+    if isRestoring {
+        let url = URL(fileURLWithPath: NSString(string: config.restoreFrom).expandingTildeInPath)
+        try runner.restoreFromSnapshot(url: url, expectedFingerprint: fingerprint)
     } else {
-        // Wait for guest vsock-term daemon to be ready, then connect.
-        // The guest needs time to boot, run init, install agent binary, and start vsock-term.
+        try runner.start()
+    }
+
+    // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
+    // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.
+    // Otherwise, attach the vsock terminal once the guest's per-run init
+    // has spawned it.
+    if !config.noTerminal {
         let terminal = VSockTerminal(vm: vm, queue: vmQueue)
 
         DispatchQueue.global().async {
-            // Retry vsock connection until guest is ready (up to 120s for first boot with npm install)
+            // Retry vsock connection until guest is ready (up to 120s for first boot with npm install).
+            // On restore, sshd + per-run init are nearly instant — skip the
+            // first 2s sleep so the terminal attaches as fast as possible.
+            //
+            // Only break on terminal states (.stopped / .error), NOT on
+            // transient .pausing/.paused/.saving/.restoring/.resuming —
+            // those happen mid-snapshot and the VM will be back to .running
+            // momentarily.
             var connected = false
             for attempt in 1...60 {
-                sleep(2)
-                // Check VM is still running
-                if vm.state != .running { break }
+                if !(isRestoring && attempt == 1) {
+                    sleep(2)
+                }
+                if vm.state == .stopped || vm.state == .error { break }
 
-                if terminal.tryConnect() {
+                if vm.state == .running && terminal.tryConnect() {
                     connected = true
                     break
                 }
@@ -212,9 +302,23 @@ do {
         }
     }
 
-    // Run until VM exits
+    // Run until VM exits.
+    //
+    // NOTE: in --no-terminal mode the signal DispatchSources on .main
+    // appear to be serviced unreliably (SIGUSR1 default action terminates
+    // the process before the dispatch source fires). The vsock-term retry
+    // loop on the global queue happens to keep things lively in the
+    // common case. dispatchMain() didn't fix it cleanly either. For now
+    // the snapshot test runs in vsock-term mode where SIGUSR1 works; a
+    // proper fix for --no-terminal SIGUSR1 is tracked separately and not
+    // load-bearing for the CLI orchestration in PR 4.
     RunLoop.main.run()
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
+    // Use sysexits.h EX_TEMPFAIL (75) for snapshot-related errors so the CLI
+    // can detect this case and fall back to cold-boot capture cleanly.
+    if error is VMSnapshot.Error {
+        exit(75)
+    }
     exit(1)
 }
