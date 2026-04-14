@@ -54,8 +54,15 @@ class AgentPlatform(ABC):
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
         background: bool,
+        snapshot_capture_path: Path | None = None,
+        restore_from_path: Path | None = None,
     ) -> int:
-        """Start an agent sandbox. Returns PID."""
+        """Start an agent sandbox. Returns PID.
+
+        snapshot_capture_path / restore_from_path are macOS-only (VZ
+        save/restore). Linux ignores them until PR 5 adds gVisor
+        checkpoint support.
+        """
 
     @abstractmethod
     def stop_sandbox(self, name: str) -> None:

@@ -22,6 +22,14 @@ from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
 from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
 from ..templates import TemplateError, get_agent_config, get_available_templates
+from ..snapshot import (
+    compute_snapshot_version,
+    invalidate_snapshot,
+    is_snapshot_valid,
+    platform_supports_snapshot,
+    snapshot_path,
+    write_snapshot_version,
+)
 from ..vm import (
     _cleanup_feth_bridge,
     _update_agent_map,
@@ -147,6 +155,105 @@ def _get_agent_binary(metadata: dict) -> str | None:
         return None
 
 
+def _capture_snapshot_blocking(
+    *,
+    name: str,
+    helper_pid: int,
+    config_share_dir: Path,
+    version: dict,
+    plat,
+) -> bool:
+    """Drive the safeyolo-vm helper through a snapshot capture.
+
+    Waits for the guest's /safeyolo/static-init-done marker, sends SIGUSR1
+    to the helper, waits for snapshot.bin to stop growing, and writes
+    snapshot.version.json on success.
+
+    Always writes per-run-go before returning so the guest is never
+    stranded on the gate — even if the snapshot fails, we fall back to
+    a normal cold boot and the agent still launches.
+
+    Returns True on success, False if we gave up (snapshot unusable).
+    """
+    import os
+    import signal
+    import time as _time
+
+    from ..snapshot import (
+        MIN_SNAPSHOT_BYTES,
+        snapshot_path,
+    )
+
+    static_done = config_share_dir / "static-init-done"
+    per_run_go = config_share_dir / "per-run-go"
+    snap = snapshot_path(name)
+
+    def _give_up(note: str) -> bool:
+        invalidate_snapshot(name)
+        try:
+            per_run_go.write_text("")
+        except OSError:
+            pass
+        log.warning("snapshot capture skipped: %s", note)
+        return False
+
+    # Phase 1: wait for the guest to finish static init.
+    deadline = _time.time() + 30.0
+    while _time.time() < deadline:
+        if static_done.exists():
+            break
+        if not plat.is_sandbox_running(name):
+            return _give_up("VM exited before static-init-done")
+        _time.sleep(0.05)
+    else:
+        return _give_up("timeout waiting for static-init-done")
+
+    # Phase 2: tell the helper to snapshot. The Swift side pauses the VM,
+    # writes memory to snapshot.bin, clones the rootfs, and resumes.
+    try:
+        os.kill(helper_pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        return _give_up("helper process gone before SIGUSR1")
+
+    # Phase 3: wait for snapshot.bin to appear and stop growing. A 200ms
+    # size-stable window is enough to tell we're past VZ's flush.
+    deadline = _time.time() + 60.0
+    last_size = -1
+    stable_since: float | None = None
+    while _time.time() < deadline:
+        if not plat.is_sandbox_running(name):
+            return _give_up("VM died during snapshot")
+        if snap.exists():
+            try:
+                sz = snap.stat().st_size
+            except OSError:
+                sz = -1
+            if sz != last_size:
+                last_size = sz
+                stable_since = _time.time()
+            elif stable_since and (_time.time() - stable_since) >= 0.2 and last_size > 0:
+                break
+        _time.sleep(0.05)
+    else:
+        return _give_up("timeout waiting for snapshot to stabilize")
+
+    # Phase 4: sanity-check size and persist our version sidecar.
+    if last_size < MIN_SNAPSHOT_BYTES:
+        return _give_up(f"snapshot too small ({last_size} bytes)")
+    try:
+        write_snapshot_version(name, version)
+    except OSError as e:
+        return _give_up(f"could not write snapshot.version.json: {e}")
+
+    try:
+        per_run_go.write_text("")
+    except OSError:
+        # Guest will timeout on its 30s gate and still proceed; we've
+        # written version.json so the snapshot itself is usable.
+        pass
+    return True
+
+
 def _run_agent(
     name: str,
     folder_override: str | None = None,
@@ -157,12 +264,15 @@ def _run_agent(
     extra_mounts: list[str] | None = None,
     extra_ports: list[str] | None = None,
     detach: bool = False,
+    no_snapshot: bool = False,
 ) -> int:
     """Run an agent VM. Returns exit code.
 
     Shared logic used by both `add` (auto-run) and `run` commands.
 
     detach: Boot VM in background and return after boot confirmation.
+    no_snapshot: skip snapshot capture and restore for this run;
+        don't touch an existing snapshot on disk either way.
     """
     _validate_instance_name(name)
 
@@ -285,6 +395,32 @@ def _run_agent(
     gateway_ip = fw_alloc["host_ip"]
     guest_ip = fw_alloc["guest_ip"]
 
+    # Snapshot mode decision (macOS only for now — Linux is always
+    # passthrough until PR 5 adds runsc checkpoint/restore).
+    #
+    # capture      — no valid snapshot on disk; we'll take one this run.
+    # passthrough  — existing valid snapshot (PR 4 will turn this into
+    #                restore), or --no-snapshot, or unsupported platform.
+    cpus_for_run = 4
+    memory_for_run = 4096
+    snapshot_version: dict | None = None
+    snapshot_mode = "passthrough"
+    if not no_snapshot and platform_supports_snapshot():
+        snapshot_version = compute_snapshot_version(
+            memory_mb=memory_for_run,
+            cpus=cpus_for_run,
+            gateway_ip=gateway_ip,
+            guest_ip=guest_ip,
+        )
+        if is_snapshot_valid(name, snapshot_version):
+            # PR 4 restores here; PR 3 just cold-boots. Snapshot files
+            # stay on disk untouched — next run after PR 4 picks them up.
+            snapshot_mode = "passthrough"
+        else:
+            snapshot_mode = "capture"
+            # Stale/invalid metadata would confuse a later restore.
+            invalidate_snapshot(name)
+
     # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
     try:
         prepare_config_share(
@@ -302,6 +438,10 @@ def _run_agent(
             auto_args=auto_args,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            # Capture mode writes per-run-go itself, after snapshot completes,
+            # so the guest pauses at the static/per-run boundary long enough
+            # for us to send SIGUSR1.
+            pre_write_per_run_go=(snapshot_mode != "capture"),
         )
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
@@ -324,17 +464,20 @@ def _run_agent(
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
     try:
         # Show progress as the sandbox boots
-        console.print("  Booting VM...", end="")
+        boot_label = "Booting VM (first-time snapshot)" if snapshot_mode == "capture" else "Booting VM"
+        console.print(f"  {boot_label}...", end="")
         config_share = get_agent_config_share_dir(name)
-        plat.start_sandbox(
+        capture_path = snapshot_path(name) if snapshot_mode == "capture" else None
+        helper_pid = plat.start_sandbox(
             name=name,
             workspace_path=str(workspace_path),
             config_share=config_share,
             fw_alloc=fw_alloc,
-            cpus=4,
-            memory_mb=4096,
+            cpus=cpus_for_run,
+            memory_mb=memory_for_run,
             extra_shares=host_shares if host_shares else None,
             background=run_background,
+            snapshot_capture_path=capture_path,
         )
         _update_agent_map(name, ip=guest_ip)
 
@@ -342,6 +485,18 @@ def _run_agent(
         import time as _time
         config_share_dir = get_agent_config_share_dir(name)
         ip_file = config_share_dir / "vm-ip"
+
+        if snapshot_mode == "capture":
+            # Capture happens between static and per-run — static has
+            # already written vm-ip by the time we get here, so the
+            # subsequent vm-ip poll will complete on the first iteration.
+            _capture_snapshot_blocking(
+                name=name,
+                helper_pid=helper_pid,
+                config_share_dir=config_share_dir,
+                version=snapshot_version or {},
+                plat=plat,
+            )
 
         # Wait for VM IP (indicates guest init is running).
         # Poll fast (50ms) for the first 2s so the host detects the file
@@ -804,6 +959,11 @@ def run(
         "--dangerously-allow-unowned",
         help="Allow mounting directories you don't own",
     ),
+    no_snapshot: bool = typer.Option(
+        False,
+        "--no-snapshot",
+        help="Skip snapshot capture/restore for this run (debug aid; existing snapshot untouched)",
+    ),
 ) -> None:
     """Run an existing agent container.
 
@@ -858,6 +1018,7 @@ def run(
         extra_mounts=parsed_mounts if parsed_mounts else None,
         extra_ports=parsed_ports if parsed_ports else None,
         detach=detach,
+        no_snapshot=no_snapshot,
     )
     raise typer.Exit(exit_code)
 
@@ -924,6 +1085,25 @@ def stop(
     plat.stop_sandbox(name)
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
+
+
+@agent_app.command(name="rebuild-snapshot")
+def rebuild_snapshot(
+    name: str = typer.Argument(..., help="Agent instance name"),
+) -> None:
+    """Delete an agent's warm-boot snapshot so the next run re-captures.
+
+    Use this when you suspect a snapshot is stale or corrupt, or after
+    a guest/kernel/CA change that the version fingerprint didn't catch.
+
+    Examples:
+
+        safeyolo agent rebuild-snapshot myproject
+    """
+    _validate_instance_name(name)
+    invalidate_snapshot(name)
+    console.print(f"[green]Snapshot invalidated for {name}.[/green]")
+    console.print(f"  Next run will cold-boot and re-capture.")
 
 
 @agent_app.command()

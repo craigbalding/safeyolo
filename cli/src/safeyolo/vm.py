@@ -138,6 +138,7 @@ def prepare_config_share(
     auto_args: str = "",
     gateway_ip: str = "192.168.65.1",
     guest_ip: str = "192.168.65.2",
+    pre_write_per_run_go: bool = True,
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -163,11 +164,22 @@ def prepare_config_share(
         dst.chmod(0o755)
 
     # Pre-write the per-run gate so the orchestrator falls straight through
-    # to per-run after static. Snapshot-capture (PR 3) and restore (PR 4)
-    # will instead remove this before VM start and write it at the correct
-    # moment (after snapshot, or after restore). Without this pre-write the
-    # guest would wait 30s before continuing on every cold boot.
-    (share_dir / "per-run-go").write_text("")
+    # to per-run after static. CAPTURE / RESTORE callers disable this and
+    # write per-run-go themselves at the right moment (after snapshot
+    # completes, or after restore succeeds). Without a pre-write or an
+    # explicit write from the CLI, the guest would wait 30s before
+    # continuing on every cold boot.
+    per_run_go = share_dir / "per-run-go"
+    if pre_write_per_run_go:
+        per_run_go.write_text("")
+    else:
+        # CAPTURE mode needs a clean slate — a stale per-run-go from an
+        # earlier passthrough run would let the guest skip past the
+        # snapshot point before we get a chance to SIGUSR1.
+        try:
+            per_run_go.unlink()
+        except FileNotFoundError:
+            pass
     # Ensure no stale static-init-done from a prior run masks progress —
     # the orchestrator writes this fresh on every boot.
     try:
@@ -310,12 +322,27 @@ def start_vm(
     extra_shares: list[tuple[str, str, bool]] | None = None,
     feth_vm: str = "",
     background: bool = False,
+    snapshot_capture_path: Path | None = None,
+    restore_from_path: Path | None = None,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
     If background=True, serial console goes to a log file instead of
     stdin/stdout (for SSH-primary mode).
+
+    snapshot_capture_path: if set, pass --snapshot-on-signal to the
+        helper. The CLI sends SIGUSR1 once the guest's static phase has
+        completed; the helper pauses the VM, saves memory state to this
+        path, clones the rootfs beside it, and resumes.
+
+    restore_from_path: if set, pass --restore-from to the helper and
+        override --rootfs to point at the paired APFS clone. The helper
+        restores VM memory from this path instead of cold-booting.
+        Mutually exclusive with snapshot_capture_path.
     """
+    if snapshot_capture_path and restore_from_path:
+        raise VMError("snapshot_capture_path and restore_from_path are mutually exclusive")
+
     helper = find_vm_helper()
     rootfs = get_agent_rootfs_path(name)
     if not rootfs.exists():
@@ -326,6 +353,17 @@ def start_vm(
     for path, label in [(kernel, "kernel"), (initrd, "initramfs")]:
         if not path.exists():
             raise VMError(f"{label} not found at {path}\nBuild guest images first.")
+
+    # On restore, VZ requires the disk image to match byte-for-byte the
+    # state it had at save time. The helper captured a clone at save time
+    # (alongside the snapshot file) — use that instead of the live rootfs.
+    if restore_from_path is not None:
+        rootfs = Path(f"{restore_from_path}.rootfs")
+        if not rootfs.exists():
+            raise VMError(
+                f"Snapshot rootfs clone missing: {rootfs}\n"
+                f"Restore cannot proceed without the paired clone."
+            )
 
     config_share = get_agent_config_share_dir(name)
 
@@ -340,6 +378,11 @@ def start_vm(
         "--share", f"{config_share}:config:rw",
         "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
     ]
+
+    if snapshot_capture_path is not None:
+        cmd.extend(["--snapshot-on-signal", str(snapshot_capture_path)])
+    if restore_from_path is not None:
+        cmd.extend(["--restore-from", str(restore_from_path)])
 
     # feth-based networking
     if feth_vm:

@@ -55,6 +55,8 @@ class DarwinPlatform(AgentPlatform):
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
         background: bool,
+        snapshot_capture_path: Path | None = None,
+        restore_from_path: Path | None = None,
     ) -> int:
         proc = start_vm(
             name=name,
@@ -64,6 +66,8 @@ class DarwinPlatform(AgentPlatform):
             extra_shares=extra_shares,
             feth_vm=fw_alloc.get("feth_vm", ""),
             background=background,
+            snapshot_capture_path=snapshot_capture_path,
+            restore_from_path=restore_from_path,
         )
         return proc.pid
 
