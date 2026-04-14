@@ -149,10 +149,14 @@ class FileLoggingAddon:
 # =============================================================================
 # Log Sanitization — canonical implementation lives in audit_schema.
 # Re-exported here so existing `from utils import sanitize_for_log` call sites
-# continue to work without a second implementation.
+# continue to work without a second implementation. Named in __all__ because
+# that's the only re-export pattern CodeQL's py/unused-import recognises
+# (the `import X as X` idiom is not).
 # =============================================================================
 
-from audit_schema import sanitize_for_log as sanitize_for_log  # noqa: E402  (explicit re-export)
+from audit_schema import sanitize_for_log  # noqa: E402
+
+__all__ = ["sanitize_for_log"]
 
 # Module-level logger for write_event errors
 _log = logging.getLogger("safeyolo.utils")
