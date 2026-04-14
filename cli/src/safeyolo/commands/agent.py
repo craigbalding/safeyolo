@@ -23,6 +23,7 @@ from ..events import EventKind, Severity, write_event
 from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
 from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..vm import (
+    _cleanup_feth_bridge,
     _update_agent_map,
     get_agent_config_share_dir,
     get_agent_rootfs_path,
@@ -394,10 +395,11 @@ def _run_agent(
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
 
-    # Clean up PID file (not for detach — VM is still running)
+    # Clean up PID file and feth-bridge (not for detach — VM is still running)
     if not detach:
         pid_path = get_agents_dir() / name / "vm.pid"
         pid_path.unlink(missing_ok=True)
+        _cleanup_feth_bridge(name)
 
     return exit_code
 

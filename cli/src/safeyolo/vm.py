@@ -448,7 +448,7 @@ def _cleanup_feth_bridge(name: str) -> None:
 
 
 def is_vm_running(name: str) -> bool:
-    """Check if a VM process is alive."""
+    """Check if a VM process is alive (and not a zombie)."""
     pid_path = get_agent_pid_path(name)
     if not pid_path.exists():
         return False
@@ -456,10 +456,25 @@ def is_vm_running(name: str) -> bool:
     pid = int(pid_path.read_text().strip())
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         pid_path.unlink(missing_ok=True)
         return False
+
+    # os.kill(pid, 0) also succeeds for zombies — a Popen whose child has
+    # exited but hasn't been waited on. Ask ps for the state letter; 'Z'
+    # means zombie, which we treat as not running.
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.stdout.strip().startswith("Z"):
+            pid_path.unlink(missing_ok=True)
+            return False
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return True
 
 
 def get_vm_ip(name: str, timeout: int = 30) -> str | None:

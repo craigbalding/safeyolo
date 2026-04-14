@@ -180,6 +180,12 @@ else
     su agent -lc "cd /workspace && bash -l" || true
 fi
 
-# Agent exited — shut down the VM cleanly
-reboot -f -p 2>/dev/null || poweroff -f 2>/dev/null || halt -f -p 2>/dev/null || true
+# Agent exited — shut down the VM cleanly.
+# We are PID 1, so /sbin/{reboot,poweroff,halt} don't work: they signal init,
+# which is us. Call the reboot() syscall directly via busybox, which relies
+# on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.
+sync
+/usr/bin/busybox poweroff -f 2>/dev/null || true
+# Unreachable if poweroff succeeded; fallback keeps PID 1 alive so the kernel
+# doesn't panic, and the host's 5s force-stop will catch us.
 exec sleep infinity
