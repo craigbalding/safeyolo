@@ -403,7 +403,7 @@ class TestAgentAdd:
         assert "template" in result.output.lower()
 
     def test_creates_rootfs_on_add(self, runner, config_dir, tmp_path):
-        """add creates agent rootfs and saves metadata."""
+        """add calls plat.prepare_rootfs and saves metadata."""
         folder = tmp_path / "project"
         folder.mkdir()
 
@@ -417,10 +417,12 @@ class TestAgentAdd:
         mock_agent_config.instructions.path = ""
 
         mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
+        mock_platform = MagicMock()
+        mock_platform.prepare_rootfs.return_value = mock_rootfs
 
         with (
             patch("safeyolo.commands.agent.get_agent_config", return_value=mock_agent_config),
-            patch("safeyolo.commands.agent.create_agent_rootfs", return_value=mock_rootfs) as mock_create,
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.agent.save_agent"),
             patch("safeyolo.commands.agent.write_event"),
             patch("safeyolo.commands.agent._check_project_ownership"),
@@ -428,7 +430,7 @@ class TestAgentAdd:
             result = runner.invoke(app, ["agent", "add", "test", "claude-code", str(folder), "--no-run"])
 
         assert result.exit_code == 0
-        mock_create.assert_called_once_with("test")
+        mock_platform.prepare_rootfs.assert_called_once_with("test")
         assert "added" in result.output.lower()
 
     def test_idempotent_readd_with_same_config(self, runner, config_dir, tmp_path):
@@ -546,22 +548,22 @@ class TestAgentRemove:
         assert "not found" in result.output.lower()
 
     def test_stops_running_vm_before_remove(self, runner, config_dir):
-        """Stops VM if running before removing."""
+        """Stops sandbox if running before removing."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir()
         (agent_dir / "rootfs.ext4").touch()
 
-        mock_stop = MagicMock()
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
         with (
-            patch("safeyolo.commands.agent.is_vm_running", return_value=True),
-            patch("safeyolo.commands.agent.stop_vm", mock_stop),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.agent._store_remove_agent"),
             patch("safeyolo.commands.agent.write_event"),
         ):
             result = runner.invoke(app, ["agent", "remove", "test-agent"])
 
         assert result.exit_code == 0
-        mock_stop.assert_called_once_with("test-agent")
+        mock_platform.stop_sandbox.assert_called_once_with("test-agent")
         assert not agent_dir.exists()  # rmtree deleted it
 
     def test_removes_dir_and_metadata(self, runner, config_dir):
@@ -571,8 +573,10 @@ class TestAgentRemove:
         (agent_dir / "rootfs.ext4").touch()
 
         mock_store_remove = MagicMock()
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = False
         with (
-            patch("safeyolo.commands.agent.is_vm_running", return_value=False),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.agent._store_remove_agent", mock_store_remove),
             patch("safeyolo.commands.agent.write_event"),
         ):
@@ -593,57 +597,35 @@ class TestAgentShell:
 
     def test_not_running_exits_one(self, runner, config_dir):
         """Shell into non-running agent exits 1."""
-        with patch("safeyolo.commands.agent.is_vm_running", return_value=False):
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = False
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
             result = runner.invoke(app, ["agent", "shell", "test-agent"])
         assert result.exit_code == 1
         assert "not running" in result.output.lower()
 
-    def test_constructs_ssh_command(self, runner, config_dir):
-        """Shell command SSHs as agent user with correct options."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir()
-        cs_dir = agent_dir / "config-share"
-        cs_dir.mkdir()
-        (cs_dir / "vm-ip").write_text("192.168.65.2")
-
-        ssh_key = config_dir / "data" / "vm_ssh_key"
-        ssh_key.touch()
-
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess([], 0))
-        with (
-            patch("safeyolo.commands.agent.is_vm_running", return_value=True),
-            patch("subprocess.run", mock_run),
-        ):
+    def test_running_calls_exec_in_sandbox(self, runner, config_dir):
+        """Running agent: shell invokes plat.exec_in_sandbox."""
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
+        mock_platform.exec_in_sandbox.return_value = 0
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
             result = runner.invoke(app, ["agent", "shell", "test-agent"])
-
         assert result.exit_code == 0
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "ssh"
-        assert "agent@192.168.65.2" in call_args
-        assert "-o" in call_args
-        assert "StrictHostKeyChecking=no" in call_args
+        mock_platform.exec_in_sandbox.assert_called_once()
+        _, kwargs = mock_platform.exec_in_sandbox.call_args
+        assert kwargs["user"] == "agent"
 
-    def test_root_flag_uses_root_user(self, runner, config_dir):
-        """--root flag SSHs as root instead of agent."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir()
-        cs_dir = agent_dir / "config-share"
-        cs_dir.mkdir()
-        (cs_dir / "vm-ip").write_text("192.168.65.2")
-
-        ssh_key = config_dir / "data" / "vm_ssh_key"
-        ssh_key.touch()
-
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess([], 0))
-        with (
-            patch("safeyolo.commands.agent.is_vm_running", return_value=True),
-            patch("subprocess.run", mock_run),
-        ):
+    def test_root_flag_passes_root_user(self, runner, config_dir):
+        """--root flag passes user='root' to exec_in_sandbox."""
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
+        mock_platform.exec_in_sandbox.return_value = 0
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
             result = runner.invoke(app, ["agent", "shell", "test-agent", "--root"])
-
         assert result.exit_code == 0
-        call_args = mock_run.call_args[0][0]
-        assert "root@192.168.65.2" in call_args
+        _, kwargs = mock_platform.exec_in_sandbox.call_args
+        assert kwargs["user"] == "root"
 
 
 # ---------------------------------------------------------------------------
@@ -655,23 +637,25 @@ class TestAgentStop:
 
     def test_not_running_exits_zero(self, runner, config_dir):
         """Stopping a non-running agent exits 0."""
-        with patch("safeyolo.commands.agent.is_vm_running", return_value=False):
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = False
+        with patch("safeyolo.platform.get_platform", return_value=mock_platform):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
         assert result.exit_code == 0
         assert "not running" in result.output.lower()
 
-    def test_calls_stop_vm(self, runner, config_dir):
-        """Stopping a running agent calls stop_vm."""
-        mock_stop = MagicMock()
+    def test_calls_stop_sandbox(self, runner, config_dir):
+        """Stopping a running agent calls plat.stop_sandbox."""
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
         with (
-            patch("safeyolo.commands.agent.is_vm_running", return_value=True),
-            patch("safeyolo.commands.agent.stop_vm", mock_stop),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.agent.write_event"),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
         assert result.exit_code == 0
-        mock_stop.assert_called_once_with("test-agent")
+        mock_platform.stop_sandbox.assert_called_once_with("test-agent")
         assert "stopped" in result.output.lower()
 
 
@@ -692,60 +676,20 @@ class TestRunAgent:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
-    def test_auto_starts_proxy_if_not_running(self, runner, config_dir, tmp_path):
-        """If proxy is not running, _run_agent auto-starts it."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir()
-        (agent_dir / "rootfs.ext4").touch()
-
-        folder = tmp_path / "project"
-        folder.mkdir()
-
-        mock_start = MagicMock()
-        with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={
-                "template": "claude-code", "folder": str(folder),
-            }),
-            patch("safeyolo.commands.agent.get_agent_rootfs_path", return_value=agent_dir / "rootfs.ext4"),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=False),
-            patch("safeyolo.commands.agent.start_proxy", mock_start),
-            patch("safeyolo.commands.agent.wait_for_healthy", return_value=True),
-            patch("safeyolo.commands.agent.is_vm_running", return_value=False),
-            patch("safeyolo.commands.agent._check_project_ownership"),
-            patch("safeyolo.firewall.setup_feth", return_value={
-                "host_ip": "192.168.65.1", "guest_ip": "192.168.65.2",
-                "subnet": "192.168.65.0/24", "feth_vm": "feth0",
-            }),
-            patch("safeyolo.firewall.load_rules"),
-            patch("safeyolo.commands.agent.prepare_config_share", return_value=Path("/tmp/share")),
-            patch("safeyolo.commands.agent.write_event"),
-            patch("safeyolo.commands.agent._get_agent_binary", return_value="claude"),
-            patch("safeyolo.commands.agent.get_agent_config"),
-            patch("safeyolo.commands.agent.start_vm") as mock_vm,
-            patch("safeyolo.commands.agent._update_agent_map"),
-        ):
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = 0
-            mock_proc.returncode = 0
-            mock_proc.wait.return_value = None
-            mock_vm.return_value = mock_proc
-
-            result = runner.invoke(app, ["agent", "run", "test-agent"])
-
-        mock_start.assert_called_once()
-
     def test_already_running_exits_one(self, runner, config_dir, tmp_path):
-        """If VM is already running, exits 1 with helpful message."""
+        """If sandbox is already running, exits 1 with helpful message."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir()
         (agent_dir / "rootfs.ext4").touch()
 
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
         with (
             patch("safeyolo.commands.agent._load_agent_metadata", return_value={"template": "t", "folder": "."}),
             patch("safeyolo.commands.agent.get_agent_rootfs_path", return_value=agent_dir / "rootfs.ext4"),
             patch("safeyolo.commands.agent._get_agent_binary", return_value=None),
             patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
-            patch("safeyolo.commands.agent.is_vm_running", return_value=True),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent"])
 
