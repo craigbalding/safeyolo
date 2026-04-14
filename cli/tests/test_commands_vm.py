@@ -197,26 +197,26 @@ class TestLifecycleStop:
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
 
     def test_stop_all_unloads_pf_rules(self, runner, config_dir):
-        """stop --all unloads pf rules."""
-        mock_unload = MagicMock()
+        """stop --all calls plat.unload_firewall_rules()."""
+        mock_platform = MagicMock()
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.lifecycle.stop_proxy"),
-            patch("safeyolo.firewall.unload_rules", mock_unload),
-            patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
             result = runner.invoke(app, ["stop", "--all"])
 
         assert result.exit_code == 0
-        mock_unload.assert_called_once()
+        mock_platform.unload_firewall_rules.assert_called_once()
 
     def test_stop_all_pf_unload_failure_is_nonfatal(self, runner, config_dir):
-        """pf unload failure doesn't prevent stop --all from completing."""
+        """Firewall unload failure doesn't prevent stop --all from completing."""
+        mock_platform = MagicMock()
+        mock_platform.unload_firewall_rules.side_effect = RuntimeError("pf error")
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.lifecycle.stop_proxy"),
-            patch("safeyolo.firewall.unload_rules", side_effect=RuntimeError("pf error")),
-            patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
             result = runner.invoke(app, ["stop", "--all"])
 
