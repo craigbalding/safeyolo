@@ -65,11 +65,23 @@ fi
 echo 'export HOME=/home/agent' >> /etc/environment
 
 # --------------------------------------------------------------------------
-# 4. Trust SafeYolo CA certificate
+# 4. Trust SafeYolo CA certificate (idempotent)
+#
+# Skip the rebuild on every boot — the CA cert is the same across runs.
+# Trigger update-ca-certificates only if either:
+#   - the source cert differs from what's installed
+#   - the bundle file is missing (recovery from a corrupt/missing state)
+# Drop --fresh: incremental update is enough since we're adding, not pruning.
+# Saves ~500ms-1s per warm boot.
 # --------------------------------------------------------------------------
-if [ -f /safeyolo/mitmproxy-ca-cert.pem ]; then
-    install -m 644 /safeyolo/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/safeyolo.crt
-    update-ca-certificates --fresh >/dev/null 2>&1 || true
+SY_CERT_SRC=/safeyolo/mitmproxy-ca-cert.pem
+SY_CERT_DST=/usr/local/share/ca-certificates/safeyolo.crt
+SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+if [ -f "$SY_CERT_SRC" ]; then
+    if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
+        install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
+        update-ca-certificates >/dev/null 2>&1 || true
+    fi
 fi
 
 # --------------------------------------------------------------------------

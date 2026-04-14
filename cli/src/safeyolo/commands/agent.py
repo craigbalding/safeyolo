@@ -343,12 +343,16 @@ def _run_agent(
         config_share_dir = get_agent_config_share_dir(name)
         ip_file = config_share_dir / "vm-ip"
 
-        # Wait for VM IP (indicates guest init is running)
+        # Wait for VM IP (indicates guest init is running).
+        # Poll fast (50ms) for the first 2s so the host detects the file
+        # within ~50ms instead of waiting up to 500ms; fall back to 0.5s
+        # after that to keep the long-tail wait cheap.
         deadline = _time.time() + 120
+        fast_until = _time.time() + 2.0
         while _time.time() < deadline and plat.is_sandbox_running(name):
             if ip_file.exists() and ip_file.read_text().strip():
                 break
-            _time.sleep(0.5)
+            _time.sleep(0.05 if _time.time() < fast_until else 0.5)
 
         if not plat.is_sandbox_running(name):
             console.print(" [red]failed[/red]")
