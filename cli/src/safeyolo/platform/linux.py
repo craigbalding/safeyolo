@@ -288,8 +288,15 @@ class LinuxPlatform(AgentPlatform):
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
         background: bool,
+        snapshot_capture_path: Path | None = None,  # noqa: ARG002 — PR 5
+        restore_from_path: Path | None = None,      # noqa: ARG002 — PR 5
     ) -> int:
-        """Start a gVisor sandbox via runsc."""
+        """Start a gVisor sandbox via runsc.
+
+        snapshot_capture_path / restore_from_path are accepted for
+        interface parity with DarwinPlatform but ignored here; PR 5 will
+        add runsc checkpoint/restore.
+        """
         runsc = _find_runsc()
         platform = _detect_runsc_platform()
         cgroup_v = _detect_cgroup_version()

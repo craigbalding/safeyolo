@@ -326,6 +326,22 @@ class TestPrepareConfigShare:
         share = prepare_config_share("agent1", "/workspace")
         assert (share / "per-run-go").exists()
 
+    def test_per_run_go_not_pre_written_when_opted_out(self, tmp_config_dir):
+        """Capture mode needs the gate closed at prepare time so the guest
+        pauses at the static/per-run boundary for the snapshot signal."""
+        share = prepare_config_share("agent1", "/workspace", pre_write_per_run_go=False)
+        assert not (share / "per-run-go").exists()
+
+    def test_stale_per_run_go_cleared_when_opted_out(self, tmp_config_dir):
+        """A stale per-run-go from an earlier passthrough run would let
+        the guest skip the snapshot point. prepare_config_share must
+        clear it when pre_write_per_run_go=False."""
+        share_dir = tmp_config_dir / "agents" / "agent1" / "config-share"
+        share_dir.mkdir(parents=True, exist_ok=True)
+        (share_dir / "per-run-go").write_text("stale")
+        prepare_config_share("agent1", "/workspace", pre_write_per_run_go=False)
+        assert not (share_dir / "per-run-go").exists()
+
     def test_stale_static_init_done_is_cleared(self, tmp_config_dir):
         """A static-init-done left over from a prior run must not persist
         into the next run — the orchestrator writes it fresh."""
