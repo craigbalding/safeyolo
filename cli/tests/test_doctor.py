@@ -39,19 +39,18 @@ class TestCheckConfigDir:
         assert "safeyolo init" in result.remediation
 
 
-class TestCheckDocker:
-    def test_docker_available(self, monkeypatch):
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="27.5.0", stderr="")
-        )
-        monkeypatch.setattr("subprocess.run", mock_run)
-        monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: True)
+class TestCheckProxyRunning:
+    """_check_docker was repurposed (kept the old name) to check the
+    host mitmproxy process — Docker is no longer part of the runtime."""
+
+    def test_proxy_running(self, monkeypatch):
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
         result = _check_docker()
         assert result.status == "pass"
-        assert "27.5.0" in result.message
+        assert "mitmproxy" in result.message.lower()
 
-    def test_docker_unavailable(self, monkeypatch):
-        monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
+    def test_proxy_not_running(self, monkeypatch):
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         result = _check_docker()
         assert result.status == "fail"
 
@@ -418,37 +417,14 @@ class TestCheckAddonLoading:
 
 
 class TestRunChecks:
-    def test_cascade_skips(self, tmp_config_dir, monkeypatch):
-        """When Docker is unavailable, downstream checks are skipped."""
-        monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
-        mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
-        monkeypatch.setattr("subprocess.run", mock_run)
+    def test_proxy_down_skips_dependents(self, tmp_config_dir, monkeypatch):
+        """When the proxy is down, dependent checks (Admin API, Addon loading, Proxy port) are skipped."""
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         results = _run_checks()
         names = {r.name: r.status for r in results}
-        assert names["Docker available"] == "fail"
-        assert names["Docker network"] == "skip"
-
-    def test_container_down_skips_proxy(self, tmp_config_dir, monkeypatch):
-        """When container is down, mitmproxy/admin/proxy checks are skipped."""
-        monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: True)
-        mock_run = MagicMock()
-
-        def side_effect(args, **kwargs):
-            if "version" in args:
-                return subprocess.CompletedProcess(args=args, returncode=0, stdout="27.0", stderr="")
-            if "inspect" in args and "network" not in str(args):
-                return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="not found")
-            if "network" in str(args):
-                return subprocess.CompletedProcess(args=args, returncode=0, stdout="{}", stderr="")
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr("subprocess.run", mock_run)
-        mock_run.side_effect = side_effect
-        results = _run_checks()
-        names = {r.name: r.status for r in results}
-        assert names["Container running"] == "fail"
-        assert names["mitmproxy process"] == "skip"
+        assert names["Proxy running"] == "fail"
         assert names["Admin API"] == "skip"
+        assert names["Addon loading"] == "skip"
         assert names["Proxy port"] == "skip"
 
 
@@ -473,7 +449,7 @@ class TestBuildBundle:
 class TestDoctorCLI:
     def test_doctor_runs(self, cli_runner, tmp_config_dir, monkeypatch):
         """Smoke test that doctor command runs without crashing."""
-        monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
         monkeypatch.setattr("subprocess.run", mock_run)
 
@@ -485,7 +461,7 @@ class TestDoctorCLI:
 
     def test_doctor_json(self, cli_runner, tmp_config_dir, monkeypatch):
         """Test --json flag writes bundle file."""
-        monkeypatch.setattr("safeyolo.commands.doctor.check_docker", lambda: False)
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         mock_run = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=""))
         monkeypatch.setattr("subprocess.run", mock_run)
 

@@ -591,18 +591,18 @@ class TestClientBypass:
         This is a REAL integration test - no mocks for policy lookup.
         It verifies the full flow: client IP -> ServiceDiscovery -> is_bypassed() -> PolicyEngine.
         """
-        import time
-
         from mitmproxy.test import taddons
         from pattern_scanner import PatternScanner
-        from service_discovery import DNS_CACHE_TTL_SECONDS, get_service_discovery
+        from service_discovery import get_service_discovery
 
-        # Pre-populate DNS cache to simulate Docker DNS resolution
+        # Pre-populate the file-based agent map's reverse index. The real
+        # runtime source is ~/.safeyolo/data/agent_map.json written by the
+        # CLI; for unit-level coverage we populate the in-memory index
+        # directly.
         discovery = get_service_discovery()
-        expiry = time.time() + DNS_CACHE_TTL_SECONDS
         with discovery._lock:
-            discovery._dns_cache["10.0.0.100"] = ("admin-cli", expiry)
-            discovery._dns_cache["10.0.0.200"] = ("user-bob", expiry)
+            discovery._ip_to_name["10.0.0.100"] = "admin-cli"
+            discovery._ip_to_name["10.0.0.200"] = "user-bob"
 
         policy_yaml = """
 metadata:
@@ -640,17 +640,14 @@ clients:
 
     def test_test_client_disables_network_guard(self, make_flow, tmp_path):
         """Test that test-* clients have network_guard disabled per policy."""
-        import time
-
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
-        from service_discovery import DNS_CACHE_TTL_SECONDS, get_service_discovery
+        from service_discovery import get_service_discovery
 
-        # Pre-populate DNS cache to simulate Docker DNS resolution
+        # Pre-populate the file-based agent map's reverse index.
         discovery = get_service_discovery()
-        expiry = time.time() + DNS_CACHE_TTL_SECONDS
         with discovery._lock:
-            discovery._dns_cache["10.0.0.101"] = ("test-integration", expiry)
+            discovery._ip_to_name["10.0.0.101"] = "test-integration"
 
         policy_yaml = """
 metadata:

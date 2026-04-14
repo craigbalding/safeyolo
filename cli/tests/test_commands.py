@@ -1,8 +1,5 @@
 """Tests for CLI commands."""
 
-import subprocess
-
-import pytest
 from rich.text import Text
 
 from safeyolo.cli import app
@@ -208,22 +205,6 @@ class TestStatusCommand:
         result = cli_runner.invoke(app, ["status"])
         assert "no safeyolo configuration" in result.output.lower()
 
-    def test_shows_container_status(self, cli_runner, tmp_config_dir, mock_docker_running, mock_httpx):
-        """Shows container status when running."""
-
-        # Mock the API responses - stats() and get_modes() are called
-        def mock_json():
-            return {"credential-guard": {"mode": "block"}}
-
-        mock_httpx["response"].json = mock_json
-
-        result = cli_runner.invoke(app, ["status"])
-        assert result.exit_code in (0, 1)
-        # Must show either "running" container status or "SafeYolo" header
-        output_lower = result.output.lower()
-        assert "running" in output_lower or "safeyolo" in output_lower
-
-
 class TestModeCommand:
     """Tests for mode command."""
 
@@ -274,13 +255,6 @@ class TestCertShowCommand:
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "start" in result.output.lower()
 
-    def test_shows_cert_not_generated(self, cli_runner, tmp_config_dir, mock_docker_available):
-        """Shows message when cert not yet generated."""
-        result = cli_runner.invoke(app, ["cert", "show"])
-        assert result.exit_code == 0
-        # Should indicate cert doesn't exist yet
-        assert "not generated" in result.output.lower() or "start" in result.output.lower()
-
     def test_shows_cert_path_when_exists(self, cli_runner, tmp_config_dir):
         """Shows cert path when it exists."""
         cert_file = tmp_config_dir / "certs" / "mitmproxy-ca-cert.pem"
@@ -304,75 +278,3 @@ class TestCheckCommand:
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "start" in result.output.lower()
 
-    def test_reports_config_found(self, cli_runner, tmp_config_dir, mock_docker_running, mock_httpx):
-        """Reports when config is found."""
-        mock_httpx["response"].json.return_value = {"status": "healthy"}
-
-        result = cli_runner.invoke(app, ["check"])
-        # Should pass the config check at minimum
-        assert "Config" in result.output or "config" in result.output
-
-
-class TestStartCommand:
-    """Tests for start command."""
-
-    def test_auto_bootstraps_on_first_run(self, cli_runner, tmp_path, monkeypatch, mock_docker_available):
-        """Auto-creates config on first run."""
-        config_dir = tmp_path / ".safeyolo"  # Not created yet
-        logs_dir = tmp_path / ".local" / "state" / "safeyolo"
-        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
-        monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
-
-        result = cli_runner.invoke(app, ["start", "--no-wait"])
-        # Should bootstrap and attempt to start (may fail on docker but config should exist)
-        assert config_dir.exists() or "First run" in result.output or "Starting" in result.output
-
-    def test_starts_with_docker(self, cli_runner, tmp_config_dir, mock_docker_available):
-        """Starts container with Docker."""
-        result = cli_runner.invoke(app, ["start", "--no-wait"])
-        assert result.exit_code == 0
-        # Check that docker compose was called
-        calls = mock_docker_available.call_args_list
-        compose_calls = [c for c in calls if "compose" in str(c)]
-        assert len(compose_calls) > 0
-
-
-class TestStopCommand:
-    """Tests for stop command."""
-
-    def test_stops_container(self, cli_runner, tmp_config_dir, mock_docker_running):
-        """Stops running container."""
-        result = cli_runner.invoke(app, ["stop"])
-        assert result.exit_code == 0
-        # Should attempt docker compose down or docker stop
-        calls = mock_docker_running.call_args_list
-        stop_calls = [c for c in calls if "stop" in str(c) or "down" in str(c)]
-        assert len(stop_calls) > 0
-
-
-def _docker_container_running() -> bool:
-    """Check if safeyolo container is running (safe for import time)."""
-    try:
-        result = subprocess.run(
-            ["docker", "ps", "-q", "-f", "name=safeyolo"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return bool(result.stdout.strip())
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-class TestSmokeIntegration:
-    """Smoke test with real container (skipped if not running)."""
-
-    @pytest.mark.skipif(
-        not _docker_container_running(),
-        reason="SafeYolo container not running or Docker not available",
-    )
-    def test_check_with_real_container(self, cli_runner):
-        """Runs check against real running container."""
-        result = cli_runner.invoke(app, ["check"])
-        # With real container, check should pass or show meaningful status
-        assert "SafeYolo" in result.output or "Config" in result.output

@@ -2,7 +2,6 @@
 
 import httpx
 import typer
-import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -57,9 +56,9 @@ def check() -> None:
         toml_path = config_dir / "policy.toml"
         yaml_path = config_dir / "policy.yaml"
         if toml_path.exists():
-            console.print(f"  [green]✓[/green]  Policy file: policy.toml")
+            console.print("  [green]✓[/green]  Policy file: policy.toml")
         elif yaml_path.exists():
-            console.print(f"  [green]✓[/green]  Policy file: policy.yaml")
+            console.print("  [green]✓[/green]  Policy file: policy.yaml")
         else:
             console.print("  [red]✗[/red]  Policy file: not found (expected policy.toml)")
             all_ok = False
