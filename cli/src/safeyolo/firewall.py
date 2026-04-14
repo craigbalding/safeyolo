@@ -198,6 +198,7 @@ def _detect_outbound_interface() -> str:
             if "interface:" in line:
                 return line.split(":")[1].strip()
     except (subprocess.SubprocessError, OSError):
+        # `route` unavailable or errored — fall back to the conventional en0.
         pass
     return "en0"
 

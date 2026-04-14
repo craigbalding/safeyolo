@@ -152,7 +152,7 @@ class FileLoggingAddon:
 # continue to work without a second implementation.
 # =============================================================================
 
-from audit_schema import sanitize_for_log  # noqa: E402,F401  (re-export)
+from audit_schema import sanitize_for_log as sanitize_for_log  # noqa: E402  (explicit re-export)
 
 # Module-level logger for write_event errors
 _log = logging.getLogger("safeyolo.utils")

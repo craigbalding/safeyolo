@@ -452,6 +452,7 @@ def stop_proxy() -> None:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
+            # Process died during the SIGTERM wait loop — fine.
             pass
 
     pid_file.unlink(missing_ok=True)
@@ -492,6 +493,7 @@ def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
                 if resp.status == 200:
                     return True
         except (urllib.error.URLError, ConnectionError, OSError):
+            # Proxy not up yet this tick — sleep and retry until timeout.
             pass
         time.sleep(1)
 
