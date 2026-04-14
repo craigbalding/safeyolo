@@ -1,0 +1,104 @@
+#!/bin/bash
+#
+# SafeYolo guest-init — STATIC phase.
+#
+# Runs the setup that is identical across every run of this agent and
+# therefore snapshottable: network bring-up, VirtioFS mounts, CA trust,
+# sshd, ipv6 disable, VM-IP discovery. Does NOT touch per-run state
+# (agent.env, instructions, agent_token, mise install, remount ro,
+# agent launch) — those live in guest-init-per-run.
+#
+# Invoked by /safeyolo/guest-init (orchestrator) before the per-run-go
+# gate. On restore, this script has already executed into snapshotted
+# memory and is never re-entered; the orchestrator wakes up in the
+# gate-wait and proceeds to per-run.
+#
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+# --------------------------------------------------------------------------
+# 1. Networking (static IP from config share)
+# --------------------------------------------------------------------------
+ip link set lo up 2>/dev/null || true
+
+if [ -f /safeyolo/network.env ] && ip link show eth0 >/dev/null 2>&1; then
+    . /safeyolo/network.env
+    ip link set eth0 up
+    ip addr add ${GUEST_IP}/24 dev eth0 2>/dev/null || true
+    ip route add default via ${GATEWAY_IP} 2>/dev/null || true
+fi
+
+# --------------------------------------------------------------------------
+# 2. Mount VirtioFS shares (workspace, host config dirs/files)
+# --------------------------------------------------------------------------
+mkdir -p /workspace
+mount -t virtiofs workspace /workspace 2>/dev/null || true
+
+# Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
+if [ -f /safeyolo/host-mounts ]; then
+    while IFS=: read -r tag guest_path; do
+        [ -z "$tag" ] && continue
+        mkdir -p "$guest_path"
+        mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
+        chown -R agent:agent "$guest_path" 2>/dev/null || true
+    done < /safeyolo/host-mounts
+fi
+
+# Host config files (copied into config share)
+if [ -f /safeyolo/host-files-manifest ]; then
+    while IFS=: read -r src_name guest_path; do
+        [ -z "$src_name" ] && continue
+        if [ -f "/safeyolo/host-files/$src_name" ]; then
+            mkdir -p "$(dirname "$guest_path")"
+            cp "/safeyolo/host-files/$src_name" "$guest_path"
+            chown agent:agent "$guest_path" 2>/dev/null || true
+        fi
+    done < /safeyolo/host-files-manifest
+fi
+
+# --------------------------------------------------------------------------
+# 3. Trust SafeYolo CA certificate (idempotent)
+#
+# Skip the rebuild on every boot — the CA cert is the same across runs.
+# Trigger update-ca-certificates only if either:
+#   - the source cert differs from what's installed
+#   - the bundle file is missing (recovery from a corrupt/missing state)
+# Drop --fresh: incremental update is enough since we're adding, not pruning.
+# --------------------------------------------------------------------------
+SY_CERT_SRC=/safeyolo/mitmproxy-ca-cert.pem
+SY_CERT_DST=/usr/local/share/ca-certificates/safeyolo.crt
+SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+if [ -f "$SY_CERT_SRC" ]; then
+    if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
+        install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
+        update-ca-certificates >/dev/null 2>&1 || true
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# 4. SSH server and agent authorized keys
+# --------------------------------------------------------------------------
+if [ -f /safeyolo/authorized_keys ]; then
+    mkdir -p /home/agent/.ssh
+    cp /safeyolo/authorized_keys /home/agent/.ssh/authorized_keys
+    chown -R agent:agent /home/agent/.ssh
+    chmod 700 /home/agent/.ssh
+    chmod 600 /home/agent/.ssh/authorized_keys
+fi
+
+if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+    ssh-keygen -A >/dev/null 2>&1 || true
+fi
+
+mkdir -p /run/sshd
+/usr/sbin/sshd -D &
+
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
+
+# --------------------------------------------------------------------------
+# 5. Write VM IP so the CLI can discover it
+# --------------------------------------------------------------------------
+VM_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo "")
+if [ -n "$VM_IP" ]; then
+    echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
+fi

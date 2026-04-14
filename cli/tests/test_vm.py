@@ -269,16 +269,17 @@ class TestPrepareConfigShare:
         """Set up dependencies for prepare_config_share tests."""
         self.config_dir = tmp_config_dir
 
-        # Create the guest-init.sh source file where the code expects it
-        # (same directory as vm.py)
+        # Create the guest-init*.sh source files where the code expects
+        # them (same directory as vm.py). Three files: the orchestrator
+        # and its static/per-run phase scripts.
         import safeyolo.vm as vm_mod
 
-        self.guest_init_src = Path(vm_mod.__file__).parent / "guest-init.sh"
-        if not self.guest_init_src.exists():
-            self.guest_init_src.write_text("#!/bin/bash\necho guest-init\n")
-            self._created_guest_init = True
-        else:
-            self._created_guest_init = False
+        self._created_guest_init_srcs: list[Path] = []
+        for src_name in ("guest-init.sh", "guest-init-static.sh", "guest-init-per-run.sh"):
+            src = Path(vm_mod.__file__).parent / src_name
+            if not src.exists():
+                src.write_text(f"#!/bin/bash\necho {src_name}\n")
+                self._created_guest_init_srcs.append(src)
 
         # Mock _ensure_ssh_key to avoid subprocess calls
         monkeypatch.setattr("safeyolo.vm._ensure_ssh_key", lambda: None)
@@ -292,8 +293,8 @@ class TestPrepareConfigShare:
 
         yield
 
-        if self._created_guest_init:
-            self.guest_init_src.unlink(missing_ok=True)
+        for src in self._created_guest_init_srcs:
+            src.unlink(missing_ok=True)
 
     def test_returns_config_share_dir(self, tmp_config_dir):
         result = prepare_config_share("agent1", "/workspace")
@@ -308,6 +309,31 @@ class TestPrepareConfigShare:
         guest_init = share / "guest-init"
         assert guest_init.exists()
         assert os.access(guest_init, os.X_OK)
+
+    def test_guest_init_static_and_per_run_are_executable(self, tmp_config_dir):
+        """The orchestrator execs two phase scripts — both must be present
+        and executable on the config share or the guest hangs."""
+        share = prepare_config_share("agent1", "/workspace")
+        for name in ("guest-init-static", "guest-init-per-run"):
+            path = share / name
+            assert path.exists(), f"{name} missing from config share"
+            assert os.access(path, os.X_OK), f"{name} not executable"
+
+    def test_per_run_go_sentinel_pre_written(self, tmp_config_dir):
+        """Pre-write /safeyolo/per-run-go so the orchestrator falls straight
+        through in passthrough mode. PR 3/4 will remove this and write it
+        at the snapshot-completion point instead."""
+        share = prepare_config_share("agent1", "/workspace")
+        assert (share / "per-run-go").exists()
+
+    def test_stale_static_init_done_is_cleared(self, tmp_config_dir):
+        """A static-init-done left over from a prior run must not persist
+        into the next run — the orchestrator writes it fresh."""
+        share_dir = tmp_config_dir / "agents" / "agent1" / "config-share"
+        share_dir.mkdir(parents=True, exist_ok=True)
+        (share_dir / "static-init-done").write_text("stale")
+        prepare_config_share("agent1", "/workspace")
+        assert not (share_dir / "static-init-done").exists()
 
     def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
         share = prepare_config_share(
