@@ -105,21 +105,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Run the helper in --no-terminal mode (vsock-term needs a real stdin
-# and would auto-shutdown on EOF when stdin is /dev/null). The SIGUSR1
-# DispatchSource is on .global() so it fires reliably without vsock-term
-# present.
-run_helper_bg() {
-    "$HELPER" run \
-        --kernel "$KERNEL" \
-        --initrd "$INITRD" \
-        --rootfs "$ROOTFS" \
-        --memory 4096 --cpus 4 \
-        --share "$SHARE:config:rw" \
-        --no-terminal \
-        "$@" </dev/null >/tmp/sytest-helper.log 2>&1 &
-    echo $!
-}
+# Helper invocation as a flat command string we expand inline. We can't
+# wrap it in a function returning $! via command substitution, because
+# command substitution runs in a subshell — the backgrounded helper
+# becomes a grandchild of the parent shell, and `wait` can't reap it.
+# Inline it so $! refers to a direct child.
+HELPER_ARGS=(
+    "$HELPER" run
+    --kernel "$KERNEL"
+    --initrd "$INITRD"
+    --rootfs "$ROOTFS"
+    --memory 4096 --cpus 4
+    --share "$SHARE:config:rw"
+    --no-terminal
+)
 
 # ---------------------------------------------------------------------------
 # Phase 1 — cold-boot + snapshot
@@ -127,7 +126,8 @@ run_helper_bg() {
 echo "=== PHASE 1: cold-boot + snapshot ==="
 rm -f "$SNAP" "$SNAP.meta.json"
 
-HELPER_PID=$(run_helper_bg --snapshot-on-signal "$SNAP")
+"${HELPER_ARGS[@]}" --snapshot-on-signal "$SNAP" </dev/null >/tmp/sytest-helper.log 2>&1 &
+HELPER_PID=$!
 echo "  helper pid: $HELPER_PID"
 echo "  waiting 15s for guest boot..."
 sleep 15
@@ -160,7 +160,8 @@ echo "=== PHASE 2: restore + liveness ==="
 SNAP2="/tmp/sytest-${AGENT}-2.snap"
 rm -f "$SNAP2" "$SNAP2.meta.json"
 
-RESTORE_PID=$(run_helper_bg --restore-from "$SNAP" --snapshot-on-signal "$SNAP2")
+"${HELPER_ARGS[@]}" --restore-from "$SNAP" --snapshot-on-signal "$SNAP2" </dev/null >/tmp/sytest-helper.log 2>&1 &
+RESTORE_PID=$!
 echo "  restore pid: $RESTORE_PID"
 sleep 5
 
