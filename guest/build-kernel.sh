@@ -29,6 +29,8 @@ docker run --rm --platform linux/arm64/v8 \
     debian:trixie-slim /bin/bash -c "
 set -euo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+
 echo '--- Installing build dependencies ---'
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
