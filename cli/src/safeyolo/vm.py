@@ -472,6 +472,8 @@ def is_vm_running(name: str) -> bool:
             pid_path.unlink(missing_ok=True)
             return False
     except (subprocess.SubprocessError, OSError):
+        # ps unavailable or errored — can't distinguish zombie from live.
+        # os.kill already said the pid exists, so fall through to "running".
         pass
 
     return True
