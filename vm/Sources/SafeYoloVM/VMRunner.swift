@@ -9,6 +9,30 @@ class VMRunner: NSObject {
     private var observation: NSKeyValueObservation?
     private var hasExited = false
 
+    // When non-zero, the state observer ignores .stopped and .error
+    // transitions. Used during restore/save where VZ may transition the
+    // VM through .stopped on its own (failure path) and we want the
+    // calling code to detect that explicitly via vm.state checks rather
+    // than racing the observer to exit().
+    private var suppressAutoExit = 0
+    private let suppressLock = NSLock()
+    private func withSuppressedAutoExit<T>(_ body: () throws -> T) rethrows -> T {
+        suppressLock.lock()
+        suppressAutoExit += 1
+        suppressLock.unlock()
+        defer {
+            suppressLock.lock()
+            suppressAutoExit -= 1
+            suppressLock.unlock()
+        }
+        return try body()
+    }
+    private var isSuppressed: Bool {
+        suppressLock.lock()
+        defer { suppressLock.unlock() }
+        return suppressAutoExit > 0
+    }
+
     // Snapshot-on-signal config — set by main.swift after parsing
     // `--snapshot-on-signal PATH`. SIGUSR1 calls `VMSnapshot.save` with
     // these values. nil means SIGUSR1 is a no-op.
@@ -43,12 +67,12 @@ class VMRunner: NSObject {
     private func handleStateChange(_ state: VZVirtualMachine.State) {
         // Diagnostic: log every state transition to stderr so we can see
         // exactly what VZ is doing during cold-boot, save, and restore.
-        fputs("[vm state] → \(state.rawValue) (\(stateName(state)))\n", stderr)
+        fputs("[vm state] → \(state.rawValue) (\(stateName(state)))\(isSuppressed ? " [auto-exit suppressed]" : "")\n", stderr)
         switch state {
         case .stopped:
-            exitClean(code: 0)
+            if !isSuppressed { exitClean(code: 0) }
         case .error:
-            exitClean(code: 1)
+            if !isSuppressed { exitClean(code: 1) }
         case .running:
             break
         case .starting:
@@ -81,24 +105,33 @@ class VMRunner: NSObject {
     // MARK: - Start (completion handler API, not async)
 
     func start() throws {
-        let semaphore = DispatchSemaphore(value: 0)
-        var startError: Error?
+        try withSuppressedAutoExit {
+            let semaphore = DispatchSemaphore(value: 0)
+            var startError: Error?
 
-        // Terminal raw mode is handled by VSockTerminal, not here.
+            // Terminal raw mode is handled by VSockTerminal, not here.
 
-        queue.async { [self] in
-            vm.start { (result: Result<Void, Error>) in
-                if case .failure(let error) = result {
-                    startError = error
+            queue.async { [self] in
+                vm.start { (result: Result<Void, Error>) in
+                    if case .failure(let error) = result {
+                        startError = error
+                    }
+                    semaphore.signal()
                 }
-                semaphore.signal()
             }
-        }
 
-        semaphore.wait()
-        if let error = startError {
-            restoreTerminal()
-            throw error
+            semaphore.wait()
+            if let error = startError {
+                restoreTerminal()
+                throw error
+            }
+            // If VZ reported success but state isn't running, treat as
+            // failure so we don't fall through to the run loop with a
+            // dead VM.
+            if vm.state != .running {
+                restoreTerminal()
+                throw NSError(domain: "VMRunner", code: 1, userInfo: [NSLocalizedDescriptionKey: "VM not running after start (state=\(stateName(vm.state)))"])
+            }
         }
     }
 
@@ -113,11 +146,25 @@ class VMRunner: NSObject {
     /// (kernel, initrd, memory, cpus) that was used at save time;
     /// `expectedFingerprint` lets us catch mismatches before VZ does.
     func restoreFromSnapshot(url: URL, expectedFingerprint: VMSnapshot.Fingerprint) throws {
-        do {
-            try VMSnapshot.restore(vm: vm, queue: queue, fromURL: url, expectedFingerprint: expectedFingerprint)
-        } catch {
-            restoreTerminal()
-            throw error
+        try withSuppressedAutoExit {
+            do {
+                try VMSnapshot.restore(vm: vm, queue: queue, fromURL: url, expectedFingerprint: expectedFingerprint)
+            } catch {
+                restoreTerminal()
+                throw error
+            }
+            // VZ may transition the VM to .stopped during restore failure
+            // without surfacing an error in the completion handler. The
+            // KVO observer is suppressed during restore (so we don't race
+            // to exit), so we have to detect this case explicitly here.
+            if vm.state != .running {
+                restoreTerminal()
+                throw VMSnapshot.Error.restoreFailed(NSError(
+                    domain: "VMSnapshot",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "VM in \(stateName(vm.state)) state after restore — VZ rejected the snapshot (likely incompatible config or corrupt file)"]
+                ))
+            }
         }
     }
 
@@ -249,10 +296,14 @@ class VMRunner: NSObject {
 
         // Run save off the main queue so the signal source isn't blocked.
         // VMSnapshot.save handles pause → save → resume, always resuming.
+        // Suppress auto-exit during the operation so a transient .paused
+        // observer callback doesn't race to kill the helper.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             do {
-                try VMSnapshot.save(vm: self.vm, queue: self.queue, toURL: url, fingerprint: fingerprint)
+                try self.withSuppressedAutoExit {
+                    try VMSnapshot.save(vm: self.vm, queue: self.queue, toURL: url, fingerprint: fingerprint)
+                }
                 fputs("Snapshot written to \(url.path)\n", stderr)
             } catch {
                 fputs("Snapshot failed: \(error.localizedDescription)\n", stderr)
