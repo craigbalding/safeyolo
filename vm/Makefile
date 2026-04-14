@@ -16,15 +16,38 @@ debug:
 	codesign --entitlements safeyolo-vm.entitlements --force -s - .build/debug/safeyolo-vm
 	cc -o .build/debug/feth-bridge feth-bridge.c
 
-# Cross-compile vsock-term for ARM64 Linux (runs inside guest VM)
-guest-tools:
-	docker run --rm --platform linux/arm64/v8 \
-		-v "$(GUEST_DIR)/vsock-term.c:/src/vsock-term.c:ro" \
-		-v "$(BUILD_DIR):/out" \
-		debian:trixie-slim bash -c '\
-			apt-get update -qq && \
-			apt-get install -y -qq --no-install-recommends build-essential >/dev/null && \
-			cc -static -O2 -o /out/vsock-term /src/vsock-term.c -lutil'
+LIMA_VM = safeyolo-builder
+UNAME := $(shell uname)
+
+# Cross-compile vsock-term for ARM64 Linux (runs inside guest VM).
+#
+# On Linux: native cross-compile via gcc-aarch64-linux-gnu.
+# On macOS: run the cross-compile inside the same Lima VM used for guest
+# image builds (see guest/lima.yaml). Requires Lima (brew install lima).
+guest-tools: $(BUILD_DIR)/vsock-term
+
+$(BUILD_DIR)/vsock-term: $(GUEST_DIR)/vsock-term.c
+	@mkdir -p $(BUILD_DIR)
+ifeq ($(UNAME),Linux)
+	@command -v aarch64-linux-gnu-gcc >/dev/null || { \
+		echo "Error: aarch64-linux-gnu-gcc not found."; \
+		echo "  Debian/Ubuntu: sudo apt-get install gcc-aarch64-linux-gnu"; \
+		exit 1; }
+	aarch64-linux-gnu-gcc -static -O2 -o $@ $< -lutil
+else ifeq ($(UNAME),Darwin)
+	@command -v limactl >/dev/null || { \
+		echo "Error: Lima not found. Install with: brew install lima"; \
+		echo "See guest/README.md for details."; \
+		exit 1; }
+	@limactl list --format '{{.Name}}' 2>/dev/null | grep -qx $(LIMA_VM) || \
+		limactl start --name=$(LIMA_VM) --tty=false $(GUEST_DIR)/lima.yaml
+	limactl shell $(LIMA_VM) -- \
+		aarch64-linux-gnu-gcc -static -O2 \
+		-o /build/vm/.build/release/vsock-term \
+		/build/guest/vsock-term.c -lutil
+else
+	$(error Unsupported platform for guest-tools: $(UNAME))
+endif
 
 install: build guest-tools
 	mkdir -p $(INSTALL_DIR)

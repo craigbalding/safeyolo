@@ -1,232 +1,156 @@
 #!/bin/bash
 #
 # Build Debian trixie rootfs for SafeYolo agents.
-# Runs in Docker (requires --privileged for mount/debootstrap).
 #
-# Supports: arm64 (default on Apple Silicon), amd64 (for x86_64 VPS)
+# Runs on Linux only (natively or inside the Lima VM on macOS — see
+# guest/build-all.sh). Uses mmdebstrap instead of Docker+debootstrap.
+#
+# Supports: arm64 (default on Apple Silicon), amd64 (for x86_64 VPS).
 #
 # Usage:
 #   ./build-rootfs.sh              # Build for host architecture
 #   ARCH=amd64 ./build-rootfs.sh   # Build for x86_64
 #   ARCH=arm64 ./build-rootfs.sh   # Build for ARM64
 #
-# Output: out/rootfs-base.ext4 (~2GB sparse, ~400MB actual)
+# Output: out/rootfs-base.ext4 (~400MB actual)
+#
+# Dependencies (install via apt on the host):
+#   mmdebstrap e2fsprogs
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"
-ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"
+
+# Linux-only guard — mmdebstrap uses Linux-specific syscalls.
+if [ "$(uname)" != "Linux" ]; then
+    echo "Error: build-rootfs.sh runs on Linux only." >&2
+    echo "On macOS, run ./build-all.sh from the repo which will shell" >&2
+    echo "into a Lima VM automatically. See guest/README.md." >&2
+    exit 1
+fi
 
 # Architecture detection
 HOST_ARCH="$(uname -m)"
 case "${ARCH:-$HOST_ARCH}" in
-    aarch64|arm64) BUILD_ARCH="arm64"; DOCKER_PLATFORM="linux/arm64/v8"; DEB_ARCH="arm64" ;;
-    x86_64|amd64)  BUILD_ARCH="amd64"; DOCKER_PLATFORM="linux/amd64";    DEB_ARCH="amd64" ;;
+    aarch64|arm64) DEB_ARCH="arm64" ;;
+    x86_64|amd64)  DEB_ARCH="amd64" ;;
     *) echo "Unsupported architecture: ${ARCH:-$HOST_ARCH}"; exit 1 ;;
 esac
 
-# Pinned mise version
+# Matches the original Docker-based build (2GB sparse) — leaves room for
+# agent-time installs (npm packages, mise tools, pip installs).
+ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"
+
+# Pinned mise version (same as previous Docker-based build)
 MISE_VERSION="${MISE_VERSION:-2026.1.1}"
 MISE_SHA256_ARM64="${MISE_SHA256_ARM64:-dcd7006e84d3557284a7c87b99abdce4a465900f67609e99b39c757006a361dd}"
 MISE_SHA256_AMD64="${MISE_SHA256_AMD64:-}"
 
+# Pinned gh CLI version
+GH_VERSION="${GH_VERSION:-2.89.0}"
+GH_SHA256_ARM64="${GH_SHA256_ARM64:-9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5}"
+GH_SHA256_AMD64="${GH_SHA256_AMD64:-}"
+
 mkdir -p "$OUTPUT_DIR"
 
-if [ -f "$OUTPUT_DIR/rootfs-base.ext4" ]; then
-    echo "Rootfs already exists at $OUTPUT_DIR/rootfs-base.ext4"
+OUTPUT_EXT4="$OUTPUT_DIR/rootfs-base.ext4"
+if [ -f "$OUTPUT_EXT4" ]; then
+    echo "Rootfs already exists at $OUTPUT_EXT4"
     echo "Delete it to rebuild."
     exit 0
 fi
 
-echo "=== Building Debian trixie ${BUILD_ARCH} rootfs ==="
-echo "Size: ${ROOTFS_SIZE_MB}MB"
-echo "This runs in Docker (privileged) and takes several minutes on first build."
+command -v mmdebstrap >/dev/null || {
+    echo "Error: mmdebstrap not installed." >&2
+    echo "  Debian/Ubuntu: sudo apt-get install mmdebstrap e2fsprogs" >&2
+    exit 1
+}
+command -v mkfs.ext4 >/dev/null || {
+    echo "Error: mkfs.ext4 not installed (apt-get install e2fsprogs)." >&2
+    exit 1
+}
 
-docker run --rm --privileged --platform "$DOCKER_PLATFORM" \
-    -v "$SCRIPT_DIR/rootfs:/build/rootfs:ro" \
-    -v "$OUTPUT_DIR:/output" \
-    -e MISE_VERSION="$MISE_VERSION" \
-    -e MISE_SHA256_ARM64="$MISE_SHA256_ARM64" \
-    -e MISE_SHA256_AMD64="$MISE_SHA256_AMD64" \
-    debian:trixie-slim /bin/bash -c '
+echo "=== Building Debian trixie ${DEB_ARCH} rootfs with mmdebstrap ==="
+
+# Work directory for the unpacked tree before we size + pack the ext4 image.
+# mmdebstrap runs under sudo and populates WORK_DIR with root-owned files,
+# so cleanup must also run under sudo or we'll hit thousands of "Permission
+# denied" errors and leave the tree behind.
+WORK_DIR="$(mktemp -d -t safeyolo-rootfs.XXXXXX)"
+cleanup_workdir() {
+    if [ -d "$WORK_DIR" ]; then
+        # Try sudo first (the common case — sudo creds are cached after the
+        # mmdebstrap call). Fall back to a best-effort plain rm that may
+        # leave some files behind rather than spamming errors.
+        sudo -n rm -rf "$WORK_DIR" 2>/dev/null \
+            || rm -rf "$WORK_DIR" 2>/dev/null \
+            || true
+    fi
+}
+trap cleanup_workdir EXIT
+
+# Resolve the pinned mise/gh tarball SHA256s by architecture.
+MISE_SHA256_VAR="MISE_SHA256_$(echo "$DEB_ARCH" | tr a-z A-Z)"
+GH_SHA256_VAR="GH_SHA256_$(echo "$DEB_ARCH" | tr a-z A-Z)"
+MISE_SHA256="${!MISE_SHA256_VAR:-}"
+GH_SHA256="${!GH_SHA256_VAR:-}"
+
+HOOK_SCRIPT="$SCRIPT_DIR/rootfs-customize-hook.sh"
+[ -r "$HOOK_SCRIPT" ] || { echo "Missing $HOOK_SCRIPT" >&2; exit 1; }
+
+# Export for the customize-hook process. mmdebstrap's hooks inherit the
+# invoking process's env, so we just export and the hook sees them.
+export DEB_ARCH MISE_VERSION MISE_SHA256 GH_VERSION GH_SHA256
+export GUEST_SRC_DIR="$SCRIPT_DIR"
+
+# Essential-hook: runs after the essential packages are installed but BEFORE
+# the --include packages. Drops in a dpkg.cfg.d file that tells dpkg to skip
+# docs, man pages, info files, and non-English locales during ALL subsequent
+# installs — including build-essential and its 100+MB of compiler docs that
+# otherwise dominate the rootfs size.
+#
+# We keep copyright files specifically (Debian redistribution compliance)
+# via the path-include rule.
+ESSENTIAL_HOOK='
 set -euo pipefail
-
-export DEBIAN_FRONTEND=noninteractive
-ROOTFS_SIZE_MB='"$ROOTFS_SIZE_MB"'
-
-echo "--- Installing build tools ---"
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends \
-    debootstrap e2fsprogs curl ca-certificates >/dev/null
-
-# Create sparse ext4 image
-echo "--- Creating ${ROOTFS_SIZE_MB}MB ext4 image ---"
-dd if=/dev/zero of=/output/rootfs-base.ext4 bs=1M count=0 seek=$ROOTFS_SIZE_MB 2>/dev/null
-mkfs.ext4 -F -E lazy_itable_init=0 -q /output/rootfs-base.ext4
-
-# Mount
-mkdir -p /mnt/rootfs
-mount /output/rootfs-base.ext4 /mnt/rootfs
-
-# Debootstrap
-echo "--- Running debootstrap (trixie, arm64, minbase) ---"
-debootstrap --arch=arm64 --variant=minbase trixie /mnt/rootfs http://deb.debian.org/debian
-
-# Suppress doc/man/locale installation
-cat > /mnt/rootfs/etc/dpkg/dpkg.cfg.d/01-nodoc << EOF
+ROOTFS="$1"
+mkdir -p "$ROOTFS/etc/dpkg/dpkg.cfg.d"
+cat > "$ROOTFS/etc/dpkg/dpkg.cfg.d/01-nodoc" <<NODOC
 path-exclude /usr/share/doc/*
+path-include /usr/share/doc/*/copyright
 path-exclude /usr/share/man/*
 path-exclude /usr/share/info/*
 path-exclude /usr/share/locale/*
 path-include /usr/share/locale/en*
-EOF
-
-# Mount proc/sys/dev for chroot (needed by dpkg post-install hooks)
-mount -t proc proc /mnt/rootfs/proc
-mount -t sysfs sys /mnt/rootfs/sys
-mount -t devtmpfs dev /mnt/rootfs/dev
-mount -t devpts devpts /mnt/rootfs/dev/pts
-
-# Install packages
-echo "--- Installing packages ---"
-chroot /mnt/rootfs apt-get update -qq
-chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
-    git curl jq ca-certificates build-essential gnupg \
-    openssh-server iproute2 iputils-ping procps \
-    less xz-utils libgomp1 libatomic1 \
-    python3 python3-pip \
-    busybox-static >/dev/null
-
-# Create agent user
-echo "--- Creating agent user ---"
-chroot /mnt/rootfs useradd -m -s /bin/bash agent
-
-# Install mise (pinned, checksum-verified)
-echo "--- Installing mise ${MISE_VERSION} ---"
-ARCH=$(dpkg --print-architecture)  # arm64 or amd64
-MISE_SHA256_VAR="MISE_SHA256_$(echo $ARCH | tr a-z A-Z)"
-MISE_SHA256="${!MISE_SHA256_VAR:-}"
-curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${ARCH}.tar.gz" -o /tmp/mise.tar.gz
-if [ -n "$MISE_SHA256" ]; then
-    echo "${MISE_SHA256}  /tmp/mise.tar.gz" | sha256sum -c -
-else
-    echo "WARNING: No checksum for mise ${ARCH}, skipping verification"
-fi
-tar -xzf /tmp/mise.tar.gz -C /tmp
-cp /tmp/mise/bin/mise /mnt/rootfs/usr/local/bin/mise
-chmod +x /mnt/rootfs/usr/local/bin/mise
-rm -rf /tmp/mise.tar.gz /tmp/mise
-
-# Configure mise with shared dirs (accessible to all users)
-# MISE_CONFIG_DIR must also be shared so `mise use -g` config is visible to all users
-mkdir -p /mnt/rootfs/opt/mise
-cat > /mnt/rootfs/etc/profile.d/mise.sh << '"'"'MISE_PROFILE'"'"'
-export MISE_DATA_DIR="/opt/mise"
-export MISE_CONFIG_DIR="/opt/mise"
-export MISE_CACHE_DIR="/opt/mise/cache"
-export PATH="/opt/mise/shims:$PATH"
-eval "$(mise activate bash)" 2>/dev/null || true
-MISE_PROFILE
-chmod +x /mnt/rootfs/etc/profile.d/mise.sh
-
-# Also source for non-interactive shells
-cp /mnt/rootfs/etc/profile.d/mise.sh /mnt/rootfs/etc/mise-activate.sh
-echo "BASH_ENV=/etc/mise-activate.sh" >> /mnt/rootfs/etc/environment
-
-# Pre-install node@22 into shared mise dir
-echo "--- Installing node@22 via mise ---"
-MISE_ENV="MISE_DATA_DIR=/opt/mise MISE_CONFIG_DIR=/opt/mise MISE_CACHE_DIR=/opt/mise/cache"
-chroot /mnt/rootfs env $MISE_ENV mise install node@22 || true
-chroot /mnt/rootfs env $MISE_ENV mise use -g node@22 || true
-echo "--- Installing gh CLI ---"
-GH_VERSION="2.89.0"
-GH_ARCH=$(dpkg --print-architecture)  # arm64 or amd64
-GH_SHA256_ARM64="9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5"
-GH_SHA256_AMD64=""
-GH_SHA256_VAR="GH_SHA256_$(echo $GH_ARCH | tr a-z A-Z)"
-GH_SHA256="${!GH_SHA256_VAR:-}"
-curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz
-if [ -n "$GH_SHA256" ]; then
-    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c -
-else
-    echo "WARNING: No checksum for gh ${GH_ARCH}, skipping verification"
-fi
-tar -xzf /tmp/gh.tar.gz -C /tmp
-cp /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh /mnt/rootfs/usr/local/bin/gh
-chmod +x /mnt/rootfs/usr/local/bin/gh
-rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}
-# Regenerate shims with correct config
-chroot /mnt/rootfs env $MISE_ENV mise reshim || true
-# Make shared dir writable by agent user (for installing additional tools)
-chroot /mnt/rootfs chmod -R 777 /opt/mise
-
-# Install Python packages (before apt intercepts are set up)
-echo "--- Installing Python packages ---"
-chroot /mnt/rootfs pip3 install --break-system-packages pytest httpx pytest-timeout
-
-# Clean up apt BEFORE installing package-manager intercepts
-echo "--- Cleaning up ---"
-chroot /mnt/rootfs /usr/bin/apt-get clean
-rm -rf /mnt/rootfs/var/lib/apt/lists/*
-
-# Package-manager intercepts (same as current SafeYolo Dockerfile)
-# MUST come after apt-get clean since they shadow /usr/bin/apt-get
-for cmd in apt apt-get yum dnf apk; do
-    cat > "/mnt/rootfs/usr/local/bin/$cmd" << '"'"'INTERCEPT'"'"'
-#!/bin/bash
-echo "Error: Package manager not available in SafeYolo VM"
-echo ""
-echo "Use mise to install languages and tools:"
-echo "  mise install go@latest"
-echo "  mise install python@3.12"
-echo "  mise install rust@latest"
-echo ""
-echo "List available versions: mise ls-remote go"
-exit 1
-INTERCEPT
-    chmod +x "/mnt/rootfs/usr/local/bin/$cmd"
-done
-
-# Configure sshd
-echo "--- Configuring sshd ---"
-sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" /mnt/rootfs/etc/ssh/sshd_config
-sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" /mnt/rootfs/etc/ssh/sshd_config
-# Generate host keys
-chroot /mnt/rootfs ssh-keygen -A >/dev/null 2>&1
-
-# Build and install vsock-term (terminal daemon with PTY + resize)
-# vsock-term is now cross-compiled by `make guest-tools` and served
-# from the config share. No longer baked into rootfs.
-
-# Install guest init STUB (thin wrapper that execs from config share)
-echo "--- Installing guest init ---"
-cp /build/rootfs/safeyolo-guest-init /mnt/rootfs/usr/local/bin/safeyolo-guest-init
-chmod +x /mnt/rootfs/usr/local/bin/safeyolo-guest-init
-
-# Set hostname
-echo "safeyolo" > /mnt/rootfs/etc/hostname
-
-# Default DNS (overridden by DHCP at boot)
-echo "nameserver 8.8.8.8" > /mnt/rootfs/etc/resolv.conf
-rm -rf /mnt/rootfs/usr/share/doc/*
-rm -rf /mnt/rootfs/usr/share/man/*
-find /mnt/rootfs/usr/share/locale -maxdepth 1 ! -name "en*" -type d -exec rm -rf {} + 2>/dev/null || true
-
-# Kill any processes still using the rootfs (gpg-agent, dirmngr, etc.)
-fuser -km /mnt/rootfs 2>/dev/null || true
-sleep 1
-
-# Unmount all mounts under rootfs (reverse order)
-umount /mnt/rootfs/dev/pts 2>/dev/null || true
-umount /mnt/rootfs/dev 2>/dev/null || true
-umount /mnt/rootfs/proc 2>/dev/null || true
-umount /mnt/rootfs/sys 2>/dev/null || true
-umount /mnt/rootfs/run 2>/dev/null || true
-
-umount /mnt/rootfs || { echo "WARN: lazy unmount"; umount -l /mnt/rootfs; }
-echo "--- Rootfs built ---"
+path-include /usr/share/locale/locale.alias
+NODOC
 '
 
-echo "=== Rootfs ready at $OUTPUT_DIR/rootfs-base.ext4 ==="
-echo "Actual size: $(du -sh "$OUTPUT_DIR/rootfs-base.ext4" | cut -f1)"
+echo "--- Running mmdebstrap (trixie, ${DEB_ARCH}, minbase) ---"
+sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST_SRC_DIR \
+    mmdebstrap \
+        --mode=root \
+        --variant=minbase \
+        --arch="$DEB_ARCH" \
+        --include=ca-certificates,curl,git,jq,build-essential,gnupg,openssh-server,iproute2,iputils-ping,procps,less,xz-utils,libgomp1,libatomic1,python3,python3-pip,busybox-static \
+        --essential-hook="$ESSENTIAL_HOOK" \
+        --customize-hook="bash $HOOK_SCRIPT \"\$1\"" \
+        trixie \
+        "$WORK_DIR" \
+        http://deb.debian.org/debian
+
+# Fixed ${ROOTFS_SIZE_MB}M sparse image, matching the original Docker-based
+# build. Leaves enough free space for agent-time installs (npm, pip, mise
+# tools). Sparse on-disk, so the actual bytes used are close to content size.
+echo "--- Building ${ROOTFS_SIZE_MB} MiB sparse ext4 image ---"
+truncate -s "${ROOTFS_SIZE_MB}M" "$OUTPUT_EXT4"
+# mkfs.ext4 -d populates directly from the unpacked tree. Requires the target
+# directory to be owned by root (it is, coming from --mode=root mmdebstrap).
+sudo mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$WORK_DIR" "$OUTPUT_EXT4"
+
+# Make the resulting image readable by the invoking user.
+sudo chown "$(id -u):$(id -g)" "$OUTPUT_EXT4"
+
+echo "=== Rootfs ready at $OUTPUT_EXT4 ==="
+echo "Actual size: $(du -sh "$OUTPUT_EXT4" | cut -f1)"

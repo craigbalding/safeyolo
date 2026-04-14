@@ -7,6 +7,7 @@ microVMs via the safeyolo-vm Swift helper binary.
 import json
 import logging
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -606,12 +607,17 @@ def register_vm_ip(name: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def check_guest_images() -> bool:
-    """Check if all guest image artifacts exist."""
-    return (
-        get_kernel_path().exists()
-        and get_initrd_path().exists()
-        and get_base_rootfs_path().exists()
-    )
+    """Check if required guest image artifacts exist.
+
+    On macOS (Virtualization.framework) all three are required: kernel,
+    initramfs, and rootfs. On Linux (gVisor) only the rootfs is needed —
+    gVisor provides its own kernel.
+    """
+    if not get_base_rootfs_path().exists():
+        return False
+    if platform.system() == "Darwin":
+        return get_kernel_path().exists() and get_initrd_path().exists()
+    return True
 
 
 def guest_image_status() -> dict[str, bool]:

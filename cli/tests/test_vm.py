@@ -1134,43 +1134,74 @@ class TestUpdateAgentMap:
 
 
 class TestGuestImageChecks:
-    """Guest image artifact existence checks."""
+    """Guest image artifact existence checks.
 
-    def test_check_guest_images_all_present(self, tmp_config_dir):
+    check_guest_images() is platform-aware: macOS needs kernel+initramfs+rootfs
+    (Virtualization.framework); Linux needs only rootfs (gVisor provides its
+    own kernel).
+    """
+
+    def test_check_guest_images_all_present_darwin(self, tmp_config_dir):
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
         (share / "Image").write_bytes(b"k")
         (share / "initramfs.cpio.gz").write_bytes(b"i")
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        assert check_guest_images() is True
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is True
 
-    def test_check_guest_images_missing_kernel(self, tmp_config_dir):
+    def test_check_guest_images_missing_kernel_darwin(self, tmp_config_dir):
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
         (share / "initramfs.cpio.gz").write_bytes(b"i")
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is False
 
-    def test_check_guest_images_missing_initrd(self, tmp_config_dir):
+    def test_check_guest_images_missing_initrd_darwin(self, tmp_config_dir):
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
         (share / "Image").write_bytes(b"k")
         (share / "rootfs-base.ext4").write_bytes(b"r")
 
-        assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is False
 
     def test_check_guest_images_missing_rootfs(self, tmp_config_dir):
+        """Rootfs is required on all platforms."""
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
         (share / "Image").write_bytes(b"k")
         (share / "initramfs.cpio.gz").write_bytes(b"i")
 
-        assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is False
 
     def test_check_guest_images_none_present(self, tmp_config_dir):
         assert check_guest_images() is False
+
+    def test_check_guest_images_linux_only_rootfs_needed(self, tmp_config_dir):
+        """On Linux, rootfs alone is sufficient (gVisor has its own kernel)."""
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is True
+
+    def test_check_guest_images_linux_ignores_missing_kernel(self, tmp_config_dir):
+        """On Linux, missing kernel/initramfs is fine as long as rootfs is present."""
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+        # No Image, no initramfs.cpio.gz
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is True
 
     def test_guest_image_status_all_present(self, tmp_config_dir):
         share = tmp_config_dir / "share"

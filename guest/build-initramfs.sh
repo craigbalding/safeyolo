@@ -1,53 +1,97 @@
 #!/bin/bash
 #
 # Build minimal initramfs for SafeYolo microVMs.
-# Contains busybox, e2fsck, resize2fs, and init script.
-# Runs in Docker on macOS.
+#
+# Runs on Linux only (natively or inside the Lima VM on macOS — see
+# guest/build-all.sh). Contains busybox, e2fsck, resize2fs, and the init
+# script at guest/initramfs/init.
 #
 # Output: out/initramfs.cpio.gz (~5-10MB)
+#
+# Dependencies (install via apt on the host):
+#   busybox-static e2fsprogs pax-utils cpio
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"
 
+# Linux-only guard.
+if [ "$(uname)" != "Linux" ]; then
+    echo "Error: build-initramfs.sh runs on Linux only." >&2
+    echo "On macOS, run ./build-all.sh which will shell into a Lima VM." >&2
+    exit 1
+fi
+
 mkdir -p "$OUTPUT_DIR"
+
+if [ -f "$OUTPUT_DIR/initramfs.cpio.gz" ]; then
+    echo "Initramfs already exists at $OUTPUT_DIR/initramfs.cpio.gz"
+    echo "Delete it to rebuild."
+    exit 0
+fi
+
+# Dependency check. Debian's busybox-static ships /bin/busybox (static binary).
+MISSING=()
+[ -x /bin/busybox ] || MISSING+=("busybox-static (/bin/busybox)")
+command -v lddtree >/dev/null || MISSING+=("pax-utils (lddtree)")
+command -v cpio >/dev/null || MISSING+=("cpio")
+[ -x /sbin/e2fsck ] || [ -x /usr/sbin/e2fsck ] || MISSING+=("e2fsprogs (e2fsck)")
+[ -x /sbin/resize2fs ] || [ -x /usr/sbin/resize2fs ] || MISSING+=("e2fsprogs (resize2fs)")
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    echo "Error: missing build dependencies: ${MISSING[*]}" >&2
+    echo "  Debian/Ubuntu: sudo apt-get install busybox-static e2fsprogs pax-utils cpio" >&2
+    exit 1
+fi
+
+# Resolve e2fsprogs binary locations (Debian moves some between /sbin and /usr/sbin).
+E2FSCK_BIN="$(command -v e2fsck || echo /sbin/e2fsck)"
+[ -x "$E2FSCK_BIN" ] || E2FSCK_BIN=/usr/sbin/e2fsck
+RESIZE2FS_BIN="$(command -v resize2fs || echo /sbin/resize2fs)"
+[ -x "$RESIZE2FS_BIN" ] || RESIZE2FS_BIN=/usr/sbin/resize2fs
+
+[ -r "$SCRIPT_DIR/initramfs/init" ] || {
+    echo "Error: missing initramfs init script at $SCRIPT_DIR/initramfs/init" >&2
+    exit 1
+}
 
 echo "=== Building initramfs ==="
 
-docker run --rm --platform linux/arm64/v8 \
-    -v "$SCRIPT_DIR/initramfs/init:/build/init:ro" \
-    -v "$OUTPUT_DIR:/output" \
-    debian:trixie-slim /bin/bash -c '
-set -euo pipefail
+WORK="$(mktemp -d -t safeyolo-initramfs.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends \
-    busybox-static e2fsprogs pax-utils cpio >/dev/null
-
-# Create initramfs structure
-WORK=/tmp/initramfs
-mkdir -p $WORK/{bin,sbin,usr/sbin,proc,sys,dev,mnt/root,usr/share/udhcpc}
+mkdir -p \
+    "$WORK/bin" \
+    "$WORK/sbin" \
+    "$WORK/usr/sbin" \
+    "$WORK/proc" \
+    "$WORK/sys" \
+    "$WORK/dev" \
+    "$WORK/mnt/root" \
+    "$WORK/usr/share/udhcpc" \
+    "$WORK/etc"
 
 # Busybox (static, all-in-one)
-cp /bin/busybox $WORK/bin/busybox
+cp /bin/busybox "$WORK/bin/busybox"
 for cmd in sh mount umount cp chmod echo cat mkdir rm \
            ip ifconfig route udhcpc switch_root sleep; do
-    ln -sf busybox $WORK/bin/$cmd
+    ln -sf busybox "$WORK/bin/$cmd"
 done
 
-# e2fsck and resize2fs with all library dependencies
-lddtree -l /sbin/e2fsck /usr/sbin/resize2fs 2>/dev/null | sort -u | while read lib; do
-    if [ -f "$lib" ]; then
-        dir="$WORK$(dirname "$lib")"
-        mkdir -p "$dir"
-        cp "$lib" "$WORK$lib"
-    fi
+# e2fsck and resize2fs (with lib deps via lddtree)
+cp "$E2FSCK_BIN" "$WORK/sbin/e2fsck"
+cp "$RESIZE2FS_BIN" "$WORK/usr/sbin/resize2fs"
+
+lddtree -l "$E2FSCK_BIN" "$RESIZE2FS_BIN" 2>/dev/null | sort -u | while read -r lib; do
+    [ -f "$lib" ] || continue
+    dst_dir="$WORK$(dirname "$lib")"
+    mkdir -p "$dst_dir"
+    # Skip if already placed (e2fsck itself shows up in lddtree output)
+    [ -f "$WORK$lib" ] || cp "$lib" "$WORK$lib"
 done
 
 # udhcpc default script (busybox DHCP client)
-cat > $WORK/usr/share/udhcpc/default.script << '"'"'DHCP'"'"'
+cat > "$WORK/usr/share/udhcpc/default.script" <<'DHCP'
 #!/bin/sh
 case "$1" in
     bound|renew)
@@ -57,16 +101,14 @@ case "$1" in
         ;;
 esac
 DHCP
-chmod +x $WORK/usr/share/udhcpc/default.script
+chmod +x "$WORK/usr/share/udhcpc/default.script"
 
 # Init script
-cp /build/init $WORK/init
-chmod +x $WORK/init
+cp "$SCRIPT_DIR/initramfs/init" "$WORK/init"
+chmod +x "$WORK/init"
 
 # Create the cpio archive
-cd $WORK
-find . | cpio -o -H newc --quiet 2>/dev/null | gzip > /output/initramfs.cpio.gz
-echo "Initramfs built: $(ls -lh /output/initramfs.cpio.gz | awk '"'"'{print $5}'"'"')"
-'
+( cd "$WORK" && find . | cpio -o -H newc --quiet 2>/dev/null | gzip > "$OUTPUT_DIR/initramfs.cpio.gz" )
+echo "Initramfs built: $(ls -lh "$OUTPUT_DIR/initramfs.cpio.gz" | awk '{print $5}')"
 
 echo "=== Initramfs ready at $OUTPUT_DIR/initramfs.cpio.gz ==="
