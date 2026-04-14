@@ -259,16 +259,17 @@ do {
         }
     }
 
-    // Park the main thread on libdispatch's main queue. This drains the
-    // signal-handling DispatchSources (SIGINT/SIGTERM/SIGUSR1) reliably
-    // for command-line tools — RunLoop.main.run() leaves the main queue
-    // unserviced when no other dispatch work is scheduled, which broke
-    // SIGUSR1 in --no-terminal mode (signal arrived, default action
-    // killed the process before the dispatch source fired).
+    // Run until VM exits.
     //
-    // dispatchMain() never returns; the VM-state observer's exitClean()
-    // calls exit() to terminate.
-    dispatchMain()
+    // NOTE: in --no-terminal mode the signal DispatchSources on .main
+    // appear to be serviced unreliably (SIGUSR1 default action terminates
+    // the process before the dispatch source fires). The vsock-term retry
+    // loop on the global queue happens to keep things lively in the
+    // common case. dispatchMain() didn't fix it cleanly either. For now
+    // the snapshot test runs in vsock-term mode where SIGUSR1 works; a
+    // proper fix for --no-terminal SIGUSR1 is tracked separately and not
+    // load-bearing for the CLI orchestration in PR 4.
+    RunLoop.main.run()
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
     // Use sysexits.h EX_TEMPFAIL (75) for snapshot-related errors so the CLI
