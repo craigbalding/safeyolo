@@ -146,8 +146,12 @@ sleep 8
 [[ -f "$SNAP.meta.json" ]] || { echo "  FAIL: $SNAP.meta.json not written"; exit 1; }
 echo "  PASS: snapshot $(ls -lh "$SNAP" | awk '{print $5}') logical / $(du -h "$SNAP" | awk '{print $1}') physical"
 
-# Stop the cold-boot helper
-kill -TERM "$HELPER_PID" 2>/dev/null
+# Force-kill (not graceful) so the guest doesn't fsync/journal-flush
+# the rootfs between snapshot and restore. VZ requires the disk image
+# to be byte-identical to its state at save time, otherwise restore
+# fails with "invalid argument". PR 4 will need to APFS-clone the
+# rootfs at snapshot time to handle this for production use.
+kill -KILL "$HELPER_PID" 2>/dev/null
 wait "$HELPER_PID" 2>/dev/null || true
 HELPER_PID=""
 
