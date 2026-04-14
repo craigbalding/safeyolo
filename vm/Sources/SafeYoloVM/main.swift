@@ -259,8 +259,16 @@ do {
         }
     }
 
-    // Run until VM exits
-    RunLoop.main.run()
+    // Park the main thread on libdispatch's main queue. This drains the
+    // signal-handling DispatchSources (SIGINT/SIGTERM/SIGUSR1) reliably
+    // for command-line tools — RunLoop.main.run() leaves the main queue
+    // unserviced when no other dispatch work is scheduled, which broke
+    // SIGUSR1 in --no-terminal mode (signal arrived, default action
+    // killed the process before the dispatch source fired).
+    //
+    // dispatchMain() never returns; the VM-state observer's exitClean()
+    // calls exit() to terminate.
+    dispatchMain()
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
     // Use sysexits.h EX_TEMPFAIL (75) for snapshot-related errors so the CLI
