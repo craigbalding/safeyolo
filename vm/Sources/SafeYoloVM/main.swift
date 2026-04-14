@@ -233,15 +233,19 @@ do {
             // Retry vsock connection until guest is ready (up to 120s for first boot with npm install).
             // On restore, sshd + per-run init are nearly instant — skip the
             // first 2s sleep so the terminal attaches as fast as possible.
+            //
+            // Only break on terminal states (.stopped / .error), NOT on
+            // transient .pausing/.paused/.saving/.restoring/.resuming —
+            // those happen mid-snapshot and the VM will be back to .running
+            // momentarily.
             var connected = false
             for attempt in 1...60 {
                 if !(isRestoring && attempt == 1) {
                     sleep(2)
                 }
-                // Check VM is still running
-                if vm.state != .running { break }
+                if vm.state == .stopped || vm.state == .error { break }
 
-                if terminal.tryConnect() {
+                if vm.state == .running && terminal.tryConnect() {
                     connected = true
                     break
                 }
