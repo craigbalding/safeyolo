@@ -21,8 +21,20 @@
 # Usage:
 #   bash vm/test/snapshot-smoke.sh <agent-name>
 #
-# The agent must already exist with a populated config-share — e.g.
-# `safeyolo agent run --detach <name> && safeyolo agent stop <name>`.
+# The agent must use the byoa template (or have no SAFEYOLO_AGENT_CMD)
+# and have been run once with --detach so its config-share is populated
+# and SAFEYOLO_DETACH=1 keeps guest-init's `exec sleep infinity` path
+# alive without network. Setup:
+#
+#   mkdir -p ~/tmp/snaptest
+#   safeyolo agent add snaptest byoa ~/tmp/snaptest --no-run
+#   safeyolo agent run --detach snaptest
+#   sleep 5
+#   safeyolo agent stop snaptest
+#
+# Agents with an auto-launching CLI (claude-code, openai-codex) will fail
+# this test because that CLI exits immediately without network and
+# guest-init then powers off the VM, masking snapshot success.
 #
 set -euo pipefail
 set -m
