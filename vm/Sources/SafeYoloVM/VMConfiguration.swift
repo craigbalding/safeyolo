@@ -18,7 +18,18 @@ enum VMConfigurationError: LocalizedError {
 struct VMConfiguration {
 
     /// Build a VZVirtualMachineConfiguration from RunConfig.
-    static func build(from config: RunConfig) throws -> VZVirtualMachineConfiguration {
+    ///
+    /// - Parameter machineIdentifier: Optional explicit `VZGenericMachineIdentifier`.
+    ///   On cold boot, pass a freshly generated identifier and persist its
+    ///   `dataRepresentation` in the snapshot sidecar. On restore, decode the
+    ///   sidecar's base64 identifier back into a `VZGenericMachineIdentifier`
+    ///   and pass it here — VZ requires the restored VM to carry the SAME
+    ///   machine identity it had at save time, or `restoreMachineStateFrom`
+    ///   fails with EINVAL ("invalid argument").
+    static func build(
+        from config: RunConfig,
+        machineIdentifier: VZGenericMachineIdentifier? = nil
+    ) throws -> VZVirtualMachineConfiguration {
         // Validate file paths exist
         for (path, label) in [
             (config.kernelPath, "kernel"),
@@ -41,6 +52,15 @@ struct VMConfiguration {
         let minMem = VZVirtualMachineConfiguration.minimumAllowedMemorySize
         let maxMem = VZVirtualMachineConfiguration.maximumAllowedMemorySize
         vmConfig.memorySize = max(minMem, min(memoryBytes, maxMem))
+
+        // Platform — pin the machine identifier so save/restore works across
+        // processes. Without this, VZ creates a fresh random identifier per
+        // VZGenericPlatformConfiguration and restore fails with EINVAL.
+        let platform = VZGenericPlatformConfiguration()
+        if let identifier = machineIdentifier {
+            platform.machineIdentifier = identifier
+        }
+        vmConfig.platform = platform
 
         // Boot loader
         vmConfig.bootLoader = try createBootLoader(config: config)

@@ -39,8 +39,13 @@ enum VMSnapshot {
         }
     }
 
-    /// Hardware fingerprint stored alongside the snapshot file. Restore
-    /// refuses if any field differs from the values being passed in.
+    /// Hardware fingerprint + restore-time identity stored alongside the
+    /// snapshot file. The fingerprint fields are checked at restore time
+    /// for an early, clear mismatch error. The machineIdentifier is the
+    /// base64-encoded VZGenericMachineIdentifier dataRepresentation —
+    /// VZ requires the restored VM to have the SAME machine identifier
+    /// it had at save time, so we serialize it here and the restoring
+    /// process reads it back BEFORE building the VM config.
     struct Fingerprint: Codable, Equatable {
         var schema: Int = 1
         var memoryMB: Int
@@ -48,6 +53,7 @@ enum VMSnapshot {
         var kernelSHA256: String
         var initrdSHA256: String
         var vmHelperVersion: String
+        var machineIdentifier: String  // base64
     }
 
     // MARK: - Save (pause → write → clone-disk → resume)
@@ -220,6 +226,9 @@ enum VMSnapshot {
             if actual.initrdSHA256 != expected.initrdSHA256 { diffs.append("initrd_sha changed") }
             if actual.vmHelperVersion != expected.vmHelperVersion {
                 diffs.append("vm_helper=\(actual.vmHelperVersion)≠\(expected.vmHelperVersion)")
+            }
+            if actual.machineIdentifier != expected.machineIdentifier {
+                diffs.append("machine_identifier changed")
             }
             throw Error.fingerprintMismatch(diffs.joined(separator: ", "))
         }

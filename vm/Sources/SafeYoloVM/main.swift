@@ -189,7 +189,39 @@ do {
         close(hostFD)  // Parent no longer needs it
     }
 
-    let vmConfig = try VMConfiguration.build(from: config)
+    // Determine the machine identifier BEFORE building the VM config.
+    // On restore, VZ requires the restored VM to have the same identifier
+    // it had at save time (otherwise restoreMachineStateFrom fails with
+    // EINVAL), so we read the sidecar early to recover it. On cold boot
+    // we mint a fresh identifier and persist it via the save-time sidecar.
+    let machineIdentifier: VZGenericMachineIdentifier
+    if !config.restoreFrom.isEmpty {
+        let snapURL = URL(fileURLWithPath: NSString(string: config.restoreFrom).expandingTildeInPath)
+        let sidecarURL = VMSnapshot.sidecarURL(for: snapURL)
+        guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
+            throw VMSnapshot.Error.sidecarMissing(sidecarURL)
+        }
+        let sidecarData = try Data(contentsOf: sidecarURL)
+        let savedFingerprint: VMSnapshot.Fingerprint
+        do {
+            savedFingerprint = try JSONDecoder().decode(VMSnapshot.Fingerprint.self, from: sidecarData)
+        } catch {
+            throw VMSnapshot.Error.sidecarParseFailed(error)
+        }
+        guard let idData = Data(base64Encoded: savedFingerprint.machineIdentifier),
+              let decoded = VZGenericMachineIdentifier(dataRepresentation: idData) else {
+            throw VMSnapshot.Error.sidecarParseFailed(NSError(
+                domain: "VMSnapshot",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "sidecar machineIdentifier is not a valid VZGenericMachineIdentifier"]
+            ))
+        }
+        machineIdentifier = decoded
+    } else {
+        machineIdentifier = VZGenericMachineIdentifier()
+    }
+
+    let vmConfig = try VMConfiguration.build(from: config, machineIdentifier: machineIdentifier)
     try vmConfig.validate()
 
     let vmQueue = DispatchQueue(label: "com.safeyolo.vm", qos: .userInteractive)
@@ -204,7 +236,8 @@ do {
         cpus: config.cpus,
         kernelSHA256: try VMSnapshot.sha256(ofFileAt: config.kernelPath),
         initrdSHA256: try VMSnapshot.sha256(ofFileAt: config.initrdPath),
-        vmHelperVersion: helperVersion
+        vmHelperVersion: helperVersion,
+        machineIdentifier: machineIdentifier.dataRepresentation.base64EncodedString()
     )
 
     if !config.snapshotOnSignal.isEmpty {
