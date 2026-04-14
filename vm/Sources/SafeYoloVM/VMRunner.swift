@@ -9,11 +9,27 @@ class VMRunner: NSObject {
     private var observation: NSKeyValueObservation?
     private var hasExited = false
 
+    // Snapshot-on-signal config — set by main.swift after parsing
+    // `--snapshot-on-signal PATH`. SIGUSR1 calls `VMSnapshot.save` with
+    // these values. nil means SIGUSR1 is a no-op.
+    private var snapshotURL: URL?
+    private var snapshotFingerprint: VMSnapshot.Fingerprint?
+    private let snapshotLock = NSLock()
+    private var snapshotInProgress = false
+
     init(vm: VZVirtualMachine, queue: DispatchQueue? = nil) {
         self.vm = vm
         self.queue = queue ?? DispatchQueue(label: "com.safeyolo.vm.runner", qos: .userInteractive)
         super.init()
         observeState()
+    }
+
+    /// Configure SIGUSR1 to capture a snapshot to `url`. Must be called
+    /// before `installSignalHandlers()`. Calling this twice replaces the
+    /// previous configuration. Pass `nil` to disable.
+    func configureSnapshotOnSignal(url: URL?, fingerprint: VMSnapshot.Fingerprint?) {
+        snapshotURL = url
+        snapshotFingerprint = fingerprint
     }
 
     // MARK: - State observation
@@ -62,6 +78,25 @@ class VMRunner: NSObject {
 
         semaphore.wait()
         if let error = startError {
+            restoreTerminal()
+            throw error
+        }
+    }
+
+    // MARK: - Restore (alternative to start)
+
+    /// Restore the VM from a previously-saved snapshot at `url` and resume
+    /// it. Must be called *instead of* `start()` — the VM transitions
+    /// directly from `.stopped` to `.paused` (via `.restoring`) and then
+    /// to `.running` via the resume inside `VMSnapshot.restore`.
+    ///
+    /// The caller must have constructed `vm` with the same hardware config
+    /// (kernel, initrd, memory, cpus) that was used at save time;
+    /// `expectedFingerprint` lets us catch mismatches before VZ does.
+    func restoreFromSnapshot(url: URL, expectedFingerprint: VMSnapshot.Fingerprint) throws {
+        do {
+            try VMSnapshot.restore(vm: vm, queue: queue, fromURL: url, expectedFingerprint: expectedFingerprint)
+        } catch {
             restoreTerminal()
             throw error
         }
@@ -129,6 +164,7 @@ class VMRunner: NSObject {
     func installSignalHandlers() {
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
+        signal(SIGUSR1, SIG_IGN)
 
         // First Ctrl-C: try graceful stop. Second Ctrl-C: force stop immediately.
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
@@ -152,7 +188,53 @@ class VMRunner: NSObject {
         }
         sigtermSource.resume()
 
-        _signalSources = [sigintSource, sigtermSource]
+        // SIGUSR1: take a snapshot to the configured path. No-op if the
+        // helper wasn't started with --snapshot-on-signal. Debounced:
+        // duplicate signals while a save is in flight are ignored, since
+        // VZ requires the VM to be paused for save and we must always
+        // resume it before the next save can run.
+        let sigusr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        sigusr1Source.setEventHandler { [weak self] in
+            self?.handleSnapshotSignal()
+        }
+        sigusr1Source.resume()
+
+        _signalSources = [sigintSource, sigtermSource, sigusr1Source]
+    }
+
+    private func handleSnapshotSignal() {
+        // Debounce: drop the signal if a save is already running.
+        snapshotLock.lock()
+        if snapshotInProgress {
+            snapshotLock.unlock()
+            fputs("Snapshot already in progress, ignoring SIGUSR1\n", stderr)
+            return
+        }
+        snapshotInProgress = true
+        snapshotLock.unlock()
+
+        guard let url = snapshotURL, let fingerprint = snapshotFingerprint else {
+            fputs("SIGUSR1 received but --snapshot-on-signal was not configured\n", stderr)
+            snapshotLock.lock()
+            snapshotInProgress = false
+            snapshotLock.unlock()
+            return
+        }
+
+        // Run save off the main queue so the signal source isn't blocked.
+        // VMSnapshot.save handles pause → save → resume, always resuming.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            do {
+                try VMSnapshot.save(vm: self.vm, queue: self.queue, toURL: url, fingerprint: fingerprint)
+                fputs("Snapshot written to \(url.path)\n", stderr)
+            } catch {
+                fputs("Snapshot failed: \(error.localizedDescription)\n", stderr)
+            }
+            self.snapshotLock.lock()
+            self.snapshotInProgress = false
+            self.snapshotLock.unlock()
+        }
     }
 
     private var _signalSources: [Any] = []
