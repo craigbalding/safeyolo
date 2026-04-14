@@ -1,6 +1,5 @@
 """Proxy lifecycle commands: start, stop, status, build."""
 
-import datetime
 import secrets
 import shutil
 from pathlib import Path
@@ -19,7 +18,6 @@ from ..config import (
     save_config,
 )
 from ..proxy import (
-    get_ca_cert_path,
     is_proxy_running,
     start_proxy,
     stop_proxy,
@@ -198,8 +196,8 @@ def stop(
     console.print("[green]Stopped.[/green]")
 
     # Hint if agents are still running
-    from ..platform import get_platform
     from ..config import get_agents_dir
+    from ..platform import get_platform
     plat = get_platform()
     agents_dir = get_agents_dir()
     running = []
@@ -218,8 +216,8 @@ def stop_all() -> None:
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
-    from ..platform import get_platform
     from ..config import get_agents_dir
+    from ..platform import get_platform
 
     plat = get_platform()
     agents_dir = get_agents_dir()
@@ -343,8 +341,8 @@ def status() -> None:
         pass
 
     # Running agents
-    from ..platform import get_platform
     from ..config import get_agents_dir
+    from ..platform import get_platform
     plat = get_platform()
     agents_dir = get_agents_dir()
     if agents_dir.exists():

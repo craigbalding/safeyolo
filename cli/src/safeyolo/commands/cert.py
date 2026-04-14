@@ -6,7 +6,6 @@ import typer
 from rich.console import Console
 
 from ..config import find_config_dir, get_certs_dir, load_config
-from ..proxy import is_proxy_running
 
 console = Console()
 

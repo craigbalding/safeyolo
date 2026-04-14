@@ -8,7 +8,6 @@ reads the file (mtime-cached) to resolve IPs to agent names.
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from threading import Lock

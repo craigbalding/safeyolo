@@ -9,10 +9,7 @@ import json
 import time
 from pathlib import Path
 from threading import Thread
-from unittest.mock import MagicMock, Mock, patch
-
-import pytest
-
+from unittest.mock import Mock, patch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -182,8 +179,6 @@ class TestReloadMap:
         # This happens when the file is deleted between the two calls.
         original_exists = Path.exists
         original_stat = Path.stat
-
-        call_count = {"stat": 0}
 
         def exists_returns_true(self_path, **kwargs):
             if str(self_path) == str(map_file):

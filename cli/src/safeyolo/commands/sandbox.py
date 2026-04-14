@@ -1,6 +1,5 @@
 """Sandbox Mode commands."""
 
-from pathlib import Path
 
 import typer
 from rich.console import Console
