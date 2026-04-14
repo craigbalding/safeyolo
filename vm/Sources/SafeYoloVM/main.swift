@@ -209,7 +209,17 @@ do {
 
     if !config.snapshotOnSignal.isEmpty {
         let url = URL(fileURLWithPath: NSString(string: config.snapshotOnSignal).expandingTildeInPath)
-        runner.configureSnapshotOnSignal(url: url, fingerprint: fingerprint)
+        let rootfsURL = URL(fileURLWithPath: NSString(string: config.rootfsPath).expandingTildeInPath)
+        // Auto-derive clone path: <snapshot>.rootfs. Restore must use this
+        // clone (via --rootfs <X>.rootfs --restore-from <X>) to satisfy
+        // VZ's requirement that the disk match its save-time state.
+        let cloneURL = url.appendingPathExtension("rootfs")
+        runner.configureSnapshotOnSignal(
+            url: url,
+            rootfsURL: rootfsURL,
+            rootfsCloneURL: cloneURL,
+            fingerprint: fingerprint
+        )
     }
 
     runner.installSignalHandlers()

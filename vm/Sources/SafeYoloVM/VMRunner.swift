@@ -38,6 +38,8 @@ class VMRunner: NSObject {
     // these values. nil means SIGUSR1 is a no-op.
     private var snapshotURL: URL?
     private var snapshotFingerprint: VMSnapshot.Fingerprint?
+    private var snapshotRootfsURL: URL?
+    private var snapshotRootfsCloneURL: URL?
     private let snapshotLock = NSLock()
     private var snapshotInProgress = false
 
@@ -48,11 +50,20 @@ class VMRunner: NSObject {
         observeState()
     }
 
-    /// Configure SIGUSR1 to capture a snapshot to `url`. Must be called
-    /// before `installSignalHandlers()`. Calling this twice replaces the
-    /// previous configuration. Pass `nil` to disable.
-    func configureSnapshotOnSignal(url: URL?, fingerprint: VMSnapshot.Fingerprint?) {
+    /// Configure SIGUSR1 to capture a snapshot to `url`, with the rootfs
+    /// disk image cloned to `rootfsCloneURL` at the same paused moment
+    /// (required for restorability — see VMSnapshot.save). Must be
+    /// called before `installSignalHandlers()`. Pass `nil` for url to
+    /// disable.
+    func configureSnapshotOnSignal(
+        url: URL?,
+        rootfsURL: URL?,
+        rootfsCloneURL: URL?,
+        fingerprint: VMSnapshot.Fingerprint?
+    ) {
         snapshotURL = url
+        snapshotRootfsURL = rootfsURL
+        snapshotRootfsCloneURL = rootfsCloneURL
         snapshotFingerprint = fingerprint
     }
 
@@ -286,25 +297,39 @@ class VMRunner: NSObject {
         snapshotInProgress = true
         snapshotLock.unlock()
 
-        guard let url = snapshotURL, let fingerprint = snapshotFingerprint else {
+        guard let url = snapshotURL,
+              let fingerprint = snapshotFingerprint,
+              let rootfsURL = snapshotRootfsURL else {
             fputs("SIGUSR1 received but --snapshot-on-signal was not configured\n", stderr)
             snapshotLock.lock()
             snapshotInProgress = false
             snapshotLock.unlock()
             return
         }
+        let cloneURL = snapshotRootfsCloneURL
 
         // Run save off the main queue so the signal source isn't blocked.
-        // VMSnapshot.save handles pause → save → resume, always resuming.
+        // VMSnapshot.save handles pause → save → clone-disk → resume.
         // Suppress auto-exit during the operation so a transient .paused
         // observer callback doesn't race to kill the helper.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             do {
                 try self.withSuppressedAutoExit {
-                    try VMSnapshot.save(vm: self.vm, queue: self.queue, toURL: url, fingerprint: fingerprint)
+                    try VMSnapshot.save(
+                        vm: self.vm,
+                        queue: self.queue,
+                        toURL: url,
+                        rootfsURL: rootfsURL,
+                        rootfsCloneURL: cloneURL,
+                        fingerprint: fingerprint
+                    )
                 }
-                fputs("Snapshot written to \(url.path)\n", stderr)
+                if let cloneURL = cloneURL {
+                    fputs("Snapshot written to \(url.path) (rootfs cloned to \(cloneURL.path))\n", stderr)
+                } else {
+                    fputs("Snapshot written to \(url.path) (no rootfs clone)\n", stderr)
+                }
             } catch {
                 fputs("Snapshot failed: \(error.localizedDescription)\n", stderr)
             }

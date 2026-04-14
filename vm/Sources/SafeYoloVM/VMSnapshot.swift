@@ -50,11 +50,18 @@ enum VMSnapshot {
         var vmHelperVersion: String
     }
 
-    // MARK: - Save (pause → write → resume)
+    // MARK: - Save (pause → write → clone-disk → resume)
 
-    /// Take a snapshot of the running VM and write it to `url`. Resumes the
-    /// VM unconditionally on the way out — even on save failure — so we never
-    /// leave the VM stuck in `.paused` from a half-finished snapshot.
+    /// Take a snapshot of the running VM and write it to `url`. Optionally
+    /// clones the rootfs disk image to `rootfsCloneURL` while the VM is
+    /// still paused — VZ requires the rootfs at restore time to be
+    /// byte-identical to its state at save time, so a clone snapshotted
+    /// at the same moment as the memory state is the only safe way to
+    /// ensure restorability after the VM continues running and modifies
+    /// the live disk.
+    ///
+    /// Resumes the VM unconditionally on the way out — even on save failure
+    /// — so we never leave the VM stuck in `.paused`.
     ///
     /// Sidecar metadata is written *after* a successful save; if save fails
     /// the sidecar is not written and the snapshot file is deleted.
@@ -62,6 +69,8 @@ enum VMSnapshot {
         vm: VZVirtualMachine,
         queue: DispatchQueue,
         toURL url: URL,
+        rootfsURL: URL,
+        rootfsCloneURL: URL?,
         fingerprint: Fingerprint
     ) throws {
         // 1. Pause
@@ -87,7 +96,24 @@ enum VMSnapshot {
             saveError = error
         }
 
-        // 3. Resume — must run even if save failed, otherwise VM is stuck paused.
+        // 3. Clone the rootfs while the VM is still paused (and only if
+        // save succeeded — pointless otherwise). Uses APFS's clonefile()
+        // syscall via FileManager — instant, copy-on-write. The clone
+        // captures the exact disk state that pairs with the saved memory
+        // state. Restore must use this clone, not the live rootfs.
+        var cloneError: Swift.Error?
+        if saveError == nil, let cloneURL = rootfsCloneURL {
+            do {
+                if FileManager.default.fileExists(atPath: cloneURL.path) {
+                    try FileManager.default.removeItem(at: cloneURL)
+                }
+                try FileManager.default.copyItem(at: rootfsURL, to: cloneURL)
+            } catch {
+                cloneError = Error.saveFailed(error)
+            }
+        }
+
+        // 4. Resume — must run even if save/clone failed, otherwise VM is stuck paused.
         let resumeError: Swift.Error? = {
             do {
                 try runSync(queue: queue) { done in
@@ -104,19 +130,22 @@ enum VMSnapshot {
             }
         }()
 
-        // Save error takes precedence — a failed save with a successful
-        // resume is "VM still running, snapshot didn't happen", which is
-        // recoverable. A failed resume after successful save is worse but
-        // still surfaces.
+        // Save/clone errors take precedence over resume errors — a failed
+        // save+resumed-VM is recoverable; a failed resume after successful
+        // save indicates VM corruption that we want surfaced.
         if let e = saveError {
             // Best-effort cleanup: don't leave a partial snapshot file
             // around to confuse a later restore attempt.
             try? FileManager.default.removeItem(at: url)
             throw e
         }
+        if let e = cloneError {
+            try? FileManager.default.removeItem(at: url)
+            throw e
+        }
         if let e = resumeError { throw e }
 
-        // 4. Sidecar
+        // 5. Sidecar
         try writeSidecar(fingerprint: fingerprint, snapshotURL: url)
     }
 

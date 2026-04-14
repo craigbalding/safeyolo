@@ -93,7 +93,8 @@ cleanup() {
         kill -TERM "$RESTORE_PID" 2>/dev/null
         wait "$RESTORE_PID" 2>/dev/null
     fi
-    rm -f "$SNAP" "$SNAP.meta.json"
+    rm -f "$SNAP" "$SNAP.meta.json" "$SNAP.rootfs"
+    rm -f "${SNAP2:-/dev/null}" "${SNAP2:-/dev/null}.meta.json" "${SNAP2:-/dev/null}.rootfs"
     if [[ "$rc" -eq 0 ]]; then
         echo
         echo "=== ALL PHASES PASSED ==="
@@ -164,7 +165,24 @@ echo "=== PHASE 2: restore + liveness ==="
 SNAP2="/tmp/sytest-${AGENT}-2.snap"
 rm -f "$SNAP2" "$SNAP2.meta.json"
 
-"${HELPER_ARGS[@]}" --restore-from "$SNAP" --snapshot-on-signal "$SNAP2" </dev/null >/tmp/sytest-helper.log 2>&1 &
+# Restore must use the cloned rootfs that was captured at snapshot time
+# (the live $ROOTFS may have been modified by the cold-boot helper before
+# we killed it — VZ requires byte-identical disk state).
+SNAP_ROOTFS="$SNAP.rootfs"
+[[ -f "$SNAP_ROOTFS" ]] || { echo "  FAIL: snapshot rootfs clone $SNAP_ROOTFS missing"; exit 1; }
+
+# Build args with overridden --rootfs pointing at the clone.
+RESTORE_ARGS=(
+    "$HELPER" run
+    --kernel "$KERNEL"
+    --initrd "$INITRD"
+    --rootfs "$SNAP_ROOTFS"
+    --memory 4096 --cpus 4
+    --share "$SHARE:config:rw"
+    --no-terminal
+)
+
+"${RESTORE_ARGS[@]}" --restore-from "$SNAP" --snapshot-on-signal "$SNAP2" </dev/null >/tmp/sytest-helper.log 2>&1 &
 RESTORE_PID=$!
 echo "  restore pid: $RESTORE_PID"
 sleep 5
@@ -200,7 +218,7 @@ echo "=== PHASE 3: boundary (wrong --memory → exit 75) ==="
 
 set +e
 "$HELPER" run \
-    --kernel "$KERNEL" --initrd "$INITRD" --rootfs "$ROOTFS" \
+    --kernel "$KERNEL" --initrd "$INITRD" --rootfs "$SNAP_ROOTFS" \
     --memory 8192 --cpus 4 \
     --share "$SHARE:config:rw" \
     --no-terminal \
