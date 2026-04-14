@@ -19,7 +19,7 @@ authors = [
 
 # Runtime dependencies (from requirements/base.in)
 dependencies = [
-    "mitmproxy>=12.0.0",
+    "mitmproxy>=12.2.2",
     "httpx>=0.25.0",
     "tenacity>=8.2.0",
     "pyyaml>=6.0",
