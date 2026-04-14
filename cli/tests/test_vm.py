@@ -817,6 +817,74 @@ class TestStartVm:
         assert "stdin" not in captured_kwargs
         assert "stdout" not in captured_kwargs
 
+    def test_snapshot_capture_path_adds_flag(self, tmp_config_dir, monkeypatch):
+        """When snapshot_capture_path is set, --snapshot-on-signal should
+        be threaded to the helper."""
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        start_vm("agent1", "/workspace", snapshot_capture_path=snap_path)
+
+        assert "--snapshot-on-signal" in captured_cmd
+        idx = captured_cmd.index("--snapshot-on-signal")
+        assert captured_cmd[idx + 1] == str(snap_path)
+
+    def test_restore_from_path_overrides_rootfs_with_clone(self, tmp_config_dir, monkeypatch):
+        """Restore requires the APFS clone that pairs with the snapshot;
+        start_vm must replace --rootfs with <snapshot>.rootfs so VZ sees
+        the byte-identical disk state it had at save time."""
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        clone_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+        clone_path.write_bytes(b"clone")
+
+        start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+        assert "--restore-from" in captured_cmd
+        idx = captured_cmd.index("--restore-from")
+        assert captured_cmd[idx + 1] == str(snap_path)
+
+        # --rootfs must point at the clone, not the live agent rootfs.
+        rootfs_idx = captured_cmd.index("--rootfs")
+        assert captured_cmd[rootfs_idx + 1] == str(clone_path)
+
+    def test_restore_without_clone_raises(self, tmp_config_dir, monkeypatch):
+        """If the paired clone is missing, restore can't possibly succeed —
+        refuse early rather than hand VZ a mismatched rootfs."""
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        # No clone file.
+
+        with pytest.raises(VMError, match="clone missing"):
+            start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+    def test_snapshot_and_restore_mutually_exclusive(self, tmp_config_dir, monkeypatch):
+        """The helper's own arg parser would reject both flags together,
+        but we should fail in Python so the error message is clearer."""
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        with pytest.raises(VMError, match="mutually exclusive"):
+            start_vm(
+                "agent1", "/workspace",
+                snapshot_capture_path=snap_path,
+                restore_from_path=snap_path,
+            )
+
 
 # ---------------------------------------------------------------------------
 # stop_vm
