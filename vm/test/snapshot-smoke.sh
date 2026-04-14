@@ -93,9 +93,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Run the helper in vsock-term mode (no --no-terminal). stdin is detached
-# (</dev/null) since we're backgrounding and don't want the helper to
-# block on terminal input.
+# Run the helper in --no-terminal mode (vsock-term needs a real stdin
+# and would auto-shutdown on EOF when stdin is /dev/null). The SIGUSR1
+# DispatchSource is on .global() so it fires reliably without vsock-term
+# present.
 run_helper_bg() {
     "$HELPER" run \
         --kernel "$KERNEL" \
@@ -103,6 +104,7 @@ run_helper_bg() {
         --rootfs "$ROOTFS" \
         --memory 4096 --cpus 4 \
         --share "$SHARE:config:rw" \
+        --no-terminal \
         "$@" </dev/null >/tmp/sytest-helper.log 2>&1 &
     echo $!
 }
@@ -138,39 +140,40 @@ wait "$HELPER_PID" 2>/dev/null || true
 HELPER_PID=""
 
 # ---------------------------------------------------------------------------
-# Phase 2 — restore (success = restore command didn't error during load)
+# Phase 2 — restore + liveness via second snapshot
 # ---------------------------------------------------------------------------
 echo
-echo "=== PHASE 2: restore ==="
+echo "=== PHASE 2: restore + liveness ==="
 
-RESTORE_PID=$(run_helper_bg --restore-from "$SNAP")
+SNAP2="/tmp/sytest-${AGENT}-2.snap"
+rm -f "$SNAP2" "$SNAP2.meta.json"
+
+RESTORE_PID=$(run_helper_bg --restore-from "$SNAP" --snapshot-on-signal "$SNAP2")
 echo "  restore pid: $RESTORE_PID"
 sleep 5
 
-# Two acceptable outcomes:
-#   (a) helper still alive — restore worked, vsock-term attached
-#   (b) helper exited 0 — restore worked, but vsock-term in guest saw the
-#       old host disappear, agent exited, guest-init poweroff, VM stopped.
-#       Both are successful restores.
-# A FAIL is exit 75 (snapshot error) or exit 1 (other error).
-if kill -0 "$RESTORE_PID" 2>/dev/null; then
-    echo "  PASS: restored helper alive (vsock-term presumably attached)"
-    kill -TERM "$RESTORE_PID" 2>/dev/null
-    wait "$RESTORE_PID" 2>/dev/null || true
-else
-    set +e
-    wait "$RESTORE_PID"
-    rc=$?
-    set -e
-    if [[ "$rc" -eq 0 ]]; then
-        echo "  PASS: restored helper exited cleanly (vsock disconnect → guest poweroff)"
-    else
-        echo "  FAIL: restored helper exited with rc=$rc. Last 20 lines of log:"
-        tail -20 /tmp/sytest-helper.log | sed 's/^/    /'
-        exit 1
-    fi
+if ! kill -0 "$RESTORE_PID" 2>/dev/null; then
+    set +e; wait "$RESTORE_PID"; rc=$?; set -e
+    echo "  FAIL: restored helper exited with rc=$rc. Last 20 lines of log:"
+    tail -20 /tmp/sytest-helper.log | sed 's/^/    /'
+    exit 1
 fi
+echo "  PASS: restored helper alive"
+
+# Liveness via second snapshot — only succeeds if the VM is actually .running
+echo "  sending SIGUSR1 for liveness snapshot..."
+kill -USR1 "$RESTORE_PID"
+sleep 8
+
+[[ -f "$SNAP2" ]] || { echo "  FAIL: liveness snapshot not written (restored VM not running?)"; tail -10 /tmp/sytest-helper.log | sed 's/^/    /'; exit 1; }
+[[ -f "$SNAP2.meta.json" ]] || { echo "  FAIL: liveness sidecar missing"; exit 1; }
+echo "  PASS: liveness snapshot $(ls -lh "$SNAP2" | awk '{print $5}') logical / $(du -h "$SNAP2" | awk '{print $1}') physical"
+
+kill -TERM "$RESTORE_PID" 2>/dev/null
+wait "$RESTORE_PID" 2>/dev/null || true
 RESTORE_PID=""
+
+rm -f "$SNAP2" "$SNAP2.meta.json"
 
 # ---------------------------------------------------------------------------
 # Phase 3 — boundary: wrong --memory must reject (exit 75)
@@ -183,8 +186,9 @@ set +e
     --kernel "$KERNEL" --initrd "$INITRD" --rootfs "$ROOTFS" \
     --memory 8192 --cpus 4 \
     --share "$SHARE:config:rw" \
+    --no-terminal \
     --restore-from "$SNAP" </dev/null 2>&1 | sed 's/^/  /'
-RC=$?
+RC=${PIPESTATUS[0]}
 set -e
 
 if [[ "$RC" != "75" ]]; then

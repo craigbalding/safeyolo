@@ -193,7 +193,13 @@ class VMRunner: NSObject {
         // duplicate signals while a save is in flight are ignored, since
         // VZ requires the VM to be paused for save and we must always
         // resume it before the next save can run.
-        let sigusr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        //
+        // Uses .global() instead of .main so the source fires reliably in
+        // --no-terminal mode (where the main run loop has nothing else to
+        // service and the kernel races us to the default action).
+        // handleSnapshotSignal dispatches its real work to .global anyway,
+        // so there's no main-thread ordering requirement here.
+        let sigusr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .global())
         sigusr1Source.setEventHandler { [weak self] in
             self?.handleSnapshotSignal()
         }
