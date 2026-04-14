@@ -15,17 +15,19 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 
 ### Prerequisites
 
-- macOS with Apple Silicon (M1+)
-- [OrbStack](https://orbstack.dev/) or Docker Desktop (for guest image build only — not used at runtime)
+- macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- [Lima](https://lima-vm.io/) on macOS only (for guest image build; `brew install lima`)
 
 ### Build
 
 ```bash
-git clone -b microvm https://github.com/craigbalding/safeyolo.git
+git clone https://github.com/craigbalding/safeyolo.git
 cd safeyolo
 
-# Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min
+# Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min.
+# On macOS this auto-shells into a Lima VM; on Linux it runs natively via
+# mmdebstrap. See guest/README.md for platform-specific setup notes.
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
 
@@ -153,7 +155,7 @@ See [docs/microvm-architecture.md](docs/microvm-architecture.md) for the full te
 - **Networking**: VZFileHandleNetworkDeviceAttachment + feth pairs + pf (not VZNATNetworkDeviceAttachment — Apple blocks pf on bridge interfaces)
 - **Terminal**: vsock PTY bridge with proper resize (not serial console)
 - **Guest init**: served from VirtioFS config share (changes without rootfs rebuild)
-- **Service discovery**: file-based agent IP map (not Docker DNS)
+- **Service discovery**: file-based agent IP map
 
 ## Trust Model
 
@@ -166,16 +168,15 @@ See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, an
 
 ## Requirements
 
-- macOS Apple Silicon (M1+)
+- macOS Apple Silicon (M1+) or Linux (x86_64/arm64)
 - Python 3.12+
-- OrbStack or Docker Desktop (build-time only)
-- User in `access_bpf` group (OrbStack or Wireshark adds this)
+- Lima on macOS (build-time only; `brew install lima`)
 
 Run `safeyolo setup` to check all prerequisites.
 
 ## Status
 
-SafeYolo is **pre-v1**. The `microvm` branch replaces Docker with hardware-isolated microVMs. No backward compatibility with the Docker-based `master` branch.
+SafeYolo is **pre-v1**. Hardware-isolated microVMs replace the earlier container-based design; the Docker-era code is preserved on the [`docker`](https://github.com/craigbalding/safeyolo/tree/docker) branch for reference.
 
 ## Documentation
 
