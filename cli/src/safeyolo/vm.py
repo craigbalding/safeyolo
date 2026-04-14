@@ -384,6 +384,7 @@ def stop_vm(name: str) -> None:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
+            # Process died between the SIGTERM wait loop and SIGKILL — fine.
             pass
 
     pid_path.unlink(missing_ok=True)
@@ -411,8 +412,11 @@ def _cleanup_feth_bridge(name: str) -> None:
                 try:
                     os.kill(int(pid_str), signal.SIGTERM)
                 except (ProcessLookupError, ValueError):
+                    # Process exited between pgrep and kill, or pgrep emitted
+                    # a non-integer line — skip it and move on.
                     pass
         except subprocess.SubprocessError:
+            # pgrep missing or errored — nothing to clean up from our side.
             pass
 
         # Tear down feth interfaces
@@ -420,6 +424,8 @@ def _cleanup_feth_bridge(name: str) -> None:
             from .firewall import teardown_feth
             teardown_feth(agent_index)
         except Exception:
+            # Best-effort: feth interfaces may already be gone, or ifconfig
+            # may refuse. Not worth aborting the rest of cleanup.
             pass
 
     # Also kill any orphaned feth-bridge processes
@@ -441,8 +447,10 @@ def _cleanup_feth_bridge(name: str) -> None:
                     os.kill(pid, signal.SIGTERM)
                     log.info("Killed orphaned feth-bridge (pid=%d)", pid)
             except (ProcessLookupError, ValueError):
+                # Raced with process exit, or ps emitted a non-integer — skip.
                 pass
     except subprocess.SubprocessError:
+        # pgrep missing or errored — no orphan cleanup this pass.
         pass
 
 

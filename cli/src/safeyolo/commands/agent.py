@@ -254,6 +254,9 @@ def _run_agent(
             host_config_files = [f for f in agent_config.host.config_files
                                  if (home / f).exists()]
         except TemplateError:
+            # Template missing or malformed — continue with empty host
+            # mounts/instructions; the agent name was already validated
+            # earlier so it's safe to proceed without template extras.
             pass
 
     # Set up network isolation (platform-specific: feth+pf on macOS, veth+iptables on Linux)

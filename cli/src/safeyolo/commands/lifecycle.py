@@ -237,6 +237,7 @@ def stop_all() -> None:
     try:
         plat.cleanup_all(agents_dir)
     except Exception:
+        # Best-effort teardown — partial state is better than aborting stop.
         pass
 
     # Unload firewall rules
@@ -337,6 +338,8 @@ def status() -> None:
         console.print(mode_table)
 
     except APIError:
+        # Proxy may be down or unreachable — status view still shows the
+        # rest of the system; mode table simply isn't rendered.
         pass
 
     # Running agents

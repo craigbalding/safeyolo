@@ -66,6 +66,8 @@ def _detect_outbound_interface() -> str:
                 idx = result.stdout.split().index("dev")
                 return result.stdout.split()[idx + 1]
     except (subprocess.SubprocessError, OSError, IndexError):
+        # `ip route` unavailable or output shape unexpected — fall back
+        # to the conventional eth0.
         pass
     return "eth0"
 
@@ -449,6 +451,8 @@ class LinuxPlatform(AgentPlatform):
             cfg = load_config()
             proxy_port = cfg.get("proxy", {}).get("port", 8080)
         except Exception:
+            # Config unreadable (missing, malformed) — keep the 8080 default
+            # we initialised above. Spec generation must still succeed.
             pass
 
         proxy_url = f"http://{fw_alloc['host_ip']}:{proxy_port}"

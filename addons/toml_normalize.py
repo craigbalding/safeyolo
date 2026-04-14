@@ -18,22 +18,6 @@ inside a helper.
 import copy
 from typing import Any
 
-# TOML-side key → internal-side key (for collision detection)
-_NORMALIZE_COLLISIONS = {
-    "budget": "global_budget",
-    "credential": "credentials",
-    "risk": "gateway",  # risk becomes gateway.risk_appetite
-    "version": "metadata",  # version becomes metadata.version
-    "description": "metadata",  # description becomes metadata.description
-}
-
-# Internal-side key → TOML-side key (for collision detection)
-_DENORMALIZE_COLLISIONS = {
-    "global_budget": "budget",
-    "credentials": "credential",
-    "metadata": "version",  # metadata.version becomes top-level version
-}
-
 
 def _require_dict(value: Any, field: str) -> None:
     """Raise ValueError if value is not a dict. Names the field for the operator."""

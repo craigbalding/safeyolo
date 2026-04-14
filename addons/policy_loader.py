@@ -312,6 +312,8 @@ class PolicyLoader:
                 if mt > max_mtime:
                     max_mtime = mt
             except OSError:
+                # Referenced list file missing or unreadable — skip it
+                # for mtime purposes; the loader handles the actual load.
                 pass
         return max_mtime
 

@@ -115,9 +115,11 @@ class DarwinPlatform(AgentPlatform):
                         subprocess.run(["pkill", "-f", f"feth-bridge.*{feth}"],
                                        capture_output=True)
                     except Exception:
+                        # pkill missing or no matches — nothing more to do.
                         pass
                     try:
                         subprocess.run(["sudo", "ifconfig", feth, "destroy"],
                                        capture_output=True)
                     except Exception:
+                        # Interface may already be gone or sudo unavailable.
                         pass
