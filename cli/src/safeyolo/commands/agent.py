@@ -21,7 +21,6 @@ from ..agents_store import remove_agent as _store_remove_agent
 from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
 from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
-from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..snapshot import (
     compute_snapshot_version,
     invalidate_snapshot,
@@ -30,6 +29,7 @@ from ..snapshot import (
     snapshot_path,
     write_snapshot_version,
 )
+from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..vm import (
     _cleanup_feth_bridge,
     _update_agent_map,
@@ -1103,7 +1103,7 @@ def rebuild_snapshot(
     _validate_instance_name(name)
     invalidate_snapshot(name)
     console.print(f"[green]Snapshot invalidated for {name}.[/green]")
-    console.print(f"  Next run will cold-boot and re-capture.")
+    console.print("  Next run will cold-boot and re-capture.")
 
 
 @agent_app.command()
