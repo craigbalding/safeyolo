@@ -6,9 +6,9 @@ name: Blackbox Tests
 #   - Host pytest: Credential routing, network guard via sinkhole inspection
 #   - VM pytest: Network isolation, privilege escalation, key isolation (inside real microVM)
 #
-# These tests require a macOS host with Virtualization.framework (microVM support).
-# They cannot run on GitHub Actions ubuntu runners. Run manually on a Mac or
-# via the hostctl bridge for remote execution.
+# The VM side requires a macOS host with Virtualization.framework. Guest
+# artifacts are built natively on Linux (no Docker) and consumed by the
+# macOS job.
 #
 # See docs/security-testing-design.md for architecture details.
 
@@ -19,9 +19,54 @@ permissions:
   contents: read
 
 jobs:
+  build-artifacts:
+    name: Build Guest Artifacts (Linux arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            mmdebstrap \
+            e2fsprogs \
+            build-essential \
+            bc \
+            flex \
+            bison \
+            libelf-dev \
+            libssl-dev \
+            gcc-aarch64-linux-gnu \
+            busybox-static \
+            pax-utils \
+            cpio \
+            curl \
+            xz-utils
+
+      - name: Build guest artifacts
+        env:
+          BUILD_KERNEL: "1"  # macOS consumer needs kernel + initramfs too
+        run: |
+          cd guest && ./build-all.sh
+
+      - name: Upload guest artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: guest-artifacts
+          path: |
+            guest/out/Image
+            guest/out/initramfs.cpio.gz
+            guest/out/rootfs-base.ext4
+          retention-days: 1
+          if-no-files-found: error
+
   blackbox:
     name: Security Blackbox Tests
     runs-on: macos-latest
+    needs: build-artifacts
     timeout-minutes: 15
 
     steps:
@@ -38,9 +83,18 @@ jobs:
           .venv/bin/pip install -e cli/
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Build guest artifacts
+      - name: Download guest artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: guest-artifacts
+          path: guest/out
+
+      - name: Stage guest artifacts
         run: |
-          cd guest && ./build-all.sh
+          mkdir -p ~/.safeyolo/share
+          cp guest/out/Image ~/.safeyolo/share/
+          cp guest/out/initramfs.cpio.gz ~/.safeyolo/share/
+          cp guest/out/rootfs-base.ext4 ~/.safeyolo/share/
 
       - name: Run blackbox tests
         run: ./tests/blackbox/run-tests.sh --verbose

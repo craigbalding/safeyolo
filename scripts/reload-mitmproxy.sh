@@ -1,12 +1,9 @@
 #!/bin/bash
 #
-# Reload mitmproxy addons
+# Reload mitmproxy addons.
 #
-# With source mounted, just restart the container (no rebuild needed):
-#   docker compose restart safeyolo
-#
-# Or restart just mitmproxy inside the container (faster, drops connections):
-#   docker exec safeyolo /app/scripts/reload-mitmproxy.sh
+# Restarts the mitmproxy process in the local tmux session. Faster than
+# a full `safeyolo stop && safeyolo start`, but drops in-flight connections.
 #
 # NOTE: This script re-runs the exact command from startup.
 # The command is saved to /tmp/mitmproxy-cmd.sh by start-safeyolo.sh.
@@ -15,14 +12,13 @@
 # WARNING: Runtime settings are reset on reload!
 # Any changes made via admin API (warn/block modes, temp allowlists) are lost.
 # SafeYolo returns to startup defaults (warn-only unless SAFEYOLO_BLOCK=true).
-# For persistent blocking mode, set SAFEYOLO_BLOCK=true in docker-compose.yml.
 
 CMD_FILE="/tmp/mitmproxy-cmd.sh"
 
 if [ ! -f "$CMD_FILE" ]; then
     echo "ERROR: $CMD_FILE not found"
     echo "This file is created by start-safeyolo.sh at startup."
-    echo "Try restarting the container instead: docker compose restart safeyolo"
+    echo "Try: safeyolo stop && safeyolo start"
     exit 1
 fi
 

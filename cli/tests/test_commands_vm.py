@@ -1180,9 +1180,11 @@ class TestFirewallSubnetAllocation:
 
 
 class TestGuestImageChecks:
+    """check_guest_images is platform-aware: macOS needs kernel+initramfs+rootfs,
+    Linux needs only rootfs (gVisor ships its own kernel)."""
 
     def test_all_images_present(self, config_dir):
-        """check_guest_images returns True when all three artifacts exist."""
+        """check_guest_images returns True when all three artifacts exist (either platform)."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
@@ -1192,38 +1194,54 @@ class TestGuestImageChecks:
 
         assert check_guest_images() is True
 
-    def test_missing_kernel(self, config_dir):
-        """check_guest_images returns False when kernel is missing."""
+    def test_missing_kernel_on_darwin(self, config_dir):
+        """check_guest_images returns False on macOS when kernel is missing."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
         (share / "initramfs.cpio.gz").touch()
         (share / "rootfs-base.ext4").touch()
 
-        assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is False
 
-    def test_missing_initramfs(self, config_dir):
-        """check_guest_images returns False when initramfs is missing."""
+    def test_missing_initramfs_on_darwin(self, config_dir):
+        """check_guest_images returns False on macOS when initramfs is missing."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
         (share / "Image").touch()
         (share / "rootfs-base.ext4").touch()
 
-        assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is False
 
     def test_missing_rootfs(self, config_dir):
-        """check_guest_images returns False when base rootfs is missing."""
+        """check_guest_images returns False on both platforms when rootfs is missing."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
         (share / "Image").touch()
         (share / "initramfs.cpio.gz").touch()
 
-        assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is False
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is False
+
+    def test_linux_only_needs_rootfs(self, config_dir):
+        """On Linux, rootfs alone is sufficient — gVisor provides its own kernel."""
+        from safeyolo.vm import check_guest_images
+
+        share = config_dir / "share"
+        (share / "rootfs-base.ext4").touch()
+        # No Image, no initramfs.cpio.gz
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is True
 
     def test_guest_image_status_returns_per_artifact(self, config_dir):
-        """guest_image_status returns dict with per-artifact booleans."""
+        """guest_image_status returns dict with per-artifact booleans (no platform dispatch)."""
         from safeyolo.vm import guest_image_status
 
         share = config_dir / "share"

@@ -1,9 +1,15 @@
 #!/bin/bash
 #
 # Build minimal ARM64 Linux kernel for SafeYolo microVMs.
-# Runs in Docker on macOS (cross-compilation via linux/arm64/v8).
+#
+# Runs on Linux only (natively or inside the Lima VM on macOS — see
+# guest/build-all.sh). Cross-compiles to arm64 via native toolchain.
 #
 # Output: out/Image (~10-15MB)
+#
+# Dependencies (install via apt on the host):
+#   build-essential bc flex bison libelf-dev libssl-dev gcc-aarch64-linux-gnu
+#   curl xz-utils
 #
 set -euo pipefail
 
@@ -11,6 +17,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KERNEL_VERSION="${KERNEL_VERSION:-6.12.17}"
 KERNEL_MAJOR="${KERNEL_VERSION%%.*}"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"
+
+# Linux-only guard.
+if [ "$(uname)" != "Linux" ]; then
+    echo "Error: build-kernel.sh runs on Linux only." >&2
+    echo "On macOS, run ./build-all.sh which will shell into a Lima VM." >&2
+    exit 1
+fi
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -20,36 +33,43 @@ if [ -f "$OUTPUT_DIR/Image" ]; then
     exit 0
 fi
 
-echo "=== Building Linux $KERNEL_VERSION (ARM64) ==="
-echo "This runs in Docker and takes a few minutes on first build."
+# Dependency check
+MISSING=()
+for cmd in make bc flex bison curl xz aarch64-linux-gnu-gcc; do
+    command -v "$cmd" >/dev/null || MISSING+=("$cmd")
+done
+# libelf / libssl check via pkg-config so we don't rely on specific header locations
+if command -v pkg-config >/dev/null; then
+    pkg-config --exists libelf || MISSING+=("libelf-dev")
+    pkg-config --exists openssl || MISSING+=("libssl-dev")
+fi
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    echo "Error: missing build dependencies: ${MISSING[*]}" >&2
+    echo "  Debian/Ubuntu: sudo apt-get install build-essential bc flex bison \\" >&2
+    echo "    libelf-dev libssl-dev gcc-aarch64-linux-gnu curl xz-utils pkg-config" >&2
+    exit 1
+fi
 
-docker run --rm --platform linux/arm64/v8 \
-    -v "$SCRIPT_DIR/defconfig:/build/defconfig:ro" \
-    -v "$OUTPUT_DIR:/output" \
-    debian:trixie-slim /bin/bash -c "
-set -euo pipefail
+echo "=== Building Linux $KERNEL_VERSION (ARM64, native cross-compile) ==="
 
-echo '--- Installing build dependencies ---'
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends \
-    build-essential bc flex bison libelf-dev libssl-dev \
-    curl xz-utils ca-certificates >/dev/null
+WORK_DIR="$(mktemp -d -t safeyolo-kernel.XXXXXX)"
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo '--- Downloading kernel source ---'
-cd /tmp
-curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz | tar xJ
-cd linux-${KERNEL_VERSION}
+echo "--- Downloading kernel source ---"
+curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz" \
+    | tar xJ -C "$WORK_DIR"
+KERNEL_SRC="$WORK_DIR/linux-${KERNEL_VERSION}"
 
-echo '--- Configuring kernel ---'
-cp /build/defconfig .config
-make ARCH=arm64 olddefconfig
+echo "--- Configuring kernel ---"
+cp "$SCRIPT_DIR/defconfig" "$KERNEL_SRC/.config"
+make -C "$KERNEL_SRC" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
-echo '--- Building kernel ---'
-make ARCH=arm64 -j\$(nproc) Image 2>&1 | tail -5
+echo "--- Building kernel ---"
+make -C "$KERNEL_SRC" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+    -j"$(nproc)" Image 2>&1 | tail -5
 
-echo '--- Copying output ---'
-cp arch/arm64/boot/Image /output/Image
-echo \"Kernel built: \$(ls -lh /output/Image | awk '{print \$5}')\"
-"
+echo "--- Copying output ---"
+cp "$KERNEL_SRC/arch/arm64/boot/Image" "$OUTPUT_DIR/Image"
+echo "Kernel built: $(ls -lh "$OUTPUT_DIR/Image" | awk '{print $5}')"
 
 echo "=== Kernel ready at $OUTPUT_DIR/Image ==="
