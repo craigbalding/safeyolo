@@ -148,12 +148,32 @@ def prepare_config_share(
     share_dir = get_agent_config_share_dir(name)
     share_dir.mkdir(parents=True, exist_ok=True)
 
-    # Guest init script — served from config share, not baked into rootfs.
+    # Guest init scripts — served from config share, not baked into rootfs.
     # Changes here take effect on next agent run without rootfs rebuild.
-    guest_init_src = Path(__file__).parent / "guest-init.sh"
-    guest_init_dst = share_dir / "guest-init"
-    shutil.copy2(str(guest_init_src), str(guest_init_dst))
-    guest_init_dst.chmod(0o755)
+    # Three scripts split the boot into a snapshottable static phase and
+    # a per-run phase; the orchestrator gates between them on per-run-go.
+    for src_name, dst_name in [
+        ("guest-init.sh", "guest-init"),
+        ("guest-init-static.sh", "guest-init-static"),
+        ("guest-init-per-run.sh", "guest-init-per-run"),
+    ]:
+        src = Path(__file__).parent / src_name
+        dst = share_dir / dst_name
+        shutil.copy2(str(src), str(dst))
+        dst.chmod(0o755)
+
+    # Pre-write the per-run gate so the orchestrator falls straight through
+    # to per-run after static. Snapshot-capture (PR 3) and restore (PR 4)
+    # will instead remove this before VM start and write it at the correct
+    # moment (after snapshot, or after restore). Without this pre-write the
+    # guest would wait 30s before continuing on every cold boot.
+    (share_dir / "per-run-go").write_text("")
+    # Ensure no stale static-init-done from a prior run masks progress —
+    # the orchestrator writes this fresh on every boot.
+    try:
+        (share_dir / "static-init-done").unlink()
+    except FileNotFoundError:
+        pass
 
     # vsock-term binary — cross-compiled, served from config share
     vsock_term_src = config_dir / "bin" / "vsock-term"

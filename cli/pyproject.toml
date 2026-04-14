@@ -61,6 +61,7 @@ packages = ["src/safeyolo"]
 [tool.hatch.build]
 include = [
     "src/safeyolo/**/*.py",
+    "src/safeyolo/*.sh",
     "src/safeyolo/templates/**/*.j2",
     "src/safeyolo/templates/**/*.md",
     "src/safeyolo/templates/**/*.yaml",
