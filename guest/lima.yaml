@@ -1,0 +1,126 @@
+# Lima VM config for SafeYolo guest-artifact builds on macOS.
+#
+# This VM is used by guest/build-all.sh on macOS to run the Linux-only
+# build scripts (mmdebstrap, debootstrap, native Linux cross-compile).
+#
+# SECURITY: mounts are explicit and narrow. Lima's default template mounts
+# ~/ read-only into the VM, which would expose SSH keys, browser data, and
+# credentials to the build environment. We override the defaults by declaring
+# our own mounts: block — only guest/ is exposed, writable, for artifact output.
+#
+# On Linux hosts, build-all.sh runs the scripts natively and never creates
+# this VM.
+
+minimumLimaVersion: 2.0.0
+
+# Inherit Lima's maintained Debian 13 image list.
+#
+# This pulls in pinned Debian release images (e.g. trixie/20260327-2429/...)
+# with SHA-512 digests — Lima maintainers update the pin when Debian cuts
+# new point releases. We get content-verified downloads instead of relying
+# solely on cloud.debian.org's TLS cert.
+#
+# We import only _images/debian-13, NOT the top-level debian-13 template,
+# because the top-level template also pulls in _default/mounts which would
+# re-add the home-directory passthrough we explicitly don't want.
+#
+# Daily fallback images (no digest) are included by Lima's template in case
+# the pinned release ever goes away — those would still be TLS-only, but
+# that's a degraded fallback, not the primary path.
+base:
+- template:_images/debian-13
+
+# CPU/memory for the build VM. mmdebstrap benefits from parallelism; kernel
+# compile benefits from more cores and RAM.
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+# REPO_DIR param: absolute path to the SafeYolo repo root.
+#
+# Lima mount locations require absolute paths. Since the repo lives wherever
+# the user cloned it, build-all.sh sets this at start time via:
+#   limactl start --set='.param.REPO_DIR = "<abs path>"'
+#
+# Leaving the default empty means a direct `limactl start` without --set
+# will fail loudly (mount location = "/guest" doesn't exist) rather than
+# silently break in surprising ways.
+param:
+  REPO_DIR: ""
+
+# Narrow mounts. No home directory passthrough.
+#
+# Mounts only guest/ + vm/ — not the whole repo. Minimizes blast radius if
+# anything malicious runs during an mmdebstrap customize-hook. cli/, addons/,
+# tests/ etc. are not visible inside the VM.
+mounts:
+  - location: "{{.Param.REPO_DIR}}/guest"
+    writable: true
+    mountPoint: "/build/guest"
+  # vm/Makefile's guest-tools target cross-compiles vsock-term into vm/.build/.
+  - location: "{{.Param.REPO_DIR}}/vm"
+    writable: true
+    mountPoint: "/build/vm"
+
+# Disable all port forwarding — this is a build VM with no services that
+# need to be reachable from the host. Silences the mDNS (5353) / LLMNR (5355)
+# auto-forwarding noise and the "address already in use" warnings.
+#
+# The `ignore` rule requires both `guestIP` and `proto: any` to match every
+# listening port Lima would auto-forward (see lima-vm/lima#2901). Lima 2.x
+# also auto-forwards 127.0.0.1 bindings, so we cover both IPs.
+# Port 22 (SSH) is always forwarded regardless — needed for `limactl shell`.
+portForwards:
+  - guestIP: "0.0.0.0"
+    proto: any
+    ignore: true
+  - guestIP: "127.0.0.1"
+    proto: any
+    ignore: true
+
+# Disable containerd — we don't run containers inside the VM, only native
+# Linux build tools. Saves memory and startup time.
+containerd:
+  system: false
+  user: false
+
+# Pre-install build dependencies so subsequent `./build-all.sh` invocations
+# are fast. First-run provision takes ~2-3 min.
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq
+      apt-get install -y -qq --no-install-recommends \
+        mmdebstrap \
+        e2fsprogs \
+        build-essential \
+        bc \
+        flex \
+        bison \
+        libelf-dev \
+        libssl-dev \
+        gcc-aarch64-linux-gnu \
+        busybox-static \
+        pax-utils \
+        cpio \
+        curl \
+        ca-certificates \
+        xz-utils \
+        sudo
+
+# Health probe — confirms mmdebstrap is callable before build-all.sh shells in.
+probes:
+  - description: "build dependencies installed"
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      command -v mmdebstrap
+      command -v aarch64-linux-gnu-gcc
+      command -v busybox
+    hint: |
+      Build dependencies didn't install cleanly. Try:
+        limactl delete safeyolo-builder
+        ./guest/build-all.sh   # recreates the VM

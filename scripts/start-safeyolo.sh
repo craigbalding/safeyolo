@@ -6,7 +6,7 @@
 # with native addon chain. JSONL logs go to file.
 #
 # For interactive TUI mode: SAFEYOLO_TUI=true
-#   Runs mitmproxy in tmux, attach with: docker exec -it safeyolo tmux attach
+#   Runs mitmproxy in tmux; attach locally with `tmux attach -t proxy`.
 #
 
 set -e
@@ -47,7 +47,7 @@ if ! touch "${CERT_DIR}/.write-test" 2>/dev/null; then
     echo "ERROR: Cannot write to ${CERT_DIR}"
     echo "  If using non-root (SAFEYOLO_UID/GID), the safeyolo-certs volume"
     echo "  may have root ownership from a previous run."
-    echo "  Fix: docker volume rm safeyolo-certs && docker volume create safeyolo-certs"
+    echo "  Fix: check that ${CERT_DIR} is writable by the invoking user."
     exit 1
 fi
 rm -f "${CERT_DIR}/.write-test"
@@ -372,7 +372,7 @@ fi
 if [ "${SAFEYOLO_TUI}" = "true" ]; then
     echo ""
     echo "=== Starting in TUI mode (mitmproxy in tmux) ==="
-    echo "Attach to TUI: docker exec -it safeyolo tmux attach"
+    echo "Attach to TUI: tmux attach -t proxy"
 
     # TUI mode: load flow pruner to prevent unbounded memory growth.
     # mitmproxy keeps every flow in memory for the scrollable list.
@@ -432,7 +432,7 @@ if [ "${SAFEYOLO_TUI}" = "true" ]; then
 
     echo "Network guard confirmed in block mode"
 
-    # Tail JSONL logs to stdout (for docker logs -f)
+    # Tail JSONL logs to stdout (viewable via `safeyolo logs --follow` or tail -f)
     echo "SafeYolo ready - tailing JSONL logs to stdout"
     tail -f "${LOG_DIR}/safeyolo.jsonl" &
     TAIL_PID=$!
