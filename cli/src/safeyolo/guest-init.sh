@@ -24,11 +24,19 @@
 #   - restore: restores a snapshot (guest wakes up in the wait loop),
 #     then writes per-run-go.
 #
+# Diagnostics: phase-boundary markers are written to /dev/console (the
+# only channel that survives a save/restore cycle cleanly — the VirtioFS
+# config share becomes unreliable for writes post-resume). A host-side
+# console.log captures these. With SAFEYOLO_DEBUG=1 (marker file
+# /safeyolo/debug-mode), per-iteration tracing is also emitted.
+#
 # Served from the VirtioFS config share, not baked into the rootfs, so
 # changes here take effect on the next agent run without a rootfs rebuild.
 #
 set -e
 export DEBIAN_FRONTEND=noninteractive
+
+echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)" > /dev/console 2>/dev/null || true
 
 /safeyolo/guest-init-static
 
@@ -44,11 +52,30 @@ echo "ready" > /safeyolo/static-init-done 2>/dev/null || true
 # practice (per-run-go is typically pre-written by the CLI).
 waited=0
 while [ ! -f /safeyolo/per-run-go ] && [ "$waited" -lt 300 ]; do
+    # Check the debug-mode marker inside the loop rather than once at
+    # startup: on restore the orchestrator resumed from a capture-time
+    # snapshot where debug mode may have been off, but the host may have
+    # set SAFEYOLO_DEBUG=1 for this restore run — we want the tracing to
+    # kick in on the restore side. One extra stat per 100ms is cheap.
+    if [ -f /safeyolo/debug-mode ]; then
+        echo "[orch t=${waited}]" > /dev/console 2>/dev/null || true
+    fi
     sleep 0.1
     waited=$((waited + 1))
 done
+echo "[orch exit] waited=${waited} per-run-go=$([ -f /safeyolo/per-run-go ] && echo yes || echo no)" > /dev/console 2>/dev/null || true
 if [ ! -f /safeyolo/per-run-go ]; then
     echo "Warning: /safeyolo/per-run-go did not appear within 30s, continuing" >&2
 fi
 
-exec /safeyolo/guest-init-per-run
+# Prefer the tmpfs copy that static staged — it's in the captured memory
+# image and thus readable post-restore even when VirtioFS file reads are
+# unreliable (as observed: open+read of /safeyolo/guest-init-per-run
+# returns ENOENT on some restores, which kills PID 1 via exec failure
+# and kernel-panics with "Attempted to kill init").
+PER_RUN_SCRIPT=/run/safeyolo/guest-init-per-run
+if [ ! -x "$PER_RUN_SCRIPT" ]; then
+    PER_RUN_SCRIPT=/safeyolo/guest-init-per-run
+fi
+echo "[orch exec] $PER_RUN_SCRIPT" > /dev/console 2>/dev/null || true
+exec "$PER_RUN_SCRIPT"

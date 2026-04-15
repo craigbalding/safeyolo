@@ -846,10 +846,12 @@ class TestStartVm:
         idx = captured_cmd.index("--snapshot-on-signal")
         assert captured_cmd[idx + 1] == str(snap_path)
 
-    def test_restore_from_path_overrides_rootfs_with_clone(self, tmp_config_dir, monkeypatch):
-        """Restore requires the APFS clone that pairs with the snapshot;
-        start_vm must replace --rootfs with <snapshot>.rootfs so VZ sees
-        the byte-identical disk state it had at save time."""
+    def test_restore_clones_rootfs_to_per_run_working_copy(self, tmp_config_dir, monkeypatch):
+        """Restore must not pass the pristine clone directly as --rootfs:
+        the live restored VM writes to its disk, and VZ requires the
+        rootfs to match its save-time state. Instead, start_vm clones
+        snapshot.bin.rootfs to a disposable per-run .run copy and uses
+        that. The pristine clone stays untouched for the next restore."""
         captured_cmd = []
 
         def mock_popen(cmd, **kw):
@@ -858,20 +860,63 @@ class TestStartVm:
             proc.pid = 1
             return proc
 
+        cp_calls: list[list[str]] = []
+
+        def mock_cp_run(cmd, **kw):
+            # Simulate successful `cp -c` by copying the file content.
+            cp_calls.append(list(cmd))
+            if cmd[0] == "cp" and "-c" in cmd:
+                src, dst = cmd[-2], cmd[-1]
+                Path(dst).write_bytes(Path(src).read_bytes())
+                return MagicMock(returncode=0, stdout=b"", stderr=b"")
+            return MagicMock(returncode=0)
+
         monkeypatch.setattr("subprocess.Popen", mock_popen)
+        monkeypatch.setattr("subprocess.run", mock_cp_run)
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
-        clone_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
-        clone_path.write_bytes(b"clone")
+        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+        pristine.write_bytes(b"pristine-clone")
 
         start_vm("agent1", "/workspace", restore_from_path=snap_path)
 
-        assert "--restore-from" in captured_cmd
-        idx = captured_cmd.index("--restore-from")
-        assert captured_cmd[idx + 1] == str(snap_path)
-
-        # --rootfs must point at the clone, not the live agent rootfs.
+        # --rootfs must point at the per-run working copy, NOT the pristine clone.
         rootfs_idx = captured_cmd.index("--rootfs")
-        assert captured_cmd[rootfs_idx + 1] == str(clone_path)
+        working_copy = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.run"
+        assert captured_cmd[rootfs_idx + 1] == str(working_copy)
+        # Working copy must exist and match pristine at invocation time.
+        assert working_copy.exists()
+        assert working_copy.read_bytes() == b"pristine-clone"
+        # Pristine clone must not have been touched (still the same bytes).
+        assert pristine.read_bytes() == b"pristine-clone"
+        # cp -c must have been attempted (APFS clonefile fast path).
+        assert any("cp" in c and "-c" in c for c in cp_calls)
+
+    def test_restore_working_copy_overwrites_stale_one(self, tmp_config_dir, monkeypatch):
+        """A .run file left behind by a previous restore session must be
+        replaced, not appended to — otherwise subsequent restores reuse
+        a rootfs that drifted from save-time state."""
+        def mock_popen(cmd, **kw):
+            return MagicMock(pid=1)
+
+        def mock_cp_run(cmd, **kw):
+            if cmd[0] == "cp" and "-c" in cmd:
+                src, dst = cmd[-2], cmd[-1]
+                Path(dst).write_bytes(Path(src).read_bytes())
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        monkeypatch.setattr("subprocess.run", mock_cp_run)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+        pristine.write_bytes(b"pristine")
+        stale_run = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.run"
+        stale_run.write_bytes(b"STALE-FROM-PRIOR-RESTORE")
+
+        start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+        assert stale_run.exists()
+        assert stale_run.read_bytes() == b"pristine"
 
     def test_restore_without_clone_raises(self, tmp_config_dir, monkeypatch):
         """If the paired clone is missing, restore can't possibly succeed —

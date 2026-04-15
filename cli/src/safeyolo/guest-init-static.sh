@@ -16,6 +16,8 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
+echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
+
 # --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
@@ -102,3 +104,18 @@ VM_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo "")
 if [ -n "$VM_IP" ]; then
     echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
 fi
+
+# Stage guest-init-per-run into tmpfs so the orchestrator has something
+# to exec after a restore. VirtioFS file reads are unreliable post-
+# resume in this framework (stat works via cached dentry, but open+read
+# may fail — observed as exit 127 when exec'ing a /safeyolo/ path,
+# which triggers a kernel panic in init). /run is tmpfs, part of the
+# captured memory image, so the staged copy survives the save/restore
+# round trip.
+mkdir -p /run/safeyolo 2>/dev/null || true
+if [ -f /safeyolo/guest-init-per-run ]; then
+    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run 2>/dev/null || true
+    chmod +x /run/safeyolo/guest-init-per-run 2>/dev/null || true
+fi
+
+echo "[static end] pid=$$" > /dev/console 2>/dev/null || true

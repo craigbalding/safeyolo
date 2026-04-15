@@ -166,12 +166,19 @@ def is_snapshot_valid(name: str, expected: dict) -> bool:
 
 def invalidate_snapshot(name: str) -> None:
     """Best-effort delete of every snapshot artefact for an agent.
-    Leaves the agent's other state (rootfs, config-share) alone."""
+    Leaves the agent's other state (rootfs, config-share) alone.
+
+    The `.run` working copy — a per-restore clone of the pristine rootfs
+    that start_vm creates so the restored VM doesn't corrupt the
+    pristine clone — is also removed here. It's recreated on the next
+    restore and has no meaning after a snapshot is invalidated."""
+    agent_dir = get_agents_dir() / name
     for path in (
         snapshot_path(name),
         snapshot_sidecar_path(name),
         snapshot_rootfs_clone_path(name),
         snapshot_version_path(name),
+        agent_dir / "snapshot.bin.run",
     ):
         try:
             path.unlink(missing_ok=True)

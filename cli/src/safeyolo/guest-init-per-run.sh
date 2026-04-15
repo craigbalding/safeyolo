@@ -18,6 +18,8 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
+echo "[per-run start] pid=$$" > /dev/console 2>/dev/null || true
+
 # --------------------------------------------------------------------------
 # 0. Post-restore fixups (no-ops on cold boot)
 # --------------------------------------------------------------------------
@@ -34,6 +36,7 @@ ls /safeyolo >/dev/null 2>&1 || true
 # than racing on the stale vm-ip file that persists across runs. Written
 # after the VirtioFS readdir above so the host sees the write promptly.
 echo "$(date +%s)" > /safeyolo/per-run-started 2>/dev/null || true
+echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # 1. Configure environment

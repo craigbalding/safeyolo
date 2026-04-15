@@ -139,6 +139,7 @@ def prepare_config_share(
     gateway_ip: str = "192.168.65.1",
     guest_ip: str = "192.168.65.2",
     pre_write_per_run_go: bool = True,
+    debug_mode: bool = False,
 ) -> Path:
     """Create the config share directory for a VM.
 
@@ -187,6 +188,18 @@ def prepare_config_share(
     for marker in ("static-init-done", "per-run-started"):
         try:
             (share_dir / marker).unlink()
+        except FileNotFoundError:
+            pass
+
+    # Debug-mode marker — presence enables per-iteration guest tracing.
+    # Checked by guest-init orchestrator (which runs before agent.env is
+    # sourced, so a file marker is cleaner than an env var).
+    debug_marker = share_dir / "debug-mode"
+    if debug_mode:
+        debug_marker.write_text("")
+    else:
+        try:
+            debug_marker.unlink()
         except FileNotFoundError:
             pass
 
@@ -358,15 +371,43 @@ def start_vm(
             raise VMError(f"{label} not found at {path}\nBuild guest images first.")
 
     # On restore, VZ requires the disk image to match byte-for-byte the
-    # state it had at save time. The helper captured a clone at save time
-    # (alongside the snapshot file) — use that instead of the live rootfs.
+    # state it had at save time. snapshot.bin.rootfs is that pristine
+    # clone — but during a restore session the guest writes to its
+    # rootfs, and those writes would corrupt the pristine clone if we
+    # passed it directly as --rootfs. Next restore would then hit EXT4
+    # journal replay / inode bitmap inconsistencies against the memory
+    # image's expected state.
+    #
+    # Solution: clone the pristine clone to a per-run working copy and
+    # use that as --rootfs. APFS clonefile makes this ~instant (tens of
+    # ms regardless of logical size). The working copy is disposable —
+    # next restore starts from the pristine clone again.
     if restore_from_path is not None:
-        rootfs = Path(f"{restore_from_path}.rootfs")
-        if not rootfs.exists():
+        pristine = Path(f"{restore_from_path}.rootfs")
+        if not pristine.exists():
             raise VMError(
-                f"Snapshot rootfs clone missing: {rootfs}\n"
+                f"Snapshot rootfs clone missing: {pristine}\n"
                 f"Restore cannot proceed without the paired clone."
             )
+        working = Path(f"{restore_from_path}.run")
+        # Discard any residue from a previous restore session.
+        try:
+            working.unlink()
+        except FileNotFoundError:
+            pass
+        # APFS clone (cp -c). Falls back to a deep copy on non-APFS.
+        cp_result = subprocess.run(
+            ["cp", "-c", str(pristine), str(working)],
+            capture_output=True,
+        )
+        if cp_result.returncode != 0:
+            try:
+                shutil.copy2(str(pristine), str(working))
+            except Exception as err:
+                raise VMError(
+                    f"Failed to prepare restore working copy at {working}: {err}"
+                ) from err
+        rootfs = working
 
     config_share = get_agent_config_share_dir(name)
 

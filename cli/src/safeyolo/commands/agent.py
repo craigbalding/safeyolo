@@ -425,6 +425,7 @@ def _run_agent(
     # so the guest pauses at the static/per-run boundary long enough for
     # us to send SIGUSR1. Restore and passthrough pre-write — on restore
     # the snapshotted guest wakes up on the gate and sees it immediately.
+    _debug_mode = os.environ.get("SAFEYOLO_DEBUG") == "1"
     def _do_prepare_config_share(for_mode: str) -> None:
         prepare_config_share(
             name=name,
@@ -442,6 +443,7 @@ def _run_agent(
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
             pre_write_per_run_go=(for_mode != "capture"),
+            debug_mode=_debug_mode,
         )
 
     try:
@@ -511,13 +513,26 @@ def _run_agent(
             per_run_started = config_share_dir / "per-run-started"
             deadline = _time.time() + 8.0
             restore_ok = False
-            while _time.time() < deadline:
-                if not plat.is_sandbox_running(name):
-                    break
-                if per_run_started.exists():
-                    restore_ok = True
-                    break
-                _time.sleep(0.05)
+            # Diagnostic escape hatch: skip the per-run-started gate and
+            # treat a helper alive for 3s as successful. For exploring
+            # whether the guest is actually usable post-restore even
+            # when the marker mechanism isn't propagating. Gated behind
+            # SAFEYOLO_DEBUG=1 to keep production from accidentally
+            # shipping a run that skipped a readiness check.
+            _debug_enabled = os.environ.get("SAFEYOLO_DEBUG") == "1"
+            _skip_marker = _debug_enabled and os.environ.get("SAFEYOLO_RESTORE_SKIP_MARKER") == "1"
+            if _skip_marker:
+                import time as _t2
+                _t2.sleep(3.0)
+                restore_ok = plat.is_sandbox_running(name)
+            else:
+                while _time.time() < deadline:
+                    if not plat.is_sandbox_running(name):
+                        break
+                    if per_run_started.exists():
+                        restore_ok = True
+                        break
+                    _time.sleep(0.05)
 
             if restore_ok:
                 console.print(f" {guest_ip}")
