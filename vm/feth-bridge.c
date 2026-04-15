@@ -31,6 +31,19 @@
 
 static volatile sig_atomic_t running = 1;
 
+/*
+ * Gate lifecycle chatter ("attached to fethN", "forwarding fd=...",
+ * "socket closed", "shutting down") behind SAFEYOLO_DEBUG=1. In
+ * interactive mode the helper inherits the user's terminal, and these
+ * messages previously leaked through on every agent run. Error paths
+ * (BPF open failures, BIOCSETIF errors, invalid fd, hangups) stay
+ * unconditional — when something's wrong the user needs to see it.
+ */
+static int debug_enabled = 0;
+
+#define LOG_INFO(fmt, ...) \
+    do { if (debug_enabled) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
+
 static void handle_signal(int sig) {
     (void)sig;
     running = 0;
@@ -77,11 +90,14 @@ static int open_bpf(const char *ifname) {
 
     unsigned int buflen;
     ioctl(fd, BIOCGBLEN, &buflen);
-    fprintf(stderr, "feth-bridge: attached to %s (bpf buf=%u)\n", ifname, buflen);
+    LOG_INFO("feth-bridge: attached to %s (bpf buf=%u)\n", ifname, buflen);
     return fd;
 }
 
 int main(int argc, char *argv[]) {
+    const char *debug_env = getenv("SAFEYOLO_DEBUG");
+    debug_enabled = (debug_env != NULL && strcmp(debug_env, "1") == 0);
+
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <socket-fd> <feth-interface>\n", argv[0]);
         return 1;
@@ -105,7 +121,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, handle_signal);
     signal(SIGPIPE, SIG_IGN);
 
-    fprintf(stderr, "feth-bridge: forwarding fd=%d <-> %s\n", sock_fd, ifname);
+    LOG_INFO("feth-bridge: forwarding fd=%d <-> %s\n", sock_fd, ifname);
 
     uint8_t sock_buf[MAX_FRAME_SIZE];
     uint8_t *bpf_buf = malloc(bpf_buflen);
@@ -132,7 +148,7 @@ int main(int argc, char *argv[]) {
             if (n > 0) {
                 write(bpf_fd, sock_buf, n);
             } else if (n == 0) {
-                fprintf(stderr, "feth-bridge: socket closed\n");
+                LOG_INFO("feth-bridge: socket closed\n");
                 break;
             }
         }
@@ -162,7 +178,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    fprintf(stderr, "feth-bridge: shutting down\n");
+    LOG_INFO("feth-bridge: shutting down\n");
     free(bpf_buf);
     close(bpf_fd);
     close(sock_fd);
