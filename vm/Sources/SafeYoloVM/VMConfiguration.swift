@@ -26,9 +26,14 @@ struct VMConfiguration {
     ///   and pass it here — VZ requires the restored VM to carry the SAME
     ///   machine identity it had at save time, or `restoreMachineStateFrom`
     ///   fails with EINVAL ("invalid argument").
+    /// - Parameter macAddress: Optional explicit MAC for the virtio-net
+    ///   device. Same contract as `machineIdentifier` — defaults to a new
+    ///   random MAC per process, and restore fails with EINVAL unless the
+    ///   same MAC is pinned back into the config.
     static func build(
         from config: RunConfig,
-        machineIdentifier: VZGenericMachineIdentifier? = nil
+        machineIdentifier: VZGenericMachineIdentifier? = nil,
+        macAddress: VZMACAddress? = nil
     ) throws -> VZVirtualMachineConfiguration {
         // Validate file paths exist
         for (path, label) in [
@@ -74,7 +79,7 @@ struct VMConfiguration {
         // FileHandle networking (feth-based isolation)
         // The caller must have created a socketpair and passed the VM-side fd
         if let netFD = config.netSocketFD {
-            vmConfig.networkDevices = [createFileHandleNetworkDevice(vmSocketFD: netFD)]
+            vmConfig.networkDevices = [createFileHandleNetworkDevice(vmSocketFD: netFD, macAddress: macAddress)]
         }
 
         // VirtioFS shares
@@ -148,10 +153,19 @@ struct VMConfiguration {
     /// Create a network device backed by a Unix datagram socket.
     /// The VM sends/receives raw Ethernet frames on the socket.
     /// The other end of the socketpair goes to feth-bridge for forwarding to a feth interface.
-    static func createFileHandleNetworkDevice(vmSocketFD: Int32) -> VZVirtioNetworkDeviceConfiguration {
+    ///
+    /// - Parameter macAddress: Optional explicit MAC. Must match what was
+    ///   in effect at save time, otherwise VZ rejects the restore.
+    static func createFileHandleNetworkDevice(
+        vmSocketFD: Int32,
+        macAddress: VZMACAddress? = nil
+    ) -> VZVirtioNetworkDeviceConfiguration {
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         let fileHandle = FileHandle(fileDescriptor: vmSocketFD, closeOnDealloc: true)
         networkDevice.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: fileHandle)
+        if let mac = macAddress {
+            networkDevice.macAddress = mac
+        }
         return networkDevice
     }
 

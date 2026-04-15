@@ -498,13 +498,26 @@ def _run_agent(
             # rejection causes safeyolo-vm to exit 75 within ~500ms. Give
             # it 8s total to account for slow disks/cold cache, then
             # treat a stopped sandbox as a restore failure.
+            #
+            # Note on vm-ip: it's written by the guest's static phase at
+            # FIRST capture, persists across runs (host-side config share),
+            # and its content is stable (same agent_index → same guest_ip).
+            # So on restore the file is already there before the helper has
+            # even parsed its args. We use it as a readiness hint, then
+            # settle briefly to catch a helper that goes on to crash on
+            # VZ's "invalid argument" a few hundred ms later.
             deadline = _time.time() + 8.0
             restore_ok = False
             while _time.time() < deadline:
                 if not plat.is_sandbox_running(name):
                     break
                 if ip_file.exists() and ip_file.read_text().strip():
-                    restore_ok = True
+                    # Settle: give the helper long enough to commit to the
+                    # restore (or crash). VZ rejections surface within
+                    # ~500ms; 750ms leaves headroom without adding much to
+                    # the user-visible restore time.
+                    _time.sleep(0.75)
+                    restore_ok = plat.is_sandbox_running(name)
                     break
                 _time.sleep(0.05)
 
