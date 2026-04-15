@@ -248,6 +248,12 @@ def prepare_config_share(
         f"NETMASK=255.255.255.0\n"
     )
 
+    # Agent name → guest hostname. Read by guest-init-static which calls
+    # `hostname <name>` and writes /etc/hostname. Agents in the Docker
+    # era inherited container name as hostname automatically; the
+    # VM-based stack needs to set it explicitly.
+    (share_dir / "agent-name").write_text(name)
+
     # CA certificate
     ca_cert = config_dir / "certs" / "mitmproxy-ca-cert.pem"
     if ca_cert.exists():

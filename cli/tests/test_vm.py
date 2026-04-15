@@ -417,6 +417,16 @@ class TestPrepareConfigShare:
             "NETMASK=255.255.255.0\n"
         )
 
+    def test_agent_name_file_written_for_guest_hostname(self, tmp_config_dir):
+        """Guest reads /safeyolo/agent-name and calls `hostname <name>` in
+        static phase so the VM identifies itself as its agent name."""
+        share = prepare_config_share("claude-snaptest", "/workspace")
+        assert (share / "agent-name").read_text() == "claude-snaptest"
+
+    def test_agent_name_file_matches_name_argument(self, tmp_config_dir):
+        share = prepare_config_share("myagent", "/workspace")
+        assert (share / "agent-name").read_text() == "myagent"
+
     def test_agent_env_with_all_parameters(self, tmp_config_dir):
         share = prepare_config_share(
             "agent1", "/workspace",
