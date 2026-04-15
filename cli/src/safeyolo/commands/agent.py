@@ -193,6 +193,9 @@ def _capture_snapshot_blocking(
         try:
             per_run_go.write_text("")
         except OSError:
+            # Best-effort: if we can't write the gate here, the guest's
+            # orchestrator will time out on its 30s wait and proceed
+            # regardless. The warning below is what actually matters.
             pass
         log.warning("snapshot capture skipped: %s", note)
         return False
@@ -398,9 +401,10 @@ def _run_agent(
     # Snapshot mode decision (macOS only for now — Linux is always
     # passthrough until PR 5 adds runsc checkpoint/restore).
     #
-    # capture      — no valid snapshot on disk; we'll take one this run.
-    # passthrough  — existing valid snapshot (PR 4 will turn this into
-    #                restore), or --no-snapshot, or unsupported platform.
+    # restore      — valid snapshot on disk; resume from it (fast path).
+    # capture      — no valid snapshot; cold-boot and take one.
+    # passthrough  — --no-snapshot or unsupported platform; cold-boot
+    #                with no snapshot interaction.
     cpus_for_run = 4
     memory_for_run = 4096
     snapshot_version: dict | None = None
@@ -413,16 +417,19 @@ def _run_agent(
             guest_ip=guest_ip,
         )
         if is_snapshot_valid(name, snapshot_version):
-            # PR 4 restores here; PR 3 just cold-boots. Snapshot files
-            # stay on disk untouched — next run after PR 4 picks them up.
-            snapshot_mode = "passthrough"
+            snapshot_mode = "restore"
         else:
             snapshot_mode = "capture"
             # Stale/invalid metadata would confuse a later restore.
             invalidate_snapshot(name)
 
-    # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions)
-    try:
+    # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions).
+    # Capture mode writes per-run-go itself, after snapshot completes,
+    # so the guest pauses at the static/per-run boundary long enough for
+    # us to send SIGUSR1. Restore and passthrough pre-write — on restore
+    # the snapshotted guest wakes up on the gate and sees it immediately.
+    _debug_mode = os.environ.get("SAFEYOLO_DEBUG") == "1"
+    def _do_prepare_config_share(for_mode: str) -> None:
         prepare_config_share(
             name=name,
             workspace_path=str(workspace_path),
@@ -438,11 +445,12 @@ def _run_agent(
             auto_args=auto_args,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
-            # Capture mode writes per-run-go itself, after snapshot completes,
-            # so the guest pauses at the static/per-run boundary long enough
-            # for us to send SIGUSR1.
-            pre_write_per_run_go=(snapshot_mode != "capture"),
+            pre_write_per_run_go=(for_mode != "capture"),
+            debug_mode=_debug_mode,
         )
+
+    try:
+        _do_prepare_config_share(snapshot_mode)
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
@@ -462,61 +470,147 @@ def _run_agent(
     run_background = detach
 
     write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} started", agent=name)
+    exit_code = 0
     try:
-        # Show progress as the sandbox boots
-        boot_label = "Booting VM (first-time snapshot)" if snapshot_mode == "capture" else "Booting VM"
-        console.print(f"  {boot_label}...", end="")
-        config_share = get_agent_config_share_dir(name)
-        capture_path = snapshot_path(name) if snapshot_mode == "capture" else None
-        helper_pid = plat.start_sandbox(
-            name=name,
-            workspace_path=str(workspace_path),
-            config_share=config_share,
-            fw_alloc=fw_alloc,
-            cpus=cpus_for_run,
-            memory_mb=memory_for_run,
-            extra_shares=host_shares if host_shares else None,
-            background=run_background,
-            snapshot_capture_path=capture_path,
-        )
-        _update_agent_map(name, ip=guest_ip)
-
-        # Monitor boot progress by watching config share for milestones
         import time as _time
         config_share_dir = get_agent_config_share_dir(name)
+        config_share = config_share_dir
         ip_file = config_share_dir / "vm-ip"
 
-        if snapshot_mode == "capture":
-            # Capture happens between static and per-run — static has
-            # already written vm-ip by the time we get here, so the
-            # subsequent vm-ip poll will complete on the first iteration.
-            _capture_snapshot_blocking(
+        # --- Restore attempt (macOS warm-boot fast path) -------------------
+        # If the valid-snapshot path fails — typically because VZ rejects
+        # the save data (exit 75 from safeyolo-vm) — we invalidate the
+        # snapshot, re-prepare the config share for capture, and fall
+        # through to the cold-boot path below. The user's agent always
+        # comes up; a broken snapshot never blocks startup.
+        if snapshot_mode == "restore":
+            console.print("  Restoring snapshot...", end="")
+            restore_src = snapshot_path(name)
+            # No helper_pid binding here: restore doesn't need SIGUSR1
+            # (that's capture-mode only). Liveness is checked via
+            # plat.is_sandbox_running(name), which reads the pid file.
+            plat.start_sandbox(
                 name=name,
-                helper_pid=helper_pid,
-                config_share_dir=config_share_dir,
-                version=snapshot_version or {},
-                plat=plat,
+                workspace_path=str(workspace_path),
+                config_share=config_share,
+                fw_alloc=fw_alloc,
+                cpus=cpus_for_run,
+                memory_mb=memory_for_run,
+                extra_shares=host_shares if host_shares else None,
+                background=run_background,
+                restore_from_path=restore_src,
             )
+            _update_agent_map(name, ip=guest_ip)
 
-        # Wait for VM IP (indicates guest init is running).
-        # Poll fast (50ms) for the first 2s so the host detects the file
-        # within ~50ms instead of waiting up to 500ms; fall back to 0.5s
-        # after that to keep the long-tail wait cheap.
-        deadline = _time.time() + 120
-        fast_until = _time.time() + 2.0
-        while _time.time() < deadline and plat.is_sandbox_running(name):
-            if ip_file.exists() and ip_file.read_text().strip():
-                break
-            _time.sleep(0.05 if _time.time() < fast_until else 0.5)
+            # Definitive readiness: the guest's per-run phase writes
+            # /safeyolo/per-run-started as its first real action, after
+            # forcing a VirtioFS readdir so the host sees the write
+            # promptly. prepare_config_share unlinked any stale copy, so
+            # appearance of this file means the restored VM actually
+            # resumed and got into per-run — no race against stale
+            # vm-ip, no need for a settle wait.
+            #
+            # Budget: 8s. On success the happy path is ~1-2s (VZ restore
+            # + VirtioFS dentry cache TTL + per-run startup). A failed
+            # restore causes safeyolo-vm to exit within ~500ms (sidecar
+            # mismatch or VZ rejection), so is_sandbox_running catches
+            # that quickly. 8s leaves headroom for slow disks / first-
+            # boot cold caches without dragging out the fallback.
+            per_run_started = config_share_dir / "per-run-started"
+            deadline = _time.time() + 8.0
+            restore_ok = False
+            # Diagnostic escape hatch: skip the per-run-started gate and
+            # treat a helper alive for 3s as successful. For exploring
+            # whether the guest is actually usable post-restore even
+            # when the marker mechanism isn't propagating. Gated behind
+            # SAFEYOLO_DEBUG=1 to keep production from accidentally
+            # shipping a run that skipped a readiness check.
+            _debug_enabled = os.environ.get("SAFEYOLO_DEBUG") == "1"
+            _skip_marker = _debug_enabled and os.environ.get("SAFEYOLO_RESTORE_SKIP_MARKER") == "1"
+            if _skip_marker:
+                import time as _t2
+                _t2.sleep(3.0)
+                restore_ok = plat.is_sandbox_running(name)
+            else:
+                while _time.time() < deadline:
+                    if not plat.is_sandbox_running(name):
+                        break
+                    if per_run_started.exists():
+                        restore_ok = True
+                        break
+                    _time.sleep(0.05)
 
-        if not plat.is_sandbox_running(name):
-            console.print(" [red]failed[/red]")
-            console.print(f"  Check logs: ~/.safeyolo/agents/{name}/serial.log")
-            exit_code = 1
-        else:
-            console.print(f" {guest_ip}")
+            if restore_ok:
+                console.print(f" {guest_ip}")
+            else:
+                console.print(" [yellow]failed[/yellow]")
+                console.print("  [yellow]Snapshot invalidated; cold-booting.[/yellow]")
+                # Make sure the helper is fully cleaned up before we
+                # restart. stop_sandbox is a no-op if it already exited.
+                plat.stop_sandbox(name)
+                invalidate_snapshot(name)
+                snapshot_mode = "capture"
+                # Re-prepare the share so per-run-go isn't pre-written —
+                # capture needs the guest to pause on the gate.
+                try:
+                    _do_prepare_config_share("capture")
+                except Exception as err:
+                    console.print(f"[red]Failed to re-prepare VM config:[/red] {err}")
+                    raise typer.Exit(1)
 
-            # Watch for agent install (first run only)
+        # --- Cold boot (capture or passthrough) ----------------------------
+        if snapshot_mode != "restore":
+            boot_label = "Booting VM (first-time snapshot)" if snapshot_mode == "capture" else "Booting VM"
+            console.print(f"  {boot_label}...", end="")
+            capture_path = snapshot_path(name) if snapshot_mode == "capture" else None
+            helper_pid = plat.start_sandbox(
+                name=name,
+                workspace_path=str(workspace_path),
+                config_share=config_share,
+                fw_alloc=fw_alloc,
+                cpus=cpus_for_run,
+                memory_mb=memory_for_run,
+                extra_shares=host_shares if host_shares else None,
+                background=run_background,
+                snapshot_capture_path=capture_path,
+            )
+            _update_agent_map(name, ip=guest_ip)
+
+            if snapshot_mode == "capture":
+                # Capture happens between static and per-run — static has
+                # already written vm-ip by the time we get here, so the
+                # subsequent vm-ip poll will complete on the first iteration.
+                _capture_snapshot_blocking(
+                    name=name,
+                    helper_pid=helper_pid,
+                    config_share_dir=config_share_dir,
+                    version=snapshot_version or {},
+                    plat=plat,
+                )
+
+            # Wait for VM IP (indicates guest init is running).
+            # Poll fast (50ms) for the first 2s so the host detects the file
+            # within ~50ms instead of waiting up to 500ms; fall back to 0.5s
+            # after that to keep the long-tail wait cheap.
+            deadline = _time.time() + 120
+            fast_until = _time.time() + 2.0
+            while _time.time() < deadline and plat.is_sandbox_running(name):
+                if ip_file.exists() and ip_file.read_text().strip():
+                    break
+                _time.sleep(0.05 if _time.time() < fast_until else 0.5)
+
+            if not plat.is_sandbox_running(name):
+                console.print(" [red]failed[/red]")
+                console.print(f"  Check logs: ~/.safeyolo/agents/{name}/serial.log")
+                exit_code = 1
+            else:
+                console.print(f" {guest_ip}")
+
+        # --- Post-boot (shared by restore and cold-boot success paths) ----
+        if plat.is_sandbox_running(name):
+            # Watch for agent install. Per-run runs on every boot (including
+            # restore), so if the agent binary isn't yet installed in the
+            # rootfs we'll see the "installing" status mark.
             status_file = config_share_dir / "vm-status"
             shown_installing = False
             deadline2 = _time.time() + 120

@@ -351,6 +351,16 @@ class TestPrepareConfigShare:
         prepare_config_share("agent1", "/workspace")
         assert not (share_dir / "static-init-done").exists()
 
+    def test_stale_per_run_started_is_cleared(self, tmp_config_dir):
+        """A per-run-started left over from a prior run would make a
+        failed restore look successful — the CLI polls for this file
+        specifically as the definitive readiness signal."""
+        share_dir = tmp_config_dir / "agents" / "agent1" / "config-share"
+        share_dir.mkdir(parents=True, exist_ok=True)
+        (share_dir / "per-run-started").write_text("stale")
+        prepare_config_share("agent1", "/workspace")
+        assert not (share_dir / "per-run-started").exists()
+
     def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
         share = prepare_config_share(
             "agent1", "/workspace",
@@ -816,6 +826,119 @@ class TestStartVm:
 
         assert "stdin" not in captured_kwargs
         assert "stdout" not in captured_kwargs
+
+    def test_snapshot_capture_path_adds_flag(self, tmp_config_dir, monkeypatch):
+        """When snapshot_capture_path is set, --snapshot-on-signal should
+        be threaded to the helper."""
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        start_vm("agent1", "/workspace", snapshot_capture_path=snap_path)
+
+        assert "--snapshot-on-signal" in captured_cmd
+        idx = captured_cmd.index("--snapshot-on-signal")
+        assert captured_cmd[idx + 1] == str(snap_path)
+
+    def test_restore_clones_rootfs_to_per_run_working_copy(self, tmp_config_dir, monkeypatch):
+        """Restore must not pass the pristine clone directly as --rootfs:
+        the live restored VM writes to its disk, and VZ requires the
+        rootfs to match its save-time state. Instead, start_vm clones
+        snapshot.bin.rootfs to a disposable per-run .run copy and uses
+        that. The pristine clone stays untouched for the next restore."""
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        cp_calls: list[list[str]] = []
+
+        def mock_cp_run(cmd, **kw):
+            # Simulate successful `cp -c` by copying the file content.
+            cp_calls.append(list(cmd))
+            if cmd[0] == "cp" and "-c" in cmd:
+                src, dst = cmd[-2], cmd[-1]
+                Path(dst).write_bytes(Path(src).read_bytes())
+                return MagicMock(returncode=0, stdout=b"", stderr=b"")
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        monkeypatch.setattr("subprocess.run", mock_cp_run)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+        pristine.write_bytes(b"pristine-clone")
+
+        start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+        # --rootfs must point at the per-run working copy, NOT the pristine clone.
+        rootfs_idx = captured_cmd.index("--rootfs")
+        working_copy = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.run"
+        assert captured_cmd[rootfs_idx + 1] == str(working_copy)
+        # Working copy must exist and match pristine at invocation time.
+        assert working_copy.exists()
+        assert working_copy.read_bytes() == b"pristine-clone"
+        # Pristine clone must not have been touched (still the same bytes).
+        assert pristine.read_bytes() == b"pristine-clone"
+        # cp -c must have been attempted (APFS clonefile fast path).
+        assert any("cp" in c and "-c" in c for c in cp_calls)
+
+    def test_restore_working_copy_overwrites_stale_one(self, tmp_config_dir, monkeypatch):
+        """A .run file left behind by a previous restore session must be
+        replaced, not appended to — otherwise subsequent restores reuse
+        a rootfs that drifted from save-time state."""
+        def mock_popen(cmd, **kw):
+            return MagicMock(pid=1)
+
+        def mock_cp_run(cmd, **kw):
+            if cmd[0] == "cp" and "-c" in cmd:
+                src, dst = cmd[-2], cmd[-1]
+                Path(dst).write_bytes(Path(src).read_bytes())
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        monkeypatch.setattr("subprocess.run", mock_cp_run)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+        pristine.write_bytes(b"pristine")
+        stale_run = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.run"
+        stale_run.write_bytes(b"STALE-FROM-PRIOR-RESTORE")
+
+        start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+        assert stale_run.exists()
+        assert stale_run.read_bytes() == b"pristine"
+
+    def test_restore_without_clone_raises(self, tmp_config_dir, monkeypatch):
+        """If the paired clone is missing, restore can't possibly succeed —
+        refuse early rather than hand VZ a mismatched rootfs."""
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        # No clone file.
+
+        with pytest.raises(VMError, match="clone missing"):
+            start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+    def test_snapshot_and_restore_mutually_exclusive(self, tmp_config_dir, monkeypatch):
+        """The helper's own arg parser would reject both flags together,
+        but we should fail in Python so the error message is clearer."""
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        with pytest.raises(VMError, match="mutually exclusive"):
+            start_vm(
+                "agent1", "/workspace",
+                snapshot_capture_path=snap_path,
+                restore_from_path=snap_path,
+            )
 
 
 # ---------------------------------------------------------------------------

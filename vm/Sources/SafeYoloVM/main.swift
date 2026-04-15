@@ -21,7 +21,7 @@ struct RunConfig {
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
 
-let helperVersion = "0.2.0"
+let helperVersion = "0.3.0"
 
 func printUsage() {
     let usage = """
@@ -189,12 +189,14 @@ do {
         close(hostFD)  // Parent no longer needs it
     }
 
-    // Determine the machine identifier BEFORE building the VM config.
-    // On restore, VZ requires the restored VM to have the same identifier
-    // it had at save time (otherwise restoreMachineStateFrom fails with
-    // EINVAL), so we read the sidecar early to recover it. On cold boot
-    // we mint a fresh identifier and persist it via the save-time sidecar.
+    // Determine the machine identifier AND the virtio-net MAC address
+    // BEFORE building the VM config. Both default to random-per-process,
+    // so without pinning them VZ rejects any cross-process restore with
+    // EINVAL. On restore we read the sidecar to recover both values; on
+    // cold boot we mint fresh ones and persist them via the save-time
+    // sidecar.
     let machineIdentifier: VZGenericMachineIdentifier
+    let macAddress: VZMACAddress
     if !config.restoreFrom.isEmpty {
         let snapURL = URL(fileURLWithPath: NSString(string: config.restoreFrom).expandingTildeInPath)
         let sidecarURL = VMSnapshot.sidecarURL(for: snapURL)
@@ -217,11 +219,25 @@ do {
             ))
         }
         machineIdentifier = decoded
+
+        guard let mac = VZMACAddress(string: savedFingerprint.networkMAC) else {
+            throw VMSnapshot.Error.sidecarParseFailed(NSError(
+                domain: "VMSnapshot",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "sidecar networkMAC '\(savedFingerprint.networkMAC)' is not a valid MAC address"]
+            ))
+        }
+        macAddress = mac
     } else {
         machineIdentifier = VZGenericMachineIdentifier()
+        macAddress = VZMACAddress.randomLocallyAdministered()
     }
 
-    let vmConfig = try VMConfiguration.build(from: config, machineIdentifier: machineIdentifier)
+    let vmConfig = try VMConfiguration.build(
+        from: config,
+        machineIdentifier: machineIdentifier,
+        macAddress: macAddress
+    )
     try vmConfig.validate()
 
     let vmQueue = DispatchQueue(label: "com.safeyolo.vm", qos: .userInteractive)
@@ -237,7 +253,8 @@ do {
         kernelSHA256: try VMSnapshot.sha256(ofFileAt: config.kernelPath),
         initrdSHA256: try VMSnapshot.sha256(ofFileAt: config.initrdPath),
         vmHelperVersion: helperVersion,
-        machineIdentifier: machineIdentifier.dataRepresentation.base64EncodedString()
+        machineIdentifier: machineIdentifier.dataRepresentation.base64EncodedString(),
+        networkMAC: macAddress.string
     )
 
     if !config.snapshotOnSignal.isEmpty {
