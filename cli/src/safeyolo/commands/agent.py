@@ -193,6 +193,9 @@ def _capture_snapshot_blocking(
         try:
             per_run_go.write_text("")
         except OSError:
+            # Best-effort: if we can't write the gate here, the guest's
+            # orchestrator will time out on its 30s wait and proceed
+            # regardless. The warning below is what actually matters.
             pass
         log.warning("snapshot capture skipped: %s", note)
         return False

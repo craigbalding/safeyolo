@@ -177,19 +177,13 @@ def prepare_config_share(
         # CAPTURE mode needs a clean slate — a stale per-run-go from an
         # earlier passthrough run would let the guest skip past the
         # snapshot point before we get a chance to SIGUSR1.
-        try:
-            per_run_go.unlink()
-        except FileNotFoundError:
-            pass
+        per_run_go.unlink(missing_ok=True)
     # Ensure no stale per-boot markers from a prior run mask progress —
     # the guest writes these fresh on every boot. The CLI polls for
     # per-run-started specifically as a definitive "restore succeeded"
     # signal; a stale copy would make a failed restore look successful.
     for marker in ("static-init-done", "per-run-started"):
-        try:
-            (share_dir / marker).unlink()
-        except FileNotFoundError:
-            pass
+        (share_dir / marker).unlink(missing_ok=True)
 
     # Debug-mode marker — presence enables per-iteration guest tracing.
     # Checked by guest-init orchestrator (which runs before agent.env is
@@ -198,10 +192,7 @@ def prepare_config_share(
     if debug_mode:
         debug_marker.write_text("")
     else:
-        try:
-            debug_marker.unlink()
-        except FileNotFoundError:
-            pass
+        debug_marker.unlink(missing_ok=True)
 
     # vsock-term binary — cross-compiled, served from config share
     vsock_term_src = config_dir / "bin" / "vsock-term"
@@ -391,10 +382,7 @@ def start_vm(
             )
         working = Path(f"{restore_from_path}.run")
         # Discard any residue from a previous restore session.
-        try:
-            working.unlink()
-        except FileNotFoundError:
-            pass
+        working.unlink(missing_ok=True)
         # APFS clone (cp -c). Falls back to a deep copy on non-APFS.
         cp_result = subprocess.run(
             ["cp", "-c", str(pristine), str(working)],

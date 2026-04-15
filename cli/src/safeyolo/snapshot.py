@@ -180,10 +180,11 @@ def invalidate_snapshot(name: str) -> None:
         snapshot_version_path(name),
         agent_dir / "snapshot.bin.run",
     ):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        # missing_ok covers the common "already gone" case; any other
+        # OSError (permission, EBUSY) should surface — we own these
+        # files, if unlink fails there's something the user needs to
+        # know about (disk full, corrupted FS, manual chmod).
+        path.unlink(missing_ok=True)
 
 
 def platform_supports_snapshot() -> bool:
