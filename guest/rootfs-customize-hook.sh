@@ -44,7 +44,13 @@ echo "=== Customizing rootfs at $ROOTFS ==="
 # mise
 # ---------------------------------------------------------------------------
 echo "--- Installing mise ${MISE_VERSION} ---"
-MISE_URL="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${DEB_ARCH}.tar.gz"
+# mise uses "x64" for its amd64 asset, not Debian's "amd64". arm64 matches.
+case "$DEB_ARCH" in
+    amd64) MISE_ARCH=x64 ;;
+    arm64) MISE_ARCH=arm64 ;;
+    *) echo "Unsupported DEB_ARCH for mise URL: $DEB_ARCH" >&2; exit 1 ;;
+esac
+MISE_URL="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
 curl -fsSL "$MISE_URL" -o "$ROOTFS/tmp/mise.tar.gz"
 if [ -n "${MISE_SHA256:-}" ]; then
     echo "${MISE_SHA256}  $ROOTFS/tmp/mise.tar.gz" | sha256sum -c -
