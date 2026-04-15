@@ -777,9 +777,15 @@ class TestInit:
 
 class TestSetup:
 
+    # Existing tests exercise the macOS branch (BPF + safeyolo-vm + pf).
+    # Pin the platform + stub _pf_conf_state so these run consistently on
+    # any CI host regardless of its /etc/pf.conf state.
+
     def test_guest_images_ok(self, runner, config_dir):
         """Reports OK when guest images are available."""
         with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
             patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "User is in access_bpf group")),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
@@ -793,6 +799,8 @@ class TestSetup:
     def test_guest_images_missing_shows_missing(self, runner, config_dir):
         """Reports MISSING when guest images are absent."""
         with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=False),
             patch(
                 "safeyolo.commands.setup.guest_image_status",
@@ -810,6 +818,8 @@ class TestSetup:
     def test_bpf_access_missing_shows_warn(self, runner, config_dir):
         """Reports WARN when BPF access is missing."""
         with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
             patch("safeyolo.commands.setup.check_bpf_access", return_value=(False, "Not in access_bpf group")),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
@@ -825,6 +835,8 @@ class TestSetup:
         from safeyolo.vm import VMError as _VMError
 
         with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
             patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "OK")),
             patch("safeyolo.vm.find_vm_helper", side_effect=_VMError("not found")),
@@ -838,6 +850,8 @@ class TestSetup:
     def test_all_ok_summary(self, runner, config_dir):
         """Shows all-OK summary when everything passes."""
         with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
             patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "OK")),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
@@ -846,6 +860,38 @@ class TestSetup:
 
         assert result.exit_code == 0
         assert "all prerequisites met" in result.output.lower()
+
+    # Linux branch: runsc replaces BPF + safeyolo-vm + pf. check_runsc() does
+    # the actual PATH lookup, so mock it directly — no need to stub shutil.
+    def test_runsc_ok_on_linux(self, runner, config_dir):
+        """Linux: reports OK when runsc is present."""
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch("safeyolo.commands.setup.check_runsc", return_value=(True, "found at /usr/bin/runsc")),
+        ):
+            result = runner.invoke(app, ["setup"])
+
+        assert result.exit_code == 0
+        assert "runsc" in result.output.lower()
+        assert "all prerequisites met" in result.output.lower()
+        # Shouldn't mention macOS-specific checks
+        assert "bpf" not in result.output.lower()
+        assert "safeyolo-vm" not in result.output.lower()
+
+    def test_runsc_missing_shows_missing_on_linux(self, runner, config_dir):
+        """Linux: reports MISSING when runsc is not found, with install hint."""
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch("safeyolo.commands.setup.check_runsc", return_value=(False, "not found on PATH")),
+        ):
+            result = runner.invoke(app, ["setup"])
+
+        assert result.exit_code == 0
+        assert "missing" in result.output.lower()
+        assert "runsc" in result.output.lower()
+        assert "gvisor" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
