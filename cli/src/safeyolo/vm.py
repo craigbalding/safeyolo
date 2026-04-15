@@ -432,13 +432,17 @@ def start_vm(
     if background:
         cmd.append("--no-terminal")
         serial_log = get_agents_dir() / name / "serial.log"
-        serial_fh = open(serial_log, "w")
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=serial_fh,
-            stderr=serial_fh,
-        )
+        # `with` closes our parent-side handle on block exit; Popen has
+        # already duplicated the fd into the child process, which
+        # continues writing independently. Avoids the parent leaking an
+        # fd for the lifetime of the VM.
+        with open(serial_log, "w") as serial_fh:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=serial_fh,
+                stderr=serial_fh,
+            )
     else:
         proc = subprocess.Popen(cmd)
 
