@@ -319,7 +319,7 @@ class TestGenerateRules:
 
 class TestLoadRules:
     @pytest.fixture()
-    def mock_helpers(self, monkeypatch):
+    def mock_helpers(self, monkeypatch, tmp_path):
         """Mock helpers that load_rules depends on.
 
         The runtime load_rules path no longer mutates /etc/pf.conf; it only
@@ -329,6 +329,8 @@ class TestLoadRules:
           - generate_rules
           - _sudo_write_file
           - _sudo_run (for pfctl calls)
+          - ANCHOR_FILE (points at a tmp path that doesn't exist; ensures
+            the idempotency check falls through to the slow path)
         """
         mock_require = MagicMock()
         mock_generate = MagicMock(return_value="# test rules\n")
@@ -342,11 +344,16 @@ class TestLoadRules:
         monkeypatch.setattr("safeyolo.firewall.generate_rules", mock_generate)
         monkeypatch.setattr("safeyolo.firewall._sudo_write_file", mock_write)
         monkeypatch.setattr("safeyolo.firewall._sudo_run", mock_sudo)
+        # Anchor file path points at a tmp that doesn't exist, so existing
+        # tests (which predate the idempotency check) always hit slow path.
+        anchor = tmp_path / "nonexistent.anchor"
+        monkeypatch.setattr("safeyolo.firewall.ANCHOR_FILE", anchor)
         return {
             "require": mock_require,
             "generate": mock_generate,
             "write": mock_write,
             "sudo_run": mock_sudo,
+            "anchor_file": anchor,
         }
 
     def test_requires_pf_conf_hook_present(self, mock_helpers):
@@ -355,13 +362,13 @@ class TestLoadRules:
 
     def test_writes_rules_to_anchor_file(self, mock_helpers):
         load_rules(proxy_port=8080, admin_port=9090, active_subnets=["192.168.65.0/24"])
-        mock_helpers["write"].assert_called_once_with(ANCHOR_FILE, "# test rules\n")
+        mock_helpers["write"].assert_called_once_with(mock_helpers["anchor_file"], "# test rules\n")
 
     def test_loads_anchor_via_pfctl(self, mock_helpers):
         load_rules()
-        # pfctl -a com.safeyolo -f /etc/pf.anchors/com.safeyolo
+        # pfctl -a com.safeyolo -f <anchor_file>
         pfctl_call = mock_helpers["sudo_run"].call_args_list[0]
-        assert pfctl_call[0][0] == ["pfctl", "-a", ANCHOR_NAME, "-f", str(ANCHOR_FILE)]
+        assert pfctl_call[0][0] == ["pfctl", "-a", ANCHOR_NAME, "-f", str(mock_helpers["anchor_file"])]
 
     def test_checks_pf_status(self, mock_helpers):
         load_rules()
@@ -442,6 +449,37 @@ class TestLoadRules:
 
         with pytest.raises(RuntimeError, match="not installed"):
             load_rules(active_subnets=["192.168.65.0/24"])
+
+    def test_fast_path_skips_reload_when_file_matches(self, mock_helpers):
+        """If the anchor file already has the expected rules, load_rules is
+        a complete no-op — no sudo, no write, no pfctl. This is the hot
+        path called on every `agent run` and needs to cost near zero.
+
+        We deliberately trust the anchor file without a `pfctl -s rules`
+        probe; that probe alone costs ~1s on macOS and would erase most
+        of the saving. See load_rules docstring for the fail-closed
+        routing argument that makes this safe."""
+        # Arrange: pre-write the anchor file with exactly the rules
+        # generate_rules() would produce for this call.
+        mock_helpers["anchor_file"].write_text("# test rules\n")
+
+        load_rules(active_subnets=["192.168.65.0/24"])
+
+        mock_helpers["write"].assert_not_called()
+        mock_helpers["sudo_run"].assert_not_called()
+
+    def test_slow_path_when_anchor_file_content_differs(self, mock_helpers):
+        """Agent added or removed → rules changed → file content mismatch →
+        must reload, not skip."""
+        mock_helpers["anchor_file"].write_text("# OLD rules\n")
+        # generate_rules returns "# test rules\n" — differs from on-disk
+        # content, so the fast path should not trigger.
+
+        load_rules(active_subnets=["192.168.65.0/24"])
+
+        mock_helpers["write"].assert_called_once_with(
+            mock_helpers["anchor_file"], "# test rules\n"
+        )
 
 
 # ---------------------------------------------------------------------------

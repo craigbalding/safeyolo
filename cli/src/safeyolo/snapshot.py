@@ -22,11 +22,12 @@ PR 5 extends this to Linux via runsc checkpoint images.
 
 import hashlib
 import json
+import os
 import platform as _platform
 import subprocess
 from pathlib import Path
 
-from .config import get_config_dir
+from .config import get_config_dir, get_data_dir
 from .vm import (
     find_vm_helper,
     get_agents_dir,
@@ -65,7 +66,56 @@ def snapshot_version_path(name: str) -> Path:
     return get_agents_dir() / name / "snapshot.version.json"
 
 
-def _sha256_file(path: Path) -> str:
+# ---------------------------------------------------------------------------
+# Hash cache — avoids re-reading 2 GB of rootfs + kernel/initrd on every
+# agent run just to produce a fingerprint that rarely changes.
+#
+# Key by (path, mtime_ns, size). Same convention as ccache / make: if any
+# of those change, content may have changed and we rehash. In practice
+# kernel/initrd/rootfs change only when the user rebuilds guest images,
+# so cache hits dominate.
+#
+# Cache file is a plain JSON map stored under the data dir. Corrupted /
+# missing cache files are treated as empty — worst case we redo the
+# hashing once and rewrite. No locking: `safeyolo agent run` invocations
+# are interactive and typically not concurrent; if they were, two writers
+# would at worst duplicate work or lose one entry, not corrupt downstream
+# state (because snapshot.version.json is always written fresh from the
+# returned dict, not from cache contents).
+# ---------------------------------------------------------------------------
+
+def _hash_cache_path() -> Path:
+    return get_data_dir() / "hash-cache.json"
+
+
+def _load_hash_cache() -> dict:
+    path = _hash_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _save_hash_cache(cache: dict) -> None:
+    path = _hash_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write via temp file + rename. Avoids a torn write if the
+        # process is interrupted mid-save.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(cache, sort_keys=True))
+        os.replace(tmp, path)
+    except OSError:
+        # Non-fatal: next call will redo the hashing and try to save again.
+        pass
+
+
+def _sha256_file_uncached(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -73,15 +123,68 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _sha256_file(path: Path) -> str:
+    """Cached sha256 of a file, keyed by (path, mtime_ns, size).
+
+    Cache invalidates automatically whenever the file changes in any
+    filesystem-visible way. First call after a file edit pays the full
+    read cost; subsequent calls return in microseconds.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        # Fall through — caller handles missing files per their own logic.
+        raise
+
+    cache = _load_hash_cache()
+    entry = cache.get("sha256", {}).get(str(path))
+    if (
+        entry is not None
+        and entry.get("mtime_ns") == st.st_mtime_ns
+        and entry.get("size") == st.st_size
+    ):
+        return entry["sha256"]
+
+    digest = _sha256_file_uncached(path)
+    cache.setdefault("sha256", {})[str(path)] = {
+        "mtime_ns": st.st_mtime_ns,
+        "size": st.st_size,
+        "sha256": digest,
+    }
+    _save_hash_cache(cache)
+    return digest
+
+
 def _vm_helper_version() -> str:
     """Ask safeyolo-vm for its version string. "unknown" on any failure —
     this field participates in the fingerprint, so two hosts running
     different helper versions won't share a snapshot even if we can't
-    parse one side's version output."""
+    parse one side's version output.
+
+    Cached by the helper binary's (path, mtime_ns, size). Avoids a
+    ~50-100 ms Popen per agent run just to re-read a version constant.
+    """
     try:
         helper = find_vm_helper()
     except Exception:
         return "unknown"
+
+    try:
+        st = helper.stat()
+    except OSError:
+        st = None
+
+    cache = _load_hash_cache()
+    helper_cache = cache.get("helper_version", {})
+    entry = helper_cache.get(str(helper))
+    if (
+        st is not None
+        and entry is not None
+        and entry.get("mtime_ns") == st.st_mtime_ns
+        and entry.get("size") == st.st_size
+    ):
+        return entry["version"]
+
     try:
         result = subprocess.run(
             [str(helper), "version"],
@@ -93,7 +196,16 @@ def _vm_helper_version() -> str:
         return "unknown"
     # Expected format: "safeyolo-vm 0.2.0"
     parts = result.stdout.strip().split()
-    return parts[-1] if parts else "unknown"
+    version = parts[-1] if parts else "unknown"
+
+    if st is not None:
+        cache.setdefault("helper_version", {})[str(helper)] = {
+            "mtime_ns": st.st_mtime_ns,
+            "size": st.st_size,
+            "version": version,
+        }
+        _save_hash_cache(cache)
+    return version
 
 
 def compute_snapshot_version(

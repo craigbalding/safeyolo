@@ -30,6 +30,8 @@ from ..snapshot import (
     write_snapshot_version,
 )
 from ..templates import TemplateError, get_agent_config, get_available_templates
+from ..timing import emit as _timing_emit
+from ..timing import enter as _t
 from ..vm import (
     _cleanup_feth_bridge,
     _update_agent_map,
@@ -277,6 +279,7 @@ def _run_agent(
     no_snapshot: skip snapshot capture and restore for this run;
         don't touch an existing snapshot on disk either way.
     """
+    _t("cli entry (metadata, proxy check)")
     _validate_instance_name(name)
 
     rootfs = get_agent_rootfs_path(name)
@@ -383,7 +386,9 @@ def _run_agent(
     agent_index = existing.index(name) if name in existing else len(existing)
 
     try:
+        _t("setup_networking: feth create (ifconfig + sudo)")
         fw_alloc = plat.setup_networking(agent_index)
+        _t("setup_networking: firewall load (pfctl)")
         plat.load_firewall_rules(
             proxy_port=proxy_port,
             admin_port=admin_port,
@@ -409,6 +414,7 @@ def _run_agent(
     memory_for_run = 4096
     snapshot_version: dict | None = None
     snapshot_mode = "passthrough"
+    _t("compute_snapshot_version (hash kernel/initrd/rootfs/scripts)")
     if not no_snapshot and platform_supports_snapshot():
         snapshot_version = compute_snapshot_version(
             memory_mb=memory_for_run,
@@ -452,6 +458,7 @@ def _run_agent(
         )
 
     try:
+        _t("prepare_config_share (write env files, scripts)")
         _do_prepare_config_share(snapshot_mode)
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
@@ -491,6 +498,7 @@ def _run_agent(
             # No helper_pid binding here: restore doesn't need SIGUSR1
             # (that's capture-mode only). Liveness is checked via
             # plat.is_sandbox_running(name), which reads the pid file.
+            _t("start_sandbox (restore: spawn helper + VZ.restore)")
             plat.start_sandbox(
                 name=name,
                 workspace_path=str(workspace_path),
@@ -521,6 +529,7 @@ def _run_agent(
             per_run_started = config_share_dir / "per-run-started"
             deadline = _time.time() + 8.0
             restore_ok = False
+            _t("wait per-run-started (guest wake + per-run prefix)")
             # Diagnostic escape hatch: skip the per-run-started gate and
             # treat a helper alive for 3s as successful. For exploring
             # whether the guest is actually usable post-restore even
@@ -565,6 +574,7 @@ def _run_agent(
             boot_label = "Booting VM (first-time snapshot)" if snapshot_mode == "capture" else "Booting VM"
             console.print(f"  {boot_label}...", end="")
             capture_path = snapshot_path(name) if snapshot_mode == "capture" else None
+            _t(f"start_sandbox ({snapshot_mode}: spawn helper + guest boot)")
             helper_pid = plat.start_sandbox(
                 name=name,
                 workspace_path=str(workspace_path),
@@ -582,6 +592,7 @@ def _run_agent(
                 # Capture happens between static and per-run — static has
                 # already written vm-ip by the time we get here, so the
                 # subsequent vm-ip poll will complete on the first iteration.
+                _t("capture orchestration (static-done → SIGUSR1 → save + clone)")
                 _capture_snapshot_blocking(
                     name=name,
                     helper_pid=helper_pid,
@@ -591,6 +602,7 @@ def _run_agent(
                 )
 
             # Wait for VM IP (indicates guest init is running).
+            _t("wait vm-ip (guest static write)")
             # Poll fast (50ms) for the first 2s so the host detects the file
             # within ~50ms instead of waiting up to 500ms; fall back to 0.5s
             # after that to keep the long-tail wait cheap.
@@ -613,6 +625,7 @@ def _run_agent(
             # Watch for agent install. Per-run runs on every boot (including
             # restore), so if the agent binary isn't yet installed in the
             # rootfs we'll see the "installing" status mark.
+            _t("install watch (guest per-run mise install if any)")
             status_file = config_share_dir / "vm-status"
             shown_installing = False
             deadline2 = _time.time() + 120
@@ -635,10 +648,13 @@ def _run_agent(
                 console.print("  VM running (detached)")
                 console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
                 console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
+                _t("detach return")
+                _timing_emit()
                 return 0
 
             console.print("  Connecting terminal...")
             console.print()
+            _t("interactive session (agent running; user in claude)")
             # Wait for sandbox to exit (interactive mode)
             while plat.is_sandbox_running(name):
                 _time.sleep(0.5)
@@ -659,6 +675,7 @@ def _run_agent(
         pid_path.unlink(missing_ok=True)
         _cleanup_feth_bridge(name)
 
+    _timing_emit()
     return exit_code
 
 
