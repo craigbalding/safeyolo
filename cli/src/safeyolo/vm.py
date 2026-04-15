@@ -180,12 +180,15 @@ def prepare_config_share(
             per_run_go.unlink()
         except FileNotFoundError:
             pass
-    # Ensure no stale static-init-done from a prior run masks progress —
-    # the orchestrator writes this fresh on every boot.
-    try:
-        (share_dir / "static-init-done").unlink()
-    except FileNotFoundError:
-        pass
+    # Ensure no stale per-boot markers from a prior run mask progress —
+    # the guest writes these fresh on every boot. The CLI polls for
+    # per-run-started specifically as a definitive "restore succeeded"
+    # signal; a stale copy would make a failed restore look successful.
+    for marker in ("static-init-done", "per-run-started"):
+        try:
+            (share_dir / marker).unlink()
+        except FileNotFoundError:
+            pass
 
     # vsock-term binary — cross-compiled, served from config share
     vsock_term_src = config_dir / "bin" / "vsock-term"

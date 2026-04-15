@@ -351,6 +351,16 @@ class TestPrepareConfigShare:
         prepare_config_share("agent1", "/workspace")
         assert not (share_dir / "static-init-done").exists()
 
+    def test_stale_per_run_started_is_cleared(self, tmp_config_dir):
+        """A per-run-started left over from a prior run would make a
+        failed restore look successful — the CLI polls for this file
+        specifically as the definitive readiness signal."""
+        share_dir = tmp_config_dir / "agents" / "agent1" / "config-share"
+        share_dir.mkdir(parents=True, exist_ok=True)
+        (share_dir / "per-run-started").write_text("stale")
+        prepare_config_share("agent1", "/workspace")
+        assert not (share_dir / "per-run-started").exists()
+
     def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
         share = prepare_config_share(
             "agent1", "/workspace",

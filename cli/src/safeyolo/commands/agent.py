@@ -494,30 +494,28 @@ def _run_agent(
             )
             _update_agent_map(name, ip=guest_ip)
 
-            # A usable restore produces a .running VM within ~1-2s; a VZ
-            # rejection causes safeyolo-vm to exit 75 within ~500ms. Give
-            # it 8s total to account for slow disks/cold cache, then
-            # treat a stopped sandbox as a restore failure.
+            # Definitive readiness: the guest's per-run phase writes
+            # /safeyolo/per-run-started as its first real action, after
+            # forcing a VirtioFS readdir so the host sees the write
+            # promptly. prepare_config_share unlinked any stale copy, so
+            # appearance of this file means the restored VM actually
+            # resumed and got into per-run — no race against stale
+            # vm-ip, no need for a settle wait.
             #
-            # Note on vm-ip: it's written by the guest's static phase at
-            # FIRST capture, persists across runs (host-side config share),
-            # and its content is stable (same agent_index → same guest_ip).
-            # So on restore the file is already there before the helper has
-            # even parsed its args. We use it as a readiness hint, then
-            # settle briefly to catch a helper that goes on to crash on
-            # VZ's "invalid argument" a few hundred ms later.
+            # Budget: 8s. On success the happy path is ~1-2s (VZ restore
+            # + VirtioFS dentry cache TTL + per-run startup). A failed
+            # restore causes safeyolo-vm to exit within ~500ms (sidecar
+            # mismatch or VZ rejection), so is_sandbox_running catches
+            # that quickly. 8s leaves headroom for slow disks / first-
+            # boot cold caches without dragging out the fallback.
+            per_run_started = config_share_dir / "per-run-started"
             deadline = _time.time() + 8.0
             restore_ok = False
             while _time.time() < deadline:
                 if not plat.is_sandbox_running(name):
                     break
-                if ip_file.exists() and ip_file.read_text().strip():
-                    # Settle: give the helper long enough to commit to the
-                    # restore (or crash). VZ rejections surface within
-                    # ~500ms; 750ms leaves headroom without adding much to
-                    # the user-visible restore time.
-                    _time.sleep(0.75)
-                    restore_ok = plat.is_sandbox_running(name)
+                if per_run_started.exists():
+                    restore_ok = True
                     break
                 _time.sleep(0.05)
 
