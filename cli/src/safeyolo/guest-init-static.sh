@@ -19,6 +19,21 @@ export DEBIAN_FRONTEND=noninteractive
 echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
+# Hostname — set to agent name so `hostname`, the shell prompt, syslog,
+# and sshd all identify the guest correctly. The Docker stack did this
+# via container-name=hostname inheritance; the VM stack has to do it
+# explicitly. Runs pre-snapshot so the hostname lands in the captured
+# memory state and restores along with everything else.
+# --------------------------------------------------------------------------
+if [ -f /safeyolo/agent-name ]; then
+    _agent_name=$(cat /safeyolo/agent-name 2>/dev/null || echo "")
+    if [ -n "$_agent_name" ]; then
+        hostname "$_agent_name" 2>/dev/null || true
+        echo "$_agent_name" > /etc/hostname 2>/dev/null || true
+    fi
+fi
+
+# --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
 ip link set lo up 2>/dev/null || true
