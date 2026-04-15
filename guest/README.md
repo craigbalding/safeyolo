@@ -73,6 +73,8 @@ sudo apt-get install \
     xz-utils
 ```
 
+`build-rootfs.sh` fetches a pinned + SHA256-verified `debian-archive-keyring` into `guest/out/.keyring-cache/` and passes it to `mmdebstrap --keyring=`, so the host's own keyring doesn't need to cover Debian trixie. (Ubuntu LTS ships a 2023-era keyring that predates trixie's signing keys — this way the build works regardless.)
+
 On Linux, `./build-all.sh` skips kernel + initramfs by default (gVisor doesn't need them). Set `BUILD_KERNEL=1` to build all three (required when producing artifacts for macOS consumers).
 
 ## Architecture selection

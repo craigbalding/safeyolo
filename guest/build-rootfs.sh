@@ -52,6 +52,19 @@ GH_VERSION="${GH_VERSION:-2.89.0}"
 GH_SHA256_ARM64="${GH_SHA256_ARM64:-9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5}"
 GH_SHA256_AMD64="${GH_SHA256_AMD64:-}"
 
+# Pinned debian-archive-keyring (arch: all, so one pin for every ARCH).
+#
+# We fetch+verify this ourselves instead of relying on the host's
+# /usr/share/keyrings/debian-archive-keyring.gpg. Reasons:
+#   1) Ubuntu LTS ships a pre-trixie keyring (2023.3), which fails
+#      Release.gpg verification with NO_PUBKEY on trixie's InRelease.
+#   2) Host keyring state drifts silently. A pinned + SHA256-verified
+#      fetch makes the build reproducible across host distros.
+#   3) Same trust model as the pinned mise/gh binaries above — no
+#      system-wide package mutation just to run a build.
+DAK_VERSION="${DAK_VERSION:-2025.1}"
+DAK_SHA256="${DAK_SHA256:-9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac}"
+
 mkdir -p "$OUTPUT_DIR"
 
 OUTPUT_EXT4="$OUTPUT_DIR/rootfs-base.ext4"
@@ -70,6 +83,38 @@ command -v mkfs.ext4 >/dev/null || {
     echo "Error: mkfs.ext4 not installed (apt-get install e2fsprogs)." >&2
     exit 1
 }
+
+# Fetch + SHA256-verify debian-archive-keyring, cache under out/, and pass it
+# to mmdebstrap via --keyring= below. See DAK_VERSION comment above for why.
+# dpkg-deb is always present alongside mmdebstrap on Debian/Ubuntu hosts.
+command -v dpkg-deb >/dev/null || {
+    echo "Error: dpkg-deb not found (needed to unpack the pinned keyring)." >&2
+    exit 1
+}
+
+DAK_CACHE_DIR="$OUTPUT_DIR/.keyring-cache"
+DAK_DEB="$DAK_CACHE_DIR/debian-archive-keyring_${DAK_VERSION}_all.deb"
+DAK_GPG="$DAK_CACHE_DIR/debian-archive-keyring.gpg"
+mkdir -p "$DAK_CACHE_DIR"
+
+# Re-fetch if missing or if a previous interrupted download left a bad file.
+if [ ! -f "$DAK_DEB" ] \
+   || ! echo "${DAK_SHA256}  ${DAK_DEB}" | sha256sum -c - >/dev/null 2>&1; then
+    echo "--- Fetching debian-archive-keyring ${DAK_VERSION} (pinned) ---"
+    curl -fsSL \
+        "http://ftp.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_${DAK_VERSION}_all.deb" \
+        -o "$DAK_DEB"
+    echo "${DAK_SHA256}  ${DAK_DEB}" | sha256sum -c -
+    rm -f "$DAK_GPG"  # force re-extract from the fresh .deb
+fi
+
+# Extract just the combined keyring file — that's all mmdebstrap needs.
+if [ ! -f "$DAK_GPG" ]; then
+    DAK_TMP="$(mktemp -d -t safeyolo-dak.XXXXXX)"
+    dpkg-deb -x "$DAK_DEB" "$DAK_TMP"
+    cp "$DAK_TMP/usr/share/keyrings/debian-archive-keyring.gpg" "$DAK_GPG"
+    rm -rf "$DAK_TMP"
+fi
 
 echo "=== Building Debian trixie ${DEB_ARCH} rootfs with mmdebstrap ==="
 
@@ -133,6 +178,7 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
         --mode=root \
         --variant=minbase \
         --arch="$DEB_ARCH" \
+        --keyring="$DAK_GPG" \
         --include=ca-certificates,curl,git,jq,build-essential,gnupg,openssh-server,iproute2,iputils-ping,procps,less,xz-utils,libgomp1,libatomic1,python3,python3-pip,busybox-static \
         --essential-hook="$ESSENTIAL_HOOK" \
         --customize-hook="bash $HOOK_SCRIPT \"\$1\"" \
