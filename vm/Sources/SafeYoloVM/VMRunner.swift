@@ -78,7 +78,11 @@ class VMRunner: NSObject {
     private func handleStateChange(_ state: VZVirtualMachine.State) {
         // Diagnostic: log every state transition to stderr so we can see
         // exactly what VZ is doing during cold-boot, save, and restore.
-        fputs("[vm state] → \(state.rawValue) (\(stateName(state)))\(isSuppressed ? " [auto-exit suppressed]" : "")\n", stderr)
+        // Gated behind SAFEYOLO_DEBUG=1 so production runs stay quiet —
+        // in interactive mode the helper's stderr is the user's terminal.
+        if ProcessInfo.processInfo.environment["SAFEYOLO_DEBUG"] == "1" {
+            fputs("[vm state] → \(state.rawValue) (\(stateName(state)))\(isSuppressed ? " [auto-exit suppressed]" : "")\n", stderr)
+        }
         switch state {
         case .stopped:
             if !isSuppressed { exitClean(code: 0) }
@@ -232,7 +236,9 @@ class VMRunner: NSObject {
     private func exitClean(code: Int32) {
         guard !hasExited else { return }
         hasExited = true
-        fputs("[exitClean] code=\(code)\n", stderr)
+        if ProcessInfo.processInfo.environment["SAFEYOLO_DEBUG"] == "1" {
+            fputs("[exitClean] code=\(code)\n", stderr)
+        }
         restoreTerminal()
         exit(code)
     }
