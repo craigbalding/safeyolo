@@ -118,4 +118,49 @@ if [ -f /safeyolo/guest-init-per-run ]; then
     chmod +x /run/safeyolo/guest-init-per-run 2>/dev/null || true
 fi
 
+# --------------------------------------------------------------------------
+# 6. Install the agent binary (pre-snapshot)
+#
+# Runs here rather than in per-run so the installed binary is captured
+# in the rootfs clone and survives restore. Before this moved, every
+# restore re-ran mise install (~10s for claude-code), defeating most
+# of the snapshot speedup for coding-agent templates.
+#
+# /etc/environment is written now so that `su agent -l`'s login shell
+# picks up HTTP_PROXY / SSL_CERT_FILE via pam_env — mise install hits
+# HTTPS endpoints through the host proxy. Per-run will rewrite this
+# file with the same content on every boot (idempotent).
+# --------------------------------------------------------------------------
+if [ -f /safeyolo/proxy.env ]; then
+    cp /safeyolo/proxy.env /etc/environment
+fi
+if [ -f /safeyolo/agent.env ]; then
+    cat /safeyolo/agent.env >> /etc/environment
+fi
+echo 'export HOME=/home/agent' >> /etc/environment
+
+(
+    # Subshell keeps the sourced env scope-limited; the static script's
+    # parent env stays minimal.
+    set -a
+    [ -f /safeyolo/proxy.env ] && . /safeyolo/proxy.env
+    [ -f /safeyolo/agent.env ] && . /safeyolo/agent.env
+    set +a
+    if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
+        # `-lc` so mise's shell activation runs and puts its shims on
+        # PATH; without `-l`, `command -v` can't find a mise-managed
+        # binary even when it's correctly installed.
+        if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
+            echo "installing" > /safeyolo/vm-status 2>/dev/null || true
+            if timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1; then
+                echo "" > /safeyolo/vm-status 2>/dev/null || true
+            else
+                # Continue anyway — per-run has a safety-net retry, and
+                # the CLI surfaces this to the user via vm-status.
+                echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            fi
+        fi
+    fi
+)
+
 echo "[static end] pid=$$" > /dev/console 2>/dev/null || true

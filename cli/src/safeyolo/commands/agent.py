@@ -415,6 +415,8 @@ def _run_agent(
             cpus=cpus_for_run,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            agent_binary=binary or "",
+            mise_package=mise_package,
         )
         if is_snapshot_valid(name, snapshot_version):
             snapshot_mode = "restore"
