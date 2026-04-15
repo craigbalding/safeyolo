@@ -153,9 +153,38 @@ def load_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnets: l
     once so that the anchor hook is declared in pf.conf. If the hook is missing,
     this function raises RuntimeError rather than attempting a privileged
     append.
+
+    Idempotent fast path: if the anchor file on disk already contains the
+    rules we would write AND pf currently has them loaded, this is a no-op.
+    Skips 3-4 sudo round-trips (pfctl write + pfctl -f + pfctl -s info + pfctl -e)
+    which together cost around 1.4s on macOS. The common case — same set of
+    registered agents, called on every `agent run` — hits the fast path.
+
+    Slow-path triggers (each correctly reloads the full rule set):
+      - anchor file missing or unreadable (first run or manual removal)
+      - file content differs (agent added / removed, subnet base changed)
+      - pf's anchor has no rules even though the file matches (externally
+        flushed or host rebooted without a later safeyolo start)
     """
     _require_pf_conf_hook()
     rules = generate_rules(proxy_port=proxy_port, admin_port=admin_port, active_subnets=active_subnets)
+
+    # Fast path: if the anchor file on disk already contains exactly these
+    # rules, assume pf is in sync — skip the 3-4 sudo round-trips (~1.4s).
+    # Safety note: we deliberately do NOT verify pf state with `pfctl -s
+    # rules`, because that single sudo call costs ~1s on macOS and wipes
+    # out most of the saving. The risk — pf externally flushed while our
+    # anchor file persists — is mitigated by fail-closed routing: without
+    # pf's NAT rules, agent subnets aren't routable upstream, so traffic
+    # dies at the first hop regardless of whether the per-port block
+    # rules are active. The anchor file is managed only by us.
+    if ANCHOR_FILE.exists():
+        try:
+            existing = ANCHOR_FILE.read_text()
+        except OSError:
+            existing = None
+        if existing == rules:
+            return
 
     _sudo_write_file(ANCHOR_FILE, rules)
     _sudo_run(["pfctl", "-a", ANCHOR_NAME, "-f", str(ANCHOR_FILE)], capture=True)

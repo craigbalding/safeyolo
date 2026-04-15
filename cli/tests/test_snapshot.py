@@ -110,11 +110,17 @@ class TestComputeSnapshotVersion:
         captured state would diverge from what the new script expects."""
         fake_cli_dir = tmp_path / "fakepkg"
         fake_cli_dir.mkdir()
-        (fake_cli_dir / "guest-init-static.sh").write_text("v1")
+        script = fake_cli_dir / "guest-init-static.sh"
+        script.write_text("v1")
+        # Force distinct mtimes so the hash cache doesn't treat these as
+        # the same file (same size + same mtime + same path → cache hit).
+        # Real edits always change mtime; the test just compresses that.
+        os.utime(script, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
         monkeypatch.setattr(snap_mod, "__file__", str(fake_cli_dir / "snapshot.py"))
         v1 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
 
-        (fake_cli_dir / "guest-init-static.sh").write_text("v2")
+        script.write_text("v2")
+        os.utime(script, ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
         v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         assert v1 != v2
 
@@ -149,6 +155,101 @@ class TestComputeSnapshotVersion:
             agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code@2.0.0",
         )
         assert v1 != v2
+
+
+# ---------------------------------------------------------------------------
+# _sha256_file hash cache
+# ---------------------------------------------------------------------------
+
+
+class TestSha256FileCache:
+    """Caching hot-path: kernel/initrd/rootfs hashes rarely change but are
+    recomputed on every `safeyolo agent run`. Cache by (path, mtime_ns, size)
+    so the common-case run hits cache and avoids reading GB of rootfs."""
+
+    def _write_file_with_mtime(self, path: Path, content: bytes, mtime_ns: int) -> None:
+        path.write_bytes(content)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+
+    def test_first_call_computes_and_caches(self, tmp_config_dir, tmp_path):
+        from safeyolo.snapshot import _hash_cache_path, _sha256_file
+
+        f = tmp_path / "big.bin"
+        self._write_file_with_mtime(f, b"hello", 1_000_000_000_000_000_000)
+
+        digest1 = _sha256_file(f)
+
+        cache = json.loads(_hash_cache_path().read_text())
+        entry = cache["sha256"][str(f)]
+        assert entry["sha256"] == digest1
+        assert entry["mtime_ns"] == 1_000_000_000_000_000_000
+        assert entry["size"] == 5
+
+    def test_second_call_does_not_read_file(self, tmp_config_dir, tmp_path, monkeypatch):
+        """If cache key matches, the file is never opened. This is the
+        load-bearing assertion — the whole point is skipping the I/O."""
+        from safeyolo.snapshot import _sha256_file
+
+        f = tmp_path / "big.bin"
+        self._write_file_with_mtime(f, b"hello", 1_000_000_000_000_000_000)
+
+        _sha256_file(f)  # populate cache
+
+        # Now spy on open() at the module level: any attempt to open the
+        # tracked file on the second call would be a cache miss.
+        import safeyolo.snapshot as snap_mod
+        real_uncached = snap_mod._sha256_file_uncached
+        def should_not_run(p):
+            raise AssertionError(f"cache miss — _sha256_file_uncached called on {p}")
+        monkeypatch.setattr(snap_mod, "_sha256_file_uncached", should_not_run)
+
+        digest2 = _sha256_file(f)  # must NOT call the uncached path
+        # Sanity: same answer as the first call.
+        # Restore for anything else the test suite might do.
+        monkeypatch.setattr(snap_mod, "_sha256_file_uncached", real_uncached)
+        assert digest2 == _sha256_file(f)
+
+    def test_mtime_change_invalidates_cache(self, tmp_config_dir, tmp_path):
+        from safeyolo.snapshot import _sha256_file
+
+        f = tmp_path / "big.bin"
+        self._write_file_with_mtime(f, b"hello", 1_000_000_000_000_000_000)
+        digest1 = _sha256_file(f)
+
+        # Simulate a rebuild: content AND mtime change.
+        self._write_file_with_mtime(f, b"world", 2_000_000_000_000_000_000)
+        digest2 = _sha256_file(f)
+        assert digest1 != digest2
+
+    def test_size_change_invalidates_cache(self, tmp_config_dir, tmp_path):
+        """mtime-preserving edits (rare but possible with `touch -t`) are
+        caught by the size check."""
+        from safeyolo.snapshot import _sha256_file
+
+        f = tmp_path / "big.bin"
+        self._write_file_with_mtime(f, b"hello", 1_000_000_000_000_000_000)
+        digest1 = _sha256_file(f)
+
+        # Different content AND different size, same mtime.
+        self._write_file_with_mtime(f, b"hello-longer", 1_000_000_000_000_000_000)
+        digest2 = _sha256_file(f)
+        assert digest1 != digest2
+
+    def test_corrupt_cache_file_is_tolerated(self, tmp_config_dir, tmp_path):
+        """A garbage cache file shouldn't break hashing — just redo the
+        work and rewrite."""
+        from safeyolo.snapshot import _hash_cache_path, _sha256_file
+
+        _hash_cache_path().parent.mkdir(parents=True, exist_ok=True)
+        _hash_cache_path().write_text("{not json")
+
+        f = tmp_path / "big.bin"
+        self._write_file_with_mtime(f, b"hello", 1_000_000_000_000_000_000)
+        digest = _sha256_file(f)  # must not raise
+
+        # Cache file should be rewritten with valid JSON.
+        cache = json.loads(_hash_cache_path().read_text())
+        assert cache["sha256"][str(f)]["sha256"] == digest
 
 
 # ---------------------------------------------------------------------------
