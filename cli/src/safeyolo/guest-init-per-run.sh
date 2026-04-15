@@ -71,10 +71,22 @@ if [ -f /safeyolo/agent_token ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 4. Install agent binary via mise if missing
+# 4. Install agent binary via mise — safety net only
+#
+# The real install happens in guest-init-static (pre-snapshot) so the
+# binary is captured in the rootfs clone and restore doesn't re-install.
+# This block is a no-op on the happy path (command -v succeeds). It
+# only fires when static's install failed at capture time, or when
+# something external removed the binary — either way we retry here and
+# the agent still gets to launch.
 # --------------------------------------------------------------------------
 if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
-    if ! su agent -c "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
+    # `-lc` so mise's shell activation sources the profile and adds its
+    # shims to PATH — otherwise `command -v` reports a correctly-installed
+    # binary as missing and we redundantly re-run `mise use -g` on every
+    # boot. This safety-net is meant to be a no-op after a healthy
+    # static-phase install.
+    if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
         echo "installing" > /safeyolo/vm-status 2>/dev/null || true
         timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || {
             echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
