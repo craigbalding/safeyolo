@@ -486,7 +486,10 @@ def _run_agent(
         if snapshot_mode == "restore":
             console.print("  Restoring snapshot...", end="")
             restore_src = snapshot_path(name)
-            helper_pid = plat.start_sandbox(
+            # No helper_pid binding here: restore doesn't need SIGUSR1
+            # (that's capture-mode only). Liveness is checked via
+            # plat.is_sandbox_running(name), which reads the pid file.
+            plat.start_sandbox(
                 name=name,
                 workspace_path=str(workspace_path),
                 config_share=config_share,
