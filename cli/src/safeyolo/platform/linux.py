@@ -360,8 +360,14 @@ class LinuxPlatform(AgentPlatform):
         work = agent_dir / "rootfs-work"
         merged = agent_dir / "rootfs"
 
-        if merged.exists() and any(merged.iterdir()):
-            return merged  # Already mounted
+        # Check for an actual overlay mount, not just dir-has-contents.
+        # After stop_sandbox (before the fix that stopped unmounting),
+        # merged/ could contain leftover skeleton dirs from the upper
+        # layer with no overlay backing them — iterdir saw entries and
+        # the old logic shortcut to "already mounted", leaving the
+        # next boot without /bin/bash.
+        if merged.exists() and os.path.ismount(merged):
+            return merged  # Genuinely already mounted
 
         for d in (upper, work, merged):
             d.mkdir(parents=True, exist_ok=True)
@@ -402,6 +408,15 @@ class LinuxPlatform(AgentPlatform):
         rootfs = agent_dir / "rootfs"
         cid = _container_id(name)
         netns = fw_alloc.get("netns", "")
+
+        # Ensure the overlay is mounted for this run. prepare_rootfs is
+        # idempotent (checks ismount) and originally only runs at
+        # `agent add` time — but a host reboot, an accidental umount,
+        # or a buggy stop_sandbox umount (now fixed) can leave the
+        # overlay off between runs. Without this call, runsc create
+        # would see only rootfs-upper skeletons and start would fail
+        # with "failed to load /bin/bash: no such file or directory".
+        self.prepare_rootfs(name)
 
         # Build OCI config
         config = self._generate_oci_config(
@@ -508,10 +523,13 @@ class LinuxPlatform(AgentPlatform):
         if agent_index >= 0:
             self.teardown_networking(agent_index)
 
-        # Unmount overlayfs
-        merged = agent_dir / "rootfs"
-        if merged.exists():
-            _sudo(["umount", str(merged)], check=False)
+        # Intentionally do NOT unmount the overlay here. stop_sandbox
+        # is called for graceful halts that expect a subsequent
+        # restart — if we umount, the next `runsc create` finds only
+        # rootfs-upper's leftover skeletons and fails at "/bin/bash:
+        # no such file or directory" before guest-init ever runs. The
+        # overlay is torn down in remove_agent_dir when the agent is
+        # actually being deleted.
 
         # Clean up PID file
         pid_path = agent_dir / "container.pid"
