@@ -8,8 +8,6 @@ Agent names flow into:
 The validator must reject anything that could escape these contexts.
 """
 
-import re
-
 import pytest
 
 # Import the validator and pattern directly — no subprocess needed.
