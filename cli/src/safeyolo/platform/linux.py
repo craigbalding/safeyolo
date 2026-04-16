@@ -423,6 +423,15 @@ class LinuxPlatform(AgentPlatform):
         # Ensure runsc root dir exists
         _sudo(["mkdir", "-p", RUNSC_ROOT])
 
+        # Clear any stale state entry for this cid before create. runsc
+        # create fails with ID-already-exists if a previous run's state
+        # is still in the root dir (e.g. `stopped` after a failed boot,
+        # or leftover from an un-clean shutdown). --force makes delete
+        # a no-op when the container doesn't exist, so this is safe on
+        # a clean slate.
+        _sudo([runsc, "--root", RUNSC_ROOT, "delete", "--force", cid],
+              check=False)
+
         # Create container. detach=True: `runsc create` forks the sandbox
         # and gofer as daemons that inherit our stdout pipe — without
         # detach, Python blocks forever in communicate() waiting for EOF
@@ -521,7 +530,7 @@ class LinuxPlatform(AgentPlatform):
         cmd = [
             "sudo", _find_runsc(), "--root", RUNSC_ROOT, "exec",
             "--user", uid,
-            "--cwd", "/home/agent/workspace",
+            "--cwd", "/workspace",
             cid,
         ]
         if command:
@@ -650,7 +659,7 @@ class LinuxPlatform(AgentPlatform):
             {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs",
              "options": ["nosuid", "nodev", "mode=1777"]},
             # Workspace (rw)
-            {"destination": "/home/agent/workspace", "type": "bind",
+            {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
              "options": ["rbind", "rw"]},
             # Config share — mounted RW during boot so guest-init can write
