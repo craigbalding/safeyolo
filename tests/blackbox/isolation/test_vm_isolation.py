@@ -415,3 +415,222 @@ class TestFilesystemIsolation:
                 except (PermissionError, UnicodeDecodeError):
                     pass
         assert not dangerous, f"Private key material in config share: {dangerous}"
+
+
+class TestSandboxExposure:
+    """Verify attack-surface reduction: device nodes, /proc/sys leaks,
+    firewall-rule disclosure, process visibility. Each probe is a thing
+    a captured-agent adversary would reach for when hunting for escape
+    vectors; if any succeed, that's a hardening gap.
+    """
+
+    def test_no_sensitive_devices(self):
+        """Sensitive device nodes must be absent or unreadable. /dev/kvm
+        grants direct hypervisor access, /dev/net/tun lets an agent
+        forge L3 packets, /dev/fuse allows mounting attacker-controlled
+        filesystems, /dev/loop* lets the agent map arbitrary files as
+        block devices. Any of these present and openable is a gap.
+        """
+        sensitive = [
+            "/dev/kvm", "/dev/net/tun", "/dev/fuse",
+            "/dev/port",  # x86 I/O ports — direct hardware poke
+            "/dev/mem", "/dev/kmem",  # already covered by other tests; belt-and-braces
+        ]
+        # /dev/loop0..3 — probe a few; absence is sufficient
+        sensitive.extend(f"/dev/loop{i}" for i in range(4))
+        openable = []
+        for path in sensitive:
+            if not os.path.exists(path):
+                continue
+            # Existence alone isn't breach-worthy if open fails EACCES.
+            try:
+                fd = os.open(path, os.O_RDONLY)
+                os.close(fd)
+                openable.append(path)
+            except (PermissionError, OSError):
+                pass
+        assert not openable, (
+            f"Sensitive device nodes openable from sandbox: {openable}"
+        )
+
+    def test_proc_kcore_unreadable(self):
+        """/proc/kcore exposes kernel memory as an ELF. Must not be
+        readable from the sandbox.
+        """
+        if not os.path.exists("/proc/kcore"):
+            return  # absent is acceptable
+        with pytest.raises((PermissionError, OSError)):
+            with open("/proc/kcore", "rb") as f:
+                f.read(16)
+
+    def test_proc_kallsyms_redacted(self):
+        """/proc/kallsyms leaks kernel symbol addresses (ROP gadgets). If
+        present, symbols must be redacted to 0x0 when read by an
+        unprivileged process.
+        """
+        if not os.path.exists("/proc/kallsyms"):
+            return
+        try:
+            with open("/proc/kallsyms") as f:
+                # Just first 50 lines — enough to see whether addresses
+                # are leaking or are all zero.
+                lines = [next(f) for _ in range(50)]
+        except (PermissionError, OSError):
+            return  # can't read at all — strongest property; fine
+        non_zero = [ln for ln in lines if not ln.startswith("0000000000000000")]
+        assert not non_zero, (
+            f"/proc/kallsyms leaks non-zero kernel addresses "
+            f"({len(non_zero)} of first {len(lines)} lines)"
+        )
+
+    def test_sys_kernel_debug_inaccessible(self):
+        """/sys/kernel/debug exposes kernel internals (tracefs). Must
+        not be readable.
+        """
+        debug = "/sys/kernel/debug"
+        if not os.path.exists(debug):
+            return
+        try:
+            os.listdir(debug)
+        except (PermissionError, OSError):
+            return  # expected
+        pytest.fail(f"{debug} is listable from the sandbox")
+
+    def test_pid_visibility_scoped(self):
+        """The sandbox must not see host PIDs. /proc should show only
+        the container's own process tree. A host `ps aux` has dozens
+        to hundreds of processes — a sandbox has a handful. The
+        threshold is deliberately loose (≤50) to allow the agent's own
+        process tree to grow without flaking.
+        """
+        pids = [e for e in os.listdir("/proc") if e.isdigit()]
+        assert len(pids) < 50, (
+            f"/proc reports {len(pids)} PIDs — likely host-PID leak "
+            f"(sandbox should see only its own small process tree)"
+        )
+
+    def test_firewall_rules_not_readable(self):
+        """iptables(-save) / pfctl must fail inside the sandbox — the
+        firewall topology is not a property the agent should enumerate.
+        CAP_NET_ADMIN would be required on Linux and isn't granted.
+        """
+        # `iptables -L` prints and exits 0 on an empty table but needs
+        # CAP_NET_ADMIN and the kernel netfilter namespace to read. In
+        # gVisor user-space kernel the iptables binary likely isn't
+        # present; if it is, it should fail.
+        for binary in ("iptables", "iptables-save", "pfctl"):
+            result = subprocess.run(
+                ["sh", "-c", f"command -v {binary} >/dev/null && {binary} -L 2>&1"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout:
+                # Success AND output means the agent saw rules.
+                pytest.fail(
+                    f"{binary} ran successfully inside sandbox, output:\n"
+                    f"{result.stdout[:500]}"
+                )
+
+    def test_host_ssh_not_reachable_via_sandbox_sshd(self):
+        """Defence-in-depth: even if an agent rooted itself inside the
+        sandbox (which the other tests assert it cannot), the sandbox's
+        own sshd — running to let the operator connect IN — must not
+        provide an egress channel to the host. Assert no ssh-client
+        credential material is present that would let the sandbox ssh
+        OUT to the host or another agent.
+        """
+        for path in ("/root/.ssh/id_ed25519", "/root/.ssh/id_rsa",
+                     "/home/agent/.ssh/id_ed25519", "/home/agent/.ssh/id_rsa"):
+            if os.path.exists(path):
+                # A key that would let sandbox SSH anywhere is a problem.
+                # Agent's public authorized_keys (for operator inbound)
+                # is expected and fine; probe for the private halves.
+                pytest.fail(
+                    f"Private SSH key present at {path} — sandbox can "
+                    f"use it to reach other hosts/agents"
+                )
+
+
+class TestSyscallSeccompEquivalents:
+    """Verify syscalls that Docker's default seccomp profile drops are
+    also unreachable on this runtime. Docker-on-Linux drops ~44 syscalls
+    by default; the most security-relevant are keyctl/add_key (kernel
+    keyring injection), pivot_root/mount (namespace manipulation),
+    unshare(CLONE_NEWUSER) (user-namespace creation, historical escape
+    vehicle), and ptrace (process introspection). gVisor's user-space
+    kernel should either reject or no-op these; if any *succeed*, the
+    hardening gap matters.
+    """
+
+    @staticmethod
+    def _libc():
+        libc_name = ctypes.util.find_library("c")
+        if not libc_name:
+            pytest.skip("libc not found")
+        return ctypes.CDLL(libc_name, use_errno=True)
+
+    @staticmethod
+    def _syscall_num(table: dict) -> int:
+        import platform as _p
+        arch = _p.machine()
+        if arch not in table:
+            pytest.skip(f"syscall number unknown for {arch}")
+        return table[arch]
+
+    def _assert_syscall_fails(self, num: int, args: tuple, name: str) -> None:
+        libc = self._libc()
+        ret = libc.syscall(num, *args)
+        err = ctypes.get_errno()
+        assert ret == -1, f"{name} syscall succeeded (ret={ret})"
+        assert err != 0, f"{name} returned -1 with errno=0"
+
+    def test_keyctl_blocked(self):
+        """keyctl(2) — kernel keyring manipulation. In Docker's default
+        seccomp drop list because it's the vector used in CVE-2017-6074
+        and various keyring-related privilege escalations.
+        """
+        # SYS_keyctl: x86_64=250, aarch64=217
+        num = self._syscall_num({"x86_64": 250, "aarch64": 217})
+        # keyctl(KEYCTL_GET_KEYRING_ID=0, 0, 0, 0, 0)
+        self._assert_syscall_fails(num, (0, 0, 0, 0, 0), "keyctl")
+
+    def test_add_key_blocked(self):
+        """add_key(2) — adds keys to kernel keyring. Dropped by Docker
+        default seccomp.
+        """
+        # SYS_add_key: x86_64=248, aarch64=217 (note: keyctl and add_key
+        # share a range; keep them separate)
+        num = self._syscall_num({"x86_64": 248, "aarch64": 217})
+        self._assert_syscall_fails(num, (0, 0, 0, 0, 0), "add_key")
+
+    def test_pivot_root_blocked(self):
+        """pivot_root(2) — moves the root filesystem. Escape technique
+        when combined with a mount from a controlled directory.
+        """
+        # SYS_pivot_root: x86_64=155, aarch64=41
+        num = self._syscall_num({"x86_64": 155, "aarch64": 41})
+        self._assert_syscall_fails(num, (0, 0), "pivot_root")
+
+    def test_unshare_user_ns_blocked(self):
+        """unshare(CLONE_NEWUSER) — create a new user namespace. Has been
+        the mechanism of several container escapes because it grants a
+        chroot-like env where the agent appears root inside. gVisor's
+        user-space kernel should reject; native Linux may require it
+        disabled via kernel.unprivileged_userns_clone=0.
+        """
+        # SYS_unshare: x86_64=272, aarch64=97
+        num = self._syscall_num({"x86_64": 272, "aarch64": 97})
+        CLONE_NEWUSER = 0x10000000
+        # On success unshare returns 0; we want non-zero.
+        libc = self._libc()
+        ret = libc.syscall(num, CLONE_NEWUSER)
+        assert ret != 0, "unshare(CLONE_NEWUSER) succeeded"
+
+    def test_ptrace_init_blocked(self):
+        """ptrace(PTRACE_ATTACH, 1, ...) — attach to pid 1. If granted,
+        agent can read init's memory / inject code. Docker's seccomp
+        drops ptrace entirely by default; gVisor has its own layer.
+        """
+        # SYS_ptrace: x86_64=101, aarch64=117
+        num = self._syscall_num({"x86_64": 101, "aarch64": 117})
+        PTRACE_ATTACH = 16
+        self._assert_syscall_fails(num, (PTRACE_ATTACH, 1, 0, 0), "ptrace(init)")
