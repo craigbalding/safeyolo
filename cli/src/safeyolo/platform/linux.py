@@ -233,6 +233,14 @@ class LinuxPlatform(AgentPlatform):
 
     # --- Rootfs ---
 
+    def agent_rootfs_path(self, name: str) -> Path:
+        """Return the overlayfs merged-dir path for this agent's rootfs.
+
+        On Linux the rootfs is a directory (overlayfs merge of a shared
+        read-only base + a per-agent upper layer), not an ext4 image file.
+        """
+        return get_agents_dir() / name / "rootfs"
+
     def prepare_rootfs(self, name: str) -> Path:
         """Create agent rootfs using overlayfs on extracted base.
 

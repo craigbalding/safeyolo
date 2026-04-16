@@ -499,22 +499,36 @@ class TestAgentAdd:
 
 class TestAgentList:
 
-    def test_detects_agents_by_rootfs_ext4(self, runner, config_dir):
-        """list_agents detects agents by presence of rootfs.ext4, not docker-compose.yml."""
-        # Create agent with rootfs.ext4
+    def test_detects_agents_by_rootfs(self, runner, config_dir):
+        """list_agents detects agents via the platform-dispatched rootfs path.
+
+        Darwin: rootfs.ext4 file. Linux: rootfs/ directory. The filter asks
+        the platform which to check. Mock the platform so the test is
+        hermetic on any CI host.
+        """
+        # Agent with a rootfs artifact in place
         vm_agent = config_dir / "agents" / "vm-agent"
         vm_agent.mkdir()
         (vm_agent / "rootfs.ext4").touch()
 
-        # Create dir without rootfs.ext4 (should NOT appear)
+        # Bare dir with no rootfs artifact (should NOT appear)
         non_agent = config_dir / "agents" / "not-an-agent"
         non_agent.mkdir()
+
+        # Mock platform returns the ext4 file path for any name it's asked about.
+        # The filter will then find vm-agent/rootfs.ext4 (exists) and skip
+        # not-an-agent/rootfs.ext4 (doesn't).
+        mock_platform = MagicMock()
+        mock_platform.agent_rootfs_path.side_effect = (
+            lambda n: config_dir / "agents" / n / "rootfs.ext4"
+        )
 
         with (
             patch("safeyolo.commands.agent.get_available_templates", return_value={}),
             patch("safeyolo.commands.agent.load_all_agents", return_value={
                 "vm-agent": {"template": "claude-code", "folder": "/proj"},
             }),
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
         ):
             result = runner.invoke(app, ["agent", "list"])
 
@@ -680,13 +694,16 @@ class TestRunAgent:
         """If sandbox is already running, exits 1 with helpful message."""
         agent_dir = config_dir / "agents" / "test-agent"
         agent_dir.mkdir()
-        (agent_dir / "rootfs.ext4").touch()
+        rootfs_path = agent_dir / "rootfs.ext4"
+        rootfs_path.touch()
 
         mock_platform = MagicMock()
         mock_platform.is_sandbox_running.return_value = True
+        # agent_rootfs_path is platform-dispatched — return the same file we
+        # just touched so the existence check passes regardless of host OS.
+        mock_platform.agent_rootfs_path.return_value = rootfs_path
         with (
             patch("safeyolo.commands.agent._load_agent_metadata", return_value={"template": "t", "folder": "."}),
-            patch("safeyolo.commands.agent.get_agent_rootfs_path", return_value=agent_dir / "rootfs.ext4"),
             patch("safeyolo.commands.agent._get_agent_binary", return_value=None),
             patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
