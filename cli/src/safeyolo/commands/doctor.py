@@ -80,6 +80,146 @@ def _check_docker() -> DiagResult:
     return DiagResult(name="Proxy running", status="pass", message="mitmproxy is running")
 
 
+def _check_firewall() -> DiagResult:
+    """Verify host firewall is actually enforcing agent egress.
+
+    The unit tests in test_firewall.py mock pfctl/iptables, so they can't
+    tell you whether the on-host state is actually set up correctly. This
+    check queries the real system: `pfctl -s rules` on macOS (anchor must
+    appear in the running ruleset, not just in pf.conf on disk) or
+    `iptables -L SAFEYOLO_<base>` on Linux.
+    """
+    import platform as _platform
+    system = _platform.system()
+    if system == "Darwin":
+        return _check_firewall_darwin()
+    if system == "Linux":
+        return _check_firewall_linux()
+    return DiagResult(
+        name="Firewall enforcement",
+        status="skip",
+        message=f"Unsupported platform: {system}",
+    )
+
+
+def _sudo_n(cmd: list[str], timeout: float = 5) -> subprocess.CompletedProcess | None:
+    """Run `sudo -n <cmd>` non-interactively. Returns None on FileNotFoundError/timeout."""
+    try:
+        return subprocess.run(
+            ["sudo", "-n", *cmd],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _sudo_needs_password(result: subprocess.CompletedProcess) -> bool:
+    stderr = (result.stderr or "").lower()
+    return (
+        "a password is required" in stderr
+        or "a terminal is required" in stderr
+        or "sudo:" in stderr and "password" in stderr
+    )
+
+
+def _check_firewall_darwin() -> DiagResult:
+    """macOS: pf enabled + com.safeyolo anchor loaded in the running ruleset."""
+    from ..firewall import ANCHOR_NAME
+
+    info = _sudo_n(["pfctl", "-s", "info"])
+    if info is None:
+        return DiagResult(
+            name="Firewall enforcement",
+            status="warn",
+            message="Could not invoke pfctl (missing or timed out)",
+        )
+    if info.returncode != 0:
+        if _sudo_needs_password(info):
+            return DiagResult(
+                name="Firewall enforcement",
+                status="warn",
+                message="pf not queryable without sudo cached credentials",
+                remediation="safeyolo setup sudoers (or `sudo -v` before running doctor)",
+            )
+        return DiagResult(
+            name="Firewall enforcement",
+            status="fail",
+            message=f"pfctl -s info failed: {(info.stderr or '').strip()}",
+        )
+    if "Status: Enabled" not in (info.stdout or ""):
+        return DiagResult(
+            name="Firewall enforcement",
+            status="fail",
+            message="pf is disabled — agent egress not enforced",
+            remediation="sudo pfctl -e",
+        )
+
+    rules = _sudo_n(["pfctl", "-s", "rules"])
+    if rules is None or rules.returncode != 0:
+        return DiagResult(
+            name="Firewall enforcement",
+            status="fail",
+            message="pfctl -s rules failed after pfctl -s info succeeded",
+        )
+    if f'anchor "{ANCHOR_NAME}"' not in (rules.stdout or ""):
+        return DiagResult(
+            name="Firewall enforcement",
+            status="fail",
+            message=(
+                f"Anchor {ANCHOR_NAME!r} not in running pf ruleset — "
+                f"default-deny is INERT, agents can reach host services"
+            ),
+            remediation="safeyolo setup pf",
+        )
+    return DiagResult(
+        name="Firewall enforcement",
+        status="pass",
+        message=f"pf enabled, anchor {ANCHOR_NAME!r} active in main ruleset",
+    )
+
+
+def _check_firewall_linux() -> DiagResult:
+    """Linux: SAFEYOLO_<base> iptables chain present."""
+    from ..platform.linux import CHAIN_NAME
+
+    result = _sudo_n(["iptables", "-L", CHAIN_NAME, "-n"])
+    if result is None:
+        return DiagResult(
+            name="Firewall enforcement",
+            status="warn",
+            message="Could not invoke iptables (missing or timed out)",
+        )
+    if result.returncode == 0:
+        return DiagResult(
+            name="Firewall enforcement",
+            status="pass",
+            message=f"iptables chain {CHAIN_NAME} present",
+        )
+    stderr = (result.stderr or "").lower()
+    if _sudo_needs_password(result):
+        return DiagResult(
+            name="Firewall enforcement",
+            status="warn",
+            message="iptables not queryable without sudo cached credentials",
+            remediation="safeyolo setup sudoers (or `sudo -v` before running doctor)",
+        )
+    if "no chain" in stderr or "does not exist" in stderr:
+        return DiagResult(
+            name="Firewall enforcement",
+            status="warn",
+            message=(
+                f"iptables chain {CHAIN_NAME} not present "
+                f"(expected if no agent has started yet)"
+            ),
+            remediation="Run an agent to trigger rule install, or `safeyolo agent run <name>`",
+        )
+    return DiagResult(
+        name="Firewall enforcement",
+        status="fail",
+        message=f"iptables check failed: {result.stderr.strip()}",
+    )
+
+
 def _check_admin_api() -> DiagResult:
     """Check if admin API is responding."""
     config = load_config()
@@ -532,6 +672,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Proxy port", _check_proxy_port),
         ("CA certificate", _check_ca_cert),
         ("Baseline policy", _check_baseline),
+        ("Firewall enforcement", _check_firewall),
         ("Tokens", _check_tokens),
         ("Service gateway vault", _check_vault),
         ("Crash detection", _check_crash_logs),
