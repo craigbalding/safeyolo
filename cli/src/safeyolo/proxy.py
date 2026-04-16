@@ -120,11 +120,17 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
         admin_token_file.write_text(admin_token)
         admin_token_file.chmod(0o600)
 
-    # Agent token: regenerated every start
-    agent_token = secrets.token_hex(32)
+    # Agent token: persist across restarts (same as admin token).
+    # Running sandboxes hold a copy of the token from boot time; if we
+    # regenerate on every proxy restart, their copy goes stale and
+    # agent API calls fail with 401.
     agent_token_file = data_dir / "agent_token"
-    agent_token_file.write_text(agent_token)
-    agent_token_file.chmod(0o600)
+    if agent_token_file.exists():
+        agent_token = agent_token_file.read_text().strip()
+    else:
+        agent_token = secrets.token_hex(32)
+        agent_token_file.write_text(agent_token)
+        agent_token_file.chmod(0o600)
 
     return admin_token, agent_token
 
