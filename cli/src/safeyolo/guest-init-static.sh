@@ -38,8 +38,15 @@ fi
 # --------------------------------------------------------------------------
 ip link set lo up 2>/dev/null || true
 
-if [ -f /safeyolo/network.env ] && ip link show eth0 >/dev/null 2>&1; then
+# Source network.env unconditionally — GUEST_IP is needed later for the
+# /safeyolo/vm-ip readiness signal even on runtimes where `ip link show
+# eth0` is unhappy (notably gVisor: its netstack doesn't surface the
+# netns's eth0 as a kernel interface, so standard `ip` queries find
+# only lo — yet traffic flows fine because netstack forwards transparently).
+if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
+fi
+if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up
     ip addr add ${GUEST_IP}/24 dev eth0 2>/dev/null || true
     ip route add default via ${GATEWAY_IP} 2>/dev/null || true
@@ -115,7 +122,12 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # --------------------------------------------------------------------------
 # 5. Write VM IP so the CLI can discover it
 # --------------------------------------------------------------------------
-VM_IP=$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo "")
+# Prefer GUEST_IP from network.env (host-written, accurate on every runtime);
+# fall back to `ip addr` for legacy paths or for cases where the env wasn't
+# staged. On gVisor the `ip addr` path returns nothing because eth0 isn't
+# visible from inside the sandbox — the env-var path is what makes vm-ip
+# reliably appear there.
+VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
 if [ -n "$VM_IP" ]; then
     echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
 fi
