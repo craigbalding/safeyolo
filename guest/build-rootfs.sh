@@ -42,15 +42,17 @@ esac
 # agent-time installs (npm packages, mise tools, pip installs).
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"
 
-# Pinned mise version (same as previous Docker-based build)
+# Pinned mise version (same as previous Docker-based build).
+# mise names its amd64 asset "linux-x64" (not "linux-amd64") — the hook
+# script maps DEB_ARCH→MISE_ARCH when building the download URL.
 MISE_VERSION="${MISE_VERSION:-2026.1.1}"
 MISE_SHA256_ARM64="${MISE_SHA256_ARM64:-dcd7006e84d3557284a7c87b99abdce4a465900f67609e99b39c757006a361dd}"
-MISE_SHA256_AMD64="${MISE_SHA256_AMD64:-}"
+MISE_SHA256_AMD64="${MISE_SHA256_AMD64:-e35fd46d51f27829f4aefe60c9a8e92a68534de5ad07568b5f034144d1d3cf0c}"
 
 # Pinned gh CLI version
 GH_VERSION="${GH_VERSION:-2.89.0}"
 GH_SHA256_ARM64="${GH_SHA256_ARM64:-9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5}"
-GH_SHA256_AMD64="${GH_SHA256_AMD64:-}"
+GH_SHA256_AMD64="${GH_SHA256_AMD64:-d0422caade520530e76c1c558da47daebaa8e1203d6b7ff10ad7d6faba3490d8}"
 
 # Pinned debian-archive-keyring (arch: all, so one pin for every ARCH).
 #
@@ -141,39 +143,23 @@ GH_SHA256_VAR="GH_SHA256_$(echo "$DEB_ARCH" | tr a-z A-Z)"
 MISE_SHA256="${!MISE_SHA256_VAR:-}"
 GH_SHA256="${!GH_SHA256_VAR:-}"
 
-HOOK_SCRIPT="$SCRIPT_DIR/rootfs-customize-hook.sh"
-[ -r "$HOOK_SCRIPT" ] || { echo "Missing $HOOK_SCRIPT" >&2; exit 1; }
+CUSTOMIZE_HOOK_SCRIPT="$SCRIPT_DIR/rootfs-customize-hook.sh"
+ESSENTIAL_HOOK_SCRIPT="$SCRIPT_DIR/rootfs-essential-hook.sh"
+[ -r "$CUSTOMIZE_HOOK_SCRIPT" ] || { echo "Missing $CUSTOMIZE_HOOK_SCRIPT" >&2; exit 1; }
+[ -x "$ESSENTIAL_HOOK_SCRIPT" ] || { echo "Missing or non-executable $ESSENTIAL_HOOK_SCRIPT" >&2; exit 1; }
 
 # Export for the customize-hook process. mmdebstrap's hooks inherit the
 # invoking process's env, so we just export and the hook sees them.
 export DEB_ARCH MISE_VERSION MISE_SHA256 GH_VERSION GH_SHA256
 export GUEST_SRC_DIR="$SCRIPT_DIR"
 
-# Essential-hook: runs after the essential packages are installed but BEFORE
-# the --include packages. Drops in a dpkg.cfg.d file that tells dpkg to skip
-# docs, man pages, info files, and non-English locales during ALL subsequent
-# installs — including build-essential and its 100+MB of compiler docs that
-# otherwise dominate the rootfs size.
+# Essential-hook: runs after essential packages are installed but BEFORE
+# the --include packages. Lives in rootfs-essential-hook.sh.
 #
-# We keep copyright files specifically (Debian redistribution compliance)
-# via the path-include rule.
-# NOTE: mmdebstrap runs hook strings via `sh -c`, and /bin/sh is dash on
-# Debian/Ubuntu. Keep this POSIX-only — no bashisms like `-o pipefail`.
-# The hook body has no pipes, so `set -eu` is equivalent.
-ESSENTIAL_HOOK='
-set -eu
-ROOTFS="$1"
-mkdir -p "$ROOTFS/etc/dpkg/dpkg.cfg.d"
-cat > "$ROOTFS/etc/dpkg/dpkg.cfg.d/01-nodoc" <<NODOC
-path-exclude /usr/share/doc/*
-path-include /usr/share/doc/*/copyright
-path-exclude /usr/share/man/*
-path-exclude /usr/share/info/*
-path-exclude /usr/share/locale/*
-path-include /usr/share/locale/en*
-path-include /usr/share/locale/locale.alias
-NODOC
-'
+# We pass a file path (not an inline string) so mmdebstrap's hook dispatch
+# hits its `-x $script` branch and executes the script directly — shebang
+# honored, no `sh -c` wrap, no Perl "Unsuccessful stat on filename
+# containing newline" noise from mmdebstrap probing an inline script body.
 
 echo "--- Running mmdebstrap (trixie, ${DEB_ARCH}, minbase) ---"
 # Explain the sudo prompt before it appears. mmdebstrap --mode=root needs
@@ -197,8 +183,8 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
         --arch="$DEB_ARCH" \
         --keyring="$DAK_GPG" \
         --include=ca-certificates,curl,git,jq,build-essential,gnupg,openssh-server,iproute2,iputils-ping,procps,less,xz-utils,libgomp1,libatomic1,python3,python3-pip,busybox-static \
-        --essential-hook="$ESSENTIAL_HOOK" \
-        --customize-hook="bash $HOOK_SCRIPT \"\$1\"" \
+        --essential-hook="$ESSENTIAL_HOOK_SCRIPT" \
+        --customize-hook="bash $CUSTOMIZE_HOOK_SCRIPT \"\$1\"" \
         trixie \
         "$WORK_DIR" \
         http://deb.debian.org/debian
