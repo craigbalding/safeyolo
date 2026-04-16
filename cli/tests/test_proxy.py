@@ -1064,6 +1064,167 @@ class TestTlsPassthrough:
 
 
 # ---------------------------------------------------------------------------
+# TestIgnoreCidrsEnv — SAFEYOLO_IGNORE_CIDRS: converter + integration
+# ---------------------------------------------------------------------------
+
+class TestCidrToIgnoreRegex:
+    """Pin the CIDR → --ignore-hosts regex conversion shape.
+
+    These tests exist because the generated regex is the user-facing result
+    of a CIDR they supplied — any silent drift in what gets exempted is a
+    security-posture change.
+    """
+
+    def test_slash_32_single_host(self):
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        assert _cidr_to_ignore_regex("10.0.0.5/32") == r"^10\.0\.0\.5(?::\d+)?$"
+
+    def test_slash_24(self):
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        assert _cidr_to_ignore_regex("192.168.1.0/24") == r"^192\.168\.1\.\d+(?::\d+)?$"
+
+    def test_slash_16(self):
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        assert _cidr_to_ignore_regex("192.168.0.0/16") == r"^192\.168\.\d+\.\d+(?::\d+)?$"
+
+    def test_slash_8(self):
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        assert _cidr_to_ignore_regex("10.0.0.0/8") == r"^10\.\d+\.\d+\.\d+(?::\d+)?$"
+
+    def test_slash_10_tailscale_cgnat(self):
+        """Tailscale CGNAT: the main driving case. 100.64.0.0 – 100.127.x.x."""
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        import re
+        regex = _cidr_to_ignore_regex("100.64.0.0/10")
+        # Structural shape
+        assert regex.startswith(r"^100\.(?:64|")
+        assert regex.endswith(r")\.\d+\.\d+(?::\d+)?$")
+        # And it actually matches the range boundaries
+        pat = re.compile(regex)
+        assert pat.match("100.64.0.0:443")
+        assert pat.match("100.127.255.255:22")
+        assert pat.match("100.100.50.50")  # no port
+        # And excludes outside-range IPs
+        assert not pat.match("100.63.0.0:22")
+        assert not pat.match("100.128.0.0:22")
+        assert not pat.match("99.64.0.0:22")
+
+    def test_normalises_host_bits(self):
+        """`strict=False` means a non-network address still parses; it should
+        normalise to the actual network and produce the same regex as the
+        canonical form."""
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        a = _cidr_to_ignore_regex("192.168.1.5/24")    # host bits set
+        b = _cidr_to_ignore_regex("192.168.1.0/24")    # canonical
+        assert a == b
+
+    def test_rejects_invalid_cidr(self):
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="Invalid CIDR"):
+            _cidr_to_ignore_regex("not-a-cidr")
+        with _pytest.raises(ValueError, match="Invalid CIDR"):
+            _cidr_to_ignore_regex("10.0.0.0/99")
+
+    def test_rejects_ipv6(self):
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="IPv6"):
+            _cidr_to_ignore_regex("fd00::/8")
+
+    def test_rejects_too_wide(self):
+        """Prefixes < /8 are refused — footgun guard against opening huge
+        ranges by typo."""
+        from safeyolo.proxy import _cidr_to_ignore_regex
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="too wide"):
+            _cidr_to_ignore_regex("0.0.0.0/0")
+        with _pytest.raises(ValueError, match="too wide"):
+            _cidr_to_ignore_regex("10.0.0.0/7")
+
+
+class TestIgnoreCidrsIntegration:
+    """_build_command picks up SAFEYOLO_IGNORE_CIDRS and appends extra
+    --ignore-hosts entries alongside the built-in frp pattern."""
+
+    @pytest.fixture
+    def cmd_env(self, tmp_path):
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir()
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "data").mkdir()
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        from safeyolo.proxy import ADDON_CHAIN
+        for addon in ADDON_CHAIN:
+            (addons_dir / addon).touch()
+        (config_dir / "policy.toml").touch()
+        return {"addons_dir": addons_dir, "cert_dir": cert_dir, "config_dir": config_dir, "data_dir": config_dir / "data", "logs_dir": logs_dir}
+
+    def _ignore_hosts(self, cmd: list[str]) -> list[str]:
+        """Extract every value passed to --ignore-hosts in order."""
+        out = []
+        for i, arg in enumerate(cmd):
+            if arg == "--ignore-hosts" and i + 1 < len(cmd):
+                out.append(cmd[i + 1])
+        return out
+
+    def test_no_env_is_a_noop(self, cmd_env, monkeypatch):
+        """With the env unset, only the built-in frp pattern is present."""
+        from safeyolo.proxy import _build_command
+        monkeypatch.delenv("SAFEYOLO_IGNORE_CIDRS", raising=False)
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        assert self._ignore_hosts(cmd) == [r"^api\.asterfold\.ai:7000$"]
+
+    def test_single_cidr_appended(self, cmd_env, monkeypatch):
+        from safeyolo.proxy import _build_command
+        monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "100.64.0.0/10")
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        entries = self._ignore_hosts(cmd)
+        assert len(entries) == 2
+        assert entries[0] == r"^api\.asterfold\.ai:7000$"
+        assert entries[1].startswith(r"^100\.(?:64|")
+
+    def test_multiple_cidrs_with_whitespace(self, cmd_env, monkeypatch):
+        from safeyolo.proxy import _build_command
+        monkeypatch.setenv(
+            "SAFEYOLO_IGNORE_CIDRS",
+            " 100.64.0.0/10 , 10.0.0.0/8 ,,  192.168.1.0/24 ",
+        )
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        entries = self._ignore_hosts(cmd)
+        # frp + 3 CIDRs = 4
+        assert len(entries) == 4
+        assert entries[1].startswith(r"^100\.(?:64|")
+        assert entries[2] == r"^10\.\d+\.\d+\.\d+(?::\d+)?$"
+        assert entries[3] == r"^192\.168\.1\.\d+(?::\d+)?$"
+
+    def test_empty_env_is_a_noop(self, cmd_env, monkeypatch):
+        """Empty/whitespace-only env value shouldn't add anything."""
+        from safeyolo.proxy import _build_command
+        monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "  ,, ")
+        cmd = _build_command(admin_token="tok", **cmd_env)
+        assert self._ignore_hosts(cmd) == [r"^api\.asterfold\.ai:7000$"]
+
+    def test_invalid_cidr_fails_startup(self, cmd_env, monkeypatch):
+        """Fail-fast: one bad entry refuses to build the command at all, so
+        the proxy never starts with a silently-dropped passthrough."""
+        from safeyolo.proxy import _build_command
+        monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "100.64.0.0/10,not-a-cidr")
+        with pytest.raises(ValueError, match="Invalid CIDR"):
+            _build_command(admin_token="tok", **cmd_env)
+
+    def test_too_wide_cidr_fails_startup(self, cmd_env, monkeypatch):
+        from safeyolo.proxy import _build_command
+        monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "0.0.0.0/0")
+        with pytest.raises(ValueError, match="too wide"):
+            _build_command(admin_token="tok", **cmd_env)
+
+
+# ---------------------------------------------------------------------------
 # TestRateLimitConfig
 # ---------------------------------------------------------------------------
 
