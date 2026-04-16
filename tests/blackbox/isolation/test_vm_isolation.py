@@ -85,6 +85,77 @@ class TestNetworkEscape:
         )
 
 
+class TestHostAdjacentReachability:
+    """Verify the sandbox cannot reach the host beyond the proxy.
+
+    The migration from Docker's private bridge to host-level firewall
+    rules (iptables on Linux, pf on macOS) introduces the risk of
+    "pass by default" leaks: anything the firewall didn't explicitly
+    block is reachable. These tests actively probe that — any success
+    connecting to a host-side service other than the proxy is a breach.
+    """
+
+    @staticmethod
+    def _host_ip_from_proxy() -> str:
+        proxy = os.environ.get("HTTP_PROXY", "")
+        if not proxy:
+            pytest.skip("HTTP_PROXY not set")
+        from urllib.parse import urlparse
+        host = urlparse(proxy).hostname
+        if not host:
+            pytest.skip(f"Could not parse host from HTTP_PROXY={proxy!r}")
+        return host
+
+    def _assert_tcp_unreachable(self, host: str, port: int, context: str) -> None:
+        """Attempt TCP connect with short timeout; must fail at network layer.
+
+        A successful connect (even if the handshake is later refused by an
+        app-layer auth check) counts as a breach. We assert on the socket
+        connect result, not on any response payload — the property we care
+        about is that no packet reaches the service's listener socket.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        try:
+            try:
+                sock.connect((host, port))
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                return  # expected: firewall blocked the connect
+            pytest.fail(
+                f"TCP connect to {host}:{port} ({context}) succeeded — "
+                f"this is a host-reachability breach. The sandbox must only "
+                f"reach the proxy."
+            )
+        finally:
+            sock.close()
+
+    def test_admin_api_unreachable(self):
+        """SafeYolo admin API (default 9090, test instance 9190) must not be
+        reachable from the sandbox. Admin API grants policy/mode control —
+        agent reachability would defeat the sandbox.
+        """
+        host = self._host_ip_from_proxy()
+        for port in (9090, 9190):
+            self._assert_tcp_unreachable(host, port, f"admin API port {port}")
+
+    def test_host_ssh_unreachable(self):
+        """Host SSH (:22) is a realistic reachable service on many Linux
+        hosts; it must not be reachable from the sandbox. Lets `agent run`
+        on a host that happens to run sshd fail safe instead of exposing it.
+        """
+        host = self._host_ip_from_proxy()
+        self._assert_tcp_unreachable(host, 22, "host SSH")
+
+    def test_arbitrary_host_port_unreachable(self):
+        """An unused ephemeral port on the host must be unreachable — proves
+        the firewall is block-by-default for host-destined traffic, not
+        pass-by-default with a narrow deny list. Uses 44444 (IANA
+        unregistered) as a port nothing legitimate is listening on.
+        """
+        host = self._host_ip_from_proxy()
+        self._assert_tcp_unreachable(host, 44444, "arbitrary unused port 44444")
+
+
 class TestPrivilegeEscalation:
     """Verify privilege escalation vectors are blocked."""
 
