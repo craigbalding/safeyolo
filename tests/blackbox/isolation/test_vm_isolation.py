@@ -647,14 +647,16 @@ class TestSyscallSeccompEquivalents:
         if ret == 0:
             # Succeeded — check if this is gVisor (accepted risk) or
             # a native kernel (real breach).
-            is_gvisor = os.path.exists("/sys/devices/virtual/misc/gvisor")
-            if not is_gvisor:
-                # Also check /proc/version for "gVisor" string
-                try:
-                    with open("/proc/version") as f:
-                        is_gvisor = "gvisor" in f.read().lower()
-                except OSError:
-                    pass
+            is_gvisor = False
+            try:
+                # gVisor's emulated dmesg always starts with
+                # "Starting gVisor..." at boot.
+                result = subprocess.run(
+                    ["dmesg"], capture_output=True, text=True, timeout=5,
+                )
+                is_gvisor = "Starting gVisor" in result.stdout
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
             if is_gvisor:
                 pytest.xfail(
                     "unshare(CLONE_NEWUSER) succeeds on gVisor — accepted "
