@@ -47,9 +47,17 @@ if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
 fi
 if ip link show eth0 >/dev/null 2>&1; then
-    ip link set eth0 up
-    ip addr add ${GUEST_IP}/24 dev eth0 2>/dev/null || true
-    ip route add default via ${GATEWAY_IP} 2>/dev/null || true
+    # On gVisor the sandbox inherits eth0 fully configured from the netns
+    # (UP, IP assigned, default route) — bringing it up here would just
+    # EPERM, and set -e would kill the script. Detect that and skip.
+    # On the macOS microVM path the guest kernel sees a bare interface
+    # and we have to configure it ourselves; failure here IS a bug and
+    # should propagate (no `|| true` masking).
+    if ! ip -4 addr show eth0 | grep -qE "inet ${GUEST_IP}/"; then
+        ip link set eth0 up
+        ip addr add ${GUEST_IP}/24 dev eth0
+        ip route add default via ${GATEWAY_IP}
+    fi
 fi
 
 # --------------------------------------------------------------------------
