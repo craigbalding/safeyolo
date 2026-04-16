@@ -630,7 +630,7 @@ class LinuxPlatform(AgentPlatform):
             from ..config import load_config
             cfg = load_config()
             proxy_port = cfg.get("proxy", {}).get("port", 8080)
-        except Exception:
+        except (OSError, KeyError, ValueError):
             # Config unreadable (missing, malformed) — keep the 8080 default
             # we initialised above. Spec generation must still succeed.
             pass
