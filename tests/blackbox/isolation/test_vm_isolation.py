@@ -187,33 +187,32 @@ class TestNetworkEscape:
             sock = socket.socket(17, socket.SOCK_RAW, 0)
             sock.close()
 
-    def test_dns_tunnel_subdomain(self):
-        """DNS tunnelling via subdomain encoding: the agent encodes data
-        in subdomain labels of an allowlisted domain and sends it as a
-        CNAME/A query. If the proxy resolves names, the DNS query
-        reaches the upstream resolver even though the HTTP request will
-        be blocked at the policy layer.
+    def test_dns_tunnel_subdomain_blocked(self):
+        """DNS tunnelling: encode data in subdomain labels, resolve via
+        the system resolver. If the sandbox can resolve arbitrary
+        subdomains, an agent can exfiltrate data by encoding it as
+        DNS queries to a domain it controls (e.g.
+        <base64-chunk>.exfil.attacker.com) — each query leaks ~60
+        bytes and the proxy never sees it because it's DNS, not HTTP.
 
-        This test doesn't assert a hard block — DNS tunnelling
-        prevention is an ongoing arms race. It DOCUMENTS the behaviour:
-        does the DNS query for a deep subdomain succeed? If so, the
-        allowlist model has a structural exfiltration risk.
+        The sandbox must NOT be able to resolve external names. If
+        getaddrinfo succeeds, the DNS exfiltration path is open.
         """
-        # Build a distinctive subdomain probe. Use an allowlisted host
-        # (httpbin.org) with a long exfil-style subdomain.
         exfil_host = "exfil-data-here.tunnel-probe.httpbin.org"
         try:
-            # getaddrinfo is the libc path (affected by the resolver test
-            # above). If it fails, the DNS tunnel path is closed. If it
-            # succeeds, document it.
-            socket.getaddrinfo(exfil_host, 80, socket.AF_INET,
-                               socket.SOCK_STREAM)
-            # If we get here, a DNS query for a deep subdomain resolved.
-            # Mark as xfail-style documentation, not hard fail: the
-            # proxy may intentionally allow recursive DNS.
-            pass
+            result = socket.getaddrinfo(exfil_host, 80, socket.AF_INET,
+                                        socket.SOCK_STREAM)
         except socket.gaierror:
-            pass  # resolver couldn't answer — DNS tunnel path closed
+            return  # resolver blocked — DNS tunnel path closed
+
+        # If we reach here, the resolver answered. That means the agent
+        # can make arbitrary DNS queries — the tunnel is open.
+        pytest.fail(
+            f"DNS tunnel path is OPEN: getaddrinfo({exfil_host!r}) "
+            f"resolved to {result[0][4] if result else '?'}. An agent "
+            f"can exfiltrate ~60 bytes per query by encoding data in "
+            f"subdomain labels of any domain it controls."
+        )
 
     def test_host_header_mismatch_blocked(self):
         """Host-header smuggling: send a request to an allowlisted URL
