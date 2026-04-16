@@ -130,7 +130,14 @@ import yaml
 from pathlib import Path
 addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
 addons = yaml.safe_load(addons_path.read_text())
-addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = ['httpbin.org']
+# target_hosts enables test_context to tag matching traffic with
+# ccapt_context metadata → flow recorder captures it.
+# block=false so requests WITHOUT X-Test-Context still pass through
+# (the host-side proxy tests don't include the header and would
+# otherwise get 428-rejected).
+tc = addons.setdefault('addons', {}).setdefault('test_context', {})
+tc['target_hosts'] = ['httpbin.org']
+tc['block'] = False
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "
 
