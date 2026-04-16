@@ -116,6 +116,26 @@ def setup() -> None:
             console.print(f"  [red]MISSING[/red]  runsc: {reason}")
             console.print("    Install gVisor — see README 'Linux' section for apt commands.")
             all_ok = False
+
+        # sudoers rules — present means no sudo prompts during agent lifecycle.
+        # /etc/sudoers.d/ is typically 0750 (unreadable without sudo), so
+        # .exists() can raise PermissionError; treat that as "unknown" and
+        # surface the pointer anyway.
+        sudoers_path = Path("/etc/sudoers.d/safeyolo")
+        try:
+            sudoers_installed = sudoers_path.exists()
+        except PermissionError:
+            sudoers_installed = None
+
+        if sudoers_installed is True:
+            console.print(f"  [green]OK[/green]  sudoers rules installed ({sudoers_path})")
+        elif sudoers_installed is False:
+            console.print(f"  [yellow]WARN[/yellow]  sudoers rules not installed ({sudoers_path})")
+            console.print("    Without them, every agent start/stop/remove prompts for sudo.")
+            console.print("    Run [bold]safeyolo setup sudoers[/bold] to install.")
+        else:
+            console.print(f"  [dim]?[/dim]  sudoers rules: cannot read {sudoers_path.parent}")
+            console.print("    If not already installed, run [bold]safeyolo setup sudoers[/bold].")
     else:
         console.print(f"  [yellow]WARN[/yellow]  unsupported platform {system!r}: skipping runtime checks")
 
@@ -199,43 +219,116 @@ def bpf() -> None:
     console.print("Verify: [dim]groups | grep access_bpf[/dim]")
 
 
+def _sudoers_template_and_summary() -> tuple[Path, str, str]:
+    """Return (template_path, post-install-summary, missing-template-error)
+    for the current platform.
+
+    Darwin: safeyolo.sudoers — pfctl/feth/sysctl/anchor-file write rules.
+    Linux:  safeyolo-linux.sudoers — ip/iptables/mount/umount/runsc/cp rules.
+    """
+    templates_dir = Path(__file__).parent.parent / "templates"
+    system = _platform.system()
+    if system == "Darwin":
+        return (
+            templates_dir / "safeyolo.sudoers",
+            "pfctl, ifconfig feth, sysctl",
+            "Darwin sudoers template missing",
+        )
+    if system == "Linux":
+        return (
+            templates_dir / "safeyolo-linux.sudoers",
+            "ip/iptables/mount/umount/runsc/cp",
+            "Linux sudoers template missing",
+        )
+    raise RuntimeError(f"Unsupported platform for sudoers setup: {system}")
+
+
+def _resolve_sudoers_body(template_path: Path) -> str:
+    """Read the template and apply platform-specific substitutions.
+
+    Linux substitutions:
+      - `%safeyolo` → invoking user's username. The placeholder group
+        doesn't exist on default distros, so without this substitution
+        the rules would never match any user.
+      - `%SAFEYOLO_BASE_ROOTFS_DEST%` → the resolved base rootfs path
+        (e.g. `/home/alice/.safeyolo/share/rootfs-base`). Pinning the
+        destination literal kills the wildcard in the `cp -a` rule, so
+        it can't be used as a generic `sudo cp` primitive.
+
+    Darwin uses `%staff` (a default macOS group) and is left untouched.
+    """
+    content = template_path.read_text()
+    if _platform.system() == "Linux":
+        username = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+        if not username:
+            raise RuntimeError(
+                "Cannot determine invoking user (neither $SUDO_USER nor $USER is set)."
+            )
+        # `%safeyolo` → bare username (drops the `%` group prefix).
+        content = content.replace("%safeyolo", username)
+
+        # Resolve the base-rootfs destination that the Linux platform's
+        # `prepare_rootfs` will `sudo cp -a /tmp/safeyolo-rootfs-mnt/. …`
+        # into. Pinning the literal path kills the wildcard in the rule.
+        from ..config import get_agents_dir, get_share_dir
+        base_rootfs_dest = str(get_share_dir() / "rootfs-base")
+        content = content.replace("%SAFEYOLO_BASE_ROOTFS_DEST%", base_rootfs_dest)
+
+        # Pin the rm -rf rule to this instance's agents dir; sudoers `*`
+        # does not match `/`, so path traversal outside the dir is blocked.
+        agents_dir = str(get_agents_dir())
+        content = content.replace("%SAFEYOLO_AGENTS_DIR%", agents_dir)
+
+    return content
+
+
 @setup_app.command()
 def sudoers() -> None:
-    """Install sudoers rules for passwordless pf/feth management.
+    """Install sudoers rules for passwordless SafeYolo privileged operations.
 
-    Copies the SafeYolo sudoers template to /etc/sudoers.d/safeyolo,
-    granting passwordless sudo for only the specific commands SafeYolo
-    needs at runtime: pfctl on the fixed com.safeyolo anchor, ifconfig
-    feth*, sysctl IP forwarding, and writes to the fixed anchor file
-    /etc/pf.anchors/com.safeyolo. The sudoers rules do NOT grant write
-    access to /etc/pf.conf — install the static anchor hook once with
-    `safeyolo setup pf` instead.
+    Copies a platform-specific SafeYolo sudoers template to
+    /etc/sudoers.d/safeyolo, granting passwordless sudo for ONLY the
+    specific commands SafeYolo needs at runtime:
 
-    Review the template before installing:
+      macOS: pfctl on the fixed com.safeyolo anchor, ifconfig feth*,
+        sysctl IP forwarding, writes to /etc/pf.anchors/com.safeyolo.
+        The rules do NOT grant write access to /etc/pf.conf — install
+        the static anchor hook once with `safeyolo setup pf` instead.
 
-        safeyolo setup sudoers --show
+      Linux: ip netns/link/addr for veth and namespace lifecycle,
+        iptables for per-agent egress rules, mount/umount for overlayfs,
+        runsc for gVisor container lifecycle, sysctl for IP forwarding,
+        mkdir/cp for base-rootfs extraction. The Linux template's
+        `%safeyolo` placeholder is replaced with the invoking user's
+        username at install time.
 
     Examples:
 
         safeyolo setup sudoers
     """
-    import platform
-
-    if platform.system() != "Darwin":
-        console.print("[yellow]sudoers setup is macOS-only.[/yellow]")
-        console.print("On Linux, pf/feth are not used — different firewall rules apply.")
+    try:
+        template, post_install_summary, missing_msg = _sudoers_template_and_summary()
+    except RuntimeError as err:
+        console.print(f"[yellow]{err}[/yellow]")
         raise typer.Exit(0)
 
-    template = Path(__file__).parent.parent / "templates" / "safeyolo.sudoers"
     if not template.exists():
-        console.print(f"[red]Template not found:[/red] {template}")
+        console.print(f"[red]{missing_msg}:[/red] {template}")
         raise typer.Exit(1)
 
     dest = Path("/etc/sudoers.d/safeyolo")
 
+    # Resolve substitutions (Linux: %safeyolo → username) before showing +
+    # writing so what the user sees is what lands on disk.
+    try:
+        content = _resolve_sudoers_body(template)
+    except RuntimeError as err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+
     # Show the template so the user knows what they're installing
-    console.print("[bold]SafeYolo sudoers template:[/bold]\n")
-    console.print(template.read_text())
+    console.print("[bold]SafeYolo sudoers rules to install:[/bold]\n")
+    console.print(content)
 
     if dest.exists():
         console.print(f"[yellow]{dest} already exists.[/yellow]")
@@ -246,7 +339,6 @@ def sudoers() -> None:
 
     try:
         # Write via sudo tee (can't write directly to /etc/sudoers.d/)
-        content = template.read_text()
         subprocess.run(
             ["sudo", "tee", str(dest)],
             input=content.encode(),
@@ -273,7 +365,7 @@ def sudoers() -> None:
         raise typer.Exit(1)
 
     console.print("[green]Sudoers rules installed.[/green]")
-    console.print("SafeYolo commands (pfctl, ifconfig feth, sysctl) no longer require a password.")
+    console.print(f"SafeYolo commands ({post_install_summary}) no longer require a password.")
 
 
 # ---------------------------------------------------------------------------

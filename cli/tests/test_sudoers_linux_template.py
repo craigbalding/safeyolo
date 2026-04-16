@@ -1,0 +1,192 @@
+"""Tests for the Linux sudoers template and `safeyolo setup sudoers` on Linux.
+
+The invariants here pin the contract between the template and the
+`_resolve_sudoers_body` substitution logic:
+
+  - The template uses `%safeyolo` as a group placeholder so
+    `setup sudoers` can substitute the invoking user's username.
+  - The cp rule is locked to the fixed scratch mount point, not
+    bare `cp -a *` (which would be a generic root-escalation primitive).
+  - The runtime privileged commands we actually need at agent
+    lifecycle time (runsc, iptables, mount/umount, ip) are granted.
+"""
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from typer.testing import CliRunner
+
+from safeyolo.cli import app
+
+
+SUDOERS_PATH = (
+    Path(__file__).parent.parent
+    / "src"
+    / "safeyolo"
+    / "templates"
+    / "safeyolo-linux.sudoers"
+)
+
+
+@pytest.fixture(scope="module")
+def sudoers_text() -> str:
+    return SUDOERS_PATH.read_text()
+
+
+@pytest.fixture(scope="module")
+def sudoers_rules(sudoers_text: str) -> str:
+    """Non-comment, non-blank lines only — the actual sudoers rules."""
+    lines = [
+        line
+        for line in sudoers_text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    return "\n".join(lines)
+
+
+class TestLinuxTemplateInvariants:
+
+    def test_template_exists(self):
+        assert SUDOERS_PATH.exists(), f"Missing: {SUDOERS_PATH}"
+
+    def test_uses_safeyolo_group_placeholder(self, sudoers_rules):
+        """setup sudoers' substitution logic looks for the literal
+        string `%safeyolo`. If someone renames the group, substitution
+        silently leaves the template unchanged and the rules don't
+        match any user."""
+        assert "%safeyolo" in sudoers_rules
+
+    def test_cp_source_is_locked_to_scratch_mount(self, sudoers_rules):
+        """Source arg of the cp rule is the fixed scratch mount point."""
+        assert "/usr/bin/cp -a *" not in sudoers_rules, (
+            "Unlocked `cp -a *` rule is a root-escalation primitive"
+        )
+        assert "/usr/bin/cp -a /tmp/safeyolo-rootfs-mnt/." in sudoers_rules
+
+    def test_cp_destination_uses_placeholder_not_wildcard(self, sudoers_rules):
+        """`cp -a /tmp/safeyolo-rootfs-mnt/. *` with a trailing `*` dest
+        was still a `sudo cp <anywhere>` escalation primitive. The
+        template must use a substitution placeholder that setup renders
+        into the literal resolved share-dir path at install time."""
+        assert "/tmp/safeyolo-rootfs-mnt/. *" not in sudoers_rules, (
+            "Destination wildcard re-introduced — would allow `sudo cp` to any path"
+        )
+        assert "%SAFEYOLO_BASE_ROOTFS_DEST%" in sudoers_rules, (
+            "Placeholder removed — _resolve_sudoers_body has nothing to substitute"
+        )
+
+    def test_mkdir_has_no_wildcard(self, sudoers_rules):
+        """/run/safeyolo is a fixed path — no `mkdir -p /run/safeyolo*`."""
+        assert "mkdir -p /run/safeyolo*" not in sudoers_rules
+        assert "mkdir -p /run/safeyolo" in sudoers_rules
+
+    def test_rm_rule_is_scoped_to_agents_dir_placeholder(self, sudoers_rules):
+        """`rm -rf *` would be a generic sudo rm primitive. The rule
+        must be pinned to a single path component under the agents dir.
+        Sudoers `*` does not match `/`, so path traversal is blocked."""
+        assert "rm -rf *" not in sudoers_rules
+        assert "rm -rf %SAFEYOLO_AGENTS_DIR%/*" in sudoers_rules
+
+    def test_grants_runsc(self, sudoers_rules):
+        """gVisor lifecycle — create/start/kill/delete/exec — all go
+        through runsc. Without this rule, every agent op prompts for sudo."""
+        assert "runsc *" in sudoers_rules
+
+    def test_grants_iptables(self, sudoers_rules):
+        """Per-agent egress rules."""
+        assert "iptables *" in sudoers_rules
+
+    def test_grants_mount_and_umount(self, sudoers_rules):
+        """Overlayfs mount for rootfs layering + loop mount for base
+        extraction + their teardown on agent remove."""
+        assert "mount *" in sudoers_rules
+        assert "umount *" in sudoers_rules
+
+
+class TestSetupSudoersOnLinux:
+
+    def test_substitutes_safeyolo_placeholder_with_username(self, tmp_path):
+        """setup sudoers renders `%safeyolo` → invoking user's name before
+        writing. Pin that via the helper — the full command mocks out the
+        tee/chmod/visudo calls so we don't need root."""
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice"}, clear=False),
+        ):
+            body = _resolve_sudoers_body(SUDOERS_PATH)
+
+        assert "%safeyolo" not in body, "Placeholder left unresolved"
+        assert "alice ALL=(root) NOPASSWD" in body
+
+    def test_prefers_sudo_user_over_user(self, tmp_path):
+        """When invoked via `sudo ...`, $USER is `root` but $SUDO_USER
+        is the real invoker — substitute the real user, not root."""
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "root", "SUDO_USER": "alice"}, clear=False),
+        ):
+            body = _resolve_sudoers_body(SUDOERS_PATH)
+
+        assert "root ALL=(root) NOPASSWD" not in body
+        assert "alice ALL=(root) NOPASSWD" in body
+
+    def test_substitutes_base_rootfs_dest_placeholder(self, tmp_path):
+        """The cp rule's destination placeholder must be rendered into
+        the literal resolved share-dir path, leaving no wildcard."""
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        fake_share = tmp_path / "fake-safeyolo" / "share"
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice"}, clear=False),
+            patch("safeyolo.config.get_share_dir", return_value=fake_share),
+        ):
+            body = _resolve_sudoers_body(SUDOERS_PATH)
+
+        assert "%SAFEYOLO_BASE_ROOTFS_DEST%" not in body, "Placeholder unresolved"
+        expected_dest = str(fake_share / "rootfs-base")
+        assert f"/usr/bin/cp -a /tmp/safeyolo-rootfs-mnt/. {expected_dest}" in body
+        # Belt-and-suspenders: no wildcard remains in the cp rule.
+        assert "/tmp/safeyolo-rootfs-mnt/. *" not in body
+
+    def test_substitutes_agents_dir_placeholder(self, tmp_path):
+        """The rm rule's agents-dir placeholder must be rendered into
+        the literal resolved agents dir path."""
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        fake_agents = tmp_path / "fake-safeyolo" / "agents"
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice"}, clear=False),
+            patch("safeyolo.config.get_agents_dir", return_value=fake_agents),
+        ):
+            body = _resolve_sudoers_body(SUDOERS_PATH)
+
+        assert "%SAFEYOLO_AGENTS_DIR%" not in body, "Placeholder unresolved"
+        assert f"/usr/bin/rm -rf {fake_agents}/*" in body
+
+
+class TestSetupTopLevelCheck:
+
+    def test_reports_warn_when_sudoers_not_installed_on_linux(self, tmp_path):
+        """`safeyolo setup` on Linux should warn when sudoers is absent
+        and point at `safeyolo setup sudoers` as the fix."""
+        runner = CliRunner()
+        # Point sudoers_path at a non-existent file to guarantee WARN.
+        missing = tmp_path / "does-not-exist"
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch("safeyolo.commands.setup.check_runsc", return_value=(True, "found")),
+            patch("safeyolo.commands.setup.Path", side_effect=lambda p: missing if p == "/etc/sudoers.d/safeyolo" else Path(p)),
+        ):
+            result = runner.invoke(app, ["setup"])
+
+        assert result.exit_code == 0
+        assert "sudoers" in result.output.lower()
+        assert "safeyolo setup sudoers" in result.output

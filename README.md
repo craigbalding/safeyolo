@@ -64,6 +64,11 @@ sudo apt-get update && sudo apt-get install -y runsc
 # policy), addons.yaml, an admin token, and the certs/data/lists directories.
 safeyolo init
 
+# One-time: install sudoers rules so agent lifecycle commands don't prompt
+# for your password. Installs a scoped /etc/sudoers.d/safeyolo (pfctl/feth
+# on macOS, iptables/runsc/overlay-mount on Linux — nothing else).
+safeyolo setup sudoers
+
 # Start the proxy
 safeyolo start
 

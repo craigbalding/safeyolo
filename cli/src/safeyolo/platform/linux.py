@@ -444,6 +444,23 @@ class LinuxPlatform(AgentPlatform):
                 netns = _netns_name(f"idx{idx}")
                 _sudo(["ip", "netns", "del", netns], check=False)
 
+    def remove_agent_dir(self, name: str) -> None:
+        """Delete the agent's on-disk directory.
+
+        overlayfs leaves a root-owned work/ subdirectory inside
+        rootfs-work/ after unmount, and the container's writes land in
+        rootfs-upper/ as root too — so a plain shutil.rmtree from the
+        user account fails with EPERM. Defensively unmount any stale
+        overlay (no-op if not mounted) and then sudo rm -rf.
+        """
+        agent_dir = get_agents_dir() / name
+        if not agent_dir.exists():
+            return
+        merged = agent_dir / "rootfs"
+        if merged.exists():
+            _sudo(["umount", str(merged)], check=False)
+        _sudo(["rm", "-rf", str(agent_dir)])
+
     # --- OCI config generation ---
 
     def _generate_oci_config(
