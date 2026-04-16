@@ -750,11 +750,18 @@ class LinuxPlatform(AgentPlatform):
         # Shell/agent sessions come in via `exec_in_sandbox`, which passes
         # `--user 1000:1000` to `runsc exec` — so actual user-facing
         # activity is scoped to the `agent` user even though PID 1 is root.
+        # Docker-default capabilities MINUS CAP_SYS_ADMIN. SYS_ADMIN was
+        # previously included for `mount -o remount,ro /safeyolo` in
+        # guest-init, but gVisor's mount operations don't check this cap
+        # (they go through gVisor's gofer, not the host kernel), and
+        # SYS_ADMIN is the one cap that enables user-namespace creation
+        # (unshare/clone CLONE_NEWUSER) — a historical escape vehicle we
+        # can't block via seccomp on gVisor. Dropping it here means
+        # unshare(CLONE_NEWUSER) will fail with EPERM.
         root_caps = [
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
             "CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SYS_CHROOT",
-            "CAP_SYS_ADMIN",  # needed for the `mount -o remount,ro /safeyolo`
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
         return {
