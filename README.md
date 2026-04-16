@@ -55,6 +55,10 @@ sudo apt-get update && sudo apt-get install -y runsc
 ### Run
 
 ```bash
+# One-time config bootstrap — writes ~/.safeyolo/policy.toml (the baseline
+# policy), addons.yaml, an admin token, and the certs/data/lists directories.
+safeyolo init
+
 # Start the proxy
 safeyolo start
 
