@@ -17,6 +17,7 @@ from safeyolo.commands.doctor import (
     _check_config_dir,
     _check_crash_logs,
     _check_docker,
+    _check_firewall,
     _check_flow_store,
     _check_log_health,
     _check_proxy_port,
@@ -24,6 +25,12 @@ from safeyolo.commands.doctor import (
     _check_vault,
     _run_checks,
 )
+
+
+def _completed(returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr=stderr
+    )
 
 
 class TestCheckConfigDir:
@@ -477,3 +484,116 @@ class TestDoctorCLI:
         bundle = json.loads(json_files[0].read_text())
         assert "checks" in bundle
         assert "summary" in bundle
+
+
+class TestCheckFirewallDarwin:
+    """macOS: pf enabled + com.safeyolo in running ruleset."""
+
+    @pytest.fixture(autouse=True)
+    def _darwin(self, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+
+    def test_pass_when_anchor_active(self, monkeypatch):
+        def fake_sudo_n(cmd, timeout=5):
+            if cmd[0:3] == ["pfctl", "-s", "info"]:
+                return _completed(stdout="Status: Enabled\n")
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                return _completed(stdout='anchor "com.safeyolo" all\n')
+            return _completed()
+
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
+        result = _check_firewall()
+        assert result.status == "pass"
+        assert "com.safeyolo" in result.message
+
+    def test_fail_when_anchor_missing_from_running_pf(self, monkeypatch):
+        """The exact regression #155 fixed: pf enabled, anchor loaded
+        into anchor namespace, but not in the main ruleset."""
+        def fake_sudo_n(cmd, timeout=5):
+            if cmd[0:3] == ["pfctl", "-s", "info"]:
+                return _completed(stdout="Status: Enabled\n")
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                return _completed(stdout='anchor "com.apple/*" all\n')
+            return _completed()
+
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
+        result = _check_firewall()
+        assert result.status == "fail"
+        assert "INERT" in result.message
+        assert "safeyolo setup pf" in result.remediation
+
+    def test_fail_when_pf_disabled(self, monkeypatch):
+        def fake_sudo_n(cmd, timeout=5):
+            if cmd[0:3] == ["pfctl", "-s", "info"]:
+                return _completed(stdout="Status: Disabled\n")
+            return _completed()
+
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
+        result = _check_firewall()
+        assert result.status == "fail"
+        assert "pfctl -e" in result.remediation
+
+    def test_warn_when_sudo_needs_password(self, monkeypatch):
+        """Doctor shouldn't prompt — if sudo credentials aren't cached,
+        surface as warn with a clear remediation."""
+        def fake_sudo_n(cmd, timeout=5):
+            return _completed(returncode=1, stderr="sudo: a password is required\n")
+
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
+        result = _check_firewall()
+        assert result.status == "warn"
+        assert "sudo" in result.message.lower()
+        assert "safeyolo setup sudoers" in result.remediation
+
+    def test_warn_when_pfctl_unavailable(self, monkeypatch):
+        """_sudo_n returns None on FileNotFoundError / TimeoutExpired."""
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", lambda cmd, timeout=5: None)
+        result = _check_firewall()
+        assert result.status == "warn"
+
+
+class TestCheckFirewallLinux:
+    """Linux: SAFEYOLO_<base> iptables chain present."""
+
+    @pytest.fixture(autouse=True)
+    def _linux(self, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    def test_pass_when_chain_present(self, monkeypatch):
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor._sudo_n",
+            lambda cmd, timeout=5: _completed(stdout="Chain SAFEYOLO_65 (0 references)\n"),
+        )
+        result = _check_firewall()
+        assert result.status == "pass"
+
+    def test_warn_when_chain_missing(self, monkeypatch):
+        """Chain is only created when an agent first starts — not having
+        it isn't an error, just informational."""
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor._sudo_n",
+            lambda cmd, timeout=5: _completed(
+                returncode=1, stderr="iptables: No chain/target/match by that name.\n"
+            ),
+        )
+        result = _check_firewall()
+        assert result.status == "warn"
+        assert "not present" in result.message
+
+    def test_warn_when_sudo_needs_password(self, monkeypatch):
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor._sudo_n",
+            lambda cmd, timeout=5: _completed(
+                returncode=1, stderr="sudo: a password is required\n"
+            ),
+        )
+        result = _check_firewall()
+        assert result.status == "warn"
+        assert "safeyolo setup sudoers" in result.remediation
+
+
+class TestCheckFirewallUnsupportedPlatform:
+    def test_skip_on_unknown_platform(self, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "OpenBSD")
+        result = _check_firewall()
+        assert result.status == "skip"
