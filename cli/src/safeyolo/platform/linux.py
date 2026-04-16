@@ -802,47 +802,33 @@ class LinuxPlatform(AgentPlatform):
                 # kernel already rejects most of them) with targeted
                 # denials for the cases blackbox tests proved were
                 # reachable otherwise.
+                # Minimal seccomp profile: block syscalls whose default
+                # behaviour is an escape vector. Default-allow — we
+                # don't replicate Docker's 44-syscall blocklist here
+                # because gVisor's user-space kernel already rejects
+                # most of them (blackbox tests confirm). Target only
+                # what the probes proved reachable.
+                #
+                # Note: gVisor does NOT honour SCMP_CMP_MASKED_EQ arg
+                # filters (as of 20260416-release); per-arg rules are
+                # silently ignored so we must block the entire syscall,
+                # not just specific flag combinations.
                 "seccomp": {
                     "defaultAction": "SCMP_ACT_ALLOW",
                     "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
                     "syscalls": [
                         {
-                            # unshare(CLONE_NEWUSER): user-namespace
+                            # unshare: user/mount/pid/net namespace
                             # creation. Inside a fresh userns the agent
-                            # appears as uid 0 and gets a full capability
-                            # set (scoped to that namespace), enabling
-                            # mount/ptrace/capability-based escape
-                            # attempts the other seccomp/cap controls
+                            # appears as uid 0 with a full cap set,
+                            # enabling escape attempts the other controls
                             # didn't anticipate. Historical escape
                             # vehicle (CVE-2013-1956 and others).
+                            # guest-init doesn't use unshare at all
+                            # (verified via grep); safe to block entirely.
                             "names": ["unshare"],
                             "action": "SCMP_ACT_ERRNO",
                             "errnoRet": 1,  # EPERM
-                            "args": [
-                                {
-                                    "index": 0,
-                                    "value": 0x10000000,     # CLONE_NEWUSER
-                                    "valueTwo": 0x10000000,  # mask
-                                    "op": "SCMP_CMP_MASKED_EQ",
-                                },
-                            ],
-                        },
-                        {
-                            # clone(CLONE_NEWUSER): same risk via clone()
-                            # instead of unshare(). clone's flags are arg
-                            # 0 on x86_64 but the args layout varies by
-                            # arch. We mask on CLONE_NEWUSER regardless.
-                            "names": ["clone"],
-                            "action": "SCMP_ACT_ERRNO",
-                            "errnoRet": 1,
-                            "args": [
-                                {
-                                    "index": 0,
-                                    "value": 0x10000000,
-                                    "valueTwo": 0x10000000,
-                                    "op": "SCMP_CMP_MASKED_EQ",
-                                },
-                            ],
                         },
                     ],
                 },
