@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -32,8 +33,52 @@ CHAIN_NAME = os.environ.get("SAFEYOLO_FW_CHAIN", "SAFEYOLO")
 RUNSC_ROOT = "/run/safeyolo"
 
 
-def _sudo(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
-    """Run a command with sudo."""
+def _sudo(
+    cmd: list[str],
+    check: bool = True,
+    capture: bool = True,
+    detach: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run a command with sudo.
+
+    detach=True: for commands that fork daemons (notably `runsc create`,
+    which spawns runsc-sandbox and runsc-gofer as long-lived children of
+    init). Daemon children inherit any pipe we opened for sudo's
+    stdout/stderr, and subprocess.run's communicate() then blocks until
+    EOF — which never comes while the daemon holds the pipe open.
+    detach swaps stderr onto a real tempfile rather than a pipe: regular
+    files have no "EOF-blocks-until-all-writers-close" semantics, so
+    daemon inheritance is harmless. stdout is discarded (runsc create
+    prints nothing useful on success anyway); errors still come through
+    via stderr exactly like the non-detach path, both on the returned
+    CompletedProcess and on CalledProcessError.
+    """
+    if detach:
+        # tempfile.TemporaryFile unlinks on close; fd is inheritable.
+        # Unbuffered so the runsc-cli's stderr lands on disk before
+        # it exits, even if daemon children are still writing.
+        stderr_file = tempfile.TemporaryFile(mode="w+b", buffering=0)
+        try:
+            result = subprocess.run(
+                ["sudo"] + cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                check=False,  # handle manually so we can attach stderr text
+            )
+            stderr_file.seek(0)
+            err_text = stderr_file.read().decode(errors="replace")
+        finally:
+            stderr_file.close()
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, ["sudo"] + cmd, output=None, stderr=err_text,
+            )
+        # Preserve the CompletedProcess shape callers expect.
+        return subprocess.CompletedProcess(
+            args=result.args, returncode=result.returncode,
+            stdout=None, stderr=err_text,
+        )
     return subprocess.run(
         ["sudo"] + cmd,
         capture_output=capture,
@@ -361,9 +406,12 @@ class LinuxPlatform(AgentPlatform):
         # Ensure runsc root dir exists
         _sudo(["mkdir", "-p", RUNSC_ROOT])
 
-        # Create container
+        # Create container. detach=True: `runsc create` forks the sandbox
+        # and gofer as daemons that inherit our stdout pipe — without
+        # detach, Python blocks forever in communicate() waiting for EOF
+        # on a pipe the daemons hold open for the container's lifetime.
         _sudo([runsc, "--root", RUNSC_ROOT, f"--platform={platform}",
-               "create", "--bundle", str(agent_dir), cid])
+               "create", "--bundle", str(agent_dir), cid], detach=True)
 
         # Start container
         _sudo([runsc, "--root", RUNSC_ROOT, "start", cid])
