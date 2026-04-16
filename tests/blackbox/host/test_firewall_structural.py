@@ -79,7 +79,7 @@ class TestProcessSecrecy:
         if agent_token_file.exists():
             agent_token = agent_token_file.read_text().strip()
             assert agent_token not in cmdline, (
-                f"Agent token appears in the mitmdump process cmdline!"
+                "Agent token appears in the mitmdump process cmdline!"
             )
 
 
@@ -106,9 +106,9 @@ class TestIptablesChainStructure:
         hosts.
         """
         rules = self._get_chain_rules()
-        lines = [l.strip() for l in rules.strip().split("\n") if l.strip()]
+        lines = [ln.strip() for ln in rules.strip().split("\n") if ln.strip()]
         # Find numbered rule lines (start with a digit)
-        rule_lines = [l for l in lines if l and l[0].isdigit()]
+        rule_lines = [ln for ln in lines if ln and ln[0].isdigit()]
         assert rule_lines, "SAFEYOLO chain has no rules"
         last_rule = rule_lines[-1]
         assert "DROP" in last_rule and "0.0.0.0/0" in last_rule, (
@@ -208,7 +208,7 @@ class TestFirewallCrashResilience:
                 capture_output=True, text=True, timeout=5,
             )
             assert after.returncode == 0, (
-                f"SAFEYOLO chain disappeared after proxy kill"
+                "SAFEYOLO chain disappeared after proxy kill"
             )
             # Rule count should be identical
             before_count = before_rules.count("\n")
