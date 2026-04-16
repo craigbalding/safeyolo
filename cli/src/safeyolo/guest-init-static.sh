@@ -187,13 +187,19 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # binary even when it's correctly installed.
         if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
             echo "installing" > /safeyolo/vm-status 2>/dev/null || true
-            if timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1; then
-                echo "" > /safeyolo/vm-status 2>/dev/null || true
-            else
-                # Continue anyway — per-run has a safety-net retry, and
-                # the CLI surfaces this to the user via vm-status.
-                echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
-            fi
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+        fi
+        # Ground vm-status in reality. `mise use -g` can exit nonzero
+        # (notably: the outer `timeout` fires *after* the package is
+        # already installed on disk) yet leave a working binary behind —
+        # so trusting the install command's exit code leaves a stale
+        # "install-failed" even on healthy boots. Decide on command -v.
+        # Per-run has a safety-net retry, so "install-failed" here is
+        # only terminal if per-run's retry also fails.
+        if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
+            echo "" > /safeyolo/vm-status 2>/dev/null || true
+        else
+            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
         fi
     fi
 )
