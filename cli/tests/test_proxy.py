@@ -539,15 +539,17 @@ class TestEnsureTokens:
         assert admin_token == "my-existing-admin-token"
         assert (data_dir / "admin_token").read_text() == "my-existing-admin-token"
 
-    def test_regenerates_agent_token_every_call(self, tmp_path):
-        """Agent token is different on each call (regenerated every start)."""
+    def test_persists_agent_token_across_calls(self, tmp_path):
+        """Agent token persists across restarts (microVM sandboxes hold a
+        copy from boot; regenerating breaks running sandboxes with 401).
+        """
         from safeyolo.proxy import _ensure_tokens
 
         data_dir = tmp_path / "data"
         _, agent1 = _ensure_tokens(data_dir)
         _, agent2 = _ensure_tokens(data_dir)
 
-        assert agent1 != agent2
+        assert agent1 == agent2
 
     def test_sets_file_permissions_to_600(self, tmp_path):
         """Both token files get 0o600 permissions."""
@@ -788,7 +790,7 @@ class TestBuildCommand:
         assert "block_global=false" in cmd_str
         assert "stream_large_bodies=10m" in cmd_str
         assert "admin_port=9090" in cmd_str
-        assert "admin_api_token=my-admin-tok" in cmd_str
+        assert "admin_api_token_file=" in cmd_str
         assert "network_guard_block=true" in cmd_str
         assert "credguard_block=true" in cmd_str
 

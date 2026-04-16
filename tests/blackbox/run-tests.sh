@@ -36,6 +36,9 @@ cd "$SCRIPT_DIR"
 export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
 export SAFEYOLO_SUBNET_BASE=75
 export SAFEYOLO_PF_ANCHOR=com.safeyolo-test
+# Logs + flow store scoped to the test instance so blackbox runs
+# don't pollute production logs/flows.sqlite3.
+export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
 
 # Test instance ports (different from production 8080/9090)
 TEST_PROXY_PORT=8180
@@ -116,6 +119,23 @@ config['proxy']['admin_port'] = $TEST_ADMIN_PORT
 config['test']['sinkhole_router'] = '$SCRIPT_DIR/harness/sinkhole_router.py'
 config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
+"
+
+# Configure target_hosts for test_context addon so the flow recorder
+# captures tagged flows. The blackbox cross-agent isolation test uses
+# X-Test-Context headers on httpbin.org probes — without target_hosts,
+# test_context doesn't tag them and the flow recorder drops them.
+python3 -c "
+import yaml
+from pathlib import Path
+addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
+addons = yaml.safe_load(addons_path.read_text())
+# target_hosts enables test_context to tag matching traffic with
+# ccapt_context metadata → flow recorder captures it. Blocking is
+# disabled in test mode via proxy.py (test_context_block=false) so
+# host-side proxy tests without X-Test-Context aren't 428'd.
+addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = ['httpbin.org']
+addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "
 
 # Symlink shared guest artifacts (rootfs, kernel) from production.
@@ -228,15 +248,15 @@ if [ "$RUN_ISOLATION" = true ]; then
     # Create agent if not exists
     safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run 2>/dev/null || true
 
-    # Check if already running by looking for vm-ip
+    # Platform-portable readiness: `safeyolo agent shell -c true` dispatches
+    # to SSH on Darwin and `runsc exec` on Linux, so it works on both without
+    # this script reaching for platform primitives. SSH keys only exist on
+    # the Darwin path; runsc exec uses its own channel.
     VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
-    SSH_KEY="$SAFEYOLO_CONFIG_DIR/data/vm_ssh_key"
 
     VM_RUNNING=false
     if [ -n "$VM_IP" ]; then
-        if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
-            -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
+        if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
             VM_RUNNING=true
         fi
     fi
@@ -248,8 +268,7 @@ if [ "$RUN_ISOLATION" = true ]; then
         safeyolo agent run "$AGENT_NAME" --detach
         STARTED_VM=true
 
-        # Wait for SSH
-        echo "  Waiting for SSH..."
+        echo "  Waiting for VM..."
         VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
         if [ -z "$VM_IP" ]; then
             for i in $(seq 1 15); do
@@ -263,10 +282,8 @@ if [ "$RUN_ISOLATION" = true ]; then
             exit 2
         fi
         for i in $(seq 1 60); do
-            if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
-                -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
-                -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
-                echo "  SSH ready ($VM_IP)"
+            if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
+                echo "  VM ready ($VM_IP)"
                 break
             fi
             sleep 1
@@ -281,6 +298,8 @@ echo ""
 PROXY_RESULT=0
 ISOLATION_RESULT=0
 
+FIREWALL_RESULT=0
+
 if [ "$RUN_PROXY" = true ]; then
     echo "=== Proxy Functional Tests (host-side) ==="
     echo ""
@@ -289,6 +308,16 @@ if [ "$RUN_PROXY" = true ]; then
     pytest $VERBOSE --tb=short --timeout=60 \
         test_credential_guard.py test_network_guard.py
     PROXY_RESULT=$?
+
+    # Firewall structural tests (Linux only — iptables)
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        echo ""
+        echo "=== Firewall Structural Tests (host-side) ==="
+        echo ""
+        pytest $VERBOSE --tb=short --timeout=60 \
+            test_firewall_structural.py
+        FIREWALL_RESULT=$?
+    fi
     set -e
     cd "$SCRIPT_DIR"
     echo ""
@@ -303,6 +332,23 @@ if [ "$RUN_ISOLATION" = true ]; then
     ISOLATION_RESULT=$?
     set -e
     echo ""
+
+    # Token lifecycle test — runs on the host but needs the sandbox
+    # still running (tests agent API across a proxy restart). Must
+    # run BEFORE cleanup tears down the VM.
+    LIFECYCLE_RESULT=0
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        echo "=== Token Lifecycle Tests (host-side, sandbox running) ==="
+        echo ""
+        cd "$SCRIPT_DIR/host"
+        set +e
+        pytest $VERBOSE --tb=short --timeout=120 \
+            test_token_lifecycle.py
+        LIFECYCLE_RESULT=$?
+        set -e
+        cd "$SCRIPT_DIR"
+        echo ""
+    fi
 fi
 
 # --- Phase 3: Summary ---
@@ -316,15 +362,26 @@ if [ "$RUN_PROXY" = true ]; then
     fi
 fi
 
+if [ "$FIREWALL_RESULT" != "0" ]; then
+    echo "Firewall tests:  FAILED (exit code: $FIREWALL_RESULT)"
+elif [[ "$(uname -s)" == "Linux" ]] && [ "$RUN_PROXY" = true ]; then
+    echo "Firewall tests:  PASSED"
+fi
+
 if [ "$RUN_ISOLATION" = true ]; then
     if [ "$ISOLATION_RESULT" = "0" ]; then
         echo "Isolation tests: PASSED"
     else
         echo "Isolation tests: FAILED (exit code: $ISOLATION_RESULT)"
     fi
+    if [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
+        echo "Lifecycle tests: FAILED (exit code: $LIFECYCLE_RESULT)"
+    elif [[ "$(uname -s)" == "Linux" ]]; then
+        echo "Lifecycle tests: PASSED"
+    fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ]; then
+if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
     echo ""
     echo "Result: FAILED"
     exit 1

@@ -1279,10 +1279,10 @@ class AdminAPI:
             help="Port for admin API server",
         )
         loader.add_option(
-            name="admin_api_token",
+            name="admin_api_token_file",
             typespec=str,
             default="",
-            help="Bearer token for admin API authentication",
+            help="Path to file containing the admin API bearer token",
         )
 
     def configure(self, updates):
@@ -1323,7 +1323,17 @@ class AdminAPI:
     def _start_server(self):
         """Start the admin HTTP server."""
         port = ctx.options.admin_port
-        token = ctx.options.admin_api_token
+
+        # Read token from file — never from CLI args (cmdline is visible
+        # to all local users via /proc/PID/cmdline).
+        token = ""
+        token_file = ctx.options.admin_api_token_file
+        if token_file:
+            try:
+                with open(token_file) as f:
+                    token = f.read().strip()
+            except (FileNotFoundError, PermissionError) as exc:
+                log.error(f"Cannot read admin token file {token_file}: {exc}")
 
         # Set token on handler class
         AdminRequestHandler.admin_token = token

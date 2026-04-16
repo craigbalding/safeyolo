@@ -1058,15 +1058,21 @@ def remove(
     existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
     agent_index = existing.index(name) if name in existing else -1
 
-    # Stop sandbox if running
+    # stop_sandbox is idempotent on both platforms (Linux probes runsc
+    # state first; Darwin's stop_vm returns early if no pid). Calling
+    # unconditionally ensures cleanup of `stopped` or `created` runsc
+    # containers too, which is_sandbox_running() doesn't report as running
+    # and therefore the old conditional skipped — leaving stale state
+    # that broke the next `runsc create`.
     if plat.is_sandbox_running(name):
         console.print(f"  Stopping {name}...")
-        plat.stop_sandbox(name)
+    plat.stop_sandbox(name)
 
-    # Teardown per-agent networking (netns + veth). Without this,
-    # remove+re-add leaks a netns and the next `runsc create` fails
-    # with "cannot create sandbox process: file does not exist" on
-    # the stale netns path.
+    # Teardown per-agent networking. Linux's stop_sandbox already did
+    # this (idempotent netns delete), but Darwin's didn't — it only
+    # shuts the VM down. Explicit call here keeps the remove semantics
+    # consistent across platforms: after remove, the agent has no
+    # residual networking state.
     if agent_index >= 0:
         try:
             plat.teardown_networking(agent_index)

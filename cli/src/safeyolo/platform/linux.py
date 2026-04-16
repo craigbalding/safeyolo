@@ -158,14 +158,31 @@ def _container_id(name: str) -> str:
     return f"safeyolo-{name}"
 
 
-def _netns_name(name: str) -> str:
-    """Derive network namespace name from agent name."""
-    return f"safeyolo-{name}"
+def _netns_offset(agent_index: int) -> int:
+    """Global slot number for an agent, offsetting by SUBNET_BASE so that
+    multiple SafeYolo instances (production SUBNET_BASE=65 + blackbox test
+    SUBNET_BASE=75 + any future sibling) don't collide in the kernel's
+    flat namespace. Mirror of the formula in _veth_host_name — keep them
+    in lockstep.
+    """
+    return SUBNET_BASE - 65 + agent_index
+
+
+def _netns_name(agent_index: int) -> str:
+    """Derive network namespace name from agent index.
+
+    Must be namespaced by SUBNET_BASE because netns names live in a
+    single host-wide namespace. Without the offset, production idx0
+    and blackbox-test idx0 both resolve to `safeyolo-idx0`; the second
+    instance's `ip link add ... netns safeyolo-idx0` then fails because
+    the eth0 peer already exists in the first instance's netns.
+    """
+    return f"safeyolo-idx{_netns_offset(agent_index)}"
 
 
 def _veth_host_name(agent_index: int) -> str:
     """Derive host-side veth interface name from agent index."""
-    return f"veth-sy{SUBNET_BASE - 65 + agent_index}"
+    return f"veth-sy{_netns_offset(agent_index)}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +199,7 @@ class LinuxPlatform(AgentPlatform):
     def setup_networking(self, agent_index: int) -> dict:
         """Create veth pair + network namespace for an agent."""
         alloc = allocate_subnet(agent_index)
-        netns = _netns_name(f"idx{agent_index}")
+        netns = _netns_name(agent_index)
         veth_host = _veth_host_name(agent_index)
         veth_guest = "eth0"
 
@@ -222,7 +239,7 @@ class LinuxPlatform(AgentPlatform):
 
     def teardown_networking(self, agent_index: int) -> None:
         """Remove network namespace (auto-removes veth pair)."""
-        netns = _netns_name(f"idx{agent_index}")
+        netns = _netns_name(agent_index)
         _sudo(["ip", "netns", "del", netns], check=False)
         log.info("Network namespace %s removed", netns)
 
@@ -343,8 +360,14 @@ class LinuxPlatform(AgentPlatform):
         work = agent_dir / "rootfs-work"
         merged = agent_dir / "rootfs"
 
-        if merged.exists() and any(merged.iterdir()):
-            return merged  # Already mounted
+        # Check for an actual overlay mount, not just dir-has-contents.
+        # After stop_sandbox (before the fix that stopped unmounting),
+        # merged/ could contain leftover skeleton dirs from the upper
+        # layer with no overlay backing them — iterdir saw entries and
+        # the old logic shortcut to "already mounted", leaving the
+        # next boot without /bin/bash.
+        if merged.exists() and os.path.ismount(merged):
+            return merged  # Genuinely already mounted
 
         for d in (upper, work, merged):
             d.mkdir(parents=True, exist_ok=True)
@@ -386,6 +409,15 @@ class LinuxPlatform(AgentPlatform):
         cid = _container_id(name)
         netns = fw_alloc.get("netns", "")
 
+        # Ensure the overlay is mounted for this run. prepare_rootfs is
+        # idempotent (checks ismount) and originally only runs at
+        # `agent add` time — but a host reboot, an accidental umount,
+        # or a buggy stop_sandbox umount (now fixed) can leave the
+        # overlay off between runs. Without this call, runsc create
+        # would see only rootfs-upper skeletons and start would fail
+        # with "failed to load /bin/bash: no such file or directory".
+        self.prepare_rootfs(name)
+
         # Build OCI config
         config = self._generate_oci_config(
             name=name,
@@ -405,6 +437,23 @@ class LinuxPlatform(AgentPlatform):
 
         # Ensure runsc root dir exists
         _sudo(["mkdir", "-p", RUNSC_ROOT])
+
+        # Ensure the workspace bind-mount target exists inside the
+        # rootfs. The base rootfs doesn't ship `/workspace`; without
+        # this, `runsc start` fails to attach the workspace bind mount
+        # and the container lands in `stopped` state before guest-init
+        # ever runs. Creating it in rootfs-upper makes it visible via
+        # the overlay without mutating the shared base image.
+        _sudo(["mkdir", "-p", str(agent_dir / "rootfs-upper" / "workspace")])
+
+        # Clear any stale state entry for this cid before create. runsc
+        # create fails with ID-already-exists if a previous run's state
+        # is still in the root dir (e.g. `stopped` after a failed boot,
+        # or leftover from an un-clean shutdown). --force makes delete
+        # a no-op when the container doesn't exist, so this is safe on
+        # a clean slate.
+        _sudo([runsc, "--root", RUNSC_ROOT, "delete", "--force", cid],
+              check=False)
 
         # Create container. detach=True: `runsc create` forks the sandbox
         # and gofer as daemons that inherit our stdout pipe — without
@@ -437,17 +486,35 @@ class LinuxPlatform(AgentPlatform):
         """Stop a running gVisor sandbox."""
         cid = _container_id(name)
         agent_dir = get_agents_dir() / name
+        runsc = _find_runsc()
 
-        # Graceful stop
-        _sudo([_find_runsc(), "--root", RUNSC_ROOT, "kill", cid, "SIGTERM"], check=False)
-        time.sleep(5)
+        # Probe state so we only pay for the graceful-kill cycle when a
+        # live init exists. `stopped` and `created` both mean "runsc has
+        # state dir entries that need cleanup" but no process to signal.
+        state_result = _sudo(
+            [runsc, "--root", RUNSC_ROOT, "state", cid], check=False,
+        )
+        has_state = state_result.returncode == 0
+        is_running = False
+        if has_state:
+            try:
+                is_running = json.loads(state_result.stdout).get("status") == "running"
+            except json.JSONDecodeError:
+                pass
 
-        # Force kill
-        _sudo([_find_runsc(), "--root", RUNSC_ROOT, "kill", "--all", cid, "SIGKILL"], check=False)
-        time.sleep(1)
+        if is_running:
+            # Graceful then forced.
+            _sudo([runsc, "--root", RUNSC_ROOT, "kill", cid, "SIGTERM"], check=False)
+            time.sleep(5)
+            _sudo([runsc, "--root", RUNSC_ROOT, "kill", "--all", cid, "SIGKILL"], check=False)
+            time.sleep(1)
 
-        # Delete container
-        _sudo([_find_runsc(), "--root", RUNSC_ROOT, "delete", cid], check=False)
+        if has_state:
+            # --force so delete works on created/stopped/running alike.
+            # Without --force runsc errors on non-running states, leaving
+            # stale entries that break the next `runsc create`.
+            _sudo([runsc, "--root", RUNSC_ROOT, "delete", "--force", cid],
+                  check=False)
 
         # Teardown networking
         agents_dir = get_agents_dir()
@@ -456,10 +523,13 @@ class LinuxPlatform(AgentPlatform):
         if agent_index >= 0:
             self.teardown_networking(agent_index)
 
-        # Unmount overlayfs
-        merged = agent_dir / "rootfs"
-        if merged.exists():
-            _sudo(["umount", str(merged)], check=False)
+        # Intentionally do NOT unmount the overlay here. stop_sandbox
+        # is called for graceful halts that expect a subsequent
+        # restart — if we umount, the next `runsc create` finds only
+        # rootfs-upper's leftover skeletons and fails at "/bin/bash:
+        # no such file or directory" before guest-init ever runs. The
+        # overlay is torn down in remove_agent_dir when the agent is
+        # actually being deleted.
 
         # Clean up PID file
         pid_path = agent_dir / "container.pid"
@@ -486,7 +556,7 @@ class LinuxPlatform(AgentPlatform):
         cmd = [
             "sudo", _find_runsc(), "--root", RUNSC_ROOT, "exec",
             "--user", uid,
-            "--cwd", "/home/agent/workspace",
+            "--cwd", "/workspace",
             cid,
         ]
         if command:
@@ -519,7 +589,7 @@ class LinuxPlatform(AgentPlatform):
 
         for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
             if agent_dir.is_dir():
-                netns = _netns_name(f"idx{idx}")
+                netns = _netns_name(idx)
                 _sudo(["ip", "netns", "del", netns], check=False)
 
     def remove_agent_dir(self, name: str) -> None:
@@ -560,7 +630,7 @@ class LinuxPlatform(AgentPlatform):
             from ..config import load_config
             cfg = load_config()
             proxy_port = cfg.get("proxy", {}).get("port", 8080)
-        except Exception:
+        except (OSError, KeyError, ValueError):
             # Config unreadable (missing, malformed) — keep the 8080 default
             # we initialised above. Spec generation must still succeed.
             pass
@@ -615,7 +685,7 @@ class LinuxPlatform(AgentPlatform):
             {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs",
              "options": ["nosuid", "nodev", "mode=1777"]},
             # Workspace (rw)
-            {"destination": "/home/agent/workspace", "type": "bind",
+            {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
              "options": ["rbind", "rw"]},
             # Config share — mounted RW during boot so guest-init can write
@@ -680,11 +750,26 @@ class LinuxPlatform(AgentPlatform):
         # Shell/agent sessions come in via `exec_in_sandbox`, which passes
         # `--user 1000:1000` to `runsc exec` — so actual user-facing
         # activity is scoped to the `agent` user even though PID 1 is root.
+        # Docker-default capability set. CAP_SYS_ADMIN is included because
+        # guest-init-per-run.sh needs `mount -o remount,ro /safeyolo` and
+        # gVisor DOES enforce the cap check for mount operations (verified:
+        # dropping it breaks the remount, leaving /safeyolo writable).
+        #
+        # Known residual: unshare(CLONE_NEWUSER) succeeds inside gVisor
+        # regardless of this cap set — gVisor's sentry emulates namespace
+        # creation in its own user-space kernel without checking the OCI
+        # capability bitmask. We cannot block it via seccomp either (gVisor
+        # ignores OCI seccomp profiles). The risk is mitigated by gVisor's
+        # own sandbox boundary: the new userns exists entirely within the
+        # sentry, not on the host kernel, so capabilities gained there are
+        # scoped to gVisor's emulated environment and don't grant host
+        # access. Filed as an accepted risk with a blackbox test that
+        # documents the behaviour.
         root_caps = [
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
             "CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SYS_CHROOT",
-            "CAP_SYS_ADMIN",  # needed for the `mount -o remount,ro /safeyolo`
+            "CAP_SYS_ADMIN",  # needed for mount -o remount,ro /safeyolo
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
         return {
@@ -725,5 +810,42 @@ class LinuxPlatform(AgentPlatform):
                     "pids": {"limit": 4096},
                 },
                 "cgroupsPath": cgroups_path,
+                # Minimal seccomp profile: block syscalls whose default
+                # behaviour is an escape vector in a containerised
+                # context. Default-allow (we don't replicate Docker's
+                # ~44-syscall blocklist here; gVisor's user-space
+                # kernel already rejects most of them) with targeted
+                # denials for the cases blackbox tests proved were
+                # reachable otherwise.
+                # Minimal seccomp profile: block syscalls whose default
+                # behaviour is an escape vector. Default-allow — we
+                # don't replicate Docker's 44-syscall blocklist here
+                # because gVisor's user-space kernel already rejects
+                # most of them (blackbox tests confirm). Target only
+                # what the probes proved reachable.
+                #
+                # Note: gVisor does NOT honour SCMP_CMP_MASKED_EQ arg
+                # filters (as of 20260416-release); per-arg rules are
+                # silently ignored so we must block the entire syscall,
+                # not just specific flag combinations.
+                "seccomp": {
+                    "defaultAction": "SCMP_ACT_ALLOW",
+                    "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
+                    "syscalls": [
+                        {
+                            # unshare: user/mount/pid/net namespace
+                            # creation. Inside a fresh userns the agent
+                            # appears as uid 0 with a full cap set,
+                            # enabling escape attempts the other controls
+                            # didn't anticipate. Historical escape
+                            # vehicle (CVE-2013-1956 and others).
+                            # guest-init doesn't use unshare at all
+                            # (verified via grep); safe to block entirely.
+                            "names": ["unshare"],
+                            "action": "SCMP_ACT_ERRNO",
+                            "errnoRet": 1,  # EPERM
+                        },
+                    ],
+                },
             },
         }

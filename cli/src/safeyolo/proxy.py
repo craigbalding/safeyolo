@@ -120,11 +120,19 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
         admin_token_file.write_text(admin_token)
         admin_token_file.chmod(0o600)
 
-    # Agent token: regenerated every start
-    agent_token = secrets.token_hex(32)
+    # Agent token: persist across restarts. In the Docker era this was
+    # a bind-mount so regeneration was transparent (container saw the
+    # new file immediately). In the microVM era the token is copied at
+    # staging time — regenerating it breaks running sandboxes (401 on
+    # agent API). The token's threat model doesn't benefit from rotation
+    # anyway: the agent always holds the current value via /app/agent_token.
     agent_token_file = data_dir / "agent_token"
-    agent_token_file.write_text(agent_token)
-    agent_token_file.chmod(0o600)
+    if agent_token_file.exists():
+        agent_token = agent_token_file.read_text().strip()
+    else:
+        agent_token = secrets.token_hex(32)
+        agent_token_file.write_text(agent_token)
+        agent_token_file.chmod(0o600)
 
     return admin_token, agent_token
 
@@ -244,7 +252,11 @@ def _build_command(
     cmd.extend(["--set", "block_global=false"])
     cmd.extend(["--set", "stream_large_bodies=10m"])
     cmd.extend(["--set", f"admin_port={admin_port}"])
-    cmd.extend(["--set", f"admin_api_token={admin_token}"])
+    # Pass token via file path, NOT on the command line. The cmdline is
+    # visible to any local user via /proc/PID/cmdline or `ps aux` — putting
+    # the admin token there leaks it to every process on the host.
+    admin_token_file = data_dir / "admin_token"
+    cmd.extend(["--set", f"admin_api_token_file={admin_token_file}"])
 
     # TLS passthrough for frpc — frp protocol doesn't work through MITM
     cmd.extend(["--ignore-hosts", r"^api\.asterfold\.ai:7000$"])
@@ -279,8 +291,14 @@ def _build_command(
         cmd.extend(["--set", "pattern_block_input=true"])
         cmd.extend(["--set", "pattern_block_output=true"])
 
-    # test-context: defaults to BLOCK (428 soft-reject for missing context)
-    tc_block = force_block or os.environ.get("TEST_CONTEXT_BLOCK", "true").lower() == "true"
+    # test-context: defaults to BLOCK (428 soft-reject for missing context).
+    # In test mode (blackbox harness), disable blocking so host-side proxy
+    # tests that don't include X-Test-Context aren't 428'd. The isolation
+    # tests explicitly include the header on probes they want recorded.
+    if test_config:
+        tc_block = False
+    else:
+        tc_block = force_block or os.environ.get("TEST_CONTEXT_BLOCK", "true").lower() == "true"
     cmd.extend(["--set", f"test_context_block={'true' if tc_block else 'false'}"])
 
     # Override container-default paths for host execution
