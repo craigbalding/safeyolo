@@ -192,6 +192,10 @@ class TestAgentAPICrossAgentIsolation:
             capture_output=True, timeout=10,
         )
 
+        # Brief pause for the flow recorder to commit to SQLite.
+        import time
+        time.sleep(1)
+
         # Now search flows and inspect results.
         status, body = _curl_agent_api(
             f"/api/flows/search?host=httpbin.org&limit=50",
