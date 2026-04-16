@@ -142,9 +142,13 @@ def start(
         console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)
 
-    # pf firewall rules are loaded when the first VM starts (needs a running
-    # VM to detect the bridge interface). See _run_agent in agent.py.
-    console.print("  pf rules will be loaded when first agent starts")
+    # Firewall rules are loaded when the first sandbox starts (needs a
+    # running sandbox to detect the bridge/veth interface). See _run_agent
+    # in agent.py.
+    from ..platform import get_platform
+    console.print(
+        f"  {get_platform().firewall_name} rules will be loaded when first agent starts"
+    )
 
     if wait:
         console.print("Waiting for healthy status...", end=" ")
@@ -241,7 +245,7 @@ def stop_all() -> None:
     # Unload firewall rules
     try:
         plat.unload_firewall_rules()
-        console.print("  pf rules unloaded")
+        console.print(f"  {plat.firewall_name} rules unloaded")
     except Exception:
         pass  # Non-fatal
 

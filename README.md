@@ -11,6 +11,9 @@ SafeYolo is a security proxy that gives operators scoped control over what AI ag
 
 Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patterns informed by [Shuru](https://github.com/superhq-ai/shuru/).
 
+> [!NOTE]
+> **SafeYolo is pre-v1.** The install below is deliberately step-by-step so you can see exactly what gets built on your machine. A one-command installer lands with v1.
+
 ## Quick Start
 
 ### Prerequisites
@@ -34,6 +37,8 @@ mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
 
 # Install CLI and dependencies
 uv sync --all-packages
+# Put the `safeyolo` CLI on your shell's PATH (or prefix every command with `uv run`)
+source .venv/bin/activate
 ```
 
 **Then, one platform-specific step:**

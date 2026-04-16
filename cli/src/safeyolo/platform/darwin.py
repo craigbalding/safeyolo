@@ -28,6 +28,8 @@ from . import AgentPlatform
 class DarwinPlatform(AgentPlatform):
     """macOS agent isolation via Virtualization.framework microVMs."""
 
+    firewall_name = "pf"
+
     def setup_networking(self, agent_index: int) -> dict:
         return setup_feth(agent_index)
 
