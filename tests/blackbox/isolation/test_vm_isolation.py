@@ -155,6 +155,19 @@ class TestHostAdjacentReachability:
         host = self._host_ip_from_proxy()
         self._assert_tcp_unreachable(host, 44444, "arbitrary unused port 44444")
 
+    def test_sinkhole_direct_unreachable(self):
+        """Sinkhole ports bind to 0.0.0.0 on the host during test runs, so
+        they're a real, listening target. Sandbox traffic to those ports
+        must only reach them *via the proxy* (which routes specific
+        hostnames there); direct sandbox → host-sinkhole-port connects
+        must be firewall-blocked. This is the strongest version of the
+        "arbitrary port" check because it can't pass trivially — there
+        is definitely something listening.
+        """
+        host = self._host_ip_from_proxy()
+        for port in (18080, 18443, 19999):
+            self._assert_tcp_unreachable(host, port, f"sinkhole port {port}")
+
 
 class TestPrivilegeEscalation:
     """Verify privilege escalation vectors are blocked."""
