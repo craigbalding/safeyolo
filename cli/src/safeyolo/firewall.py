@@ -167,6 +167,7 @@ def load_rules(proxy_port: int = 8080, admin_port: int = 9090, active_subnets: l
         flushed or host rebooted without a later safeyolo start)
     """
     _require_pf_conf_hook()
+    _ensure_hook_active_in_pf()
     rules = generate_rules(proxy_port=proxy_port, admin_port=admin_port, active_subnets=active_subnets)
 
     # Fast path: if the anchor file on disk already contains exactly these
@@ -299,3 +300,59 @@ def _require_pf_conf_hook() -> None:
         f"{' --test' if ANCHOR_NAME == 'com.safeyolo-test' else ''}` once to "
         f"install it. SafeYolo no longer modifies {PF_CONF} at runtime."
     )
+
+
+def _anchor_in_loaded_pf() -> bool:
+    """True iff the SafeYolo anchor appears in the currently-loaded main pf ruleset.
+
+    pf has two states that can drift: what's on disk in /etc/pf.conf, and
+    what's in the running ruleset (loaded at boot, or by `pfctl -f`). A hook
+    can be on disk without being active — edits to pf.conf don't take
+    effect until an explicit reload. This queries the running state.
+    """
+    try:
+        result = _sudo_run(["pfctl", "-s", "rules"], capture=True, check=True)
+    except subprocess.CalledProcessError:
+        return False  # can't tell; treat as not-loaded so caller will try to reload
+    haystack = result.stdout or ""
+    return f'anchor "{ANCHOR_NAME}"' in haystack
+
+
+def _ensure_hook_active_in_pf() -> None:
+    """Self-heal: if the anchor hook is on disk but not in the running pf,
+    reload pf.conf. Fail-closed on any failure.
+
+    Covers the migration case where `safeyolo setup pf` was run long ago
+    before it learned to reload — the hook stayed inert in memory until
+    someone reloaded pf or rebooted. Without this check, a whole class of
+    installs have their default-deny agent-egress posture silently broken.
+
+    Side effect of `pfctl -f`: replaces the running ruleset, flushing
+    dynamic anchors managed outside pf.conf (notably Apple's
+    com.apple.internet-sharing when Internet Sharing is enabled). Owners
+    re-register on their own cadence. We accept the cost because the
+    alternative — an inert anchor — defeats the whole point.
+    """
+    if _anchor_in_loaded_pf():
+        return
+
+    log.warning(
+        "SafeYolo anchor %s not in running pf ruleset — reloading %s. "
+        "This flushes dynamic anchors like Apple's Internet Sharing; "
+        "toggle Sharing off/on if it doesn't re-attach.",
+        ANCHOR_NAME, PF_CONF,
+    )
+    proc = _sudo_run(["pfctl", "-f", str(PF_CONF)], capture=True, check=False)
+    if proc.returncode != 0:
+        err_text = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            f"Failed to reload {PF_CONF}: "
+            f"{err_text or 'pfctl -f returned non-zero'}. "
+            f"Cannot start without an active anchor — default-deny would not enforce."
+        )
+    if not _anchor_in_loaded_pf():
+        raise RuntimeError(
+            f"Anchor {ANCHOR_NAME!r} still not in running pf after reload. "
+            f"Check {PF_CONF} for both 'anchor \"{ANCHOR_NAME}\"' and "
+            f"'load anchor \"{ANCHOR_NAME}\" from \"...\"' lines."
+        )
