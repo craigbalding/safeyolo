@@ -228,15 +228,15 @@ if [ "$RUN_ISOLATION" = true ]; then
     # Create agent if not exists
     safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run 2>/dev/null || true
 
-    # Check if already running by looking for vm-ip
+    # Platform-portable readiness: `safeyolo agent shell -c true` dispatches
+    # to SSH on Darwin and `runsc exec` on Linux, so it works on both without
+    # this script reaching for platform primitives. SSH keys only exist on
+    # the Darwin path; runsc exec uses its own channel.
     VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
-    SSH_KEY="$SAFEYOLO_CONFIG_DIR/data/vm_ssh_key"
 
     VM_RUNNING=false
     if [ -n "$VM_IP" ]; then
-        if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
-            -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
+        if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
             VM_RUNNING=true
         fi
     fi
@@ -248,8 +248,7 @@ if [ "$RUN_ISOLATION" = true ]; then
         safeyolo agent run "$AGENT_NAME" --detach
         STARTED_VM=true
 
-        # Wait for SSH
-        echo "  Waiting for SSH..."
+        echo "  Waiting for VM..."
         VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
         if [ -z "$VM_IP" ]; then
             for i in $(seq 1 15); do
@@ -263,10 +262,8 @@ if [ "$RUN_ISOLATION" = true ]; then
             exit 2
         fi
         for i in $(seq 1 60); do
-            if ssh -i "$SSH_KEY" -p 22 -o StrictHostKeyChecking=no \
-                -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 \
-                -o BatchMode=yes "agent@$VM_IP" true 2>/dev/null; then
-                echo "  SSH ready ($VM_IP)"
+            if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
+                echo "  VM ready ($VM_IP)"
                 break
             fi
             sleep 1
