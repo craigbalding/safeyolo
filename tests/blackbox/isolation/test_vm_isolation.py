@@ -71,6 +71,122 @@ class TestNetworkEscape:
             finally:
                 sock.close()
 
+    def test_direct_alt_port_blocked(self):
+        """Direct TCP to an external IP on non-standard ports must fail.
+
+        Existing tests cover :80 and :443. This widens to ports an
+        agent might try if the firewall whitelisted only the common
+        HTTP/S ports: :8443 (alt-HTTPS), :22 (SSH to external host),
+        :6667 (IRC — historical C2 channel), :25 (SMTP).
+        """
+        for port in (8443, 22, 6667, 25):
+            result = subprocess.run(
+                ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
+                 "-o", "/dev/null", f"http://1.1.1.1:{port}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0, (
+                f"Direct TCP to 1.1.1.1:{port} succeeded — firewall leak "
+                f"on a non-standard port"
+            )
+
+    def test_libc_resolver_blocked(self):
+        """DNS via the libc resolver (getaddrinfo) must not resolve an
+        external name. Existing tests probe raw UDP to 8.8.8.8:53 — but
+        an agent using the system resolver routes through whatever
+        /etc/resolv.conf points at; if that nameserver is reachable,
+        the agent can bypass the proxy for lookups (and then stream
+        data via DNS tunnelling). Assert getaddrinfo on an external
+        name fails — no valid resolver should be reachable.
+        """
+        # "blackbox-probe.example" isn't a real host; we care only whether
+        # DNS is reachable at all. An EAI_AGAIN / EAI_NODATA / EAI_NONAME
+        # all indicate resolver couldn't answer — expected.
+        with pytest.raises(socket.gaierror):
+            socket.getaddrinfo("blackbox-probe-should-not-resolve.example",
+                               80, socket.AF_INET, socket.SOCK_STREAM)
+
+    def test_non_icmp_raw_protocols_blocked(self):
+        """Raw sockets using non-ICMP IP protocols must also fail. Existing
+        test only covers IPPROTO_ICMP; if the kernel filter scopes raw-
+        socket restriction by protocol number, an agent could try
+        IPPROTO_SCTP, IPPROTO_GRE, IPPROTO_IPIP (tunnelling) to
+        exfiltrate data outside the proxy's TCP/UDP observation window.
+        """
+        # IPPROTO_SCTP = 132, IPPROTO_GRE = 47, IPPROTO_IPIP = 4.
+        # Use raw numeric constants since some are absent from socket
+        # module depending on build.
+        for proto in (132, 47, 4):
+            with pytest.raises((PermissionError, OSError)):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, proto)
+                try:
+                    sock.sendto(b"\x00" * 20, ("1.1.1.1", 0))
+                finally:
+                    sock.close()
+
+    def test_ipv6_egress_blocked(self):
+        """IPv6 egress must fail. mitmproxy binds to IPv4; if the sandbox
+        has v6 connectivity, it routes around the proxy entirely.
+        guest-init disables IPv6 at the sysctl level — assert the
+        observable property (no v6 destination reachable), not the
+        mechanism.
+        """
+        # Try a AAAA literal (Google DNS v6) via curl.
+        result = subprocess.run(
+            ["curl", "-6", "-s", "--noproxy", "*", "--connect-timeout", "3",
+             "-o", "/dev/null", "http://[2001:4860:4860::8888]/"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode != 0, "IPv6 egress to 2001:4860:4860::8888 succeeded"
+        # Also at the socket layer — AF_INET6 creation may succeed but
+        # connect must fail.
+        try:
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        except OSError:
+            return  # v6 stack fully disabled — property holds
+        sock.settimeout(3)
+        try:
+            try:
+                sock.connect(("2001:4860:4860::8888", 80))
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                return  # expected
+            pytest.fail("IPv6 connect to 2001:4860:4860::8888:80 succeeded")
+        finally:
+            sock.close()
+
+    def test_metadata_ips_unreachable(self):
+        """Cloud metadata services (AWS/GCP/Azure IMDS at 169.254.169.254,
+        DigitalOcean at 169.254.169.254, GCE alias gateway 10.0.0.1)
+        must be unreachable. A sandbox running on a cloud VM could
+        otherwise SSRF the host's IAM credentials via metadata.
+
+        Link-local 169.254.0.0/16 in particular must be blocked — the
+        proxy's allowlist likely doesn't cover it, so this relies on
+        the firewall's block-by-default behaviour.
+        """
+        for ip in ("169.254.169.254", "169.254.170.2"):  # AWS IMDSv1 + ECS creds
+            result = subprocess.run(
+                ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
+                 "-o", "/dev/null", f"http://{ip}/"],
+                capture_output=True, text=True, timeout=5,
+            )
+            assert result.returncode != 0, (
+                f"Cloud metadata IP {ip} was reachable — potential SSRF to "
+                f"host IAM credentials"
+            )
+
+    def test_af_packet_blocked(self):
+        """AF_PACKET raw Ethernet sockets must fail (CAP_NET_RAW required).
+        If granted, agent can forge L2 frames on its veth — ARP spoofing,
+        source-IP spoofing past L3 firewall rules, MAC-level probing of
+        the host side.
+        """
+        with pytest.raises((PermissionError, OSError)):
+            # AF_PACKET = 17 on Linux (not always in socket module namespace
+            # on non-Linux stubs); use the numeric constant.
+            sock = socket.socket(17, socket.SOCK_RAW, 0)
+            sock.close()
+
     def test_proxy_reachable(self):
         """Proxy must be reachable (the one allowed network path)."""
         proxy = os.environ.get("HTTP_PROXY", "")
