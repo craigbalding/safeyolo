@@ -558,6 +558,140 @@ class TestSandboxExposure:
                 )
 
 
+class TestFilesystemBoundary:
+    """Verify workspace/virtiofs and overlayfs boundaries can't be abused
+    to escape or compromise the host.
+    """
+
+    def test_workspace_symlink_traversal(self):
+        """Create a symlink inside /workspace pointing to /etc/shadow on
+        the host. If the host follows it (e.g. via virtiofs passthrough),
+        the agent can read host files outside the mount.
+
+        On gVisor (lisafs gofer) this should resolve within the sandbox's
+        rootfs, not the host. On VZ microVMs (virtiofs) the mount layer
+        prevents traversal. Either way, the read must fail or return the
+        sandbox's own /etc/shadow (which has no real credentials).
+        """
+        import tempfile
+        link_dir = tempfile.mkdtemp(dir="/workspace", prefix="symtest-")
+        link_path = os.path.join(link_dir, "shadow-link")
+        try:
+            os.symlink("/etc/shadow", link_path)
+            try:
+                with open(link_path) as f:
+                    content = f.read(200)
+            except (PermissionError, FileNotFoundError, OSError):
+                return  # can't read → safe
+            # If readable, verify it's the SANDBOX's shadow (no real
+            # password hashes) not the HOST's.
+            assert "root:" not in content or content.count(":") < 5, (
+                f"Symlink traversal may have reached host /etc/shadow: "
+                f"{content[:100]!r}"
+            )
+        finally:
+            os.unlink(link_path)
+            os.rmdir(link_dir)
+
+    def test_workspace_no_setuid(self):
+        """setuid bits on files written to /workspace must not take effect.
+        The workspace mount should have `nosuid` — otherwise an agent
+        can create a setuid-root binary and escalate.
+        """
+        import stat
+        import tempfile
+        test_file = tempfile.NamedTemporaryFile(
+            dir="/workspace", prefix="suidtest-", delete=False,
+        )
+        try:
+            test_file.write(b"#!/bin/sh\nwhoami\n")
+            test_file.close()
+            os.chmod(test_file.name, 0o4755)  # setuid root
+            actual_mode = os.stat(test_file.name).st_mode
+            # If nosuid mount, the kernel strips the suid bit silently
+            # OR allows the chmod but ignores the bit at exec time.
+            # Check the bit on disk:
+            has_suid = bool(actual_mode & stat.S_ISUID)
+            if has_suid:
+                # Bit stuck — test if exec actually escalates.
+                result = subprocess.run(
+                    [test_file.name], capture_output=True, text=True,
+                    timeout=5,
+                )
+                # If output is "root", the suid is effective — bad.
+                if result.stdout.strip() == "root":
+                    pytest.fail(
+                        "setuid binary on /workspace executed as root — "
+                        "mount lacks nosuid"
+                    )
+                # Bit is on disk but not effective at exec → acceptable
+                # (common on overlayfs + gVisor).
+        finally:
+            os.unlink(test_file.name)
+
+    def test_workspace_no_mknod(self):
+        """mknod on /workspace must fail. If allowed, agent can create
+        device nodes (e.g. /dev/sda equivalent) on the shared mount.
+        """
+        import tempfile
+        mknod_path = os.path.join(
+            tempfile.mkdtemp(dir="/workspace", prefix="mktest-"),
+            "testdev",
+        )
+        try:
+            # Try to create a character device (1,3 = /dev/null)
+            try:
+                os.mknod(mknod_path, 0o666 | 0o020000, os.makedev(1, 3))
+            except (PermissionError, OSError):
+                return  # expected
+            pytest.fail("mknod succeeded on /workspace — mount lacks nodev")
+        finally:
+            if os.path.exists(mknod_path):
+                os.unlink(mknod_path)
+            os.rmdir(os.path.dirname(mknod_path))
+
+    def test_ca_trust_store_immutable(self):
+        """An agent must not be able to add CAs to the trust store and
+        then MITM its own traffic to hide from the proxy. The system
+        trust store (update-ca-certificates target) should be read-only
+        or the addition should have no effect on proxy behaviour.
+        """
+        # Attempt to write a fake CA cert. The target dir is
+        # /usr/local/share/ca-certificates/ — if writable, the agent
+        # could inject a CA and re-run update-ca-certificates.
+        fake_ca = "/usr/local/share/ca-certificates/evil-test.crt"
+        try:
+            with open(fake_ca, "w") as f:
+                f.write("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+        except (PermissionError, OSError):
+            return  # can't write → strong property
+
+        # Written — that's a concern. Clean up and try update-ca-certificates.
+        try:
+            result = subprocess.run(
+                ["update-ca-certificates"], capture_output=True,
+                text=True, timeout=10,
+            )
+            # Even if the write succeeded and update ran, the proxy
+            # won't honour the new CA for its own outbound validation
+            # (proxy runs on the HOST, not inside the sandbox). So the
+            # actual security impact is limited to in-sandbox TLS
+            # clients trusting the fake CA — which only matters if the
+            # agent is trying to MITM itself (to hide traffic from the
+            # proxy's content inspection).
+            #
+            # Flag it anyway — defence in depth.
+            if result.returncode == 0:
+                pytest.fail(
+                    "Agent was able to add a CA to the trust store AND "
+                    "run update-ca-certificates. While the proxy's own "
+                    "trust store is unaffected, in-sandbox TLS clients "
+                    "would honour the injected CA."
+                )
+        finally:
+            os.unlink(fake_ca) if os.path.exists(fake_ca) else None
+
+
 class TestSyscallSeccompEquivalents:
     """Verify syscalls that Docker's default seccomp profile drops are
     also unreachable on this runtime. Docker-on-Linux drops ~44 syscalls
