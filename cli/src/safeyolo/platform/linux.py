@@ -423,6 +423,14 @@ class LinuxPlatform(AgentPlatform):
         # Ensure runsc root dir exists
         _sudo(["mkdir", "-p", RUNSC_ROOT])
 
+        # Ensure the workspace bind-mount target exists inside the
+        # rootfs. The base rootfs doesn't ship `/workspace`; without
+        # this, `runsc start` fails to attach the workspace bind mount
+        # and the container lands in `stopped` state before guest-init
+        # ever runs. Creating it in rootfs-upper makes it visible via
+        # the overlay without mutating the shared base image.
+        _sudo(["mkdir", "-p", str(agent_dir / "rootfs-upper" / "workspace")])
+
         # Clear any stale state entry for this cid before create. runsc
         # create fails with ID-already-exists if a previous run's state
         # is still in the root dir (e.g. `stopped` after a failed boot,
