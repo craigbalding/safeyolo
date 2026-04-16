@@ -50,11 +50,16 @@ class TestDoesNotGrantPfConfWrites:
         assert "tee  -a /etc/pf.conf" not in sudoers_rules
 
     def test_no_tee_write_to_pf_conf(self, sudoers_rules):
-        # Neither `tee -a` nor plain `tee` should target pf.conf at runtime.
+        # No tee shape against pf.conf (that's the mutation primitive we forbid).
+        # `pfctl -f /etc/pf.conf` is allowed — it's a read + re-parse, not a write.
         assert "tee /etc/pf.conf" not in sudoers_rules
-        assert "/etc/pf.conf" not in sudoers_rules, (
-            "Runtime sudoers must not reference /etc/pf.conf at all."
-        )
+        assert "tee -a /etc/pf.conf" not in sudoers_rules
+        # Any other reference to pf.conf must be a pfctl read (-f for reload-from-file).
+        for line in sudoers_rules.splitlines():
+            if "/etc/pf.conf" in line:
+                assert "/sbin/pfctl -f /etc/pf.conf" in line, (
+                    f"Unexpected pf.conf reference in sudoers line: {line!r}"
+                )
 
     def test_no_cat_pf_conf(self, sudoers_rules):
         assert "cat /etc/pf.conf" not in sudoers_rules
@@ -107,6 +112,19 @@ class TestRuntimeEssentialsPreserved:
 
     def test_pfctl_status(self, sudoers_rules):
         assert "/sbin/pfctl -s info" in sudoers_rules
+
+    def test_pfctl_list_main_rules(self, sudoers_rules):
+        """`safeyolo doctor` queries `pfctl -s rules` to verify the anchor
+        hook is in the running main ruleset — distinct from anchor-scoped
+        `pfctl -a com.safeyolo -s rules` which only shows rules inside
+        the anchor namespace. Listing is read-only, safe to grant."""
+        assert "/sbin/pfctl -s rules" in sudoers_rules
+
+    def test_pfctl_reload_pf_conf(self, sudoers_rules):
+        """`safeyolo setup pf` and firewall.py's self-heal run `pfctl -f
+        /etc/pf.conf` to activate the anchor hook. Path is the exact
+        system pf.conf — no wildcard, no writing, just re-parse."""
+        assert "/sbin/pfctl -f /etc/pf.conf" in sudoers_rules
 
     def test_ifconfig_feth(self, sudoers_rules):
         assert "/sbin/ifconfig feth*" in sudoers_rules

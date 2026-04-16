@@ -42,11 +42,16 @@
 # -----------------------------------------------------------------
 
 # pf firewall management (fixed anchor: com.safeyolo)
+# `-s rules` (no anchor) is needed by `safeyolo doctor`'s firewall
+# enforcement check — it verifies the anchor hook is in the running main
+# ruleset (read-only; listing rules is not a mutation).
 %staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo -f *, \
                             /sbin/pfctl -a com.safeyolo -F all, \
                             /sbin/pfctl -a com.safeyolo -s *, \
                             /sbin/pfctl -e, \
-                            /sbin/pfctl -s info
+                            /sbin/pfctl -s info, \
+                            /sbin/pfctl -s rules, \
+                            /sbin/pfctl -f /etc/pf.conf
 
 # pf firewall management (blackbox test harness anchor: com.safeyolo-test)
 %staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo-test -f *, \

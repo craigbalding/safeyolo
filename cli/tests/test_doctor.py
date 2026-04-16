@@ -551,6 +551,41 @@ class TestCheckFirewallDarwin:
         result = _check_firewall()
         assert result.status == "warn"
 
+    def test_warn_when_rules_needs_password_but_info_allowed(self, monkeypatch):
+        """Stock sudoers template (pre-this-PR) grants `pfctl -s info` but
+        not `pfctl -s rules`. The rules call hits password-required even
+        after info succeeded — must warn (not fail) with a remediation
+        that points at the updated template, not at pf itself."""
+        def fake_sudo_n(cmd, timeout=5):
+            if cmd[0:3] == ["pfctl", "-s", "info"]:
+                return _completed(stdout="Status: Enabled\n")
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                return _completed(
+                    returncode=1, stderr="sudo: a password is required\n"
+                )
+            return _completed()
+
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
+        result = _check_firewall()
+        assert result.status == "warn"
+        assert "pfctl -s rules" in result.message
+        assert "safeyolo setup sudoers" in result.remediation
+
+    def test_fail_with_stderr_when_rules_fails_for_other_reason(self, monkeypatch):
+        """Non-password rules failure surfaces the stderr verbatim so
+        the user can see the actual cause instead of guessing."""
+        def fake_sudo_n(cmd, timeout=5):
+            if cmd[0:3] == ["pfctl", "-s", "info"]:
+                return _completed(stdout="Status: Enabled\n")
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                return _completed(returncode=1, stderr="pfctl: quirky kernel error\n")
+            return _completed()
+
+        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
+        result = _check_firewall()
+        assert result.status == "fail"
+        assert "quirky kernel error" in result.message
+
 
 class TestCheckFirewallLinux:
     """Linux: SAFEYOLO_<base> iptables chain present."""
