@@ -59,7 +59,11 @@ if not _in_blackbox_test_vm():
 
 
 # --- host/ : platform- and dependency-gated --------------------------------
-if sys.platform == "linux":
+# Only relevant on the host itself. When run inside the bbtest VM (isolation
+# pytest invocation), host/* is already deselected by path (the tests don't
+# exist inside the VM's view of the repo anyway) and runsc obviously won't
+# be installed inside the sandbox — so the warning is a false alarm there.
+if sys.platform == "linux" and not _in_blackbox_test_vm():
     if not _runsc_available():
         warnings.warn(
             "runsc (gVisor) not found — skipping blackbox host tests.\n"
