@@ -332,6 +332,23 @@ if [ "$RUN_ISOLATION" = true ]; then
     ISOLATION_RESULT=$?
     set -e
     echo ""
+
+    # Token lifecycle test — runs on the host but needs the sandbox
+    # still running (tests agent API across a proxy restart). Must
+    # run BEFORE cleanup tears down the VM.
+    LIFECYCLE_RESULT=0
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        echo "=== Token Lifecycle Tests (host-side, sandbox running) ==="
+        echo ""
+        cd "$SCRIPT_DIR/host"
+        set +e
+        pytest $VERBOSE --tb=short --timeout=120 \
+            test_token_lifecycle.py
+        LIFECYCLE_RESULT=$?
+        set -e
+        cd "$SCRIPT_DIR"
+        echo ""
+    fi
 fi
 
 # --- Phase 3: Summary ---
@@ -357,9 +374,14 @@ if [ "$RUN_ISOLATION" = true ]; then
     else
         echo "Isolation tests: FAILED (exit code: $ISOLATION_RESULT)"
     fi
+    if [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
+        echo "Lifecycle tests: FAILED (exit code: $LIFECYCLE_RESULT)"
+    elif [[ "$(uname -s)" == "Linux" ]]; then
+        echo "Lifecycle tests: PASSED"
+    fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ]; then
+if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
     echo ""
     echo "Result: FAILED"
     exit 1
