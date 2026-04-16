@@ -210,6 +210,18 @@ class LinuxPlatform(AgentPlatform):
             _sudo(["iptables", "-t", "nat", "-A", "POSTROUTING",
                    "-s", subnet, "-o", outbound_if, "-j", "MASQUERADE"])
 
+            # INPUT chain: sandbox → host:proxy_port is destined for a local
+            # IP (the feth host side), so it hits INPUT, not FORWARD. On
+            # hosts with default-deny INPUT (e.g. Ubuntu with UFW active)
+            # the FORWARD rule above isn't enough — the packet gets dropped
+            # before ever reaching mitmproxy. Also explicitly DROP admin
+            # port on INPUT so a permissive INPUT policy doesn't let the
+            # agent reach it. Use -I so these land ahead of any drop rule.
+            _sudo(["iptables", "-I", "INPUT", "-s", subnet, "-d", host_ip,
+                   "-p", "tcp", "--dport", str(admin_port), "-j", "DROP"])
+            _sudo(["iptables", "-I", "INPUT", "-s", subnet, "-d", host_ip,
+                   "-p", "tcp", "--dport", str(proxy_port), "-j", "ACCEPT"])
+
         log.info("iptables rules loaded for chain %s", CHAIN_NAME)
 
     def unload_firewall_rules(self) -> None:
@@ -224,12 +236,23 @@ class LinuxPlatform(AgentPlatform):
         _sudo(["iptables", "-F", CHAIN_NAME], check=False)
         _sudo(["iptables", "-X", CHAIN_NAME], check=False)
 
-        # Clean up NAT rules (remove all MASQUERADE rules for our subnets)
-        # This is best-effort — stale rules are harmless
+        # Clean up NAT + INPUT rules. Best-effort — stale rules are harmless.
         for idx in range(10):
             alloc = allocate_subnet(idx)
+            host_ip = alloc["subnet"].replace(".0/24", ".1")
             _sudo(["iptables", "-t", "nat", "-D", "POSTROUTING",
                    "-s", alloc["subnet"], "-j", "MASQUERADE"], check=False)
+            # We don't know the proxy/admin ports at teardown time (they
+            # come from runtime config), so loop the known defaults + a
+            # small range of likely overrides. Each -D is a no-op if the
+            # rule doesn't exist. Keeps teardown self-contained.
+            for port in (8080, 8090, 9090):
+                _sudo(["iptables", "-D", "INPUT", "-s", alloc["subnet"],
+                       "-d", host_ip, "-p", "tcp", "--dport", str(port),
+                       "-j", "ACCEPT"], check=False)
+                _sudo(["iptables", "-D", "INPUT", "-s", alloc["subnet"],
+                       "-d", host_ip, "-p", "tcp", "--dport", str(port),
+                       "-j", "DROP"], check=False)
 
         log.info("iptables rules unloaded for chain %s", CHAIN_NAME)
 
