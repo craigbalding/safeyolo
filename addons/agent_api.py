@@ -240,6 +240,26 @@ class AgentAPI:
 
         return None
 
+    def _resolve_agent_id(self, flow: http.HTTPFlow) -> str | None:
+        """Resolve calling agent name from the request's source IP.
+
+        Used by flow-inspection endpoints to scope results to the
+        calling agent — without this, any agent can search/read any
+        other agent's flows (cross-agent info disclosure).
+
+        Returns agent name string, or None if unresolvable (caller
+        should 403).
+        """
+        sd = self._find_addon("service-discovery")
+        if not sd:
+            return None
+        from utils import get_client_ip
+        client_ip = get_client_ip(flow)
+        agent_name = sd.get_client_for_ip(client_ip)
+        if not agent_name or agent_name == "default":
+            return None
+        return agent_name
+
     def _handle_gateway_services(self, flow: http.HTTPFlow):
         """GET /gateway/services - Get this agent's authorized + available services.
 
@@ -849,8 +869,28 @@ class AgentAPI:
                 self._respond(flow, 400, {"error": "Invalid JSON body"})
                 return
 
+        # Scope to calling agent — prevent cross-agent info disclosure.
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id:
+            filters["agent_id"] = agent_id
+
         results = store.search_flows(filters)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
+
+    def _verify_flow_ownership(self, flow: http.HTTPFlow,
+                               flow_record: dict) -> bool:
+        """Check that a fetched flow belongs to the calling agent.
+
+        Returns True if ownership verified (or if service-discovery is
+        unavailable, in which case we fail-open to avoid breaking
+        single-agent setups without service-discovery).
+        """
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id is None:
+            # Can't resolve caller — fail-open for backwards compat.
+            return True
+        record_agent = flow_record.get("agent_id", "")
+        return record_agent == agent_id
 
     def _handle_flow_detail(self, flow: http.HTTPFlow, flow_id: int):
         """GET /api/flows/{id} - Get flow metadata."""
@@ -862,6 +902,9 @@ class AgentAPI:
         if result is None:
             self._respond(flow, 404, {"error": "Flow not found"})
             return
+        if not self._verify_flow_ownership(flow, result):
+            self._respond(flow, 404, {"error": "Flow not found"})
+            return
         self._respond(flow, 200, result)
 
     def _handle_flow_request_body(self, flow: http.HTTPFlow, flow_id: int):
@@ -869,6 +912,12 @@ class AgentAPI:
         store = self._get_flow_store()
         if not store:
             self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        # Ownership check: fetch metadata first to get agent_id, then
+        # body only if it belongs to this agent.
+        meta = store.get_flow(flow_id)
+        if meta is None or not self._verify_flow_ownership(flow, meta):
+            self._respond(flow, 404, {"error": "Flow not found"})
             return
         result = store.get_request_body(flow_id)
         if result is None:
@@ -889,6 +938,10 @@ class AgentAPI:
         store = self._get_flow_store()
         if not store:
             self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        meta = store.get_flow(flow_id)
+        if meta is None or not self._verify_flow_ownership(flow, meta):
+            self._respond(flow, 404, {"error": "Flow not found"})
             return
         result = store.get_response_body(flow_id)
         if result is None:
@@ -912,6 +965,9 @@ class AgentAPI:
         if body is None:
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id:
+            body["agent_id"] = agent_id
         results = store.get_endpoints(body)
         self._respond(flow, 200, {"endpoints": results, "count": len(results)})
 
@@ -931,6 +987,9 @@ class AgentAPI:
         if not body.get("query"):
             self._respond(flow, 400, {"error": "query required"})
             return
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id:
+            body["agent_id"] = agent_id
         results = store.search_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 
@@ -950,6 +1009,12 @@ class AgentAPI:
         except (KeyError, TypeError, ValueError):
             self._respond(flow, 400, {"error": "flow_id_a and flow_id_b (integers) required"})
             return
+        # Ownership check: both flows must belong to the calling agent.
+        for fid in (id_a, id_b):
+            meta = store.get_flow(fid)
+            if meta is None or not self._verify_flow_ownership(flow, meta):
+                self._respond(flow, 404, {"error": "One or both flows not found"})
+                return
         result = store.diff_flows(id_a, id_b)
         if result is None:
             self._respond(flow, 404, {"error": "One or both flows not found"})
@@ -972,6 +1037,9 @@ class AgentAPI:
         if not body.get("query"):
             self._respond(flow, 400, {"error": "query required"})
             return
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id:
+            body["agent_id"] = agent_id
         results = store.search_request_bodies(body)
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 
@@ -989,6 +1057,10 @@ class AgentAPI:
         if not tag:
             self._respond(flow, 400, {"error": "tag required"})
             return
+        meta = store.get_flow(flow_id)
+        if meta is None or not self._verify_flow_ownership(flow, meta):
+            self._respond(flow, 404, {"error": "Flow not found"})
+            return
         value = body.get("value", "")
         result = store.tag_flow(flow_id, tag, value)
         self._respond(flow, 200, result)
@@ -998,6 +1070,10 @@ class AgentAPI:
         store = self._get_flow_store()
         if not store:
             self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        meta = store.get_flow(flow_id)
+        if meta is None or not self._verify_flow_ownership(flow, meta):
+            self._respond(flow, 404, {"error": "Flow not found"})
             return
         tag = urllib.parse.unquote(tag_name)
         deleted = store.untag_flow(flow_id, tag)
