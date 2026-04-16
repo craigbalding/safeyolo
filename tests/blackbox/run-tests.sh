@@ -121,6 +121,19 @@ config['test']['ca_cert'] = '$SCRIPT_DIR/certs/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
 "
 
+# Configure target_hosts for test_context addon so the flow recorder
+# captures tagged flows. The blackbox cross-agent isolation test uses
+# X-Test-Context headers on httpbin.org probes — without target_hosts,
+# test_context doesn't tag them and the flow recorder drops them.
+python3 -c "
+import yaml
+from pathlib import Path
+addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
+addons = yaml.safe_load(addons_path.read_text())
+addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = ['httpbin.org']
+addons_path.write_text(yaml.dump(addons, default_flow_style=False))
+"
+
 # Symlink shared guest artifacts (rootfs, kernel) from production.
 # init creates an empty share/ dir — replace it with a symlink.
 PROD_SHARE="$HOME/.safeyolo/share"

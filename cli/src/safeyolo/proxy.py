@@ -288,12 +288,6 @@ def _build_command(
     cmd.extend(["--set", f"circuit_state_file={data_dir / 'circuit_breaker_state.json'}"])
     cmd.extend(["--set", f"flow_store_db_path={logs_dir / 'flows.sqlite3'}"])
 
-    # In test mode, record all flows (not just ccapt_context-tagged)
-    # so security audit blackbox tests can exercise cross-agent flow
-    # isolation.
-    if test_config:
-        cmd.extend(["--set", "flow_store_record_all=true"])
-
     # Policy file
     policy_toml = config_dir / "policy.toml"
     policy_yaml = config_dir / "policy.yaml"

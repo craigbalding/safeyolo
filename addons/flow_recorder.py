@@ -48,13 +48,6 @@ class FlowRecorder:
             default="/app/logs/flows.sqlite3",
             help="Path to flow store SQLite database",
         )
-        loader.add_option(
-            name="flow_store_record_all",
-            typespec=bool,
-            default=False,
-            help="Record all flows, not just ccapt_context-tagged ones "
-                 "(for security audit blackbox testing)",
-        )
 
     def running(self):
         """Initialize FlowStore on startup."""
@@ -91,22 +84,16 @@ class FlowRecorder:
         log.info(f"Flow recorder active, db={db_path}")
 
     def _should_record(self, flow: http.HTTPFlow) -> bool:
-        """Check scope gate: record flows per configured scope."""
+        """Check scope gate: only record flows with ccapt_context."""
         if not ctx.options.flow_store_enabled:
             return False
         if self.store is None:
             return False
-        # Skip agent API internal traffic regardless of mode
-        if flow.request.host == AGENT_API_HOST:
-            return False
-        # record_all mode: capture every flow (for security audit
-        # blackbox testing where the ccapt_context header isn't
-        # present). Without this, the flow store stays empty and
-        # cross-agent isolation tests can't exercise the scoping fix.
-        if ctx.options.flow_store_record_all:
-            return True
-        # Default: only record flows with test context
+        # Must have test context (set by test_context.py for target hosts)
         if "ccapt_context" not in flow.metadata:
+            return False
+        # Skip agent API internal traffic
+        if flow.request.host == AGENT_API_HOST:
             return False
         return True
 

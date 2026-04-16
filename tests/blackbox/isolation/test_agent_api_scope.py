@@ -181,13 +181,17 @@ class TestAgentAPICrossAgentIsolation:
         token = _agent_token()
 
         # Generate a flow from this agent — the proxy will log it.
+        # Include X-Test-Context so the test_context addon tags the
+        # flow and the flow recorder captures it. This also exercises
+        # the test_context control itself (it's a security control
+        # used during pentesting to link traffic to test activities).
         proxy = os.environ.get("HTTP_PROXY", "")
         if not proxy:
             pytest.skip("HTTP_PROXY not set")
-        # Hit a distinctive URL so we can search for it.
         marker = "bbtest-scope-probe"
         subprocess.run(
             ["curl", "-s", "--proxy", proxy, "-o", "/dev/null",
+             "-H", "X-Test-Context: run=security-audit;agent=bbtest",
              f"http://httpbin.org/get?marker={marker}"],
             capture_output=True, timeout=10,
         )
