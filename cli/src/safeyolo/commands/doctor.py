@@ -155,11 +155,24 @@ def _check_firewall_darwin() -> DiagResult:
         )
 
     rules = _sudo_n(["pfctl", "-s", "rules"])
-    if rules is None or rules.returncode != 0:
+    if rules is None:
         return DiagResult(
             name="Firewall enforcement",
             status="fail",
-            message="pfctl -s rules failed after pfctl -s info succeeded",
+            message="pfctl -s rules timed out or binary not found",
+        )
+    if rules.returncode != 0:
+        if _sudo_needs_password(rules):
+            return DiagResult(
+                name="Firewall enforcement",
+                status="warn",
+                message="sudoers doesn't grant `pfctl -s rules` (needed to verify the anchor is in the main ruleset)",
+                remediation="safeyolo setup sudoers (re-run to pick up the updated template)",
+            )
+        return DiagResult(
+            name="Firewall enforcement",
+            status="fail",
+            message=f"pfctl -s rules failed: {(rules.stderr or '').strip()}",
         )
     if f'anchor "{ANCHOR_NAME}"' not in (rules.stdout or ""):
         return DiagResult(
