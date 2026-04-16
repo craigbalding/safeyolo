@@ -130,6 +130,8 @@ def _veth_host_name(agent_index: int) -> str:
 class LinuxPlatform(AgentPlatform):
     """Linux agent isolation via gVisor (runsc)."""
 
+    firewall_name = "iptables"
+
     # --- Networking ---
 
     def setup_networking(self, agent_index: int) -> dict:

@@ -17,6 +17,16 @@ from pathlib import Path
 class AgentPlatform(ABC):
     """Platform-specific agent sandbox operations."""
 
+    @property
+    @abstractmethod
+    def firewall_name(self) -> str:
+        """Short name of the host firewall used for agent egress isolation.
+
+        Surfaced in user-visible status messages (e.g. "pf rules loaded" vs
+        "iptables rules loaded") so the CLI doesn't leak macOS terminology
+        on Linux or vice versa.
+        """
+
     @abstractmethod
     def setup_networking(self, agent_index: int) -> dict:
         """Create network isolation for an agent.
