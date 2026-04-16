@@ -5,6 +5,7 @@ The addon stack, options, and behavior are identical — only the
 execution environment changes (host process vs. container).
 """
 
+import ipaddress
 import logging
 import os
 import shutil
@@ -128,6 +129,84 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
     return admin_token, agent_token
 
 
+# ---------------------------------------------------------------------------
+# SAFEYOLO_IGNORE_CIDRS — pass a CIDR (or comma-separated list of CIDRs) as
+# an env var to add mitmproxy --ignore-hosts exemptions for those IP ranges.
+# CIDR-only by design: no regex surface for the user to misuse, validated at
+# startup, and /0–/7 is refused so you can't accidentally exempt half the
+# internet.
+# ---------------------------------------------------------------------------
+
+# Refuse prefixes wider than this — user-facing footgun guard.
+_IGNORE_CIDR_MIN_PREFIX = 8
+
+
+def _octet_range_regex(lo: int, hi: int) -> str:
+    """Regex fragment matching any integer in [lo, hi]. 0 ≤ lo ≤ hi ≤ 255."""
+    if lo == 0 and hi == 255:
+        return r"\d+"
+    # Alternation is fine here: the widest CIDRs we accept (/8) give at most
+    # 256 values in the partial octet, which regex engines compile happily.
+    return "(?:" + "|".join(str(n) for n in range(lo, hi + 1)) + ")"
+
+
+def _cidr_to_ignore_regex(cidr: str) -> str:
+    """Convert an IPv4 CIDR to a mitmproxy --ignore-hosts regex.
+
+    Output matches `<ip>` or `<ip>:<port>` where <ip> is any IPv4 address in
+    the CIDR. Rejects IPv6 (the host:port regex shape doesn't map cleanly)
+    and prefixes < /8 (accidental-over-exemption guard).
+    """
+    try:
+        net = ipaddress.ip_network(cidr.strip(), strict=False)
+    except ValueError as e:
+        raise ValueError(f"Invalid CIDR {cidr!r}: {e}") from e
+
+    if isinstance(net, ipaddress.IPv6Network):
+        raise ValueError(f"IPv6 CIDR not supported: {cidr!r}")
+
+    if net.prefixlen < _IGNORE_CIDR_MIN_PREFIX:
+        raise ValueError(
+            f"CIDR {cidr!r} is too wide (prefix /{net.prefixlen} < "
+            f"/{_IGNORE_CIDR_MIN_PREFIX}); refusing to exempt that large a range"
+        )
+
+    octets = net.network_address.packed  # 4 bytes
+    full = net.prefixlen // 8        # number of fully-fixed leading octets
+    partial = net.prefixlen % 8      # bits constraining the next octet, if any
+
+    parts: list[str] = [str(octets[i]) for i in range(full)]
+
+    if full < 4:
+        if partial == 0:
+            # Whole remaining octets are wildcards
+            parts.extend([r"\d+"] * (4 - full))
+        else:
+            lo = octets[full]
+            hi = lo + (1 << (8 - partial)) - 1
+            parts.append(_octet_range_regex(lo, hi))
+            parts.extend([r"\d+"] * (4 - full - 1))
+
+    return r"^" + r"\.".join(parts) + r"(?::\d+)?$"
+
+
+def _parse_ignore_cidrs_env() -> list[str]:
+    """Parse SAFEYOLO_IGNORE_CIDRS into a list of --ignore-hosts regexes.
+
+    Fails fast on any invalid entry so a typo can't silently drop a passthrough.
+    """
+    raw = os.environ.get("SAFEYOLO_IGNORE_CIDRS", "").strip()
+    if not raw:
+        return []
+    regexes: list[str] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        regexes.append(_cidr_to_ignore_regex(entry))
+    return regexes
+
+
 def _build_command(
     addons_dir: Path,
     cert_dir: Path,
@@ -169,6 +248,13 @@ def _build_command(
 
     # TLS passthrough for frpc — frp protocol doesn't work through MITM
     cmd.extend(["--ignore-hosts", r"^api\.asterfold\.ai:7000$"])
+
+    # User-supplied IPv4 CIDR passthroughs (comma-separated in
+    # SAFEYOLO_IGNORE_CIDRS). Useful for e.g. Tailscale CGNAT (100.64.0.0/10)
+    # or RFC1918 admin networks. Validation failures raise here so the proxy
+    # refuses to start with a mis-typed CIDR rather than silently dropping it.
+    for regex in _parse_ignore_cidrs_env():
+        cmd.extend(["--ignore-hosts", regex])
 
     # -------------------------------------------------------------------------
     # Blocking mode configuration
