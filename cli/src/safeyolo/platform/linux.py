@@ -492,7 +492,11 @@ class LinuxPlatform(AgentPlatform):
         proxy_url = f"http://{fw_alloc['host_ip']}:{proxy_port}"
         ca_cert_path = "/usr/local/share/ca-certificates/safeyolo.crt"
 
-        # Environment variables matching what guest-init.sh would set
+        # Environment variables matching what guest-init.sh would set.
+        # SAFEYOLO_DETACH=1 routes guest-init-per-run into its "stay alive
+        # for SSH access" branch (`exec sleep infinity`) instead of trying
+        # to launch vsock-term (which is macOS-only). The container then
+        # stays up and `exec_in_sandbox` uses `runsc exec` to open shells.
         env = [
             f"HTTP_PROXY={proxy_url}",
             f"HTTPS_PROXY={proxy_url}",
@@ -510,6 +514,7 @@ class LinuxPlatform(AgentPlatform):
             "TERM=xterm-256color",
             "PATH=/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "BASH_ENV=/etc/mise-activate.sh",
+            "SAFEYOLO_DETACH=1",
         ]
 
         # Add agent-specific env from config share
@@ -586,26 +591,43 @@ class LinuxPlatform(AgentPlatform):
         cpu_quota = cpus * 100000  # period is 100000
         cgroups_path = f"/safeyolo/{name}" if cgroup_version == 2 else f"safeyolo/{name}"
 
+        # Init process: run the guest-init orchestrator as PID 1 (as root,
+        # with a Docker-ish cap set) so it can do the same setup it does on
+        # the macOS microVM path — mounts, CA trust install, sshd, writing
+        # /safeyolo/vm-ip (the host-side readiness signal) — before the
+        # SAFEYOLO_DETACH branch leaves the container sleeping for
+        # `runsc exec` sessions to land in.
+        #
+        # Shell/agent sessions come in via `exec_in_sandbox`, which passes
+        # `--user 1000:1000` to `runsc exec` — so actual user-facing
+        # activity is scoped to the `agent` user even though PID 1 is root.
+        root_caps = [
+            "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
+            "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
+            "CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SYS_CHROOT",
+            "CAP_SYS_ADMIN",  # needed for the `mount -o remount,ro /safeyolo`
+            "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
+        ]
         return {
             "ociVersion": "1.0.0",
             "root": {"path": str(rootfs_path), "readonly": False},
             "hostname": f"safeyolo-{name}",
             "process": {
                 "terminal": False,
-                "user": {"uid": 1000, "gid": 1000},
-                "args": ["/bin/sleep", "infinity"],
+                "user": {"uid": 0, "gid": 0},
+                "args": ["/safeyolo/guest-init"],
                 "env": env,
-                "cwd": "/home/agent",
+                "cwd": "/",
                 "capabilities": {
-                    "bounding": ["CAP_KILL", "CAP_NET_BIND_SERVICE"],
-                    "effective": ["CAP_KILL", "CAP_NET_BIND_SERVICE"],
-                    "permitted": ["CAP_KILL", "CAP_NET_BIND_SERVICE"],
-                    "ambient": ["CAP_KILL", "CAP_NET_BIND_SERVICE"],
+                    "bounding": root_caps,
+                    "effective": root_caps,
+                    "permitted": root_caps,
+                    "ambient": root_caps,
                 },
                 "rlimits": [
                     {"type": "RLIMIT_NOFILE", "hard": 65536, "soft": 65536},
                 ],
-                "noNewPrivileges": True,
+                "noNewPrivileges": False,
             },
             "mounts": mounts,
             "linux": {
