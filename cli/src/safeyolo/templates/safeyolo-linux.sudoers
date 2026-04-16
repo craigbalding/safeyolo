@@ -24,8 +24,21 @@
 #   mount              Overlayfs for agent rootfs, loop mount for base extraction
 #   umount             Clean up overlayfs on agent removal
 #   runsc              gVisor container lifecycle (create, start, stop, exec)
-#   mkdir -p /run/*    Create runsc state directory
-#   cp -a *            Copy base rootfs for extraction
+#   mkdir -p /run/safeyolo
+#                      Create the exact runsc state dir. No wildcard.
+#   cp -a /tmp/safeyolo-rootfs-mnt/. %SAFEYOLO_BASE_ROOTFS_DEST%
+#                      Copy base rootfs for extraction. Both source AND
+#                      destination are literal paths — source is the fixed
+#                      scratch mount point, destination is resolved at
+#                      install time from the invoking user's share dir
+#                      (`safeyolo setup sudoers` substitutes the placeholder).
+#                      Result: this rule is not a generic `sudo cp` primitive.
+#   rm -rf %SAFEYOLO_AGENTS_DIR%/*
+#                      Delete an agent's on-disk dir on `agent remove`.
+#                      overlayfs leaves root-owned work/upper artifacts
+#                      that a user rmtree can't clean. Sudoers `*` does
+#                      not match `/`, so only single path components
+#                      under the agents dir match — no path traversal.
 # -----------------------------------------------------------------
 
 # Network namespace and veth management
@@ -54,9 +67,18 @@
 %safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc *, \
                                 /usr/bin/runsc *
 
-# State directory creation
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/safeyolo*, \
-                                /bin/mkdir -p /run/safeyolo*
+# State directory creation — exact path, no wildcard
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/safeyolo, \
+                                /bin/mkdir -p /run/safeyolo
 
-# Base rootfs extraction
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/cp -a *
+# Base rootfs extraction — both source and destination are literal paths.
+# %SAFEYOLO_BASE_ROOTFS_DEST% is substituted by `safeyolo setup sudoers`
+# with the resolved path (default: /home/<user>/.safeyolo/share/rootfs-base).
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/cp -a /tmp/safeyolo-rootfs-mnt/. %SAFEYOLO_BASE_ROOTFS_DEST%
+
+# Agent dir removal (`agent remove`) — overlayfs leaves root-owned
+# work/upper artifacts that a user rmtree can't delete. Locked to a
+# single path component under the agents dir (sudoers `*` does not
+# match `/`, so path traversal outside %SAFEYOLO_AGENTS_DIR% is blocked).
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/rm -rf %SAFEYOLO_AGENTS_DIR%/*, \
+                                /bin/rm -rf %SAFEYOLO_AGENTS_DIR%/*

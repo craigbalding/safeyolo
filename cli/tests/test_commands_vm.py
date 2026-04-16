@@ -569,6 +569,11 @@ class TestAgentRemove:
 
         mock_platform = MagicMock()
         mock_platform.is_sandbox_running.return_value = True
+        # Dir deletion is now platform-dispatched; have the mock actually
+        # delete so other asserts behave naturally.
+        import shutil as _sh
+        mock_platform.remove_agent_dir.side_effect = lambda n: _sh.rmtree(
+            config_dir / "agents" / n, ignore_errors=True)
         with (
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.agent._store_remove_agent"),
@@ -578,7 +583,8 @@ class TestAgentRemove:
 
         assert result.exit_code == 0
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
-        assert not agent_dir.exists()  # rmtree deleted it
+        mock_platform.remove_agent_dir.assert_called_once_with("test-agent")
+        assert not agent_dir.exists()
 
     def test_removes_dir_and_metadata(self, runner, config_dir):
         """remove deletes agent dir and metadata entry."""
@@ -589,6 +595,9 @@ class TestAgentRemove:
         mock_store_remove = MagicMock()
         mock_platform = MagicMock()
         mock_platform.is_sandbox_running.return_value = False
+        import shutil as _sh
+        mock_platform.remove_agent_dir.side_effect = lambda n: _sh.rmtree(
+            config_dir / "agents" / n, ignore_errors=True)
         with (
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.agent._store_remove_agent", mock_store_remove),
@@ -598,6 +607,7 @@ class TestAgentRemove:
 
         assert result.exit_code == 0
         assert not agent_dir.exists()
+        mock_platform.remove_agent_dir.assert_called_once_with("test-agent")
         mock_store_remove.assert_called_once_with("test-agent")
         assert "removed" in result.output.lower()
 

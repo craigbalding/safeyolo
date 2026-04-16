@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import shlex
-import shutil
 from pathlib import Path
 
 import typer
@@ -1055,7 +1054,10 @@ def remove(
         console.print(f"  Stopping {name}...")
         plat.stop_sandbox(name)
 
-    shutil.rmtree(agent_dir)
+    # Delete the agent's on-disk state. Platform-dispatched because on Linux
+    # overlayfs leaves root-owned directories behind after unmount, which a
+    # plain shutil.rmtree can't clean up.
+    plat.remove_agent_dir(name)
     _store_remove_agent(name)
     write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name, details={"clean": clean})
     console.print(f"[green]Removed agent: {name}[/green]")

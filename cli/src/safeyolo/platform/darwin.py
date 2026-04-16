@@ -4,10 +4,11 @@ Wraps the existing vm.py and firewall.py code behind the AgentPlatform
 interface. No new functionality — just delegation.
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 
-from ..config import get_ssh_key_path
+from ..config import get_agents_dir, get_ssh_key_path
 from ..firewall import (
     allocate_subnet,
     load_rules,
@@ -133,3 +134,9 @@ class DarwinPlatform(AgentPlatform):
                     except Exception:
                         # Interface may already be gone or sudo unavailable.
                         pass
+
+    def remove_agent_dir(self, name: str) -> None:
+        """Delete the agent's on-disk directory (Darwin: all user-owned)."""
+        agent_dir = get_agents_dir() / name
+        if agent_dir.exists():
+            shutil.rmtree(agent_dir)

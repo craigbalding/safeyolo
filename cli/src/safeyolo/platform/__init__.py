@@ -105,6 +105,18 @@ class AgentPlatform(ABC):
         belonging to this instance (respects SUBNET_BASE scoping).
         """
 
+    @abstractmethod
+    def remove_agent_dir(self, name: str) -> None:
+        """Delete an agent's on-disk directory.
+
+        Darwin: all artifacts are user-owned, so shutil.rmtree works.
+        Linux: overlayfs leaves root-owned work/ subdirectories behind
+        after unmount, and the container's writes to upper/ may also
+        be root-owned — so rmtree-as-user fails with EPERM. The Linux
+        implementation unmounts any stale overlay then sudo-removes
+        the dir.
+        """
+
 
 def get_platform() -> AgentPlatform:
     """Auto-detect and return the platform implementation."""
