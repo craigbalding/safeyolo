@@ -244,7 +244,11 @@ def _build_command(
     cmd.extend(["--set", "block_global=false"])
     cmd.extend(["--set", "stream_large_bodies=10m"])
     cmd.extend(["--set", f"admin_port={admin_port}"])
-    cmd.extend(["--set", f"admin_api_token={admin_token}"])
+    # Pass token via file path, NOT on the command line. The cmdline is
+    # visible to any local user via /proc/PID/cmdline or `ps aux` — putting
+    # the admin token there leaks it to every process on the host.
+    admin_token_file = data_dir / "admin_token"
+    cmd.extend(["--set", f"admin_api_token_file={admin_token_file}"])
 
     # TLS passthrough for frpc — frp protocol doesn't work through MITM
     cmd.extend(["--ignore-hosts", r"^api\.asterfold\.ai:7000$"])
