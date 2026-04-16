@@ -120,10 +120,12 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
         admin_token_file.write_text(admin_token)
         admin_token_file.chmod(0o600)
 
-    # Agent token: persist across restarts (same as admin token).
-    # Running sandboxes hold a copy of the token from boot time; if we
-    # regenerate on every proxy restart, their copy goes stale and
-    # agent API calls fail with 401.
+    # Agent token: persist across restarts. In the Docker era this was
+    # a bind-mount so regeneration was transparent (container saw the
+    # new file immediately). In the microVM era the token is copied at
+    # staging time — regenerating it breaks running sandboxes (401 on
+    # agent API). The token's threat model doesn't benefit from rotation
+    # anyway: the agent always holds the current value via /app/agent_token.
     agent_token_file = data_dir / "agent_token"
     if agent_token_file.exists():
         agent_token = agent_token_file.read_text().strip()
