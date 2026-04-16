@@ -333,6 +333,7 @@ class TestLoadRules:
             the idempotency check falls through to the slow path)
         """
         mock_require = MagicMock()
+        mock_ensure_active = MagicMock()
         mock_generate = MagicMock(return_value="# test rules\n")
         mock_write = MagicMock()
         mock_sudo = MagicMock(
@@ -341,6 +342,7 @@ class TestLoadRules:
             )
         )
         monkeypatch.setattr("safeyolo.firewall._require_pf_conf_hook", mock_require)
+        monkeypatch.setattr("safeyolo.firewall._ensure_hook_active_in_pf", mock_ensure_active)
         monkeypatch.setattr("safeyolo.firewall.generate_rules", mock_generate)
         monkeypatch.setattr("safeyolo.firewall._sudo_write_file", mock_write)
         monkeypatch.setattr("safeyolo.firewall._sudo_run", mock_sudo)
@@ -350,6 +352,7 @@ class TestLoadRules:
         monkeypatch.setattr("safeyolo.firewall.ANCHOR_FILE", anchor)
         return {
             "require": mock_require,
+            "ensure_active": mock_ensure_active,
             "generate": mock_generate,
             "write": mock_write,
             "sudo_run": mock_sudo,
@@ -359,6 +362,13 @@ class TestLoadRules:
     def test_requires_pf_conf_hook_present(self, mock_helpers):
         load_rules()
         mock_helpers["require"].assert_called_once()
+
+    def test_ensures_hook_active_in_pf(self, mock_helpers):
+        """load_rules must verify the anchor hook isn't just on disk but
+        actually in the running pf ruleset — otherwise the anchor rules
+        we're about to load are inert."""
+        load_rules()
+        mock_helpers["ensure_active"].assert_called_once()
 
     def test_writes_rules_to_anchor_file(self, mock_helpers):
         load_rules(proxy_port=8080, admin_port=9090, active_subnets=["192.168.65.0/24"])
@@ -398,12 +408,17 @@ class TestLoadRules:
             proxy_port=3128, admin_port=7070, active_subnets=["192.168.65.0/24"]
         )
 
-    def test_no_pf_conf_read_or_append(self, monkeypatch):
-        """Runtime load_rules must not read or mutate /etc/pf.conf.
+    def test_no_pf_conf_mutation(self, monkeypatch):
+        """Runtime load_rules must never *mutate* /etc/pf.conf.
 
-        We fail read_text/sudo cat/sudo tee -a if anything tries to touch it.
+        Reading the file via `pfctl -f /etc/pf.conf` (to self-heal the
+        on-disk-hook-not-in-running-pf case) is allowed and covered by
+        its own tests; this guardrail is specifically about the
+        `tee -a /etc/pf.conf` / file-overwrite shape that the old
+        setup-at-runtime code used to do.
         """
         monkeypatch.setattr("safeyolo.firewall._require_pf_conf_hook", lambda: None)
+        monkeypatch.setattr("safeyolo.firewall._ensure_hook_active_in_pf", lambda: None)
         monkeypatch.setattr("safeyolo.firewall.generate_rules", lambda **kw: "# test\n")
         monkeypatch.setattr("safeyolo.firewall._sudo_write_file", lambda *a, **kw: None)
 
@@ -415,23 +430,26 @@ class TestLoadRules:
 
         monkeypatch.setattr("safeyolo.firewall._sudo_run", fake_sudo_run)
 
-        # subprocess.run must never be called with tee -a on pf.conf or cat pf.conf.
+        # subprocess.run must never be called with `tee` targeting pf.conf
+        # (that's the mutation shape we forbid).
         original_run = subprocess.run
 
         def guarded_run(cmd, *args, **kwargs):
             if isinstance(cmd, list):
                 joined = " ".join(str(c) for c in cmd)
                 assert "tee -a" not in joined, f"load_rules must not append to pf.conf: {cmd}"
-                assert "/etc/pf.conf" not in joined, f"load_rules must not touch pf.conf: {cmd}"
+                if "tee" in joined and "/etc/pf.conf" in joined:
+                    raise AssertionError(f"load_rules must not rewrite pf.conf: {cmd}")
             return original_run(cmd, *args, **kwargs)
 
         monkeypatch.setattr("subprocess.run", guarded_run)
 
         load_rules(active_subnets=["192.168.65.0/24"])
 
-        # None of the recorded pfctl calls should touch pf.conf either.
+        # No tee-shaped pfctl calls either.
         for cmd in pfctl_calls:
-            assert "/etc/pf.conf" not in " ".join(str(c) for c in cmd)
+            joined = " ".join(str(c) for c in cmd)
+            assert "tee" not in joined
 
     def test_fails_loudly_when_hook_missing(self, monkeypatch):
         """If the pf.conf hook is missing, load_rules must not attempt to add it."""
@@ -480,6 +498,116 @@ class TestLoadRules:
         mock_helpers["write"].assert_called_once_with(
             mock_helpers["anchor_file"], "# test rules\n"
         )
+
+
+# ---------------------------------------------------------------------------
+# _ensure_hook_active_in_pf — self-heal when the anchor hook is on disk
+# but not in the running pf ruleset
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureHookActiveInPf:
+
+    @pytest.fixture()
+    def anchor_hook_line(self):
+        return f'anchor "{ANCHOR_NAME}"'
+
+    def _completed(self, returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+
+    def test_noop_when_anchor_already_loaded(self, monkeypatch, anchor_hook_line):
+        """Steady-state: if pfctl reports the anchor in main rules, skip
+        the reload. No pfctl -f call should be issued (don't flush dynamic
+        anchors like Apple Internet Sharing without reason)."""
+        from safeyolo.firewall import _ensure_hook_active_in_pf
+
+        calls: list[list[str]] = []
+
+        def fake_sudo_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0:2] == ["pfctl", "-s"]:
+                return self._completed(stdout=f"{anchor_hook_line} all\n")
+            return self._completed()
+
+        monkeypatch.setattr("safeyolo.firewall._sudo_run", fake_sudo_run)
+
+        _ensure_hook_active_in_pf()
+
+        # Only the rules-listing call should have happened; no reload.
+        assert calls == [["pfctl", "-s", "rules"]]
+
+    def test_reloads_when_anchor_not_loaded(self, monkeypatch, anchor_hook_line):
+        """If pfctl -s rules doesn't list the anchor, pf.conf must be
+        reloaded. After the reload, pfctl -s rules is queried again to
+        confirm the anchor is now active."""
+        from safeyolo.firewall import _ensure_hook_active_in_pf
+
+        calls: list[list[str]] = []
+
+        # First rules-dump: no anchor. Reload succeeds. Second dump: anchor present.
+        state = {"dumps_seen": 0}
+
+        def fake_sudo_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                state["dumps_seen"] += 1
+                if state["dumps_seen"] == 1:
+                    return self._completed(stdout="")  # anchor missing
+                return self._completed(stdout=f"{anchor_hook_line} all\n")
+            if cmd[0:2] == ["pfctl", "-f"]:
+                return self._completed()
+            return self._completed()
+
+        monkeypatch.setattr("safeyolo.firewall._sudo_run", fake_sudo_run)
+
+        _ensure_hook_active_in_pf()
+
+        # Expected: rules-dump, pfctl -f, rules-dump again
+        assert len(calls) == 3
+        assert calls[0] == ["pfctl", "-s", "rules"]
+        assert calls[1][:2] == ["pfctl", "-f"]
+        assert calls[2] == ["pfctl", "-s", "rules"]
+
+    def test_raises_when_reload_fails(self, monkeypatch):
+        """pfctl -f non-zero means the reload itself failed — abort with
+        a clear error rather than proceeding with an inert anchor."""
+        from safeyolo.firewall import _ensure_hook_active_in_pf
+
+        def fake_sudo_run(cmd, **kwargs):
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                return self._completed(stdout="")  # anchor not loaded
+            if cmd[0:2] == ["pfctl", "-f"]:
+                return self._completed(
+                    returncode=1, stderr="/etc/pf.conf:42: syntax error"
+                )
+            return self._completed()
+
+        monkeypatch.setattr("safeyolo.firewall._sudo_run", fake_sudo_run)
+
+        with pytest.raises(RuntimeError, match="Failed to reload"):
+            _ensure_hook_active_in_pf()
+
+    def test_raises_when_anchor_still_missing_after_reload(
+        self, monkeypatch
+    ):
+        """pfctl -f succeeded but the anchor didn't appear — main pf.conf
+        doesn't declare it. Fail with remediation guidance rather than
+        silently running with an inert anchor."""
+        from safeyolo.firewall import _ensure_hook_active_in_pf
+
+        def fake_sudo_run(cmd, **kwargs):
+            if cmd[0:3] == ["pfctl", "-s", "rules"]:
+                return self._completed(stdout="")  # anchor never appears
+            if cmd[0:2] == ["pfctl", "-f"]:
+                return self._completed()  # reload ok, but anchor still absent
+            return self._completed()
+
+        monkeypatch.setattr("safeyolo.firewall._sudo_run", fake_sudo_run)
+
+        with pytest.raises(RuntimeError, match="still not in running pf"):
+            _ensure_hook_active_in_pf()
 
 
 # ---------------------------------------------------------------------------

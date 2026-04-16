@@ -545,6 +545,40 @@ def pf(
         )
         raise typer.Exit(1)
 
+    # Reload main pf.conf so the anchor hook takes effect in the running pf
+    # state now, not on the next reboot. macOS loads pf.conf once at boot;
+    # edits to the file afterwards are inert until an explicit reload.
+    # Without this step the hook sits on disk and every packet sails past it
+    # — which silently defeats SafeYolo's default-deny egress posture until
+    # the Mac next reboots. We refuse to start without it; abort on failure.
+    #
+    # Side effect: `pfctl -f` replaces the main ruleset, which flushes
+    # anchors that were added dynamically at runtime (notably Apple's
+    # `com.apple.internet-sharing` when Internet Sharing is on). The
+    # owning service normally re-registers; if it doesn't, toggle
+    # Sharing off/on. We surface the warning so the user isn't surprised.
+    console.print(
+        f"\n  [yellow]Reloading {_PF_CONF_PATH}[/yellow] — may flush "
+        f"dynamic anchors like Apple's Internet Sharing; toggle them "
+        f"off/on afterwards if they don't re-attach on their own."
+    )
+    reload_proc = subprocess.run(
+        ["sudo", "pfctl", "-f", str(_PF_CONF_PATH)],
+        capture_output=True, text=True,
+    )
+    if reload_proc.returncode != 0:
+        err_text = (reload_proc.stderr or reload_proc.stdout or "").strip()
+        console.print(
+            f"[red]Failed to reload pf:[/red] {err_text or 'pfctl -f returned non-zero'}"
+        )
+        console.print(
+            "\nThe hook lines are written to /etc/pf.conf but won't take "
+            "effect until pf is reloaded. Re-run `safeyolo setup pf` once "
+            "the issue is resolved, or reboot."
+        )
+        raise typer.Exit(1)
+    console.print("  [green]OK[/green]  pf reloaded — anchor hook is now active")
+
     console.print(
         f"\n[green]pf anchor hook installed.[/green] "
         f"SafeYolo will manage {_PF_ANCHORS_DIR / anchor} only."

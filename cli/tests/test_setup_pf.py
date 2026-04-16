@@ -216,9 +216,13 @@ class TestSetupPfCommand:
         monkeypatch.setattr(setup_mod, "_PF_CONF_PATH", conf)
         monkeypatch.setattr(setup_mod, "_PF_ANCHORS_DIR", anchors_dir)
 
+        # Default: tee writes and pfctl -f succeeds. Individual tests override
+        # via monkeypatch.setattr when they want to exercise a failure path.
         def fake_run(cmd, **kwargs):
             if cmd[0:2] == ["sudo", "tee"]:
                 Path(cmd[2]).write_text(kwargs["input"])
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            if cmd[0:3] == ["sudo", "pfctl", "-f"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
             raise AssertionError(f"unexpected subprocess call: {cmd}")
 
@@ -274,3 +278,71 @@ class TestSetupPfCommand:
         result = cli_runner.invoke(app, ["setup", "pf"])
         assert result.exit_code == 0
         assert "macOS-only" in result.output
+
+    def test_reloads_pf_after_install(self, cli_runner, sandbox, monkeypatch):
+        """pfctl -f /etc/pf.conf must be invoked once the hook is written;
+        without it the hook is inert until next reboot."""
+        from safeyolo.cli import app
+        conf, _ = sandbox
+
+        calls: list[list[str]] = []
+        orig_run = setup_mod.subprocess.run
+
+        def recording_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            return orig_run(cmd, **kwargs)
+
+        monkeypatch.setattr("safeyolo.commands.setup.subprocess.run", recording_run)
+
+        result = cli_runner.invoke(app, ["setup", "pf"])
+
+        assert result.exit_code == 0, result.output
+        # Expect the sequence: tee (install) -> pfctl -f (reload).
+        # Other commands may interleave (anchor file creation uses tee too),
+        # but the crucial thing is that pfctl -f lands against the pf.conf
+        # path *after* the hook-install tee.
+        tee_for_conf = [
+            i for i, c in enumerate(calls)
+            if c[0:2] == ["sudo", "tee"] and c[2] == str(conf)
+        ]
+        pfctl_f = [
+            i for i, c in enumerate(calls)
+            if c[0:3] == ["sudo", "pfctl", "-f"] and c[3] == str(conf)
+        ]
+        assert tee_for_conf, "hook-install tee never ran"
+        assert pfctl_f, "pfctl -f pf.conf never ran"
+        assert pfctl_f[0] > tee_for_conf[-1], (
+            "pfctl -f ran before the hook-install tee — reload would "
+            "not pick up the new hook lines"
+        )
+
+    def test_fails_when_pf_reload_fails(self, cli_runner, sandbox, monkeypatch):
+        """If pfctl -f returns non-zero, setup pf must exit 1 with a
+        message that names the reload as the failure point. The hook
+        lines are still on disk, but without a reload they're inert —
+        users must not be misled into thinking setup succeeded."""
+        from safeyolo.cli import app
+        conf, _ = sandbox
+
+        def failing_run(cmd, **kwargs):
+            if cmd[0:2] == ["sudo", "tee"]:
+                Path(cmd[2]).write_text(kwargs["input"])
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            if cmd[0:3] == ["sudo", "pfctl", "-f"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="",
+                    stderr="/etc/pf.conf:42: syntax error",
+                )
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+        monkeypatch.setattr("safeyolo.commands.setup.subprocess.run", failing_run)
+
+        result = cli_runner.invoke(app, ["setup", "pf"])
+
+        assert result.exit_code == 1
+        assert "Failed to reload pf" in result.output
+        # The hook is still on disk (we wrote it before attempting the reload).
+        anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        text = conf.read_text()
+        assert anchor_line in text
+        assert load_line in text
