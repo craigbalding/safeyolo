@@ -211,7 +211,13 @@ class TestAgentAPICrossAgentIsolation:
 
         flows = data.get("flows", [])
         if not flows:
-            pytest.skip("No flows returned — flow store may be empty or not enabled")
+            pytest.skip(
+                "No flows returned — the test-instance flow recorder "
+                "isn't capturing flows (DB exists but is empty). The "
+                "cross-agent scoping fix is in agent_api.py regardless; "
+                "this test exercises it once the flow recorder is wired "
+                "into the test proxy config."
+            )
 
         # Check: every returned flow's client_address should be in OUR
         # subnet, not another agent's. Our subnet's gateway is the
