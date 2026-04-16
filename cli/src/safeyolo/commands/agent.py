@@ -1024,16 +1024,15 @@ def list_agents() -> None:
 @agent_app.command()
 def remove(
     name: str = typer.Argument(..., help="Agent instance name to remove"),
-    clean: bool = typer.Option(False, "--clean", help="Also stop containers and remove images/volumes"),
 ) -> None:
     """Remove an agent configuration.
 
-    Deletes the agent's compose file and configuration directory.
+    Stops the sandbox if running, tears down per-agent networking
+    (netns + veth), and deletes the agent's on-disk state.
 
     Examples:
 
         safeyolo agent remove claude-code
-        safeyolo agent remove claude-code --clean  # Also remove containers/images
     """
     _validate_instance_name(name)
 
@@ -1042,24 +1041,44 @@ def remove(
         console.print("[red]No SafeYolo configuration found.[/red]")
         raise typer.Exit(1)
 
-    agent_dir = get_agents_dir() / name
+    agents_dir = get_agents_dir()
+    agent_dir = agents_dir / name
     if not agent_dir.exists():
         console.print(f"[yellow]Agent not found: {escape(name)}[/yellow]")
         raise typer.Exit(1)
 
-    # Stop sandbox if running
     from ..platform import get_platform
     plat = get_platform()
+
+    # Agent index must be computed before the agent dir disappears,
+    # since it's derived from the sorted list of agent dirs — the same
+    # allocation rule used by setup_networking. Using the stale index
+    # here is what lets us target this agent's netns/veth for teardown
+    # rather than leaking them.
+    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
+    agent_index = existing.index(name) if name in existing else -1
+
+    # Stop sandbox if running
     if plat.is_sandbox_running(name):
         console.print(f"  Stopping {name}...")
         plat.stop_sandbox(name)
+
+    # Teardown per-agent networking (netns + veth). Without this,
+    # remove+re-add leaks a netns and the next `runsc create` fails
+    # with "cannot create sandbox process: file does not exist" on
+    # the stale netns path.
+    if agent_index >= 0:
+        try:
+            plat.teardown_networking(agent_index)
+        except Exception as err:
+            console.print(f"[yellow]  Warning: network teardown failed: {err}[/yellow]")
 
     # Delete the agent's on-disk state. Platform-dispatched because on Linux
     # overlayfs leaves root-owned directories behind after unmount, which a
     # plain shutil.rmtree can't clean up.
     plat.remove_agent_dir(name)
     _store_remove_agent(name)
-    write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name, details={"clean": clean})
+    write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name)
     console.print(f"[green]Removed agent: {name}[/green]")
 
 

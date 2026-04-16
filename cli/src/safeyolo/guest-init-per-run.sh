@@ -88,10 +88,17 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
     # static-phase install.
     if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
         echo "installing" > /safeyolo/vm-status 2>/dev/null || true
-        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || {
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
-        }
+        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+    fi
+    # Ground vm-status in reality — the install command's exit code can
+    # lie (timeout fires after the binary is already in place), and
+    # skipping the install block entirely because a stale install-failed
+    # from static is still on disk is exactly how the status went out of
+    # sync in practice. `command -v` is the source of truth.
+    if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
         echo "" > /safeyolo/vm-status 2>/dev/null || true
+    else
+        echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
     fi
 fi
 
