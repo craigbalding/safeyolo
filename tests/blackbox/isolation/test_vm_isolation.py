@@ -155,6 +155,42 @@ class TestHostAdjacentReachability:
         host = self._host_ip_from_proxy()
         self._assert_tcp_unreachable(host, 44444, "arbitrary unused port 44444")
 
+    def test_cross_agent_subnet_unreachable(self):
+        """Neighbouring SafeYolo subnets must not be reachable from this
+        sandbox. Agents are allocated from a contiguous range of /24s
+        (192.168.{SUBNET_BASE}+idx.0/24); each is isolated from the
+        others by firewall rules, not just by routing. A sibling
+        sandbox's IP — or its veth host-side gateway — must fail to
+        connect from here.
+
+        Derivation: pull our own subnet from HTTP_PROXY's host IP, then
+        try adjacent /24s on both sides. Works whether or not a sibling
+        is actually running (if nothing's listening, connection refused
+        also counts as unreachable; the assertion forbids a successful
+        TCP handshake, not a specific error).
+        """
+        proxy_host = self._host_ip_from_proxy()  # e.g. 192.168.75.1
+        octets = proxy_host.split(".")
+        if len(octets) != 4:
+            pytest.skip(f"HTTP_PROXY host {proxy_host!r} not an IPv4 /24 gateway")
+        base3 = int(octets[2])
+        for offset in (-1, +1):
+            sibling_subnet = int(octets[2]) + offset
+            if sibling_subnet < 0 or sibling_subnet > 255:
+                continue
+            # Probe the sibling's guest IP (idx0: .2) and host gateway (.1).
+            for last in (1, 2):
+                sibling_ip = f"{octets[0]}.{octets[1]}.{sibling_subnet}.{last}"
+                # TCP/22 is the most likely listener on any healthy host;
+                # 8080 covers a sibling running its own proxy; 80 catches
+                # anything generic. If none are reachable we're isolated.
+                for port in (22, 8080, 80):
+                    self._assert_tcp_unreachable(
+                        sibling_ip, port,
+                        f"sibling subnet 192.168.{sibling_subnet}.0/24 "
+                        f"({sibling_ip}:{port})"
+                    )
+
     def test_sinkhole_direct_unreachable(self):
         """Sinkhole ports bind to 0.0.0.0 on the host during test runs, so
         they're a real, listening target. Sandbox traffic to those ports
