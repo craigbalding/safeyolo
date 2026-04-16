@@ -158,14 +158,31 @@ def _container_id(name: str) -> str:
     return f"safeyolo-{name}"
 
 
-def _netns_name(name: str) -> str:
-    """Derive network namespace name from agent name."""
-    return f"safeyolo-{name}"
+def _netns_offset(agent_index: int) -> int:
+    """Global slot number for an agent, offsetting by SUBNET_BASE so that
+    multiple SafeYolo instances (production SUBNET_BASE=65 + blackbox test
+    SUBNET_BASE=75 + any future sibling) don't collide in the kernel's
+    flat namespace. Mirror of the formula in _veth_host_name — keep them
+    in lockstep.
+    """
+    return SUBNET_BASE - 65 + agent_index
+
+
+def _netns_name(agent_index: int) -> str:
+    """Derive network namespace name from agent index.
+
+    Must be namespaced by SUBNET_BASE because netns names live in a
+    single host-wide namespace. Without the offset, production idx0
+    and blackbox-test idx0 both resolve to `safeyolo-idx0`; the second
+    instance's `ip link add ... netns safeyolo-idx0` then fails because
+    the eth0 peer already exists in the first instance's netns.
+    """
+    return f"safeyolo-idx{_netns_offset(agent_index)}"
 
 
 def _veth_host_name(agent_index: int) -> str:
     """Derive host-side veth interface name from agent index."""
-    return f"veth-sy{SUBNET_BASE - 65 + agent_index}"
+    return f"veth-sy{_netns_offset(agent_index)}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +199,7 @@ class LinuxPlatform(AgentPlatform):
     def setup_networking(self, agent_index: int) -> dict:
         """Create veth pair + network namespace for an agent."""
         alloc = allocate_subnet(agent_index)
-        netns = _netns_name(f"idx{agent_index}")
+        netns = _netns_name(agent_index)
         veth_host = _veth_host_name(agent_index)
         veth_guest = "eth0"
 
@@ -222,7 +239,7 @@ class LinuxPlatform(AgentPlatform):
 
     def teardown_networking(self, agent_index: int) -> None:
         """Remove network namespace (auto-removes veth pair)."""
-        netns = _netns_name(f"idx{agent_index}")
+        netns = _netns_name(agent_index)
         _sudo(["ip", "netns", "del", netns], check=False)
         log.info("Network namespace %s removed", netns)
 
@@ -519,7 +536,7 @@ class LinuxPlatform(AgentPlatform):
 
         for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
             if agent_dir.is_dir():
-                netns = _netns_name(f"idx{idx}")
+                netns = _netns_name(idx)
                 _sudo(["ip", "netns", "del", netns], check=False)
 
     def remove_agent_dir(self, name: str) -> None:
