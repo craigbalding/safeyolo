@@ -50,6 +50,15 @@ class AgentPlatform(ABC):
         """Remove all firewall rules for this instance."""
 
     @abstractmethod
+    def agent_rootfs_path(self, name: str) -> Path:
+        """Expected on-disk path for an agent's rootfs.
+
+        Returns the path whether or not it exists — callers use this to
+        check whether `prepare_rootfs` has run for this agent.
+        Darwin: a file (ext4 disk image). Linux: a directory (overlayfs).
+        """
+
+    @abstractmethod
     def prepare_rootfs(self, name: str) -> Path:
         """Create agent rootfs from base image. Returns rootfs path."""
 

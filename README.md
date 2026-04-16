@@ -7,7 +7,7 @@
 
 **Don't slow your agents down, just scope their access.**
 
-SafeYolo is a security proxy that gives operators scoped control over what AI agents can access. Agents run in isolated Linux microVMs with enforced network egress control — bypass is impossible.
+SafeYolo is a security proxy that gives operators scoped control over what AI agents can access. Agents run in isolated Linux sandboxes — hardware-backed microVMs on macOS, gVisor on Linux — with enforced network egress control that the agent cannot bypass.
 
 Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patterns informed by [Shuru](https://github.com/superhq-ai/shuru/).
 
@@ -67,13 +67,13 @@ safeyolo init
 # Start the proxy
 safeyolo start
 
-# Run Claude Code in an isolated microVM
+# Run Claude Code in an isolated sandbox
 safeyolo agent add myproject claude-code ~/code
 ```
 
-The last argument (`~/code`) is your project directory — mounted read-write into the VM via VirtioFS. The agent runs in a hardware-isolated Linux microVM where:
+The last argument (`~/code`) is your project directory — mounted read-write into the sandbox (VirtioFS on macOS, bind mount on Linux). The agent runs in an isolated Linux sandbox where:
 
-- **All traffic routes through SafeYolo proxy** — pf firewall blocks direct internet access
+- **All traffic routes through SafeYolo proxy** — host firewall (pf on macOS, iptables on Linux) blocks direct internet access
 - **API keys are protected** — credentials only reach their intended hosts
 - **Everything is logged** — JSONL audit trail for review
 - **Dev-ready VMs** — agents install toolchains via mise, state persists across restarts
@@ -86,21 +86,21 @@ From inside the agent:
 # This works (routed through proxy):
 curl https://httpbin.org/ip
 
-# This is blocked (pf drops it):
+# This is blocked (host firewall drops it):
 curl --noproxy '*' https://ifconfig.co
 # Error: Could not resolve host
 ```
 
 ## How It Works
 
-Each agent runs in a persistent Linux microVM (Apple Virtualization.framework) with a dedicated network segment:
+Each agent runs in an isolated Linux sandbox with a dedicated network segment:
 
 ```
-Agent VM (192.168.68.2)
+Agent sandbox (192.168.68.2)
     │
-    │  HTTP_PROXY → host feth IP
+    │  HTTP_PROXY → host bridge IP
     ▼
-feth pair (pf: allow proxy port, block all else)
+Host bridge (firewall: allow proxy port, block everything else)
     │
     ▼
 SafeYolo mitmproxy (host process)
@@ -109,20 +109,20 @@ SafeYolo mitmproxy (host process)
 Internet
 ```
 
-If the agent unsets proxy vars → blocked by pf. Raw TCP → blocked by pf. DNS → blocked (no DNS from VM). The enforcement is at the network level, not the process level.
+The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + feth + pf) and a gVisor container on Linux (runsc + veth + iptables). Either way: if the agent unsets proxy vars → blocked by the host firewall. Raw TCP → blocked. DNS → blocked (no DNS from inside the sandbox). Enforcement is at the network level, not the process level.
 
 ## Key Features
 
-- **One-command agent setup** — pre-configured templates for Claude Code and Codex
-- **Hardware isolation** — each agent in its own microVM (stronger than containers)
-- **Enforced egress** — pf firewall on feth interfaces, not just env vars
+- **One-command agent setup** — pre-configured templates for Claude Code and Codex, plus a `byoa` (Bring Your Own Agent) template for installing your own
+- **Strong isolation** — each agent in its own sandbox: hardware-backed microVM on macOS, gVisor on Linux
+- **Enforced egress** — host firewall (pf/iptables) on dedicated bridge interfaces, not just env vars
 - **Scoped API access** — grant agents specific capabilities per service
 - **Credential isolation** — agents access your services without seeing your keys
 - **Human-in-the-loop** — risky actions need approval via `safeyolo watch`
 - **Rate limiting** — prevent runaway loops from harming your IP reputation
 - **Audit trail** — every request logged with decisions and correlation
-- **Persistent VMs** — mise installs, shell history, agent state survive restarts
-- **Proper terminal** — vsock PTY bridge with resize support
+- **Persistent sandboxes** — mise installs, shell history, agent state survive restarts
+- **Proper terminal** — full PTY with resize support (vsock bridge on macOS, `runsc exec` on Linux)
 
 ## Multiple Agents
 
@@ -173,12 +173,14 @@ $ safeyolo watch
 
 ## Architecture
 
-See [docs/microvm-architecture.md](docs/microvm-architecture.md) for the full technical design:
+Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.md) (macOS microVM path) and [docs/linux-port-design.md](docs/linux-port-design.md) (Linux gVisor path). Highlights from the macOS microVM path:
 
 - **Networking**: VZFileHandleNetworkDeviceAttachment + feth pairs + pf (not VZNATNetworkDeviceAttachment — Apple blocks pf on bridge interfaces)
 - **Terminal**: vsock PTY bridge with proper resize (not serial console)
 - **Guest init**: served from VirtioFS config share (changes without rootfs rebuild)
 - **Service discovery**: file-based agent IP map
+
+The Linux path runs the same guest rootfs under `runsc` with veth + iptables for network isolation and overlayfs for per-agent writable layers — see `docs/linux-port-design.md` for the full design.
 
 ## Trust Model
 
@@ -191,15 +193,16 @@ See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, an
 
 ## Requirements
 
-- macOS Apple Silicon (M1+) or Linux (x86_64/arm64)
-- Python 3.12+
-- Lima on macOS (build-time only; `brew install lima`)
+- macOS Apple Silicon (M1+) **or** Linux (x86_64/arm64)
+- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- macOS only: Lima (build-time, for the guest image) — `brew install lima`
+- Linux only: gVisor `runsc` (VM runtime) — see the Build section above for the install command
 
 Run `safeyolo setup` to check all prerequisites.
 
 ## Status
 
-SafeYolo is **pre-v1**. Hardware-isolated microVMs replace the earlier container-based design; the Docker-era code is preserved on the [`docker`](https://github.com/craigbalding/safeyolo/tree/docker) branch for reference.
+SafeYolo is **pre-v1**. The current sandbox design — hardware-backed microVMs on macOS, gVisor on Linux — replaces the earlier Docker-based implementation; the container-era code is preserved on the [`docker`](https://github.com/craigbalding/safeyolo/tree/docker) branch for reference.
 
 ## Documentation
 

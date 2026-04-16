@@ -36,7 +36,6 @@ from ..vm import (
     _cleanup_feth_bridge,
     _update_agent_map,
     get_agent_config_share_dir,
-    get_agent_rootfs_path,
     prepare_config_share,
 )
 from ._service_discovery import find_service
@@ -282,7 +281,10 @@ def _run_agent(
     _t("cli entry (metadata, proxy check)")
     _validate_instance_name(name)
 
-    rootfs = get_agent_rootfs_path(name)
+    # Rootfs path is platform-specific — Darwin uses an ext4 disk image file,
+    # Linux uses an overlayfs merged directory. Ask the platform which to check.
+    from ..platform import get_platform
+    rootfs = get_platform().agent_rootfs_path(name)
     if not rootfs.exists():
         console.print(f"[red]Agent not found: {escape(name)}[/red]")
         console.print("Run [bold]safeyolo agent add <name> <template> <folder>[/bold] first.")
@@ -669,11 +671,15 @@ def _run_agent(
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
 
-    # Clean up PID file and feth-bridge (not for detach — VM is still running)
+    # Clean up PID file and feth-bridge (not for detach — VM is still running).
+    # feth-bridge is macOS-only (feth interfaces + BPF forwarding); on Linux
+    # the equivalent teardown happens inside plat.stop_sandbox / cleanup_all.
     if not detach:
         pid_path = get_agents_dir() / name / "vm.pid"
         pid_path.unlink(missing_ok=True)
-        _cleanup_feth_bridge(name)
+        import platform as _plat
+        if _plat.system() == "Darwin":
+            _cleanup_feth_bridge(name)
 
     _timing_emit()
     return exit_code
@@ -990,7 +996,14 @@ def list_agents() -> None:
     all_agents = load_all_agents()
 
     if agents_dir.exists():
-        instances = [d for d in agents_dir.iterdir() if d.is_dir() and (d / "rootfs.ext4").exists()]
+        # Ask the platform for the expected rootfs path (ext4 file on Darwin,
+        # overlayfs directory on Linux) so the filter works on both.
+        from ..platform import get_platform
+        plat = get_platform()
+        instances = [
+            d for d in agents_dir.iterdir()
+            if d.is_dir() and plat.agent_rootfs_path(d.name).exists()
+        ]
 
         if instances:
             table = Table(title="Configured Agents")

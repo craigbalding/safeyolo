@@ -18,6 +18,7 @@ from ..firewall import (
 from ..vm import (
     create_agent_rootfs,
     get_agent_config_share_dir,
+    get_agent_rootfs_path,
     is_vm_running,
     start_vm,
     stop_vm,
@@ -43,6 +44,9 @@ class DarwinPlatform(AgentPlatform):
 
     def unload_firewall_rules(self) -> None:
         unload_rules()
+
+    def agent_rootfs_path(self, name: str) -> Path:
+        return get_agent_rootfs_path(name)
 
     def prepare_rootfs(self, name: str) -> Path:
         return create_agent_rootfs(name)
