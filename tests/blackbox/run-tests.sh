@@ -36,6 +36,9 @@ cd "$SCRIPT_DIR"
 export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
 export SAFEYOLO_SUBNET_BASE=75
 export SAFEYOLO_PF_ANCHOR=com.safeyolo-test
+# Logs + flow store scoped to the test instance so blackbox runs
+# don't pollute production logs/flows.sqlite3.
+export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
 
 # Test instance ports (different from production 8080/9090)
 TEST_PROXY_PORT=8180
