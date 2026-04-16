@@ -294,6 +294,8 @@ echo ""
 PROXY_RESULT=0
 ISOLATION_RESULT=0
 
+FIREWALL_RESULT=0
+
 if [ "$RUN_PROXY" = true ]; then
     echo "=== Proxy Functional Tests (host-side) ==="
     echo ""
@@ -302,6 +304,16 @@ if [ "$RUN_PROXY" = true ]; then
     pytest $VERBOSE --tb=short --timeout=60 \
         test_credential_guard.py test_network_guard.py
     PROXY_RESULT=$?
+
+    # Firewall structural tests (Linux only — iptables)
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        echo ""
+        echo "=== Firewall Structural Tests (host-side) ==="
+        echo ""
+        pytest $VERBOSE --tb=short --timeout=60 \
+            test_firewall_structural.py
+        FIREWALL_RESULT=$?
+    fi
     set -e
     cd "$SCRIPT_DIR"
     echo ""
@@ -329,6 +341,12 @@ if [ "$RUN_PROXY" = true ]; then
     fi
 fi
 
+if [ "$FIREWALL_RESULT" != "0" ]; then
+    echo "Firewall tests:  FAILED (exit code: $FIREWALL_RESULT)"
+elif [[ "$(uname -s)" == "Linux" ]] && [ "$RUN_PROXY" = true ]; then
+    echo "Firewall tests:  PASSED"
+fi
+
 if [ "$RUN_ISOLATION" = true ]; then
     if [ "$ISOLATION_RESULT" = "0" ]; then
         echo "Isolation tests: PASSED"
@@ -337,7 +355,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ]; then
+if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ]; then
     echo ""
     echo "Result: FAILED"
     exit 1
