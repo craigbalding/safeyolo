@@ -144,12 +144,14 @@ class LinuxPlatform(AgentPlatform):
         # Create network namespace
         _sudo(["ip", "netns", "add", netns], check=False)  # may already exist
 
-        # Create veth pair
+        # Create veth pair with the guest end spawned DIRECTLY in the target
+        # netns. Without `netns <netns>` on the peer spec, the kernel creates
+        # both ends in the root namespace, which collides with the host's own
+        # `eth0` (the typical primary NIC name on a Linux server) and fails
+        # with RTNETLINK EEXIST.
         _sudo(["ip", "link", "del", veth_host], check=False)  # clean up stale
-        _sudo(["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_guest])
-
-        # Move guest end into namespace
-        _sudo(["ip", "link", "set", veth_guest, "netns", netns])
+        _sudo(["ip", "link", "add", veth_host, "type", "veth",
+               "peer", "name", veth_guest, "netns", netns])
 
         # Configure host side
         _sudo(["ip", "addr", "add", f"{alloc['host_ip']}/24", "dev", veth_host])
