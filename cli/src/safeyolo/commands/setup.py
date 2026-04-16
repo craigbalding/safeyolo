@@ -2,6 +2,8 @@
 
 import grp
 import os
+import platform as _platform
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,6 +35,19 @@ def check_bpf_access() -> tuple[bool, str]:
     return False, "Not in access_bpf group (run: safeyolo setup bpf)"
 
 
+def check_runsc() -> tuple[bool, str]:
+    """Check if runsc (gVisor) is installed. Linux VM runtime."""
+    path = shutil.which("runsc")
+    if not path:
+        for p in ("/usr/local/bin/runsc", "/usr/bin/runsc"):
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                path = p
+                break
+    if path:
+        return True, f"found at {path}"
+    return False, "not found on PATH or in /usr/local/bin, /usr/bin"
+
+
 @setup_app.callback(invoke_without_command=True)
 def setup() -> None:
     """Check system prerequisites for SafeYolo microVM agents.
@@ -58,28 +73,30 @@ def setup() -> None:
         console.print("    Install:    cp guest/out/* ~/.safeyolo/share/")
         all_ok = False
 
-    # BPF access
-    has_bpf, reason = check_bpf_access()
-    if has_bpf:
-        console.print(f"  [green]OK[/green]  BPF access ({reason})")
-    else:
-        console.print(f"  [yellow]WARN[/yellow]  BPF access: {reason}")
-        console.print("    Run [bold]safeyolo setup bpf[/bold] to fix")
+    # Platform-specific checks. macOS uses a Swift VM helper + feth-bridge (BPF)
+    # + pf; Linux uses runsc (gVisor) and has none of those.
+    system = _platform.system()
+    if system == "Darwin":
+        # BPF access (needed by feth-bridge)
+        has_bpf, reason = check_bpf_access()
+        if has_bpf:
+            console.print(f"  [green]OK[/green]  BPF access ({reason})")
+        else:
+            console.print(f"  [yellow]WARN[/yellow]  BPF access: {reason}")
+            console.print("    Run [bold]safeyolo setup bpf[/bold] to fix")
 
-    # VM helper
-    from ..vm import VMError, find_vm_helper
-    try:
-        helper = find_vm_helper()
-        console.print(f"  [green]OK[/green]  safeyolo-vm at {helper}")
-    except VMError:
-        console.print("  [red]MISSING[/red]  safeyolo-vm binary")
-        console.print("    Build with: cd vm && make install")
-        all_ok = False
+        # VM helper (Swift-built safeyolo-vm binary)
+        from ..vm import VMError, find_vm_helper
+        try:
+            helper = find_vm_helper()
+            console.print(f"  [green]OK[/green]  safeyolo-vm at {helper}")
+        except VMError:
+            console.print("  [red]MISSING[/red]  safeyolo-vm binary")
+            console.print("    Build with: cd vm && make install")
+            all_ok = False
 
-    # pf anchor hook (macOS only). Runtime no longer installs this — must be
-    # present in /etc/pf.conf before the first VM starts.
-    import platform as _platform
-    if _platform.system() == "Darwin":
+        # pf anchor hook — must be present in /etc/pf.conf before the first
+        # VM starts. Runtime no longer installs this.
         state = _pf_conf_state("com.safeyolo")
         if state == "present":
             console.print(f"  [green]OK[/green]  pf anchor hook installed in {_PF_CONF_PATH}")
@@ -90,6 +107,17 @@ def setup() -> None:
         else:
             console.print(f"  [red]MISSING[/red]  pf anchor hook: {state}")
             all_ok = False
+    elif system == "Linux":
+        # runsc (gVisor) — the Linux VM runtime
+        has_runsc, reason = check_runsc()
+        if has_runsc:
+            console.print(f"  [green]OK[/green]  runsc ({reason})")
+        else:
+            console.print(f"  [red]MISSING[/red]  runsc: {reason}")
+            console.print("    Install gVisor — see README 'Linux' section for apt commands.")
+            all_ok = False
+    else:
+        console.print(f"  [yellow]WARN[/yellow]  unsupported platform {system!r}: skipping runtime checks")
 
     if all_ok:
         console.print("\n[green]All prerequisites met.[/green]")
