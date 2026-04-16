@@ -454,17 +454,35 @@ class LinuxPlatform(AgentPlatform):
         """Stop a running gVisor sandbox."""
         cid = _container_id(name)
         agent_dir = get_agents_dir() / name
+        runsc = _find_runsc()
 
-        # Graceful stop
-        _sudo([_find_runsc(), "--root", RUNSC_ROOT, "kill", cid, "SIGTERM"], check=False)
-        time.sleep(5)
+        # Probe state so we only pay for the graceful-kill cycle when a
+        # live init exists. `stopped` and `created` both mean "runsc has
+        # state dir entries that need cleanup" but no process to signal.
+        state_result = _sudo(
+            [runsc, "--root", RUNSC_ROOT, "state", cid], check=False,
+        )
+        has_state = state_result.returncode == 0
+        is_running = False
+        if has_state:
+            try:
+                is_running = json.loads(state_result.stdout).get("status") == "running"
+            except json.JSONDecodeError:
+                pass
 
-        # Force kill
-        _sudo([_find_runsc(), "--root", RUNSC_ROOT, "kill", "--all", cid, "SIGKILL"], check=False)
-        time.sleep(1)
+        if is_running:
+            # Graceful then forced.
+            _sudo([runsc, "--root", RUNSC_ROOT, "kill", cid, "SIGTERM"], check=False)
+            time.sleep(5)
+            _sudo([runsc, "--root", RUNSC_ROOT, "kill", "--all", cid, "SIGKILL"], check=False)
+            time.sleep(1)
 
-        # Delete container
-        _sudo([_find_runsc(), "--root", RUNSC_ROOT, "delete", cid], check=False)
+        if has_state:
+            # --force so delete works on created/stopped/running alike.
+            # Without --force runsc errors on non-running states, leaving
+            # stale entries that break the next `runsc create`.
+            _sudo([runsc, "--root", RUNSC_ROOT, "delete", "--force", cid],
+                  check=False)
 
         # Teardown networking
         agents_dir = get_agents_dir()
