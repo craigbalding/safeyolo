@@ -1,5 +1,17 @@
-"""Agent API scope tests — verify the token grants read-only access
-and that auth enforcement has no bypasses.
+"""Agent API scope tests — verify auth enforcement has no bypasses
+and that the mutation surface is correctly scoped.
+
+The agent API is NOT read-only: it exposes diagnostics (GET) plus a
+small mutation surface:
+  - POST /api/flows/{id}/tag — add/update tag
+  - DELETE /api/flows/{id}/tag/{name} — remove tag
+  - POST /gateway/request-access — request service capability
+  - POST /gateway/submit-binding — submit contract binding
+
+All endpoints require a valid bearer token. The token MUST NOT grant
+access to the admin API (separate addon, separate port, separate token).
+These tests verify the auth boundary and that methods outside each
+route's allowed set are rejected.
 
 Runs from inside the sandbox (same as test_vm_isolation.py). The
 agent API is reached via `http://_safeyolo.proxy.internal/` — a
@@ -101,4 +113,49 @@ class TestAgentAPIMethodRestriction:
                                     token=_agent_token())
         assert status in (404, 405), (
             f"DELETE /nonexistent returned {status}, expected 404/405"
+        )
+
+
+class TestAgentAPIMutationSurface:
+    """Verify the known mutation endpoints exist and are auth-gated,
+    and that mutation outside those endpoints is rejected.
+    """
+
+    def test_tag_post_requires_auth(self):
+        """POST /api/flows/{id}/tag without token → reject."""
+        status, _ = _curl_agent_api(
+            "/api/flows/nonexistent-id/tag", method="POST",
+            extra_flags=["-d", '{"name":"test","value":"x"}',
+                         "-H", "Content-Type: application/json"],
+        )
+        assert status in (401, 403), (
+            f"POST tag without auth returned {status}"
+        )
+
+    def test_tag_delete_requires_auth(self):
+        """DELETE /api/flows/{id}/tag/{name} without token → reject."""
+        status, _ = _curl_agent_api(
+            "/api/flows/nonexistent-id/tag/test-tag", method="DELETE",
+        )
+        assert status in (401, 403), (
+            f"DELETE tag without auth returned {status}"
+        )
+
+    def test_gateway_request_access_requires_auth(self):
+        """POST /gateway/request-access without token → reject."""
+        status, _ = _curl_agent_api(
+            "/gateway/request-access", method="POST",
+            extra_flags=["-d", '{"service":"test"}',
+                         "-H", "Content-Type: application/json"],
+        )
+        assert status in (401, 403), (
+            f"POST /gateway/request-access without auth returned {status}"
+        )
+
+    def test_post_on_get_only_route_rejected(self):
+        """POST on a GET-only route (e.g. /policy) → 405, not silent OK."""
+        token = _agent_token()
+        status, _ = _curl_agent_api("/policy", method="POST", token=token)
+        assert status == 405, (
+            f"POST /policy returned {status}, expected 405"
         )
