@@ -98,10 +98,21 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 All three scripts run on Linux only. On macOS, invoke them through `build-all.sh` which handles the Lima shell-in.
 
-## Troubleshooting
+## Why sudo?
 
-**mmdebstrap fails with "Operation not permitted" around user namespaces**
-Our scripts use `--mode=root` under `sudo`, which sidesteps AppArmor restrictions on newer Ubuntu runners. If you're running on a host without sudo, see mmdebstrap's [mode documentation](https://gitlab.mister-muffin.de/josch/mmdebstrap/blob/main/mmdebstrap.1.pod) for alternatives.
+`build-rootfs.sh` invokes `mmdebstrap --mode=root` under `sudo`. Root is needed *inside* the bootstrap process for three things the kernel tightly gates:
+
+1. `mknod` to create `/dev/` entries in the target rootfs
+2. `chroot` into the rootfs and run Debian package maintainer scripts
+3. Setting root-owned file ownership across the target `/` tree
+
+mmdebstrap also supports `--mode=unshare`, which uses Linux user namespaces to fake root with zero real privilege — the preferred modern path. But Ubuntu 24.04 ships with `kernel.apparmor_restrict_unprivileged_userns=1` by default, which kills unprivileged user namespaces unless you flip that sysctl (a host-wide security posture change) or install an AppArmor profile for mmdebstrap. Neither is better UX than `sudo` for a quickstart, so we default to `--mode=root`.
+
+Everything root touches is confined to a scratch directory under `/tmp/safeyolo-rootfs.*`. No persistent host state is modified — once `out/rootfs-base.ext4` is built and `chown`'d back to you, the `/tmp` tree is cleaned up.
+
+If you want unshare mode on Noble: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (make persistent in `/etc/sysctl.d/` if you want), then patch `build-rootfs.sh` to drop `sudo` and change `--mode=root` to `--mode=unshare`. We may add this as a flag if there's demand.
+
+## Troubleshooting
 
 **`mkfs.ext4: No space left on device`**
 Content exceeded the sized image. The script computes size with 20% + 50MB headroom, so this shouldn't happen in normal flow. If it does, shrink the rootfs package list or bump the headroom in `build-rootfs.sh`.

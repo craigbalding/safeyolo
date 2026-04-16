@@ -157,8 +157,11 @@ export GUEST_SRC_DIR="$SCRIPT_DIR"
 #
 # We keep copyright files specifically (Debian redistribution compliance)
 # via the path-include rule.
+# NOTE: mmdebstrap runs hook strings via `sh -c`, and /bin/sh is dash on
+# Debian/Ubuntu. Keep this POSIX-only — no bashisms like `-o pipefail`.
+# The hook body has no pipes, so `set -eu` is equivalent.
 ESSENTIAL_HOOK='
-set -euo pipefail
+set -eu
 ROOTFS="$1"
 mkdir -p "$ROOTFS/etc/dpkg/dpkg.cfg.d"
 cat > "$ROOTFS/etc/dpkg/dpkg.cfg.d/01-nodoc" <<NODOC
@@ -173,6 +176,20 @@ NODOC
 '
 
 echo "--- Running mmdebstrap (trixie, ${DEB_ARCH}, minbase) ---"
+# Explain the sudo prompt before it appears. mmdebstrap --mode=root needs
+# real root to mknod device files, chroot + run package maintainer scripts,
+# and chown files to root inside the rootfs tree. The alternative
+# (--mode=unshare, user namespaces) is blocked by Ubuntu 24.04's default
+# AppArmor restriction on unprivileged userns, so --mode=root is the
+# portable choice. Everything root touches is under $WORK_DIR in /tmp.
+if ! sudo -n true 2>/dev/null; then
+    echo ""
+    echo "    sudo prompt ahead: mmdebstrap needs root to populate and chroot"
+    echo "    into the new rootfs under $WORK_DIR (a scratch /tmp directory)."
+    echo "    Nothing outside that directory is modified. See guest/README.md"
+    echo "    'Why sudo?' for the full explanation and unshare-mode alternative."
+    echo ""
+fi
 sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST_SRC_DIR \
     mmdebstrap \
         --mode=root \
