@@ -424,33 +424,41 @@ class TestSandboxExposure:
     vectors; if any succeed, that's a hardening gap.
     """
 
-    def test_no_sensitive_devices(self):
-        """Sensitive device nodes must be absent or unreadable. /dev/kvm
-        grants direct hypervisor access, /dev/net/tun lets an agent
-        forge L3 packets, /dev/fuse allows mounting attacker-controlled
-        filesystems, /dev/loop* lets the agent map arbitrary files as
-        block devices. Any of these present and openable is a gap.
+    def test_dev_whitelist(self):
+        """Broad /dev enumeration — anything outside Docker's default
+        minimal set is a hardening gap.
+
+        Instead of targeting known-bad devices by name (which misses
+        novel entries), enumerate everything in /dev and assert it's
+        all on the whitelist. If gVisor adds a new device in a future
+        version, this test catches it before it ships into production.
         """
-        sensitive = [
-            "/dev/kvm", "/dev/net/tun", "/dev/fuse",
-            "/dev/port",  # x86 I/O ports — direct hardware poke
-            "/dev/mem", "/dev/kmem",  # already covered by other tests; belt-and-braces
-        ]
-        # /dev/loop0..3 — probe a few; absence is sufficient
-        sensitive.extend(f"/dev/loop{i}" for i in range(4))
-        openable = []
-        for path in sensitive:
-            if not os.path.exists(path):
+        # The whitelist: Docker-standard minimal /dev entries. These
+        # are harmless (null, zero, random, tty, pty, symlinks to
+        # /proc/self/fd, shm tmpfs, console emulated as a file).
+        whitelist = {
+            # Character devices
+            "null", "zero", "full", "random", "urandom", "tty", "console",
+            # PTY
+            "ptmx", "pts",
+            # Symlinks to /proc/self/fd
+            "fd", "stdin", "stdout", "stderr",
+            # tmpfs mount
+            "shm",
+        }
+        unexpected = []
+        for entry in os.listdir("/dev"):
+            if entry in whitelist:
                 continue
-            # Existence alone isn't breach-worthy if open fails EACCES.
-            try:
-                fd = os.open(path, os.O_RDONLY)
-                os.close(fd)
-                openable.append(path)
-            except (PermissionError, OSError):
-                pass
-        assert not openable, (
-            f"Sensitive device nodes openable from sandbox: {openable}"
+            # pts/ptmx is a subentry of the pts devpts mount — allow
+            if entry.startswith("pts"):
+                continue
+            unexpected.append(entry)
+        assert not unexpected, (
+            f"Unexpected device entries in /dev: {unexpected}. "
+            f"Every entry must be on the whitelist or it's a potential "
+            f"attack surface. If a new entry is legitimately needed, add "
+            f"it to the whitelist and document why."
         )
 
     def test_proc_kcore_unreadable(self):
