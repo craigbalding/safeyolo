@@ -210,7 +210,10 @@ def _build_command(
     elif policy_yaml.exists():
         cmd.extend(["--set", f"policy_file={policy_yaml}"])
     else:
-        raise RuntimeError(f"No policy file found in {config_dir}")
+        raise RuntimeError(
+            f"No policy file found in {config_dir}. "
+            f"Run 'safeyolo init' to create a default configuration."
+        )
 
     # Rate limit config (optional)
     ratelimit_config = config_dir / "rate_limits.json"
