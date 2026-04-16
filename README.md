@@ -17,7 +17,8 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 
 - macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
-- [Lima](https://lima-vm.io/) on macOS only (for guest image build; `brew install lima`)
+- macOS only: [Lima](https://lima-vm.io/) for the guest image build — `brew install lima`
+- Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime — install command below
 
 ### Build
 
@@ -31,11 +32,24 @@ cd safeyolo
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
 
-# Build host binaries (Swift VM helper + feth-bridge + vsock-term)
-cd vm && make install && cd ..
-
 # Install CLI and dependencies
 uv sync --all-packages
+```
+
+**Then, one platform-specific step:**
+
+_macOS_ — build the Swift VM helper + `feth-bridge` + `vsock-term`:
+
+```bash
+cd vm && make install && cd ..
+```
+
+_Linux_ — install gVisor (`runsc`) as the VM runtime. The `vm/` directory is macOS-only and is not used here:
+
+```bash
+curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
+sudo apt-get update && sudo apt-get install -y runsc
 ```
 
 ### Run
