@@ -279,8 +279,14 @@ def _build_command(
         cmd.extend(["--set", "pattern_block_input=true"])
         cmd.extend(["--set", "pattern_block_output=true"])
 
-    # test-context: defaults to BLOCK (428 soft-reject for missing context)
-    tc_block = force_block or os.environ.get("TEST_CONTEXT_BLOCK", "true").lower() == "true"
+    # test-context: defaults to BLOCK (428 soft-reject for missing context).
+    # In test mode (blackbox harness), disable blocking so host-side proxy
+    # tests that don't include X-Test-Context aren't 428'd. The isolation
+    # tests explicitly include the header on probes they want recorded.
+    if test_config:
+        tc_block = False
+    else:
+        tc_block = force_block or os.environ.get("TEST_CONTEXT_BLOCK", "true").lower() == "true"
     cmd.extend(["--set", f"test_context_block={'true' if tc_block else 'false'}"])
 
     # Override container-default paths for host execution
