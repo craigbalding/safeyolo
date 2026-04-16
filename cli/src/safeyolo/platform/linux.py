@@ -478,11 +478,16 @@ class LinuxPlatform(AgentPlatform):
         cid = _container_id(name)
         uid = "0:0" if user == "root" else "1000:1000"
 
+        # No `--` separator before the command — runsc exec parses the
+        # first non-flag arg as the container ID and everything after
+        # it as the command, without treating `--` as a flag terminator.
+        # Including `--` makes runsc try to exec `--` itself and fail
+        # with "error finding executable \"--\" in PATH".
         cmd = [
             "sudo", _find_runsc(), "--root", RUNSC_ROOT, "exec",
             "--user", uid,
             "--cwd", "/home/agent/workspace",
-            cid, "--",
+            cid,
         ]
         if command:
             cmd.extend(["/bin/bash", "-c", command])
