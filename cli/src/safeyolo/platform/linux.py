@@ -542,10 +542,13 @@ class LinuxPlatform(AgentPlatform):
             {"destination": "/home/agent/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
              "options": ["rbind", "rw"]},
-            # Config share (ro)
+            # Config share — mounted RW during boot so guest-init can write
+            # /safeyolo/vm-ip (the host's readiness signal) and vm-status.
+            # guest-init-per-run:108 remounts it `ro` before going to sleep,
+            # matching the macOS microVM behaviour.
             {"destination": "/safeyolo", "type": "bind",
              "source": str(config_share),
-             "options": ["rbind", "ro"]},
+             "options": ["rbind", "rw"]},
         ]
 
         # CA cert bind mount into trust store
@@ -615,7 +618,15 @@ class LinuxPlatform(AgentPlatform):
             "process": {
                 "terminal": False,
                 "user": {"uid": 0, "gid": 0},
-                "args": ["/safeyolo/guest-init"],
+                # Capture guest-init stdout+stderr to a log file in the
+                # rootfs overlay upper layer — accessible post-mortem from
+                # the host at ~/.safeyolo/agents/<name>/rootfs-upper/var/log/
+                # safeyolo-boot.log even if the container exits. Without this,
+                # runsc swallows the streams and a boot crash is invisible.
+                "args": [
+                    "/bin/bash", "-c",
+                    "mkdir -p /var/log && exec /safeyolo/guest-init >> /var/log/safeyolo-boot.log 2>&1",
+                ],
                 "env": env,
                 "cwd": "/",
                 "capabilities": {
