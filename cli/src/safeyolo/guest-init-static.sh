@@ -34,6 +34,22 @@ if [ -f /safeyolo/agent-name ]; then
 fi
 
 # --------------------------------------------------------------------------
+# 0. Remove attack-surface device nodes
+#
+# gVisor's default /dev includes /dev/net/tun and /dev/fuse, both of
+# which a captured agent would reach for: /dev/net/tun lets it create
+# a userspace TUN interface and forge L3 packets (bypassing our
+# firewall rules at the veth layer); /dev/fuse lets it mount an
+# attacker-controlled filesystem inside the container. Neither is
+# needed for any legitimate agent workflow, so delete the nodes
+# before dropping to agent-user context. We run as root at this
+# point (pre-per-run) with CAP_MKNOD + CAP_DAC_OVERRIDE, which is
+# sufficient to unlink.
+rm -f /dev/net/tun 2>/dev/null || true
+rmdir /dev/net 2>/dev/null || true
+rm -f /dev/fuse 2>/dev/null || true
+
+# --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
 ip link set lo up 2>/dev/null || true

@@ -795,5 +795,56 @@ class LinuxPlatform(AgentPlatform):
                     "pids": {"limit": 4096},
                 },
                 "cgroupsPath": cgroups_path,
+                # Minimal seccomp profile: block syscalls whose default
+                # behaviour is an escape vector in a containerised
+                # context. Default-allow (we don't replicate Docker's
+                # ~44-syscall blocklist here; gVisor's user-space
+                # kernel already rejects most of them) with targeted
+                # denials for the cases blackbox tests proved were
+                # reachable otherwise.
+                "seccomp": {
+                    "defaultAction": "SCMP_ACT_ALLOW",
+                    "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
+                    "syscalls": [
+                        {
+                            # unshare(CLONE_NEWUSER): user-namespace
+                            # creation. Inside a fresh userns the agent
+                            # appears as uid 0 and gets a full capability
+                            # set (scoped to that namespace), enabling
+                            # mount/ptrace/capability-based escape
+                            # attempts the other seccomp/cap controls
+                            # didn't anticipate. Historical escape
+                            # vehicle (CVE-2013-1956 and others).
+                            "names": ["unshare"],
+                            "action": "SCMP_ACT_ERRNO",
+                            "errnoRet": 1,  # EPERM
+                            "args": [
+                                {
+                                    "index": 0,
+                                    "value": 0x10000000,     # CLONE_NEWUSER
+                                    "valueTwo": 0x10000000,  # mask
+                                    "op": "SCMP_CMP_MASKED_EQ",
+                                },
+                            ],
+                        },
+                        {
+                            # clone(CLONE_NEWUSER): same risk via clone()
+                            # instead of unshare(). clone's flags are arg
+                            # 0 on x86_64 but the args layout varies by
+                            # arch. We mask on CLONE_NEWUSER regardless.
+                            "names": ["clone"],
+                            "action": "SCMP_ACT_ERRNO",
+                            "errnoRet": 1,
+                            "args": [
+                                {
+                                    "index": 0,
+                                    "value": 0x10000000,
+                                    "valueTwo": 0x10000000,
+                                    "op": "SCMP_CMP_MASKED_EQ",
+                                },
+                            ],
+                        },
+                    ],
+                },
             },
         }
