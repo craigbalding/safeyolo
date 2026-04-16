@@ -121,7 +121,7 @@ class FlowRecorder:
         port = flow.request.port
         method = flow.request.method
         path = flow.request.path.split("?")[0]
-        query_string = flow.request.query.to_dict() if flow.request.query else None
+        query_string = dict(flow.request.query) if flow.request.query else None
         query_str = json.dumps(query_string) if query_string else None
 
         # Request info — redact gateway-injected credential header
