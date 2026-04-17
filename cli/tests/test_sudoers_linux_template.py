@@ -122,24 +122,31 @@ class TestLinuxTemplateInvariants:
         assert "ip netns add safeyolo-*" in sudoers_rules
         assert "ip netns del safeyolo-*" in sudoers_rules
 
-    def test_ip_link_scoped_to_veth_prefix(self, sudoers_rules):
-        """Host-side veth operations scoped to veth-sy* interface names."""
-        # No blanket `ip link *`
-        assert "/ip link *\\" not in sudoers_rules and \
-               "/ip link *\n" not in sudoers_rules
-        assert "ip link add veth-sy*" in sudoers_rules
-        assert "ip link del veth-sy*" in sudoers_rules
-        assert "ip link set veth-sy* up" in sudoers_rules
+    def test_no_veth_grants(self, sudoers_rules):
+        """UDS-only arch: no veth interfaces exist on the host.
+        The sandbox has zero external interfaces; egress is structural,
+        not policy-based. Any veth grant would be pure attack surface."""
+        assert "veth-sy" not in sudoers_rules
+        assert "ip link add" not in sudoers_rules
+        assert "ip addr add" not in sudoers_rules
 
-    def test_ip_addr_scoped_to_veth_prefix(self, sudoers_rules):
-        """Host-side addr operations scoped to veth-sy* interfaces."""
-        assert "ip addr add * dev veth-sy*" in sudoers_rules
-
-    def test_ip_n_grants_for_guest_side_config(self, sudoers_rules):
-        """Guest-side config uses ip -n safeyolo-* (not ip netns exec)."""
-        assert "ip -n safeyolo-* addr *" in sudoers_rules
-        assert "ip -n safeyolo-* link *" in sudoers_rules
-        assert "ip -n safeyolo-* route *" in sudoers_rules
+    def test_ip_n_restricted_to_loopback_up(self, sudoers_rules):
+        """Guest-side ip -n is restricted to bringing up loopback only.
+        No addr/route/arbitrary-link grants — the container has no
+        interface to configure except lo."""
+        assert "ip -n safeyolo-* link set lo up" in sudoers_rules
+        # Broader wildcards that would let an operator touch other
+        # interfaces or configure addresses/routes must be absent.
+        assert "ip -n safeyolo-* addr" not in sudoers_rules
+        assert "ip -n safeyolo-* route" not in sudoers_rules
+        # Any ip -n ... link wildcard other than the pinned `link set lo up`
+        # form would be a broadening. Keep the scope tight.
+        for line in sudoers_rules.splitlines():
+            stripped = line.strip()
+            if "ip -n safeyolo-* link" in stripped:
+                assert "link set lo up" in stripped, (
+                    f"ip -n ... link rule broader than `link set lo up`: {stripped}"
+                )
 
     def test_runsc_pinned_to_safeyolo_state_dir(self, sudoers_rules):
         """runsc rules must pin --root /run/safeyolo so they can't operate
@@ -153,26 +160,27 @@ class TestLinuxTemplateInvariants:
                 )
 
     def test_runsc_enumerates_subcommands(self, sudoers_rules):
-        """Each runsc subcommand must be explicitly listed."""
+        """Each runsc subcommand must be explicitly listed, and the
+        `create` variants must pin --host-uds=open (required to relay
+        UDS connect() across the sandbox boundary)."""
         for subcmd in ("create", "start", "state", "kill", "delete", "exec"):
-            assert f"runsc --root /run/safeyolo {subcmd} *" in sudoers_rules or \
-                   f"runsc --root /run/safeyolo --platform=kvm {subcmd} *" in sudoers_rules or \
-                   f"runsc --root /run/safeyolo --platform=systrap {subcmd} *" in sudoers_rules, \
-                   f"Missing runsc subcommand grant: {subcmd}"
+            # `create` has --host-uds=open pinned; other subcommands don't need it.
+            if subcmd == "create":
+                assert f"runsc --root /run/safeyolo --host-uds=open --platform=kvm {subcmd} *" in sudoers_rules or \
+                       f"runsc --root /run/safeyolo --host-uds=open --platform=systrap {subcmd} *" in sudoers_rules, \
+                       f"Missing runsc {subcmd} with --host-uds=open"
+            else:
+                assert f"runsc --root /run/safeyolo {subcmd} *" in sudoers_rules, \
+                       f"Missing runsc subcommand grant: {subcmd}"
 
-    def test_nft_scoped_to_safeyolo_table(self, sudoers_rules):
-        """nft rules must be scoped to `table ip safeyolo` only.
-        No flush ruleset, no operations on other tables."""
-        assert "nft add table ip safeyolo" in sudoers_rules
-        assert "nft delete table ip safeyolo" in sudoers_rules
-        assert "nft flush table ip safeyolo" in sudoers_rules
-        assert "nft list table ip safeyolo" in sudoers_rules
-        assert "nft add chain ip safeyolo *" in sudoers_rules
-        assert "nft add rule ip safeyolo *" in sudoers_rules
-        # Must NOT have blanket iptables or nft -f
-        assert "iptables *" not in sudoers_rules
-        assert "nft -f" not in sudoers_rules
-        assert "flush ruleset" not in sudoers_rules
+    def test_no_kernel_firewall_grants(self, sudoers_rules):
+        """UDS-only arch has no kernel firewall at all. Any nft/iptables
+        grant would be unused policy surface — and dangerous if ever
+        mis-applied, since the sandbox doesn't depend on kernel rules
+        for isolation."""
+        assert "nft" not in sudoers_rules
+        assert "iptables" not in sudoers_rules
+        assert "sysctl" not in sudoers_rules
 
     def test_grants_pinned_mount_and_umount(self, sudoers_rules):
         """Only the one-time base extraction mount is granted, pinned

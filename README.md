@@ -57,6 +57,12 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gviso
 sudo apt-get update && sudo apt-get install -y runsc
 ```
 
+If `uv sync --all-packages` did not install `mitmproxy` into the workspace venv (Python 3.12 resolution can drop it), fall back to pipx with the addon dependencies injected:
+
+```bash
+./scripts/install-mitmproxy-pipx.sh
+```
+
 ### Run
 
 ```bash

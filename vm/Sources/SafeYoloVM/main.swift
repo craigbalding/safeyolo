@@ -282,6 +282,12 @@ do {
         try runner.start()
     }
 
+    // Start the vsock proxy relay — guest-initiated connections on vsock
+    // port 1080 are forwarded to mitmproxy on 127.0.0.1:8080. This
+    // replaces the feth-bridge + pf firewall path with a single hop.
+    let proxyRelay = VSockProxyRelay(vm: vm, queue: vmQueue)
+    proxyRelay.start()
+
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.
     // Otherwise, attach the vsock terminal once the guest's per-run init

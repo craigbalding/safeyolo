@@ -196,6 +196,11 @@ def get_agent_map_path() -> Path:
     return get_data_dir() / "agent_map.json"
 
 
+def get_bridge_sockets_dir() -> Path:
+    """Per-agent proxy_bridge listener sockets live here."""
+    return get_data_dir() / "sockets"
+
+
 def get_proxy_pid_path() -> Path:
     """Get path to the mitmproxy PID file."""
     return get_data_dir() / "proxy.pid"

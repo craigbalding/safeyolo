@@ -192,44 +192,38 @@ def _check_firewall_darwin() -> DiagResult:
 
 
 def _check_firewall_linux() -> DiagResult:
-    """Linux: SafeYolo nftables table present."""
-    from ..platform.linux import NFT_TABLE
+    """Linux: egress control is structural (UDS-only) — no firewall to check.
 
-    result = _sudo_n(["nft", "list", "table", "ip", NFT_TABLE])
-    if result is None:
-        return DiagResult(
-            name="Firewall enforcement",
-            status="warn",
-            message="Could not invoke nft (missing or timed out)",
-        )
-    if result.returncode == 0 and "chain forward" in (result.stdout or ""):
+    The sandbox has no external network interfaces, so there's nothing
+    to filter. Enforcement is inherent in the architecture: the only
+    egress path is the bind-mounted UDS, which terminates at mitmproxy.
+    We verify the bridge daemon is alive as the equivalent readiness
+    signal. Per-agent sockets appear under sockets_dir when agents run.
+    """
+    from ..proxy_bridge import is_bridge_running, sockets_dir
+
+    socks = sockets_dir()
+    if is_bridge_running():
+        active = [p.name for p in socks.glob("*.sock")] if socks.exists() else []
+        if active:
+            return DiagResult(
+                name="Firewall enforcement",
+                status="pass",
+                message=f"proxy UDS bridge active ({len(active)} agent socket(s) in {socks})",
+            )
         return DiagResult(
             name="Firewall enforcement",
             status="pass",
-            message=f"nftables table {NFT_TABLE} present with forward chain",
-        )
-    stderr = (result.stderr or "").lower()
-    if _sudo_needs_password(result):
-        return DiagResult(
-            name="Firewall enforcement",
-            status="warn",
-            message="nft not queryable without sudo cached credentials",
-            remediation="safeyolo setup sudoers (or `sudo -v` before running doctor)",
-        )
-    if "no such file" in stderr or "does not exist" in stderr:
-        return DiagResult(
-            name="Firewall enforcement",
-            status="warn",
-            message=(
-                f"nftables table {NFT_TABLE} not present "
-                f"(expected if no agent has started yet)"
-            ),
-            remediation="Run an agent to trigger rule install, or `safeyolo agent run <name>`",
+            message=f"proxy UDS bridge active (no agents running, sockets dir {socks})",
         )
     return DiagResult(
         name="Firewall enforcement",
-        status="fail",
-        message=f"nft check failed: {result.stderr.strip()}",
+        status="warn",
+        message=(
+            f"proxy UDS bridge not running ({socks} not being served). "
+            f"The bridge starts automatically when the proxy starts."
+        ),
+        remediation="safeyolo start",
     )
 
 

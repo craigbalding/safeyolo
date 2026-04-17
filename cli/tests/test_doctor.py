@@ -588,49 +588,33 @@ class TestCheckFirewallDarwin:
 
 
 class TestCheckFirewallLinux:
-    """Linux: nftables table ip safeyolo present."""
+    """Linux (UDS-only arch): the proxy_bridge is the readiness signal.
+
+    The sandbox has no kernel firewall — isolation is structural via
+    per-agent Unix sockets + loopback-only netns. The doctor check is
+    really "is the bridge daemon up and ready to serve agents?".
+    """
 
     @pytest.fixture(autouse=True)
     def _linux(self, monkeypatch):
         monkeypatch.setattr("platform.system", lambda: "Linux")
 
-    def test_pass_when_table_present(self, monkeypatch):
-        nft_output = (
-            "table ip safeyolo {\n"
-            "\tchain forward {\n"
-            "\t\ttype filter hook forward priority filter; policy accept;\n"
-            "\t}\n"
-            "}\n"
-        )
+    def test_pass_when_bridge_running(self, monkeypatch):
         monkeypatch.setattr(
-            "safeyolo.commands.doctor._sudo_n",
-            lambda cmd, timeout=5: _completed(stdout=nft_output),
+            "safeyolo.proxy_bridge.is_bridge_running", lambda: True,
         )
         result = _check_firewall()
         assert result.status == "pass"
+        assert "proxy UDS bridge active" in result.message
 
-    def test_warn_when_table_missing(self, monkeypatch):
-        """Table is only created when an agent first starts."""
+    def test_warn_when_bridge_not_running(self, monkeypatch):
         monkeypatch.setattr(
-            "safeyolo.commands.doctor._sudo_n",
-            lambda cmd, timeout=5: _completed(
-                returncode=1, stderr="Error: No such file or directory\n"
-            ),
+            "safeyolo.proxy_bridge.is_bridge_running", lambda: False,
         )
         result = _check_firewall()
         assert result.status == "warn"
-        assert "not present" in result.message
-
-    def test_warn_when_sudo_needs_password(self, monkeypatch):
-        monkeypatch.setattr(
-            "safeyolo.commands.doctor._sudo_n",
-            lambda cmd, timeout=5: _completed(
-                returncode=1, stderr="sudo: a password is required\n"
-            ),
-        )
-        result = _check_firewall()
-        assert result.status == "warn"
-        assert "safeyolo setup sudoers" in result.remediation
+        assert "bridge not running" in result.message
+        assert result.remediation == "safeyolo start"
 
 
 class TestCheckFirewallUnsupportedPlatform:

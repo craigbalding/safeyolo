@@ -532,9 +532,33 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
 
     log.info("Proxy started (PID %d) on port %d", proc.pid, proxy_port)
 
+    # Start the UDS -> TCP bridge for Linux agents that reach mitmproxy
+    # via a bind-mounted socket instead of IP networking. macOS agents
+    # use the vsock relay inside safeyolo-vm and ignore this socket.
+    # Best-effort: a failed bridge start shouldn't prevent the proxy
+    # from coming up.
+    try:
+        from .proxy_bridge import start_proxy_bridge
+        start_proxy_bridge(proxy_port=proxy_port)
+    except Exception as exc:
+        log.warning("proxy bridge failed to start: %s: %s",
+                    type(exc).__name__, exc)
+
 
 def stop_proxy() -> None:
-    """Stop the host mitmproxy process."""
+    """Stop the host mitmproxy process.
+
+    Does NOT stop the proxy_bridge. The bridge owns /safeyolo/proxy.sock,
+    which gVisor's gofer binds once at container start; unlinking the
+    socket invalidates the container-side inode handle even after a
+    fresh bind at the same path. Keeping the bridge alive across
+    mitmproxy restarts preserves the UDS inode — clients inside running
+    agents just see transient "connection refused" to 127.0.0.1:8080
+    during the gap and recover automatically when mitmproxy is back.
+
+    `safeyolo stop --all` is the right command when the bridge should
+    also go (it tears down agents first, so no one is holding handles).
+    """
     pid_file = _pid_file()
     if not pid_file.exists():
         return

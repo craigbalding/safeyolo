@@ -5,7 +5,7 @@ import os
 import signal
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -28,7 +28,6 @@ from safeyolo.vm import (
     start_vm,
     stop_vm,
 )
-
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -361,16 +360,24 @@ class TestPrepareConfigShare:
         prepare_config_share("agent1", "/workspace")
         assert not (share_dir / "per-run-started").exists()
 
-    def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
+    def test_proxy_env_uses_gateway_ip_and_forwarder_port(self, tmp_config_dir):
+        """HTTP_PROXY points at the in-guest forwarder (fixed port 8080),
+        not the host proxy port. The forwarder decouples the container-
+        facing port from whatever port mitmproxy is actually bound to,
+        so test mode (host port 8180) and prod (host port 8080) produce
+        identical container env."""
         share = prepare_config_share(
             "agent1", "/workspace",
             gateway_ip="10.0.0.1", proxy_port=9999,
         )
         proxy_env = (share / "proxy.env").read_text()
-        assert 'HTTP_PROXY="http://10.0.0.1:9999"' in proxy_env
-        assert 'HTTPS_PROXY="http://10.0.0.1:9999"' in proxy_env
-        assert 'http_proxy="http://10.0.0.1:9999"' in proxy_env
-        assert 'https_proxy="http://10.0.0.1:9999"' in proxy_env
+        # gateway_ip flows through; proxy_port is ignored (forwarder-fixed).
+        assert 'HTTP_PROXY="http://10.0.0.1:8080"' in proxy_env
+        assert 'HTTPS_PROXY="http://10.0.0.1:8080"' in proxy_env
+        assert 'http_proxy="http://10.0.0.1:8080"' in proxy_env
+        assert 'https_proxy="http://10.0.0.1:8080"' in proxy_env
+        # The host-side proxy_port should NOT appear in the container env.
+        assert "9999" not in proxy_env
 
     def test_proxy_env_default_values(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
