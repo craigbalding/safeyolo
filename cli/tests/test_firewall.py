@@ -948,8 +948,12 @@ class TestConstants:
     def test_default_anchor(self):
         assert DEFAULT_ANCHOR == "com.safeyolo"
 
-    def test_allowed_anchors_is_exactly_two(self):
-        assert ALLOWED_ANCHORS == ("com.safeyolo", "com.safeyolo-test")
+    def test_allowed_anchors_is_exactly_three(self):
+        assert ALLOWED_ANCHORS == (
+            "com.safeyolo",
+            "com.safeyolo-test",
+            "com.safeyolo-dev",
+        )
 
     def test_anchor_name_is_in_allowlist(self):
         assert ANCHOR_NAME in ALLOWED_ANCHORS

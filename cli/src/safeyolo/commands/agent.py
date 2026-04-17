@@ -480,6 +480,13 @@ def _run_agent(
     # us to send SIGUSR1. Restore and passthrough pre-write — on restore
     # the snapshotted guest wakes up on the gate and sees it immediately.
     _debug_mode = os.environ.get("SAFEYOLO_DEBUG") == "1"
+    # Port that ends up in the guest's HTTP_PROXY. On platforms that
+    # use the in-guest forwarder (Linux UDS arch), the container-facing
+    # port is fixed at 8080 and the forwarder decouples it from the
+    # host's mitmproxy port. On platforms without a forwarder (macOS
+    # feth), the guest dials the host port directly via its gateway.
+    guest_proxy_port = 8080 if fw_alloc.get("needs_bridge_socket") else proxy_port
+
     def _do_prepare_config_share(for_mode: str) -> None:
         prepare_config_share(
             name=name,
@@ -488,7 +495,7 @@ def _run_agent(
             mise_package=mise_package,
             agent_args=agent_args_str,
             extra_env=extra_env,
-            proxy_port=proxy_port,
+            proxy_port=guest_proxy_port,
             host_mounts=host_shares if host_shares else None,
             host_config_files=host_config_files if host_config_files else None,
             instructions_content=instructions_content,
