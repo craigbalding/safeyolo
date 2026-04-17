@@ -47,15 +47,28 @@ class DarwinPlatform(AgentPlatform):
             # interfaces, no subnet. attribution_ip is synthetic 127.0.0.X
             # exactly like Linux; the host-side bridge binds upstream TCP
             # to this address before reaching mitmproxy.
+            attribution_ip = f"127.0.0.{agent_index + 2}"
+
+            # macOS quirk: Linux auto-routes the whole 127.0.0.0/8
+            # loopback range, but Darwin only owns 127.0.0.1 by default.
+            # The bridge's bind() to 127.0.0.X fails with EADDRNOTAVAIL
+            # unless we explicitly alias the address onto lo0 first.
+            # Idempotent — re-aliasing is a no-op.
+            subprocess.run(
+                ["sudo", "-n", "ifconfig", "lo0", "alias",
+                 f"{attribution_ip}/32"],
+                capture_output=True, check=False,
+            )
+
             return {
-                "attribution_ip": f"127.0.0.{agent_index + 2}",
+                "attribution_ip": attribution_ip,
                 "needs_bridge_socket": True,
                 "host_ip": "127.0.0.1",
                 "guest_ip": "127.0.0.1",
                 # Subnet / placeholders kept non-empty so the firewall
                 # rules path (still active for feth callers) doesn't
                 # KeyError until Phase 2b fully removes it.
-                "subnet": f"127.0.0.{agent_index + 2}/32",
+                "subnet": f"{attribution_ip}/32",
             }
 
         alloc = setup_feth(agent_index)
@@ -65,6 +78,15 @@ class DarwinPlatform(AgentPlatform):
         return alloc
 
     def teardown_networking(self, agent_index: int) -> None:
+        import os as _os  # noqa: PLC0415
+        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
+            # Mirror of setup_networking — drop the lo0 alias we added.
+            attribution_ip = f"127.0.0.{agent_index + 2}"
+            subprocess.run(
+                ["sudo", "-n", "ifconfig", "lo0", "-alias", attribution_ip],
+                capture_output=True, check=False,
+            )
+            return
         teardown_feth(agent_index)
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
