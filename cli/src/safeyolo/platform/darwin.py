@@ -33,7 +33,16 @@ class DarwinPlatform(AgentPlatform):
     firewall_name = "pf"
 
     def setup_networking(self, agent_index: int) -> dict:
-        return setup_feth(agent_index)
+        alloc = setup_feth(agent_index)
+        # API symmetry with Linux: attribution_ip is the source IP
+        # mitmproxy sees for this agent's flows, which service_discovery
+        # maps back to the agent name for audit/policy. On macOS the
+        # per-agent feth interface already gives a unique guest IP, so
+        # that serves as attribution_ip directly — no synthetic loopback
+        # needed and no host-side bridge socket (traffic is ordinary TCP
+        # via the feth gateway).
+        alloc["attribution_ip"] = alloc["guest_ip"]
+        return alloc
 
     def teardown_networking(self, agent_index: int) -> None:
         teardown_feth(agent_index)

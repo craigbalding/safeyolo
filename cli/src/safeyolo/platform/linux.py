@@ -196,6 +196,10 @@ class LinuxPlatform(AgentPlatform):
         # works without config. 127.0.0.1 is reserved for mitmproxy's
         # own traffic; agents start at 127.0.0.2.
         alloc["attribution_ip"] = f"127.0.0.{agent_index + 2}"
+        # Linux agents reach mitmproxy via a per-agent UDS bridge socket
+        # (structural isolation). Signals to agent.py that it should
+        # coordinate with proxy_bridge before start_sandbox.
+        alloc["needs_bridge_socket"] = True
         log.info("Loopback-only netns %s created (attribution_ip=%s)",
                  netns, alloc["attribution_ip"])
         return alloc

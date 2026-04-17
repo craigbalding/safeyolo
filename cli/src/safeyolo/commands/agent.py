@@ -404,21 +404,24 @@ def _run_agent(
     gateway_ip = fw_alloc["host_ip"]
     guest_ip = fw_alloc["guest_ip"]
 
-    # Identity attribution (Linux UDS arch): mitmproxy sees every agent
-    # as src=127.0.0.1 at the TCP layer because all traffic comes from
-    # the local proxy_bridge. To restore per-agent attribution, the
-    # platform allocates a synthetic loopback IP (attribution_ip) and
-    # a per-agent bridge socket path. We register both in agent_map.json
-    # BEFORE start_sandbox: the bridge polls the map, creates the
-    # listener socket, and only then can runsc's gofer bind-mount it
-    # into the container. On macOS the feth IP is already unique per
-    # agent, so attribution_ip falls back to guest_ip and socket is None.
+    # Identity attribution: `attribution_ip` is the source IP mitmproxy
+    # sees, which service_discovery maps back to the agent name. Both
+    # platforms populate it in setup_networking:
+    #   Linux: synthetic 127.0.0.X — the proxy_bridge binds its upstream
+    #          TCP source to this address and also listens on a per-agent
+    #          UDS, signalled by needs_bridge_socket=True.
+    #   macOS: the per-agent feth guest_ip — mitmproxy sees it directly,
+    #          no bridge socket needed.
+    # agent_map.json is written BEFORE start_sandbox on both paths so
+    # service_discovery is ready when the first request arrives; on
+    # Linux it's also what the bridge polls to create listeners.
     attribution_ip = fw_alloc.get("attribution_ip", guest_ip)
     bridge_sock = None
-    if "attribution_ip" in fw_alloc:
+    if fw_alloc.get("needs_bridge_socket"):
         from ..proxy_bridge import socket_path_for as _bridge_sock_for
         bridge_sock = str(_bridge_sock_for(name))
-        _update_agent_map(name, ip=attribution_ip, socket=bridge_sock)
+    _update_agent_map(name, ip=attribution_ip, socket=bridge_sock)
+    if bridge_sock:
         # Wait up to 5s for the bridge to create the listener socket.
         # Without this, the OCI bind-mount source path doesn't exist
         # and gVisor's gofer caches a ghost inode (same gotcha as the
@@ -550,11 +553,8 @@ def _run_agent(
                 background=run_background,
                 restore_from_path=restore_src,
             )
-            # On Linux the map was already populated above (with
-            # attribution_ip + socket). Re-write it for macOS where
-            # guest_ip is the real per-agent feth address.
-            if "attribution_ip" not in fw_alloc:
-                _update_agent_map(name, ip=guest_ip)
+            # agent_map was populated pre-start_sandbox (attribution_ip +
+            # optional bridge socket). Nothing to re-register here.
 
             # Definitive readiness: the guest's per-run phase writes
             # /safeyolo/per-run-started as its first real action, after
@@ -630,11 +630,8 @@ def _run_agent(
                 background=run_background,
                 snapshot_capture_path=capture_path,
             )
-            # On Linux the map was already populated above (with
-            # attribution_ip + socket). Re-write it for macOS where
-            # guest_ip is the real per-agent feth address.
-            if "attribution_ip" not in fw_alloc:
-                _update_agent_map(name, ip=guest_ip)
+            # agent_map was populated pre-start_sandbox (attribution_ip +
+            # optional bridge socket). Nothing to re-register here.
 
             if snapshot_mode == "capture":
                 # Capture happens between static and per-run — static has
