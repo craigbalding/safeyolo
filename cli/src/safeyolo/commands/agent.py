@@ -1269,6 +1269,28 @@ def shell(
 
 
 @agent_app.command()
+def diag(
+    name: str = typer.Argument(..., help="Agent instance name to diagnose"),
+) -> None:
+    """Probe the full agent egress chain and report where (if anywhere)
+    it's broken.
+
+    Runs through the hops from the agent out to mitmproxy and back,
+    checking each link:
+        agent map entry → bridge socket → attribution IP alias →
+        proxy_bridge process → VM process → end-to-end UDS probe
+
+    Exits 0 if everything checks out, 1 if any link is broken. Output
+    is one line per check, PASS/FAIL/WARN prefix, so piping to grep
+    FAIL shows you what's wrong at a glance.
+    """
+    _validate_instance_name(name)
+    from ..agent_diag import run_agent_diag  # noqa: PLC0415
+    exit_code = run_agent_diag(name)
+    raise typer.Exit(exit_code)
+
+
+@agent_app.command()
 def stop(
     name: str = typer.Argument(..., help="Agent instance name to stop"),
 ) -> None:
