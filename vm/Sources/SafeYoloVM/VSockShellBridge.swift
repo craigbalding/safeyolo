@@ -145,23 +145,38 @@ class VSockShellBridge {
         }
 
         let vsockFD = conn.fileDescriptor
-        fputs("[shell-bridge] relay start uds->vsock=\(vsockFD)\n", stderr)
 
-        let t1 = Thread {
+        // Use a DispatchGroup so the parent thread reliably waits for
+        // both pumps to finish. Thread.isExecuting has a race window
+        // between start() and the thread actually scheduling — the
+        // while-loop can see false-false before either pump begins and
+        // return, releasing `conn` and closing the backing vsock fd
+        // underneath the pumps (→ EBADF on read).
+        //
+        // DispatchQueue.global(qos:)+group.enter()/leave() gives a
+        // clean happens-before: the pumps enter() synchronously from
+        // this thread before any async work starts, so wait() doesn't
+        // return early.
+        let group = DispatchGroup()
+        let bgQueue = DispatchQueue.global(qos: .default)
+        group.enter()
+        bgQueue.async {
+            defer { group.leave() }
             _ = VSockShellBridge.forwardData(from: udsFD, to: vsockFD, label: "uds->vsock")
             shutdown(vsockFD, SHUT_WR)
         }
-        let t2 = Thread {
+        group.enter()
+        bgQueue.async {
+            defer { group.leave() }
             _ = VSockShellBridge.forwardData(from: vsockFD, to: udsFD, label: "vsock->uds")
             shutdown(udsFD, SHUT_WR)
         }
-        t1.start()
-        t2.start()
-        while t1.isExecuting || t2.isExecuting {
-            Thread.sleep(forTimeInterval: 0.1)
-        }
+        group.wait()
 
-        close(vsockFD)
+        // conn is still in scope here → vsockFD still valid → pumps
+        // above saw a live fd. Now release everything.
+        _ = conn  // explicit reference at function end to defeat any
+                  // over-eager release optimisation.
         close(udsFD)
     }
 
