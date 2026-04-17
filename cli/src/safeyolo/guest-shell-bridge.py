@@ -15,10 +15,13 @@ Started by guest-init-per-run.sh; runs as a daemon until shutdown.
 """
 from __future__ import annotations
 
+import itertools
 import logging
+import os
 import socket
 import sys
 import threading
+import time
 
 LISTEN_PORT = 2220
 SSHD_HOST = "127.0.0.1"
@@ -27,14 +30,22 @@ VMADDR_CID_ANY = 0xFFFFFFFF  # accept from any remote CID (i.e. the host)
 
 log = logging.getLogger("safeyolo.guest-shell-bridge")
 
+_DEBUG_ENABLED = os.environ.get("SAFEYOLO_VM_DEBUG", "").lower() in ("1", "true")
+_flow_counter = itertools.count(1)
+try:
+    _AGENT = open("/safeyolo/agent-name").read().strip() or "unknown"
+except OSError:
+    _AGENT = "unknown"
 
-def _forward(src: socket.socket, dst: socket.socket) -> None:
+
+def _forward(src: socket.socket, dst: socket.socket, counter: list[int]) -> None:
     try:
         while True:
             data = src.recv(65536)
             if not data:
                 break
             dst.sendall(data)
+            counter[0] += len(data)
     except (BrokenPipeError, ConnectionResetError, OSError):
         pass
     finally:
@@ -45,22 +56,36 @@ def _forward(src: socket.socket, dst: socket.socket) -> None:
 
 
 def handle_client(vsock_conn: socket.socket) -> None:
+    flow = next(_flow_counter)
+    started = time.monotonic()
+
+    if _DEBUG_ENABLED:
+        log.info("accept flow=%d agent=%s upstream=%s:%d",
+                 flow, _AGENT, SSHD_HOST, SSHD_PORT)
+
     try:
         tcp = socket.create_connection((SSHD_HOST, SSHD_PORT), timeout=5)
         tcp.settimeout(None)
     except OSError as exc:
-        log.warning("sshd connect failed: %s: %s", type(exc).__name__, exc)
+        log.warning("flow=%d agent=%s sshd connect failed: %s: %s",
+                    flow, _AGENT, type(exc).__name__, exc)
         vsock_conn.close()
         return
 
-    t1 = threading.Thread(target=_forward, args=(vsock_conn, tcp), daemon=True)
-    t2 = threading.Thread(target=_forward, args=(tcp, vsock_conn), daemon=True)
+    bytes_in: list[int] = [0]
+    bytes_out: list[int] = [0]
+    t1 = threading.Thread(target=_forward, args=(vsock_conn, tcp, bytes_in), daemon=True)
+    t2 = threading.Thread(target=_forward, args=(tcp, vsock_conn, bytes_out), daemon=True)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
     vsock_conn.close()
     tcp.close()
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    log.info("done flow=%d agent=%s bytes_in=%d bytes_out=%d duration_ms=%d",
+             flow, _AGENT, bytes_in[0], bytes_out[0], duration_ms)
 
 
 def main() -> int:

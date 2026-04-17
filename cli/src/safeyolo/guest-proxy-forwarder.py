@@ -20,11 +20,13 @@ Usage:
 
 Defaults: port=8080, uds_path=/safeyolo/proxy.sock, vsock_port=1080
 """
+import itertools
 import logging
 import os
 import socket
 import sys
 import threading
+import time
 
 LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
@@ -33,6 +35,19 @@ VSOCK_HOST_PORT = 1080
 VMADDR_CID_HOST = 2  # standard vsock host CID
 
 log = logging.getLogger("safeyolo.guest-proxy-forwarder")
+
+# SAFEYOLO_VM_DEBUG gates the per-flow accept log. done/warn are
+# always on — low volume, load-bearing for post-mortem.
+_DEBUG_ENABLED = os.environ.get("SAFEYOLO_VM_DEBUG", "").lower() in ("1", "true")
+_flow_counter = itertools.count(1)
+
+# Agent name for log correlation. guest-init-static writes it to
+# /safeyolo/agent-name from the config share. Fallback "unknown" keeps
+# the format stable if the file is absent.
+try:
+    _AGENT = open("/safeyolo/agent-name").read().strip() or "unknown"
+except OSError:
+    _AGENT = "unknown"
 
 
 def detect_transport() -> str:
@@ -58,14 +73,19 @@ def connect_upstream(transport: str) -> socket.socket:
     return s
 
 
-def _forward(src: socket.socket, dst: socket.socket) -> None:
-    """Copy src->dst until EOF, then half-close dst's write side."""
+def _forward(src: socket.socket, dst: socket.socket, counter: list[int]) -> None:
+    """Copy src->dst until EOF, then half-close dst's write side.
+
+    `counter` is a single-element list used as an out-param for the
+    byte count — threading makes returning a value awkward.
+    """
     try:
         while True:
             data = src.recv(65536)
             if not data:
                 break
             dst.sendall(data)
+            counter[0] += len(data)
     except (BrokenPipeError, ConnectionResetError, OSError):
         # Peer hung up or transport died — normal mid-flow termination.
         # Let finally half-close so the opposite-direction thread sees EOF.
@@ -80,21 +100,35 @@ def _forward(src: socket.socket, dst: socket.socket) -> None:
 
 
 def handle_client(client: socket.socket, transport: str) -> None:
+    flow = next(_flow_counter)
+    started = time.monotonic()
+    target = UDS_PATH if transport == "uds" else f"vsock:{VMADDR_CID_HOST}:{VSOCK_HOST_PORT}"
+
+    if _DEBUG_ENABLED:
+        log.info("accept flow=%d agent=%s upstream=%s", flow, _AGENT, target)
+
     try:
         upstream = connect_upstream(transport)
     except OSError as exc:
-        log.warning("upstream connect failed: %s: %s", type(exc).__name__, exc)
+        log.warning("flow=%d agent=%s upstream=%s connect failed: %s: %s",
+                    flow, _AGENT, target, type(exc).__name__, exc)
         client.close()
         return
 
-    t1 = threading.Thread(target=_forward, args=(client, upstream), daemon=True)
-    t2 = threading.Thread(target=_forward, args=(upstream, client), daemon=True)
+    bytes_in: list[int] = [0]
+    bytes_out: list[int] = [0]
+    t1 = threading.Thread(target=_forward, args=(client, upstream, bytes_in), daemon=True)
+    t2 = threading.Thread(target=_forward, args=(upstream, client, bytes_out), daemon=True)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
     client.close()
     upstream.close()
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    log.info("done flow=%d agent=%s bytes_in=%d bytes_out=%d duration_ms=%d",
+             flow, _AGENT, bytes_in[0], bytes_out[0], duration_ms)
 
 
 def main() -> int:

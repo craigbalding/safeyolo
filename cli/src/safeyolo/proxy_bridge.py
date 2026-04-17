@@ -26,6 +26,7 @@ events (poll every 1s) and brings listeners up/down in lockstep.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -39,6 +40,15 @@ import time
 from pathlib import Path
 
 log = logging.getLogger("safeyolo.proxy_bridge")
+
+# SAFEYOLO_VM_DEBUG gates high-frequency per-flow accept lines.
+# `done` + error lines are always logged — they carry byte counts,
+# duration, and error context that are load-bearing for debugging.
+_DEBUG_ENABLED = os.environ.get("SAFEYOLO_VM_DEBUG", "").lower() in ("1", "true")
+
+# Monotonic flow counter — stamps each accept/done pair so cross-hop
+# logs grep together.
+_flow_counter = itertools.count(1)
 
 
 def _get_data_dir() -> Path:
@@ -203,14 +213,20 @@ def _cleanup_sockets() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _forward(src: socket.socket, dst: socket.socket) -> None:
-    """Copy src -> dst until EOF, then half-close dst's write side."""
+def _forward(src: socket.socket, dst: socket.socket, counter: list[int]) -> None:
+    """Copy src -> dst until EOF, then half-close dst's write side.
+
+    `counter` is a single-element list used as an out-param for the
+    byte count — threading makes returning a value awkward, and a
+    list lets the caller read it after .join().
+    """
     try:
         while True:
             data = src.recv(65536)
             if not data:
                 break
             dst.sendall(data)
+            counter[0] += len(data)
     except (BrokenPipeError, ConnectionResetError, OSError):
         # Either end hung up mid-stream. Normal during client disconnects
         # (agent CLI ^C, mitmproxy restart). Let the finally block half-close
@@ -237,6 +253,14 @@ def _handle_client(
     loopback address before connecting. mitmproxy sees src=attribution_ip
     and service_discovery maps that back to the agent name.
     """
+    flow = next(_flow_counter)
+    started = time.monotonic()
+    log_ = logging.getLogger(__name__)
+
+    if _DEBUG_ENABLED:
+        log_.info("accept flow=%d agent=%s src=uds upstream=%s:%d",
+                  flow, agent, upstream[0], upstream[1])
+
     try:
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -245,22 +269,31 @@ def _handle_client(
         tcp.connect(upstream)
         tcp.settimeout(None)
     except OSError as exc:
-        logging.getLogger(__name__).warning(
-            "agent %s upstream %s:%d from %s connect failed: %s: %s",
-            agent, upstream[0], upstream[1], attribution_ip,
+        log_.warning(
+            "flow=%d agent=%s upstream %s:%d from %s connect failed: %s: %s",
+            flow, agent, upstream[0], upstream[1], attribution_ip,
             type(exc).__name__, exc,
         )
         uds_conn.close()
         return
 
-    t1 = threading.Thread(target=_forward, args=(uds_conn, tcp), daemon=True)
-    t2 = threading.Thread(target=_forward, args=(tcp, uds_conn), daemon=True)
+    # Single-element lists as out-params so _forward can report bytes
+    # without a threading.Queue/Event on the hot path.
+    bytes_in: list[int] = [0]   # uds → tcp (agent request)
+    bytes_out: list[int] = [0]  # tcp → uds (proxy response)
+
+    t1 = threading.Thread(target=_forward, args=(uds_conn, tcp, bytes_in), daemon=True)
+    t2 = threading.Thread(target=_forward, args=(tcp, uds_conn, bytes_out), daemon=True)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
     uds_conn.close()
     tcp.close()
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    log_.info("done flow=%d agent=%s bytes_in=%d bytes_out=%d duration_ms=%d",
+              flow, agent, bytes_in[0], bytes_out[0], duration_ms)
 
 
 class _Listener:

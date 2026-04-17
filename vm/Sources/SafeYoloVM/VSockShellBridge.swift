@@ -5,27 +5,32 @@ import Virtualization
 /// forwards each one bidirectionally to a vsock port in the guest.
 ///
 /// Enables `safeyolo agent shell` (and any SSH-shaped tooling) to reach
-/// a VM that has no network interface. The guest runs `socat` on the
-/// matching vsock port forwarding to its local sshd; the host-side
-/// caller uses `ssh -o ProxyCommand='nc -U <socket>'`.
+/// a VM that has no network interface. The guest runs a python bridge
+/// on the matching vsock port forwarding to its local sshd; the
+/// host-side caller uses `ssh -o ProxyCommand='nc -U <socket>'`.
 ///
 ///   Host:  ssh → nc -U shell.sock → safeyolo-vm (this bridge)
 ///   VZ:    vsock:<port>
-///   Guest: socat VSOCK-LISTEN:<port>,fork TCP:127.0.0.1:22 → sshd
+///   Guest: guest-shell-bridge vsock:<port> → TCP:127.0.0.1:22 → sshd
 class VSockShellBridge {
 
     static let SHELL_PORT: UInt32 = 2220
+    private static let LABEL = "shell-bridge"
 
     private let vm: VZVirtualMachine
     private let queue: DispatchQueue
     private let socketPath: String
+    private let agent: String
     private var listenFD: Int32 = -1
     private var acceptThread: Thread?
+    private let flowCounter = FlowCounter()
 
     init(vm: VZVirtualMachine, queue: DispatchQueue, socketPath: String) {
         self.vm = vm
         self.queue = queue
         self.socketPath = socketPath
+        self.agent = ((socketPath as NSString).lastPathComponent
+                      as NSString).deletingPathExtension
     }
 
     /// Bind + listen on the host UDS and start an accept loop.
@@ -83,7 +88,8 @@ class VSockShellBridge {
         }
 
         listenFD = fd
-        fputs("[shell-bridge] Listening on unix:\(socketPath) -> vsock:\(VSockShellBridge.SHELL_PORT)\n", stderr)
+        Log.info(Self.LABEL,
+                 "listen agent=\(agent) src=unix:\(socketPath) upstream=vsock:\(VSockShellBridge.SHELL_PORT)")
 
         acceptThread = Thread { [self] in acceptLoop() }
         acceptThread?.start()
@@ -100,27 +106,32 @@ class VSockShellBridge {
             }
             if clientFD < 0 {
                 if errno == EINTR { continue }
-                fputs("[shell-bridge] accept(): \(String(cString: strerror(errno)))\n", stderr)
+                Log.warn(Self.LABEL,
+                         "accept(): \(String(cString: strerror(errno)))")
                 return
             }
-            fputs("[shell-bridge] accept fd=\(clientFD)\n", stderr)
+            let flow = flowCounter.next()
+            Log.debug(Self.LABEL,
+                      "accept flow=\(flow) agent=\(agent) src=unix:\(socketPath)")
             // Hand off vsock dial + pump to a worker thread so accept()
             // stays ready for the next connection.
             DispatchQueue.global(qos: .default).async { [self] in
-                relay(udsFD: clientFD)
+                relay(flow: flow, udsFD: clientFD)
             }
         }
     }
 
-    private func relay(udsFD: Int32) {
+    private func relay(flow: Int, udsFD: Int32) {
+        let started = Date()
+
         guard let device = vm.socketDevices.first as? VZVirtioSocketDevice else {
-            fputs("[shell-bridge] No vsock device on VM\n", stderr)
+            Log.warn(Self.LABEL, "flow=\(flow) no vsock device on VM")
             close(udsFD)
             return
         }
 
-        // VZVirtioSocketDevice.connect is async; we block on a semaphore
-        // so each accept's worker thread stays linear and easy to reason
+        // VZVirtioSocketDevice.connect is async; block on a semaphore so
+        // each accept's worker thread stays linear and easy to reason
         // about. Timeout is implicit in VZ's own connect handling.
         let sem = DispatchSemaphore(value: 0)
         var vsockConn: VZVirtioSocketConnection? = nil
@@ -140,13 +151,13 @@ class VSockShellBridge {
         sem.wait()
 
         guard let conn = vsockConn else {
-            fputs("[shell-bridge] vsock connect to port \(VSockShellBridge.SHELL_PORT) failed: \(connErr?.localizedDescription ?? "unknown")\n", stderr)
+            Log.warn(Self.LABEL,
+                     "flow=\(flow) vsock connect port=\(VSockShellBridge.SHELL_PORT) failed: \(connErr?.localizedDescription ?? "unknown")")
             close(udsFD)
             return
         }
 
         let vsockFD = conn.fileDescriptor
-        fputs("[shell-bridge] vsock connected port=\(VSockShellBridge.SHELL_PORT) fd=\(vsockFD)\n", stderr)
 
         // Use a DispatchGroup so the parent thread reliably waits for
         // both pumps to finish. Thread.isExecuting has a race window
@@ -154,45 +165,41 @@ class VSockShellBridge {
         // while-loop can see false-false before either pump begins and
         // return, releasing `conn` and closing the backing vsock fd
         // underneath the pumps (→ EBADF on read).
-        //
-        // DispatchQueue.global(qos:)+group.enter()/leave() gives a
-        // clean happens-before: the pumps enter() synchronously from
-        // this thread before any async work starts, so wait() doesn't
-        // return early.
         let group = DispatchGroup()
         let bgQueue = DispatchQueue.global(qos: .default)
+
+        var bytesInbound = 0  // uds → vsock (ssh client → sshd)
+        var bytesOutbound = 0 // vsock → uds (sshd → ssh client)
+
         group.enter()
         bgQueue.async {
             defer { group.leave() }
-            _ = VSockShellBridge.forwardData(from: udsFD, to: vsockFD, label: "uds->vsock")
+            bytesInbound = VSockShellBridge.forwardData(from: udsFD, to: vsockFD)
             shutdown(vsockFD, SHUT_WR)
         }
         group.enter()
         bgQueue.async {
             defer { group.leave() }
-            _ = VSockShellBridge.forwardData(from: vsockFD, to: udsFD, label: "vsock->uds")
+            bytesOutbound = VSockShellBridge.forwardData(from: vsockFD, to: udsFD)
             shutdown(udsFD, SHUT_WR)
         }
         group.wait()
 
-        // conn is still in scope here → vsockFD still valid → pumps
-        // above saw a live fd. Now release everything.
+        let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+        Log.info(Self.LABEL,
+                 "done flow=\(flow) agent=\(agent) bytes_in=\(bytesInbound) bytes_out=\(bytesOutbound) duration_ms=\(durationMs)")
+
         _ = conn  // explicit reference at function end to defeat any
-                  // over-eager release optimisation.
+                  // over-eager ARC release optimisation.
         close(udsFD)
     }
 
-    private static func forwardData(from srcFD: Int32, to dstFD: Int32, label: String = "") -> Int {
+    private static func forwardData(from srcFD: Int32, to dstFD: Int32) -> Int {
         var buf = [UInt8](repeating: 0, count: 65536)
         var total = 0
         while true {
             let n = read(srcFD, &buf, buf.count)
-            if n <= 0 {
-                if n < 0 {
-                    fputs("[shell-bridge] \(label) read(\(srcFD)) err=\(String(cString: strerror(errno)))\n", stderr)
-                }
-                break
-            }
+            if n <= 0 { break }
             var written = 0
             buf.withUnsafeBufferPointer { ptr in
                 while written < n {
@@ -204,7 +211,6 @@ class VSockShellBridge {
             if written < n { break }
             total += written
         }
-        fputs("[shell-bridge] \(label) pump ended total=\(total)\n", stderr)
         return total
     }
 }
