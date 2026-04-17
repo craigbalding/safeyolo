@@ -142,13 +142,9 @@ def start(
         console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)
 
-    # Firewall rules are loaded when the first sandbox starts (needs a
-    # running sandbox to detect the bridge/veth interface). See _run_agent
-    # in agent.py.
-    from ..platform import get_platform
-    console.print(
-        f"  {get_platform().firewall_name} rules will be loaded when first agent starts"
-    )
+    # No per-agent firewall setup — egress isolation is structural (sandbox
+    # has no external interface). The bridge daemon and per-agent UDS
+    # listeners are the moving parts; they come up with the proxy itself.
 
     if wait:
         console.print("Waiting for healthy status...", end=" ")
@@ -193,9 +189,9 @@ def stop(
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
-    # Stop proxy only — agents, feth interfaces, and pf rules stay intact.
-    # Agents get "connection refused" on the proxy port but remain alive
-    # and accessible via SSH. When the proxy restarts, connectivity resumes.
+    # Stop proxy only — agents and bridge sockets stay intact. Agents get
+    # "connection refused" on the proxy port but remain alive and accessible
+    # via SSH. When the proxy restarts, connectivity resumes.
     stop_proxy()
     console.print("[green]Stopped.[/green]")
 
@@ -242,10 +238,9 @@ def stop_all() -> None:
         # Best-effort teardown — partial state is better than aborting stop.
         pass
 
-    # Unload firewall rules
+    # Unload host firewall rules (Linux: iptables. macOS: no-op).
     try:
         plat.unload_firewall_rules()
-        console.print(f"  {plat.firewall_name} rules unloaded")
     except Exception:
         pass  # Non-fatal
 
@@ -304,15 +299,10 @@ def status() -> None:
     else:
         table.add_row("Guest Images", "[yellow]missing[/yellow]")
 
-    # pf rules
-    try:
-        from ..firewall import is_loaded
-        if is_loaded():
-            table.add_row("Firewall", "[green]active[/green]")
-        else:
-            table.add_row("Firewall", "[yellow]not loaded[/yellow]")
-    except Exception:
-        table.add_row("Firewall", "[dim]unknown[/dim]")
+    # Host firewall row removed — egress isolation is structural (agent
+    # sandbox has no external interface; the only path out is a per-agent
+    # UDS). iptables on Linux is a belt-and-braces guard, not the primary
+    # control, and doesn't warrant a dashboard row.
 
     # Try to get stats from API
     try:

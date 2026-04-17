@@ -21,7 +21,6 @@ from safeyolo.vm import (
     get_base_rootfs_path,
     get_initrd_path,
     get_kernel_path,
-    get_vm_ip,
     guest_image_status,
     is_vm_running,
     prepare_config_share,
@@ -362,10 +361,10 @@ class TestPrepareConfigShare:
 
     def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
         """proxy.env uses whatever (gateway_ip, proxy_port) the caller
-        passes. The caller decides per-platform: on Linux the value is
-        always 8080 (the forwarder's fixed port); on macOS it's the
-        host's actual mitmproxy port (feth delivers traffic directly).
-        prepare_config_share is platform-agnostic — it just renders."""
+        passes. Both platforms pass (127.0.0.1, 8080) — the guest-proxy-forwarder
+        listens on that address inside the sandbox and the host bridge
+        decouples it from mitmproxy's actual port. prepare_config_share
+        is platform-agnostic — it just renders."""
         share = prepare_config_share(
             "agent1", "/workspace",
             gateway_ip="10.0.0.1", proxy_port=9999,
@@ -379,8 +378,8 @@ class TestPrepareConfigShare:
     def test_proxy_env_default_values(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
         proxy_env = (share / "proxy.env").read_text()
-        # Default gateway_ip=192.168.65.1, proxy_port=8080
-        assert 'HTTP_PROXY="http://192.168.65.1:8080"' in proxy_env
+        # Default gateway_ip=127.0.0.1, proxy_port=8080
+        assert 'HTTP_PROXY="http://127.0.0.1:8080"' in proxy_env
 
     def test_proxy_env_includes_no_proxy(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
@@ -416,8 +415,8 @@ class TestPrepareConfigShare:
         share = prepare_config_share("agent1", "/workspace")
         network_env = (share / "network.env").read_text()
         assert network_env == (
-            "GUEST_IP=192.168.65.2\n"
-            "GATEWAY_IP=192.168.65.1\n"
+            "GUEST_IP=127.0.0.1\n"
+            "GATEWAY_IP=127.0.0.1\n"
             "NETMASK=255.255.255.0\n"
         )
 
@@ -743,7 +742,7 @@ class TestStartVm:
         assert any(a.startswith("/my/workspace:workspace:rw") for a in share_args)
         assert any(":config:rw" in a for a in share_args)
 
-    def test_feth_networking_adds_feth_flag(self, tmp_config_dir, monkeypatch):
+    def test_proxy_socket_flag_threaded_through(self, tmp_config_dir, monkeypatch):
         captured_cmd = []
 
         def mock_popen(cmd, **kw):
@@ -754,12 +753,12 @@ class TestStartVm:
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
 
-        start_vm("agent1", "/workspace", feth_vm="feth0")
+        start_vm("agent1", "/workspace", proxy_socket_path="/tmp/agent1.sock")
 
-        idx = captured_cmd.index("--feth")
-        assert captured_cmd[idx + 1] == "feth0"
+        idx = captured_cmd.index("--proxy-socket")
+        assert captured_cmd[idx + 1] == "/tmp/agent1.sock"
 
-    def test_feth_bridge_added_when_binary_exists(self, tmp_config_dir, monkeypatch):
+    def test_shell_socket_flag_threaded_through(self, tmp_config_dir, monkeypatch):
         captured_cmd = []
 
         def mock_popen(cmd, **kw):
@@ -770,15 +769,10 @@ class TestStartVm:
 
         monkeypatch.setattr("subprocess.Popen", mock_popen)
 
-        feth_bridge = tmp_config_dir / "bin" / "feth-bridge"
-        feth_bridge.write_text("#!/bin/sh\n")
-        feth_bridge.chmod(0o755)
+        start_vm("agent1", "/workspace", shell_socket_path="/tmp/shell.sock")
 
-        start_vm("agent1", "/workspace", feth_vm="feth0")
-
-        assert "--feth-bridge" in captured_cmd
-        fb_idx = captured_cmd.index("--feth-bridge")
-        assert captured_cmd[fb_idx + 1] == str(feth_bridge)
+        idx = captured_cmd.index("--shell-socket")
+        assert captured_cmd[idx + 1] == "/tmp/shell.sock"
 
     def test_extra_shares_added_with_correct_mode(self, tmp_config_dir, monkeypatch):
         captured_cmd = []
@@ -964,25 +958,18 @@ class TestStopVm:
     """VM process shutdown and cleanup."""
 
     def test_no_pid_file_still_cleans_up(self, tmp_config_dir, monkeypatch):
-        """When no PID file exists, still cleans up feth and agent map."""
+        """When no PID file exists, still clears the agent map entry."""
         agents_dir = tmp_config_dir / "agents"
         agents_dir.mkdir(exist_ok=True)
         (agents_dir / "agent1").mkdir(exist_ok=True)
 
-        # Mock _cleanup_feth_bridge and _update_agent_map
-        feth_calls = []
         map_calls = []
-        monkeypatch.setattr(
-            "safeyolo.vm._cleanup_feth_bridge",
-            lambda name: feth_calls.append(name),
-        )
         monkeypatch.setattr(
             "safeyolo.vm._update_agent_map",
             lambda name, **kw: map_calls.append((name, kw)),
         )
 
         stop_vm("agent1")
-        assert feth_calls == ["agent1"]
         assert map_calls == [("agent1", {"remove": True})]
 
     def test_sends_sigterm(self, tmp_config_dir, monkeypatch):
@@ -1001,7 +988,6 @@ class TestStopVm:
             raise ProcessLookupError()
 
         monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
         monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
 
         stop_vm("agent1")
@@ -1019,7 +1005,6 @@ class TestStopVm:
                 raise ProcessLookupError()
 
         monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
         monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
 
         stop_vm("agent1")
@@ -1036,7 +1021,6 @@ class TestStopVm:
             raise ProcessLookupError()
 
         monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
         monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
 
         stop_vm("agent1")  # Should not raise
@@ -1064,7 +1048,6 @@ class TestStopVm:
 
         monkeypatch.setattr("os.kill", mock_kill)
         monkeypatch.setattr("time.sleep", lambda x: None)  # Skip waits
-        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
         monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda name, **kw: None)
 
         stop_vm("agent1")
@@ -1084,7 +1067,6 @@ class TestStopVm:
                 raise ProcessLookupError()
 
         monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("safeyolo.vm._cleanup_feth_bridge", lambda name: None)
         monkeypatch.setattr(
             "safeyolo.vm._update_agent_map",
             lambda name, **kw: map_calls.append((name, kw)),
@@ -1128,64 +1110,6 @@ class TestIsVmRunning:
 
         assert is_vm_running("agent1") is False
         assert not pid_path.exists()
-
-
-# ---------------------------------------------------------------------------
-# get_vm_ip
-# ---------------------------------------------------------------------------
-
-
-class TestGetVmIp:
-    """Polling config share for guest-reported IP."""
-
-    def test_returns_ip_when_file_exists(self, tmp_config_dir, monkeypatch):
-        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
-        config_share.mkdir(parents=True)
-        (config_share / "vm-ip").write_text("192.168.65.2\n")
-
-        monkeypatch.setattr("time.sleep", lambda x: None)
-
-        result = get_vm_ip("agent1", timeout=1)
-        assert result == "192.168.65.2"
-
-    def test_returns_none_on_timeout(self, tmp_config_dir, monkeypatch):
-        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
-        config_share.mkdir(parents=True)
-
-        monkeypatch.setattr("time.sleep", lambda x: None)
-
-        result = get_vm_ip("agent1", timeout=1)
-        assert result is None
-
-    def test_waits_for_nonempty_content(self, tmp_config_dir, monkeypatch):
-        """Skips empty file, returns IP when content appears."""
-        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
-        config_share.mkdir(parents=True)
-        ip_file = config_share / "vm-ip"
-        ip_file.write_text("")  # Start empty
-
-        call_count = 0
-
-        def mock_sleep(x):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 3:
-                ip_file.write_text("10.0.0.5")
-
-        monkeypatch.setattr("time.sleep", mock_sleep)
-
-        result = get_vm_ip("agent1", timeout=30)
-        assert result == "10.0.0.5"
-
-    def test_strips_whitespace_from_ip(self, tmp_config_dir, monkeypatch):
-        config_share = tmp_config_dir / "agents" / "agent1" / "config-share"
-        config_share.mkdir(parents=True)
-        (config_share / "vm-ip").write_text("  192.168.65.2  \n")
-
-        monkeypatch.setattr("time.sleep", lambda x: None)
-
-        result = get_vm_ip("agent1", timeout=1)
-        assert result == "192.168.65.2"
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
-# SafeYolo sudoers configuration
+# SafeYolo sudoers configuration (macOS)
 #
-# Grants the operator passwordless sudo for the specific commands
-# SafeYolo needs to manage network isolation (pf firewall and feth
-# interfaces). No other commands are permitted.
+# Grants the operator passwordless sudo for the single command SafeYolo
+# needs to manage per-agent attribution IPs: aliasing a synthetic
+# 127.0.0.X address onto lo0. No other commands are permitted.
 #
 # Install:
 #   sudo cp safeyolo.sudoers /etc/sudoers.d/safeyolo
@@ -17,53 +17,18 @@
 # -----------------------------------------------------------------
 # Security model:
 #
-# SafeYolo uses a single fixed pf anchor named "com.safeyolo"
-# (and "com.safeyolo-test" for the blackbox test harness). The
-# anchor hook is installed once into /etc/pf.conf by
-# `safeyolo setup pf`. Runtime code only manages the fixed
-# /etc/pf.anchors/com.safeyolo file — it never reads, mutates,
-# or appends to /etc/pf.conf. These sudoers rules deliberately
-# do NOT grant write access to /etc/pf.conf.
+# Egress isolation is structural — agent sandboxes have no external
+# network interface. The only path out is a per-agent Unix socket
+# served by the host-side proxy_bridge. The bridge's upstream TCP
+# source is bound to 127.0.0.<N+2> so mitmproxy can attribute each
+# flow to the right agent.
 #
-# Why each command is needed:
-#
-#   pfctl -a com.safeyolo -f *    Load anchor rules (VM egress control)
-#   pfctl -a com.safeyolo -F all  Flush anchor rules (cleanup)
-#   pfctl -a com.safeyolo -s *    Show anchor rules/info (diagnostics)
-#   pfctl -e                      Enable pf if disabled
-#   pfctl -s info                 Check pf status
-#   ifconfig feth* create         Create feth pair for VM networking
-#   ifconfig feth* destroy        Tear down feth pair
-#   ifconfig feth* peer *         Link feth pair
-#   ifconfig feth* * netmask *    Assign IP to feth interface
-#   ifconfig feth* up             Bring feth interface up
-#   sysctl -w net.inet.ip.forwarding=1   Enable IP forwarding
-#   tee /etc/pf.anchors/com.safeyolo     Write fixed anchor rule file
+# Darwin doesn't auto-route 127.0.0.0/8, so each synthetic loopback
+# IP must be explicitly aliased onto lo0 before bind() can use it.
+# That's the whole reason this file exists.
 # -----------------------------------------------------------------
 
-# pf firewall management (fixed anchor: com.safeyolo)
-# `-s rules` (no anchor) is needed by `safeyolo doctor`'s firewall
-# enforcement check — it verifies the anchor hook is in the running main
-# ruleset (read-only; listing rules is not a mutation).
-%safeyolo_user ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo -f *, \
-                            /sbin/pfctl -a com.safeyolo -F all, \
-                            /sbin/pfctl -a com.safeyolo -s *, \
-                            /sbin/pfctl -e, \
-                            /sbin/pfctl -s info, \
-                            /sbin/pfctl -s rules, \
-                            /sbin/pfctl -f /etc/pf.conf
-
-# pf firewall management (blackbox test harness anchor: com.safeyolo-test)
-%safeyolo_user ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo-test -f *, \
-                            /sbin/pfctl -a com.safeyolo-test -F all, \
-                            /sbin/pfctl -a com.safeyolo-test -s *
-
-# feth interface lifecycle (create, destroy, configure)
-%safeyolo_user ALL=(root) NOPASSWD: /sbin/ifconfig feth*
-
-# IP forwarding (required for VM traffic to reach proxy)
-%safeyolo_user ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.inet.ip.forwarding=1
-
-# pf anchor file management — fixed paths, no wildcards
-%safeyolo_user ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.anchors/com.safeyolo, \
-                            /usr/bin/tee /etc/pf.anchors/com.safeyolo-test
+# lo0 alias for per-agent attribution IPs. The wildcard covers
+# 127.0.0.2/32 through 127.0.0.254/32 (one per agent index).
+%safeyolo_user ALL=(root) NOPASSWD: /sbin/ifconfig lo0 alias 127.0.0.*, \
+                            /sbin/ifconfig lo0 -alias 127.0.0.*

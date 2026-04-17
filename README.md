@@ -43,7 +43,7 @@ source .venv/bin/activate
 
 **Then, one platform-specific step:**
 
-_macOS_ — build the Swift VM helper + `feth-bridge` + `vsock-term`:
+_macOS_ — build the Swift VM helper and its guest-side companion binaries:
 
 ```bash
 cd vm && make install && cd ..
@@ -71,8 +71,8 @@ If `uv sync --all-packages` did not install `mitmproxy` into the workspace venv 
 safeyolo init
 
 # One-time: install sudoers rules so agent lifecycle commands don't prompt
-# for your password. Installs a scoped /etc/sudoers.d/safeyolo (pfctl/feth
-# on macOS, iptables/runsc/overlay-mount on Linux — nothing else).
+# for your password. Installs a scoped /etc/sudoers.d/safeyolo (ifconfig
+# lo0 alias on macOS, iptables/runsc/overlay-mount on Linux — nothing else).
 safeyolo setup sudoers
 
 # Start the proxy
@@ -190,12 +190,12 @@ $ safeyolo watch
 
 Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.md) (macOS microVM path) and [docs/linux-port-design.md](docs/linux-port-design.md) (Linux gVisor path). Highlights from the macOS microVM path:
 
-- **Networking**: VZFileHandleNetworkDeviceAttachment + feth pairs + pf (not VZNATNetworkDeviceAttachment — Apple blocks pf on bridge interfaces)
+- **Networking**: no virtio-net at all — egress is via vsock → host UDS → proxy bridge → mitmproxy (structural isolation; the guest has no other path out)
 - **Terminal**: vsock PTY bridge with proper resize (not serial console)
 - **Guest init**: served from VirtioFS config share (changes without rootfs rebuild)
-- **Service discovery**: file-based agent IP map
+- **Service discovery**: file-based agent IP map; the host bridge stamps each agent's attribution IP on upstream TCP so mitmproxy maps flows back to agent names
 
-The Linux path runs the same guest rootfs under `runsc` with veth + iptables for network isolation and overlayfs for per-agent writable layers — see `docs/linux-port-design.md` for the full design.
+The Linux path runs the same guest rootfs under `runsc` in a loopback-only netns with iptables as a belt-and-braces guard and overlayfs for per-agent writable layers — see `docs/linux-port-design.md` for the full design.
 
 ## Trust Model
 

@@ -47,19 +47,17 @@ enum VMSnapshot {
     /// it had at save time, so we serialize it here and the restoring
     /// process reads it back BEFORE building the VM config.
     struct Fingerprint: Codable, Equatable {
-        // Schema bumped to 2 when networkMAC was added — VZ enforces a
-        // matching MAC between save and restore, and without pinning it
-        // the default (random per process) causes restoreMachineStateFrom
-        // to fail with EINVAL. Old sidecars lack the field and will
-        // mismatch here, forcing a clean re-capture.
-        var schema: Int = 2
+        // Schema bumped to 3 when the feth-era networkMAC field was
+        // removed. vsock-only VMs have no virtio-net device, so there
+        // is no MAC to pin. Old sidecars (schema<3) will mismatch here
+        // and force a clean re-capture.
+        var schema: Int = 3
         var memoryMB: Int
         var cpus: Int
         var kernelSHA256: String
         var initrdSHA256: String
         var vmHelperVersion: String
         var machineIdentifier: String  // base64 VZGenericMachineIdentifier
-        var networkMAC: String         // canonical string form "aa:bb:cc:dd:ee:ff"
     }
 
     // MARK: - Save (pause → write → clone-disk → resume)
@@ -235,9 +233,6 @@ enum VMSnapshot {
             }
             if actual.machineIdentifier != expected.machineIdentifier {
                 diffs.append("machine_identifier changed")
-            }
-            if actual.networkMAC != expected.networkMAC {
-                diffs.append("network_mac=\(actual.networkMAC)≠\(expected.networkMAC)")
             }
             throw Error.fingerprintMismatch(diffs.joined(separator: ", "))
         }

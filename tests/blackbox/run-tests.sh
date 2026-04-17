@@ -8,8 +8,8 @@
 # Runs as an ISOLATED INSTANCE alongside production SafeYolo:
 #   - Separate config dir (~/.safeyolo-test)
 #   - Separate ports (proxy 8180, admin 9190)
-#   - Separate pf anchor (com.safeyolo-test)
-#   - Separate subnets (192.168.75.0/24)
+#   - Separate netns slot on Linux (SAFEYOLO_SUBNET_BASE=75 shifts the
+#     namespace name so it doesn't collide with production)
 #   - Production agents are unaffected
 #
 # Usage:
@@ -35,7 +35,6 @@ cd "$SCRIPT_DIR"
 # so blackbox tests don't interfere with production agents.
 export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
 export SAFEYOLO_SUBNET_BASE=75
-export SAFEYOLO_PF_ANCHOR=com.safeyolo-test
 # Logs + flow store scoped to the test instance so blackbox runs
 # don't pollute production logs/flows.sqlite3.
 export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
@@ -79,7 +78,7 @@ done
 echo "=== SafeYolo Blackbox Tests ==="
 echo "  Instance: $SAFEYOLO_CONFIG_DIR"
 echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT"
-echo "  Subnet:   192.168.${SAFEYOLO_SUBNET_BASE}.0/24"
+echo "  Netns base: SAFEYOLO_SUBNET_BASE=${SAFEYOLO_SUBNET_BASE}"
 echo ""
 
 # --- Phase 0: Prerequisites ---
@@ -87,18 +86,6 @@ echo ""
 if ! command -v safeyolo &>/dev/null; then
     echo "ERROR: safeyolo CLI not found. Activate the venv or install."
     exit 2
-fi
-
-# Ensure the blackbox test pf anchor hook is installed in /etc/pf.conf.
-# `safeyolo setup pf --test` is idempotent: it's a no-op after the first run.
-# The first run will prompt for sudo once to write the hook; the runtime
-# never mutates /etc/pf.conf.
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    echo "Ensuring pf anchor hook for com.safeyolo-test is installed..."
-    if ! safeyolo setup pf --test; then
-        echo "ERROR: failed to install com.safeyolo-test anchor hook" >&2
-        exit 2
-    fi
 fi
 
 # Initialize test config dir on first run
@@ -148,7 +135,7 @@ if [ -d "$PROD_SHARE" ] && [ ! -L "$TEST_SHARE" ]; then
     echo "  Linked guest artifacts: $TEST_SHARE -> $PROD_SHARE"
 fi
 
-# Symlink host binaries (safeyolo-vm, feth-bridge) from production
+# Symlink host binaries (safeyolo-vm + vsock-term) from production
 PROD_BIN="$HOME/.safeyolo/bin"
 TEST_BIN="$SAFEYOLO_CONFIG_DIR/bin"
 if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then

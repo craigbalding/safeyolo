@@ -1,6 +1,6 @@
 # MicroVM Architecture
 
-SafeYolo runs AI coding agents in persistent Linux microVMs with hardware-level isolation and enforced network egress control.
+SafeYolo runs AI coding agents in persistent Linux microVMs with hardware-level isolation and structural egress control.
 
 The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCSCTTY PTY pattern — was informed by [Shuru](https://github.com/superhq-ai/shuru/), an open-source microVM sandbox for AI agents.
 
@@ -11,33 +11,39 @@ The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCS
 │ Host (macOS, Apple Silicon)                                      │
 │                                                                  │
 │  ┌────────────────────────────────────┐                          │
-│  │ mitmproxy (host process, 0.0.0.0)  │                          │
-│  │   - mitmdump with ~15 addons      │                          │
-│  │   - admin API on :9090            │                          │
-│  └──────────────┬─────────────────────┘                          │
-│                 │                                                │
-│  ┌──────────────┼──────────────────────────┐                     │
-│  │ pf anchor    │  (com.safeyolo)          │                     │
-│  │   pass TCP to proxy port on feth        │                     │
-│  │   block everything else from VM subnet  │                     │
-│  └──────────────┼──────────────────────────┘                     │
-│                 │                                                │
-│  ┌──────────────▼──────────────────────────┐                     │
-│  │ feth pair (per VM)                      │                     │
-│  │   fethN ◄──BPF──► feth-bridge ◄──► VZ socket                │
-│  │   fethN+1: host IP (192.168.x.1)       │                     │
-│  └─────────────────────────────────────────┘                     │
-│                                                                  │
-│  ┌─────────────────────────────────────────┐                     │
+│  │ mitmproxy (host process, 127.0.0.1)│                          │
+│  │   - mitmdump with ~15 addons       │                          │
+│  │   - admin API on :9090             │                          │
+│  └──────────────▲─────────────────────┘                          │
+│                 │  127.0.0.N  (attribution IP, one per agent)    │
+│  ┌──────────────┴─────────────────────┐                          │
+│  │ proxy_bridge (Python daemon)       │                          │
+│  │   per-agent UDS listener →         │                          │
+│  │   TCP connect to mitmproxy,        │                          │
+│  │   upstream bind()ed to 127.0.0.N   │                          │
+│  └──────────────▲─────────────────────┘                          │
+│                 │  AF_UNIX                                        │
+│  ┌──────────────┴─────────────────────┐                          │
+│  │ safeyolo-vm                        │                          │
+│  │   VSockProxyRelay: vsock:1080  →   │                          │
+│  │     per-agent UDS                  │                          │
+│  │   VSockShellBridge: per-agent UDS →│                          │
+│  │     vsock:2220 (guest sshd)        │                          │
+│  │   VSockTerminal: vsock:1024/1025 → │                          │
+│  │     guest vsock-term (foreground)  │                          │
+│  └──────────────▲─────────────────────┘                          │
+│                 │  vsock (virtio socket) — no virtio-net         │
+│  ┌──────────────┴──────────────────────────┐                     │
 │  │ Apple Virtualization.framework          │                     │
 │  │                                         │                     │
 │  │  ┌───────────────────────────────────┐  │                     │
 │  │  │ Agent MicroVM                     │  │                     │
 │  │  │   Debian trixie + mise + node@22  │  │                     │
-│  │  │   Static IP on eth0              │  │                     │
-│  │  │   HTTP_PROXY → host feth IP      │  │                     │
-│  │  │   Workspace via VirtioFS         │  │                     │
-│  │  │   Terminal via vsock PTY         │  │                     │
+│  │  │   Loopback-only (no eth0)         │  │                     │
+│  │  │   HTTP_PROXY → 127.0.0.1:8080 →   │  │                     │
+│  │  │     guest-proxy-forwarder → vsock │  │                     │
+│  │  │   Workspace via VirtioFS          │  │                     │
+│  │  │   Terminal via vsock PTY          │  │                     │
 │  │  │   Persistent ext4 root disk      │  │                     │
 │  │  └───────────────────────────────────┘  │                     │
 │  └─────────────────────────────────────────┘                     │
@@ -46,38 +52,19 @@ The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCS
 
 ## Network Isolation
 
-### Why not VZNATNetworkDeviceAttachment?
+The sandbox has **no external network interface**. There is no virtio-net attachment — the only ingress/egress channels into the guest are vsock (a virtio socket, not a network device) and VirtioFS. This is structural isolation: there is no firewall rule to misconfigure and no way to route around, because the guest kernel never sees an interface it could use.
 
-Apple's vmnet NAT creates bridge interfaces. The XNU kernel explicitly blocks pf IP filtering on bridge interfaces (`bridge_ioctl_sfilt` returns EINVAL for `IFBF_FILT_USEIPF`). This means pf rules on the bridge are silently ignored — no network isolation.
+All agent-initiated HTTP traffic takes this path:
 
-### feth pair approach
+1. Agent makes an HTTP request honouring `HTTP_PROXY=http://127.0.0.1:8080`
+2. `guest-proxy-forwarder.py` (listening on `127.0.0.1:8080` inside the guest) accepts the connection and relays bytes over vsock
+3. `VSockProxyRelay` (in `safeyolo-vm`) accepts on vsock port 1080 and connects to the per-agent host UDS
+4. `proxy_bridge` (host daemon) accepts on the per-agent UDS and connects to mitmproxy, binding the upstream TCP source to a synthetic `127.0.0.<N+2>` loopback IP
+5. mitmproxy's `service_discovery` addon maps `127.0.0.<N+2>` back to the agent name for policy evaluation and audit
 
-Each VM gets a dedicated feth (fake Ethernet) pair. feth interfaces are regular network interfaces where pf works:
+An agent that unsets proxy env vars has nowhere to go — there is no other network path out of the sandbox.
 
-1. `VZFileHandleNetworkDeviceAttachment` connects the VM to a Unix datagram socketpair
-2. `feth-bridge` (C binary) forwards Ethernet frames between the socket and a feth interface via BPF
-3. pf rules on the feth interface allow only the proxy port, block everything else
-4. NAT from the feth subnet to the outbound interface enables proxy upstream connections
-
-```
-VM eth0 ──► VZ socketpair ──► feth-bridge ──► BPF on fethN ──► fethN+1 (host IP)
-                                                                    │
-                                                              pf rules here
-                                                              (allow proxy, block all)
-```
-
-Each VM gets its own /24 subnet: `192.168.(65+index).0/24`. The guest uses static IP `.2`, host is `.1`.
-
-### pf rules
-
-```
-nat on en0 from 192.168.68.0/24 to any -> (en0)
-pass in quick on feth proto tcp from 192.168.68.0/24 to 192.168.68.1 port 8090
-block in quick on feth proto tcp from 192.168.68.0/24 to any port 9090
-block in on feth from 192.168.68.0/24 to any
-```
-
-BPF access requires the `access_bpf` group (added by Wireshark or OrbStack). No sudo needed for feth-bridge.
+See `docs/networking-vsock-uds.md` for the hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
 
 ## Terminal
 
@@ -87,6 +74,8 @@ The VM terminal uses vsock (virtio socket) with a proper PTY:
 
 **Host side (`VSockTerminal.swift`)**: Connects to vsock after VM boots. Full `cfmakeraw` terminal mode. `write_all()` with retry to prevent split ANSI sequences. SIGWINCH → 4-byte resize message on control channel. Drains PTY output before closing.
 
+For detached agents (`safeyolo agent run --detach`), the foreground terminal is skipped and shell access goes via SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd.
+
 ## Config Share Architecture
 
 All SafeYolo-specific logic lives on the VirtioFS config share, not baked into the rootfs:
@@ -95,16 +84,18 @@ All SafeYolo-specific logic lives on the VirtioFS config share, not baked into t
 ~/.safeyolo/agents/<name>/config-share/
 ├── guest-init          # The real init script (written by CLI on every run)
 ├── vsock-term          # Terminal daemon (cross-compiled ARM64 binary)
+├── guest-proxy-forwarder
+├── guest-shell-bridge
 ├── proxy.env           # HTTP_PROXY, HTTPS_PROXY, SSL_CERT_FILE, etc.
 ├── agent.env           # SAFEYOLO_AGENT_CMD, MISE_PACKAGE, auto_args, etc.
-├── network.env         # GUEST_IP, GATEWAY_IP, NETMASK
+├── network.env         # GUEST_IP=127.0.0.1, GATEWAY_IP=127.0.0.1
 ├── mitmproxy-ca-cert.pem
 ├── authorized_keys     # SSH public key for `agent shell`
 ├── agent_token         # Agent API bearer token
 ├── instructions.md     # CLAUDE.md or equivalent (injected to guest path)
 ├── host-mounts         # VirtioFS mount manifest (tag:guest_path)
 ├── host-files-manifest # Individual file copy manifest
-├── vm-ip               # Written by guest init after boot (read by CLI)
+├── agent-name          # Written by CLI; read by guest-init + forwarders
 └── vm-status           # "installing" during first-run install
 ```
 
@@ -117,9 +108,8 @@ The rootfs has a 30-line stub at `/usr/local/bin/safeyolo-guest-init` that mount
 ```
 TRUSTED: Host
   mitmproxy + addons + PDP + policy
-  pf rules on feth interfaces
-  safeyolo-vm (Swift, manages VM lifecycle)
-  feth-bridge (C, forwards Ethernet frames)
+  proxy_bridge (Python daemon, per-agent UDS listeners)
+  safeyolo-vm (Swift, manages VM lifecycle + vsock bridges)
   Python CLI (agent management)
   VirtioFS config share contents
 
@@ -128,18 +118,18 @@ UNTRUSTED: Guest VM
   Guest OS, tools, anything the agent installs
   Guest networking configuration
 
-  If the guest unsets HTTP_PROXY → pf blocks all non-proxy traffic
-  If the guest sends raw TCP → pf blocks it
+  If the guest unsets HTTP_PROXY → no path out (no external interface)
+  If the guest opens a raw socket → no interface to bind to
   VM boundary is hardware virtualisation (stronger than Docker namespaces)
 ```
 
 ## Guest Image
 
-Built via Docker on macOS for ARM64 cross-compilation:
+Built via a Lima VM on macOS for ARM64 cross-compilation (see `guest/README.md`):
 
-- **Kernel**: Linux 6.12, minimal defconfig (all virtio built-in, no modules)
+- **Kernel**: Linux 6.12, minimal defconfig. Virtio-vsock built in; virtio-net still available for local development but not attached by the runtime.
 - **Rootfs**: Debian trixie minbase, 2GB ext4 (sparse). Includes: git, curl, jq, build-essential, gnupg, openssh-server, mise + node@22, gh CLI, package-manager intercepts
-- **Initramfs**: busybox-static + e2fsck + resize2fs. Mounts root, configures static IP from VirtioFS, `switch_root` to stub init
+- **Initramfs**: busybox-static + e2fsck + resize2fs. Mounts root, `switch_root` to stub init. Network configuration is a no-op — there is no eth0.
 
 Artifacts stored at `~/.safeyolo/share/`: `Image`, `initramfs.cpio.gz`, `rootfs-base.ext4`.
 
@@ -152,26 +142,27 @@ One mutable ext4 disk per agent at `~/.safeyolo/agents/<name>/rootfs.ext4`. Clon
 The CLI writes `~/.safeyolo/data/agent_map.json` when VMs start/stop:
 
 ```json
-{"test": {"ip": "192.168.68.2", "started": "2026-04-06T..."}}
+{"test": {"ip": "127.0.0.2", "socket": "/Users/me/.safeyolo/data/sockets/test.sock", "started": "2026-04-17T..."}}
 ```
 
-The `service_discovery` addon reads this file (mtime-cached) to resolve client IPs to agent names for per-agent policy evaluation.
+The `service_discovery` addon reads this file (mtime-cached) to resolve the bridge-stamped attribution IP (127.0.0.N) back to the agent name for per-agent policy evaluation. `proxy_bridge` reads the same file to know which per-agent UDS listeners to create.
 
 ## Components
 
 | Component | Language | Purpose |
 |-----------|----------|---------|
-| `safeyolo-vm` | Swift | VM lifecycle (Apple Virtualization.framework) |
-| `feth-bridge` | C | Ethernet frame forwarding (VZ socket ↔ BPF on feth) |
+| `safeyolo-vm` | Swift | VM lifecycle (Apple Virtualization.framework) + vsock bridges |
 | `vsock-term` | C (static, ARM64) | Guest terminal daemon (vsock PTY bridge) |
+| `guest-proxy-forwarder.py` | Python (in guest) | `127.0.0.1:8080` → vsock:1080 |
+| `guest-shell-bridge.py` | Python (in guest) | vsock:2220 → sshd on `127.0.0.1:22` |
 | `proxy.py` | Python | Host mitmproxy process management |
-| `firewall.py` | Python | feth pair + pf rule management |
+| `proxy_bridge.py` | Python | Per-agent UDS listeners, attribution IP binding |
 | `vm.py` | Python | VM lifecycle, config share, agent map |
 | `guest-init.sh` | Bash | Guest init (on config share, not rootfs) |
 
 ## Limitations
 
-1. **macOS only** (Apple Silicon). Linux KVM backend deferred.
-2. **Non-HTTP traffic blocked, not intercepted.** pf drops raw TCP/UDP from VMs.
-3. **No guest snapshots.** Corrupted rootfs → re-create agent.
-4. **Guest image build requires Docker** (for cross-compilation). Runtime has zero Docker dependency.
+1. **macOS only** (Apple Silicon) for the microVM path. Linux runs gVisor containers via `runsc`; see `docs/linux-port-design.md`.
+2. **Non-HTTP traffic has no path at all.** There is no external interface; raw TCP/UDP have no kernel route out of the guest.
+3. **No guest snapshots by default** (though `--snapshot` is a beta flag on `agent run`). Corrupted rootfs → re-create agent.
+4. **Guest image build requires Lima on macOS** (for cross-compilation). Runtime has no Docker or Lima dependency.

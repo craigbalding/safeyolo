@@ -26,7 +26,7 @@ Same blackbox tests: verify the security contract regardless of mechanism.
 macOS (current)                     Linux (new)
 safeyolo-vm (Swift)                 runsc (gVisor)
   Virtualization.framework            KVM or systrap (auto-detected)
-  feth pairs + pf                     veth pairs + netns + iptables
+  no virtio-net, vsock → UDS bridge   loopback-only netns + UDS bind-mount + iptables
   VirtioFS mounts                     bind mounts
   SSH for agent shell                 runsc exec (direct process injection)
   guest-init.sh in VM                 OCI config.json (no guest init needed)
@@ -44,10 +44,10 @@ Both share:
 | Component | macOS | Linux |
 |-----------|-------|-------|
 | VM/sandbox launcher | `safeyolo-vm` (Swift) | `runsc` (Go binary) |
-| Networking | feth pairs + pf anchors | veth pairs + netns + iptables |
+| Networking | no virtio-net; vsock → UDS bridge (structural) | loopback-only netns + bind-mounted UDS; iptables as belt-and-braces |
 | Filesystem sharing | VirtioFS | bind mounts |
 | Rootfs format | ext4 image file | overlayfs (extracted dir) |
-| Shell access | SSH over network | `runsc exec` (no SSH needed) |
+| Shell access | SSH via vsock shell-bridge UDS | `runsc exec` (no SSH needed) |
 | Guest init | guest-init.sh (runs in VM) | Not needed (OCI config.json) |
 | Kernel | Custom Linux kernel in VM | gVisor Sentry (userspace kernel) |
 | KVM | N/A (Hypervisor.framework) | Optional, auto-detected |
@@ -139,12 +139,13 @@ def get_platform() -> AgentPlatform:
 ```
 cli/src/safeyolo/platform/
     __init__.py          # AgentPlatform ABC + get_platform()
-    darwin.py            # macOS: Virtualization.framework + feth + pf
-    linux.py             # Linux: gVisor + veth + iptables
+    darwin.py            # macOS: Virtualization.framework + vsock UDS bridge
+    linux.py             # Linux: gVisor + loopback-only netns + iptables
 ```
 
-`darwin.py` wraps the existing code from vm.py and firewall.py.
-`linux.py` is the new implementation.
+`darwin.py` delegates VM lifecycle to `vm.py` and sets up the per-agent
+shell bridge + lo0 alias for the attribution IP. `linux.py` is the gVisor
+implementation.
 
 ## Linux Implementation Details
 
@@ -159,31 +160,40 @@ def _detect_runsc_platform(self) -> str:
 
 Passed to all runsc invocations: `runsc --platform=kvm|systrap ...`
 
-### Networking (veth + netns + iptables)
+### Networking (loopback-only netns + UDS bind-mount + iptables)
 
-Equivalent of macOS feth + pf, using Linux kernel primitives:
+Structural isolation, not policy-based:
 
 ```
 setup_networking(agent_index):
-    1. ip netns add safeyolo-<name>
-    2. ip link add veth-<name> type veth peer name eth0
-    3. ip link set eth0 netns safeyolo-<name>
-    4. Configure IPs (same 192.168.X.0/24 scheme as macOS)
-    5. Enable IP forwarding
+    1. ip netns add safeyolo-idx<N>
+    2. ip -n safeyolo-idx<N> link set lo up
+    3. Allocate attribution IP 127.0.0.<N+2> (for mitmproxy attribution)
+    4. Signal needs_bridge_socket=True so agent.py coordinates with
+       proxy_bridge to create the per-agent UDS before start_sandbox
 
-load_firewall_rules():
-    1. iptables -A FORWARD -i veth-<name> -d <host_ip> -p tcp --dport <proxy_port> -j ACCEPT
-    2. iptables -A FORWARD -i veth-<name> -j DROP
-    3. iptables -t nat -A POSTROUTING -s <subnet> -o <outbound_if> -j MASQUERADE
-
-teardown_networking(agent_index):
-    1. ip netns delete safeyolo-<name>  (removes veth pair automatically)
-    2. Remove iptables rules
+(no veth, no external IP, no routing)
 ```
 
-The SAFEYOLO_SUBNET_BASE and SAFEYOLO_PF_ANCHOR (renamed to
-SAFEYOLO_FW_CHAIN for Linux) env vars scope these for multi-instance
-isolation, same as the macOS implementation.
+The sandbox has no external network interface. The per-agent UDS at
+`~/.safeyolo/data/sockets/<name>.sock` is bind-mounted into the guest
+at `/safeyolo/proxy.sock` (via `runsc --host-uds=open`); the in-guest
+forwarder relays HTTP to it, and `proxy_bridge` stamps the attribution
+IP on upstream TCP as it connects to mitmproxy.
+
+iptables is a belt-and-braces guard for any traffic that tries to
+escape the netns — in practice there is no interface for it to leave
+through, but the rules catch configuration drift:
+
+```
+load_firewall_rules():
+    iptables-restore --noflush with a rendered table that only permits
+    traffic leaving via the agent UDS and drops anything else.
+```
+
+`SAFEYOLO_SUBNET_BASE` (default 65) offsets the netns slot number so
+a second instance (blackbox test harness or per-operator dev) doesn't
+collide with production's netns names.
 
 ### Rootfs (overlayfs)
 

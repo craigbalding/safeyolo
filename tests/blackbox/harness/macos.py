@@ -1,8 +1,9 @@
 """macOS blackbox test harness.
 
-Manages: sinkhole (host process), mitmdump (host process),
-microVM (Virtualization.framework via safeyolo-vm), and
-feth + pf network isolation.
+Manages: sinkhole (host process), mitmdump (host process), and
+microVM (Virtualization.framework via safeyolo-vm). Egress isolation
+is structural — the sandbox has no external interface, so there's
+nothing host-side to configure besides the per-agent bridge sockets.
 """
 
 import logging

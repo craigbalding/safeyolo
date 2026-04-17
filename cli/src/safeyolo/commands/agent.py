@@ -32,7 +32,6 @@ from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..timing import emit as _timing_emit
 from ..timing import enter as _t
 from ..vm import (
-    _cleanup_feth_bridge,
     _update_agent_map,
     get_agent_config_share_dir,
     prepare_config_share,
@@ -406,15 +405,12 @@ def _run_agent(
 
     # Identity attribution: `attribution_ip` is the source IP mitmproxy
     # sees, which service_discovery maps back to the agent name. Both
-    # platforms populate it in setup_networking:
-    #   Linux: synthetic 127.0.0.X — the proxy_bridge binds its upstream
-    #          TCP source to this address and also listens on a per-agent
-    #          UDS, signalled by needs_bridge_socket=True.
-    #   macOS: the per-agent feth guest_ip — mitmproxy sees it directly,
-    #          no bridge socket needed.
-    # agent_map.json is written BEFORE start_sandbox on both paths so
-    # service_discovery is ready when the first request arrives; on
-    # Linux it's also what the bridge polls to create listeners.
+    # platforms populate it in setup_networking as a synthetic 127.0.0.X
+    # — the proxy_bridge binds its upstream TCP source to this address
+    # and listens on a per-agent UDS (needs_bridge_socket=True).
+    # agent_map.json is written BEFORE start_sandbox so service_discovery
+    # is ready when the first request arrives, and the bridge polls it
+    # to create listeners.
     attribution_ip = fw_alloc.get("attribution_ip", guest_ip)
     bridge_sock = None
     if fw_alloc.get("needs_bridge_socket"):
@@ -480,12 +476,10 @@ def _run_agent(
     # us to send SIGUSR1. Restore and passthrough pre-write — on restore
     # the snapshotted guest wakes up on the gate and sees it immediately.
     _debug_mode = os.environ.get("SAFEYOLO_DEBUG") == "1"
-    # Port that ends up in the guest's HTTP_PROXY. On platforms that
-    # use the in-guest forwarder (Linux UDS arch), the container-facing
-    # port is fixed at 8080 and the forwarder decouples it from the
-    # host's mitmproxy port. On platforms without a forwarder (macOS
-    # feth), the guest dials the host port directly via its gateway.
-    guest_proxy_port = 8080 if fw_alloc.get("needs_bridge_socket") else proxy_port
+    # Guest's HTTP_PROXY port. Both platforms use the in-guest forwarder
+    # on a fixed port (8080); the host bridge decouples it from whatever
+    # port mitmproxy is actually on.
+    guest_proxy_port = 8080
 
     def _do_prepare_config_share(for_mode: str) -> None:
         prepare_config_share(
@@ -513,18 +507,6 @@ def _run_agent(
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
-
-    # macOS-specific: check BPF access (feth-bridge needs /dev/bpf*)
-    import platform as _plat
-    if _plat.system() == "Darwin":
-        from .setup import check_bpf_access
-        has_bpf, bpf_reason = check_bpf_access()
-        if not has_bpf:
-            console.print(f"[red]BPF access denied:[/red] {bpf_reason}")
-            console.print()
-            console.print("  feth-bridge needs BPF to forward VM network traffic.")
-            console.print("  Fix: [bold]safeyolo setup bpf[/bold]")
-            raise typer.Exit(1)
 
     run_background = detach
 
@@ -721,15 +703,10 @@ def _run_agent(
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
 
-    # Clean up PID file and feth-bridge (not for detach — VM is still running).
-    # feth-bridge is macOS-only (feth interfaces + BPF forwarding); on Linux
-    # the equivalent teardown happens inside plat.stop_sandbox / cleanup_all.
+    # Clean up PID file (not for detach — VM is still running).
     if not detach:
         pid_path = get_agents_dir() / name / "vm.pid"
         pid_path.unlink(missing_ok=True)
-        import platform as _plat
-        if _plat.system() == "Darwin":
-            _cleanup_feth_bridge(name)
 
     _timing_emit()
     return exit_code

@@ -235,8 +235,7 @@ hop to see one specific connection's accept + done pair.
 | Agent → bridge path    | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
 | Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
 | Attribution IP setup   | kernel routes all of 127/8    | explicit `ifconfig lo0 alias`             |
-| Firewall               | none (structural)             | none in vsock mode (structural; feth mode still uses pf) |
-| Toggle                 | default                       | `SAFEYOLO_MACOS_NETWORK=vsock`            |
+| Host firewall          | iptables (belt-and-braces)    | none (structural)                         |
 
 ---
 
@@ -245,8 +244,7 @@ hop to see one specific connection's accept + done pair.
 | Env var                      | Default      | Effect                                            |
 |------------------------------|--------------|---------------------------------------------------|
 | `SAFEYOLO_CONFIG_DIR`        | `~/.safeyolo`| Instance root (isolated from prod when set)       |
-| `SAFEYOLO_PF_ANCHOR`         | `com.safeyolo` | macOS pf anchor — `com.safeyolo-test` and `com.safeyolo-dev` also allowed |
-| `SAFEYOLO_MACOS_NETWORK`     | `feth`       | `vsock` → structural isolation (Phase 2 arch)     |
+| `SAFEYOLO_SUBNET_BASE`       | `65`         | Linux netns slot offset — shift to run a second instance (e.g. blackbox tests) without colliding with prod netns names |
 | `SAFEYOLO_VM_HELPER`         | unset        | Override `safeyolo-vm` binary path for single runs |
 | `SAFEYOLO_VM_DEBUG`          | unset (off)  | Enable per-flow `accept` logs on all hops         |
 
