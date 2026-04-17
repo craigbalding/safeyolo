@@ -1,0 +1,4 @@
+[safeyolo]
+title=SafeYolo Proxy
+description=Egress control proxy for AI coding agents. Allows agent traffic to reach the mitmproxy listener on the configured port.
+ports=%SAFEYOLO_PROXY_PORT%/tcp

@@ -197,7 +197,7 @@ def _veth_host_name(agent_index: int) -> str:
 class LinuxPlatform(AgentPlatform):
     """Linux agent isolation via gVisor (runsc)."""
 
-    firewall_name = "iptables"
+    firewall_name = "nftables"
 
     # --- Networking ---
 
@@ -271,12 +271,16 @@ class LinuxPlatform(AgentPlatform):
         _sudo(["nft", "add", "table", "ip", NFT_TABLE], check=False)
         _sudo(["nft", "flush", "table", "ip", NFT_TABLE])
 
-        # Create chains with netfilter hooks. The chain spec (braces,
-        # hook type, priority) must be a single string argument to nft.
+        # Create chains with netfilter hooks.
+        # Priority -1 ensures SafeYolo's chains run BEFORE iptables-nft/UFW
+        # chains (which register at priority 0). Without this, UFW's INPUT
+        # policy drop kills agent traffic before our accept rule fires.
+        # This follows the Tailscale pattern (priority -1 for filter).
+        # NAT stays at standard srcnat priority (100).
         _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "forward",
-               "{ type filter hook forward priority 0; policy accept; }"])
+               "{ type filter hook forward priority -1; policy accept; }"])
         _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "input",
-               "{ type filter hook input priority 0; policy accept; }"])
+               "{ type filter hook input priority -1; policy accept; }"])
         _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "postrouting",
                "{ type nat hook postrouting priority 100; policy accept; }"])
 
@@ -293,14 +297,16 @@ class LinuxPlatform(AgentPlatform):
             _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
                    "ip", "saddr", subnet, "drop"])
 
-            # INPUT: allow proxy port, block admin port (for hosts with
-            # default-deny INPUT, e.g. Ubuntu with UFW)
+            # INPUT: allow proxy port, block everything else from agent subnet.
+            # The catch-all drop is essential — without it, the agent can
+            # reach any service on the host (SSH, Docker, dev servers).
+            # On UFW hosts this is defense-in-depth (UFW also drops at
+            # priority 0). On non-UFW hosts it's the only protection.
             _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
                    "ip", "saddr", subnet, "ip", "daddr", host_ip,
                    "tcp", "dport", str(proxy_port), "accept"])
             _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
-                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
-                   "tcp", "dport", str(admin_port), "drop"])
+                   "ip", "saddr", subnet, "drop"])
 
             # NAT: masquerade outbound traffic
             _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "postrouting",
