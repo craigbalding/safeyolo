@@ -145,6 +145,7 @@ class VSockShellBridge {
         }
 
         let vsockFD = conn.fileDescriptor
+        fputs("[shell-bridge] relay start uds->vsock=\(vsockFD)\n", stderr)
 
         let t1 = Thread {
             VSockShellBridge.forwardData(from: udsFD, to: vsockFD)
