@@ -87,6 +87,37 @@ class TestLinuxTemplateInvariants:
         assert "rm -rf *" not in sudoers_rules
         assert "rm -rf %SAFEYOLO_AGENTS_DIR%/*" in sudoers_rules
 
+    def test_no_ip_netns_exec(self, sudoers_rules):
+        """ip netns exec allows running arbitrary binaries as root.
+        The template must use ip -n instead."""
+        assert "ip netns exec" not in sudoers_rules
+        # No blanket `ip netns *` — must be scoped to add/del
+        assert "ip netns *" not in sudoers_rules
+
+    def test_ip_netns_scoped_to_safeyolo_prefix(self, sudoers_rules):
+        """Namespace operations must be limited to safeyolo-* names."""
+        assert "ip netns add safeyolo-*" in sudoers_rules
+        assert "ip netns del safeyolo-*" in sudoers_rules
+
+    def test_ip_link_scoped_to_veth_prefix(self, sudoers_rules):
+        """Host-side veth operations scoped to veth-sy* interface names."""
+        # No blanket `ip link *`
+        assert "/ip link *\\" not in sudoers_rules and \
+               "/ip link *\n" not in sudoers_rules
+        assert "ip link add veth-sy*" in sudoers_rules
+        assert "ip link del veth-sy*" in sudoers_rules
+        assert "ip link set veth-sy* up" in sudoers_rules
+
+    def test_ip_addr_scoped_to_veth_prefix(self, sudoers_rules):
+        """Host-side addr operations scoped to veth-sy* interfaces."""
+        assert "ip addr add * dev veth-sy*" in sudoers_rules
+
+    def test_ip_n_grants_for_guest_side_config(self, sudoers_rules):
+        """Guest-side config uses ip -n safeyolo-* (not ip netns exec)."""
+        assert "ip -n safeyolo-* addr *" in sudoers_rules
+        assert "ip -n safeyolo-* link *" in sudoers_rules
+        assert "ip -n safeyolo-* route *" in sudoers_rules
+
     def test_runsc_pinned_to_safeyolo_state_dir(self, sudoers_rules):
         """runsc rules must pin --root /run/safeyolo so they can't operate
         on containers outside SafeYolo's state directory."""

@@ -44,13 +44,31 @@
 #                      the code's usage. See sudoers(5) §Wildcards.
 # -----------------------------------------------------------------
 
-# Network namespace and veth management
-%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip netns *, \
-                                /usr/sbin/ip link *, \
-                                /usr/sbin/ip addr *, \
-                                /sbin/ip netns *, \
-                                /sbin/ip link *, \
-                                /sbin/ip addr *
+# Network namespace lifecycle — scoped to safeyolo-* names.
+# IMPORTANT: `ip netns exec` is intentionally NOT granted — it allows
+# running arbitrary binaries as root. Use `ip -n <ns>` instead.
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip netns add safeyolo-*, \
+                                /usr/sbin/ip netns del safeyolo-*, \
+                                /sbin/ip netns add safeyolo-*, \
+                                /sbin/ip netns del safeyolo-*
+
+# veth interface management — scoped to SafeYolo's veth-sy* prefix
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip link add veth-sy* *, \
+                                /usr/sbin/ip link del veth-sy*, \
+                                /usr/sbin/ip link set veth-sy* up, \
+                                /usr/sbin/ip addr add * dev veth-sy*, \
+                                /sbin/ip link add veth-sy* *, \
+                                /sbin/ip link del veth-sy*, \
+                                /sbin/ip link set veth-sy* up, \
+                                /sbin/ip addr add * dev veth-sy*
+
+# Guest-side network config inside namespace (via ip -n, not ip netns exec)
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip -n safeyolo-* addr *, \
+                                /usr/sbin/ip -n safeyolo-* link *, \
+                                /usr/sbin/ip -n safeyolo-* route *, \
+                                /sbin/ip -n safeyolo-* addr *, \
+                                /sbin/ip -n safeyolo-* link *, \
+                                /sbin/ip -n safeyolo-* route *
 
 # Firewall rules
 %safeyolo ALL=(root) NOPASSWD: /usr/sbin/iptables *, \

@@ -219,12 +219,15 @@ class LinuxPlatform(AgentPlatform):
         _sudo(["ip", "addr", "add", f"{alloc['host_ip']}/24", "dev", veth_host])
         _sudo(["ip", "link", "set", veth_host, "up"])
 
-        # Configure guest side (inside netns)
-        _sudo(["ip", "netns", "exec", netns, "ip", "addr", "add",
+        # Configure guest side (inside netns).
+        # Uses `ip -n <ns>` instead of `ip netns exec <ns> ip ...` so the
+        # sudoers rule can grant `ip -n safeyolo-*` without also granting
+        # `ip netns exec` (which allows running arbitrary binaries as root).
+        _sudo(["ip", "-n", netns, "addr", "add",
                f"{alloc['guest_ip']}/24", "dev", veth_guest])
-        _sudo(["ip", "netns", "exec", netns, "ip", "link", "set", veth_guest, "up"])
-        _sudo(["ip", "netns", "exec", netns, "ip", "link", "set", "lo", "up"])
-        _sudo(["ip", "netns", "exec", netns, "ip", "route", "add",
+        _sudo(["ip", "-n", netns, "link", "set", veth_guest, "up"])
+        _sudo(["ip", "-n", netns, "link", "set", "lo", "up"])
+        _sudo(["ip", "-n", netns, "route", "add",
                "default", "via", alloc["host_ip"]])
 
         # Enable IP forwarding
