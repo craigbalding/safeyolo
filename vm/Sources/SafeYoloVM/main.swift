@@ -173,6 +173,13 @@ guard var config = parseArguments() else {
     exit(1)
 }
 
+// Ignore SIGPIPE — the vsock bridges' pump threads write to socket
+// fds whose peers can hang up asynchronously (ssh client disconnects,
+// guest vsock EOF). Default action for SIGPIPE is terminating the
+// process; we want EPIPE as a regular error return from write()
+// instead, caught in _forward's except block.
+signal(SIGPIPE, SIG_IGN)
+
 do {
     if !config.feth.isEmpty {
         // Network isolation via feth pair.
