@@ -139,7 +139,7 @@ def prepare_config_share(
     mise_package: str = "",
     agent_args: str = "",
     extra_env: dict[str, str] | None = None,
-    proxy_port: int = 8080,
+    proxy_port: int = 8080,  # noqa: ARG001 — kept in signature; container-facing port is fixed (8080) regardless of host proxy port
     host_mounts: list[tuple[str, str, bool]] | None = None,
     host_config_files: list[str] | None = None,
     instructions_content: str = "",
@@ -215,11 +215,17 @@ def prepare_config_share(
         (share_dir / "vsock-term").chmod(0o755)
 
     # Proxy environment variables.
+    # The container-facing port is fixed (guest-proxy-forwarder listens on
+    # localhost:8080 inside the sandbox, regardless of what port mitmproxy
+    # uses on the host). The forwarder's job is precisely this decoupling —
+    # the host can run on 8080 in prod / 8180 in test / anywhere else
+    # without touching the container's HTTP_PROXY.
+    #
     # gateway_ip comes from the platform's setup_networking:
-    #   - Linux (new arch): 127.0.0.1 — guest-proxy-forwarder listens here
-    #     and relays to the host via bind-mounted UDS.
-    #   - macOS (feth): the host veth IP; traffic flows through feth-bridge + pf.
-    proxy_url = f"http://{gateway_ip}:{proxy_port}"
+    #   - Linux (new arch): 127.0.0.1 — the in-guest forwarder's bind addr.
+    #   - macOS (feth): the host veth IP; the forwarder binds there instead.
+    _GUEST_PROXY_PORT = 8080
+    proxy_url = f"http://{gateway_ip}:{_GUEST_PROXY_PORT}"
     proxy_env = (
         f'export HTTP_PROXY="{proxy_url}"\n'
         f'export HTTPS_PROXY="{proxy_url}"\n'

@@ -551,17 +551,12 @@ class LinuxPlatform(AgentPlatform):
         cgroup_version: int,
     ) -> dict:
         """Generate an OCI runtime spec for runsc."""
-        proxy_port = 8080
-        try:
-            from ..config import load_config
-            cfg = load_config()
-            proxy_port = cfg.get("proxy", {}).get("port", 8080)
-        except (OSError, KeyError, ValueError):
-            # Config unreadable (missing, malformed) — keep the 8080 default
-            # we initialised above. Spec generation must still succeed.
-            pass
-
-        proxy_url = f"http://{fw_alloc['host_ip']}:{proxy_port}"
+        # The container's HTTP_PROXY always targets the in-guest forwarder
+        # on a fixed port — the forwarder decouples the container view
+        # from the host port (prod 8080 vs test 8180). Only the bridge's
+        # upstream port cares about which mitmproxy is running.
+        guest_proxy_port = 8080
+        proxy_url = f"http://{fw_alloc['host_ip']}:{guest_proxy_port}"
         ca_cert_path = "/usr/local/share/ca-certificates/safeyolo.crt"
 
         # Environment variables matching what guest-init.sh would set.
