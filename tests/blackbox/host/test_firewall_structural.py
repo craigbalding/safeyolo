@@ -83,9 +83,36 @@ class TestProcessSecrecy:
             )
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="iptables is Linux-only")
+def _safeyolo_chain_present() -> bool:
+    """Does the legacy SAFEYOLO iptables chain exist on this host?
+
+    The UDS-only architecture removes kernel firewalling entirely —
+    isolation is structural (per-agent sockets, loopback-only netns).
+    These tests only apply to hosts still on the old veth+iptables arch.
+    """
+    chain = os.environ.get("SAFEYOLO_FW_CHAIN", "SAFEYOLO")
+    try:
+        result = subprocess.run(
+            ["sudo", "iptables", "-nvL", chain],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or not _safeyolo_chain_present(),
+    reason="iptables SAFEYOLO chain absent — UDS-only arch uses "
+           "structural isolation (no kernel firewall). See issue #164 "
+           "for follow-up: new structural tests for per-agent sockets + "
+           "attribution IPs.",
+)
 class TestIptablesChainStructure:
-    """Verify the SAFEYOLO iptables chain is shaped for default-deny."""
+    """Legacy: verify the SAFEYOLO iptables chain is shaped for default-deny.
+
+    Skipped on the UDS-only architecture (no iptables rules to inspect).
+    """
 
     def _get_chain_rules(self) -> str:
         """Dump the SAFEYOLO chain rules."""
@@ -161,7 +188,11 @@ class TestIptablesChainStructure:
         )
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="iptables is Linux-only")
+@pytest.mark.skipif(
+    sys.platform != "linux" or not _safeyolo_chain_present(),
+    reason="iptables SAFEYOLO chain absent — UDS-only arch has no "
+           "kernel rules to survive a crash.",
+)
 class TestFirewallCrashResilience:
     """Verify iptables rules survive the proxy process dying.
 
