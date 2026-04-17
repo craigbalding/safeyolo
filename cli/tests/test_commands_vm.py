@@ -7,10 +7,9 @@ init, setup, doctor, sandbox, cert, and admin.
 All subprocess/vm/proxy/firewall calls are mocked. No real processes are started.
 """
 
-import signal
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -188,7 +187,6 @@ class TestLifecycleStop:
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
             patch("safeyolo.commands.lifecycle.stop_proxy"),
-            patch("safeyolo.firewall.unload_rules"),
             patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
             result = runner.invoke(app, ["stop", "--all"])
@@ -196,8 +194,9 @@ class TestLifecycleStop:
         assert result.exit_code == 0
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
 
-    def test_stop_all_unloads_pf_rules(self, runner, config_dir):
-        """stop --all calls plat.unload_firewall_rules()."""
+    def test_stop_all_unloads_firewall_rules(self, runner, config_dir):
+        """stop --all calls plat.unload_firewall_rules() (iptables on Linux,
+        no-op on macOS)."""
         mock_platform = MagicMock()
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
@@ -209,10 +208,10 @@ class TestLifecycleStop:
         assert result.exit_code == 0
         mock_platform.unload_firewall_rules.assert_called_once()
 
-    def test_stop_all_pf_unload_failure_is_nonfatal(self, runner, config_dir):
+    def test_stop_all_firewall_unload_failure_is_nonfatal(self, runner, config_dir):
         """Firewall unload failure doesn't prevent stop --all from completing."""
         mock_platform = MagicMock()
-        mock_platform.unload_firewall_rules.side_effect = RuntimeError("pf error")
+        mock_platform.unload_firewall_rules.side_effect = RuntimeError("iptables error")
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
@@ -249,7 +248,6 @@ class TestLifecycleStatus:
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
-            patch("safeyolo.firewall.is_loaded", return_value=True),
             patch("safeyolo.commands.lifecycle.get_api") as mock_api_factory,
             patch("safeyolo.vm.is_vm_running", return_value=False),
         ):
@@ -275,7 +273,6 @@ class TestLifecycleBuild:
     def test_build_script_not_found_exits_one(self, runner, config_dir, monkeypatch):
         """If build-all.sh doesn't exist at the expected repo-relative path, exits 1."""
         # Point the build script path to a non-existent directory
-        import safeyolo.commands.lifecycle as lc
         fake_parents = Path("/tmp/not-a-repo")
         with patch.object(Path, "resolve", return_value=fake_parents / "cli" / "src" / "safeyolo" / "commands" / "lifecycle.py"):
             # Simpler: just patch the computed script path directly
@@ -312,7 +309,6 @@ class TestLifecycleBuild:
         ):
             # This is tricky to mock because of Path resolution from __file__
             # Testing the artifact copy logic directly instead
-            import safeyolo.commands.lifecycle as lc
             import shutil
 
             share_dir = config_dir / "share"
@@ -812,9 +808,7 @@ class TestSetup:
         """Reports OK when guest images are available."""
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "User is in access_bpf group")),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
         ):
             result = runner.invoke(app, ["setup"])
@@ -827,13 +821,11 @@ class TestSetup:
         """Reports MISSING when guest images are absent."""
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=False),
             patch(
                 "safeyolo.commands.setup.guest_image_status",
                 return_value={"kernel": True, "initramfs": False, "rootfs": False},
             ),
-            patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "OK")),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
         ):
             result = runner.invoke(app, ["setup"])
@@ -842,30 +834,13 @@ class TestSetup:
         assert "missing" in result.output.lower()
         assert "initramfs" in result.output.lower()
 
-    def test_bpf_access_missing_shows_warn(self, runner, config_dir):
-        """Reports WARN when BPF access is missing."""
-        with (
-            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
-            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.commands.setup.check_bpf_access", return_value=(False, "Not in access_bpf group")),
-            patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
-        ):
-            result = runner.invoke(app, ["setup"])
-
-        assert result.exit_code == 0
-        assert "warn" in result.output.lower()
-        assert "bpf" in result.output.lower()
-
     def test_vm_helper_missing_shows_missing(self, runner, config_dir):
         """Reports MISSING when safeyolo-vm binary is not found."""
         from safeyolo.vm import VMError as _VMError
 
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "OK")),
             patch("safeyolo.vm.find_vm_helper", side_effect=_VMError("not found")),
         ):
             result = runner.invoke(app, ["setup"])
@@ -878,9 +853,7 @@ class TestSetup:
         """Shows all-OK summary when everything passes."""
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
-            patch("safeyolo.commands.setup._pf_conf_state", return_value="present"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.commands.setup.check_bpf_access", return_value=(True, "OK")),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
         ):
             result = runner.invoke(app, ["setup"])
@@ -888,7 +861,7 @@ class TestSetup:
         assert result.exit_code == 0
         assert "all prerequisites met" in result.output.lower()
 
-    # Linux branch: runsc replaces BPF + safeyolo-vm + pf. check_runsc() does
+    # Linux branch: runsc replaces safeyolo-vm. check_runsc() does
     # the actual PATH lookup, so mock it directly — no need to stub shutil.
     def test_runsc_ok_on_linux(self, runner, config_dir):
         """Linux: reports OK when runsc is present."""
@@ -903,7 +876,6 @@ class TestSetup:
         assert "runsc" in result.output.lower()
         assert "all prerequisites met" in result.output.lower()
         # Shouldn't mention macOS-specific checks
-        assert "bpf" not in result.output.lower()
         assert "safeyolo-vm" not in result.output.lower()
 
     def test_runsc_missing_shows_missing_on_linux(self, runner, config_dir):
@@ -955,7 +927,7 @@ class TestDoctorAutoFix:
 
     def test_fix_starts_proxy_on_failure(self, runner, config_dir):
         """--fix attempts to start proxy when proxy check fails."""
-        from safeyolo.commands.doctor import _attempt_fix, DiagResult
+        from safeyolo.commands.doctor import DiagResult, _attempt_fix
 
         results = [
             DiagResult(name="Proxy running", status="fail", message="not running"),
@@ -971,7 +943,7 @@ class TestDoctorAutoFix:
 
     def test_fix_ignores_non_fail_results(self, runner, config_dir):
         """--fix only acts on 'fail' status results."""
-        from safeyolo.commands.doctor import _attempt_fix, DiagResult
+        from safeyolo.commands.doctor import DiagResult, _attempt_fix
 
         results = [
             DiagResult(name="Proxy running", status="pass", message="running"),
@@ -1109,89 +1081,6 @@ class TestAdminCheck:
 
 
 # ---------------------------------------------------------------------------
-# firewall.py: generate_rules (unit tests for pf rule generation)
-# ---------------------------------------------------------------------------
-
-
-class TestFirewallGenerateRules:
-
-    def test_no_active_subnets_produces_empty_anchor(self):
-        """No active subnets produces a comment-only anchor."""
-        from safeyolo.firewall import generate_rules
-
-        rules = generate_rules()
-        assert "no active VMs" in rules
-        assert "pass" not in rules
-        assert "block" not in rules
-
-    def test_single_subnet_generates_nat_and_filter(self):
-        """Single subnet generates NAT, pass-to-proxy, block-admin, and default-block rules."""
-        from safeyolo.firewall import generate_rules
-
-        with patch("safeyolo.firewall._detect_outbound_interface", return_value="en0"):
-            rules = generate_rules(
-                proxy_port=8080,
-                admin_port=9090,
-                active_subnets=["192.168.65.0/24"],
-            )
-
-        assert "nat on en0 from 192.168.65.0/24" in rules
-        assert "pass in quick on feth proto tcp from 192.168.65.0/24 to 192.168.65.1 port 8080" in rules
-        assert "block in quick on feth proto tcp from 192.168.65.0/24 to any port 9090" in rules
-        assert "block in on feth from 192.168.65.0/24 to any" in rules
-
-    def test_admin_port_is_blocked(self):
-        """Admin port is explicitly blocked for VM subnets (fail-closed security)."""
-        from safeyolo.firewall import generate_rules
-
-        with patch("safeyolo.firewall._detect_outbound_interface", return_value="en0"):
-            rules = generate_rules(
-                proxy_port=8080,
-                admin_port=9090,
-                active_subnets=["192.168.65.0/24"],
-            )
-
-        assert "block in quick on feth proto tcp from 192.168.65.0/24 to any port 9090" in rules
-
-
-class TestFirewallSubnetAllocation:
-
-    def test_first_agent_gets_subnet_65(self):
-        """First agent (index 0) gets 192.168.65.0/24."""
-        from safeyolo.firewall import allocate_subnet
-
-        alloc = allocate_subnet(0)
-        assert alloc["host_ip"] == "192.168.65.1"
-        assert alloc["guest_ip"] == "192.168.65.2"
-        assert alloc["subnet"] == "192.168.65.0/24"
-        assert alloc["feth_vm"] == "feth0"
-        assert alloc["feth_host"] == "feth1"
-
-    def test_second_agent_gets_subnet_66(self):
-        """Second agent (index 1) gets 192.168.66.0/24."""
-        from safeyolo.firewall import allocate_subnet
-
-        alloc = allocate_subnet(1)
-        assert alloc["host_ip"] == "192.168.66.1"
-        assert alloc["guest_ip"] == "192.168.66.2"
-        assert alloc["subnet"] == "192.168.66.0/24"
-        assert alloc["feth_vm"] == "feth2"
-        assert alloc["feth_host"] == "feth3"
-
-    def test_feth_indices_are_even_for_vm_odd_for_host(self):
-        """feth_vm is always even index, feth_host is always odd index."""
-        from safeyolo.firewall import allocate_subnet
-
-        for idx in range(5):
-            alloc = allocate_subnet(idx)
-            vm_idx = int(alloc["feth_vm"].replace("feth", ""))
-            host_idx = int(alloc["feth_host"].replace("feth", ""))
-            assert vm_idx % 2 == 0
-            assert host_idx % 2 == 1
-            assert host_idx == vm_idx + 1
-
-
-# ---------------------------------------------------------------------------
 # vm.py: guest image checks
 # ---------------------------------------------------------------------------
 
@@ -1296,8 +1185,9 @@ class TestIsVmRunning:
 
     def test_live_pid_returns_true(self, config_dir):
         """Returns True when PID file points to a live process."""
-        from safeyolo.vm import is_vm_running
         import os
+
+        from safeyolo.vm import is_vm_running
 
         agent_dir = config_dir / "agents" / "test"
         agent_dir.mkdir()
@@ -1316,7 +1206,7 @@ class TestCreateAgentRootfs:
 
     def test_base_rootfs_missing_raises_vmerror(self, config_dir):
         """Raises VMError when base rootfs doesn't exist."""
-        from safeyolo.vm import create_agent_rootfs, VMError
+        from safeyolo.vm import VMError, create_agent_rootfs
 
         with pytest.raises(VMError, match="Base rootfs not found"):
             create_agent_rootfs("test")
@@ -1379,8 +1269,9 @@ class TestIsProxyRunning:
 
     def test_live_pid_returns_true(self, config_dir):
         """Live PID returns True."""
-        from safeyolo.proxy import is_proxy_running
         import os
+
+        from safeyolo.proxy import is_proxy_running
 
         pid_file = config_dir / "data" / "proxy.pid"
         pid_file.write_text(str(os.getpid()))
@@ -1398,6 +1289,7 @@ class TestAgentMap:
     def test_add_agent_to_map(self, config_dir):
         """Adding an agent writes IP and timestamp to map file."""
         import json
+
         from safeyolo.vm import _update_agent_map
 
         _update_agent_map("test", ip="192.168.65.2")
@@ -1411,6 +1303,7 @@ class TestAgentMap:
     def test_remove_agent_from_map(self, config_dir):
         """Removing an agent removes it from the map."""
         import json
+
         from safeyolo.vm import _update_agent_map
 
         _update_agent_map("test", ip="192.168.65.2")
@@ -1423,6 +1316,7 @@ class TestAgentMap:
     def test_corrupted_map_file_is_replaced(self, config_dir):
         """Corrupted JSON map file is replaced with empty map."""
         import json
+
         from safeyolo.vm import _update_agent_map
 
         map_path = config_dir / "data" / "agent_map.json"
@@ -1463,6 +1357,7 @@ class TestParseMount:
     def test_host_path_not_found_exits(self, tmp_path):
         """Non-existent host path raises typer.Exit."""
         from click.exceptions import Exit
+
         from safeyolo.commands.agent import _parse_mount
 
         with pytest.raises(Exit):
@@ -1471,6 +1366,7 @@ class TestParseMount:
     def test_container_path_must_be_absolute(self, tmp_path):
         """Container path must start with /."""
         from click.exceptions import Exit
+
         from safeyolo.commands.agent import _parse_mount
 
         host_dir = tmp_path / "data"
@@ -1503,6 +1399,7 @@ class TestParsePort:
     def test_non_localhost_bind_rejected(self):
         """Non-localhost bind address is rejected."""
         from click.exceptions import Exit
+
         from safeyolo.commands.agent import _parse_port
 
         with pytest.raises(Exit):
@@ -1511,6 +1408,7 @@ class TestParsePort:
     def test_reserved_container_port_rejected(self):
         """Container ports 8080 and 9090 (used by SafeYolo) are rejected."""
         from click.exceptions import Exit
+
         from safeyolo.commands.agent import _parse_port
 
         with pytest.raises(Exit):
@@ -1521,6 +1419,7 @@ class TestParsePort:
     def test_invalid_port_number_rejected(self):
         """Non-integer or out-of-range ports are rejected."""
         from click.exceptions import Exit
+
         from safeyolo.commands.agent import _parse_port
 
         with pytest.raises(Exit):

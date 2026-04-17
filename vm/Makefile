@@ -2,24 +2,22 @@
 
 BUILD_DIR = .build/release
 BINARY = $(BUILD_DIR)/safeyolo-vm
-FETH_BRIDGE = $(BUILD_DIR)/feth-bridge
 INSTALL_DIR ?= $(HOME)/.safeyolo/bin
 GUEST_DIR = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../guest
 
 build:
 	swift build -c release
 	codesign --entitlements safeyolo-vm.entitlements --force -s - $(BINARY)
-	cc -O2 -o $(FETH_BRIDGE) feth-bridge.c
 
 debug:
 	swift build
 	codesign --entitlements safeyolo-vm.entitlements --force -s - .build/debug/safeyolo-vm
-	cc -o .build/debug/feth-bridge feth-bridge.c
 
 LIMA_VM = safeyolo-builder
 UNAME := $(shell uname)
 
-# Cross-compile vsock-term for ARM64 Linux (runs inside guest VM).
+# Cross-compile vsock-term for ARM64 Linux (runs inside guest VM as the
+# interactive PTY daemon for non-detached agent sessions).
 #
 # On Linux: native cross-compile via gcc-aarch64-linux-gnu.
 # On macOS: run the cross-compile inside the same Lima VM used for guest
@@ -52,9 +50,8 @@ endif
 install: build guest-tools
 	mkdir -p $(INSTALL_DIR)
 	cp $(BINARY) $(INSTALL_DIR)/safeyolo-vm
-	cp $(FETH_BRIDGE) $(INSTALL_DIR)/feth-bridge
 	cp $(BUILD_DIR)/vsock-term $(INSTALL_DIR)/vsock-term
 
 clean:
 	swift package clean
-	rm -f $(FETH_BRIDGE) $(BUILD_DIR)/vsock-term .build/debug/feth-bridge
+	rm -f $(BUILD_DIR)/vsock-term

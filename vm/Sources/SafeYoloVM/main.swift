@@ -13,9 +13,6 @@ struct RunConfig {
     var cmdline: String = "console=hvc0 root=/dev/vda rw quiet"
     var shares: [(hostPath: String, tag: String, readOnly: Bool)] = []
     var console: Bool = true
-    var feth: String = ""            // feth interface name (e.g., "feth0")
-    var fethBridgePath: String = ""  // path to feth-bridge binary
-    var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
     var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
     var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
     var shellSocketPath: String = "" // host UDS the shell bridge listens on; connects to guest vsock:2220
@@ -37,11 +34,9 @@ func printUsage() {
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
       --share HOST:TAG:MODE  VirtioFS share (MODE = ro or rw, repeatable)
-      --feth IFACE        feth interface for network isolation (legacy)
-      --feth-bridge PATH  Path to feth-bridge binary (legacy)
       --proxy-socket PATH Host UDS the in-VM proxy forwarder reaches via vsock.
-                          Enables vsock→UDS relay; when absent, the legacy
-                          feth+pf network path is used instead.
+                          Enables vsock→UDS relay; bridges each flow to
+                          mitmproxy with agent-attributed upstream source.
       --shell-socket PATH Host UDS the shell bridge listens on; forwards
                           each connection to guest vsock:2220 (sshd-via-socat
                           in the guest). Used by `safeyolo agent shell` when
@@ -63,7 +58,8 @@ func printUsage() {
         --rootfs ~/.safeyolo/agents/test/rootfs.ext4 \\
         --cpus 4 --memory 4096 \\
         --share /Users/me/code:workspace:rw \\
-        --feth feth0
+        --proxy-socket ~/.safeyolo/data/sockets/test.sock \\
+        --shell-socket ~/.safeyolo/data/shell-sockets/test.sock
     """
     fputs(usage, stderr)
 }
@@ -114,12 +110,6 @@ func parseArguments() -> RunConfig? {
                 return nil
             }
             config.shares.append((hostPath: parts[0], tag: parts[1], readOnly: parts[2] == "ro"))
-        case "--feth":
-            i += 1; guard i < args.count else { fputs("Error: --feth requires interface name\n", stderr); return nil }
-            config.feth = args[i]
-        case "--feth-bridge":
-            i += 1; guard i < args.count else { fputs("Error: --feth-bridge requires path\n", stderr); return nil }
-            config.fethBridgePath = args[i]
         case "--proxy-socket":
             i += 1; guard i < args.count else { fputs("Error: --proxy-socket requires a path\n", stderr); return nil }
             config.proxySocketPath = args[i]
@@ -196,44 +186,12 @@ atexit {
 }
 
 do {
-    if !config.feth.isEmpty {
-        // Network isolation via feth pair.
-        // Create socketpair: VM gets one end, feth-bridge gets the other.
-        // Use posix_spawn_file_actions to dup the host fd into fd 3 of the
-        // child process, avoiding the sudo fd-closing problem.
-        let (vmFD, hostFD) = try VMConfiguration.createNetworkSocketPair()
-        config.netSocketFD = vmFD
-
-        let bridgePath = config.fethBridgePath.isEmpty
-            ? (ProcessInfo.processInfo.arguments[0] as NSString)
-                .deletingLastPathComponent + "/feth-bridge"
-            : config.fethBridgePath
-
-        // Ensure the host fd is NOT close-on-exec so the child inherits it
-        _ = fcntl(hostFD, F_SETFD, 0)
-
-        // Launch feth-bridge directly (no sudo — BPF is group-accessible
-        // via access_bpf on macOS with Wireshark/OrbStack installed)
-        let argv: [String] = [bridgePath, String(hostFD), config.feth]
-        let cArgs = argv.map { strdup($0) } + [nil]
-        defer { cArgs.forEach { if let p = $0 { free(p) } } }
-
-        var pid: pid_t = 0
-        let rc = posix_spawn(&pid, bridgePath, nil, nil, cArgs, environ)
-        guard rc == 0 else {
-            throw VMConfigurationError.invalidConfiguration("posix_spawn feth-bridge: \(String(cString: strerror(rc)))")
-        }
-        close(hostFD)  // Parent no longer needs it
-    }
-
-    // Determine the machine identifier AND the virtio-net MAC address
-    // BEFORE building the VM config. Both default to random-per-process,
-    // so without pinning them VZ rejects any cross-process restore with
-    // EINVAL. On restore we read the sidecar to recover both values; on
-    // cold boot we mint fresh ones and persist them via the save-time
-    // sidecar.
+    // Determine the machine identifier BEFORE building the VM config.
+    // It defaults to random-per-process, so without pinning it VZ
+    // rejects any cross-process restore with EINVAL. On restore we
+    // read the sidecar to recover it; on cold boot we mint a fresh
+    // one and persist it via the save-time sidecar.
     let machineIdentifier: VZGenericMachineIdentifier
-    let macAddress: VZMACAddress
     if !config.restoreFrom.isEmpty {
         let snapURL = URL(fileURLWithPath: NSString(string: config.restoreFrom).expandingTildeInPath)
         let sidecarURL = VMSnapshot.sidecarURL(for: snapURL)
@@ -256,24 +214,13 @@ do {
             ))
         }
         machineIdentifier = decoded
-
-        guard let mac = VZMACAddress(string: savedFingerprint.networkMAC) else {
-            throw VMSnapshot.Error.sidecarParseFailed(NSError(
-                domain: "VMSnapshot",
-                code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "sidecar networkMAC '\(savedFingerprint.networkMAC)' is not a valid MAC address"]
-            ))
-        }
-        macAddress = mac
     } else {
         machineIdentifier = VZGenericMachineIdentifier()
-        macAddress = VZMACAddress.randomLocallyAdministered()
     }
 
     let vmConfig = try VMConfiguration.build(
         from: config,
-        machineIdentifier: machineIdentifier,
-        macAddress: macAddress
+        machineIdentifier: machineIdentifier
     )
     try vmConfig.validate()
 
@@ -290,8 +237,7 @@ do {
         kernelSHA256: try VMSnapshot.sha256(ofFileAt: config.kernelPath),
         initrdSHA256: try VMSnapshot.sha256(ofFileAt: config.initrdPath),
         vmHelperVersion: helperVersion,
-        machineIdentifier: machineIdentifier.dataRepresentation.base64EncodedString(),
-        networkMAC: macAddress.string
+        machineIdentifier: machineIdentifier.dataRepresentation.base64EncodedString()
     )
 
     if !config.snapshotOnSignal.isEmpty {
@@ -320,9 +266,9 @@ do {
     }
 
     // Start the vsock proxy relay if a host UDS path was provided.
-    // Without --proxy-socket the VM falls back on the legacy feth+pf
-    // network path; once all callers pass a socket this branch becomes
-    // unconditional and the feth path can be removed.
+    // This is the primary egress path — each guest-initiated flow
+    // lands on the host-side UDS and is forwarded to mitmproxy with
+    // the agent-attributed upstream source IP.
     var proxyRelay: VSockProxyRelay? = nil
     if !config.proxySocketPath.isEmpty {
         proxyRelay = VSockProxyRelay(

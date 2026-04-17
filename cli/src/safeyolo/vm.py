@@ -145,8 +145,8 @@ def prepare_config_share(
     instructions_content: str = "",
     instructions_path: str = "",
     auto_args: str = "",
-    gateway_ip: str = "192.168.65.1",
-    guest_ip: str = "192.168.65.2",
+    gateway_ip: str = "127.0.0.1",
+    guest_ip: str = "127.0.0.1",
     pre_write_per_run_go: bool = True,
     debug_mode: bool = False,
 ) -> Path:
@@ -215,12 +215,10 @@ def prepare_config_share(
         shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
         (share_dir / "vsock-term").chmod(0o755)
 
-    # Proxy environment variables. Caller decides proxy_port per platform:
-    #   - Linux: 8080, the fixed port where guest-proxy-forwarder listens
-    #     inside the sandbox. The host bridge decouples this from whatever
-    #     port mitmproxy is on, so the guest-side value is a constant.
-    #   - macOS: the host's actual mitmproxy port. Traffic goes directly
-    #     through feth to the gateway — no in-guest relay involved.
+    # Proxy environment variables. proxy_port is 8080 — the fixed port
+    # where guest-proxy-forwarder listens inside the sandbox. The host
+    # bridge (UDS on Linux, vsock on macOS) decouples it from whatever
+    # port mitmproxy is on. gateway_ip is the guest-side loopback.
     proxy_url = f"http://{gateway_ip}:{proxy_port}"
     proxy_env = (
         f'export HTTP_PROXY="{proxy_url}"\n'
@@ -352,7 +350,6 @@ def start_vm(
     cpus: int = 4,
     memory_mb: int = 4096,
     extra_shares: list[tuple[str, str, bool]] | None = None,
-    feth_vm: str = "",
     background: bool = False,
     snapshot_capture_path: Path | None = None,
     restore_from_path: Path | None = None,
@@ -443,16 +440,8 @@ def start_vm(
     if restore_from_path is not None:
         cmd.extend(["--restore-from", str(restore_from_path)])
 
-    # feth-based networking (legacy; still required for the pf + feth
-    # path until Phase 2b removes it).
-    if feth_vm:
-        feth_bridge = get_config_dir() / "bin" / "feth-bridge"
-        cmd.extend(["--feth", feth_vm])
-        if feth_bridge.exists():
-            cmd.extend(["--feth-bridge", str(feth_bridge)])
-
-    # vsock→UDS relay (Phase 2). Enables the cross-platform bridge to
-    # stamp identity on upstream TCP, matching the Linux data path.
+    # vsock→UDS relay. The cross-platform bridge stamps agent identity
+    # on upstream TCP, matching the Linux data path.
     if proxy_socket_path:
         cmd.extend(["--proxy-socket", proxy_socket_path])
 
@@ -493,10 +482,9 @@ def start_vm(
 
 
 def stop_vm(name: str) -> None:
-    """Stop a running VM, its feth-bridge, and clean up network state."""
+    """Stop a running VM and clean up agent-map state."""
     pid_path = get_agent_pid_path(name)
     if not pid_path.exists():
-        _cleanup_feth_bridge(name)
         _update_agent_map(name, remove=True)
         return
 
@@ -506,7 +494,6 @@ def stop_vm(name: str) -> None:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pid_path.unlink(missing_ok=True)
-        _cleanup_feth_bridge(name)
         _update_agent_map(name, remove=True)
         return
 
@@ -525,70 +512,7 @@ def stop_vm(name: str) -> None:
             pass
 
     pid_path.unlink(missing_ok=True)
-    _cleanup_feth_bridge(name)
     _update_agent_map(name, remove=True)
-
-
-def _cleanup_feth_bridge(name: str) -> None:
-    """Kill any stale feth-bridge processes and tear down feth interfaces."""
-    # Kill feth-bridge processes associated with this agent's feth interface
-    agents_dir = get_agents_dir()
-    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
-    agent_index = existing.index(name) if name in existing else -1
-
-    # Kill any feth-bridge process on this agent's feth interface
-    if agent_index >= 0:
-        from .firewall import allocate_subnet
-        feth_vm = allocate_subnet(agent_index)["feth_vm"]
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", f"feth-bridge.*{feth_vm}"],
-                capture_output=True, text=True,
-            )
-            for pid_str in result.stdout.strip().splitlines():
-                try:
-                    os.kill(int(pid_str), signal.SIGTERM)
-                except (ProcessLookupError, ValueError):
-                    # Process exited between pgrep and kill, or pgrep emitted
-                    # a non-integer line — skip it and move on.
-                    pass
-        except subprocess.SubprocessError:
-            # pgrep missing or errored — nothing to clean up from our side.
-            pass
-
-        # Tear down feth interfaces
-        try:
-            from .firewall import teardown_feth
-            teardown_feth(agent_index)
-        except Exception:
-            # Best-effort: feth interfaces may already be gone, or ifconfig
-            # may refuse. Not worth aborting the rest of cleanup.
-            pass
-
-    # Also kill any orphaned feth-bridge processes
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "feth-bridge"],
-            capture_output=True, text=True,
-        )
-        for pid_str in result.stdout.strip().splitlines():
-            try:
-                pid = int(pid_str)
-                # Check if the parent safeyolo-vm is still alive
-                ppid_result = subprocess.run(
-                    ["ps", "-o", "ppid=", "-p", str(pid)],
-                    capture_output=True, text=True,
-                )
-                ppid = int(ppid_result.stdout.strip()) if ppid_result.stdout.strip() else 0
-                if ppid <= 1:  # Orphaned (parent is init/launchd)
-                    os.kill(pid, signal.SIGTERM)
-                    log.info("Killed orphaned feth-bridge (pid=%d)", pid)
-            except (ProcessLookupError, ValueError):
-                # Raced with process exit, or ps emitted a non-integer — skip.
-                pass
-    except subprocess.SubprocessError:
-        # pgrep missing or errored — no orphan cleanup this pass.
-        pass
 
 
 def is_vm_running(name: str) -> bool:
@@ -621,85 +545,6 @@ def is_vm_running(name: str) -> bool:
         pass
 
     return True
-
-
-def get_vm_ip(name: str, timeout: int = 30) -> str | None:
-    """Get the VM's IP address by polling the config share.
-
-    The guest init writes its IP to /safeyolo/vm-ip (which is the
-    config share VirtioFS mount).
-    """
-    ip_file = get_agent_config_share_dir(name) / "vm-ip"
-
-    for _ in range(timeout * 2):  # Check every 0.5s
-        if ip_file.exists():
-            ip = ip_file.read_text().strip()
-            if ip:
-                return ip
-        time.sleep(0.5)
-
-    return None
-
-
-def wait_for_ssh(name: str, timeout: int = 30) -> bool:
-    """Wait for SSH to become available on the VM."""
-    ip = get_vm_ip(name, timeout=timeout)
-    if not ip:
-        return False
-
-    key_path = get_ssh_key_path()
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        result = subprocess.run(
-            [
-                "ssh",
-                "-i", str(key_path),
-                "-p", "22",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=2",
-                "-o", "BatchMode=yes",
-                f"agent@{ip}",
-                "true",
-            ],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            return True
-        time.sleep(1)
-
-    return False
-
-
-def ssh_into_vm(ip: str, command: str = "", user: str = "agent") -> int:
-    """SSH into a VM. Returns the exit code."""
-    key_path = get_ssh_key_path()
-    cmd = [
-        "ssh",
-        "-i", str(key_path),
-        "-p", "22",  # Explicit port to override ~/.ssh/config
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-t", "-t",  # Force PTY allocation
-        f"{user}@{ip}",
-    ]
-    if command:
-        cmd.append(command)
-    result = subprocess.run(cmd)
-    return result.returncode
-
-
-def ssh_exec(name: str, command: str, user: str = "agent", timeout: int = 60) -> int:
-    """Execute a command in a VM via SSH. Waits for SSH readiness first.
-
-    Returns the command's exit code.
-    """
-    if not wait_for_ssh(name, timeout=timeout):
-        raise VMError(f"SSH not available on VM '{name}' after {timeout}s")
-    ip = get_vm_ip(name)
-    return ssh_into_vm(ip, command=command, user=user)
 
 
 # ---------------------------------------------------------------------------
@@ -743,14 +588,6 @@ def _update_agent_map(
         agent_map[name] = entry
 
     map_path.write_text(json.dumps(agent_map, indent=2) + "\n")
-
-
-def register_vm_ip(name: str) -> str | None:
-    """Wait for VM IP and register it in the agent map."""
-    ip = get_vm_ip(name)
-    if ip:
-        _update_agent_map(name, ip=ip)
-    return ip
 
 
 # ---------------------------------------------------------------------------

@@ -1,20 +1,14 @@
 """Tests for the macOS sudoers template — privilege tightening invariants.
 
-These tests encode the security contract of safeyolo.sudoers:
-
-  - Runtime cannot append to /etc/pf.conf (no `tee -a /etc/pf.conf`).
-  - Runtime cannot read /etc/pf.conf via sudo (no `cat /etc/pf.conf`).
-  - No wildcard pattern grants arbitrary anchor names like com.safeyolo*
-    (only the two fixed names com.safeyolo and com.safeyolo-test).
-  - No wildcard pattern grants arbitrary anchor file writes under
-    /etc/pf.anchors (only the two fixed files).
-  - The feth and sysctl grants that runtime does need are preserved.
+The macOS template now only needs to grant one thing: aliasing synthetic
+127.0.0.X addresses onto lo0 so the host-side proxy_bridge can bind the
+upstream TCP source for agent attribution. No pf, no feth, no sysctl —
+those went away with the vsock arch.
 """
 
 from pathlib import Path
 
 import pytest
-
 
 SUDOERS_PATH = (
     Path(__file__).parent.parent
@@ -41,113 +35,55 @@ def sudoers_rules(sudoers_text: str) -> str:
     return "\n".join(lines)
 
 
-class TestDoesNotGrantPfConfWrites:
-    """The whole point of this change: runtime cannot touch /etc/pf.conf."""
+class TestLoopbackAliasGrants:
+    """The only grant: lo0 alias/-alias for 127.0.0.* attribution IPs."""
 
-    def test_no_tee_append_to_pf_conf(self, sudoers_rules):
-        assert "tee -a /etc/pf.conf" not in sudoers_rules
-        # Also guard against paths with whitespace variants.
-        assert "tee  -a /etc/pf.conf" not in sudoers_rules
+    def test_grants_lo0_alias(self, sudoers_rules):
+        assert "/sbin/ifconfig lo0 alias 127.0.0.*" in sudoers_rules
 
-    def test_no_tee_write_to_pf_conf(self, sudoers_rules):
-        # No tee shape against pf.conf (that's the mutation primitive we forbid).
-        # `pfctl -f /etc/pf.conf` is allowed — it's a read + re-parse, not a write.
-        assert "tee /etc/pf.conf" not in sudoers_rules
-        assert "tee -a /etc/pf.conf" not in sudoers_rules
-        # Any other reference to pf.conf must be a pfctl read (-f for reload-from-file).
+    def test_grants_lo0_unalias(self, sudoers_rules):
+        assert "/sbin/ifconfig lo0 -alias 127.0.0.*" in sudoers_rules
+
+    def test_scoped_to_loopback(self, sudoers_rules):
+        """Every ifconfig rule must target lo0 — never a real interface."""
         for line in sudoers_rules.splitlines():
-            if "/etc/pf.conf" in line:
-                assert "/sbin/pfctl -f /etc/pf.conf" in line, (
-                    f"Unexpected pf.conf reference in sudoers line: {line!r}"
+            if "ifconfig" in line:
+                assert "lo0" in line, f"ifconfig rule not scoped to lo0: {line}"
+
+    def test_scoped_to_127_addresses(self, sudoers_rules):
+        """Every ifconfig rule must pin the 127.0.0.* prefix — no wildcards
+        that would allow aliasing arbitrary IPs onto lo0."""
+        for line in sudoers_rules.splitlines():
+            if "ifconfig" in line:
+                assert "127.0.0.*" in line, (
+                    f"ifconfig rule not scoped to 127.0.0.*: {line}"
                 )
 
-    def test_no_cat_pf_conf(self, sudoers_rules):
-        assert "cat /etc/pf.conf" not in sudoers_rules
+
+class TestLegacyGrantsRemoved:
+    """Everything from the feth+pf era must be gone."""
+
+    def test_no_pfctl(self, sudoers_text):
+        assert "pfctl" not in sudoers_text
+
+    def test_no_feth_interface(self, sudoers_text):
+        assert "feth" not in sudoers_text
+
+    def test_no_pf_conf_reference(self, sudoers_text):
+        assert "pf.conf" not in sudoers_text
+
+    def test_no_pf_anchors_reference(self, sudoers_text):
+        assert "pf.anchors" not in sudoers_text
+
+    def test_no_sysctl_ip_forwarding(self, sudoers_text):
+        assert "net.inet.ip.forwarding" not in sudoers_text
+
+    def test_no_tee(self, sudoers_text):
+        assert "tee " not in sudoers_text
 
 
-class TestFixedAnchorNames:
-    """Anchor grants must enumerate fixed names, not use wildcards."""
+class TestTemplatePlaceholders:
+    """The template still uses %safeyolo_user as the placeholder."""
 
-    def test_no_wildcard_anchor_pattern_in_pfctl(self, sudoers_rules):
-        # com.safeyolo* would allow com.safeyolo-anything — disallowed.
-        assert "com.safeyolo*" not in sudoers_rules
-
-    def test_no_wildcard_anchor_file_pattern(self, sudoers_rules):
-        # /etc/pf.anchors/com.safeyolo* would allow arbitrary file writes.
-        assert "/etc/pf.anchors/com.safeyolo*" not in sudoers_rules
-
-    def test_grants_pfctl_for_fixed_prod_anchor(self, sudoers_rules):
-        assert "/sbin/pfctl -a com.safeyolo -f *" in sudoers_rules
-        assert "/sbin/pfctl -a com.safeyolo -F all" in sudoers_rules
-        assert "/sbin/pfctl -a com.safeyolo -s *" in sudoers_rules
-
-    def test_grants_pfctl_for_fixed_test_anchor(self, sudoers_rules):
-        # Blackbox test harness uses com.safeyolo-test; also a fixed name.
-        assert "/sbin/pfctl -a com.safeyolo-test -f *" in sudoers_rules
-        assert "/sbin/pfctl -a com.safeyolo-test -F all" in sudoers_rules
-
-    def test_grants_tee_for_fixed_anchor_files_only(self, sudoers_rules):
-        assert "/usr/bin/tee /etc/pf.anchors/com.safeyolo" in sudoers_rules
-        assert "/usr/bin/tee /etc/pf.anchors/com.safeyolo-test" in sudoers_rules
-
-    def test_no_unexpected_anchor_paths(self, sudoers_rules):
-        """Only com.safeyolo and com.safeyolo-test should appear under /etc/pf.anchors."""
-        for line in sudoers_rules.splitlines():
-            if "/etc/pf.anchors/" not in line:
-                continue
-            # Strip quoting artifacts; look at the path segment.
-            # Allowed tokens: com.safeyolo, com.safeyolo-test (no other variants).
-            assert "/etc/pf.anchors/com.safeyolo " in (line + " ") or \
-                   "/etc/pf.anchors/com.safeyolo," in line or \
-                   "/etc/pf.anchors/com.safeyolo-test" in line, (
-                       f"Unexpected pf.anchors reference: {line}"
-                   )
-
-
-class TestRuntimeEssentialsPreserved:
-    """The grants the runtime *does* still need must remain."""
-
-    def test_pfctl_enable(self, sudoers_rules):
-        assert "/sbin/pfctl -e" in sudoers_rules
-
-    def test_pfctl_status(self, sudoers_rules):
-        assert "/sbin/pfctl -s info" in sudoers_rules
-
-    def test_pfctl_list_main_rules(self, sudoers_rules):
-        """`safeyolo doctor` queries `pfctl -s rules` to verify the anchor
-        hook is in the running main ruleset — distinct from anchor-scoped
-        `pfctl -a com.safeyolo -s rules` which only shows rules inside
-        the anchor namespace. Listing is read-only, safe to grant."""
-        assert "/sbin/pfctl -s rules" in sudoers_rules
-
-    def test_pfctl_reload_pf_conf(self, sudoers_rules):
-        """`safeyolo setup pf` and firewall.py's self-heal run `pfctl -f
-        /etc/pf.conf` to activate the anchor hook. Path is the exact
-        system pf.conf — no wildcard, no writing, just re-parse."""
-        assert "/sbin/pfctl -f /etc/pf.conf" in sudoers_rules
-
-    def test_ifconfig_feth(self, sudoers_rules):
-        assert "/sbin/ifconfig feth*" in sudoers_rules
-
-    def test_ip_forwarding(self, sudoers_rules):
-        assert "/usr/sbin/sysctl -w net.inet.ip.forwarding=1" in sudoers_rules
-
-
-class TestTemplateDocumentation:
-    """Comments in the template must not advertise removed behaviors."""
-
-    def test_no_mention_of_runtime_pf_conf_mutation(self, sudoers_text):
-        # Phrases that described the old, removed behavior.
-        forbidden = [
-            "tee -a /etc/pf.conf",
-            "Read pf config",
-            "Append anchor to pf config",
-            "com.safeyolo* -f",
-            "com.safeyolo* -F",
-            "com.safeyolo* -s",
-            "tee /etc/pf.anchors/*",
-        ]
-        for phrase in forbidden:
-            assert phrase not in sudoers_text, (
-                f"Stale documentation references removed behavior: {phrase!r}"
-            )
+    def test_placeholder_present(self, sudoers_text):
+        assert "%safeyolo_user" in sudoers_text

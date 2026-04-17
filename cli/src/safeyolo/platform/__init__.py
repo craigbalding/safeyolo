@@ -1,8 +1,11 @@
 """Platform abstraction for agent sandbox lifecycle.
 
 Each platform implements the same interface:
-  - macOS: Virtualization.framework microVM + feth + pf
-  - Linux: gVisor (runsc) container + veth + iptables
+  - macOS: Virtualization.framework microVM; egress via vsock → host UDS
+           → proxy_bridge (structural isolation, no kernel firewall)
+  - Linux: gVisor (runsc) container in a loopback-only netns; egress via
+           bind-mounted UDS → proxy_bridge; iptables rules block any
+           stray outbound traffic from the netns
 
 The platform is auto-detected at runtime. All platform-specific code
 lives behind this interface — agent.py, lifecycle.py, and the rest of
@@ -17,23 +20,13 @@ from pathlib import Path
 class AgentPlatform(ABC):
     """Platform-specific agent sandbox operations."""
 
-    @property
-    @abstractmethod
-    def firewall_name(self) -> str:
-        """Short name of the host firewall used for agent egress isolation.
-
-        Surfaced in user-visible status messages (e.g. "pf rules loaded" vs
-        "iptables rules loaded") so the CLI doesn't leak macOS terminology
-        on Linux or vice versa.
-        """
-
     @abstractmethod
     def setup_networking(self, agent_index: int) -> dict:
         """Create network isolation for an agent.
 
-        Returns dict with at minimum: host_ip, guest_ip, subnet.
-        Platform-specific keys (feth_vm, netns, veth_host, etc.) are
-        also included for the platform's own use.
+        Returns dict with at minimum: attribution_ip, host_ip, guest_ip,
+        needs_bridge_socket. Platform-specific keys (netns, veth_host,
+        etc.) are also included for the platform's own use.
         """
 
     @abstractmethod
@@ -102,7 +95,8 @@ class AgentPlatform(ABC):
         """Clean up all networking/interfaces for this instance.
 
         Called by `safeyolo stop --all`. Only cleans up resources
-        belonging to this instance (respects SUBNET_BASE scoping).
+        belonging to this instance (respects SAFEYOLO_SUBNET_BASE
+        scoping on Linux).
         """
 
     @abstractmethod

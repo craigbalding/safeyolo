@@ -486,118 +486,14 @@ class TestDoctorCLI:
         assert "summary" in bundle
 
 
-class TestCheckFirewallDarwin:
-    """macOS: pf enabled + com.safeyolo in running ruleset."""
+class TestCheckEgressStructural:
+    """Both platforms now use structural isolation — the proxy_bridge
+    is the readiness signal. The sandbox has no external interface and
+    no kernel firewall in the critical path."""
 
-    @pytest.fixture(autouse=True)
-    def _darwin(self, monkeypatch):
-        monkeypatch.setattr("platform.system", lambda: "Darwin")
-
-    def test_pass_when_anchor_active(self, monkeypatch):
-        def fake_sudo_n(cmd, timeout=5):
-            if cmd[0:3] == ["pfctl", "-s", "info"]:
-                return _completed(stdout="Status: Enabled\n")
-            if cmd[0:3] == ["pfctl", "-s", "rules"]:
-                return _completed(stdout='anchor "com.safeyolo" all\n')
-            return _completed()
-
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
-        result = _check_firewall()
-        assert result.status == "pass"
-        assert "com.safeyolo" in result.message
-
-    def test_fail_when_anchor_missing_from_running_pf(self, monkeypatch):
-        """The exact regression #155 fixed: pf enabled, anchor loaded
-        into anchor namespace, but not in the main ruleset."""
-        def fake_sudo_n(cmd, timeout=5):
-            if cmd[0:3] == ["pfctl", "-s", "info"]:
-                return _completed(stdout="Status: Enabled\n")
-            if cmd[0:3] == ["pfctl", "-s", "rules"]:
-                return _completed(stdout='anchor "com.apple/*" all\n')
-            return _completed()
-
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
-        result = _check_firewall()
-        assert result.status == "fail"
-        assert "INERT" in result.message
-        assert "safeyolo setup pf" in result.remediation
-
-    def test_fail_when_pf_disabled(self, monkeypatch):
-        def fake_sudo_n(cmd, timeout=5):
-            if cmd[0:3] == ["pfctl", "-s", "info"]:
-                return _completed(stdout="Status: Disabled\n")
-            return _completed()
-
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
-        result = _check_firewall()
-        assert result.status == "fail"
-        assert "pfctl -e" in result.remediation
-
-    def test_warn_when_sudo_needs_password(self, monkeypatch):
-        """Doctor shouldn't prompt — if sudo credentials aren't cached,
-        surface as warn with a clear remediation."""
-        def fake_sudo_n(cmd, timeout=5):
-            return _completed(returncode=1, stderr="sudo: a password is required\n")
-
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
-        result = _check_firewall()
-        assert result.status == "warn"
-        assert "sudo" in result.message.lower()
-        assert "safeyolo setup sudoers" in result.remediation
-
-    def test_warn_when_pfctl_unavailable(self, monkeypatch):
-        """_sudo_n returns None on FileNotFoundError / TimeoutExpired."""
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", lambda cmd, timeout=5: None)
-        result = _check_firewall()
-        assert result.status == "warn"
-
-    def test_warn_when_rules_needs_password_but_info_allowed(self, monkeypatch):
-        """Stock sudoers template (pre-this-PR) grants `pfctl -s info` but
-        not `pfctl -s rules`. The rules call hits password-required even
-        after info succeeded — must warn (not fail) with a remediation
-        that points at the updated template, not at pf itself."""
-        def fake_sudo_n(cmd, timeout=5):
-            if cmd[0:3] == ["pfctl", "-s", "info"]:
-                return _completed(stdout="Status: Enabled\n")
-            if cmd[0:3] == ["pfctl", "-s", "rules"]:
-                return _completed(
-                    returncode=1, stderr="sudo: a password is required\n"
-                )
-            return _completed()
-
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
-        result = _check_firewall()
-        assert result.status == "warn"
-        assert "pfctl -s rules" in result.message
-        assert "safeyolo setup sudoers" in result.remediation
-
-    def test_fail_with_stderr_when_rules_fails_for_other_reason(self, monkeypatch):
-        """Non-password rules failure surfaces the stderr verbatim so
-        the user can see the actual cause instead of guessing."""
-        def fake_sudo_n(cmd, timeout=5):
-            if cmd[0:3] == ["pfctl", "-s", "info"]:
-                return _completed(stdout="Status: Enabled\n")
-            if cmd[0:3] == ["pfctl", "-s", "rules"]:
-                return _completed(returncode=1, stderr="pfctl: quirky kernel error\n")
-            return _completed()
-
-        monkeypatch.setattr("safeyolo.commands.doctor._sudo_n", fake_sudo_n)
-        result = _check_firewall()
-        assert result.status == "fail"
-        assert "quirky kernel error" in result.message
-
-
-class TestCheckFirewallLinux:
-    """Linux (UDS-only arch): the proxy_bridge is the readiness signal.
-
-    The sandbox has no kernel firewall — isolation is structural via
-    per-agent Unix sockets + loopback-only netns. The doctor check is
-    really "is the bridge daemon up and ready to serve agents?".
-    """
-
-    @pytest.fixture(autouse=True)
-    def _linux(self, monkeypatch):
-        monkeypatch.setattr("platform.system", lambda: "Linux")
+    @pytest.fixture(params=["Darwin", "Linux"], autouse=True)
+    def _platform(self, request, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: request.param)
 
     def test_pass_when_bridge_running(self, monkeypatch):
         monkeypatch.setattr(

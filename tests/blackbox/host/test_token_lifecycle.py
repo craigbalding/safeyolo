@@ -31,7 +31,6 @@ class TestAgentTokenLifecycle:
             **os.environ,
             "SAFEYOLO_CONFIG_DIR": os.environ.get("SAFEYOLO_CONFIG_DIR", ""),
             "SAFEYOLO_SUBNET_BASE": os.environ.get("SAFEYOLO_SUBNET_BASE", "75"),
-            "SAFEYOLO_PF_ANCHOR": os.environ.get("SAFEYOLO_PF_ANCHOR", "com.safeyolo-test"),
             "SAFEYOLO_LOGS_DIR": os.environ.get("SAFEYOLO_LOGS_DIR", ""),
         }
         return subprocess.run(

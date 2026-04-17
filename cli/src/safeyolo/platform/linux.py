@@ -21,13 +21,19 @@ import time
 from pathlib import Path
 
 from ..config import get_agents_dir, get_share_dir
-from ..firewall import SUBNET_BASE, allocate_subnet
 from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
 # runsc state directory
 RUNSC_ROOT = "/run/safeyolo"
+
+# Offset for the netns slot number so a second SafeYolo instance (blackbox
+# test harness or per-operator dev run) doesn't collide with production in
+# the kernel's flat netns namespace. Historically this was the third octet
+# of the feth-era /24 subnet; it survives the feth removal because the
+# netns name still has to be unique per instance.
+SUBNET_BASE = int(os.environ.get("SAFEYOLO_SUBNET_BASE", "65"))
 
 
 def _sudo(
@@ -156,8 +162,6 @@ def _netns_name(agent_index: int) -> str:
 class LinuxPlatform(AgentPlatform):
     """Linux agent isolation via gVisor (runsc)."""
 
-    firewall_name = "structural"  # no kernel firewall; UDS-only egress
-
     # --- Networking ---
 
     def setup_networking(self, agent_index: int) -> dict:
@@ -177,7 +181,7 @@ class LinuxPlatform(AgentPlatform):
         binds 127.0.0.1:8080 — gVisor with --network=none has no
         loopback at all and can't satisfy that bind.
         """
-        alloc = allocate_subnet(agent_index)
+        alloc: dict = {}
         netns = _netns_name(agent_index)
 
         _sudo(["ip", "netns", "add", netns], check=False)  # may already exist

@@ -1,7 +1,10 @@
-"""macOS platform: Virtualization.framework microVM + feth + pf.
+"""macOS platform: Virtualization.framework microVM + vsock UDS bridge.
 
-Wraps the existing vm.py and firewall.py code behind the AgentPlatform
-interface. No new functionality — just delegation.
+Guest has no external network interface. Egress goes guest → vsock:1080 →
+safeyolo-vm's VSockProxyRelay → per-agent host UDS → proxy_bridge → mitmproxy.
+Shell access (`safeyolo agent shell`) goes via a second per-agent UDS →
+VSockShellBridge → vsock:2220 → guest-shell-bridge → sshd. No host firewall
+rules — the sandbox has no other path out.
 """
 
 import shutil
@@ -9,16 +12,8 @@ import subprocess
 from pathlib import Path
 
 from ..config import get_agents_dir, get_data_dir, get_ssh_key_path
-from ..firewall import (
-    allocate_subnet,
-    load_rules,
-    setup_feth,
-    teardown_feth,
-    unload_rules,
-)
 from ..vm import (
     create_agent_rootfs,
-    get_agent_config_share_dir,
     get_agent_rootfs_path,
     is_vm_running,
     start_vm,
@@ -37,80 +32,44 @@ def _shell_socket_path(name: str) -> Path:
 class DarwinPlatform(AgentPlatform):
     """macOS agent isolation via Virtualization.framework microVMs."""
 
-    firewall_name = "pf"
-
     def setup_networking(self, agent_index: int) -> dict:
-        import os as _os  # noqa: PLC0415
-        # SAFEYOLO_MACOS_NETWORK selects the macOS data path:
-        #   vsock  — vsock→UDS→bridge→TCP. Cross-platform parity with
-        #            Linux; identity stamped by the host proxy_bridge.
-        #   feth   — legacy veth + pf anchor path. Kept as a fallback
-        #            while Phase 2 is in progress.
-        # Default is the legacy path until Phase 2 deletes it.
-        network_mode = _os.environ.get("SAFEYOLO_MACOS_NETWORK", "feth")
+        # attribution_ip is a synthetic 127.0.0.X that proxy_bridge binds
+        # to as the upstream TCP source so mitmproxy's service_discovery
+        # can map each flow back to the originating agent.
+        attribution_ip = f"127.0.0.{agent_index + 2}"
 
-        if network_mode == "vsock":
-            # Allocate only what the shared code path needs — no feth
-            # interfaces, no subnet. attribution_ip is synthetic 127.0.0.X
-            # exactly like Linux; the host-side bridge binds upstream TCP
-            # to this address before reaching mitmproxy.
-            attribution_ip = f"127.0.0.{agent_index + 2}"
+        # macOS quirk: Linux auto-routes the whole 127.0.0.0/8 loopback
+        # range, but Darwin only owns 127.0.0.1 by default. The bridge's
+        # bind() to 127.0.0.X fails with EADDRNOTAVAIL unless we alias
+        # the address onto lo0 first. Idempotent — re-aliasing is a no-op.
+        subprocess.run(
+            ["sudo", "-n", "ifconfig", "lo0", "alias",
+             f"{attribution_ip}/32"],
+            capture_output=True, check=False,
+        )
 
-            # macOS quirk: Linux auto-routes the whole 127.0.0.0/8
-            # loopback range, but Darwin only owns 127.0.0.1 by default.
-            # The bridge's bind() to 127.0.0.X fails with EADDRNOTAVAIL
-            # unless we explicitly alias the address onto lo0 first.
-            # Idempotent — re-aliasing is a no-op.
-            subprocess.run(
-                ["sudo", "-n", "ifconfig", "lo0", "alias",
-                 f"{attribution_ip}/32"],
-                capture_output=True, check=False,
-            )
-
-            return {
-                "attribution_ip": attribution_ip,
-                "needs_bridge_socket": True,
-                "host_ip": "127.0.0.1",
-                "guest_ip": "127.0.0.1",
-                # Subnet / placeholders kept non-empty so the firewall
-                # rules path (still active for feth callers) doesn't
-                # KeyError until Phase 2b fully removes it.
-                "subnet": f"{attribution_ip}/32",
-            }
-
-        alloc = setup_feth(agent_index)
-        # Legacy macOS path: the per-agent feth IP is what mitmproxy
-        # sees directly, so it doubles as the attribution IP.
-        alloc["attribution_ip"] = alloc["guest_ip"]
-        return alloc
+        return {
+            "attribution_ip": attribution_ip,
+            "needs_bridge_socket": True,
+            "host_ip": "127.0.0.1",
+            "guest_ip": "127.0.0.1",
+        }
 
     def teardown_networking(self, agent_index: int) -> None:
-        import os as _os  # noqa: PLC0415
-        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
-            # Mirror of setup_networking — drop the lo0 alias we added.
-            attribution_ip = f"127.0.0.{agent_index + 2}"
-            subprocess.run(
-                ["sudo", "-n", "ifconfig", "lo0", "-alias", attribution_ip],
-                capture_output=True, check=False,
-            )
-            return
-        teardown_feth(agent_index)
+        attribution_ip = f"127.0.0.{agent_index + 2}"
+        subprocess.run(
+            ["sudo", "-n", "ifconfig", "lo0", "-alias", attribution_ip],
+            capture_output=True, check=False,
+        )
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
-        import os as _os  # noqa: PLC0415
-        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
-            # vsock arch: isolation is structural (agent has no feth,
-            # bridge stamps identity). No pf rules needed.
-            return
-        load_rules(proxy_port=proxy_port, admin_port=admin_port,
-                   active_subnets=active_subnets)
+        # Structural isolation: agent has no external interface, host
+        # bridge stamps identity. No pf rules needed.
+        return
 
     def unload_firewall_rules(self) -> None:
-        import os as _os  # noqa: PLC0415
-        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
-            return
-        unload_rules()
+        return
 
     def agent_rootfs_path(self, name: str) -> Path:
         return get_agent_rootfs_path(name)
@@ -131,23 +90,19 @@ class DarwinPlatform(AgentPlatform):
         snapshot_capture_path: Path | None = None,
         restore_from_path: Path | None = None,
     ) -> int:
-        # vsock mode: thread the per-agent bridge socket through to
-        # safeyolo-vm so VSockProxyRelay can connect() to it on each
-        # guest-initiated flow. Also allocate a shell-bridge UDS so
-        # `safeyolo agent shell` can reach the VM's sshd over vsock
-        # (the VM has no network interface in vsock mode).
-        proxy_socket = None
-        shell_socket = None
-        if fw_alloc.get("needs_bridge_socket"):
-            from ..proxy_bridge import socket_path_for as _sock_for  # noqa: PLC0415
-            proxy_socket = str(_sock_for(name))
-            shell_path = _shell_socket_path(name)
-            shell_path.parent.mkdir(parents=True, exist_ok=True)
-            shell_path.parent.chmod(0o700)
-            # Clear any stale socket from a previous run — safeyolo-vm's
-            # own bind() would fail otherwise.
-            shell_path.unlink(missing_ok=True)
-            shell_socket = str(shell_path)
+        # Thread the per-agent bridge socket through to safeyolo-vm so
+        # VSockProxyRelay can connect() to it on each guest-initiated
+        # flow. Also allocate a shell-bridge UDS so `safeyolo agent shell`
+        # can reach the VM's sshd over vsock.
+        from ..proxy_bridge import socket_path_for as _sock_for  # noqa: PLC0415
+        proxy_socket = str(_sock_for(name))
+        shell_path = _shell_socket_path(name)
+        shell_path.parent.mkdir(parents=True, exist_ok=True)
+        shell_path.parent.chmod(0o700)
+        # Clear any stale socket from a previous run — safeyolo-vm's
+        # own bind() would fail otherwise.
+        shell_path.unlink(missing_ok=True)
+        shell_socket = str(shell_path)
 
         proc = start_vm(
             name=name,
@@ -155,7 +110,6 @@ class DarwinPlatform(AgentPlatform):
             cpus=cpus,
             memory_mb=memory_mb,
             extra_shares=extra_shares,
-            feth_vm=fw_alloc.get("feth_vm", ""),
             background=background,
             snapshot_capture_path=snapshot_capture_path,
             restore_from_path=restore_from_path,
@@ -170,14 +124,19 @@ class DarwinPlatform(AgentPlatform):
     def exec_in_sandbox(self, name: str, command: str | None,
                         user: str = "agent",
                         interactive: bool = True) -> int:
-        """Execute via SSH. In vsock mode the VM has no TCP interface,
-        so we ProxyCommand through the per-agent shell-bridge UDS —
+        """Execute via SSH. The VM has no TCP interface, so we
+        ProxyCommand through the per-agent shell-bridge UDS —
         safeyolo-vm accepts on that UDS and forwards to vsock:2220
-        where socat bridges into guest sshd.
+        where guest-shell-bridge pumps into guest sshd.
         """
-        import os as _os  # noqa: PLC0415
         key_path = get_ssh_key_path()
         ssh_user = "root" if user == "root" else "agent"
+        shell_sock = _shell_socket_path(name)
+        if not shell_sock.exists():
+            raise RuntimeError(
+                f"Shell bridge socket {shell_sock} not found — "
+                f"is the VM running?"
+            )
 
         cmd = [
             "ssh",
@@ -185,24 +144,9 @@ class DarwinPlatform(AgentPlatform):
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR",
+            "-o", f"ProxyCommand=nc -U {shell_sock}",
         ]
-
-        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
-            shell_sock = _shell_socket_path(name)
-            if not shell_sock.exists():
-                raise RuntimeError(
-                    f"Shell bridge socket {shell_sock} not found — "
-                    f"is the VM running?"
-                )
-            cmd.extend(["-o", f"ProxyCommand=nc -U {shell_sock}"])
-            target = f"{ssh_user}@sandbox"  # hostname is cosmetic
-        else:
-            ip_file = get_agent_config_share_dir(name) / "vm-ip"
-            if not ip_file.exists():
-                raise RuntimeError(f"Cannot find VM IP for '{name}'")
-            ip = ip_file.read_text().strip()
-            cmd.extend(["-p", "22"])
-            target = f"{ssh_user}@{ip}"
+        target = f"{ssh_user}@sandbox"  # hostname is cosmetic
 
         if interactive and not command:
             cmd.append("-t")
@@ -217,26 +161,20 @@ class DarwinPlatform(AgentPlatform):
         return is_vm_running(name)
 
     def cleanup_all(self, agents_dir: Path) -> None:
-        """Clean up feth interfaces and bridges for this instance."""
+        """Drop any lingering lo0 aliases for agents that belonged to this
+        instance. vsock state and bridge sockets are process-scoped and
+        get cleaned up with the respective daemons — nothing else to do."""
         if not agents_dir.exists():
             return
 
         for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
-            if agent_dir.is_dir():
-                alloc = allocate_subnet(idx)
-                for feth in (alloc["feth_vm"], alloc["feth_host"]):
-                    try:
-                        subprocess.run(["pkill", "-f", f"feth-bridge.*{feth}"],
-                                       capture_output=True)
-                    except Exception:
-                        # pkill missing or no matches — nothing more to do.
-                        pass
-                    try:
-                        subprocess.run(["sudo", "ifconfig", feth, "destroy"],
-                                       capture_output=True)
-                    except Exception:
-                        # Interface may already be gone or sudo unavailable.
-                        pass
+            if not agent_dir.is_dir():
+                continue
+            attribution_ip = f"127.0.0.{idx + 2}"
+            subprocess.run(
+                ["sudo", "-n", "ifconfig", "lo0", "-alias", attribution_ip],
+                capture_output=True, check=False,
+            )
 
     def remove_agent_dir(self, name: str) -> None:
         """Delete the agent's on-disk directory (Darwin: all user-owned)."""

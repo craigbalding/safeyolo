@@ -1,6 +1,6 @@
 # Sandbox Mode
 
-Sandbox Mode runs AI coding agents in isolated Linux microVMs. Traffic either goes through the SafeYolo proxy or is blocked — bypass is impossible.
+Sandbox Mode runs AI coding agents in isolated Linux sandboxes — hardware-backed microVMs on macOS, gVisor containers on Linux. Traffic either goes through the SafeYolo proxy or it doesn't leave at all; there is no other path out.
 
 ## Quick Start
 
@@ -9,25 +9,21 @@ safeyolo start
 safeyolo agent add myproject claude-code ~/projects/myapp
 ```
 
-The agent boots in a microVM with network isolation, CA trust, and proxy configuration handled automatically.
+The agent boots in its sandbox with CA trust and proxy configuration handled automatically.
 
 ## How It Works
 
-Each agent runs in a persistent Linux microVM (Apple Virtualization.framework) with a dedicated feth network pair:
-
-1. **feth pair** creates an isolated network segment per VM
-2. **pf rules** on the feth interface allow only the proxy port
-3. **All other egress is blocked** — the VM cannot reach the internet directly
-4. **HTTP_PROXY/HTTPS_PROXY** route traffic through SafeYolo's mitmproxy
+The sandbox has **no external network interface**. The only egress path is a per-agent Unix socket bound to a host-side bridge, which routes through SafeYolo's mitmproxy:
 
 ```
-Agent VM (192.168.68.2)
+Agent sandbox (loopback-only; no eth0)
     │
-    │  HTTP_PROXY=http://192.168.68.1:8090
-    │
+    │  HTTP_PROXY → in-guest forwarder → AF_UNIX or AF_VSOCK
     ▼
-feth pair (pf: allow :8090, block all else)
+Per-agent bridge socket (one per agent, host-owned)
     │
+    │  bridge binds upstream TCP source to a synthetic 127.0.0.N
+    │  so mitmproxy attributes every request to the right agent
     ▼
 SafeYolo mitmproxy (host process)
     │  addon chain: policy, credential guard, rate limits, audit
@@ -35,7 +31,7 @@ SafeYolo mitmproxy (host process)
 Internet
 ```
 
-If the agent unsets proxy env vars, raw connections are blocked by pf. If the agent sends non-HTTP traffic, it's blocked by pf. The enforcement is at the network level, not the process level.
+If the agent unsets proxy env vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable. The enforcement is **structural**, not policy-based — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
 
 ## Available Templates
 
@@ -57,7 +53,7 @@ From inside the agent:
 # This works (goes through proxy):
 curl https://httpbin.org/ip
 
-# This is blocked (pf drops it):
+# This is blocked (no external network interface):
 curl --noproxy '*' https://ifconfig.co
 # Error: Could not resolve host / Connection refused
 ```
@@ -67,10 +63,10 @@ curl --noproxy '*' https://ifconfig.co
 | Scenario | Result |
 |----------|--------|
 | Code respects HTTP_PROXY | Inspected by SafeYolo |
-| Code unsets proxy vars | Blocked by pf (no route) |
-| Code uses hardcoded IPs | Blocked by pf |
-| Code sends raw TCP/UDP | Blocked by pf |
-| Code tries DNS exfil | Blocked (no DNS allowed from VM) |
+| Code unsets proxy vars | No egress path exists |
+| Code uses hardcoded IPs | No external interface to route through |
+| Code sends raw TCP/UDP | No external interface |
+| Code tries DNS exfil | No resolver reachable |
 
 ## Persistence
 

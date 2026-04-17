@@ -81,125 +81,23 @@ def _check_docker() -> DiagResult:
 
 
 def _check_firewall() -> DiagResult:
-    """Verify host firewall is actually enforcing agent egress.
+    """Verify the structural egress path is ready.
 
-    The unit tests in test_firewall.py mock pfctl/iptables, so they can't
-    tell you whether the on-host state is actually set up correctly. This
-    check queries the real system: `pfctl -s rules` on macOS (anchor must
-    appear in the running ruleset, not just in pf.conf on disk) or
-    `iptables -L SAFEYOLO_<base>` on Linux.
+    On both platforms, agent sandboxes have no external network interface
+    — the only path out is a per-agent UDS that terminates at mitmproxy
+    via the proxy_bridge. There's no host firewall in the critical path,
+    so the readiness signal is "bridge daemon alive + per-agent sockets
+    present when agents are running."
     """
     import platform as _platform
     system = _platform.system()
-    if system == "Darwin":
-        return _check_firewall_darwin()
-    if system == "Linux":
-        return _check_firewall_linux()
-    return DiagResult(
-        name="Firewall enforcement",
-        status="skip",
-        message=f"Unsupported platform: {system}",
-    )
-
-
-def _sudo_n(cmd: list[str], timeout: float = 5) -> subprocess.CompletedProcess | None:
-    """Run `sudo -n <cmd>` non-interactively. Returns None on FileNotFoundError/timeout."""
-    try:
-        return subprocess.run(
-            ["sudo", "-n", *cmd],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-
-
-def _sudo_needs_password(result: subprocess.CompletedProcess) -> bool:
-    stderr = (result.stderr or "").lower()
-    return (
-        "a password is required" in stderr
-        or "a terminal is required" in stderr
-        or "sudo:" in stderr and "password" in stderr
-    )
-
-
-def _check_firewall_darwin() -> DiagResult:
-    """macOS: pf enabled + com.safeyolo anchor loaded in the running ruleset."""
-    from ..firewall import ANCHOR_NAME
-
-    info = _sudo_n(["pfctl", "-s", "info"])
-    if info is None:
+    if system not in ("Darwin", "Linux"):
         return DiagResult(
-            name="Firewall enforcement",
-            status="warn",
-            message="Could not invoke pfctl (missing or timed out)",
-        )
-    if info.returncode != 0:
-        if _sudo_needs_password(info):
-            return DiagResult(
-                name="Firewall enforcement",
-                status="warn",
-                message="pf not queryable without sudo cached credentials",
-                remediation="safeyolo setup sudoers (or `sudo -v` before running doctor)",
-            )
-        return DiagResult(
-            name="Firewall enforcement",
-            status="fail",
-            message=f"pfctl -s info failed: {(info.stderr or '').strip()}",
-        )
-    if "Status: Enabled" not in (info.stdout or ""):
-        return DiagResult(
-            name="Firewall enforcement",
-            status="fail",
-            message="pf is disabled — agent egress not enforced",
-            remediation="sudo pfctl -e",
+            name="Egress enforcement",
+            status="skip",
+            message=f"Unsupported platform: {system}",
         )
 
-    rules = _sudo_n(["pfctl", "-s", "rules"])
-    if rules is None:
-        return DiagResult(
-            name="Firewall enforcement",
-            status="fail",
-            message="pfctl -s rules timed out or binary not found",
-        )
-    if rules.returncode != 0:
-        if _sudo_needs_password(rules):
-            return DiagResult(
-                name="Firewall enforcement",
-                status="warn",
-                message="sudoers doesn't grant `pfctl -s rules` (needed to verify the anchor is in the main ruleset)",
-                remediation="safeyolo setup sudoers (re-run to pick up the updated template)",
-            )
-        return DiagResult(
-            name="Firewall enforcement",
-            status="fail",
-            message=f"pfctl -s rules failed: {(rules.stderr or '').strip()}",
-        )
-    if f'anchor "{ANCHOR_NAME}"' not in (rules.stdout or ""):
-        return DiagResult(
-            name="Firewall enforcement",
-            status="fail",
-            message=(
-                f"Anchor {ANCHOR_NAME!r} not in running pf ruleset — "
-                f"default-deny is INERT, agents can reach host services"
-            ),
-            remediation="safeyolo setup pf",
-        )
-    return DiagResult(
-        name="Firewall enforcement",
-        status="pass",
-        message=f"pf enabled, anchor {ANCHOR_NAME!r} active in main ruleset",
-    )
-
-
-def _check_firewall_linux() -> DiagResult:
-    """Linux: egress control is structural (UDS-only) — no firewall to check.
-
-    The sandbox has no external network interfaces, so there's nothing
-    to filter. Enforcement is inherent in the architecture: the only
-    egress path is the bind-mounted UDS, which terminates at mitmproxy.
-    We verify the bridge daemon is alive as the equivalent readiness
-    signal. Per-agent sockets appear under sockets_dir when agents run.
-    """
     from ..proxy_bridge import is_bridge_running, sockets_dir
 
     socks = sockets_dir()
@@ -207,12 +105,12 @@ def _check_firewall_linux() -> DiagResult:
         active = [p.name for p in socks.glob("*.sock")] if socks.exists() else []
         if active:
             return DiagResult(
-                name="Firewall enforcement",
+                name="Egress enforcement",
                 status="pass",
                 message=f"proxy UDS bridge active ({len(active)} agent socket(s) in {socks})",
             )
         return DiagResult(
-            name="Firewall enforcement",
+            name="Egress enforcement",
             status="pass",
             message=f"proxy UDS bridge active (no agents running, sockets dir {socks})",
         )
@@ -679,7 +577,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Proxy port", _check_proxy_port),
         ("CA certificate", _check_ca_cert),
         ("Baseline policy", _check_baseline),
-        ("Firewall enforcement", _check_firewall),
+        ("Egress enforcement", _check_firewall),
         ("Tokens", _check_tokens),
         ("Service gateway vault", _check_vault),
         ("Crash detection", _check_crash_logs),
