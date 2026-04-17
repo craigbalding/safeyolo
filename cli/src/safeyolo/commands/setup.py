@@ -288,12 +288,13 @@ def _resolve_sudoers_body(template_path: Path) -> str:
         content = content.replace("%SAFEYOLO_BASE_EXT4%", base_ext4)
 
         # Pin the chown target (uid:gid) for base rootfs extraction.
+        # The colon must be escaped as \: in sudoers (: is a parser delimiter).
         import pwd
         try:
             pw = pwd.getpwnam(username)
-            chown_target = f"{pw.pw_uid}:{pw.pw_gid}"
+            chown_target = f"{pw.pw_uid}\\:{pw.pw_gid}"
         except KeyError:
-            chown_target = f"{username}:{username}"
+            chown_target = f"{username}\\:{username}"
         content = content.replace("%SAFEYOLO_CHOWN_TARGET%", chown_target)
 
     return content
