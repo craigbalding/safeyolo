@@ -45,7 +45,8 @@ _flow_counter = itertools.count(1)
 # /safeyolo/agent-name from the config share. Fallback "unknown" keeps
 # the format stable if the file is absent.
 try:
-    _AGENT = open("/safeyolo/agent-name").read().strip() or "unknown"
+    with open("/safeyolo/agent-name") as _f:
+        _AGENT = _f.read().strip() or "unknown"
 except OSError:
     _AGENT = "unknown"
 

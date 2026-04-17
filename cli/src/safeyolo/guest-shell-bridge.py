@@ -33,7 +33,8 @@ log = logging.getLogger("safeyolo.guest-shell-bridge")
 _DEBUG_ENABLED = os.environ.get("SAFEYOLO_VM_DEBUG", "").lower() in ("1", "true")
 _flow_counter = itertools.count(1)
 try:
-    _AGENT = open("/safeyolo/agent-name").read().strip() or "unknown"
+    with open("/safeyolo/agent-name") as _f:
+        _AGENT = _f.read().strip() or "unknown"
 except OSError:
     _AGENT = "unknown"
 
@@ -47,11 +48,14 @@ def _forward(src: socket.socket, dst: socket.socket, counter: list[int]) -> None
             dst.sendall(data)
             counter[0] += len(data)
     except (BrokenPipeError, ConnectionResetError, OSError):
+        # Peer closed or reset — normal end-of-stream for an interactive
+        # session. Nothing to log; the caller's `done` line records bytes.
         pass
     finally:
         try:
             dst.shutdown(socket.SHUT_WR)
         except OSError:
+            # Socket already closed by the other pump direction — benign.
             pass
 
 
