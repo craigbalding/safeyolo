@@ -357,17 +357,33 @@ def status() -> None:
         # rest of the system; mode table simply isn't rendered.
         pass
 
-    # Running agents
-    from ..config import get_agents_dir
+    # Running agents. The displayed IP is the agent's attribution address —
+    # what mitmproxy sees as the request source and what service_discovery
+    # maps back to the name for audit/policy. On Linux's UDS-only arch
+    # every guest has HTTP_PROXY pointing at 127.0.0.1, so the guest-side
+    # vm-ip file is always 127.0.0.1 and no longer identifies the agent.
+    # agent_map.json is the source of truth.
+    import json as _json
+
+    from ..config import get_agent_map_path, get_agents_dir
     from ..platform import get_platform
     plat = get_platform()
     agents_dir = get_agents_dir()
+
+    agent_map = {}
+    map_path = get_agent_map_path()
+    if map_path.exists():
+        try:
+            agent_map = _json.loads(map_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            agent_map = {}
+
     if agents_dir.exists():
         running = []
         for agent_dir in agents_dir.iterdir():
             if agent_dir.is_dir() and plat.is_sandbox_running(agent_dir.name):
-                ip_file = agent_dir / "config-share" / "vm-ip"
-                ip = ip_file.read_text().strip() if ip_file.exists() else "?"
+                entry = agent_map.get(agent_dir.name, {})
+                ip = entry.get("ip", "?")
                 running.append((agent_dir.name, ip))
 
         if running:
@@ -375,7 +391,7 @@ def status() -> None:
             agent_table.add_column("Name", style="bold")
             agent_table.add_column("IP")
 
-            for name, ip in running:
+            for name, ip in sorted(running):
                 agent_table.add_row(name, ip)
 
             console.print()
