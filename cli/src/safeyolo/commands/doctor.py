@@ -197,22 +197,30 @@ def _check_firewall_linux() -> DiagResult:
     The sandbox has no external network interfaces, so there's nothing
     to filter. Enforcement is inherent in the architecture: the only
     egress path is the bind-mounted UDS, which terminates at mitmproxy.
-    We verify the bridge socket exists as the equivalent readiness signal.
+    We verify the bridge daemon is alive as the equivalent readiness
+    signal. Per-agent sockets appear under sockets_dir when agents run.
     """
-    from ..proxy_bridge import is_bridge_running, socket_path
+    from ..proxy_bridge import is_bridge_running, sockets_dir
 
-    sock = socket_path()
-    if is_bridge_running() and sock.exists():
+    socks = sockets_dir()
+    if is_bridge_running():
+        active = [p.name for p in socks.glob("*.sock")] if socks.exists() else []
+        if active:
+            return DiagResult(
+                name="Firewall enforcement",
+                status="pass",
+                message=f"proxy UDS bridge active ({len(active)} agent socket(s) in {socks})",
+            )
         return DiagResult(
             name="Firewall enforcement",
             status="pass",
-            message=f"proxy UDS bridge active ({sock})",
+            message=f"proxy UDS bridge active (no agents running, sockets dir {socks})",
         )
     return DiagResult(
         name="Firewall enforcement",
         status="warn",
         message=(
-            f"proxy UDS bridge not running ({sock} absent). "
+            f"proxy UDS bridge not running ({socks} not being served). "
             f"The bridge starts automatically when the proxy starts."
         ),
         remediation="safeyolo start",

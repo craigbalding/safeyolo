@@ -67,11 +67,15 @@ def _forward(src: socket.socket, dst: socket.socket) -> None:
                 break
             dst.sendall(data)
     except (BrokenPipeError, ConnectionResetError, OSError):
+        # Peer hung up or transport died — normal mid-flow termination.
+        # Let finally half-close so the opposite-direction thread sees EOF.
         pass
     finally:
         try:
             dst.shutdown(socket.SHUT_WR)
         except OSError:
+            # Socket already closed; half-close is a best-effort wake-up
+            # for the reverse pump thread.
             pass
 
 

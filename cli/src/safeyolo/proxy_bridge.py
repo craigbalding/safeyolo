@@ -90,7 +90,11 @@ def start_proxy_bridge(proxy_port: int = 8080) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     socks = sockets_dir()
     socks.mkdir(parents=True, exist_ok=True)
-    os.chmod(socks, 0o750)
+    # 0700: only the operator needs to list/traverse the sockets dir.
+    # The gVisor gofer runs as root with DAC_OVERRIDE and reaches the
+    # per-socket paths directly via the bind-mount source path, so it
+    # does not need directory-read rights here.
+    os.chmod(socks, 0o700)
 
     # Clean up any stale per-agent sockets from a previous run.
     # PID file check above is the authoritative liveness signal.
@@ -98,6 +102,8 @@ def start_proxy_bridge(proxy_port: int = 8080) -> None:
         try:
             f.unlink()
         except OSError:
+            # Socket already gone, or permissions changed out from under us;
+            # we tried, move on — bind() below will surface any real problem.
             pass
 
     log_file = data_dir.parent / "logs" / "proxy-bridge.log"
@@ -150,6 +156,8 @@ def stop_proxy_bridge() -> None:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
+            # Process exited between our liveness poll and SIGKILL —
+            # exactly the state we wanted, nothing to do.
             pass
 
     pid_file.unlink(missing_ok=True)
@@ -175,6 +183,8 @@ def _cleanup_sockets() -> None:
     try:
         socks = sockets_dir()
     except Exception:
+        # Config lookup failed (missing env, torn-down home dir). Nothing
+        # to clean if we can't even find the directory.
         return
     if not socks.exists():
         return
@@ -182,6 +192,9 @@ def _cleanup_sockets() -> None:
         try:
             f.unlink()
         except OSError:
+            # Best-effort cleanup — perms or concurrent removal shouldn't
+            # fail the overall stop. Any leftover file will be unlinked
+            # by the next bridge start (which clears stale sockets).
             pass
 
 
@@ -199,11 +212,16 @@ def _forward(src: socket.socket, dst: socket.socket) -> None:
                 break
             dst.sendall(data)
     except (BrokenPipeError, ConnectionResetError, OSError):
+        # Either end hung up mid-stream. Normal during client disconnects
+        # (agent CLI ^C, mitmproxy restart). Let the finally block half-close
+        # the other side so its pump thread exits cleanly.
         pass
     finally:
         try:
             dst.shutdown(socket.SHUT_WR)
         except OSError:
+            # Peer socket may already be closed — the shutdown is just a
+            # signal for the opposite-direction thread to notice EOF.
             pass
 
 
@@ -260,6 +278,7 @@ def _make_listener(name: str, path: Path, ip: str) -> _Listener | None:
     try:
         path.unlink()
     except FileNotFoundError:
+        # Already absent — exactly what we want before bind().
         pass
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -270,10 +289,16 @@ def _make_listener(name: str, path: Path, ip: str) -> _Listener | None:
         server.close()
         return None
 
-    # 0660: owner + group (operator). gofer runs as root with DAC_OVERRIDE.
+    # 0600: only the operator may connect() here from the host side.
+    # The gVisor gofer runs as root with DAC_OVERRIDE so it can still
+    # relay connect() calls across the sandbox boundary regardless of
+    # mode; the operator is the only non-root principal that should
+    # reach this socket directly.
     try:
-        os.chmod(path, 0o660)
+        os.chmod(path, 0o600)
     except OSError:
+        # Mode setting is best-effort; the bind() above already succeeded
+        # with the umask-derived default. Don't tear the listener down.
         pass
     server.listen(32)
     server.setblocking(False)
@@ -340,14 +365,18 @@ def _daemon_main() -> int:
             try:
                 sel.unregister(lst.server)
             except KeyError:
+                # Selector already forgot about it (double-close race);
+                # continue with socket + file cleanup.
                 pass
             try:
                 lst.server.close()
             except OSError:
+                # Already closed elsewhere; the goal is a closed fd.
                 pass
             try:
                 lst.path.unlink()
             except FileNotFoundError:
+                # File is gone (manual cleanup, fs reset); matches our goal.
                 pass
             log_.info("closed listener agent=%s", name)
 
@@ -377,10 +406,12 @@ def _daemon_main() -> int:
             try:
                 cur.server.close()
             except OSError:
+                # Socket already closed; proceed to file cleanup.
                 pass
             try:
                 cur.path.unlink()
             except FileNotFoundError:
+                # Stale path; nothing to remove.
                 pass
             listeners.pop(name)
 
@@ -412,18 +443,23 @@ def _daemon_main() -> int:
                 _sync_listeners()
                 last_sync = now
     finally:
+        # Daemon shutdown: tear down every live listener. Each cleanup
+        # step is best-effort because we're already on the exit path.
         for lst in list(listeners.values()):
             try:
                 sel.unregister(lst.server)
             except KeyError:
+                # Already unregistered (signal arrived mid-sync).
                 pass
             try:
                 lst.server.close()
             except OSError:
+                # Already closed; fd is released.
                 pass
             try:
                 lst.path.unlink()
             except FileNotFoundError:
+                # File already gone; exactly the desired end state.
                 pass
         sel.close()
         log_.info("shut down")
