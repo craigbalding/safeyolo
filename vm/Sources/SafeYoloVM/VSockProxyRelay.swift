@@ -107,25 +107,31 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
             return
         }
 
-        // Bidirectional pump.
-        let t1 = Thread {
+        // Bidirectional pump via DispatchGroup — symmetric fix to
+        // VSockShellBridge's race. Thread.isExecuting has a window
+        // between start() and actual scheduling where both can read
+        // false, making the while-loop return early and tear the fds
+        // down under a pump that hadn't yet begun reading.
+        let group = DispatchGroup()
+        let bgQueue = DispatchQueue.global(qos: .default)
+        group.enter()
+        bgQueue.async {
+            defer { group.leave() }
             Self.forwardData(from: vsockFD, to: udsFD)
             shutdown(udsFD, SHUT_WR)
         }
-        let t2 = Thread {
+        group.enter()
+        bgQueue.async {
+            defer { group.leave() }
             Self.forwardData(from: udsFD, to: vsockFD)
             shutdown(vsockFD, SHUT_WR)
         }
-        t1.start()
-        t2.start()
+        group.wait()
 
-        // Foundation Threads aren't joinable; poll until both are done.
-        while t1.isExecuting || t2.isExecuting {
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-
+        // vsockFD is owned by vsockConnection (the function parameter —
+        // held alive by Swift's stack frame throughout this call). The
+        // UDS fd is ours to close explicitly.
         close(udsFD)
-        close(vsockFD)
     }
 
     private static func forwardData(from srcFD: Int32, to dstFD: Int32) {
