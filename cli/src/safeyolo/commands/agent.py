@@ -970,7 +970,7 @@ def add(
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
     cfg = load_config()
-    panel_lines.append(f"Proxy: http://192.168.64.1:{cfg.get('proxy', {}).get('port', 8080)} (host mitmproxy)")
+    panel_lines.append(f"Proxy: http://127.0.0.1:{cfg.get('proxy', {}).get('port', 8080)} (via in-guest forwarder)")
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})
