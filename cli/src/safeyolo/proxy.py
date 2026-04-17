@@ -532,9 +532,28 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
 
     log.info("Proxy started (PID %d) on port %d", proc.pid, proxy_port)
 
+    # Start the UDS -> TCP bridge for Linux agents that reach mitmproxy
+    # via a bind-mounted socket instead of IP networking. macOS agents
+    # use the vsock relay inside safeyolo-vm and ignore this socket.
+    # Best-effort: a failed bridge start shouldn't prevent the proxy
+    # from coming up.
+    try:
+        from .proxy_bridge import start_proxy_bridge
+        start_proxy_bridge(proxy_port=proxy_port)
+    except Exception as exc:
+        log.warning("proxy bridge failed to start: %s: %s",
+                    type(exc).__name__, exc)
+
 
 def stop_proxy() -> None:
     """Stop the host mitmproxy process."""
+    try:
+        from .proxy_bridge import stop_proxy_bridge
+        stop_proxy_bridge()
+    except Exception as exc:
+        log.warning("proxy bridge stop failed: %s: %s",
+                    type(exc).__name__, exc)
+
     pid_file = _pid_file()
     if not pid_file.exists():
         return
