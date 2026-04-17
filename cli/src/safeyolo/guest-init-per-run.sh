@@ -87,7 +87,11 @@ if [ -x /safeyolo/guest-shell-bridge ]; then
     (
       (echo > /dev/tcp/127.0.0.1/22) 2>/dev/null \
         && echo "[per-run] sshd reachable at 127.0.0.1:22" > /dev/console \
-        || echo "[per-run] WARNING sshd NOT reachable at 127.0.0.1:22" > /dev/console
+        || { echo "[per-run] WARNING sshd NOT reachable at 127.0.0.1:22" > /dev/console
+             echo "[per-run] sshd.log tail:" > /dev/console
+             tail -10 /var/log/sshd.log 2>/dev/null > /dev/console || true
+             echo "[per-run] pgrep sshd:" > /dev/console
+             pgrep -a sshd > /dev/console 2>/dev/null || echo "(no sshd process)" > /dev/console; }
     ) 2>/dev/null || true
     setsid nohup /safeyolo/guest-shell-bridge >/dev/console 2>&1 </dev/null &
     echo "[per-run] started guest-shell-bridge (pid=$!)" > /dev/console 2>/dev/null || true
