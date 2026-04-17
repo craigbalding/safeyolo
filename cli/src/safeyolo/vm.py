@@ -163,10 +163,15 @@ def prepare_config_share(
     # Changes here take effect on next agent run without rootfs rebuild.
     # Three scripts split the boot into a snapshottable static phase and
     # a per-run phase; the orchestrator gates between them on per-run-go.
+    #
+    # guest-proxy-forwarder.py bridges the agent's HTTP_PROXY (localhost
+    # TCP) to the host-side proxy (UDS on Linux / vsock on macOS). Started
+    # by guest-init before the agent.
     for src_name, dst_name in [
         ("guest-init.sh", "guest-init"),
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
+        ("guest-proxy-forwarder.py", "guest-proxy-forwarder"),
     ]:
         src = Path(__file__).parent / src_name
         dst = share_dir / dst_name
