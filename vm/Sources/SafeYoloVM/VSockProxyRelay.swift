@@ -55,6 +55,7 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         shouldAcceptNewConnection connection: VZVirtioSocketConnection,
         from socketDevice: VZVirtioSocketDevice
     ) -> Bool {
+        fputs("[proxy-relay] shouldAcceptNewConnection fd=\(connection.fileDescriptor)\n", stderr)
         // Accept and relay in a background thread
         DispatchQueue.global(qos: .default).async { [self] in
             relay(vsockConnection: connection)
