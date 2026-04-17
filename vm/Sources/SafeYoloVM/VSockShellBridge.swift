@@ -148,11 +148,11 @@ class VSockShellBridge {
         fputs("[shell-bridge] relay start uds->vsock=\(vsockFD)\n", stderr)
 
         let t1 = Thread {
-            VSockShellBridge.forwardData(from: udsFD, to: vsockFD)
+            _ = VSockShellBridge.forwardData(from: udsFD, to: vsockFD, label: "uds->vsock")
             shutdown(vsockFD, SHUT_WR)
         }
         let t2 = Thread {
-            VSockShellBridge.forwardData(from: vsockFD, to: udsFD)
+            _ = VSockShellBridge.forwardData(from: vsockFD, to: udsFD, label: "vsock->uds")
             shutdown(udsFD, SHUT_WR)
         }
         t1.start()
@@ -165,11 +165,17 @@ class VSockShellBridge {
         close(udsFD)
     }
 
-    private static func forwardData(from srcFD: Int32, to dstFD: Int32) {
+    private static func forwardData(from srcFD: Int32, to dstFD: Int32, label: String = "") -> Int {
         var buf = [UInt8](repeating: 0, count: 65536)
+        var total = 0
         while true {
             let n = read(srcFD, &buf, buf.count)
-            if n <= 0 { break }
+            if n <= 0 {
+                if n < 0 {
+                    fputs("[shell-bridge] \(label) read(\(srcFD)) err=\(String(cString: strerror(errno)))\n", stderr)
+                }
+                break
+            }
             var written = 0
             buf.withUnsafeBufferPointer { ptr in
                 while written < n {
@@ -179,6 +185,9 @@ class VSockShellBridge {
                 }
             }
             if written < n { break }
+            total += written
         }
+        fputs("[shell-bridge] \(label) pump ended total=\(total)\n", stderr)
+        return total
     }
 }
