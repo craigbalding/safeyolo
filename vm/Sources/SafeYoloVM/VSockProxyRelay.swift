@@ -20,6 +20,11 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
     private let vm: VZVirtualMachine
     private let queue: DispatchQueue
     private let socketPath: String
+    // Hold a strong reference to the listener. VZVirtioSocketDevice's
+    // setSocketListener(_:forPort:) isn't documented to retain the
+    // listener, and a locally-scoped one disappears as soon as the
+    // start() async block returns — the delegate method never fires.
+    private var listener: VZVirtioSocketListener?
 
     init(vm: VZVirtualMachine, queue: DispatchQueue, socketPath: String) {
         self.vm = vm
@@ -35,9 +40,10 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
                 fputs("[proxy-relay] No vsock device found\n", stderr)
                 return
             }
-            let listener = VZVirtioSocketListener()
-            listener.delegate = self
-            device.setSocketListener(listener, forPort: VSockProxyRelay.PROXY_PORT)
+            let lst = VZVirtioSocketListener()
+            lst.delegate = self
+            self.listener = lst
+            device.setSocketListener(lst, forPort: VSockProxyRelay.PROXY_PORT)
             fputs("[proxy-relay] Listening on vsock port \(VSockProxyRelay.PROXY_PORT) -> unix:\(socketPath)\n", stderr)
         }
     }
