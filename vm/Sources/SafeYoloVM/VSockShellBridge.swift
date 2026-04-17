@@ -103,6 +103,7 @@ class VSockShellBridge {
                 fputs("[shell-bridge] accept(): \(String(cString: strerror(errno)))\n", stderr)
                 return
             }
+            fputs("[shell-bridge] accept fd=\(clientFD)\n", stderr)
             // Hand off vsock dial + pump to a worker thread so accept()
             // stays ready for the next connection.
             DispatchQueue.global(qos: .default).async { [self] in
@@ -145,6 +146,7 @@ class VSockShellBridge {
         }
 
         let vsockFD = conn.fileDescriptor
+        fputs("[shell-bridge] vsock connected port=\(VSockShellBridge.SHELL_PORT) fd=\(vsockFD)\n", stderr)
 
         // Use a DispatchGroup so the parent thread reliably waits for
         // both pumps to finish. Thread.isExecuting has a race window
