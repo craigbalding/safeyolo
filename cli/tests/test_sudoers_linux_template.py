@@ -80,12 +80,35 @@ class TestLinuxTemplateInvariants:
         assert "mkdir -p /run/safeyolo*" not in sudoers_rules
         assert "mkdir -p /run/safeyolo" in sudoers_rules
 
-    def test_rm_rule_is_scoped_to_agents_dir_placeholder(self, sudoers_rules):
-        """`rm -rf *` would be a generic sudo rm primitive. The rule
-        must be pinned to a single path component under the agents dir.
-        Sudoers `*` does not match `/`, so path traversal is blocked."""
-        assert "rm -rf *" not in sudoers_rules
-        assert "rm -rf %SAFEYOLO_AGENTS_DIR%/*" in sudoers_rules
+    def test_no_rm_rf_rule(self, sudoers_rules):
+        """fuse-overlayfs + squash_to_uid makes all files user-owned.
+        No sudo rm needed — shutil.rmtree handles cleanup."""
+        assert "rm -rf" not in sudoers_rules
+
+    def test_no_wildcard_mount(self, sudoers_rules):
+        """mount * is root-equivalent. Only pinned loop mount allowed."""
+        # No `mount *` (bare wildcard)
+        for line in sudoers_rules.splitlines():
+            if "mount" in line and "umount" not in line and "loop" not in line:
+                assert "mount *" not in line, f"Unpinned mount rule: {line}"
+
+    def test_no_wildcard_umount(self, sudoers_rules):
+        """umount * can unmount critical system filesystems."""
+        for line in sudoers_rules.splitlines():
+            if "umount" in line:
+                assert "/tmp/safeyolo-rootfs-mnt" in line, (
+                    f"umount not pinned to extraction mount point: {line}"
+                )
+
+    def test_mount_pinned_to_extraction_paths(self, sudoers_rules):
+        r"""Loop mount rule uses pinned ext4 path and fixed mount point.
+        Note: sudoers requires \, to escape commas in arguments."""
+        assert r"mount -o loop\,ro %SAFEYOLO_BASE_EXT4% /tmp/safeyolo-rootfs-mnt" in sudoers_rules
+        assert "umount /tmp/safeyolo-rootfs-mnt" in sudoers_rules
+
+    def test_chown_rule_for_base_rootfs(self, sudoers_rules):
+        """chown rule pinned to base rootfs dest for fuse-overlayfs lowerdir."""
+        assert "chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%" in sudoers_rules
 
     def test_no_ip_netns_exec(self, sudoers_rules):
         """ip netns exec allows running arbitrary binaries as root.
@@ -141,11 +164,11 @@ class TestLinuxTemplateInvariants:
         """Per-agent egress rules."""
         assert "iptables *" in sudoers_rules
 
-    def test_grants_mount_and_umount(self, sudoers_rules):
-        """Overlayfs mount for rootfs layering + loop mount for base
-        extraction + their teardown on agent remove."""
-        assert "mount *" in sudoers_rules
-        assert "umount *" in sudoers_rules
+    def test_grants_pinned_mount_and_umount(self, sudoers_rules):
+        """Only the one-time base extraction mount is granted, pinned
+        to exact paths. No wildcard mount/umount."""
+        assert "mount -o loop" in sudoers_rules
+        assert "umount /tmp/safeyolo-rootfs-mnt" in sudoers_rules
 
 
 class TestSetupSudoersOnLinux:
@@ -198,21 +221,25 @@ class TestSetupSudoersOnLinux:
         # Belt-and-suspenders: no wildcard remains in the cp rule.
         assert "/tmp/safeyolo-rootfs-mnt/. *" not in body
 
-    def test_substitutes_agents_dir_placeholder(self, tmp_path):
-        """The rm rule's agents-dir placeholder must be rendered into
-        the literal resolved agents dir path."""
+    def test_substitutes_ext4_and_chown_placeholders(self, tmp_path):
+        """The mount and chown rules must have all placeholders resolved."""
         from safeyolo.commands.setup import _resolve_sudoers_body
 
-        fake_agents = tmp_path / "fake-safeyolo" / "agents"
+        fake_share = tmp_path / "fake-safeyolo" / "share"
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
             patch.dict("os.environ", {"USER": "alice"}, clear=False),
-            patch("safeyolo.config.get_agents_dir", return_value=fake_agents),
+            patch("safeyolo.config.get_share_dir", return_value=fake_share),
         ):
             body = _resolve_sudoers_body(SUDOERS_PATH)
 
-        assert "%SAFEYOLO_AGENTS_DIR%" not in body, "Placeholder unresolved"
-        assert f"/usr/bin/rm -rf {fake_agents}/*" in body
+        assert "%SAFEYOLO_BASE_EXT4%" not in body, "ext4 placeholder unresolved"
+        expected_ext4 = str(fake_share / "rootfs-base.ext4")
+        assert f"mount -o loop\\,ro {expected_ext4} /tmp/safeyolo-rootfs-mnt" in body
+
+        assert "%SAFEYOLO_CHOWN_TARGET%" not in body, "chown placeholder unresolved"
+        # chown target should be uid:gid of the alice user (or alice:alice fallback)
+        assert "chown -R" in body
 
 
 class TestSetupSudoersOnDarwin:

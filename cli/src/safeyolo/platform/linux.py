@@ -332,10 +332,16 @@ class LinuxPlatform(AgentPlatform):
         return get_agents_dir() / name / "rootfs"
 
     def prepare_rootfs(self, name: str) -> Path:
-        """Create agent rootfs using overlayfs on extracted base.
+        """Create agent rootfs using fuse-overlayfs on extracted base.
 
         The base rootfs is extracted from ext4 once and shared read-only.
-        Each agent gets an overlayfs upper layer for writes.
+        Each agent gets a fuse-overlayfs upper layer for writes.
+
+        fuse-overlayfs runs unprivileged (no sudo for per-agent mounts).
+        squash_to_uid/gid ensures all upper-layer files are owned by the
+        operator on the host, so cleanup needs no sudo either.
+        Requires: fuse-overlayfs binary, /dev/fuse, user_allow_other
+        in /etc/fuse.conf (same as rootless Podman).
         """
         share_dir = get_share_dir()
         base_dir = share_dir / "rootfs-base"
@@ -357,6 +363,9 @@ class LinuxPlatform(AgentPlatform):
             finally:
                 _sudo(["umount", str(mnt)])
             mnt.rmdir()
+            # chown the extracted base to the operator so fuse-overlayfs
+            # can read the lowerdir. Safe: gVisor maps UIDs via OCI config.
+            _sudo(["chown", "-R", f"{os.getuid()}:{os.getgid()}", str(base_dir)])
 
         agent_dir = get_agents_dir() / name
         upper = agent_dir / "rootfs-upper"
@@ -364,22 +373,27 @@ class LinuxPlatform(AgentPlatform):
         merged = agent_dir / "rootfs"
 
         # Check for an actual overlay mount, not just dir-has-contents.
-        # After stop_sandbox (before the fix that stopped unmounting),
-        # merged/ could contain leftover skeleton dirs from the upper
-        # layer with no overlay backing them — iterdir saw entries and
-        # the old logic shortcut to "already mounted", leaving the
-        # next boot without /bin/bash.
         if merged.exists() and os.path.ismount(merged):
-            return merged  # Genuinely already mounted
+            # Verify mount is healthy (FUSE mounts can go stale if the
+            # fuse-overlayfs process dies). A stale mount returns ENOTCONN
+            # on any access attempt.
+            try:
+                os.listdir(merged)
+                return merged  # Genuinely mounted and healthy
+            except OSError:
+                log.warning("Stale FUSE mount at %s, forcing remount", merged)
+                _run(["fusermount3", "-u", str(merged)], check=False)
 
         for d in (upper, work, merged):
             d.mkdir(parents=True, exist_ok=True)
 
-        _sudo(["mount", "-t", "overlay", "overlay",
-               "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work}",
-               str(merged)])
+        uid, gid = os.getuid(), os.getgid()
+        _run(["fuse-overlayfs",
+              "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work},"
+                    f"allow_other,squash_to_uid={uid},squash_to_gid={gid}",
+              str(merged)])
 
-        log.info("Overlayfs mounted for agent '%s'", name)
+        log.info("fuse-overlayfs mounted for agent '%s'", name)
         return merged
 
     # --- Sandbox lifecycle ---
@@ -600,19 +614,17 @@ class LinuxPlatform(AgentPlatform):
     def remove_agent_dir(self, name: str) -> None:
         """Delete the agent's on-disk directory.
 
-        overlayfs leaves a root-owned work/ subdirectory inside
-        rootfs-work/ after unmount, and the container's writes land in
-        rootfs-upper/ as root too — so a plain shutil.rmtree from the
-        user account fails with EPERM. Defensively unmount any stale
-        overlay (no-op if not mounted) and then sudo rm -rf.
+        With fuse-overlayfs + squash_to_uid, all files in the upper and
+        work layers are owned by the operator — shutil.rmtree works
+        without sudo. Defensively unmount via fusermount3 first.
         """
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
         merged = agent_dir / "rootfs"
-        if merged.exists():
-            _sudo(["umount", str(merged)], check=False)
-        _sudo(["rm", "-rf", str(agent_dir)])
+        if merged.exists() and os.path.ismount(merged):
+            _run(["fusermount3", "-u", str(merged)], check=False)
+        shutil.rmtree(agent_dir)
 
     # --- OCI config generation ---
 

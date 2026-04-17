@@ -253,8 +253,8 @@ def _resolve_sudoers_body(template_path: Path) -> str:
     template so that rules are scoped to a single operator, not a
     broad group like macOS %staff (which includes ALL local users).
 
-    Linux additionally substitutes rootfs and agents-dir paths to
-    pin the cp and rm rules to literal destinations.
+    Linux additionally substitutes rootfs paths and chown targets to
+    pin the extraction rules to literal destinations.
     """
     content = template_path.read_text()
 
@@ -276,16 +276,25 @@ def _resolve_sudoers_body(template_path: Path) -> str:
         # `%safeyolo` → bare username (drops the `%` group prefix).
         content = content.replace("%safeyolo", username)
 
-        # Resolve the base-rootfs destination that the Linux platform's
-        # `prepare_rootfs` will `sudo cp -a /tmp/safeyolo-rootfs-mnt/. …`
-        # into. Pinning the literal path kills the wildcard in the rule.
-        from ..config import get_agents_dir, get_share_dir
-        base_rootfs_dest = str(get_share_dir() / "rootfs-base")
+        from ..config import get_share_dir
+        share_dir = get_share_dir()
+
+        # Pin the base rootfs destination path.
+        base_rootfs_dest = str(share_dir / "rootfs-base")
         content = content.replace("%SAFEYOLO_BASE_ROOTFS_DEST%", base_rootfs_dest)
 
-        # Pin the rm -rf rule to this instance's agents dir.
-        agents_dir = str(get_agents_dir())
-        content = content.replace("%SAFEYOLO_AGENTS_DIR%", agents_dir)
+        # Pin the ext4 image path for the one-time loop mount.
+        base_ext4 = str(share_dir / "rootfs-base.ext4")
+        content = content.replace("%SAFEYOLO_BASE_EXT4%", base_ext4)
+
+        # Pin the chown target (uid:gid) for base rootfs extraction.
+        import pwd
+        try:
+            pw = pwd.getpwnam(username)
+            chown_target = f"{pw.pw_uid}:{pw.pw_gid}"
+        except KeyError:
+            chown_target = f"{username}:{username}"
+        content = content.replace("%SAFEYOLO_CHOWN_TARGET%", chown_target)
 
     return content
 
