@@ -16,56 +16,90 @@
 # -----------------------------------------------------------------
 # Why each command is needed:
 #
-#   ip netns *         Create/delete network namespaces for agent isolation
-#   ip link *          Create/delete veth pairs for agent networking
-#   ip addr *          Assign IPs to veth interfaces
-#   iptables *         Firewall rules: proxy-only egress per agent
+#   ip netns add/del safeyolo-*  Network namespace lifecycle
+#   ip -n safeyolo-* ...         Configure guest-side networking (no exec)
+#   ip link add/del/set veth-sy* Host-side veth management
+#   ip addr add * dev veth-sy*   IP assignment on veth interfaces
+#   nft add/flush/delete/list table ip safeyolo  Firewall table lifecycle
+#   nft add chain ip safeyolo *    Create chains in safeyolo table
+#   nft add rule ip safeyolo *     Add rules to safeyolo table
 #   sysctl             Enable IP forwarding for NAT
-#   mount              Overlayfs for agent rootfs, loop mount for base extraction
-#   umount             Clean up overlayfs on agent removal
-#   runsc              gVisor container lifecycle (create, start, stop, exec)
-#   mkdir -p /run/safeyolo
-#                      Create the exact runsc state dir. No wildcard.
-#   cp -a /tmp/safeyolo-rootfs-mnt/. %SAFEYOLO_BASE_ROOTFS_DEST%
-#                      Copy base rootfs for extraction. Both source AND
-#                      destination are literal paths — source is the fixed
-#                      scratch mount point, destination is resolved at
-#                      install time from the invoking user's share dir
-#                      (`safeyolo setup sudoers` substitutes the placeholder).
-#                      Result: this rule is not a generic `sudo cp` primitive.
-#   rm -rf %SAFEYOLO_AGENTS_DIR%/*
-#                      Delete an agent's on-disk dir on `agent remove`.
-#                      overlayfs leaves root-owned work/upper artifacts
-#                      that a user rmtree can't clean. Sudoers `*` does
-#                      not match `/`, so only single path components
-#                      under the agents dir match — no path traversal.
+#   mount -o loop,ro   One-time base rootfs extraction (pinned paths)
+#   umount             Unmount base rootfs after extraction (pinned path)
+#   chown -R           Make extracted base readable for fuse-overlayfs
+#   runsc --root /run/safeyolo  gVisor lifecycle (pinned state dir)
+#   mkdir -p /run/safeyolo      Exact runsc state dir. No wildcard.
+#   cp -a ...          Copy base rootfs (pinned source + destination)
+#
+# NOT needed (fuse-overlayfs handles these unprivileged):
+#   mount -t overlay   Per-agent rootfs overlay (fuse-overlayfs, no sudo)
+#   umount <agent>     Per-agent unmount (fusermount3, no sudo)
+#   rm -rf <agent>     Agent dir cleanup (user-owned via squash_to_uid)
 # -----------------------------------------------------------------
 
-# Network namespace and veth management
-%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip netns *, \
-                                /usr/sbin/ip link *, \
-                                /usr/sbin/ip addr *, \
-                                /sbin/ip netns *, \
-                                /sbin/ip link *, \
-                                /sbin/ip addr *
+# Network namespace lifecycle — scoped to safeyolo-* names.
+# IMPORTANT: `ip netns exec` is intentionally NOT granted — it allows
+# running arbitrary binaries as root. Use `ip -n <ns>` instead.
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip netns add safeyolo-*, \
+                                /usr/sbin/ip netns del safeyolo-*, \
+                                /sbin/ip netns add safeyolo-*, \
+                                /sbin/ip netns del safeyolo-*
 
-# Firewall rules
-%safeyolo ALL=(root) NOPASSWD: /usr/sbin/iptables *, \
-                                /sbin/iptables *
+# veth interface management — scoped to SafeYolo's veth-sy* prefix
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip link add veth-sy* *, \
+                                /usr/sbin/ip link del veth-sy*, \
+                                /usr/sbin/ip link set veth-sy* up, \
+                                /usr/sbin/ip addr add * dev veth-sy*, \
+                                /sbin/ip link add veth-sy* *, \
+                                /sbin/ip link del veth-sy*, \
+                                /sbin/ip link set veth-sy* up, \
+                                /sbin/ip addr add * dev veth-sy*
+
+# Guest-side network config inside namespace (via ip -n, not ip netns exec)
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip -n safeyolo-* addr *, \
+                                /usr/sbin/ip -n safeyolo-* link *, \
+                                /usr/sbin/ip -n safeyolo-* route *, \
+                                /sbin/ip -n safeyolo-* addr *, \
+                                /sbin/ip -n safeyolo-* link *, \
+                                /sbin/ip -n safeyolo-* route *
+
+# Firewall — nftables, scoped to `table ip safeyolo` only.
+# Cannot touch UFW, Tailscale, Docker, or any other table.
+# Verified: testsy user with ONLY these rules cannot create other tables,
+# flush the ruleset, or list/modify the system filter table.
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/nft add table ip safeyolo, \
+                                /usr/sbin/nft delete table ip safeyolo, \
+                                /usr/sbin/nft flush table ip safeyolo, \
+                                /usr/sbin/nft list table ip safeyolo, \
+                                /usr/sbin/nft add chain ip safeyolo *, \
+                                /usr/sbin/nft add rule ip safeyolo *
 
 # IP forwarding
 %safeyolo ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.ipv4.ip_forward=1, \
                                 /sbin/sysctl -w net.ipv4.ip_forward=1
 
-# Rootfs management (overlayfs mount/umount, loop mount for extraction)
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/mount *, \
-                                /bin/mount *, \
-                                /usr/bin/umount *, \
-                                /bin/umount *
+# One-time base rootfs extraction — loop mount + umount pinned to exact paths.
+# Per-agent overlayfs uses fuse-overlayfs (unprivileged, no sudo needed).
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/mount -o loop\,ro %SAFEYOLO_BASE_EXT4% /tmp/safeyolo-rootfs-mnt, \
+                                /bin/mount -o loop\,ro %SAFEYOLO_BASE_EXT4% /tmp/safeyolo-rootfs-mnt, \
+                                /usr/bin/umount /tmp/safeyolo-rootfs-mnt, \
+                                /bin/umount /tmp/safeyolo-rootfs-mnt
 
-# gVisor container runtime
-%safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc *, \
-                                /usr/bin/runsc *
+# gVisor container runtime — pinned to SafeYolo's state dir
+%safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc --root /run/safeyolo --platform=kvm create *, \
+                                /usr/local/bin/runsc --root /run/safeyolo --platform=systrap create *, \
+                                /usr/local/bin/runsc --root /run/safeyolo start *, \
+                                /usr/local/bin/runsc --root /run/safeyolo state *, \
+                                /usr/local/bin/runsc --root /run/safeyolo kill *, \
+                                /usr/local/bin/runsc --root /run/safeyolo delete *, \
+                                /usr/local/bin/runsc --root /run/safeyolo exec *, \
+                                /usr/bin/runsc --root /run/safeyolo --platform=kvm create *, \
+                                /usr/bin/runsc --root /run/safeyolo --platform=systrap create *, \
+                                /usr/bin/runsc --root /run/safeyolo start *, \
+                                /usr/bin/runsc --root /run/safeyolo state *, \
+                                /usr/bin/runsc --root /run/safeyolo kill *, \
+                                /usr/bin/runsc --root /run/safeyolo delete *, \
+                                /usr/bin/runsc --root /run/safeyolo exec *
 
 # State directory creation — exact path, no wildcard
 %safeyolo ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/safeyolo, \
@@ -76,9 +110,11 @@
 # with the resolved path (default: /home/<user>/.safeyolo/share/rootfs-base).
 %safeyolo ALL=(root) NOPASSWD: /usr/bin/cp -a /tmp/safeyolo-rootfs-mnt/. %SAFEYOLO_BASE_ROOTFS_DEST%
 
-# Agent dir removal (`agent remove`) — overlayfs leaves root-owned
-# work/upper artifacts that a user rmtree can't delete. Locked to a
-# single path component under the agents dir (sudoers `*` does not
-# match `/`, so path traversal outside %SAFEYOLO_AGENTS_DIR% is blocked).
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/rm -rf %SAFEYOLO_AGENTS_DIR%/*, \
-                                /bin/rm -rf %SAFEYOLO_AGENTS_DIR%/*
+# chown base rootfs to operator after extraction so fuse-overlayfs can
+# read the lowerdir. Pinned to the exact destination path.
+%safeyolo ALL=(root) NOPASSWD: /usr/bin/chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%, \
+                                /bin/chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%
+
+# Agent dir removal — with fuse-overlayfs + squash_to_uid, all files
+# in the upper/work layers are operator-owned. shutil.rmtree works
+# without sudo. No rm -rf sudoers rule needed.

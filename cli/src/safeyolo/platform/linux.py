@@ -26,7 +26,12 @@ from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
-# iptables chain name, scoped for multi-instance isolation
+# nftables table name — all SafeYolo firewall rules live in this table.
+# Operations are scoped to this table via sudoers patterns, so SafeYolo
+# can never touch UFW, Tailscale, Docker, or any other firewall rules.
+NFT_TABLE = "safeyolo"
+
+# Legacy iptables chain name — kept for doctor.py diagnostics during migration.
 CHAIN_NAME = os.environ.get("SAFEYOLO_FW_CHAIN", "SAFEYOLO")
 
 # runsc state directory
@@ -219,12 +224,15 @@ class LinuxPlatform(AgentPlatform):
         _sudo(["ip", "addr", "add", f"{alloc['host_ip']}/24", "dev", veth_host])
         _sudo(["ip", "link", "set", veth_host, "up"])
 
-        # Configure guest side (inside netns)
-        _sudo(["ip", "netns", "exec", netns, "ip", "addr", "add",
+        # Configure guest side (inside netns).
+        # Uses `ip -n <ns>` instead of `ip netns exec <ns> ip ...` so the
+        # sudoers rule can grant `ip -n safeyolo-*` without also granting
+        # `ip netns exec` (which allows running arbitrary binaries as root).
+        _sudo(["ip", "-n", netns, "addr", "add",
                f"{alloc['guest_ip']}/24", "dev", veth_guest])
-        _sudo(["ip", "netns", "exec", netns, "ip", "link", "set", veth_guest, "up"])
-        _sudo(["ip", "netns", "exec", netns, "ip", "link", "set", "lo", "up"])
-        _sudo(["ip", "netns", "exec", netns, "ip", "route", "add",
+        _sudo(["ip", "-n", netns, "link", "set", veth_guest, "up"])
+        _sudo(["ip", "-n", netns, "link", "set", "lo", "up"])
+        _sudo(["ip", "-n", netns, "route", "add",
                "default", "via", alloc["host_ip"]])
 
         # Enable IP forwarding
@@ -245,78 +253,70 @@ class LinuxPlatform(AgentPlatform):
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
-        """Load iptables rules: allow only proxy egress per subnet."""
+        """Load nftables rules: proxy-only egress per subnet.
+
+        All rules live in `table ip safeyolo` — a dedicated nftables table
+        that cannot interact with UFW, Tailscale, Docker, or any other
+        firewall. Sudoers rules are scoped to this table name, so even a
+        compromised SafeYolo process cannot modify other tables.
+
+        Cleanup is a single `nft delete table ip safeyolo` — no stale rule
+        accumulation, no need to track what was added.
+        """
         outbound_if = _detect_outbound_interface()
 
-        # Create chain (ignore if exists)
-        _sudo(["iptables", "-N", CHAIN_NAME], check=False)
+        # Create table (idempotent — nft add table is a no-op if it exists,
+        # but any existing rules are preserved. Flush first to ensure a
+        # clean slate on repeated load calls.)
+        _sudo(["nft", "add", "table", "ip", NFT_TABLE], check=False)
+        _sudo(["nft", "flush", "table", "ip", NFT_TABLE])
+
+        # Create chains with netfilter hooks. The chain spec (braces,
+        # hook type, priority) must be a single string argument to nft.
+        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "forward",
+               "{ type filter hook forward priority 0; policy accept; }"])
+        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "input",
+               "{ type filter hook input priority 0; policy accept; }"])
+        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "postrouting",
+               "{ type nat hook postrouting priority 100; policy accept; }"])
 
         for subnet in active_subnets:
             host_ip = subnet.replace(".0/24", ".1")
 
-            # Allow proxy port to host
-            _sudo(["iptables", "-A", CHAIN_NAME, "-s", subnet,
-                   "-d", host_ip, "-p", "tcp", "--dport", str(proxy_port),
-                   "-j", "ACCEPT"])
-            # Block admin port
-            _sudo(["iptables", "-A", CHAIN_NAME, "-s", subnet,
-                   "-d", host_ip, "-p", "tcp", "--dport", str(admin_port),
-                   "-j", "DROP"])
-            # Block everything else from this subnet
-            _sudo(["iptables", "-A", CHAIN_NAME, "-s", subnet, "-j", "DROP"])
+            # FORWARD: allow proxy, block admin, block rest
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(proxy_port), "accept"])
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(admin_port), "drop"])
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
+                   "ip", "saddr", subnet, "drop"])
 
-            # Wire chain into FORWARD
-            _sudo(["iptables", "-I", "FORWARD", "-s", subnet, "-j", CHAIN_NAME])
+            # INPUT: allow proxy port, block admin port (for hosts with
+            # default-deny INPUT, e.g. Ubuntu with UFW)
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(proxy_port), "accept"])
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(admin_port), "drop"])
 
-            # NAT for proxy upstream connections
-            _sudo(["iptables", "-t", "nat", "-A", "POSTROUTING",
-                   "-s", subnet, "-o", outbound_if, "-j", "MASQUERADE"])
+            # NAT: masquerade outbound traffic
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "postrouting",
+                   "ip", "saddr", subnet, "oifname", outbound_if,
+                   "masquerade"])
 
-            # INPUT chain: sandbox → host:proxy_port is destined for a local
-            # IP (the feth host side), so it hits INPUT, not FORWARD. On
-            # hosts with default-deny INPUT (e.g. Ubuntu with UFW active)
-            # the FORWARD rule above isn't enough — the packet gets dropped
-            # before ever reaching mitmproxy. Also explicitly DROP admin
-            # port on INPUT so a permissive INPUT policy doesn't let the
-            # agent reach it. Use -I so these land ahead of any drop rule.
-            _sudo(["iptables", "-I", "INPUT", "-s", subnet, "-d", host_ip,
-                   "-p", "tcp", "--dport", str(admin_port), "-j", "DROP"])
-            _sudo(["iptables", "-I", "INPUT", "-s", subnet, "-d", host_ip,
-                   "-p", "tcp", "--dport", str(proxy_port), "-j", "ACCEPT"])
-
-        log.info("iptables rules loaded for chain %s", CHAIN_NAME)
+        log.info("nftables rules loaded in table %s", NFT_TABLE)
 
     def unload_firewall_rules(self) -> None:
-        """Flush and delete iptables chain."""
-        # Remove references from FORWARD
-        while True:
-            result = _sudo(["iptables", "-D", "FORWARD", "-j", CHAIN_NAME], check=False)
-            if result.returncode != 0:
-                break  # No more references
+        """Remove all SafeYolo firewall rules by deleting the nftables table.
 
-        # Flush and delete chain
-        _sudo(["iptables", "-F", CHAIN_NAME], check=False)
-        _sudo(["iptables", "-X", CHAIN_NAME], check=False)
-
-        # Clean up NAT + INPUT rules. Best-effort — stale rules are harmless.
-        for idx in range(10):
-            alloc = allocate_subnet(idx)
-            host_ip = alloc["subnet"].replace(".0/24", ".1")
-            _sudo(["iptables", "-t", "nat", "-D", "POSTROUTING",
-                   "-s", alloc["subnet"], "-j", "MASQUERADE"], check=False)
-            # We don't know the proxy/admin ports at teardown time (they
-            # come from runtime config), so loop the known defaults + a
-            # small range of likely overrides. Each -D is a no-op if the
-            # rule doesn't exist. Keeps teardown self-contained.
-            for port in (8080, 8090, 9090):
-                _sudo(["iptables", "-D", "INPUT", "-s", alloc["subnet"],
-                       "-d", host_ip, "-p", "tcp", "--dport", str(port),
-                       "-j", "ACCEPT"], check=False)
-                _sudo(["iptables", "-D", "INPUT", "-s", alloc["subnet"],
-                       "-d", host_ip, "-p", "tcp", "--dport", str(port),
-                       "-j", "DROP"], check=False)
-
-        log.info("iptables rules unloaded for chain %s", CHAIN_NAME)
+        One command removes everything — chains, rules, NAT. No stale rules,
+        no loop-and-delete, no risk of touching other tables.
+        """
+        _sudo(["nft", "delete", "table", "ip", NFT_TABLE], check=False)
+        log.info("nftables table %s deleted", NFT_TABLE)
 
     # --- Rootfs ---
 
@@ -329,10 +329,16 @@ class LinuxPlatform(AgentPlatform):
         return get_agents_dir() / name / "rootfs"
 
     def prepare_rootfs(self, name: str) -> Path:
-        """Create agent rootfs using overlayfs on extracted base.
+        """Create agent rootfs using fuse-overlayfs on extracted base.
 
         The base rootfs is extracted from ext4 once and shared read-only.
-        Each agent gets an overlayfs upper layer for writes.
+        Each agent gets a fuse-overlayfs upper layer for writes.
+
+        fuse-overlayfs runs unprivileged (no sudo for per-agent mounts).
+        squash_to_uid/gid ensures all upper-layer files are owned by the
+        operator on the host, so cleanup needs no sudo either.
+        Requires: fuse-overlayfs binary, /dev/fuse, user_allow_other
+        in /etc/fuse.conf (same as rootless Podman).
         """
         share_dir = get_share_dir()
         base_dir = share_dir / "rootfs-base"
@@ -354,6 +360,9 @@ class LinuxPlatform(AgentPlatform):
             finally:
                 _sudo(["umount", str(mnt)])
             mnt.rmdir()
+            # chown the extracted base to the operator so fuse-overlayfs
+            # can read the lowerdir. Safe: gVisor maps UIDs via OCI config.
+            _sudo(["chown", "-R", f"{os.getuid()}:{os.getgid()}", str(base_dir)])
 
         agent_dir = get_agents_dir() / name
         upper = agent_dir / "rootfs-upper"
@@ -361,22 +370,27 @@ class LinuxPlatform(AgentPlatform):
         merged = agent_dir / "rootfs"
 
         # Check for an actual overlay mount, not just dir-has-contents.
-        # After stop_sandbox (before the fix that stopped unmounting),
-        # merged/ could contain leftover skeleton dirs from the upper
-        # layer with no overlay backing them — iterdir saw entries and
-        # the old logic shortcut to "already mounted", leaving the
-        # next boot without /bin/bash.
         if merged.exists() and os.path.ismount(merged):
-            return merged  # Genuinely already mounted
+            # Verify mount is healthy (FUSE mounts can go stale if the
+            # fuse-overlayfs process dies). A stale mount returns ENOTCONN
+            # on any access attempt.
+            try:
+                os.listdir(merged)
+                return merged  # Genuinely mounted and healthy
+            except OSError:
+                log.warning("Stale FUSE mount at %s, forcing remount", merged)
+                _run(["fusermount3", "-u", str(merged)], check=False)
 
         for d in (upper, work, merged):
             d.mkdir(parents=True, exist_ok=True)
 
-        _sudo(["mount", "-t", "overlay", "overlay",
-               "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work}",
-               str(merged)])
+        uid, gid = os.getuid(), os.getgid()
+        _run(["fuse-overlayfs",
+              "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work},"
+                    f"allow_other,squash_to_uid={uid},squash_to_gid={gid}",
+              str(merged)])
 
-        log.info("Overlayfs mounted for agent '%s'", name)
+        log.info("fuse-overlayfs mounted for agent '%s'", name)
         return merged
 
     # --- Sandbox lifecycle ---
@@ -444,7 +458,9 @@ class LinuxPlatform(AgentPlatform):
         # and the container lands in `stopped` state before guest-init
         # ever runs. Creating it in rootfs-upper makes it visible via
         # the overlay without mutating the shared base image.
-        _sudo(["mkdir", "-p", str(agent_dir / "rootfs-upper" / "workspace")])
+        # rootfs-upper is user-owned (created at prepare_rootfs time),
+        # so no sudo needed here.
+        os.makedirs(agent_dir / "rootfs-upper" / "workspace", exist_ok=True)
 
         # Clear any stale state entry for this cid before create. runsc
         # create fails with ID-already-exists if a previous run's state
@@ -595,19 +611,17 @@ class LinuxPlatform(AgentPlatform):
     def remove_agent_dir(self, name: str) -> None:
         """Delete the agent's on-disk directory.
 
-        overlayfs leaves a root-owned work/ subdirectory inside
-        rootfs-work/ after unmount, and the container's writes land in
-        rootfs-upper/ as root too — so a plain shutil.rmtree from the
-        user account fails with EPERM. Defensively unmount any stale
-        overlay (no-op if not mounted) and then sudo rm -rf.
+        With fuse-overlayfs + squash_to_uid, all files in the upper and
+        work layers are owned by the operator — shutil.rmtree works
+        without sudo. Defensively unmount via fusermount3 first.
         """
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
         merged = agent_dir / "rootfs"
-        if merged.exists():
-            _sudo(["umount", str(merged)], check=False)
-        _sudo(["rm", "-rf", str(agent_dir)])
+        if merged.exists() and os.path.ismount(merged):
+            _run(["fusermount3", "-u", str(merged)], check=False)
+        shutil.rmtree(agent_dir)
 
     # --- OCI config generation ---
 

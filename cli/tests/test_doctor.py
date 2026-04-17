@@ -588,27 +588,33 @@ class TestCheckFirewallDarwin:
 
 
 class TestCheckFirewallLinux:
-    """Linux: SAFEYOLO_<base> iptables chain present."""
+    """Linux: nftables table ip safeyolo present."""
 
     @pytest.fixture(autouse=True)
     def _linux(self, monkeypatch):
         monkeypatch.setattr("platform.system", lambda: "Linux")
 
-    def test_pass_when_chain_present(self, monkeypatch):
+    def test_pass_when_table_present(self, monkeypatch):
+        nft_output = (
+            "table ip safeyolo {\n"
+            "\tchain forward {\n"
+            "\t\ttype filter hook forward priority filter; policy accept;\n"
+            "\t}\n"
+            "}\n"
+        )
         monkeypatch.setattr(
             "safeyolo.commands.doctor._sudo_n",
-            lambda cmd, timeout=5: _completed(stdout="Chain SAFEYOLO_65 (0 references)\n"),
+            lambda cmd, timeout=5: _completed(stdout=nft_output),
         )
         result = _check_firewall()
         assert result.status == "pass"
 
-    def test_warn_when_chain_missing(self, monkeypatch):
-        """Chain is only created when an agent first starts — not having
-        it isn't an error, just informational."""
+    def test_warn_when_table_missing(self, monkeypatch):
+        """Table is only created when an agent first starts."""
         monkeypatch.setattr(
             "safeyolo.commands.doctor._sudo_n",
             lambda cmd, timeout=5: _completed(
-                returncode=1, stderr="iptables: No chain/target/match by that name.\n"
+                returncode=1, stderr="Error: No such file or directory\n"
             ),
         )
         result = _check_firewall()

@@ -12,12 +12,10 @@ one-time static install:
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from safeyolo.commands import setup as setup_mod
-
 
 # ---------------------------------------------------------------------------
 # _pf_conf_state — the decision function for idempotency / safety.
@@ -36,30 +34,37 @@ class TestPfConfState:
         return conf
 
     def _hook_lines(self):
-        """Helper: same anchor/load lines the module would compute."""
+        """Helper: same nat/anchor/load lines the module would compute."""
         return setup_mod._pf_hook_lines("com.safeyolo")
 
     def test_absent_when_hook_missing(self, pf_conf):
         pf_conf.write_text("# stock pf.conf\nscrub-anchor \"com.apple/*\"\n")
         assert setup_mod._pf_conf_state("com.safeyolo") == "absent"
 
-    def test_present_when_both_hook_lines_exist(self, pf_conf):
-        anchor_line, load_line = self._hook_lines()
+    def test_present_when_all_three_hook_lines_exist(self, pf_conf):
+        nat_line, anchor_line, load_line = self._hook_lines()
         pf_conf.write_text(
             'scrub-anchor "com.apple/*"\n'
+            f"{nat_line}\n"
             f"{anchor_line}\n"
             f"{load_line}\n"
         )
         assert setup_mod._pf_conf_state("com.safeyolo") == "present"
 
+    def test_needs_nat_anchor_when_only_filter_lines(self, pf_conf):
+        """Pre-NAT installs have anchor + load but no nat-anchor."""
+        _, anchor_line, load_line = self._hook_lines()
+        pf_conf.write_text(f"{anchor_line}\n{load_line}\n")
+        assert setup_mod._pf_conf_state("com.safeyolo") == "needs_nat_anchor"
+
     def test_partial_when_only_anchor_line(self, pf_conf):
-        anchor_line, _ = self._hook_lines()
+        _, anchor_line, _ = self._hook_lines()
         pf_conf.write_text(f"{anchor_line}\n")
         state = setup_mod._pf_conf_state("com.safeyolo")
         assert state.startswith("partial"), state
 
     def test_partial_when_only_load_line(self, pf_conf):
-        _, load_line = self._hook_lines()
+        _, _, load_line = self._hook_lines()
         pf_conf.write_text(f"{load_line}\n")
         state = setup_mod._pf_conf_state("com.safeyolo")
         assert state.startswith("partial"), state
@@ -69,7 +74,6 @@ class TestPfConfState:
             'load anchor "com.safeyolo" from "/tmp/evil-anchor"\n'
         )
         state = setup_mod._pf_conf_state("com.safeyolo")
-        # Either partial (no anchor decl) or conflict (different load path).
         assert state.startswith(("partial", "conflict")), state
         assert "com.safeyolo" in state
 
@@ -110,11 +114,38 @@ class TestInstallPfHook:
         changed, msg = setup_mod._install_pf_hook("com.safeyolo")
         assert changed is True
         text = sandbox.read_text()
-        anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        nat_line, anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        assert nat_line in text
         assert anchor_line in text
         assert load_line in text
         # Original content preserved.
         assert 'scrub-anchor "com.apple/*"' in text
+
+    def test_nat_anchor_before_filter_anchor_in_stock_pf_conf(self, sandbox):
+        """On a stock macOS pf.conf, nat-anchor must land in the translation
+        section (after rdr-anchor) and anchor+load at the end (filter section).
+        pf rejects translation rules after filtering rules."""
+        sandbox.write_text(
+            'scrub-anchor "com.apple/*"\n'
+            'nat-anchor "com.apple/*"\n'
+            'rdr-anchor "com.apple/*"\n'
+            'dummynet-anchor "com.apple/*"\n'
+            'anchor "com.apple/*"\n'
+            'load anchor "com.apple" from "/etc/pf.anchors/com.apple"\n'
+        )
+        setup_mod._install_pf_hook("com.safeyolo")
+        lines = [ln.strip() for ln in sandbox.read_text().splitlines() if ln.strip()]
+
+        nat_idx = lines.index('nat-anchor "com.safeyolo"')
+        filter_idx = lines.index('anchor "com.safeyolo"')
+        apple_filter_idx = lines.index('anchor "com.apple/*"')
+
+        # nat-anchor must appear BEFORE any filter anchor
+        assert nat_idx < apple_filter_idx, (
+            f"nat-anchor at {nat_idx} must precede filter anchor at {apple_filter_idx}"
+        )
+        # filter anchor at end
+        assert filter_idx > apple_filter_idx
 
     def test_is_idempotent(self, sandbox):
         sandbox.write_text("# stock pf.conf\n")
@@ -126,7 +157,30 @@ class TestInstallPfHook:
         assert "already" in msg.lower()
         # File contents unchanged on second run — no duplicate lines.
         assert sandbox.read_text() == after_first
-        assert after_first.count('anchor "com.safeyolo"') == 2  # "anchor" + "load anchor"
+        # "anchor" appears 3 times: nat-anchor, anchor, load anchor
+        assert after_first.count('anchor "com.safeyolo"') == 3
+
+    def test_upgrades_when_nat_anchor_missing(self, sandbox):
+        """Pre-NAT installs have anchor + load but no nat-anchor.
+        Re-running setup pf adds the missing nat-anchor in the right spot."""
+        _, anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        sandbox.write_text(
+            'scrub-anchor "com.apple/*"\n'
+            'nat-anchor "com.apple/*"\n'
+            'rdr-anchor "com.apple/*"\n'
+            'anchor "com.apple/*"\n'
+            f'{anchor_line}\n'
+            f'{load_line}\n'
+        )
+        changed, msg = setup_mod._install_pf_hook("com.safeyolo")
+        assert changed is True
+        assert "nat-anchor" in msg
+
+        text = sandbox.read_text()
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        nat_idx = lines.index('nat-anchor "com.safeyolo"')
+        apple_filter_idx = lines.index('anchor "com.apple/*"')
+        assert nat_idx < apple_filter_idx
 
     def test_refuses_on_partial_state(self, sandbox):
         # Only the `anchor` line is present; load line is missing.
@@ -157,7 +211,8 @@ class TestInstallPfHook:
         sandbox.write_text("# stock pf.conf\n")
         setup_mod._install_pf_hook("com.safeyolo-test")
         text = sandbox.read_text()
-        anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo-test")
+        nat_line, anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo-test")
+        assert nat_line in text
         assert anchor_line in text
         assert load_line in text
 
@@ -234,8 +289,9 @@ class TestSetupPfCommand:
         conf, anchors_dir = sandbox
         result = cli_runner.invoke(app, ["setup", "pf"])
         assert result.exit_code == 0, result.output
-        anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        nat_line, anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
         text = conf.read_text()
+        assert nat_line in text
         assert anchor_line in text
         assert load_line in text
         assert (anchors_dir / "com.safeyolo").exists()
@@ -245,8 +301,9 @@ class TestSetupPfCommand:
         conf, anchors_dir = sandbox
         result = cli_runner.invoke(app, ["setup", "pf", "--test"])
         assert result.exit_code == 0, result.output
-        anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo-test")
+        nat_line, anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo-test")
         text = conf.read_text()
+        assert nat_line in text
         assert anchor_line in text
         assert load_line in text
         assert (anchors_dir / "com.safeyolo-test").exists()
@@ -260,7 +317,7 @@ class TestSetupPfCommand:
         assert result.exit_code == 0
         assert conf.read_text() == first
         # No duplicate hook block.
-        _, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        _, _, load_line = setup_mod._pf_hook_lines("com.safeyolo")
         assert first.count(load_line) == 1
         assert first.count("SafeYolo VM isolation") == 1
 
@@ -342,7 +399,8 @@ class TestSetupPfCommand:
         assert result.exit_code == 1
         assert "Failed to reload pf" in result.output
         # The hook is still on disk (we wrote it before attempting the reload).
-        anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
+        nat_line, anchor_line, load_line = setup_mod._pf_hook_lines("com.safeyolo")
         text = conf.read_text()
+        assert nat_line in text
         assert anchor_line in text
         assert load_line in text

@@ -19,7 +19,6 @@ from typer.testing import CliRunner
 
 from safeyolo.cli import app
 
-
 SUDOERS_PATH = (
     Path(__file__).parent.parent
     / "src"
@@ -81,27 +80,105 @@ class TestLinuxTemplateInvariants:
         assert "mkdir -p /run/safeyolo*" not in sudoers_rules
         assert "mkdir -p /run/safeyolo" in sudoers_rules
 
-    def test_rm_rule_is_scoped_to_agents_dir_placeholder(self, sudoers_rules):
-        """`rm -rf *` would be a generic sudo rm primitive. The rule
-        must be pinned to a single path component under the agents dir.
-        Sudoers `*` does not match `/`, so path traversal is blocked."""
-        assert "rm -rf *" not in sudoers_rules
-        assert "rm -rf %SAFEYOLO_AGENTS_DIR%/*" in sudoers_rules
+    def test_no_rm_rf_rule(self, sudoers_rules):
+        """fuse-overlayfs + squash_to_uid makes all files user-owned.
+        No sudo rm needed — shutil.rmtree handles cleanup."""
+        assert "rm -rf" not in sudoers_rules
 
-    def test_grants_runsc(self, sudoers_rules):
-        """gVisor lifecycle — create/start/kill/delete/exec — all go
-        through runsc. Without this rule, every agent op prompts for sudo."""
-        assert "runsc *" in sudoers_rules
+    def test_no_wildcard_mount(self, sudoers_rules):
+        """mount * is root-equivalent. Only pinned loop mount allowed."""
+        # No `mount *` (bare wildcard)
+        for line in sudoers_rules.splitlines():
+            if "mount" in line and "umount" not in line and "loop" not in line:
+                assert "mount *" not in line, f"Unpinned mount rule: {line}"
 
-    def test_grants_iptables(self, sudoers_rules):
-        """Per-agent egress rules."""
-        assert "iptables *" in sudoers_rules
+    def test_no_wildcard_umount(self, sudoers_rules):
+        """umount * can unmount critical system filesystems."""
+        for line in sudoers_rules.splitlines():
+            if "umount" in line:
+                assert "/tmp/safeyolo-rootfs-mnt" in line, (
+                    f"umount not pinned to extraction mount point: {line}"
+                )
 
-    def test_grants_mount_and_umount(self, sudoers_rules):
-        """Overlayfs mount for rootfs layering + loop mount for base
-        extraction + their teardown on agent remove."""
-        assert "mount *" in sudoers_rules
-        assert "umount *" in sudoers_rules
+    def test_mount_pinned_to_extraction_paths(self, sudoers_rules):
+        r"""Loop mount rule uses pinned ext4 path and fixed mount point.
+        Note: sudoers requires \, to escape commas in arguments."""
+        assert r"mount -o loop\,ro %SAFEYOLO_BASE_EXT4% /tmp/safeyolo-rootfs-mnt" in sudoers_rules
+        assert "umount /tmp/safeyolo-rootfs-mnt" in sudoers_rules
+
+    def test_chown_rule_for_base_rootfs(self, sudoers_rules):
+        """chown rule pinned to base rootfs dest for fuse-overlayfs lowerdir."""
+        assert "chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%" in sudoers_rules
+
+    def test_no_ip_netns_exec(self, sudoers_rules):
+        """ip netns exec allows running arbitrary binaries as root.
+        The template must use ip -n instead."""
+        assert "ip netns exec" not in sudoers_rules
+        # No blanket `ip netns *` — must be scoped to add/del
+        assert "ip netns *" not in sudoers_rules
+
+    def test_ip_netns_scoped_to_safeyolo_prefix(self, sudoers_rules):
+        """Namespace operations must be limited to safeyolo-* names."""
+        assert "ip netns add safeyolo-*" in sudoers_rules
+        assert "ip netns del safeyolo-*" in sudoers_rules
+
+    def test_ip_link_scoped_to_veth_prefix(self, sudoers_rules):
+        """Host-side veth operations scoped to veth-sy* interface names."""
+        # No blanket `ip link *`
+        assert "/ip link *\\" not in sudoers_rules and \
+               "/ip link *\n" not in sudoers_rules
+        assert "ip link add veth-sy*" in sudoers_rules
+        assert "ip link del veth-sy*" in sudoers_rules
+        assert "ip link set veth-sy* up" in sudoers_rules
+
+    def test_ip_addr_scoped_to_veth_prefix(self, sudoers_rules):
+        """Host-side addr operations scoped to veth-sy* interfaces."""
+        assert "ip addr add * dev veth-sy*" in sudoers_rules
+
+    def test_ip_n_grants_for_guest_side_config(self, sudoers_rules):
+        """Guest-side config uses ip -n safeyolo-* (not ip netns exec)."""
+        assert "ip -n safeyolo-* addr *" in sudoers_rules
+        assert "ip -n safeyolo-* link *" in sudoers_rules
+        assert "ip -n safeyolo-* route *" in sudoers_rules
+
+    def test_runsc_pinned_to_safeyolo_state_dir(self, sudoers_rules):
+        """runsc rules must pin --root /run/safeyolo so they can't operate
+        on containers outside SafeYolo's state directory."""
+        assert "runsc --root /run/safeyolo" in sudoers_rules
+        # No blanket `runsc *` — must be subcommand-specific.
+        for line in sudoers_rules.splitlines():
+            if "runsc" in line:
+                assert "--root /run/safeyolo" in line, (
+                    f"runsc rule without --root pinning: {line}"
+                )
+
+    def test_runsc_enumerates_subcommands(self, sudoers_rules):
+        """Each runsc subcommand must be explicitly listed."""
+        for subcmd in ("create", "start", "state", "kill", "delete", "exec"):
+            assert f"runsc --root /run/safeyolo {subcmd} *" in sudoers_rules or \
+                   f"runsc --root /run/safeyolo --platform=kvm {subcmd} *" in sudoers_rules or \
+                   f"runsc --root /run/safeyolo --platform=systrap {subcmd} *" in sudoers_rules, \
+                   f"Missing runsc subcommand grant: {subcmd}"
+
+    def test_nft_scoped_to_safeyolo_table(self, sudoers_rules):
+        """nft rules must be scoped to `table ip safeyolo` only.
+        No flush ruleset, no operations on other tables."""
+        assert "nft add table ip safeyolo" in sudoers_rules
+        assert "nft delete table ip safeyolo" in sudoers_rules
+        assert "nft flush table ip safeyolo" in sudoers_rules
+        assert "nft list table ip safeyolo" in sudoers_rules
+        assert "nft add chain ip safeyolo *" in sudoers_rules
+        assert "nft add rule ip safeyolo *" in sudoers_rules
+        # Must NOT have blanket iptables or nft -f
+        assert "iptables *" not in sudoers_rules
+        assert "nft -f" not in sudoers_rules
+        assert "flush ruleset" not in sudoers_rules
+
+    def test_grants_pinned_mount_and_umount(self, sudoers_rules):
+        """Only the one-time base extraction mount is granted, pinned
+        to exact paths. No wildcard mount/umount."""
+        assert "mount -o loop" in sudoers_rules
+        assert "umount /tmp/safeyolo-rootfs-mnt" in sudoers_rules
 
 
 class TestSetupSudoersOnLinux:
@@ -154,21 +231,82 @@ class TestSetupSudoersOnLinux:
         # Belt-and-suspenders: no wildcard remains in the cp rule.
         assert "/tmp/safeyolo-rootfs-mnt/. *" not in body
 
-    def test_substitutes_agents_dir_placeholder(self, tmp_path):
-        """The rm rule's agents-dir placeholder must be rendered into
-        the literal resolved agents dir path."""
+    def test_substitutes_ext4_and_chown_placeholders(self, tmp_path):
+        """The mount and chown rules must have all placeholders resolved."""
         from safeyolo.commands.setup import _resolve_sudoers_body
 
-        fake_agents = tmp_path / "fake-safeyolo" / "agents"
+        fake_share = tmp_path / "fake-safeyolo" / "share"
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
             patch.dict("os.environ", {"USER": "alice"}, clear=False),
-            patch("safeyolo.config.get_agents_dir", return_value=fake_agents),
+            patch("safeyolo.config.get_share_dir", return_value=fake_share),
         ):
             body = _resolve_sudoers_body(SUDOERS_PATH)
 
-        assert "%SAFEYOLO_AGENTS_DIR%" not in body, "Placeholder unresolved"
-        assert f"/usr/bin/rm -rf {fake_agents}/*" in body
+        assert "%SAFEYOLO_BASE_EXT4%" not in body, "ext4 placeholder unresolved"
+        expected_ext4 = str(fake_share / "rootfs-base.ext4")
+        assert f"mount -o loop\\,ro {expected_ext4} /tmp/safeyolo-rootfs-mnt" in body
+
+        assert "%SAFEYOLO_CHOWN_TARGET%" not in body, "chown placeholder unresolved"
+        # chown target should be uid:gid of the alice user (or alice:alice fallback)
+        assert "chown -R" in body
+
+
+class TestSetupSudoersOnDarwin:
+
+    def test_substitutes_safeyolo_user_placeholder_with_username(self, tmp_path):
+        """Darwin template uses %safeyolo_user, substituted at install time."""
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        macos_template = (
+            Path(__file__).parent.parent
+            / "src" / "safeyolo" / "templates" / "safeyolo.sudoers"
+        )
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch.dict("os.environ", {"USER": "craigb"}, clear=False),
+        ):
+            body = _resolve_sudoers_body(macos_template)
+
+        assert "%safeyolo_user" not in body, "Placeholder left unresolved"
+        assert "craigb ALL=(root) NOPASSWD" in body
+
+
+class TestUsernameValidation:
+
+    def test_rejects_username_with_newline(self):
+        import pytest
+
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice\nALL=(ALL) NOPASSWD: ALL"}, clear=False),
+        ):
+            with pytest.raises(RuntimeError, match="unsafe for sudoers"):
+                _resolve_sudoers_body(SUDOERS_PATH)
+
+    def test_rejects_username_with_spaces(self):
+        import pytest
+
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice bob"}, clear=False),
+        ):
+            with pytest.raises(RuntimeError, match="unsafe for sudoers"):
+                _resolve_sudoers_body(SUDOERS_PATH)
+
+    def test_accepts_valid_username(self):
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice_bob-2"}, clear=False),
+        ):
+            body = _resolve_sudoers_body(SUDOERS_PATH)
+            assert "alice_bob-2 ALL=(root) NOPASSWD" in body
 
 
 class TestSetupTopLevelCheck:
