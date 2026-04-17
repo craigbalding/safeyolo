@@ -203,25 +203,25 @@ def _cleanup_sockets() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _forward(src: socket.socket, dst: socket.socket, label: str = "") -> None:
+def _forward(src: socket.socket, dst: socket.socket) -> None:
     """Copy src -> dst until EOF, then half-close dst's write side."""
-    _log = logging.getLogger(__name__)
-    total = 0
-    err_info = None
     try:
         while True:
             data = src.recv(65536)
             if not data:
                 break
             dst.sendall(data)
-            total += len(data)
-    except (BrokenPipeError, ConnectionResetError, OSError) as exc:
-        err_info = f"{type(exc).__name__}:{exc}"
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        # Either end hung up mid-stream. Normal during client disconnects
+        # (agent CLI ^C, mitmproxy restart). Let the finally block half-close
+        # the other side so its pump thread exits cleanly.
+        pass
     finally:
-        _log.info("pump %s %d bytes err=%s", label, total, err_info)
         try:
             dst.shutdown(socket.SHUT_WR)
         except OSError:
+            # Peer socket may already be closed — the shutdown is just a
+            # signal for the opposite-direction thread to notice EOF.
             pass
 
 
@@ -253,20 +253,12 @@ def _handle_client(
         uds_conn.close()
         return
 
-    _log = logging.getLogger(__name__)
-    _log.info("relay start agent=%s local-tcp=%s upstream=%s:%d",
-              agent, tcp.getsockname(), upstream[0], upstream[1])
-    t1 = threading.Thread(
-        target=_forward, args=(uds_conn, tcp, f"{agent}-uds->tcp"), daemon=True,
-    )
-    t2 = threading.Thread(
-        target=_forward, args=(tcp, uds_conn, f"{agent}-tcp->uds"), daemon=True,
-    )
+    t1 = threading.Thread(target=_forward, args=(uds_conn, tcp), daemon=True)
+    t2 = threading.Thread(target=_forward, args=(tcp, uds_conn), daemon=True)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
-    _log.info("relay end agent=%s", agent)
     uds_conn.close()
     tcp.close()
 
@@ -438,11 +430,15 @@ def _daemon_main() -> int:
                 lst: _Listener = key.data
                 try:
                     conn, _ = lst.server.accept()
-                except OSError as exc:
-                    log_.warning("accept on %s failed: %s: %s",
-                                 lst.path, type(exc).__name__, exc)
+                except OSError:
                     continue
-                log_.info("accept agent=%s from=%s", lst.name, lst.path)
+                # Darwin inherits the listener's O_NONBLOCK flag across
+                # accept() — the pump threads' recv() then returns EAGAIN
+                # immediately and tears down the flow after the request is
+                # sent but before the response arrives. Force blocking on
+                # the accepted socket so recv() waits as intended. Harmless
+                # on Linux (which doesn't inherit the flag there).
+                conn.setblocking(True)
                 threading.Thread(
                     target=_handle_client,
                     args=(conn, upstream, lst.ip, lst.name),
