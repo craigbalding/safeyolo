@@ -323,13 +323,15 @@ do {
     // Without --proxy-socket the VM falls back on the legacy feth+pf
     // network path; once all callers pass a socket this branch becomes
     // unconditional and the feth path can be removed.
+    var proxyRelay: VSockProxyRelay? = nil
     if !config.proxySocketPath.isEmpty {
-        let proxyRelay = VSockProxyRelay(
+        proxyRelay = VSockProxyRelay(
             vm: vm, queue: vmQueue,
             socketPath: config.proxySocketPath,
         )
-        proxyRelay.start()
+        proxyRelay?.start()
     }
+    _ = proxyRelay  // keep the VZVirtioSocketListener alive for process lifetime
 
     // Start the host-side shell bridge if a socket path was provided.
     // Each accept on the host UDS dials guest:2220 where socat proxies
