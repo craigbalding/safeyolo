@@ -192,36 +192,36 @@ def _check_firewall_darwin() -> DiagResult:
 
 
 def _check_firewall_linux() -> DiagResult:
-    """Linux: SAFEYOLO_<base> iptables chain present."""
-    from ..platform.linux import CHAIN_NAME
+    """Linux: SafeYolo nftables table present."""
+    from ..platform.linux import NFT_TABLE
 
-    result = _sudo_n(["iptables", "-L", CHAIN_NAME, "-n"])
+    result = _sudo_n(["nft", "list", "table", "ip", NFT_TABLE])
     if result is None:
         return DiagResult(
             name="Firewall enforcement",
             status="warn",
-            message="Could not invoke iptables (missing or timed out)",
+            message="Could not invoke nft (missing or timed out)",
         )
-    if result.returncode == 0:
+    if result.returncode == 0 and "chain forward" in (result.stdout or ""):
         return DiagResult(
             name="Firewall enforcement",
             status="pass",
-            message=f"iptables chain {CHAIN_NAME} present",
+            message=f"nftables table {NFT_TABLE} present with forward chain",
         )
     stderr = (result.stderr or "").lower()
     if _sudo_needs_password(result):
         return DiagResult(
             name="Firewall enforcement",
             status="warn",
-            message="iptables not queryable without sudo cached credentials",
+            message="nft not queryable without sudo cached credentials",
             remediation="safeyolo setup sudoers (or `sudo -v` before running doctor)",
         )
-    if "no chain" in stderr or "does not exist" in stderr:
+    if "no such file" in stderr or "does not exist" in stderr:
         return DiagResult(
             name="Firewall enforcement",
             status="warn",
             message=(
-                f"iptables chain {CHAIN_NAME} not present "
+                f"nftables table {NFT_TABLE} not present "
                 f"(expected if no agent has started yet)"
             ),
             remediation="Run an agent to trigger rule install, or `safeyolo agent run <name>`",
@@ -229,7 +229,7 @@ def _check_firewall_linux() -> DiagResult:
     return DiagResult(
         name="Firewall enforcement",
         status="fail",
-        message=f"iptables check failed: {result.stderr.strip()}",
+        message=f"nft check failed: {result.stderr.strip()}",
     )
 
 

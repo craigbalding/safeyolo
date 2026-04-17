@@ -26,7 +26,12 @@ from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
-# iptables chain name, scoped for multi-instance isolation
+# nftables table name — all SafeYolo firewall rules live in this table.
+# Operations are scoped to this table via sudoers patterns, so SafeYolo
+# can never touch UFW, Tailscale, Docker, or any other firewall rules.
+NFT_TABLE = "safeyolo"
+
+# Legacy iptables chain name — kept for doctor.py diagnostics during migration.
 CHAIN_NAME = os.environ.get("SAFEYOLO_FW_CHAIN", "SAFEYOLO")
 
 # runsc state directory
@@ -248,78 +253,70 @@ class LinuxPlatform(AgentPlatform):
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
-        """Load iptables rules: allow only proxy egress per subnet."""
+        """Load nftables rules: proxy-only egress per subnet.
+
+        All rules live in `table ip safeyolo` — a dedicated nftables table
+        that cannot interact with UFW, Tailscale, Docker, or any other
+        firewall. Sudoers rules are scoped to this table name, so even a
+        compromised SafeYolo process cannot modify other tables.
+
+        Cleanup is a single `nft delete table ip safeyolo` — no stale rule
+        accumulation, no need to track what was added.
+        """
         outbound_if = _detect_outbound_interface()
 
-        # Create chain (ignore if exists)
-        _sudo(["iptables", "-N", CHAIN_NAME], check=False)
+        # Create table (idempotent — nft add table is a no-op if it exists,
+        # but any existing rules are preserved. Flush first to ensure a
+        # clean slate on repeated load calls.)
+        _sudo(["nft", "add", "table", "ip", NFT_TABLE], check=False)
+        _sudo(["nft", "flush", "table", "ip", NFT_TABLE])
+
+        # Create chains with netfilter hooks. The chain spec (braces,
+        # hook type, priority) must be a single string argument to nft.
+        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "forward",
+               "{ type filter hook forward priority 0; policy accept; }"])
+        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "input",
+               "{ type filter hook input priority 0; policy accept; }"])
+        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "postrouting",
+               "{ type nat hook postrouting priority 100; policy accept; }"])
 
         for subnet in active_subnets:
             host_ip = subnet.replace(".0/24", ".1")
 
-            # Allow proxy port to host
-            _sudo(["iptables", "-A", CHAIN_NAME, "-s", subnet,
-                   "-d", host_ip, "-p", "tcp", "--dport", str(proxy_port),
-                   "-j", "ACCEPT"])
-            # Block admin port
-            _sudo(["iptables", "-A", CHAIN_NAME, "-s", subnet,
-                   "-d", host_ip, "-p", "tcp", "--dport", str(admin_port),
-                   "-j", "DROP"])
-            # Block everything else from this subnet
-            _sudo(["iptables", "-A", CHAIN_NAME, "-s", subnet, "-j", "DROP"])
+            # FORWARD: allow proxy, block admin, block rest
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(proxy_port), "accept"])
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(admin_port), "drop"])
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
+                   "ip", "saddr", subnet, "drop"])
 
-            # Wire chain into FORWARD
-            _sudo(["iptables", "-I", "FORWARD", "-s", subnet, "-j", CHAIN_NAME])
+            # INPUT: allow proxy port, block admin port (for hosts with
+            # default-deny INPUT, e.g. Ubuntu with UFW)
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(proxy_port), "accept"])
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
+                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
+                   "tcp", "dport", str(admin_port), "drop"])
 
-            # NAT for proxy upstream connections
-            _sudo(["iptables", "-t", "nat", "-A", "POSTROUTING",
-                   "-s", subnet, "-o", outbound_if, "-j", "MASQUERADE"])
+            # NAT: masquerade outbound traffic
+            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "postrouting",
+                   "ip", "saddr", subnet, "oifname", outbound_if,
+                   "masquerade"])
 
-            # INPUT chain: sandbox → host:proxy_port is destined for a local
-            # IP (the feth host side), so it hits INPUT, not FORWARD. On
-            # hosts with default-deny INPUT (e.g. Ubuntu with UFW active)
-            # the FORWARD rule above isn't enough — the packet gets dropped
-            # before ever reaching mitmproxy. Also explicitly DROP admin
-            # port on INPUT so a permissive INPUT policy doesn't let the
-            # agent reach it. Use -I so these land ahead of any drop rule.
-            _sudo(["iptables", "-I", "INPUT", "-s", subnet, "-d", host_ip,
-                   "-p", "tcp", "--dport", str(admin_port), "-j", "DROP"])
-            _sudo(["iptables", "-I", "INPUT", "-s", subnet, "-d", host_ip,
-                   "-p", "tcp", "--dport", str(proxy_port), "-j", "ACCEPT"])
-
-        log.info("iptables rules loaded for chain %s", CHAIN_NAME)
+        log.info("nftables rules loaded in table %s", NFT_TABLE)
 
     def unload_firewall_rules(self) -> None:
-        """Flush and delete iptables chain."""
-        # Remove references from FORWARD
-        while True:
-            result = _sudo(["iptables", "-D", "FORWARD", "-j", CHAIN_NAME], check=False)
-            if result.returncode != 0:
-                break  # No more references
+        """Remove all SafeYolo firewall rules by deleting the nftables table.
 
-        # Flush and delete chain
-        _sudo(["iptables", "-F", CHAIN_NAME], check=False)
-        _sudo(["iptables", "-X", CHAIN_NAME], check=False)
-
-        # Clean up NAT + INPUT rules. Best-effort — stale rules are harmless.
-        for idx in range(10):
-            alloc = allocate_subnet(idx)
-            host_ip = alloc["subnet"].replace(".0/24", ".1")
-            _sudo(["iptables", "-t", "nat", "-D", "POSTROUTING",
-                   "-s", alloc["subnet"], "-j", "MASQUERADE"], check=False)
-            # We don't know the proxy/admin ports at teardown time (they
-            # come from runtime config), so loop the known defaults + a
-            # small range of likely overrides. Each -D is a no-op if the
-            # rule doesn't exist. Keeps teardown self-contained.
-            for port in (8080, 8090, 9090):
-                _sudo(["iptables", "-D", "INPUT", "-s", alloc["subnet"],
-                       "-d", host_ip, "-p", "tcp", "--dport", str(port),
-                       "-j", "ACCEPT"], check=False)
-                _sudo(["iptables", "-D", "INPUT", "-s", alloc["subnet"],
-                       "-d", host_ip, "-p", "tcp", "--dport", str(port),
-                       "-j", "DROP"], check=False)
-
-        log.info("iptables rules unloaded for chain %s", CHAIN_NAME)
+        One command removes everything — chains, rules, NAT. No stale rules,
+        no loop-and-delete, no risk of touching other tables.
+        """
+        _sudo(["nft", "delete", "table", "ip", NFT_TABLE], check=False)
+        log.info("nftables table %s deleted", NFT_TABLE)
 
     # --- Rootfs ---
 

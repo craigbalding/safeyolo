@@ -20,7 +20,9 @@
 #   ip -n safeyolo-* ...         Configure guest-side networking (no exec)
 #   ip link add/del/set veth-sy* Host-side veth management
 #   ip addr add * dev veth-sy*   IP assignment on veth interfaces
-#   iptables *         Firewall rules: proxy-only egress per agent
+#   nft add/flush/delete/list table ip safeyolo  Firewall table lifecycle
+#   nft add chain ip safeyolo *    Create chains in safeyolo table
+#   nft add rule ip safeyolo *     Add rules to safeyolo table
 #   sysctl             Enable IP forwarding for NAT
 #   mount -o loop,ro   One-time base rootfs extraction (pinned paths)
 #   umount             Unmount base rootfs after extraction (pinned path)
@@ -61,9 +63,16 @@
                                 /sbin/ip -n safeyolo-* link *, \
                                 /sbin/ip -n safeyolo-* route *
 
-# Firewall rules
-%safeyolo ALL=(root) NOPASSWD: /usr/sbin/iptables *, \
-                                /sbin/iptables *
+# Firewall — nftables, scoped to `table ip safeyolo` only.
+# Cannot touch UFW, Tailscale, Docker, or any other table.
+# Verified: testsy user with ONLY these rules cannot create other tables,
+# flush the ruleset, or list/modify the system filter table.
+%safeyolo ALL=(root) NOPASSWD: /usr/sbin/nft add table ip safeyolo, \
+                                /usr/sbin/nft delete table ip safeyolo, \
+                                /usr/sbin/nft flush table ip safeyolo, \
+                                /usr/sbin/nft list table ip safeyolo, \
+                                /usr/sbin/nft add chain ip safeyolo *, \
+                                /usr/sbin/nft add rule ip safeyolo *
 
 # IP forwarding
 %safeyolo ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.ipv4.ip_forward=1, \

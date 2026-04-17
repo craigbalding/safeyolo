@@ -160,9 +160,19 @@ class TestLinuxTemplateInvariants:
                    f"runsc --root /run/safeyolo --platform=systrap {subcmd} *" in sudoers_rules, \
                    f"Missing runsc subcommand grant: {subcmd}"
 
-    def test_grants_iptables(self, sudoers_rules):
-        """Per-agent egress rules."""
-        assert "iptables *" in sudoers_rules
+    def test_nft_scoped_to_safeyolo_table(self, sudoers_rules):
+        """nft rules must be scoped to `table ip safeyolo` only.
+        No flush ruleset, no operations on other tables."""
+        assert "nft add table ip safeyolo" in sudoers_rules
+        assert "nft delete table ip safeyolo" in sudoers_rules
+        assert "nft flush table ip safeyolo" in sudoers_rules
+        assert "nft list table ip safeyolo" in sudoers_rules
+        assert "nft add chain ip safeyolo *" in sudoers_rules
+        assert "nft add rule ip safeyolo *" in sudoers_rules
+        # Must NOT have blanket iptables or nft -f
+        assert "iptables *" not in sudoers_rules
+        assert "nft -f" not in sudoers_rules
+        assert "flush ruleset" not in sudoers_rules
 
     def test_grants_pinned_mount_and_umount(self, sudoers_rules):
         """Only the one-time base extraction mount is granted, pinned
