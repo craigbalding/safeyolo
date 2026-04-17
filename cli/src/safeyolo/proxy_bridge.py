@@ -253,12 +253,16 @@ def _handle_client(
         uds_conn.close()
         return
 
+    _log = logging.getLogger(__name__)
+    _log.info("relay start agent=%s local-tcp=%s upstream=%s:%d",
+              agent, tcp.getsockname(), upstream[0], upstream[1])
     t1 = threading.Thread(target=_forward, args=(uds_conn, tcp), daemon=True)
     t2 = threading.Thread(target=_forward, args=(tcp, uds_conn), daemon=True)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
+    _log.info("relay end agent=%s", agent)
     uds_conn.close()
     tcp.close()
 
@@ -430,8 +434,11 @@ def _daemon_main() -> int:
                 lst: _Listener = key.data
                 try:
                     conn, _ = lst.server.accept()
-                except OSError:
+                except OSError as exc:
+                    log_.warning("accept on %s failed: %s: %s",
+                                 lst.path, type(exc).__name__, exc)
                     continue
+                log_.info("accept agent=%s from=%s", lst.name, lst.path)
                 threading.Thread(
                     target=_handle_client,
                     args=(conn, upstream, lst.ip, lst.name),
