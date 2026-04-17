@@ -38,6 +38,15 @@ class VMError(Exception):
 
 def find_vm_helper() -> Path:
     """Find the safeyolo-vm binary."""
+    # Dev override: SAFEYOLO_VM_HELPER lets you point a single agent run
+    # at a test binary without replacing ~/.safeyolo/bin/safeyolo-vm.
+    # Essential for testing VM helper changes without disrupting running agents.
+    override = os.environ.get("SAFEYOLO_VM_HELPER")
+    if override:
+        override_path = Path(override)
+        if override_path.exists() and os.access(override_path, os.X_OK):
+            return override_path
+
     # Check ~/.safeyolo/bin/ first
     local = get_config_dir() / "bin" / VM_HELPER_NAME
     if local.exists() and os.access(local, os.X_OK):

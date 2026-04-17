@@ -415,6 +415,12 @@ def _run_agent(
     memory_for_run = 4096
     snapshot_version: dict | None = None
     snapshot_mode = "passthrough"
+    if no_snapshot and platform_supports_snapshot():
+        console.print(
+            "  [dim]Note: warm-boot snapshot disabled. "
+            "Re-enable with [bold]--snapshot[/bold] once the VZ save "
+            "incompatibility is fixed (cold-boot only for now).[/dim]"
+        )
     _t("compute_snapshot_version (hash kernel/initrd/rootfs/scripts)")
     if not no_snapshot and platform_supports_snapshot():
         snapshot_version = compute_snapshot_version(
@@ -1112,10 +1118,12 @@ def run(
         "--dangerously-allow-unowned",
         help="Allow mounting directories you don't own",
     ),
-    no_snapshot: bool = typer.Option(
+    snapshot: bool = typer.Option(
         False,
-        "--no-snapshot",
-        help="Skip snapshot capture/restore for this run (debug aid; existing snapshot untouched)",
+        "--snapshot",
+        help="Enable warm-boot snapshot capture/restore (currently disabled by "
+             "default while we investigate a VZ save incompatibility with the "
+             "new vsock proxy relay).",
     ),
 ) -> None:
     """Run an existing agent container.
@@ -1171,7 +1179,7 @@ def run(
         extra_mounts=parsed_mounts if parsed_mounts else None,
         extra_ports=parsed_ports if parsed_ports else None,
         detach=detach,
-        no_snapshot=no_snapshot,
+        no_snapshot=not snapshot,
     )
     raise typer.Exit(exit_code)
 
