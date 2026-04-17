@@ -252,6 +252,19 @@ def stop_all() -> None:
     # Stop proxy
     if is_proxy_running():
         stop_proxy()
+
+    # Stop the UDS bridge only here — `safeyolo stop` deliberately keeps
+    # it alive so running agents don't lose their /safeyolo/proxy.sock
+    # inode when mitmproxy restarts. With all agents stopped above, no
+    # one is holding the handle, so tearing the bridge down is safe.
+    try:
+        from ..proxy_bridge import stop_proxy_bridge
+        stop_proxy_bridge()
+    except Exception as exc:
+        import logging
+        logging.getLogger("safeyolo.lifecycle").warning(
+            "proxy bridge stop failed: %s: %s", type(exc).__name__, exc)
+
     console.print("[green]Stopped.[/green]")
 
 
