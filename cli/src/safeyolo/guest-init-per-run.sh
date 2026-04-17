@@ -83,6 +83,8 @@ fi
 # side doesn't listen, so no connections are ever accepted.
 # --------------------------------------------------------------------------
 if [ -x /safeyolo/guest-shell-bridge ]; then
+    # Pre-check python3 + AF_VSOCK
+    /usr/bin/python3 -c "import socket; assert hasattr(socket, 'AF_VSOCK'); print('[per-run] python AF_VSOCK available')" >/dev/console 2>&1 || echo "[per-run] python AF_VSOCK MISSING" >/dev/console
     # Probe sshd reachability so failures are diagnosable from the host.
     (
       (echo > /dev/tcp/127.0.0.1/22) 2>/dev/null \
@@ -97,8 +99,16 @@ if [ -x /safeyolo/guest-shell-bridge ]; then
              echo "[per-run] ip addr:" > /dev/console
              ip -o addr 2>/dev/null > /dev/console || ifconfig -a 2>/dev/null > /dev/console || true; }
     ) 2>/dev/null || true
-    setsid nohup /safeyolo/guest-shell-bridge >/dev/console 2>&1 </dev/null &
-    echo "[per-run] started guest-shell-bridge (pid=$!)" > /dev/console 2>/dev/null || true
+    setsid nohup /safeyolo/guest-shell-bridge >/var/log/shell-bridge.log 2>&1 </dev/null &
+    SB_PID=$!
+    echo "[per-run] started guest-shell-bridge (pid=$SB_PID)" > /dev/console 2>/dev/null || true
+    sleep 0.5
+    if kill -0 "$SB_PID" 2>/dev/null; then
+        echo "[per-run] guest-shell-bridge alive" > /dev/console
+    else
+        echo "[per-run] guest-shell-bridge EXITED; log:" > /dev/console
+        cat /var/log/shell-bridge.log > /dev/console 2>/dev/null || true
+    fi
 fi
 
 # --------------------------------------------------------------------------
