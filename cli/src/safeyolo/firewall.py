@@ -30,11 +30,13 @@ from pathlib import Path
 
 log = logging.getLogger("safeyolo.firewall")
 
-# Exactly two anchor names are permitted. This is an allowlist, not a wildcard:
-# production uses com.safeyolo; the blackbox test harness uses com.safeyolo-test.
-# Any other value is rejected at import time to prevent arbitrary anchor names
-# leaking into sudo-privileged pfctl calls.
-ALLOWED_ANCHORS = ("com.safeyolo", "com.safeyolo-test")
+# Exactly three anchor names are permitted. This is an allowlist, not a
+# wildcard: production uses com.safeyolo; the blackbox test harness uses
+# com.safeyolo-test; a dev instance (per-operator sandbox, non-interfering
+# with prod) uses com.safeyolo-dev. Any other value is rejected at import
+# time to prevent arbitrary anchor names leaking into sudo-privileged
+# pfctl calls.
+ALLOWED_ANCHORS = ("com.safeyolo", "com.safeyolo-test", "com.safeyolo-dev")
 DEFAULT_ANCHOR = "com.safeyolo"
 
 
