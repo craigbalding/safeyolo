@@ -3,6 +3,7 @@
 import grp
 import os
 import platform as _platform
+import re as _re
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,6 +14,8 @@ from rich.console import Console
 from ..vm import check_guest_images, guest_image_status
 
 console = Console()
+
+_VALID_USERNAME = _re.compile(r"^[a-z_][a-z0-9_-]*$")
 
 setup_app = typer.Typer(
     name="setup",
@@ -100,8 +103,8 @@ def setup() -> None:
         state = _pf_conf_state("com.safeyolo")
         if state == "present":
             console.print(f"  [green]OK[/green]  pf anchor hook installed in {_PF_CONF_PATH}")
-        elif state == "absent":
-            console.print(f"  [yellow]WARN[/yellow]  pf anchor hook not installed in {_PF_CONF_PATH}")
+        elif state in ("absent", "needs_nat_anchor"):
+            console.print(f"  [yellow]WARN[/yellow]  pf anchor hook incomplete in {_PF_CONF_PATH}")
             console.print("    Run [bold]safeyolo setup pf[/bold] to install")
             all_ok = False
         else:
@@ -246,24 +249,30 @@ def _sudoers_template_and_summary() -> tuple[Path, str, str]:
 def _resolve_sudoers_body(template_path: Path) -> str:
     """Read the template and apply platform-specific substitutions.
 
-    Linux substitutions:
-      - `%safeyolo` → invoking user's username. The placeholder group
-        doesn't exist on default distros, so without this substitution
-        the rules would never match any user.
-      - `%SAFEYOLO_BASE_ROOTFS_DEST%` → the resolved base rootfs path
-        (e.g. `/home/alice/.safeyolo/share/rootfs-base`). Pinning the
-        destination literal kills the wildcard in the `cp -a` rule, so
-        it can't be used as a generic `sudo cp` primitive.
+    Both platforms substitute the invoking user's username into the
+    template so that rules are scoped to a single operator, not a
+    broad group like macOS %staff (which includes ALL local users).
 
-    Darwin uses `%staff` (a default macOS group) and is left untouched.
+    Linux additionally substitutes rootfs and agents-dir paths to
+    pin the cp and rm rules to literal destinations.
     """
     content = template_path.read_text()
-    if _platform.system() == "Linux":
-        username = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
-        if not username:
-            raise RuntimeError(
-                "Cannot determine invoking user (neither $SUDO_USER nor $USER is set)."
-            )
+
+    username = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if not username:
+        raise RuntimeError(
+            "Cannot determine invoking user (neither $SUDO_USER nor $USER is set)."
+        )
+    if not _VALID_USERNAME.match(username):
+        raise RuntimeError(
+            f"Username {username!r} contains characters unsafe for sudoers. "
+            f"Expected pattern: {_VALID_USERNAME.pattern}"
+        )
+
+    system = _platform.system()
+    if system == "Darwin":
+        content = content.replace("%safeyolo_user", username)
+    elif system == "Linux":
         # `%safeyolo` → bare username (drops the `%` group prefix).
         content = content.replace("%safeyolo", username)
 
@@ -274,8 +283,7 @@ def _resolve_sudoers_body(template_path: Path) -> str:
         base_rootfs_dest = str(get_share_dir() / "rootfs-base")
         content = content.replace("%SAFEYOLO_BASE_ROOTFS_DEST%", base_rootfs_dest)
 
-        # Pin the rm -rf rule to this instance's agents dir; sudoers `*`
-        # does not match `/`, so path traversal outside the dir is blocked.
+        # Pin the rm -rf rule to this instance's agents dir.
         agents_dir = str(get_agents_dir())
         content = content.replace("%SAFEYOLO_AGENTS_DIR%", agents_dir)
 
@@ -379,10 +387,16 @@ _PF_CONF_PATH = Path("/etc/pf.conf")
 _PF_ANCHORS_DIR = Path("/etc/pf.anchors")
 
 
-def _pf_hook_lines(anchor: str) -> tuple[str, str]:
-    """Return the (anchor, load) lines for the given anchor name."""
+def _pf_hook_lines(anchor: str) -> tuple[str, str, str]:
+    """Return the (nat_anchor, anchor, load) lines for the given anchor name.
+
+    pf requires rules in strict order: normalization → translation → filtering.
+    nat-anchor is a translation rule; anchor/load are filtering directives.
+    They must be inserted at different positions in pf.conf.
+    """
     anchor_file = _PF_ANCHORS_DIR / anchor
     return (
+        f'nat-anchor "{anchor}"',
         f'anchor "{anchor}"',
         f'load anchor "{anchor}" from "{anchor_file}"',
     )
@@ -391,12 +405,11 @@ def _pf_hook_lines(anchor: str) -> tuple[str, str]:
 def _pf_conf_state(anchor: str) -> str:
     """Return 'present', 'absent', or a description of an unexpected state.
 
-    Matches lines exactly (after stripping whitespace and skipping comments).
-    This matters because `anchor "com.safeyolo"` is a substring of
-    `load anchor "com.safeyolo" from "..."`, so substring matching would
-    misreport a pf.conf that has only the load line as "present".
+    Checks for all three hook lines: nat-anchor (translation), anchor
+    (filtering), and load anchor (directive). Matches lines exactly
+    (after stripping whitespace and skipping comments).
     """
-    anchor_line, load_line = _pf_hook_lines(anchor)
+    nat_line, anchor_line, load_line = _pf_hook_lines(anchor)
     try:
         content = _PF_CONF_PATH.read_text()
     except FileNotFoundError:
@@ -404,6 +417,7 @@ def _pf_conf_state(anchor: str) -> str:
     except PermissionError as err:
         return f"unreadable: {err}"
 
+    has_nat = False
     has_anchor = False
     has_load = False
     has_conflicting_load = False
@@ -412,28 +426,79 @@ def _pf_conf_state(anchor: str) -> str:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if line == anchor_line:
+        if line == nat_line:
+            has_nat = True
+        elif line == anchor_line:
             has_anchor = True
         elif line == load_line:
             has_load = True
         elif line.startswith(load_prefix):
             has_conflicting_load = True
 
-    if has_anchor and has_load:
+    if has_nat and has_anchor and has_load:
         return "present"
-    if not has_anchor and not has_load:
+    if not has_nat and not has_anchor and not has_load:
         if has_conflicting_load:
             return (
                 f"conflict: {_PF_CONF_PATH} already loads anchor "
                 f"{anchor!r} from a different path"
             )
         return "absent"
-    # Partial: one line present, the other missing — don't guess, fail loudly.
-    missing = "anchor" if not has_anchor else "load anchor"
+    # Upgrade path: anchor + load present but nat-anchor missing (pre-NAT installs).
+    if has_anchor and has_load and not has_nat:
+        return "needs_nat_anchor"
+    # Partial: some lines present, others missing in unexpected combinations.
+    present = [n for n, v in [("nat-anchor", has_nat), ("anchor", has_anchor),
+                               ("load anchor", has_load)] if v]
+    missing = [n for n, v in [("nat-anchor", has_nat), ("anchor", has_anchor),
+                               ("load anchor", has_load)] if not v]
     return (
-        f"partial: {_PF_CONF_PATH} contains one of the two expected hook "
-        f"lines for {anchor!r} but not the other (missing {missing!r} line)"
+        f"partial: {_PF_CONF_PATH} has {', '.join(present)} but is missing "
+        f"{', '.join(missing)} for {anchor!r}"
     )
+
+
+def _is_translation_rule(line: str) -> bool:
+    """True for pf translation-class rules (nat-anchor, rdr-anchor, nat, rdr, binat)."""
+    s = line.strip()
+    return s.startswith(("nat-anchor ", "rdr-anchor ", "nat ", "rdr ", "binat "))
+
+
+def _is_filter_anchor(line: str) -> bool:
+    """True for pf filter-class anchor lines (not nat-anchor/rdr-anchor/etc)."""
+    s = line.strip()
+    return s.startswith('anchor "')
+
+
+def _insert_nat_anchor(lines: list[str], nat_line: str) -> list[str]:
+    """Insert nat-anchor in the translation section of pf.conf lines.
+
+    pf requires strict ordering: normalization → translation → filtering.
+    We insert after the last existing translation rule (nat-anchor, rdr-anchor,
+    etc). If none exists, we insert before the first filter anchor.
+    """
+    result = list(lines)
+    last_translation_idx = -1
+    first_filter_idx = None
+
+    for i, raw in enumerate(result):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _is_translation_rule(stripped):
+            last_translation_idx = i
+        elif first_filter_idx is None and _is_filter_anchor(stripped):
+            first_filter_idx = i
+
+    if last_translation_idx >= 0:
+        insert_idx = last_translation_idx + 1
+    elif first_filter_idx is not None:
+        insert_idx = first_filter_idx
+    else:
+        insert_idx = len(result)
+
+    result.insert(insert_idx, nat_line + "\n")
+    return result
 
 
 def _install_pf_hook(anchor: str) -> tuple[bool, str]:
@@ -441,24 +506,21 @@ def _install_pf_hook(anchor: str) -> tuple[bool, str]:
 
     Returns (changed, message). Raises RuntimeError on unexpected pf.conf state
     so the caller can surface a clear error without leaving things half-done.
+
+    Handles two cases:
+      - Fresh install (absent): adds nat-anchor in translation section,
+        anchor + load at end.
+      - Upgrade (needs_nat_anchor): adds only the missing nat-anchor line
+        in the correct position.
     """
     state = _pf_conf_state(anchor)
     if state == "present":
         return False, f"already installed in {_PF_CONF_PATH}"
-    if state != "absent":
+    if state not in ("absent", "needs_nat_anchor"):
         raise RuntimeError(f"Refusing to modify {_PF_CONF_PATH}: {state}")
 
-    anchor_line, load_line = _pf_hook_lines(anchor)
-    block = (
-        f"\n# SafeYolo VM isolation — managed by `safeyolo setup pf`\n"
-        f"{anchor_line}\n"
-        f"{load_line}\n"
-    )
+    nat_line, anchor_line, load_line = _pf_hook_lines(anchor)
 
-    # Read current content and produce a new version; write the full file via
-    # a single `tee` (not `tee -a`) so sudoers can narrowly allow writes only
-    # to /etc/pf.conf. Callers may assume this is idempotent: if the lines are
-    # already present we never get here.
     try:
         current = _PF_CONF_PATH.read_text()
     except FileNotFoundError:
@@ -466,7 +528,22 @@ def _install_pf_hook(anchor: str) -> tuple[bool, str]:
 
     if not current.endswith("\n"):
         current += "\n"
-    new_content = current + block
+
+    lines = current.splitlines(keepends=True)
+
+    # Always ensure nat-anchor is present in the translation section.
+    lines = _insert_nat_anchor(lines, nat_line)
+
+    # For fresh installs, also append the filter anchor + load at end.
+    if state == "absent":
+        filter_block = (
+            f"\n# SafeYolo VM isolation — managed by `safeyolo setup pf`\n"
+            f"{anchor_line}\n"
+            f"{load_line}\n"
+        )
+        lines.append(filter_block)
+
+    new_content = "".join(lines)
 
     proc = subprocess.run(
         ["sudo", "tee", str(_PF_CONF_PATH)],
@@ -474,6 +551,9 @@ def _install_pf_hook(anchor: str) -> tuple[bool, str]:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to write {_PF_CONF_PATH}: {proc.stderr}")
+
+    if state == "needs_nat_anchor":
+        return True, f"added nat-anchor for {anchor!r} to {_PF_CONF_PATH}"
     return True, f"added anchor hook for {anchor!r} to {_PF_CONF_PATH}"
 
 

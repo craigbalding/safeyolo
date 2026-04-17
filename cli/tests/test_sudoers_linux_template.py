@@ -19,7 +19,6 @@ from typer.testing import CliRunner
 
 from safeyolo.cli import app
 
-
 SUDOERS_PATH = (
     Path(__file__).parent.parent
     / "src"
@@ -88,10 +87,24 @@ class TestLinuxTemplateInvariants:
         assert "rm -rf *" not in sudoers_rules
         assert "rm -rf %SAFEYOLO_AGENTS_DIR%/*" in sudoers_rules
 
-    def test_grants_runsc(self, sudoers_rules):
-        """gVisor lifecycle — create/start/kill/delete/exec — all go
-        through runsc. Without this rule, every agent op prompts for sudo."""
-        assert "runsc *" in sudoers_rules
+    def test_runsc_pinned_to_safeyolo_state_dir(self, sudoers_rules):
+        """runsc rules must pin --root /run/safeyolo so they can't operate
+        on containers outside SafeYolo's state directory."""
+        assert "runsc --root /run/safeyolo" in sudoers_rules
+        # No blanket `runsc *` — must be subcommand-specific.
+        for line in sudoers_rules.splitlines():
+            if "runsc" in line:
+                assert "--root /run/safeyolo" in line, (
+                    f"runsc rule without --root pinning: {line}"
+                )
+
+    def test_runsc_enumerates_subcommands(self, sudoers_rules):
+        """Each runsc subcommand must be explicitly listed."""
+        for subcmd in ("create", "start", "state", "kill", "delete", "exec"):
+            assert f"runsc --root /run/safeyolo {subcmd} *" in sudoers_rules or \
+                   f"runsc --root /run/safeyolo --platform=kvm {subcmd} *" in sudoers_rules or \
+                   f"runsc --root /run/safeyolo --platform=systrap {subcmd} *" in sudoers_rules, \
+                   f"Missing runsc subcommand grant: {subcmd}"
 
     def test_grants_iptables(self, sudoers_rules):
         """Per-agent egress rules."""
@@ -169,6 +182,63 @@ class TestSetupSudoersOnLinux:
 
         assert "%SAFEYOLO_AGENTS_DIR%" not in body, "Placeholder unresolved"
         assert f"/usr/bin/rm -rf {fake_agents}/*" in body
+
+
+class TestSetupSudoersOnDarwin:
+
+    def test_substitutes_safeyolo_user_placeholder_with_username(self, tmp_path):
+        """Darwin template uses %safeyolo_user, substituted at install time."""
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        macos_template = (
+            Path(__file__).parent.parent
+            / "src" / "safeyolo" / "templates" / "safeyolo.sudoers"
+        )
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
+            patch.dict("os.environ", {"USER": "craigb"}, clear=False),
+        ):
+            body = _resolve_sudoers_body(macos_template)
+
+        assert "%safeyolo_user" not in body, "Placeholder left unresolved"
+        assert "craigb ALL=(root) NOPASSWD" in body
+
+
+class TestUsernameValidation:
+
+    def test_rejects_username_with_newline(self):
+        import pytest
+
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice\nALL=(ALL) NOPASSWD: ALL"}, clear=False),
+        ):
+            with pytest.raises(RuntimeError, match="unsafe for sudoers"):
+                _resolve_sudoers_body(SUDOERS_PATH)
+
+    def test_rejects_username_with_spaces(self):
+        import pytest
+
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice bob"}, clear=False),
+        ):
+            with pytest.raises(RuntimeError, match="unsafe for sudoers"):
+                _resolve_sudoers_body(SUDOERS_PATH)
+
+    def test_accepts_valid_username(self):
+        from safeyolo.commands.setup import _resolve_sudoers_body
+
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch.dict("os.environ", {"USER": "alice_bob-2"}, clear=False),
+        ):
+            body = _resolve_sudoers_body(SUDOERS_PATH)
+            assert "alice_bob-2 ALL=(root) NOPASSWD" in body
 
 
 class TestSetupTopLevelCheck:

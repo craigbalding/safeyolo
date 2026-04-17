@@ -253,19 +253,21 @@ def _sudo_write_file(path: Path, content: str) -> None:
 
 
 def _pf_conf_declares_anchor() -> bool:
-    """Return True iff /etc/pf.conf declares the SafeYolo anchor hook.
+    """Return True iff /etc/pf.conf declares the full SafeYolo anchor hook.
 
-    The hook is two lines:
-        anchor "com.safeyolo"
-        load anchor "com.safeyolo" from "/etc/pf.anchors/com.safeyolo"
+    The hook is three lines (pf ordering: translation before filtering):
+        nat-anchor "com.safeyolo"                                      (translation)
+        anchor "com.safeyolo"                                          (filtering)
+        load anchor "com.safeyolo" from "/etc/pf.anchors/com.safeyolo" (directive)
 
-    Each must appear as a complete, non-commented line. We match line-aware to
-    avoid false positives (e.g. `load anchor "com.safeyolo" ...` contains the
-    substring `anchor "com.safeyolo"`).
+    nat-anchor is required for NAT rules inside the anchor to take effect.
+    Without it, pf silently ignores nat rules in the anchor — the VM's
+    outbound traffic can't be NATted to the host interface.
 
     pf.conf is world-readable on stock macOS (0644 root:wheel), so this
     does not require sudo.
     """
+    nat_line = f'nat-anchor "{ANCHOR_NAME}"'
     anchor_line = f'anchor "{ANCHOR_NAME}"'
     load_line = f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"'
     try:
@@ -273,17 +275,20 @@ def _pf_conf_declares_anchor() -> bool:
     except FileNotFoundError:
         return False
 
+    has_nat = False
     has_anchor = False
     has_load = False
     for raw in content.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if line == anchor_line:
+        if line == nat_line:
+            has_nat = True
+        elif line == anchor_line:
             has_anchor = True
         elif line == load_line:
             has_load = True
-    return has_anchor and has_load
+    return has_nat and has_anchor and has_load
 
 
 def _require_pf_conf_hook() -> None:

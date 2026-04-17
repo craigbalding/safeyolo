@@ -11,8 +11,8 @@
 #
 # Or: safeyolo setup sudoers
 #
-# Replace %staff with a specific user or group if preferred:
-#   craigb ALL=(root) NOPASSWD: ...
+# %safeyolo_user is replaced with the invoking user's username
+# at install time by `safeyolo setup sudoers`.
 #
 # -----------------------------------------------------------------
 # Security model:
@@ -45,7 +45,7 @@
 # `-s rules` (no anchor) is needed by `safeyolo doctor`'s firewall
 # enforcement check — it verifies the anchor hook is in the running main
 # ruleset (read-only; listing rules is not a mutation).
-%staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo -f *, \
+%safeyolo_user ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo -f *, \
                             /sbin/pfctl -a com.safeyolo -F all, \
                             /sbin/pfctl -a com.safeyolo -s *, \
                             /sbin/pfctl -e, \
@@ -54,16 +54,16 @@
                             /sbin/pfctl -f /etc/pf.conf
 
 # pf firewall management (blackbox test harness anchor: com.safeyolo-test)
-%staff ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo-test -f *, \
+%safeyolo_user ALL=(root) NOPASSWD: /sbin/pfctl -a com.safeyolo-test -f *, \
                             /sbin/pfctl -a com.safeyolo-test -F all, \
                             /sbin/pfctl -a com.safeyolo-test -s *
 
 # feth interface lifecycle (create, destroy, configure)
-%staff ALL=(root) NOPASSWD: /sbin/ifconfig feth*
+%safeyolo_user ALL=(root) NOPASSWD: /sbin/ifconfig feth*
 
 # IP forwarding (required for VM traffic to reach proxy)
-%staff ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.inet.ip.forwarding=1
+%safeyolo_user ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.inet.ip.forwarding=1
 
 # pf anchor file management — fixed paths, no wildcards
-%staff ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.anchors/com.safeyolo, \
+%safeyolo_user ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.anchors/com.safeyolo, \
                             /usr/bin/tee /etc/pf.anchors/com.safeyolo-test

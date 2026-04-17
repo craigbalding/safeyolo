@@ -36,9 +36,12 @@
 #   rm -rf %SAFEYOLO_AGENTS_DIR%/*
 #                      Delete an agent's on-disk dir on `agent remove`.
 #                      overlayfs leaves root-owned work/upper artifacts
-#                      that a user rmtree can't clean. Sudoers `*` does
-#                      not match `/`, so only single path components
-#                      under the agents dir match — no path traversal.
+#                      that a user rmtree can't clean. NOTE: sudoers `*`
+#                      in arguments DOES match `/` (unlike path globs).
+#                      Path traversal is mitigated by the code validating
+#                      agent names to ^[a-z0-9-]+$ before constructing
+#                      the path — but the rule itself is broader than
+#                      the code's usage. See sudoers(5) §Wildcards.
 # -----------------------------------------------------------------
 
 # Network namespace and veth management
@@ -63,9 +66,21 @@
                                 /usr/bin/umount *, \
                                 /bin/umount *
 
-# gVisor container runtime
-%safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc *, \
-                                /usr/bin/runsc *
+# gVisor container runtime — pinned to SafeYolo's state dir
+%safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc --root /run/safeyolo --platform=kvm create *, \
+                                /usr/local/bin/runsc --root /run/safeyolo --platform=systrap create *, \
+                                /usr/local/bin/runsc --root /run/safeyolo start *, \
+                                /usr/local/bin/runsc --root /run/safeyolo state *, \
+                                /usr/local/bin/runsc --root /run/safeyolo kill *, \
+                                /usr/local/bin/runsc --root /run/safeyolo delete *, \
+                                /usr/local/bin/runsc --root /run/safeyolo exec *, \
+                                /usr/bin/runsc --root /run/safeyolo --platform=kvm create *, \
+                                /usr/bin/runsc --root /run/safeyolo --platform=systrap create *, \
+                                /usr/bin/runsc --root /run/safeyolo start *, \
+                                /usr/bin/runsc --root /run/safeyolo state *, \
+                                /usr/bin/runsc --root /run/safeyolo kill *, \
+                                /usr/bin/runsc --root /run/safeyolo delete *, \
+                                /usr/bin/runsc --root /run/safeyolo exec *
 
 # State directory creation — exact path, no wildcard
 %safeyolo ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/safeyolo, \

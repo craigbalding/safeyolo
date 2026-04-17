@@ -28,7 +28,6 @@ from safeyolo.firewall import (
     unload_rules,
 )
 
-
 # ---------------------------------------------------------------------------
 # allocate_subnet
 # ---------------------------------------------------------------------------
@@ -267,7 +266,7 @@ class TestGenerateRules:
         result = generate_rules(admin_port=7070, active_subnets=["192.168.65.0/24"])
         assert "port 7070" in result
         # 9090 should not appear (not even in default pass rules)
-        lines_with_9090 = [l for l in result.splitlines() if "port 9090" in l]
+        lines_with_9090 = [ln for ln in result.splitlines() if "port 9090" in ln]
         assert lines_with_9090 == []
 
     def test_multiple_subnets_produce_per_subnet_rules(self):
@@ -294,9 +293,9 @@ class TestGenerateRules:
     def test_rule_ordering_per_subnet(self):
         """pass -> admin block -> catch-all block, per subnet."""
         result = generate_rules(active_subnets=["192.168.65.0/24"])
-        lines = [l for l in result.splitlines() if l.strip() and not l.startswith("#")]
+        lines = [ln for ln in result.splitlines() if ln.strip() and not ln.startswith("#")]
         # Find the filter rules (after the NAT rule)
-        filter_lines = [l for l in lines if not l.startswith("nat")]
+        filter_lines = [ln for ln in lines if not ln.startswith("nat")]
         assert len(filter_lines) == 3
         assert "pass in quick" in filter_lines[0]
         assert "block in quick" in filter_lines[1]
@@ -761,8 +760,9 @@ class TestDetectOutboundInterface:
 
 
 class TestPfConfDeclaresAnchor:
-    def test_true_when_both_hook_lines_present(self, monkeypatch):
+    def test_true_when_all_three_hook_lines_present(self, monkeypatch):
         content = (
+            f'nat-anchor "{ANCHOR_NAME}"\n'
             f'anchor "{ANCHOR_NAME}"\n'
             f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"\n'
         )
@@ -773,8 +773,15 @@ class TestPfConfDeclaresAnchor:
         monkeypatch.setattr(Path, "read_text", lambda self: "# empty pf.conf\n")
         assert _pf_conf_declares_anchor() is False
 
+    def test_false_when_nat_anchor_missing(self, monkeypatch):
+        content = (
+            f'anchor "{ANCHOR_NAME}"\n'
+            f'load anchor "{ANCHOR_NAME}" from "{ANCHOR_FILE}"\n'
+        )
+        monkeypatch.setattr(Path, "read_text", lambda self: content)
+        assert _pf_conf_declares_anchor() is False
+
     def test_false_when_only_anchor_declared(self, monkeypatch):
-        # Declared but no load line — incomplete.
         content = f'anchor "{ANCHOR_NAME}"\n'
         monkeypatch.setattr(Path, "read_text", lambda self: content)
         assert _pf_conf_declares_anchor() is False

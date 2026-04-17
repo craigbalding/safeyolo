@@ -444,7 +444,9 @@ class LinuxPlatform(AgentPlatform):
         # and the container lands in `stopped` state before guest-init
         # ever runs. Creating it in rootfs-upper makes it visible via
         # the overlay without mutating the shared base image.
-        _sudo(["mkdir", "-p", str(agent_dir / "rootfs-upper" / "workspace")])
+        # rootfs-upper is user-owned (created at prepare_rootfs time),
+        # so no sudo needed here.
+        os.makedirs(agent_dir / "rootfs-upper" / "workspace", exist_ok=True)
 
         # Clear any stale state entry for this cid before create. runsc
         # create fails with ID-already-exists if a previous run's state
