@@ -355,6 +355,7 @@ def start_vm(
     background: bool = False,
     snapshot_capture_path: Path | None = None,
     restore_from_path: Path | None = None,
+    proxy_socket_path: str | None = None,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
@@ -440,12 +441,18 @@ def start_vm(
     if restore_from_path is not None:
         cmd.extend(["--restore-from", str(restore_from_path)])
 
-    # feth-based networking
+    # feth-based networking (legacy; still required for the pf + feth
+    # path until Phase 2b removes it).
     if feth_vm:
         feth_bridge = get_config_dir() / "bin" / "feth-bridge"
         cmd.extend(["--feth", feth_vm])
         if feth_bridge.exists():
             cmd.extend(["--feth-bridge", str(feth_bridge)])
+
+    # vsock→UDS relay (Phase 2). Enables the cross-platform bridge to
+    # stamp identity on upstream TCP, matching the Linux data path.
+    if proxy_socket_path:
+        cmd.extend(["--proxy-socket", proxy_socket_path])
 
     # Additional shares
     if extra_shares:

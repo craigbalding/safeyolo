@@ -33,14 +33,34 @@ class DarwinPlatform(AgentPlatform):
     firewall_name = "pf"
 
     def setup_networking(self, agent_index: int) -> dict:
+        import os as _os  # noqa: PLC0415
+        # SAFEYOLO_MACOS_NETWORK selects the macOS data path:
+        #   vsock  — vsock→UDS→bridge→TCP. Cross-platform parity with
+        #            Linux; identity stamped by the host proxy_bridge.
+        #   feth   — legacy veth + pf anchor path. Kept as a fallback
+        #            while Phase 2 is in progress.
+        # Default is the legacy path until Phase 2 deletes it.
+        network_mode = _os.environ.get("SAFEYOLO_MACOS_NETWORK", "feth")
+
+        if network_mode == "vsock":
+            # Allocate only what the shared code path needs — no feth
+            # interfaces, no subnet. attribution_ip is synthetic 127.0.0.X
+            # exactly like Linux; the host-side bridge binds upstream TCP
+            # to this address before reaching mitmproxy.
+            return {
+                "attribution_ip": f"127.0.0.{agent_index + 2}",
+                "needs_bridge_socket": True,
+                "host_ip": "127.0.0.1",
+                "guest_ip": "127.0.0.1",
+                # Subnet / placeholders kept non-empty so the firewall
+                # rules path (still active for feth callers) doesn't
+                # KeyError until Phase 2b fully removes it.
+                "subnet": f"127.0.0.{agent_index + 2}/32",
+            }
+
         alloc = setup_feth(agent_index)
-        # API symmetry with Linux: attribution_ip is the source IP
-        # mitmproxy sees for this agent's flows, which service_discovery
-        # maps back to the agent name for audit/policy. On macOS the
-        # per-agent feth interface already gives a unique guest IP, so
-        # that serves as attribution_ip directly — no synthetic loopback
-        # needed and no host-side bridge socket (traffic is ordinary TCP
-        # via the feth gateway).
+        # Legacy macOS path: the per-agent feth IP is what mitmproxy
+        # sees directly, so it doubles as the attribution IP.
         alloc["attribution_ip"] = alloc["guest_ip"]
         return alloc
 
@@ -49,10 +69,18 @@ class DarwinPlatform(AgentPlatform):
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
+        import os as _os  # noqa: PLC0415
+        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
+            # vsock arch: isolation is structural (agent has no feth,
+            # bridge stamps identity). No pf rules needed.
+            return
         load_rules(proxy_port=proxy_port, admin_port=admin_port,
                    active_subnets=active_subnets)
 
     def unload_firewall_rules(self) -> None:
+        import os as _os  # noqa: PLC0415
+        if _os.environ.get("SAFEYOLO_MACOS_NETWORK") == "vsock":
+            return
         unload_rules()
 
     def agent_rootfs_path(self, name: str) -> Path:
@@ -74,6 +102,14 @@ class DarwinPlatform(AgentPlatform):
         snapshot_capture_path: Path | None = None,
         restore_from_path: Path | None = None,
     ) -> int:
+        # vsock mode: thread the per-agent bridge socket through to
+        # safeyolo-vm so VSockProxyRelay can connect() to it on each
+        # guest-initiated flow.
+        proxy_socket = None
+        if fw_alloc.get("needs_bridge_socket"):
+            from ..proxy_bridge import socket_path_for as _sock_for  # noqa: PLC0415
+            proxy_socket = str(_sock_for(name))
+
         proc = start_vm(
             name=name,
             workspace_path=workspace_path,
@@ -84,6 +120,7 @@ class DarwinPlatform(AgentPlatform):
             background=background,
             snapshot_capture_path=snapshot_capture_path,
             restore_from_path=restore_from_path,
+            proxy_socket_path=proxy_socket,
         )
         return proc.pid
 

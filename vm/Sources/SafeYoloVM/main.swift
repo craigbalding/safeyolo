@@ -17,6 +17,7 @@ struct RunConfig {
     var fethBridgePath: String = ""  // path to feth-bridge binary
     var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
     var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
+    var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
     var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
@@ -35,8 +36,11 @@ func printUsage() {
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
       --share HOST:TAG:MODE  VirtioFS share (MODE = ro or rw, repeatable)
-      --feth IFACE        feth interface for network isolation
-      --feth-bridge PATH  Path to feth-bridge binary
+      --feth IFACE        feth interface for network isolation (legacy)
+      --feth-bridge PATH  Path to feth-bridge binary (legacy)
+      --proxy-socket PATH Host UDS the in-VM proxy forwarder reaches via vsock.
+                          Enables vsock→UDS relay; when absent, the legacy
+                          feth+pf network path is used instead.
       --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
       --snapshot-on-signal PATH
                           Write a VM snapshot to PATH when SIGUSR1 is received.
@@ -111,6 +115,9 @@ func parseArguments() -> RunConfig? {
         case "--feth-bridge":
             i += 1; guard i < args.count else { fputs("Error: --feth-bridge requires path\n", stderr); return nil }
             config.fethBridgePath = args[i]
+        case "--proxy-socket":
+            i += 1; guard i < args.count else { fputs("Error: --proxy-socket requires a path\n", stderr); return nil }
+            config.proxySocketPath = args[i]
         case "--no-terminal":
             config.noTerminal = true
         case "--snapshot-on-signal":
@@ -282,11 +289,17 @@ do {
         try runner.start()
     }
 
-    // Start the vsock proxy relay — guest-initiated connections on vsock
-    // port 1080 are forwarded to mitmproxy on 127.0.0.1:8080. This
-    // replaces the feth-bridge + pf firewall path with a single hop.
-    let proxyRelay = VSockProxyRelay(vm: vm, queue: vmQueue)
-    proxyRelay.start()
+    // Start the vsock proxy relay if a host UDS path was provided.
+    // Without --proxy-socket the VM falls back on the legacy feth+pf
+    // network path; once all callers pass a socket this branch becomes
+    // unconditional and the feth path can be removed.
+    if !config.proxySocketPath.isEmpty {
+        let proxyRelay = VSockProxyRelay(
+            vm: vm, queue: vmQueue,
+            socketPath: config.proxySocketPath,
+        )
+        proxyRelay.start()
+    }
 
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.

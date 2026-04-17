@@ -2,26 +2,29 @@ import Foundation
 import Virtualization
 
 /// Listens on a vsock port for guest-initiated connections and relays
-/// each one bidirectionally to a TCP endpoint (mitmproxy).
+/// each one bidirectionally to a Unix domain socket on the host.
 ///
-/// The guest runs a forwarder: localhost:8080 → vsock:PROXY_PORT.
-/// This relay accepts the vsock connection and forwards to mitmproxy.
-/// One hop between the VM boundary and the proxy.
+/// Architecture symmetry with Linux: the host-side proxy_bridge owns
+/// identity (binds upstream TCP source to the agent's attribution IP)
+/// and policy (routing to local mitmproxy, team proxy, or peer agents).
+/// This relay is a dumb vsock↔UDS pump — one process per VM, no TCP
+/// logic, no knowledge of mitmproxy.
+///
+///   Guest: curl → guest-forwarder → vsock
+///   Host:  safeyolo-vm → UDS <sockets_dir>/<name>.sock
+///   Host:  proxy_bridge → TCP mitmproxy (Linux-and-macOS shared code)
 class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
 
     static let PROXY_PORT: UInt32 = 1080
 
     private let vm: VZVirtualMachine
     private let queue: DispatchQueue
-    private let proxyHost: String
-    private let proxyPort: UInt16
+    private let socketPath: String
 
-    init(vm: VZVirtualMachine, queue: DispatchQueue,
-         proxyHost: String = "127.0.0.1", proxyPort: UInt16 = 8080) {
+    init(vm: VZVirtualMachine, queue: DispatchQueue, socketPath: String) {
         self.vm = vm
         self.queue = queue
-        self.proxyHost = proxyHost
-        self.proxyPort = proxyPort
+        self.socketPath = socketPath
         super.init()
     }
 
@@ -35,7 +38,7 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
             let listener = VZVirtioSocketListener()
             listener.delegate = self
             device.setSocketListener(listener, forPort: VSockProxyRelay.PROXY_PORT)
-            fputs("[proxy-relay] Listening on vsock port \(VSockProxyRelay.PROXY_PORT) -> \(proxyHost):\(proxyPort)\n", stderr)
+            fputs("[proxy-relay] Listening on vsock port \(VSockProxyRelay.PROXY_PORT) -> unix:\(socketPath)\n", stderr)
         }
     }
 
@@ -58,51 +61,70 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
     private func relay(vsockConnection: VZVirtioSocketConnection) {
         let vsockFD = vsockConnection.fileDescriptor
 
-        // Connect to mitmproxy
-        let tcpFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard tcpFD >= 0 else {
-            fputs("[proxy-relay] socket() failed: \(String(cString: strerror(errno)))\n", stderr)
+        // Open a fresh UDS client connection for this flow. The bridge
+        // accepts on <socketPath>, binds the upstream TCP source to the
+        // agent's attribution IP, and connects to mitmproxy. Identity is
+        // stamped by which per-agent UDS the bridge accepted from —
+        // this relay never touches the attribution IP or the TCP port.
+        let udsFD = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard udsFD >= 0 else {
+            fputs("[proxy-relay] socket(AF_UNIX) failed: \(String(cString: strerror(errno)))\n", stderr)
             close(vsockFD)
             return
         }
 
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = proxyPort.bigEndian
-        inet_pton(AF_INET, proxyHost, &addr.sin_addr)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = socketPath.utf8CString
+        // sun_path is a fixed-size C array; copy byte-by-byte into the
+        // tuple-backed field via withUnsafeMutablePointer reinterpretation.
+        // Fail early if the path is longer than the OS limit (104 on
+        // Darwin) — connect() would fail in a less clear way otherwise.
+        let sunPathCapacity = MemoryLayout.size(ofValue: addr.sun_path)
+        if pathBytes.count > sunPathCapacity {
+            fputs("[proxy-relay] socket path too long (\(pathBytes.count) > \(sunPathCapacity)): \(socketPath)\n", stderr)
+            close(udsFD)
+            close(vsockFD)
+            return
+        }
+        withUnsafeMutablePointer(to: &addr.sun_path) { tuplePtr in
+            tuplePtr.withMemoryRebound(to: CChar.self, capacity: sunPathCapacity) { dst in
+                pathBytes.withUnsafeBufferPointer { src in
+                    dst.update(from: src.baseAddress!, count: pathBytes.count)
+                }
+            }
+        }
 
         let connectResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                connect(tcpFD, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                connect(udsFD, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         guard connectResult == 0 else {
-            fputs("[proxy-relay] connect to \(proxyHost):\(proxyPort) failed: \(String(cString: strerror(errno)))\n", stderr)
-            close(tcpFD)
+            fputs("[proxy-relay] connect to unix:\(socketPath) failed: \(String(cString: strerror(errno)))\n", stderr)
+            close(udsFD)
             close(vsockFD)
             return
         }
 
-        // Bidirectional relay using select()
+        // Bidirectional pump.
         let t1 = Thread {
-            Self.forwardData(from: vsockFD, to: tcpFD)
-            shutdown(tcpFD, SHUT_WR)
+            Self.forwardData(from: vsockFD, to: udsFD)
+            shutdown(udsFD, SHUT_WR)
         }
         let t2 = Thread {
-            Self.forwardData(from: tcpFD, to: vsockFD)
+            Self.forwardData(from: udsFD, to: vsockFD)
             shutdown(vsockFD, SHUT_WR)
         }
         t1.start()
         t2.start()
 
-        // Wait for both directions to finish
-        // (Threads are detached; we rely on the FD close to terminate them)
-        // Use a simple polling approach since Foundation Threads aren't joinable
+        // Foundation Threads aren't joinable; poll until both are done.
         while t1.isExecuting || t2.isExecuting {
             Thread.sleep(forTimeInterval: 0.1)
         }
 
-        close(tcpFD)
+        close(udsFD)
         close(vsockFD)
     }
 
