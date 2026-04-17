@@ -72,6 +72,22 @@ if [ -x /safeyolo/guest-proxy-forwarder ]; then
 fi
 
 # --------------------------------------------------------------------------
+# 1c. Shell bridge: vsock:2220 -> 127.0.0.1:22 (sshd)
+#
+# Lets `safeyolo agent shell` reach sshd from the host when the VM has
+# no network interface (macOS vsock mode). The host side of the bridge
+# lives in safeyolo-vm's VSockShellBridge. socat is already in the
+# image (installed at rootfs build time).
+#
+# Harmless on Linux-gVisor agents — vsock is available but the host
+# side doesn't listen, so no connections are ever accepted.
+# --------------------------------------------------------------------------
+if [ -x /safeyolo/guest-shell-bridge ]; then
+    setsid nohup /safeyolo/guest-shell-bridge >/dev/console 2>&1 </dev/null &
+    echo "[per-run] started guest-shell-bridge (pid=$!)" > /dev/console 2>/dev/null || true
+fi
+
+# --------------------------------------------------------------------------
 # 2. Inject agent instructions (e.g., /etc/claude-code/CLAUDE.md)
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/instructions.md ] && [ -n "${SAFEYOLO_INSTRUCTIONS_PATH:-}" ]; then

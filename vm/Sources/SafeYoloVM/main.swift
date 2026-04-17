@@ -18,6 +18,7 @@ struct RunConfig {
     var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
     var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
     var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
+    var shellSocketPath: String = "" // host UDS the shell bridge listens on; connects to guest vsock:2220
     var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
@@ -41,6 +42,10 @@ func printUsage() {
       --proxy-socket PATH Host UDS the in-VM proxy forwarder reaches via vsock.
                           Enables vsock→UDS relay; when absent, the legacy
                           feth+pf network path is used instead.
+      --shell-socket PATH Host UDS the shell bridge listens on; forwards
+                          each connection to guest vsock:2220 (sshd-via-socat
+                          in the guest). Used by `safeyolo agent shell` when
+                          the VM has no network interface.
       --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
       --snapshot-on-signal PATH
                           Write a VM snapshot to PATH when SIGUSR1 is received.
@@ -118,6 +123,9 @@ func parseArguments() -> RunConfig? {
         case "--proxy-socket":
             i += 1; guard i < args.count else { fputs("Error: --proxy-socket requires a path\n", stderr); return nil }
             config.proxySocketPath = args[i]
+        case "--shell-socket":
+            i += 1; guard i < args.count else { fputs("Error: --shell-socket requires a path\n", stderr); return nil }
+            config.shellSocketPath = args[i]
         case "--no-terminal":
             config.noTerminal = true
         case "--snapshot-on-signal":
@@ -300,6 +308,24 @@ do {
         )
         proxyRelay.start()
     }
+
+    // Start the host-side shell bridge if a socket path was provided.
+    // Each accept on the host UDS dials guest:2220 where socat proxies
+    // to the guest's sshd. `safeyolo agent shell` uses this via
+    // `ssh -o ProxyCommand='nc -U <path>'`.
+    var shellBridge: VSockShellBridge? = nil
+    if !config.shellSocketPath.isEmpty {
+        shellBridge = VSockShellBridge(
+            vm: vm, queue: vmQueue,
+            socketPath: config.shellSocketPath,
+        )
+        do {
+            try shellBridge?.start()
+        } catch {
+            fputs("[shell-bridge] failed to start: \(error)\n", stderr)
+        }
+    }
+    _ = shellBridge  // keep reference alive for process lifetime
 
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.

@@ -172,6 +172,7 @@ def prepare_config_share(
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
         ("guest-proxy-forwarder.py", "guest-proxy-forwarder"),
+        ("guest-shell-bridge.py", "guest-shell-bridge"),
     ]:
         src = Path(__file__).parent / src_name
         dst = share_dir / dst_name
@@ -356,6 +357,7 @@ def start_vm(
     snapshot_capture_path: Path | None = None,
     restore_from_path: Path | None = None,
     proxy_socket_path: str | None = None,
+    shell_socket_path: str | None = None,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
@@ -453,6 +455,12 @@ def start_vm(
     # stamp identity on upstream TCP, matching the Linux data path.
     if proxy_socket_path:
         cmd.extend(["--proxy-socket", proxy_socket_path])
+
+    # Shell bridge UDS (Phase 2). `safeyolo agent shell` uses SSH with
+    # ProxyCommand=`nc -U <path>` to reach sshd inside a VM that has
+    # no network interface.
+    if shell_socket_path:
+        cmd.extend(["--shell-socket", shell_socket_path])
 
     # Additional shares
     if extra_shares:
