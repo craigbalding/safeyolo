@@ -203,25 +203,25 @@ def _cleanup_sockets() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _forward(src: socket.socket, dst: socket.socket) -> None:
+def _forward(src: socket.socket, dst: socket.socket, label: str = "") -> None:
     """Copy src -> dst until EOF, then half-close dst's write side."""
+    _log = logging.getLogger(__name__)
+    total = 0
+    err_info = None
     try:
         while True:
             data = src.recv(65536)
             if not data:
                 break
             dst.sendall(data)
-    except (BrokenPipeError, ConnectionResetError, OSError):
-        # Either end hung up mid-stream. Normal during client disconnects
-        # (agent CLI ^C, mitmproxy restart). Let the finally block half-close
-        # the other side so its pump thread exits cleanly.
-        pass
+            total += len(data)
+    except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+        err_info = f"{type(exc).__name__}:{exc}"
     finally:
+        _log.info("pump %s %d bytes err=%s", label, total, err_info)
         try:
             dst.shutdown(socket.SHUT_WR)
         except OSError:
-            # Peer socket may already be closed — the shutdown is just a
-            # signal for the opposite-direction thread to notice EOF.
             pass
 
 
@@ -256,8 +256,12 @@ def _handle_client(
     _log = logging.getLogger(__name__)
     _log.info("relay start agent=%s local-tcp=%s upstream=%s:%d",
               agent, tcp.getsockname(), upstream[0], upstream[1])
-    t1 = threading.Thread(target=_forward, args=(uds_conn, tcp), daemon=True)
-    t2 = threading.Thread(target=_forward, args=(tcp, uds_conn), daemon=True)
+    t1 = threading.Thread(
+        target=_forward, args=(uds_conn, tcp, f"{agent}-uds->tcp"), daemon=True,
+    )
+    t2 = threading.Thread(
+        target=_forward, args=(tcp, uds_conn, f"{agent}-tcp->uds"), daemon=True,
+    )
     t1.start()
     t2.start()
     t1.join()
