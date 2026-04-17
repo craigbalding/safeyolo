@@ -139,7 +139,8 @@ if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
 fi
 
 mkdir -p /run/sshd
-/usr/sbin/sshd -D &
+/usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
+echo "[static] sshd launched pid=$!" > /dev/console 2>/dev/null || true
 
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 

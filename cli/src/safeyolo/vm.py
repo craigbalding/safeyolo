@@ -139,7 +139,7 @@ def prepare_config_share(
     mise_package: str = "",
     agent_args: str = "",
     extra_env: dict[str, str] | None = None,
-    proxy_port: int = 8080,  # noqa: ARG001 — kept in signature; container-facing port is fixed (8080) regardless of host proxy port
+    proxy_port: int = 8080,
     host_mounts: list[tuple[str, str, bool]] | None = None,
     host_config_files: list[str] | None = None,
     instructions_content: str = "",
@@ -172,6 +172,7 @@ def prepare_config_share(
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
         ("guest-proxy-forwarder.py", "guest-proxy-forwarder"),
+        ("guest-shell-bridge.py", "guest-shell-bridge"),
     ]:
         src = Path(__file__).parent / src_name
         dst = share_dir / dst_name
@@ -214,18 +215,13 @@ def prepare_config_share(
         shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
         (share_dir / "vsock-term").chmod(0o755)
 
-    # Proxy environment variables.
-    # The container-facing port is fixed (guest-proxy-forwarder listens on
-    # localhost:8080 inside the sandbox, regardless of what port mitmproxy
-    # uses on the host). The forwarder's job is precisely this decoupling —
-    # the host can run on 8080 in prod / 8180 in test / anywhere else
-    # without touching the container's HTTP_PROXY.
-    #
-    # gateway_ip comes from the platform's setup_networking:
-    #   - Linux (new arch): 127.0.0.1 — the in-guest forwarder's bind addr.
-    #   - macOS (feth): the host veth IP; the forwarder binds there instead.
-    _GUEST_PROXY_PORT = 8080
-    proxy_url = f"http://{gateway_ip}:{_GUEST_PROXY_PORT}"
+    # Proxy environment variables. Caller decides proxy_port per platform:
+    #   - Linux: 8080, the fixed port where guest-proxy-forwarder listens
+    #     inside the sandbox. The host bridge decouples this from whatever
+    #     port mitmproxy is on, so the guest-side value is a constant.
+    #   - macOS: the host's actual mitmproxy port. Traffic goes directly
+    #     through feth to the gateway — no in-guest relay involved.
+    proxy_url = f"http://{gateway_ip}:{proxy_port}"
     proxy_env = (
         f'export HTTP_PROXY="{proxy_url}"\n'
         f'export HTTPS_PROXY="{proxy_url}"\n'
@@ -360,6 +356,8 @@ def start_vm(
     background: bool = False,
     snapshot_capture_path: Path | None = None,
     restore_from_path: Path | None = None,
+    proxy_socket_path: str | None = None,
+    shell_socket_path: str | None = None,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
@@ -445,12 +443,24 @@ def start_vm(
     if restore_from_path is not None:
         cmd.extend(["--restore-from", str(restore_from_path)])
 
-    # feth-based networking
+    # feth-based networking (legacy; still required for the pf + feth
+    # path until Phase 2b removes it).
     if feth_vm:
         feth_bridge = get_config_dir() / "bin" / "feth-bridge"
         cmd.extend(["--feth", feth_vm])
         if feth_bridge.exists():
             cmd.extend(["--feth-bridge", str(feth_bridge)])
+
+    # vsock→UDS relay (Phase 2). Enables the cross-platform bridge to
+    # stamp identity on upstream TCP, matching the Linux data path.
+    if proxy_socket_path:
+        cmd.extend(["--proxy-socket", proxy_socket_path])
+
+    # Shell bridge UDS (Phase 2). `safeyolo agent shell` uses SSH with
+    # ProxyCommand=`nc -U <path>` to reach sshd inside a VM that has
+    # no network interface.
+    if shell_socket_path:
+        cmd.extend(["--shell-socket", shell_socket_path])
 
     # Additional shares
     if extra_shares:

@@ -17,6 +17,8 @@ struct RunConfig {
     var fethBridgePath: String = ""  // path to feth-bridge binary
     var netSocketFD: Int32? = nil    // VM-side socket fd (set internally)
     var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
+    var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
+    var shellSocketPath: String = "" // host UDS the shell bridge listens on; connects to guest vsock:2220
     var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
@@ -35,8 +37,15 @@ func printUsage() {
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
       --share HOST:TAG:MODE  VirtioFS share (MODE = ro or rw, repeatable)
-      --feth IFACE        feth interface for network isolation
-      --feth-bridge PATH  Path to feth-bridge binary
+      --feth IFACE        feth interface for network isolation (legacy)
+      --feth-bridge PATH  Path to feth-bridge binary (legacy)
+      --proxy-socket PATH Host UDS the in-VM proxy forwarder reaches via vsock.
+                          Enables vsock→UDS relay; when absent, the legacy
+                          feth+pf network path is used instead.
+      --shell-socket PATH Host UDS the shell bridge listens on; forwards
+                          each connection to guest vsock:2220 (sshd-via-socat
+                          in the guest). Used by `safeyolo agent shell` when
+                          the VM has no network interface.
       --no-terminal       Detach mode: skip vsock terminal, keep VM alive for SSH
       --snapshot-on-signal PATH
                           Write a VM snapshot to PATH when SIGUSR1 is received.
@@ -111,6 +120,12 @@ func parseArguments() -> RunConfig? {
         case "--feth-bridge":
             i += 1; guard i < args.count else { fputs("Error: --feth-bridge requires path\n", stderr); return nil }
             config.fethBridgePath = args[i]
+        case "--proxy-socket":
+            i += 1; guard i < args.count else { fputs("Error: --proxy-socket requires a path\n", stderr); return nil }
+            config.proxySocketPath = args[i]
+        case "--shell-socket":
+            i += 1; guard i < args.count else { fputs("Error: --shell-socket requires a path\n", stderr); return nil }
+            config.shellSocketPath = args[i]
         case "--no-terminal":
             config.noTerminal = true
         case "--snapshot-on-signal":
@@ -156,6 +171,28 @@ guard VZVirtualMachine.isSupported else {
 
 guard var config = parseArguments() else {
     exit(1)
+}
+
+// Ignore SIGPIPE — the vsock bridges' pump threads write to socket
+// fds whose peers can hang up asynchronously (ssh client disconnects,
+// guest vsock EOF). Default action for SIGPIPE is terminating the
+// process; we want EPIPE as a regular error return from write()
+// instead, caught in _forward's except block.
+signal(SIGPIPE, SIG_IGN)
+
+// Diagnostic: log every fatal signal before default action fires, so
+// we can tell "crashed with SIGBUS" from "exited cleanly from main".
+for sig in [SIGABRT, SIGBUS, SIGSEGV, SIGILL, SIGFPE, SIGTRAP] {
+    signal(sig) { s in
+        fputs("[vm] caught fatal signal \(s), about to die\n", stderr)
+        // Re-raise with default handler so normal crash machinery still fires
+        signal(s, SIG_DFL)
+        raise(s)
+    }
+}
+
+atexit {
+    fputs("[vm] atexit\n", stderr)
 }
 
 do {
@@ -282,11 +319,37 @@ do {
         try runner.start()
     }
 
-    // Start the vsock proxy relay — guest-initiated connections on vsock
-    // port 1080 are forwarded to mitmproxy on 127.0.0.1:8080. This
-    // replaces the feth-bridge + pf firewall path with a single hop.
-    let proxyRelay = VSockProxyRelay(vm: vm, queue: vmQueue)
-    proxyRelay.start()
+    // Start the vsock proxy relay if a host UDS path was provided.
+    // Without --proxy-socket the VM falls back on the legacy feth+pf
+    // network path; once all callers pass a socket this branch becomes
+    // unconditional and the feth path can be removed.
+    var proxyRelay: VSockProxyRelay? = nil
+    if !config.proxySocketPath.isEmpty {
+        proxyRelay = VSockProxyRelay(
+            vm: vm, queue: vmQueue,
+            socketPath: config.proxySocketPath,
+        )
+        proxyRelay?.start()
+    }
+    _ = proxyRelay  // keep the VZVirtioSocketListener alive for process lifetime
+
+    // Start the host-side shell bridge if a socket path was provided.
+    // Each accept on the host UDS dials guest:2220 where socat proxies
+    // to the guest's sshd. `safeyolo agent shell` uses this via
+    // `ssh -o ProxyCommand='nc -U <path>'`.
+    var shellBridge: VSockShellBridge? = nil
+    if !config.shellSocketPath.isEmpty {
+        shellBridge = VSockShellBridge(
+            vm: vm, queue: vmQueue,
+            socketPath: config.shellSocketPath,
+        )
+        do {
+            try shellBridge?.start()
+        } catch {
+            fputs("[shell-bridge] failed to start: \(error)\n", stderr)
+        }
+    }
+    _ = shellBridge  // keep reference alive for process lifetime
 
     // In detach mode (--no-terminal), the VM stays alive until SIGTERM and
     // is accessed via SSH (`safeyolo agent shell <name>`); no vsock-term.
@@ -335,6 +398,14 @@ do {
     // the snapshot test runs in vsock-term mode where SIGUSR1 works; a
     // proper fix for --no-terminal SIGUSR1 is tracked separately and not
     // load-bearing for the CLI orchestration in PR 4.
+    //
+    // Detach + bridges: RunLoop.main returns once it has no input
+    // sources. The vsock bridges run on GCD, not on the main runloop —
+    // so once the initial setup work drains, the runloop would exit
+    // and the whole process with it. Keep a recurring Timer attached
+    // so RunLoop.main stays alive for the VM's lifetime.
+    let keepalive = Timer(timeInterval: 30.0, repeats: true) { _ in }
+    RunLoop.main.add(keepalive, forMode: .default)
     RunLoop.main.run()
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)

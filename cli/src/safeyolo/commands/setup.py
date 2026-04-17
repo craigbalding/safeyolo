@@ -589,6 +589,11 @@ def pf(
         "--test",
         help="Install the com.safeyolo-test anchor hook (blackbox test harness).",
     ),
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help="Install the com.safeyolo-dev anchor hook (per-operator dev instance).",
+    ),
 ) -> None:
     """Install the static SafeYolo pf anchor hook in /etc/pf.conf.
 
@@ -604,6 +609,7 @@ def pf(
 
         safeyolo setup pf
         safeyolo setup pf --test   # for the blackbox test harness
+        safeyolo setup pf --dev    # for a per-operator dev instance
     """
     import platform as _platform
 
@@ -611,7 +617,15 @@ def pf(
         console.print("[yellow]pf setup is macOS-only.[/yellow]")
         raise typer.Exit(0)
 
-    anchor = "com.safeyolo-test" if test else "com.safeyolo"
+    if test and dev:
+        console.print("[red]--test and --dev are mutually exclusive.[/red]")
+        raise typer.Exit(2)
+    if dev:
+        anchor = "com.safeyolo-dev"
+    elif test:
+        anchor = "com.safeyolo-test"
+    else:
+        anchor = "com.safeyolo"
     console.print(f"[bold]Installing pf anchor hook for {anchor!r}[/bold]\n")
 
     try:

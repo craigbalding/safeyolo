@@ -72,6 +72,46 @@ if [ -x /safeyolo/guest-proxy-forwarder ]; then
 fi
 
 # --------------------------------------------------------------------------
+# 1c. Shell bridge: vsock:2220 -> 127.0.0.1:22 (sshd)
+#
+# Lets `safeyolo agent shell` reach sshd from the host when the VM has
+# no network interface (macOS vsock mode). The host side of the bridge
+# lives in safeyolo-vm's VSockShellBridge. socat is already in the
+# image (installed at rootfs build time).
+#
+# Harmless on Linux-gVisor agents — vsock is available but the host
+# side doesn't listen, so no connections are ever accepted.
+# --------------------------------------------------------------------------
+if [ -x /safeyolo/guest-shell-bridge ]; then
+    # Pre-check python3 + AF_VSOCK
+    /usr/bin/python3 -c "import socket; assert hasattr(socket, 'AF_VSOCK'); print('[per-run] python AF_VSOCK available')" >/dev/console 2>&1 || echo "[per-run] python AF_VSOCK MISSING" >/dev/console
+    # Probe sshd reachability so failures are diagnosable from the host.
+    (
+      (echo > /dev/tcp/127.0.0.1/22) 2>/dev/null \
+        && echo "[per-run] sshd reachable at 127.0.0.1:22" > /dev/console \
+        || { echo "[per-run] WARNING sshd NOT reachable at 127.0.0.1:22" > /dev/console
+             echo "[per-run] listening ports:" > /dev/console
+             ss -tlnp 2>/dev/null | head -20 > /dev/console || netstat -tln 2>/dev/null | head -20 > /dev/console || true
+             echo "[per-run] sshd.log tail:" > /dev/console
+             tail -10 /var/log/sshd.log 2>/dev/null > /dev/console || true
+             echo "[per-run] /etc/hosts.deny:" > /dev/console
+             cat /etc/hosts.deny 2>/dev/null > /dev/console || true
+             echo "[per-run] ip addr:" > /dev/console
+             ip -o addr 2>/dev/null > /dev/console || ifconfig -a 2>/dev/null > /dev/console || true; }
+    ) 2>/dev/null || true
+    setsid nohup /safeyolo/guest-shell-bridge >/var/log/shell-bridge.log 2>&1 </dev/null &
+    SB_PID=$!
+    echo "[per-run] started guest-shell-bridge (pid=$SB_PID)" > /dev/console 2>/dev/null || true
+    sleep 0.5
+    if kill -0 "$SB_PID" 2>/dev/null; then
+        echo "[per-run] guest-shell-bridge alive" > /dev/console
+    else
+        echo "[per-run] guest-shell-bridge EXITED; log:" > /dev/console
+        cat /var/log/shell-bridge.log > /dev/console 2>/dev/null || true
+    fi
+fi
+
+# --------------------------------------------------------------------------
 # 2. Inject agent instructions (e.g., /etc/claude-code/CLAUDE.md)
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/instructions.md ] && [ -n "${SAFEYOLO_INSTRUCTIONS_PATH:-}" ]; then
