@@ -184,6 +184,12 @@ class LinuxPlatform(AgentPlatform):
         # Bring up loopback so 127.0.0.1 is available to the guest.
         _sudo(["ip", "-n", netns, "link", "set", "lo", "up"])
 
+        # Override the legacy veth-based IPs: the agent's HTTP_PROXY
+        # must point at the in-guest forwarder (loopback), not at a
+        # nonexistent gateway. guest_ip is retained for logging/status
+        # writes but has no networking role anymore.
+        alloc["host_ip"] = "127.0.0.1"
+        alloc["guest_ip"] = "127.0.0.1"
         alloc["netns"] = netns
         log.info("Loopback-only netns %s created (no veth, no firewall)", netns)
         return alloc

@@ -214,8 +214,11 @@ def prepare_config_share(
         shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
         (share_dir / "vsock-term").chmod(0o755)
 
-    # Proxy environment variables
-    # The guest uses HTTP_PROXY to route through host mitmproxy on the feth gateway.
+    # Proxy environment variables.
+    # gateway_ip comes from the platform's setup_networking:
+    #   - Linux (new arch): 127.0.0.1 — guest-proxy-forwarder listens here
+    #     and relays to the host via bind-mounted UDS.
+    #   - macOS (feth): the host veth IP; traffic flows through feth-bridge + pf.
     proxy_url = f"http://{gateway_ip}:{proxy_port}"
     proxy_env = (
         f'export HTTP_PROXY="{proxy_url}"\n'

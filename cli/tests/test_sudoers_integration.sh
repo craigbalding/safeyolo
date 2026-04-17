@@ -63,7 +63,8 @@ setup() {
     uid=$(id -u "$TEST_USER")
     gid=$(id -g "$TEST_USER")
 
-    # Render the sudoers template with substitutions
+    # Render the sudoers template with substitutions. Mirrors the
+    # production template at cli/src/safeyolo/templates/safeyolo-linux.sudoers.
     cat > "$SUDOERS_FILE" << SUDEOF
 # Network namespace lifecycle
 ${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/ip netns add safeyolo-*, \\
@@ -71,35 +72,9 @@ ${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/ip netns add safeyolo-*, \\
                                    /sbin/ip netns add safeyolo-*, \\
                                    /sbin/ip netns del safeyolo-*
 
-# veth interface management
-${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/ip link add veth-sy* *, \\
-                                   /usr/sbin/ip link del veth-sy*, \\
-                                   /usr/sbin/ip link set veth-sy* up, \\
-                                   /usr/sbin/ip addr add * dev veth-sy*, \\
-                                   /sbin/ip link add veth-sy* *, \\
-                                   /sbin/ip link del veth-sy*, \\
-                                   /sbin/ip link set veth-sy* up, \\
-                                   /sbin/ip addr add * dev veth-sy*
-
-# Guest-side network config via ip -n
-${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/ip -n safeyolo-* addr *, \\
-                                   /usr/sbin/ip -n safeyolo-* link *, \\
-                                   /usr/sbin/ip -n safeyolo-* route *, \\
-                                   /sbin/ip -n safeyolo-* addr *, \\
-                                   /sbin/ip -n safeyolo-* link *, \\
-                                   /sbin/ip -n safeyolo-* route *
-
-# nftables -scoped to table ip safeyolo
-${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/nft add table ip safeyolo, \\
-                                   /usr/sbin/nft delete table ip safeyolo, \\
-                                   /usr/sbin/nft flush table ip safeyolo, \\
-                                   /usr/sbin/nft list table ip safeyolo, \\
-                                   /usr/sbin/nft add chain ip safeyolo *, \\
-                                   /usr/sbin/nft add rule ip safeyolo *
-
-# IP forwarding
-${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/sysctl -w net.ipv4.ip_forward=1, \\
-                                   /sbin/sysctl -w net.ipv4.ip_forward=1
+# Loopback bring-up inside the netns
+${TEST_USER} ALL=(root) NOPASSWD: /usr/sbin/ip -n safeyolo-* link set lo up, \\
+                                   /sbin/ip -n safeyolo-* link set lo up
 
 # One-time extraction mount (pinned paths)
 ${TEST_USER} ALL=(root) NOPASSWD: /usr/bin/mount -o loop\,ro ${base_ext4} /tmp/safeyolo-rootfs-mnt, \\
@@ -107,16 +82,16 @@ ${TEST_USER} ALL=(root) NOPASSWD: /usr/bin/mount -o loop\,ro ${base_ext4} /tmp/s
                                    /usr/bin/umount /tmp/safeyolo-rootfs-mnt, \\
                                    /bin/umount /tmp/safeyolo-rootfs-mnt
 
-# runsc -pinned to --root /run/safeyolo
-${TEST_USER} ALL=(root) NOPASSWD: /usr/local/bin/runsc --root /run/safeyolo --platform=kvm create *, \\
-                                   /usr/local/bin/runsc --root /run/safeyolo --platform=systrap create *, \\
+# runsc with --host-uds=open
+${TEST_USER} ALL=(root) NOPASSWD: /usr/local/bin/runsc --root /run/safeyolo --host-uds=open --platform=kvm create *, \\
+                                   /usr/local/bin/runsc --root /run/safeyolo --host-uds=open --platform=systrap create *, \\
                                    /usr/local/bin/runsc --root /run/safeyolo start *, \\
                                    /usr/local/bin/runsc --root /run/safeyolo state *, \\
                                    /usr/local/bin/runsc --root /run/safeyolo kill *, \\
                                    /usr/local/bin/runsc --root /run/safeyolo delete *, \\
                                    /usr/local/bin/runsc --root /run/safeyolo exec *, \\
-                                   /usr/bin/runsc --root /run/safeyolo --platform=kvm create *, \\
-                                   /usr/bin/runsc --root /run/safeyolo --platform=systrap create *, \\
+                                   /usr/bin/runsc --root /run/safeyolo --host-uds=open --platform=kvm create *, \\
+                                   /usr/bin/runsc --root /run/safeyolo --host-uds=open --platform=systrap create *, \\
                                    /usr/bin/runsc --root /run/safeyolo start *, \\
                                    /usr/bin/runsc --root /run/safeyolo state *, \\
                                    /usr/bin/runsc --root /run/safeyolo kill *, \\
@@ -165,53 +140,13 @@ run_positive_tests() {
     echo ""
     echo "=== POSITIVE TESTS (must succeed) ==="
 
-    # -- ip netns --
+    # -- loopback-only netns lifecycle --
     expect_allow "ip netns add safeyolo-test99" \
         /usr/sbin/ip netns add safeyolo-test99
+    expect_allow "ip -n safeyolo-test99 link set lo up" \
+        /usr/sbin/ip -n safeyolo-test99 link set lo up
     expect_allow "ip netns del safeyolo-test99" \
         /usr/sbin/ip netns del safeyolo-test99
-
-    # -- veth lifecycle --
-    # Need a netns for the peer
-    ip netns add safeyolo-test99 2>/dev/null
-    expect_allow "ip link add veth-sy99 with peer in netns" \
-        /usr/sbin/ip link add veth-sy99 type veth peer name eth0 netns safeyolo-test99
-    expect_allow "ip addr add on veth-sy99" \
-        /usr/sbin/ip addr add 192.168.99.1/24 dev veth-sy99
-    expect_allow "ip link set veth-sy99 up" \
-        /usr/sbin/ip link set veth-sy99 up
-
-    # -- ip -n guest-side config --
-    expect_allow "ip -n addr add (guest)" \
-        /usr/sbin/ip -n safeyolo-test99 addr add 192.168.99.2/24 dev eth0
-    expect_allow "ip -n link set eth0 up (guest)" \
-        /usr/sbin/ip -n safeyolo-test99 link set eth0 up
-    expect_allow "ip -n link set lo up (guest)" \
-        /usr/sbin/ip -n safeyolo-test99 link set lo up
-    expect_allow "ip -n route add default (guest)" \
-        /usr/sbin/ip -n safeyolo-test99 route add default via 192.168.99.1
-
-    # cleanup networking state
-    ip link del veth-sy99 2>/dev/null
-    ip netns del safeyolo-test99 2>/dev/null
-
-    # -- nftables --
-    expect_allow "nft add table ip safeyolo" \
-        /usr/sbin/nft add table ip safeyolo
-    expect_allow "nft add chain ip safeyolo" \
-        /usr/sbin/nft "add chain ip safeyolo testfwd { type filter hook forward priority 0; policy accept; }"
-    expect_allow "nft add rule ip safeyolo" \
-        /usr/sbin/nft add rule ip safeyolo testfwd ip saddr 10.0.0.0/8 drop
-    expect_allow "nft list table ip safeyolo" \
-        /usr/sbin/nft list table ip safeyolo
-    expect_allow "nft flush table ip safeyolo" \
-        /usr/sbin/nft flush table ip safeyolo
-    expect_allow "nft delete table ip safeyolo" \
-        /usr/sbin/nft delete table ip safeyolo
-
-    # -- sysctl --
-    expect_allow "sysctl ip_forward" \
-        /usr/sbin/sysctl -w net.ipv4.ip_forward=1
 
     # -- mkdir --
     expect_allow "mkdir -p /run/safeyolo" \
@@ -240,29 +175,33 @@ run_negative_tests() {
     expect_deny "ip netns add evil-ns" \
         /usr/sbin/ip netns add evil-ns
 
-    # -- ip link on non-veth-sy interface --
+    # -- ip -n: only loopback-up is allowed --
+    expect_deny "ip -n addr add (not in new arch)" \
+        /usr/sbin/ip -n safeyolo-test99 addr add 1.2.3.4/32 dev lo
+    expect_deny "ip -n route add (not in new arch)" \
+        /usr/sbin/ip -n safeyolo-test99 route add default via 1.2.3.4
+
+    # -- ip link / ip addr entirely removed from the template --
+    expect_deny "ip link add veth" \
+        /usr/sbin/ip link add veth-sy99 type veth peer name eth0
     expect_deny "ip link set eth0 down" \
         /usr/sbin/ip link set eth0 down
-    expect_deny "ip link add evil0 type veth" \
-        /usr/sbin/ip link add evil0 type veth peer name evil1
-    expect_deny "ip addr add on eth0" \
-        /usr/sbin/ip addr add 1.2.3.4/24 dev eth0
+    expect_deny "ip addr add on veth-sy" \
+        /usr/sbin/ip addr add 192.168.99.1/24 dev veth-sy99
 
-    # -- ip -n on non-safeyolo namespace --
-    expect_deny "ip -n evil-ns addr show" \
-        /usr/sbin/ip -n evil-ns addr show
-
-    # -- nft operations on other tables --
+    # -- nft: no firewall rules allowed anymore --
+    expect_deny "nft add table ip safeyolo (removed)" \
+        /usr/sbin/nft add table ip safeyolo
     expect_deny "nft add table ip evil" \
         /usr/sbin/nft add table ip evil
     expect_deny "nft flush ruleset" \
         /usr/sbin/nft flush ruleset
-    expect_deny "nft list table ip filter" \
-        /usr/sbin/nft list table ip filter
-    expect_deny "nft delete table ip filter" \
-        /usr/sbin/nft delete table ip filter
-    expect_deny "nft add rule ip filter" \
-        /usr/sbin/nft add rule ip filter INPUT ip saddr 10.0.0.0/8 drop
+
+    # -- sysctl removed entirely --
+    expect_deny "sysctl ip_forward (removed)" \
+        /usr/sbin/sysctl -w net.ipv4.ip_forward=1
+    expect_deny "sysctl kernel.hostname" \
+        /usr/sbin/sysctl -w kernel.hostname=pwned
 
     # -- mount (wrong source path) --
     expect_deny "mount with wrong ext4 path" \
@@ -276,17 +215,11 @@ run_negative_tests() {
     expect_deny "umount arbitrary path" \
         /usr/bin/umount /home
 
-    # -- runsc with wrong --root --
+    # -- runsc with wrong --root or without --host-uds=open --
     expect_deny "runsc --root /tmp/evil" \
         /usr/bin/runsc --root /tmp/evil state foo
     expect_deny "runsc without --root" \
         /usr/bin/runsc state foo
-
-    # -- sysctl (wrong key) --
-    expect_deny "sysctl arbitrary key" \
-        /usr/sbin/sysctl -w net.ipv4.ip_forward=0
-    expect_deny "sysctl kernel.hostname" \
-        /usr/sbin/sysctl -w kernel.hostname=pwned
 
     # -- generic escalation --
     expect_deny "bash as root" \
