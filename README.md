@@ -104,15 +104,17 @@ curl --noproxy '*' https://ifconfig.co
 
 ## How It Works
 
-Each agent runs in an isolated Linux sandbox with a dedicated network segment:
+Each agent runs in an isolated Linux sandbox with **no external network interface**. The only egress path is a per-agent socket bound to a host-side bridge, which routes through SafeYolo's mitmproxy:
 
 ```
-Agent sandbox (192.168.68.2)
+Agent sandbox (loopback-only; no eth0)
     │
-    │  HTTP_PROXY → host bridge IP
+    │  HTTP_PROXY → in-guest forwarder → AF_UNIX or AF_VSOCK
     ▼
-Host bridge (firewall: allow proxy port, block everything else)
+Per-agent bridge socket (one per agent, host-owned)
     │
+    │  bridge binds upstream TCP source to a synthetic 127.0.0.N
+    │  so mitmproxy attributes every request to the right agent
     ▼
 SafeYolo mitmproxy (host process)
     │  policy, credential guard, rate limits, audit
@@ -120,13 +122,15 @@ SafeYolo mitmproxy (host process)
 Internet
 ```
 
-The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + feth + pf) and a gVisor container on Linux (runsc + veth + iptables). Either way: if the agent unsets proxy vars → blocked by the host firewall. Raw TCP → blocked. DNS → blocked (no DNS from inside the sandbox). Enforcement is at the network level, not the process level.
+The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + vsock) and a gVisor container on Linux (runsc + `--host-uds=open`). Either way: if the agent unsets proxy vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable (no external interface). **Enforcement is structural, not policy-based** — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
+
+See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
 
 ## Key Features
 
 - **One-command agent setup** — pre-configured templates for Claude Code and Codex, plus a `byoa` (Bring Your Own Agent) template for installing your own
 - **Strong isolation** — each agent in its own sandbox: hardware-backed microVM on macOS, gVisor on Linux
-- **Enforced egress** — host firewall (pf/iptables) on dedicated bridge interfaces, not just env vars
+- **Structural egress control** — sandbox has no external network interface; the only path out is a per-agent host socket routed through the proxy. No firewall rules to misconfigure.
 - **Scoped API access** — grant agents specific capabilities per service
 - **Credential isolation** — agents access your services without seeing your keys
 - **Human-in-the-loop** — risky actions need approval via `safeyolo watch`
@@ -218,6 +222,7 @@ SafeYolo is **pre-v1**. The current sandbox design — hardware-backed microVMs 
 ## Documentation
 
 - [MicroVM Architecture](docs/microvm-architecture.md)
+- [Agent Networking (vsock/UDS)](docs/networking-vsock-uds.md)
 - [Sandbox Mode](docs/SANDBOX_MODE.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Architecture & Addons](docs/ADDONS.md)

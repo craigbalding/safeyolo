@@ -60,7 +60,7 @@ Agents call APIs on your behalf, but not every operation carries the same risk. 
 Agents shouldn't hold the keys to your accounts. SafeYolo lets agents access your services without ever seeing your credentials — it injects credentials at the proxy layer based on policy, so agents make requests and SafeYolo handles authentication. Your keys never enter the agent's environment.
 
 **Network and transport controls.**
-Agents have no direct internet access in Sandbox Mode. All HTTP traffic routes through SafeYolo. Non-canonical requests (path tricks, duplicate headers, encoding exploits) are rejected before policy evaluation. Homoglyph detection catches mixed-script domain spoofing. GCRA rate limiting prevents runaway loops.
+Agents have no direct internet access in Sandbox Mode. The sandbox has no external network interface at all — the only path out is a per-agent host-owned socket that routes through SafeYolo. This is *structural* isolation: there are no firewall rules in the enforcement path, so there is no configuration that can weaken it. Identity is stamped by the host-side bridge (each agent's upstream TCP source is bound to a distinct synthetic loopback address) so a compromised agent cannot forge another agent's identity. Non-canonical requests (path tricks, duplicate headers, encoding exploits) are rejected before policy evaluation. Homoglyph detection catches mixed-script domain spoofing. GCRA rate limiting prevents runaway loops.
 
 **Audit trail.**
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
