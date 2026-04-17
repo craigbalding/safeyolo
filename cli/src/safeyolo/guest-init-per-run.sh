@@ -54,6 +54,24 @@ fi
 echo 'export HOME=/home/agent' >> /etc/environment
 
 # --------------------------------------------------------------------------
+# 1b. Guest-side proxy forwarder (localhost:8080 -> UDS or vsock)
+#
+# Bridges the agent's HTTP_PROXY target (a plain TCP listener the agent
+# can reach via loopback) to the host-side SafeYolo proxy. Transport is
+# UDS on Linux/gVisor (bind-mounted /safeyolo/proxy.sock, reached via
+# gVisor --host-uds=open) or vsock on macOS (port 1080 on the VM helper).
+#
+# Runs unconditionally: if neither transport is available, the forwarder
+# logs the reason and exits — harmless on agents still using the legacy
+# veth/feth path. Runs as daemon; stderr lands on console for diagnostics.
+# Not blocking: guest-init continues even if the forwarder fails to start.
+# --------------------------------------------------------------------------
+if [ -x /safeyolo/guest-proxy-forwarder ]; then
+    setsid nohup /safeyolo/guest-proxy-forwarder >/dev/console 2>&1 </dev/null &
+    echo "[per-run] started guest-proxy-forwarder (pid=$!)" > /dev/console 2>/dev/null || true
+fi
+
+# --------------------------------------------------------------------------
 # 2. Inject agent instructions (e.g., /etc/claude-code/CLAUDE.md)
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/instructions.md ] && [ -n "${SAFEYOLO_INSTRUCTIONS_PATH:-}" ]; then
