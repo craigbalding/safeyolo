@@ -396,6 +396,14 @@ do {
     // the snapshot test runs in vsock-term mode where SIGUSR1 works; a
     // proper fix for --no-terminal SIGUSR1 is tracked separately and not
     // load-bearing for the CLI orchestration in PR 4.
+    //
+    // Detach + bridges: RunLoop.main returns once it has no input
+    // sources. The vsock bridges run on GCD, not on the main runloop —
+    // so once the initial setup work drains, the runloop would exit
+    // and the whole process with it. Keep a recurring Timer attached
+    // so RunLoop.main stays alive for the VM's lifetime.
+    let keepalive = Timer(timeInterval: 30.0, repeats: true) { _ in }
+    RunLoop.main.add(keepalive, forMode: .default)
     RunLoop.main.run()
 } catch {
     fputs("Error: \(error.localizedDescription)\n", stderr)
