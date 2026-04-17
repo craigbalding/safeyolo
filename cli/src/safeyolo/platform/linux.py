@@ -462,11 +462,10 @@ class LinuxPlatform(AgentPlatform):
         # rootfs. The base rootfs doesn't ship `/workspace`; without
         # this, `runsc start` fails to attach the workspace bind mount
         # and the container lands in `stopped` state before guest-init
-        # ever runs. Creating it in rootfs-upper makes it visible via
-        # the overlay without mutating the shared base image.
-        # rootfs-upper is user-owned (created at prepare_rootfs time),
-        # so no sudo needed here.
-        os.makedirs(agent_dir / "rootfs-upper" / "workspace", exist_ok=True)
+        # ever runs. Create through the merged mount point (not directly
+        # in rootfs-upper) — fuse-overlayfs only surfaces changes made
+        # through the merge, not direct upper-layer writes.
+        os.makedirs(rootfs / "workspace", exist_ok=True)
 
         # Clear any stale state entry for this cid before create. runsc
         # create fails with ID-already-exists if a previous run's state
