@@ -26,14 +26,6 @@ from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
-# nftables table name — all SafeYolo firewall rules live in this table.
-# Operations are scoped to this table via sudoers patterns, so SafeYolo
-# can never touch UFW, Tailscale, Docker, or any other firewall rules.
-NFT_TABLE = "safeyolo"
-
-# Legacy iptables chain name — kept for doctor.py diagnostics during migration.
-CHAIN_NAME = os.environ.get("SAFEYOLO_FW_CHAIN", "SAFEYOLO")
-
 # runsc state directory
 RUNSC_ROOT = "/run/safeyolo"
 
@@ -102,25 +94,6 @@ def _run(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess
     )
 
 
-def _detect_outbound_interface() -> str:
-    """Detect the primary outbound network interface."""
-    try:
-        result = subprocess.run(
-            ["ip", "route", "get", "1.1.1.1"],
-            capture_output=True, text=True, timeout=5,
-        )
-        # Output: "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.2"
-        for token in result.stdout.split():
-            if token == "dev":
-                idx = result.stdout.split().index("dev")
-                return result.stdout.split()[idx + 1]
-    except (subprocess.SubprocessError, OSError, IndexError):
-        # `ip route` unavailable or output shape unexpected — fall back
-        # to the conventional eth0.
-        pass
-    return "eth0"
-
-
 def _detect_runsc_platform() -> str:
     """Detect best runsc platform: kvm if available, otherwise systrap."""
     if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
@@ -164,30 +137,16 @@ def _container_id(name: str) -> str:
 
 
 def _netns_offset(agent_index: int) -> int:
-    """Global slot number for an agent, offsetting by SUBNET_BASE so that
-    multiple SafeYolo instances (production SUBNET_BASE=65 + blackbox test
-    SUBNET_BASE=75 + any future sibling) don't collide in the kernel's
-    flat namespace. Mirror of the formula in _veth_host_name — keep them
-    in lockstep.
+    """Global slot number for an agent, offset by SUBNET_BASE so multiple
+    SafeYolo instances (production + blackbox test) don't collide in the
+    kernel's flat netns namespace.
     """
     return SUBNET_BASE - 65 + agent_index
 
 
 def _netns_name(agent_index: int) -> str:
-    """Derive network namespace name from agent index.
-
-    Must be namespaced by SUBNET_BASE because netns names live in a
-    single host-wide namespace. Without the offset, production idx0
-    and blackbox-test idx0 both resolve to `safeyolo-idx0`; the second
-    instance's `ip link add ... netns safeyolo-idx0` then fails because
-    the eth0 peer already exists in the first instance's netns.
-    """
+    """Derive network namespace name from agent index."""
     return f"safeyolo-idx{_netns_offset(agent_index)}"
-
-
-def _veth_host_name(agent_index: int) -> str:
-    """Derive host-side veth interface name from agent index."""
-    return f"veth-sy{_netns_offset(agent_index)}"
 
 
 # ---------------------------------------------------------------------------
@@ -197,132 +156,60 @@ def _veth_host_name(agent_index: int) -> str:
 class LinuxPlatform(AgentPlatform):
     """Linux agent isolation via gVisor (runsc)."""
 
-    firewall_name = "nftables"
+    firewall_name = "structural"  # no kernel firewall; UDS-only egress
 
     # --- Networking ---
 
     def setup_networking(self, agent_index: int) -> dict:
-        """Create veth pair + network namespace for an agent."""
+        """Create a loopback-only network namespace for the agent.
+
+        The new architecture gives the sandbox ZERO external network
+        interfaces — only loopback (127.0.0.1). All traffic the agent
+        initiates to "the host" is caught by the guest-proxy-forwarder
+        on 127.0.0.1:8080 and relayed over a bind-mounted UDS to the
+        host-side proxy_bridge, which forwards to mitmproxy.
+
+        With no veth, no IP assignment, no routing, and no firewall
+        rules, the container has no path out except through the UDS.
+        The enforcement is structural, not policy-based.
+
+        Loopback is still needed because the guest-proxy-forwarder
+        binds 127.0.0.1:8080 — gVisor with --network=none has no
+        loopback at all and can't satisfy that bind.
+        """
         alloc = allocate_subnet(agent_index)
         netns = _netns_name(agent_index)
-        veth_host = _veth_host_name(agent_index)
-        veth_guest = "eth0"
 
-        # Create network namespace
         _sudo(["ip", "netns", "add", netns], check=False)  # may already exist
-
-        # Create veth pair with the guest end spawned DIRECTLY in the target
-        # netns. Without `netns <netns>` on the peer spec, the kernel creates
-        # both ends in the root namespace, which collides with the host's own
-        # `eth0` (the typical primary NIC name on a Linux server) and fails
-        # with RTNETLINK EEXIST.
-        _sudo(["ip", "link", "del", veth_host], check=False)  # clean up stale
-        _sudo(["ip", "link", "add", veth_host, "type", "veth",
-               "peer", "name", veth_guest, "netns", netns])
-
-        # Configure host side
-        _sudo(["ip", "addr", "add", f"{alloc['host_ip']}/24", "dev", veth_host])
-        _sudo(["ip", "link", "set", veth_host, "up"])
-
-        # Configure guest side (inside netns).
-        # Uses `ip -n <ns>` instead of `ip netns exec <ns> ip ...` so the
-        # sudoers rule can grant `ip -n safeyolo-*` without also granting
-        # `ip netns exec` (which allows running arbitrary binaries as root).
-        _sudo(["ip", "-n", netns, "addr", "add",
-               f"{alloc['guest_ip']}/24", "dev", veth_guest])
-        _sudo(["ip", "-n", netns, "link", "set", veth_guest, "up"])
+        # Bring up loopback so 127.0.0.1 is available to the guest.
         _sudo(["ip", "-n", netns, "link", "set", "lo", "up"])
-        _sudo(["ip", "-n", netns, "route", "add",
-               "default", "via", alloc["host_ip"]])
-
-        # Enable IP forwarding
-        _sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
 
         alloc["netns"] = netns
-        alloc["veth_host"] = veth_host
-
-        log.info("Network namespace %s created: %s <-> %s (host=%s)",
-                 netns, veth_host, veth_guest, alloc["host_ip"])
+        log.info("Loopback-only netns %s created (no veth, no firewall)", netns)
         return alloc
 
     def teardown_networking(self, agent_index: int) -> None:
-        """Remove network namespace (auto-removes veth pair)."""
+        """Remove the agent's network namespace."""
         netns = _netns_name(agent_index)
         _sudo(["ip", "netns", "del", netns], check=False)
         log.info("Network namespace %s removed", netns)
 
-    def load_firewall_rules(self, proxy_port: int, admin_port: int,
-                            active_subnets: list[str]) -> None:
-        """Load nftables rules: proxy-only egress per subnet.
+    def load_firewall_rules(self, proxy_port: int, admin_port: int,  # noqa: ARG002
+                            active_subnets: list[str]) -> None:  # noqa: ARG002
+        """No-op: the new architecture has no kernel firewall requirement.
 
-        All rules live in `table ip safeyolo` — a dedicated nftables table
-        that cannot interact with UFW, Tailscale, Docker, or any other
-        firewall. Sudoers rules are scoped to this table name, so even a
-        compromised SafeYolo process cannot modify other tables.
+        The container has no external network interface — there's nothing
+        to firewall. The only egress is the bind-mounted UDS, which is
+        intrinsically proxy-only (the socket is the proxy endpoint).
 
-        Cleanup is a single `nft delete table ip safeyolo` — no stale rule
-        accumulation, no need to track what was added.
+        Signature preserved so the platform abstraction stays stable
+        while macOS still uses its pf anchor path.
         """
-        outbound_if = _detect_outbound_interface()
-
-        # Create table (idempotent — nft add table is a no-op if it exists,
-        # but any existing rules are preserved. Flush first to ensure a
-        # clean slate on repeated load calls.)
-        _sudo(["nft", "add", "table", "ip", NFT_TABLE], check=False)
-        _sudo(["nft", "flush", "table", "ip", NFT_TABLE])
-
-        # Create chains with netfilter hooks.
-        # Priority -1 ensures SafeYolo's chains run BEFORE iptables-nft/UFW
-        # chains (which register at priority 0). Without this, UFW's INPUT
-        # policy drop kills agent traffic before our accept rule fires.
-        # This follows the Tailscale pattern (priority -1 for filter).
-        # NAT stays at standard srcnat priority (100).
-        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "forward",
-               "{ type filter hook forward priority -1; policy accept; }"])
-        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "input",
-               "{ type filter hook input priority -1; policy accept; }"])
-        _sudo(["nft", "add", "chain", "ip", NFT_TABLE, "postrouting",
-               "{ type nat hook postrouting priority 100; policy accept; }"])
-
-        for subnet in active_subnets:
-            host_ip = subnet.replace(".0/24", ".1")
-
-            # FORWARD: allow proxy, block admin, block rest
-            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
-                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
-                   "tcp", "dport", str(proxy_port), "accept"])
-            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
-                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
-                   "tcp", "dport", str(admin_port), "drop"])
-            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "forward",
-                   "ip", "saddr", subnet, "drop"])
-
-            # INPUT: allow proxy port, block everything else from agent subnet.
-            # The catch-all drop is essential — without it, the agent can
-            # reach any service on the host (SSH, Docker, dev servers).
-            # On UFW hosts this is defense-in-depth (UFW also drops at
-            # priority 0). On non-UFW hosts it's the only protection.
-            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
-                   "ip", "saddr", subnet, "ip", "daddr", host_ip,
-                   "tcp", "dport", str(proxy_port), "accept"])
-            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "input",
-                   "ip", "saddr", subnet, "drop"])
-
-            # NAT: masquerade outbound traffic
-            _sudo(["nft", "add", "rule", "ip", NFT_TABLE, "postrouting",
-                   "ip", "saddr", subnet, "oifname", outbound_if,
-                   "masquerade"])
-
-        log.info("nftables rules loaded in table %s", NFT_TABLE)
+        log.debug("load_firewall_rules: no-op (loopback-only netns, UDS proxy)")
 
     def unload_firewall_rules(self) -> None:
-        """Remove all SafeYolo firewall rules by deleting the nftables table.
-
-        One command removes everything — chains, rules, NAT. No stale rules,
-        no loop-and-delete, no risk of touching other tables.
-        """
-        _sudo(["nft", "delete", "table", "ip", NFT_TABLE], check=False)
-        log.info("nftables table %s deleted", NFT_TABLE)
+        """No-op: nothing to unload."""
+        log.debug("unload_firewall_rules: no-op")
 
     # --- Rootfs ---
 
@@ -480,7 +367,15 @@ class LinuxPlatform(AgentPlatform):
         # and gofer as daemons that inherit our stdout pipe — without
         # detach, Python blocks forever in communicate() waiting for EOF
         # on a pipe the daemons hold open for the container's lifetime.
-        _sudo([runsc, "--root", RUNSC_ROOT, f"--platform={platform}",
+        #
+        # --host-uds=open lets the container connect() to UDS files
+        # bind-mounted from the host (the proxy socket lands at
+        # /safeyolo/proxy.sock via the config-share bind mount).
+        # --network=none isn't used because it also suppresses loopback;
+        # the loopback-only netns from setup_networking gives us 127.0.0.1
+        # (needed by guest-proxy-forwarder) without any external path.
+        _sudo([runsc, "--root", RUNSC_ROOT, "--host-uds=open",
+               f"--platform={platform}",
                "create", "--bundle", str(agent_dir), cid], detach=True)
 
         # Start container
@@ -715,6 +610,23 @@ class LinuxPlatform(AgentPlatform):
              "source": str(config_share),
              "options": ["rbind", "rw"]},
         ]
+
+        # Proxy UDS — bind the host socket into /safeyolo/proxy.sock so
+        # guest-proxy-forwarder can reach mitmproxy via the proxy_bridge
+        # daemon. runsc --host-uds=open relays the connect() call across
+        # the sandbox boundary. If the socket doesn't exist yet (proxy
+        # not started) the mount still works — gofer surfaces the path
+        # and the container will see ENOENT on connect, matching what
+        # would happen if the proxy went down mid-run.
+        from ..proxy_bridge import socket_path as _proxy_socket_path
+        proxy_sock = _proxy_socket_path()
+        if proxy_sock.exists():
+            mounts.append({
+                "destination": "/safeyolo/proxy.sock",
+                "type": "bind",
+                "source": str(proxy_sock),
+                "options": ["bind", "rw"],
+            })
 
         # CA cert bind mount into trust store
         ca_cert_src = config_share / "mitmproxy-ca-cert.pem"
