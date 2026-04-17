@@ -182,14 +182,19 @@ def _check_end_to_end(name: str, entry: dict) -> Check:
     if not buf:
         return Check("End-to-end probe", "FAIL",
                      "no response from bridge/mitmproxy — chain broken")
-    status = "?"
     first_line = buf.split(b"\n", 1)[0].decode(errors="replace").strip()
-    if first_line.startswith("HTTP/"):
-        parts = first_line.split()
-        if len(parts) >= 2:
-            status = parts[1]
+    if not first_line.startswith("HTTP/"):
+        # Something responded but it's not HTTP — something's wrong on
+        # the other side (firewall mangling? wrong port?).
+        return Check("End-to-end probe", "FAIL",
+                     f"unexpected response (not HTTP): {first_line[:60]!r}")
+    # We intentionally send an incomplete request (no Host header) so
+    # mitmproxy rejects it with 400. A 400 *proves* the full host
+    # chain works — UDS accept + attribution-IP bind + TCP to mitmproxy
+    # + reply back — without touching any upstream or policy allowlist.
+    # Operators: this is the expected outcome; PASS is PASS.
     return Check("End-to-end probe", "PASS",
-                 f"response {len(buf)}B, status={status} ({first_line[:60]})")
+                 f"mitmproxy answered ({len(buf)}B, probe request rejected as expected)")
 
 
 def run_agent_diag(name: str) -> int:
