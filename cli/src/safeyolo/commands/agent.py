@@ -404,6 +404,39 @@ def _run_agent(
     gateway_ip = fw_alloc["host_ip"]
     guest_ip = fw_alloc["guest_ip"]
 
+    # Identity attribution (Linux UDS arch): mitmproxy sees every agent
+    # as src=127.0.0.1 at the TCP layer because all traffic comes from
+    # the local proxy_bridge. To restore per-agent attribution, the
+    # platform allocates a synthetic loopback IP (attribution_ip) and
+    # a per-agent bridge socket path. We register both in agent_map.json
+    # BEFORE start_sandbox: the bridge polls the map, creates the
+    # listener socket, and only then can runsc's gofer bind-mount it
+    # into the container. On macOS the feth IP is already unique per
+    # agent, so attribution_ip falls back to guest_ip and socket is None.
+    attribution_ip = fw_alloc.get("attribution_ip", guest_ip)
+    bridge_sock = None
+    if "attribution_ip" in fw_alloc:
+        from ..proxy_bridge import socket_path_for as _bridge_sock_for
+        bridge_sock = str(_bridge_sock_for(name))
+        _update_agent_map(name, ip=attribution_ip, socket=bridge_sock)
+        # Wait up to 5s for the bridge to create the listener socket.
+        # Without this, the OCI bind-mount source path doesn't exist
+        # and gVisor's gofer caches a ghost inode (same gotcha as the
+        # earlier restart-cycle bug).
+        import time as _time_wait
+        _deadline = _time_wait.time() + 5.0
+        _sock_path = Path(bridge_sock)
+        while _time_wait.time() < _deadline:
+            if _sock_path.is_socket():
+                break
+            _time_wait.sleep(0.05)
+        else:
+            console.print(
+                f"[yellow]Warning:[/yellow] bridge socket {bridge_sock} "
+                "did not appear; agent will see ENOENT on proxy connect. "
+                "Is `safeyolo start` running?"
+            )
+
     # Snapshot mode decision (macOS only for now — Linux is always
     # passthrough until PR 5 adds runsc checkpoint/restore).
     #
@@ -517,7 +550,11 @@ def _run_agent(
                 background=run_background,
                 restore_from_path=restore_src,
             )
-            _update_agent_map(name, ip=guest_ip)
+            # On Linux the map was already populated above (with
+            # attribution_ip + socket). Re-write it for macOS where
+            # guest_ip is the real per-agent feth address.
+            if "attribution_ip" not in fw_alloc:
+                _update_agent_map(name, ip=guest_ip)
 
             # Definitive readiness: the guest's per-run phase writes
             # /safeyolo/per-run-started as its first real action, after
@@ -593,7 +630,11 @@ def _run_agent(
                 background=run_background,
                 snapshot_capture_path=capture_path,
             )
-            _update_agent_map(name, ip=guest_ip)
+            # On Linux the map was already populated above (with
+            # attribution_ip + socket). Re-write it for macOS where
+            # guest_ip is the real per-agent feth address.
+            if "attribution_ip" not in fw_alloc:
+                _update_agent_map(name, ip=guest_ip)
 
             if snapshot_mode == "capture":
                 # Capture happens between static and per-run — static has

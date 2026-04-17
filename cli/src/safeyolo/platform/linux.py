@@ -184,14 +184,20 @@ class LinuxPlatform(AgentPlatform):
         # Bring up loopback so 127.0.0.1 is available to the guest.
         _sudo(["ip", "-n", netns, "link", "set", "lo", "up"])
 
-        # Override the legacy veth-based IPs: the agent's HTTP_PROXY
-        # must point at the in-guest forwarder (loopback), not at a
-        # nonexistent gateway. guest_ip is retained for logging/status
-        # writes but has no networking role anymore.
+        # The agent's HTTP_PROXY points at the in-guest forwarder
+        # (loopback) — these two IPs are what end up in proxy.env.
         alloc["host_ip"] = "127.0.0.1"
         alloc["guest_ip"] = "127.0.0.1"
         alloc["netns"] = netns
-        log.info("Loopback-only netns %s created (no veth, no firewall)", netns)
+
+        # Synthetic loopback IP used to stamp agent identity on upstream
+        # TCP flows from the host proxy_bridge to mitmproxy. 127.0.0.0/8
+        # is all loopback, so bind() + connect() with any 127.x address
+        # works without config. 127.0.0.1 is reserved for mitmproxy's
+        # own traffic; agents start at 127.0.0.2.
+        alloc["attribution_ip"] = f"127.0.0.{agent_index + 2}"
+        log.info("Loopback-only netns %s created (attribution_ip=%s)",
+                 netns, alloc["attribution_ip"])
         return alloc
 
     def teardown_networking(self, agent_index: int) -> None:
@@ -617,15 +623,18 @@ class LinuxPlatform(AgentPlatform):
              "options": ["rbind", "rw"]},
         ]
 
-        # Proxy UDS — bind the host socket into /safeyolo/proxy.sock so
-        # guest-proxy-forwarder can reach mitmproxy via the proxy_bridge
-        # daemon. runsc --host-uds=open relays the connect() call across
-        # the sandbox boundary. If the socket doesn't exist yet (proxy
-        # not started) the mount still works — gofer surfaces the path
-        # and the container will see ENOENT on connect, matching what
-        # would happen if the proxy went down mid-run.
-        from ..proxy_bridge import socket_path as _proxy_socket_path
-        proxy_sock = _proxy_socket_path()
+        # Per-agent proxy UDS — bind THIS agent's bridge socket into
+        # /safeyolo/proxy.sock inside the container. Agent A literally
+        # cannot see or address agent B's socket because B's path isn't
+        # bind-mounted in A's filesystem view. Identity is therefore
+        # structural, not policy-based.
+        #
+        # The bridge's accept() on this socket stamps upstream TCP flows
+        # with the agent's synthetic loopback IP (attribution_ip), which
+        # mitmproxy's service_discovery addon maps back to the agent
+        # name for audit/rate-limit/policy decisions.
+        from ..proxy_bridge import socket_path_for as _proxy_sock_for
+        proxy_sock = _proxy_sock_for(name)
         if proxy_sock.exists():
             mounts.append({
                 "destination": "/safeyolo/proxy.sock",

@@ -690,8 +690,21 @@ def ssh_exec(name: str, command: str, user: str = "agent", timeout: int = 60) ->
 # Agent map (for service_discovery addon)
 # ---------------------------------------------------------------------------
 
-def _update_agent_map(name: str, ip: str | None = None, remove: bool = False) -> None:
-    """Update the agent-IP map file read by the service_discovery addon."""
+def _update_agent_map(
+    name: str,
+    ip: str | None = None,
+    socket: str | None = None,
+    remove: bool = False,
+) -> None:
+    """Update the agent-IP map file.
+
+    Read by two consumers:
+      - addons/service_discovery.py (in mitmproxy) — uses `ip` to map
+        request source IPs back to agent names for audit/policy/rate-limit.
+      - safeyolo.proxy_bridge (on Linux) — uses `socket` to create a
+        per-agent listener, and `ip` as the upstream TCP source address
+        to stamp the agent's identity on flows to mitmproxy.
+    """
     map_path = get_agent_map_path()
     map_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -705,10 +718,13 @@ def _update_agent_map(name: str, ip: str | None = None, remove: bool = False) ->
     if remove:
         agent_map.pop(name, None)
     elif ip:
-        agent_map[name] = {
+        entry = {
             "ip": ip,
             "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        if socket:
+            entry["socket"] = socket
+        agent_map[name] = entry
 
     map_path.write_text(json.dumps(agent_map, indent=2) + "\n")
 

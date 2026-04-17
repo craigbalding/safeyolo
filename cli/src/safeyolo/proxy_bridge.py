@@ -1,29 +1,35 @@
 """Host-side UDS -> TCP bridge for SafeYolo on Linux.
 
 mitmproxy listens on TCP (127.0.0.1:<proxy_port>). Agent containers
-can't reach host TCP directly — with the new networking architecture
-they have no external network interface at all.
+can't reach host TCP directly — with the UDS-only architecture they
+have no external network interface at all.
 
-This bridge accepts connections on a Unix domain socket
-(~/.safeyolo/data/proxy.sock) and forwards each one bidirectionally
-to mitmproxy's TCP listener. The agent container gets the UDS via
-gVisor --host-uds=open + a bind-mount, and runs guest-proxy-forwarder
-to expose it as localhost:8080 (the agent's HTTP_PROXY target).
+Multi-tenant design: each agent gets its OWN per-agent socket at
+<data>/sockets/<name>.sock, bind-mounted into its container as
+/safeyolo/proxy.sock. The bridge listens on every registered agent's
+socket and stamps agent identity by the listener fd that accept()'d
+the connection — no identity claims ever come from the guest.
+
+Identity flows to mitmproxy via the upstream TCP *source* address:
+each agent is allocated a synthetic loopback IP (127.0.0.<idx+2>),
+and the bridge binds its upstream socket to that IP before connecting
+to mitmproxy on 127.0.0.1:<proxy_port>. The existing service_discovery
+addon maps src_ip -> agent_name, so attribution works unchanged.
 
 Lifecycle:
   - start_proxy_bridge() — spawn as a detached subprocess, write PID file
-  - stop_proxy_bridge() — read PID, SIGTERM, cleanup socket + PID file
-Called from proxy.py's start_proxy / stop_proxy so the bridge's
-lifetime matches mitmproxy's.
+  - stop_proxy_bridge() — SIGTERM, cleanup all per-agent sockets
+Called from proxy.py's start_proxy and lifecycle.py's stop_all.
 
-The daemon itself is in __main__: when executed as a script it opens
-the UDS, listens forever, and forwards connections. No CLI flags,
-config from argv[1] (socket path) and argv[2] (upstream host:port).
+The daemon watches ~/.safeyolo/data/agent_map.json for add/remove
+events (poll every 1s) and brings listeners up/down in lockstep.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import selectors
 import signal
 import socket
 import subprocess
@@ -36,23 +42,39 @@ log = logging.getLogger("safeyolo.proxy_bridge")
 
 
 def _get_data_dir() -> Path:
-    """Lazy import so the daemon mode (run as a standalone script) doesn't
-    need the safeyolo package on sys.path — the daemon only uses argv."""
+    """Lazy import so daemon mode doesn't need the safeyolo package."""
     from .config import get_data_dir as _impl  # noqa: PLC0415
     return _impl()
 
+
+def _get_agent_map_path() -> Path:
+    from .config import get_agent_map_path as _impl  # noqa: PLC0415
+    return _impl()
+
+
+def _get_sockets_dir() -> Path:
+    from .config import get_bridge_sockets_dir as _impl  # noqa: PLC0415
+    return _impl()
+
+
 # ---------------------------------------------------------------------------
-# Lifecycle helpers (called from proxy.py)
+# Lifecycle helpers (called from proxy.py / lifecycle.py)
 # ---------------------------------------------------------------------------
 
 
-def socket_path() -> Path:
-    """Path of the UDS agents connect to."""
-    return _get_data_dir() / "proxy.sock"
+def sockets_dir() -> Path:
+    """Directory containing per-agent listener sockets."""
+    return _get_sockets_dir()
 
 
 def _pid_file() -> Path:
     return _get_data_dir() / "proxy-bridge.pid"
+
+
+def socket_path_for(name: str) -> Path:
+    """Host-side bridge socket for an agent. Bind-mounted into the
+    container as /safeyolo/proxy.sock."""
+    return sockets_dir() / f"{name}.sock"
 
 
 def start_proxy_bridge(proxy_port: int = 8080) -> None:
@@ -66,22 +88,26 @@ def start_proxy_bridge(proxy_port: int = 8080) -> None:
 
     data_dir = _get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-    sock = socket_path()
-    # Clean up any stale socket from a previous run that didn't shut down.
-    # We own this path — the PID file check above is the authoritative
-    # liveness signal.
-    try:
-        sock.unlink()
-    except FileNotFoundError:
-        pass
+    socks = sockets_dir()
+    socks.mkdir(parents=True, exist_ok=True)
+    os.chmod(socks, 0o750)
+
+    # Clean up any stale per-agent sockets from a previous run.
+    # PID file check above is the authoritative liveness signal.
+    for f in socks.glob("*.sock"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
     log_file = data_dir.parent / "logs" / "proxy-bridge.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Run this very module as a script — no separate binary needed.
     cmd = [
         sys.executable, "-m", "safeyolo.proxy_bridge",
-        str(sock), f"127.0.0.1:{proxy_port}",
+        str(socks),
+        str(_get_agent_map_path()),
+        f"127.0.0.1:{proxy_port}",
     ]
     with open(log_file, "a") as lf:
         proc = subprocess.Popen(
@@ -90,32 +116,30 @@ def start_proxy_bridge(proxy_port: int = 8080) -> None:
         )
 
     _pid_file().write_text(str(proc.pid))
-    log.info("proxy bridge started (PID %d) on %s", proc.pid, sock)
+    log.info("proxy bridge started (PID %d), sockets dir %s", proc.pid, socks)
 
 
 def stop_proxy_bridge() -> None:
-    """SIGTERM the bridge, clean up its socket + PID file."""
+    """SIGTERM the bridge, clean up its sockets + PID file."""
     pid_file = _pid_file()
     if not pid_file.exists():
-        # May still have a stale socket if the bridge died ungracefully.
-        _cleanup_socket()
+        _cleanup_sockets()
         return
 
     try:
         pid = int(pid_file.read_text().strip())
     except (ValueError, OSError):
         pid_file.unlink(missing_ok=True)
-        _cleanup_socket()
+        _cleanup_sockets()
         return
 
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pid_file.unlink(missing_ok=True)
-        _cleanup_socket()
+        _cleanup_sockets()
         return
 
-    # Wait up to 5s for graceful exit
     for _ in range(50):
         try:
             os.kill(pid, 0)
@@ -129,7 +153,7 @@ def stop_proxy_bridge() -> None:
             pass
 
     pid_file.unlink(missing_ok=True)
-    _cleanup_socket()
+    _cleanup_sockets()
     log.info("proxy bridge stopped")
 
 
@@ -147,11 +171,18 @@ def is_bridge_running() -> bool:
         return False
 
 
-def _cleanup_socket() -> None:
+def _cleanup_sockets() -> None:
     try:
-        socket_path().unlink()
-    except FileNotFoundError:
-        pass
+        socks = sockets_dir()
+    except Exception:
+        return
+    if not socks.exists():
+        return
+    for f in socks.glob("*.sock"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -176,13 +207,30 @@ def _forward(src: socket.socket, dst: socket.socket) -> None:
             pass
 
 
-def _handle_client(uds_conn: socket.socket, upstream: tuple[str, int]) -> None:
+def _handle_client(
+    uds_conn: socket.socket,
+    upstream: tuple[str, int],
+    attribution_ip: str,
+    agent: str,
+) -> None:
+    """Pump one agent->mitmproxy TCP flow.
+
+    Binds the upstream TCP socket's source to the agent's synthetic
+    loopback address before connecting. mitmproxy sees src=attribution_ip
+    and service_discovery maps that back to the agent name.
+    """
     try:
-        tcp = socket.create_connection(upstream, timeout=5)
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind((attribution_ip, 0))
+        tcp.settimeout(5)
+        tcp.connect(upstream)
+        tcp.settimeout(None)
     except OSError as exc:
         logging.getLogger(__name__).warning(
-            "upstream %s:%d connect failed: %s: %s",
-            upstream[0], upstream[1], type(exc).__name__, exc,
+            "agent %s upstream %s:%d from %s connect failed: %s: %s",
+            agent, upstream[0], upstream[1], attribution_ip,
+            type(exc).__name__, exc,
         )
         uds_conn.close()
         return
@@ -197,10 +245,55 @@ def _handle_client(uds_conn: socket.socket, upstream: tuple[str, int]) -> None:
     tcp.close()
 
 
+class _Listener:
+    """Bound listening socket for one agent."""
+    def __init__(self, name: str, path: Path, ip: str, server: socket.socket):
+        self.name = name
+        self.path = path
+        self.ip = ip
+        self.server = server
+
+
+def _make_listener(name: str, path: Path, ip: str) -> _Listener | None:
+    log_ = logging.getLogger(__name__)
+    # Stale file from a crashed bridge instance
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(path))
+    except OSError as exc:
+        log_.error("bind %s failed: %s: %s", path, type(exc).__name__, exc)
+        server.close()
+        return None
+
+    # 0660: owner + group (operator). gofer runs as root with DAC_OVERRIDE.
+    try:
+        os.chmod(path, 0o660)
+    except OSError:
+        pass
+    server.listen(32)
+    server.setblocking(False)
+    log_.info("listen agent=%s ip=%s path=%s", name, ip, path)
+    return _Listener(name, path, ip, server)
+
+
+def _read_agent_map(map_path: Path) -> dict[str, dict]:
+    """Read agent_map.json, returning empty dict on any failure."""
+    try:
+        return json.loads(map_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
 def _daemon_main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 4:
         sys.stderr.write(
-            f"Usage: {sys.argv[0]} <socket_path> <upstream_host:port>\n"
+            f"Usage: {sys.argv[0]} <sockets_dir> <agent_map_path> "
+            "<upstream_host:port>\n"
         )
         return 2
 
@@ -209,9 +302,11 @@ def _daemon_main() -> int:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         stream=sys.stderr,
     )
+    log_ = logging.getLogger(__name__)
 
-    sock_path = sys.argv[1]
-    host_port = sys.argv[2]
+    socks_dir = Path(sys.argv[1])
+    map_path = Path(sys.argv[2])
+    host_port = sys.argv[3]
     host, _, port_str = host_port.rpartition(":")
     try:
         port = int(port_str)
@@ -220,62 +315,118 @@ def _daemon_main() -> int:
         return 2
     upstream = (host or "127.0.0.1", port)
 
-    # Clean up any stale socket (caller does this too, but be defensive).
-    try:
-        os.unlink(sock_path)
-    except FileNotFoundError:
-        pass
+    socks_dir.mkdir(parents=True, exist_ok=True)
 
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        server.bind(sock_path)
-    except OSError as exc:
-        sys.stderr.write(f"bind {sock_path} failed: {exc}\n")
-        return 1
-    # 0660 so the owner (SafeYolo operator) and group can access.
-    # The gVisor sandbox runs the gofer as root which already has
-    # DAC_OVERRIDE, so this doesn't block the container connecting.
-    os.chmod(sock_path, 0o660)
-    server.listen(32)
-
-    log = logging.getLogger(__name__)
-    log.info("listening on %s -> %s:%d", sock_path, *upstream)
-
+    sel = selectors.DefaultSelector()
+    listeners: dict[str, _Listener] = {}
     stop = threading.Event()
 
     def _on_signal(signum, frame):  # noqa: ARG001
-        log.info("signal %d received, shutting down", signum)
+        log_.info("signal %d received, shutting down", signum)
         stop.set()
-        # Unblock accept() by closing the server socket.
-        try:
-            server.close()
-        except OSError:
-            pass
 
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
 
+    def _sync_listeners() -> None:
+        """Reconcile the live listener set against agent_map.json."""
+        desired = _read_agent_map(map_path)
+        desired_names = set(desired.keys())
+        current_names = set(listeners.keys())
+
+        # Remove listeners for agents no longer in the map
+        for name in current_names - desired_names:
+            lst = listeners.pop(name)
+            try:
+                sel.unregister(lst.server)
+            except KeyError:
+                pass
+            try:
+                lst.server.close()
+            except OSError:
+                pass
+            try:
+                lst.path.unlink()
+            except FileNotFoundError:
+                pass
+            log_.info("closed listener agent=%s", name)
+
+        # Add listeners for new agents
+        for name in desired_names - current_names:
+            info = desired[name]
+            ip = info.get("ip")
+            sock_raw = info.get("socket")
+            if not ip or not sock_raw:
+                continue
+            lst = _make_listener(name, Path(sock_raw), ip)
+            if lst is None:
+                continue
+            listeners[name] = lst
+            sel.register(lst.server, selectors.EVENT_READ, lst)
+
+        # Handle IP or path change: simpler to rebuild the listener
+        for name in desired_names & current_names:
+            info = desired[name]
+            cur = listeners[name]
+            new_ip = info.get("ip")
+            new_path = info.get("socket")
+            if new_ip == cur.ip and new_path == str(cur.path):
+                continue
+            # changed — drop and re-add on next tick
+            sel.unregister(cur.server)
+            try:
+                cur.server.close()
+            except OSError:
+                pass
+            try:
+                cur.path.unlink()
+            except FileNotFoundError:
+                pass
+            listeners.pop(name)
+
+    _sync_listeners()
+    log_.info("daemon ready, upstream %s:%d", *upstream)
+
+    last_sync = 0.0
+    SYNC_INTERVAL = 1.0
+
     try:
         while not stop.is_set():
-            try:
-                conn, _ = server.accept()
-            except OSError:
-                if stop.is_set():
-                    break
-                raise
-            threading.Thread(
-                target=_handle_client, args=(conn, upstream), daemon=True,
-            ).start()
+            # Poll selectors with a short timeout so we can periodically
+            # reconcile with the map file.
+            events = sel.select(timeout=0.5)
+            for key, _ in events:
+                lst: _Listener = key.data
+                try:
+                    conn, _ = lst.server.accept()
+                except OSError:
+                    continue
+                threading.Thread(
+                    target=_handle_client,
+                    args=(conn, upstream, lst.ip, lst.name),
+                    daemon=True,
+                ).start()
+
+            now = time.time()
+            if now - last_sync >= SYNC_INTERVAL:
+                _sync_listeners()
+                last_sync = now
     finally:
-        try:
-            server.close()
-        except OSError:
-            pass
-        try:
-            os.unlink(sock_path)
-        except FileNotFoundError:
-            pass
-        log.info("shut down")
+        for lst in list(listeners.values()):
+            try:
+                sel.unregister(lst.server)
+            except KeyError:
+                pass
+            try:
+                lst.server.close()
+            except OSError:
+                pass
+            try:
+                lst.path.unlink()
+            except FileNotFoundError:
+                pass
+        sel.close()
+        log_.info("shut down")
     return 0
 
 
