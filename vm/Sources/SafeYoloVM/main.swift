@@ -180,6 +180,21 @@ guard var config = parseArguments() else {
 // instead, caught in _forward's except block.
 signal(SIGPIPE, SIG_IGN)
 
+// Diagnostic: log every fatal signal before default action fires, so
+// we can tell "crashed with SIGBUS" from "exited cleanly from main".
+for sig in [SIGABRT, SIGBUS, SIGSEGV, SIGILL, SIGFPE, SIGTRAP] {
+    signal(sig) { s in
+        fputs("[vm] caught fatal signal \(s), about to die\n", stderr)
+        // Re-raise with default handler so normal crash machinery still fires
+        signal(s, SIG_DFL)
+        raise(s)
+    }
+}
+
+atexit {
+    fputs("[vm] atexit\n", stderr)
+}
+
 do {
     if !config.feth.isEmpty {
         // Network isolation via feth pair.
