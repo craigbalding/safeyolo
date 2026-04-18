@@ -188,15 +188,20 @@ def _install_monkeypatch() -> None:
 
     async def _patched_listen(self, host, port):
         orig_hs = self.handle_stream.__func__
+        log.info("PROXY v2: patching handle_stream for %s:%s", host, port)
 
         async def _wrapped(reader, writer=None):
+            log.info("PROXY v2: handle_stream called")
             return await _pp2_handle_stream(orig_hs, self, reader, writer)
 
         self.handle_stream = _wrapped
         try:
             result = await orig_listen(self, host, port)
         finally:
-            del self.handle_stream
+            # Don't delete — asyncio.start_server captured the bound
+            # reference, but we need to keep it for the lifetime of
+            # the server in case Python GC's the closure.
+            pass
         return result
 
     target_cls.listen = _patched_listen
