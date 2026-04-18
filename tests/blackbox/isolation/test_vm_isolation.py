@@ -709,14 +709,11 @@ class TestFilesystemBoundary:
                     content = f.read(200)
             except (PermissionError, FileNotFoundError, OSError):
                 return  # can't read → safe
-            # If readable, verify it's the SANDBOX's shadow (locked
-            # accounts with * or ! or !*, no real password hashes).
-            # A real shadow file has $6$... or $y$... hashes.
-            import re
-            has_real_hash = bool(re.search(r'\$[0-9a-z]+\$', content))
-            assert not has_real_hash, (
-                f"Symlink traversal may have reached host /etc/shadow "
-                f"(contains password hashes): {content[:100]!r}"
+            # If readable, verify it's the SANDBOX's shadow (no real
+            # password hashes) not the HOST's.
+            assert "root:" not in content or content.count(":") < 5, (
+                f"Symlink traversal may have reached host /etc/shadow: "
+                f"{content[:100]!r}"
             )
         finally:
             os.unlink(link_path)
@@ -779,11 +776,6 @@ class TestFilesystemBoundary:
                 os.unlink(mknod_path)
             os.rmdir(os.path.dirname(mknod_path))
 
-    @pytest.mark.xfail(reason=(
-        "Rootless userns: rootfs overlay is writable by design (agent "
-        "needs to install packages). Trust store writes only affect the "
-        "in-sandbox TLS stack, not the proxy's host-side trust store."
-    ))
     def test_ca_trust_store_immutable(self):
         """An agent must not be able to add CAs to the trust store and
         then MITM its own traffic to hide from the proxy. The system
