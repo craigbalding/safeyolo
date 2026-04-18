@@ -424,6 +424,46 @@ class LinuxPlatform(AgentPlatform):
         for d in (upper, work, merged):
             d.mkdir(parents=True, exist_ok=True)
 
+        # The upper/work dirs must be writable by the userns root
+        # (host uid 100000) since the gofer writes to them. Create
+        # a temporary userns to chown them, then mount fuse-overlayfs.
+        aa_prefix = []
+        if _needs_apparmor() and _has_aa_exec():
+            aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
+        chown_proc = subprocess.Popen(
+            aa_prefix + ["unshare", "-Un", "sleep", "10"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.5)
+        if chown_proc.poll() is None:
+            host_uid = os.getuid()
+            host_gid = os.getgid()
+            try:
+                subprocess.run(
+                    ["newuidmap", str(chown_proc.pid),
+                     "0", "100000", "1000",
+                     "1000", str(host_uid), "1",
+                     "1001", "101001", "64534"],
+                    check=True, capture_output=True,
+                )
+                subprocess.run(
+                    ["newgidmap", str(chown_proc.pid),
+                     "0", "100000", "1000",
+                     "1000", str(host_gid), "1",
+                     "1001", "101001", "64534"],
+                    check=True, capture_output=True,
+                )
+                for d in (upper, work):
+                    subprocess.run(
+                        ["nsenter", "--user", "--target", str(chown_proc.pid),
+                         "--", "chown", "root:root", str(d)],
+                        check=False, capture_output=True,
+                    )
+            finally:
+                chown_proc.kill()
+
         _run(["fuse-overlayfs",
               "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work},"
                     f"allow_other",
