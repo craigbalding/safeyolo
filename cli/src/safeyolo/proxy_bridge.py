@@ -26,6 +26,7 @@ events (poll every 1s) and brings listeners up/down in lockstep.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import logging
@@ -81,6 +82,16 @@ def _pid_file() -> Path:
     return _get_data_dir() / "proxy-bridge.pid"
 
 
+def _hash_file() -> Path:
+    return _get_data_dir() / "proxy-bridge.hash"
+
+
+def _code_hash() -> str:
+    """SHA-256 of this module's source. Used to detect stale daemons."""
+    src = Path(__file__).resolve()
+    return hashlib.sha256(src.read_bytes()).hexdigest()[:16]
+
+
 def socket_path_for(name: str) -> Path:
     """Host-side bridge socket for an agent. Bind-mounted into the
     container as /safeyolo/proxy.sock."""
@@ -90,11 +101,23 @@ def socket_path_for(name: str) -> Path:
 def start_proxy_bridge(proxy_port: int = 8080) -> None:
     """Spawn the UDS -> TCP bridge as a detached subprocess.
 
-    Idempotent: re-running is a no-op if the bridge is already live.
+    Idempotent: re-running is a no-op if the bridge is already live
+    AND running current code. If the source has changed since the
+    daemon started (e.g. after a code update), the stale daemon is
+    stopped and a fresh one is spawned.
     """
     if is_bridge_running():
-        log.info("proxy bridge already running")
-        return
+        current = _code_hash()
+        try:
+            running = _hash_file().read_text().strip()
+        except (OSError, ValueError):
+            running = ""
+        if current == running:
+            log.info("proxy bridge already running")
+            return
+        log.info("proxy bridge code changed (%s -> %s), restarting",
+                 running[:8] or "unknown", current[:8])
+        stop_proxy_bridge()
 
     data_dir = _get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -132,6 +155,7 @@ def start_proxy_bridge(proxy_port: int = 8080) -> None:
         )
 
     _pid_file().write_text(str(proc.pid))
+    _hash_file().write_text(_code_hash())
     log.info("proxy bridge started (PID %d), sockets dir %s", proc.pid, socks)
 
 
@@ -171,6 +195,7 @@ def stop_proxy_bridge() -> None:
             pass
 
     pid_file.unlink(missing_ok=True)
+    _hash_file().unlink(missing_ok=True)
     _cleanup_sockets()
     log.info("proxy bridge stopped")
 
