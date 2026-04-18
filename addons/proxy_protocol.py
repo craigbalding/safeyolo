@@ -1,26 +1,21 @@
 """
-proxy_protocol.py — PROXY protocol v2 identity for agent connections.
+proxy_protocol.py — PROXY protocol v2 identity via mitmproxy's layer system.
 
-Monkeypatches mitmproxy's listen() method to wrap handle_stream with
-a PROXY protocol v2 parser. The proxy_bridge prepends a v2 header to
-every connection carrying the agent's attribution IP and name. The
-parser reads the header before the HTTP parser sees it, rewrites
-peername with the agent's IP, and passes the remaining bytes through.
+Uses the next_layer hook to detect PROXY protocol v2 headers on incoming
+connections. When detected, inserts a custom ProxyProtocolLayer that strips
+the v2 header, rewrites client.peername with the agent's attribution IP,
+and replays the remaining bytes to the HTTP layer.
 
-Cross-platform: works identically on macOS and Linux. The bridge
-sends the same v2 header regardless of the platform's isolation
-mechanism (VZ microVM, gVisor userns).
-
-Load order: must be first in the addon chain so the monkeypatch is
-installed before any server starts listening.
+Cross-platform: the proxy_bridge sends the same v2 header on macOS and
+Linux. No kernel interface configuration needed.
 """
 
-import asyncio
 import logging
 import struct
 from typing import Any
 
-from mitmproxy.proxy import mode_servers
+from mitmproxy import ctx
+from mitmproxy.proxy import layers, layer
 
 log = logging.getLogger("safeyolo.proxy-protocol")
 
@@ -108,165 +103,43 @@ def _parse_v2_header(data: bytes) -> dict[str, Any] | None:
     return result
 
 
-# -- Monkeypatch -----------------------------------------------------------
-
-_installed = False
-
-
-def _install_monkeypatch() -> None:
-    """Patch listen() to wrap handle_stream with PROXY v2 parsing.
-
-    The patch is installed during addon load(), before the proxy
-    server calls listen(). When listen() is called, it wraps
-    handle_stream so asyncio.start_server captures the wrapped
-    version. The wrapper reads the v2 header from the stream,
-    rewrites peername, then delegates to the original handler.
-    """
-    global _installed
-    if _installed:
-        return
-    _installed = True
-
-    # Patch asyncio.start_server directly. This catches all server
-    # creation regardless of class method resolution order or when
-    # the server instance was created relative to addon loading.
-    import asyncio as _asyncio
-    _orig_start_server = _asyncio.start_server
-
-    async def _pp2_wrap_callback(orig_cb, reader, writer):
-        """Read PROXY v2 header, rewrite peername, delegate."""
-        peek = b""
-        try:
-            peek = await asyncio.wait_for(
-                reader.readexactly(PP2_SIGNATURE_LEN),
-                timeout=2.0,
-            )
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            if peek:
-                reader = _PrependReader(peek, reader)
-            return await orig_cb(reader, writer)
-
-        if peek != PP2_SIGNATURE:
-            reader = _PrependReader(peek, reader)
-            return await orig_cb(reader, writer)
-
-        try:
-            rest_header = await asyncio.wait_for(
-                reader.readexactly(4), timeout=2.0,
-            )
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            log.warning("PROXY v2: incomplete header")
-            return
-
-        _, _, payload_len = struct.unpack("!BBH", rest_header)
-
-        try:
-            payload = await asyncio.wait_for(
-                reader.readexactly(payload_len), timeout=2.0,
-            )
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            log.warning("PROXY v2: incomplete payload")
-            return
-
-        full_header = peek + rest_header + payload
-        parsed = _parse_v2_header(full_header)
-
-        if parsed and writer is not None:
-            src_ip = parsed.get("src_ip", "127.0.0.1")
-            src_port = parsed.get("src_port", 0)
-            agent_name = parsed.get("agent_name", "")
-
-            _orig_get = writer.get_extra_info
-
-            def _patched_get(key, default=None, *, _ip=src_ip, _port=src_port, _orig=_orig_get):
-                if key == "peername":
-                    return (_ip, _port)
-                return _orig(key, default)
-
-            writer.get_extra_info = _patched_get
-
-            if agent_name:
-                log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
-
-        return await orig_cb(reader, writer)
-
-    async def _patched_start_server(client_connected_cb, host=None, port=None, **kwargs):
-        async def _wrapped(reader, writer):
-            return await _pp2_wrap_callback(client_connected_cb, reader, writer)
-        return await _orig_start_server(_wrapped, host, port, **kwargs)
-
-    _asyncio.start_server = _patched_start_server
-    log.info("PROXY v2 monkeypatch installed on asyncio.start_server")
-
-
-class _PrependReader:
-    """Wraps an asyncio.StreamReader with bytes prepended to the stream."""
-
-    def __init__(self, prepend: bytes, reader):
-        self._prepend = prepend
-        self._reader = reader
-
-    def __getattr__(self, name):
-        return getattr(self._reader, name)
-
-    async def read(self, n: int = -1) -> bytes:
-        if self._prepend:
-            if n < 0:
-                data = self._prepend + await self._reader.read(n)
-                self._prepend = b""
-                return data
-            if n <= len(self._prepend):
-                data = self._prepend[:n]
-                self._prepend = self._prepend[n:]
-                return data
-            data = self._prepend
-            self._prepend = b""
-            return data + await self._reader.read(n - len(data))
-        return await self._reader.read(n)
-
-    async def readexactly(self, n: int) -> bytes:
-        if self._prepend:
-            if n <= len(self._prepend):
-                data = self._prepend[:n]
-                self._prepend = self._prepend[n:]
-                return data
-            data = self._prepend
-            self._prepend = b""
-            return data + await self._reader.readexactly(n - len(data))
-        return await self._reader.readexactly(n)
-
-    async def readuntil(self, separator: bytes = b"\n") -> bytes:
-        if self._prepend:
-            idx = self._prepend.find(separator)
-            if idx >= 0:
-                end = idx + len(separator)
-                data = self._prepend[:end]
-                self._prepend = self._prepend[end:]
-                return data
-            data = self._prepend
-            self._prepend = b""
-            return data + await self._reader.readuntil(separator)
-        return await self._reader.readuntil(separator)
-
-    async def readline(self) -> bytes:
-        return await self.readuntil(b"\n")
-
-
-# -- Addon interface -------------------------------------------------------
-
-# Install the monkeypatch at IMPORT time — before the addon lifecycle
-# starts, before the master creates servers. Script addons are imported
-# by mitmdump's ScriptLoader, which happens during configure(). The
-# monkeypatch must be in place before ProxyServer.setup_servers() calls
-# listen(). Import-time patching guarantees this regardless of addon
-# ordering.
-_install_monkeypatch()
-
+# -- Addon -----------------------------------------------------------------
 
 class ProxyProtocolAddon:
-    """mitmproxy addon (placeholder — the monkeypatch is installed at import)."""
+    """Detect and handle PROXY protocol v2 via the next_layer hook."""
 
     name = "proxy-protocol"
+
+    def next_layer(self, nextlayer: layer.NextLayer):
+        # Peek at the buffered client data for the v2 signature.
+        data = nextlayer.data_client()
+        if not data or len(data) < PP2_SIGNATURE_LEN:
+            return
+        if data[:PP2_SIGNATURE_LEN] != PP2_SIGNATURE:
+            return
+
+        # Parse the full header (may need more bytes than currently
+        # buffered — but the v2 header is small, typically ~30 bytes,
+        # and mitmproxy buffers at least the first chunk).
+        parsed = _parse_v2_header(bytes(data))
+        if not parsed:
+            return
+
+        header_len = parsed["header_len"]
+        src_ip = parsed.get("src_ip", "127.0.0.1")
+        src_port = parsed.get("src_port", 0)
+        agent_name = parsed.get("agent_name", "")
+
+        # Rewrite the client's peername with the agent's attribution IP.
+        nextlayer.context.client.peername = (src_ip, src_port)
+
+        if agent_name:
+            log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
+
+        # Strip the PROXY header from the buffered data so the HTTP
+        # parser doesn't see it. data_client() returns a bytearray
+        # — modify it in place.
+        del data[:header_len]
 
 
 addons = [ProxyProtocolAddon()]
