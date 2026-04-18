@@ -263,13 +263,19 @@ class _PrependReader:
 
 # -- Addon interface -------------------------------------------------------
 
+# Install the monkeypatch at IMPORT time — before the addon lifecycle
+# starts, before the master creates servers. Script addons are imported
+# by mitmdump's ScriptLoader, which happens during configure(). The
+# monkeypatch must be in place before ProxyServer.setup_servers() calls
+# listen(). Import-time patching guarantees this regardless of addon
+# ordering.
+_install_monkeypatch()
+
+
 class ProxyProtocolAddon:
-    """mitmproxy addon that installs the PROXY protocol v2 monkeypatch."""
+    """mitmproxy addon (placeholder — the monkeypatch is installed at import)."""
 
     name = "proxy-protocol"
-
-    def load(self, loader):
-        _install_monkeypatch()
 
 
 addons = [ProxyProtocolAddon()]
