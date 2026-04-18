@@ -85,6 +85,15 @@ if ip link show eth0 >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------------------
+# 1b. Ensure agent home dir is owned by the agent user.
+#
+# In the rootless user-namespace path, the rootfs is owned by the
+# mapped root uid on the host. gVisor's sentry handles chown
+# internally — CAP_CHOWN in the OCI spec grants permission.
+# --------------------------------------------------------------------------
+chown -R 1000:1000 /home/agent 2>/dev/null || true
+
+# --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
 # --------------------------------------------------------------------------
 mkdir -p /workspace
