@@ -312,6 +312,7 @@ def _handle_client(
     try:
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         tcp.bind(("127.0.0.1", src_port))
         tcp.settimeout(5)
         tcp.connect(upstream)
