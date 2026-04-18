@@ -357,13 +357,26 @@ class LinuxPlatform(AgentPlatform):
         cmd = _wrap_in_userns(inner, agent_ip=agent_ip)
         cmd = _wrap_in_systemd_scope(cmd, name, memory_mb, cpus)
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, check=False,
-        )
+        # Use a tempfile for stderr to avoid the pipe-inheritance
+        # blocking problem: runsc create forks sandbox+gofer daemons
+        # that inherit stdout/stderr pipes, and subprocess.run blocks
+        # until all writers close — which never happens while the
+        # daemons are alive.
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            result = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                check=False,
+            )
+            stderr_file.seek(0)
+            err_text = stderr_file.read().decode(errors="replace")
+
         if result.returncode != 0:
-            log.error("Container start failed: %s", result.stderr or result.stdout)
-            raise RuntimeError(f"Failed to start container {cid}: {result.stderr}")
+            log.error("Container start failed (rc=%d): %s",
+                      result.returncode, err_text)
+            raise RuntimeError(f"Failed to start container {cid}: {err_text}")
 
         # Get PID (runsc state works from outside the userns)
         state_result = _run([runsc, "--root", root, "state", cid], check=False)
