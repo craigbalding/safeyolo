@@ -22,8 +22,6 @@ that port back to the agent name at connection time and rewrites
 `service_discovery` and all downstream addons see per-agent identity
 for audit, policy, and rate limiting.
 
-No `sudo`, no lo0 aliases, no kernel interface configuration.
-
 On macOS, a Swift `VSockProxyRelay` in the `safeyolo-vm` helper bridges
 the guest's vsock endpoint to a host UDS; on Linux, the guest's socket
 IS a bind-mounted host UDS (via gVisor `--host-uds=open`). Everything
@@ -131,9 +129,9 @@ This means:
 - **Structural isolation**: agent A's bridge socket (`sockets/A.sock`)
   is only bind-mounted into agent A's sandbox. Agent A literally cannot
   address agent B's socket.
-- **No sudo, no kernel config**. The bridge binds to `127.0.0.1` (always
-  available on every platform) on a userspace port. No lo0 aliases, no
-  sudoers entries, no `ifconfig` — works identically on macOS and Linux.
+- **Userspace-only**. The bridge binds to `127.0.0.1` on a userspace
+  port — no elevated privileges or kernel interface configuration
+  required on any platform.
 
 ---
 
@@ -201,7 +199,7 @@ $ safeyolo agent diag syone
 
   PASS  Agent config: /Users/…/agents/syone
   PASS  Agent map: ip=127.0.0.2 socket=/Users/…/sockets/syone.sock
-  PASS  Attribution IP: 127.0.0.2 (PROXY protocol v2)
+  PASS  Attribution IP: 127.0.0.2 (port 30002)
   PASS  Bridge socket: /Users/…/syone.sock mode=0o600
   PASS  Bridge process: pid=35520
   PASS  Sandbox/VM: running
@@ -245,8 +243,7 @@ hop to see one specific connection's accept + done pair.
 | Guest sees sandbox as  | loopback-only netns            | no network interface (vsock only)         |
 | Agent → bridge path    | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
 | Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
-| Attribution mechanism  | port-based (identical)        | port-based (identical)                    |
-| sudo required          | no                             | no                                        |
+| Attribution mechanism  | port-based identity           | port-based identity                       |
 | Host firewall          | iptables (belt-and-braces)    | none (structural)                         |
 
 ---

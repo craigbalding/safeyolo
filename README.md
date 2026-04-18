@@ -70,10 +70,9 @@ If `uv sync --all-packages` did not install `mitmproxy` into the workspace venv 
 # policy), addons.yaml, an admin token, and the certs/data/lists directories.
 safeyolo init
 
-# One-time: install sudoers rules so agent lifecycle commands don't prompt
-# for your password. Installs a scoped /etc/sudoers.d/safeyolo (ifconfig
-# lo0 alias on macOS, iptables/runsc/overlay-mount on Linux — nothing else).
-safeyolo setup sudoers
+# Linux only: install sudoers rules for gVisor/iptables/overlay-mount.
+# macOS does not require sudo.
+safeyolo setup sudoers   # skip on macOS
 
 # Start the proxy
 safeyolo start
@@ -84,7 +83,7 @@ safeyolo agent add myproject claude-code ~/code
 
 The last argument (`~/code`) is your project directory — mounted read-write into the sandbox (VirtioFS on macOS, bind mount on Linux). The agent runs in an isolated Linux sandbox where:
 
-- **All traffic routes through SafeYolo proxy** — host firewall (pf on macOS, iptables on Linux) blocks direct internet access
+- **All traffic routes through SafeYolo proxy** — the sandbox has no external network interface; the only path out is through the proxy
 - **API keys are protected** — credentials only reach their intended hosts
 - **Everything is logged** — JSONL audit trail for review
 - **Dev-ready VMs** — agents install toolchains via mise, state persists across restarts
@@ -113,8 +112,8 @@ Agent sandbox (loopback-only; no eth0)
     ▼
 Per-agent bridge socket (one per agent, host-owned)
     │
-    │  bridge binds upstream TCP source to a synthetic 127.0.0.N
-    │  so mitmproxy attributes every request to the right agent
+    │  bridge connects on a per-agent port;
+    │  mitmproxy attributes every request to the right agent
     ▼
 SafeYolo mitmproxy (host process)
     │  policy, credential guard, rate limits, audit
@@ -148,7 +147,7 @@ safeyolo agent add work claude-code ~/work
 safeyolo agent add side-project claude-code ~/side-project
 safeyolo agent add codex openai-codex ~/experiments
 
-safeyolo agent run work       # Each agent gets its own VM and subnet
+safeyolo agent run work       # Each agent gets its own isolated sandbox
 ```
 
 ## Templates
@@ -193,7 +192,7 @@ Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.
 - **Networking**: no virtio-net at all — egress is via vsock → host UDS → proxy bridge → mitmproxy (structural isolation; the guest has no other path out)
 - **Terminal**: vsock PTY bridge with proper resize (not serial console)
 - **Guest init**: served from VirtioFS config share (changes without rootfs rebuild)
-- **Service discovery**: file-based agent IP map; the host bridge stamps each agent's attribution IP on upstream TCP so mitmproxy maps flows back to agent names
+- **Service discovery**: file-based agent map; the host bridge identifies each agent by a deterministic source port so mitmproxy attributes flows to agent names
 
 The Linux path runs the same guest rootfs under `runsc` in a loopback-only netns with iptables as a belt-and-braces guard and overlayfs for per-agent writable layers — see `docs/linux-port-design.md` for the full design.
 
