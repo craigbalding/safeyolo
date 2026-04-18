@@ -424,10 +424,9 @@ class LinuxPlatform(AgentPlatform):
         for d in (upper, work, merged):
             d.mkdir(parents=True, exist_ok=True)
 
-        uid, gid = os.getuid(), os.getgid()
         _run(["fuse-overlayfs",
               "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work},"
-                    f"allow_other,squash_to_uid={uid},squash_to_gid={gid}",
+                    f"allow_other",
               str(merged)])
 
         log.info("fuse-overlayfs mounted for agent '%s'", name)
