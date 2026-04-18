@@ -170,10 +170,13 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
     # from static is still on disk is exactly how the status went out of
     # sync in practice. `command -v` is the source of truth.
     if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "" > /safeyolo-status/vm-status 2>/dev/null || true
+        echo "ready" > /safeyolo-status/vm-status 2>/dev/null || true
     else
         echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
     fi
+else
+    # No mise package configured — nothing to install.
+    echo "ready" > /safeyolo-status/vm-status 2>/dev/null || true
 fi
 
 # --------------------------------------------------------------------------

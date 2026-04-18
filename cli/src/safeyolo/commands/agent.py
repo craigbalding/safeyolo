@@ -680,10 +680,8 @@ def _run_agent(
                 elif status == "install-failed":
                     console.print("  [red]Install failed[/red]")
                     break
-                elif status == "" and shown_installing:
-                    break  # Install finished (file removed or empty)
-                if not shown_installing and status == "":
-                    break  # No install needed
+                elif status == "ready":
+                    break
                 _time.sleep(1)
 
             if detach:
