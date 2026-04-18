@@ -97,10 +97,29 @@ def _run(
 
 
 def _detect_runsc_platform() -> str:
-    """Detect best runsc platform: kvm if available, otherwise systrap."""
-    if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
-        return "kvm"
-    return "systrap"
+    """Detect best runsc platform.
+
+    KVM provides hardware isolation and is preferred. It requires
+    /dev/kvm access for both the operator (who has it via group/ACL)
+    and the subordinate root uid (100000, granted via setfacl during
+    setup). If either is missing, falls back to systrap.
+    """
+    if not os.path.exists("/dev/kvm"):
+        return "systrap"
+    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
+        return "systrap"
+    # Check if the subordinate uid (100000) has access via ACL
+    try:
+        result = subprocess.run(
+            ["getfacl", "/dev/kvm"],
+            capture_output=True, text=True, check=False, timeout=3,
+        )
+        if "user:100000:rw" not in result.stdout:
+            log.info("KVM available but subordinate uid lacks access, using systrap")
+            return "systrap"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "systrap"
+    return "kvm"
 
 
 def _find_runsc() -> str:
@@ -408,20 +427,6 @@ class LinuxPlatform(AgentPlatform):
 
         self.prepare_rootfs(name)
 
-        config = self._generate_oci_config(
-            name=name,
-            rootfs_path=rootfs,
-            workspace_path=workspace_path,
-            config_share=config_share,
-            fw_alloc=fw_alloc,
-            cpus=cpus,
-            memory_mb=memory_mb,
-            extra_shares=extra_shares,
-        )
-
-        config_path = agent_dir / "config.json"
-        config_path.write_text(json.dumps(config, indent=2))
-
         os.makedirs(rootfs / "workspace", exist_ok=True)
 
         # Make state dir world-accessible so nsenter'd processes
@@ -436,47 +441,41 @@ class LinuxPlatform(AgentPlatform):
                  check=False)
             _kill_userns(name)
 
-        # Create a user namespace with proper uid mapping:
-        # container 0 → host subordinate range (for gVisor internals)
-        # container 1000 → host operator uid (for workspace access)
+        # Create user namespace first — we need the PID for the OCI
+        # spec's network namespace path.
         upid = _start_userns(name)
 
-        # Configure networking and start the sandbox inside the userns.
+        config = self._generate_oci_config(
+            name=name,
+            rootfs_path=rootfs,
+            workspace_path=workspace_path,
+            config_share=config_share,
+            fw_alloc=fw_alloc,
+            cpus=cpus,
+            memory_mb=memory_mb,
+            extra_shares=extra_shares,
+            userns_pid=upid,
+        )
+
+        config_path = agent_dir / "config.json"
+        config_path.write_text(json.dumps(config, indent=2))
+
+        # Configure networking inside the userns. lo gets configured
+        # in the userns's netns; the OCI spec points gVisor at this
+        # netns via /proc/<holder>/ns/net so gVisor's sandbox netstack
+        # imports the loopback (with agent IP) into its internal stack.
         setup = "ip link set lo up"
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
-        # KVM fd passing: open /dev/kvm as the operator (who has access)
-        # BEFORE entering the userns. The fd is opened by the Python
-        # process (running as the operator), inherited across the
-        # subprocess chain, and referenced via /proc/self/fd/N in the
-        # runsc --platform_device_path flag. The subordinate root uid
-        # (100000) never touches /dev/kvm directly.
-        kvm_fd = None
-        platform_device_arg = ""
-        KVM_FD_NUM = 9  # well-known fd number for the KVM device
-
-        if platform == "kvm":
-            if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
-                kvm_fd = os.open("/dev/kvm", os.O_RDWR)
-                # Dup to the well-known fd number so inner commands
-                # can reference it reliably.
-                if kvm_fd != KVM_FD_NUM:
-                    os.dup2(kvm_fd, KVM_FD_NUM)
-                    os.close(kvm_fd)
-                    kvm_fd = KVM_FD_NUM
-                os.set_inheritable(kvm_fd, True)
-                platform_device_arg = f"--platform_device_path=/proc/self/fd/{KVM_FD_NUM}"
-            else:
-                log.warning("/dev/kvm not accessible, falling back to systrap")
-                platform = "systrap"
+        netns_path = f"/proc/{upid}/ns/net"
 
         inner = (
             f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
-            f"--network=host --platform={platform} {platform_device_arg} "
+            f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
-            f"{runsc} --root {root} --ignore-cgroups --network=host "
+            f"{runsc} --ignore-cgroups --root {root} "
             f"start {cid}"
         )
 
@@ -491,17 +490,10 @@ class LinuxPlatform(AgentPlatform):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_file,
-                close_fds=False,  # preserve fd 9
                 check=False,
             )
             stderr_file.seek(0)
             err_text = stderr_file.read().decode(errors="replace")
-
-        if kvm_fd is not None:
-            try:
-                os.close(kvm_fd)
-            except OSError:
-                pass
 
         if result.returncode != 0:
             _kill_userns(name)
@@ -655,6 +647,7 @@ class LinuxPlatform(AgentPlatform):
         cpus: int,
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
+        userns_pid: int | None = None,
     ) -> dict:
         """Generate an OCI runtime spec for rootless runsc."""
         guest_proxy_port = 8080
@@ -748,14 +741,20 @@ class LinuxPlatform(AgentPlatform):
                     "options": ["rbind", "ro" if read_only else "rw"],
                 })
 
-        # No network namespace in the OCI spec — we use --network=host
-        # which inherits the loopback-only netns from unshare -Urn.
         namespaces = [
             {"type": "pid"},
             {"type": "ipc"},
             {"type": "uts"},
             {"type": "mount"},
         ]
+        # Point gVisor at the userns holder's netns so sandbox
+        # networking imports the loopback (with agent IP) into its
+        # internal netstack.
+        if userns_pid:
+            namespaces.append({
+                "type": "network",
+                "path": f"/proc/{userns_pid}/ns/net",
+            })
 
         # Capabilities: CAP_CHOWN for guest-init to chown /home/agent
         # to uid 1000 (gVisor's sentry handles this internally).

@@ -86,25 +86,61 @@ def setup() -> None:
             console.print("    Install gVisor — see README 'Linux' section for apt commands.")
             all_ok = False
 
-        # sudoers rules — present means no sudo prompts during agent lifecycle.
-        # /etc/sudoers.d/ is typically 0750 (unreadable without sudo), so
-        # .exists() can raise PermissionError; treat that as "unknown" and
-        # surface the pointer anyway.
-        sudoers_path = Path("/etc/sudoers.d/safeyolo")
+        # AppArmor profile for user namespace creation
+        apparmor_restricts = False
         try:
-            sudoers_installed = sudoers_path.exists()
-        except PermissionError:
-            sudoers_installed = None
+            val = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip()
+            apparmor_restricts = val == "1"
+        except (FileNotFoundError, PermissionError):
+            pass
 
-        if sudoers_installed is True:
-            console.print(f"  [green]OK[/green]  sudoers rules installed ({sudoers_path})")
-        elif sudoers_installed is False:
-            console.print(f"  [yellow]WARN[/yellow]  sudoers rules not installed ({sudoers_path})")
-            console.print("    Without them, every agent start/stop/remove prompts for sudo.")
-            console.print("    Run [bold]safeyolo setup sudoers[/bold] to install.")
+        if apparmor_restricts:
+            import subprocess as _sp
+            profile_loaded = False
+            try:
+                r = _sp.run(["sudo", "aa-status", "--json"],
+                            capture_output=True, text=True, check=False, timeout=5)
+                profile_loaded = "safeyolo-runsc" in r.stdout
+            except (FileNotFoundError, _sp.TimeoutExpired):
+                pass
+
+            if profile_loaded:
+                console.print("  [green]OK[/green]  AppArmor profile (safeyolo-runsc)")
+            else:
+                console.print("  [yellow]SETUP[/yellow]  AppArmor profile needed (user namespace creation)")
+                console.print("    [bold]sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc[/bold]")
+                all_ok = False
+
+        # KVM platform detection
+        import shutil as _shutil
+        kvm_exists = os.path.exists("/dev/kvm")
+        kvm_operator_access = kvm_exists and os.access("/dev/kvm", os.R_OK | os.W_OK)
+
+        if not kvm_exists:
+            console.print("  [dim]INFO[/dim]  /dev/kvm not available — using systrap (software isolation)")
+            console.print("    Coding agent performance is equivalent. Hardware isolation")
+            console.print("    (KVM) is available on hosts with virtualization enabled.")
+        elif kvm_operator_access:
+            # Operator can access KVM. Check if subordinate uid can too.
+            import subprocess as _sp
+            sub_uid_access = False
+            try:
+                r = _sp.run(["getfacl", "/dev/kvm"],
+                            capture_output=True, text=True, check=False, timeout=5)
+                sub_uid_access = "user:100000:rw" in r.stdout
+            except (FileNotFoundError, _sp.TimeoutExpired):
+                pass
+
+            if sub_uid_access:
+                console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
+            else:
+                console.print("  [yellow]SETUP[/yellow]  KVM available — grant access for hardware isolation")
+                console.print("    KVM provides hardware-enforced isolation (recommended).")
+                console.print("    Without it, SafeYolo uses systrap (software isolation,")
+                console.print("    equivalent performance for coding agents).")
+                console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
         else:
-            console.print(f"  [dim]?[/dim]  sudoers rules: cannot read {sudoers_path.parent}")
-            console.print("    If not already installed, run [bold]safeyolo setup sudoers[/bold].")
+            console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
     else:
         console.print(f"  [yellow]WARN[/yellow]  unsupported platform {system!r}: skipping runtime checks")
 
