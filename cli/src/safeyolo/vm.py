@@ -480,8 +480,8 @@ def start_vm(
         # serial log so diagnostics are captured without leaking into
         # the interactive session.
         serial_log = get_agents_dir() / name / "serial.log"
-        serial_fh = open(serial_log, "w")
-        proc = subprocess.Popen(cmd, stderr=serial_fh)
+        with open(serial_log, "w") as serial_fh:
+            proc = subprocess.Popen(cmd, stderr=serial_fh)
 
     # Write PID file
     pid_path = get_agent_pid_path(name)
