@@ -374,7 +374,7 @@ def _run_agent(
             # earlier so it's safe to proceed without template extras.
             pass
 
-    # Set up network isolation (platform-specific: feth+pf on macOS, veth+iptables on Linux)
+    # Set up network isolation (platform-specific: vsock on macOS, netns on Linux)
     config = load_config()
     proxy_port = config.get("proxy", {}).get("port", 8080)
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
@@ -387,13 +387,14 @@ def _run_agent(
     agent_index = existing.index(name) if name in existing else len(existing)
 
     try:
-        _t("setup_networking: feth create (ifconfig + sudo)")
+        _t("setup_networking")
         fw_alloc = plat.setup_networking(agent_index)
-        _t("setup_networking: firewall load (pfctl)")
+        _t("load_firewall_rules")
+        subnet = fw_alloc.get("subnet")
         plat.load_firewall_rules(
             proxy_port=proxy_port,
             admin_port=admin_port,
-            active_subnets=[fw_alloc["subnet"]],
+            active_subnets=[subnet] if subnet else [],
         )
     except Exception as err:
         console.print(f"[red]Network isolation failed:[/red] {err}")
