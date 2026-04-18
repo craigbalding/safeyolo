@@ -265,18 +265,6 @@ def _kill_userns(name: str) -> None:
     pid_file.unlink(missing_ok=True)
 
 
-def _nsenter_env_cmd(userns_pid: int) -> list[str]:
-    """Build nsenter prefix with clean environment for the userns.
-
-    Unset XDG_RUNTIME_DIR (owned by operator uid, inaccessible to
-    userns root) and set TMPDIR to /tmp so gVisor writes its control
-    socket there.
-    """
-    return [
-        "env", "-u", "XDG_RUNTIME_DIR", "TMPDIR=/tmp",
-        "nsenter", "--user", "--net", "--target", str(userns_pid), "--",
-    ]
-
 
 def _wrap_in_systemd_scope(
     cmd: list[str],
@@ -423,6 +411,9 @@ class LinuxPlatform(AgentPlatform):
         _run(_nsenter_cmd(upid) +
              [runsc, "--root", root, "delete", "--force", cid],
              check=False)
+        _run(_nsenter_cmd(upid) +
+             ["rm", "-f", f"/tmp/runsc-{cid}.sock"],
+             check=False)
 
         config = self._generate_oci_config(
             name=name,
@@ -459,7 +450,7 @@ class LinuxPlatform(AgentPlatform):
         )
 
         cmd = _wrap_in_systemd_scope(
-            _nsenter_env_cmd(upid) + ["bash", "-c", inner],
+            _nsenter_cmd(upid) + ["bash", "-c", inner],
             name, memory_mb, cpus,
         )
 
@@ -544,6 +535,12 @@ class LinuxPlatform(AgentPlatform):
         else:
             # State query failed — force delete anyway in case files exist
             _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
+
+        # Clean stale control socket from /tmp. gVisor creates it as
+        # the userns root (uid 100000) so the operator can't delete it
+        # directly — use the userns prefix.
+        sock_path = f"/tmp/runsc-{cid}.sock"
+        _run(prefix + ["rm", "-f", sock_path], check=False)
 
         _kill_userns(name)
         if temp_userns:
