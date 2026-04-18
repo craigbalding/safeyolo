@@ -339,6 +339,9 @@ def _run_agent(
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
     if detach:
         extra_env["SAFEYOLO_DETACH"] = "1"
+    import sys as _sys
+    if _sys.platform == "linux" and not detach:
+        extra_env["SAFEYOLO_HOST_TERMINAL"] = "1"
 
     # Get mise package, host config, instructions, and auto_args from template
     mise_package = ""
@@ -691,13 +694,29 @@ def _run_agent(
                 _timing_emit()
                 return 0
 
-            console.print("  Connecting terminal...")
-            console.print()
-            _t("interactive session (agent running; user in claude)")
-            # Wait for sandbox to exit (interactive mode)
-            while plat.is_sandbox_running(name):
-                _time.sleep(0.5)
-            exit_code = 0
+            _t("interactive session")
+            if _sys.platform == "linux":
+                # Linux: launch the agent via runsc exec — it bridges the
+                # user's terminal into the sandbox, same role vsock-term
+                # plays on macOS. The command comes from the template config.
+                agent_cmd_parts = []
+                if binary:
+                    agent_cmd_parts.append(binary)
+                    if yolo and auto_args:
+                        agent_cmd_parts.append(auto_args)
+                    if agent_args_str:
+                        agent_cmd_parts.append(agent_args_str)
+                full_cmd = " ".join(agent_cmd_parts) if agent_cmd_parts else None
+                exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
+                plat.stop_sandbox(name)
+            else:
+                # macOS: safeyolo-vm + vsock-term handle the interactive
+                # session. Wait for the VM to exit.
+                while plat.is_sandbox_running(name):
+                    try:
+                        _time.sleep(0.5)
+                    except KeyboardInterrupt:
+                        break
 
     except Exception as err:
         console.print(" [red]error[/red]")

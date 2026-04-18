@@ -576,7 +576,8 @@ class LinuxPlatform(AgentPlatform):
             cid,
         ]
         if command:
-            cmd.extend(["/bin/bash", "-c", command])
+            # -lc sources the login profile (mise shims on PATH).
+            cmd.extend(["/bin/bash", "-lc", command])
         else:
             cmd.extend(["/bin/bash", "-l"])
 

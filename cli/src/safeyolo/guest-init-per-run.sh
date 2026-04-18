@@ -207,11 +207,16 @@ if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
     exec sleep infinity
 fi
 
-if [ -x "$VSOCK_TERM" ]; then
-    # Exec the agent binary directly — no shell wrapper.
-    # vsock-term sets up the PTY, drops privileges, sets PATH with mise shims,
-    # and execs the command. A shell wrapper (bash -lc) would break the TTY
-    # connection, causing process.stdout.isTTY to be undefined in Node.js.
+if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
+    # Linux/gVisor: the host CLI launches the agent via `runsc exec`,
+    # which bridges the user's terminal into the sandbox directly.
+    # Keep the container alive so runsc exec has a target.
+    exec sleep infinity
+elif [ -x "$VSOCK_TERM" ]; then
+    # macOS: vsock-term sets up the PTY, drops privileges, sets PATH
+    # with mise shims, and execs the command. A shell wrapper (bash -lc)
+    # would break the TTY connection, causing process.stdout.isTTY to be
+    # undefined in Node.js.
     if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
             ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-} || true
@@ -220,8 +225,8 @@ if [ -x "$VSOCK_TERM" ]; then
             bash -l || true
     fi
 else
-    echo "Warning: vsock-term not found, falling back to basic shell" >&2
-    su agent -lc "cd /workspace && bash -l" || true
+    echo "Error: no terminal bridge available" >&2
+    echo "terminal-failed" > /safeyolo-status/vm-status 2>/dev/null || true
 fi
 
 # Agent exited — shut down the VM cleanly.
