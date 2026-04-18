@@ -239,7 +239,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     # to SSH on Darwin and `runsc exec` on Linux, so it works on both without
     # this script reaching for platform primitives. SSH keys only exist on
     # the Darwin path; runsc exec uses its own channel.
-    VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+    VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/vm-ip" 2>/dev/null || echo "")
 
     VM_RUNNING=false
     if [ -n "$VM_IP" ]; then
@@ -256,11 +256,11 @@ if [ "$RUN_ISOLATION" = true ]; then
         STARTED_VM=true
 
         echo "  Waiting for VM..."
-        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/vm-ip" 2>/dev/null || echo "")
         if [ -z "$VM_IP" ]; then
             for i in $(seq 1 15); do
                 sleep 1
-                VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+                VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/vm-ip" 2>/dev/null || echo "")
                 [ -n "$VM_IP" ] && break
             done
         fi
