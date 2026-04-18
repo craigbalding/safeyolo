@@ -414,10 +414,12 @@ def _run_agent(
     # to create listeners.
     attribution_ip = fw_alloc.get("attribution_ip", guest_ip)
     bridge_sock = None
+    bridge_port = None
     if fw_alloc.get("needs_bridge_socket"):
-        from ..proxy_bridge import socket_path_for as _bridge_sock_for
+        from ..proxy_bridge import socket_path_for as _bridge_sock_for, PORT_BASE
         bridge_sock = str(_bridge_sock_for(name))
-    _update_agent_map(name, ip=attribution_ip, socket=bridge_sock)
+        bridge_port = PORT_BASE + agent_index + 2
+    _update_agent_map(name, ip=attribution_ip, socket=bridge_sock, port=bridge_port)
     if bridge_sock:
         # Wait up to 5s for the bridge to create the listener socket.
         # Without this, the OCI bind-mount source path doesn't exist

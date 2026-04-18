@@ -51,6 +51,22 @@ _DEBUG_ENABLED = os.environ.get("SAFEYOLO_VM_DEBUG", "").lower() in ("1", "true"
 # logs grep together.
 _flow_counter = itertools.count(1)
 
+# Deterministic source port base for agent identity. Each agent binds
+# to PORT_BASE + agent_index when connecting to mitmproxy. The
+# port-identity addon maps the port back to the agent name.
+PORT_BASE = 30000
+
+# agent name → port mapping, populated from agent_map.json
+_agent_ports: dict[str, int] = {}
+
+
+def _agent_port(agent_name: str) -> int:
+    """Return the deterministic source port for an agent.
+
+    Falls back to 0 (ephemeral) if the agent isn't in the map.
+    """
+    return _agent_ports.get(agent_name, 0)
+
 
 def _get_data_dir() -> Path:
     """Lazy import so daemon mode doesn't need the safeyolo package."""
@@ -288,45 +304,24 @@ def _handle_client(
         log_.info("accept flow=%d agent=%s src=uds upstream=%s:%d",
                   flow, agent, upstream[0], upstream[1])
 
+    # Bind to the agent's deterministic source port so the
+    # port-identity addon can map port → agent at connection time.
+    # 127.0.0.1 is always available — no lo0 alias needed.
+    src_port = _agent_port(agent)
+
     try:
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind(("127.0.0.1", src_port))
         tcp.settimeout(5)
         tcp.connect(upstream)
         tcp.settimeout(None)
     except OSError as exc:
         log_.warning(
-            "flow=%d agent=%s upstream %s:%d connect failed: %s: %s",
-            flow, agent, upstream[0], upstream[1],
+            "flow=%d agent=%s upstream %s:%d from port %d connect failed: %s: %s",
+            flow, agent, upstream[0], upstream[1], src_port,
             type(exc).__name__, exc,
         )
-        uds_conn.close()
-        return
-
-    # Send PROXY protocol v2 header before any application data.
-    # Import here to avoid circular deps at module level.
-    try:
-        from addons.proxy_protocol import build_v2_header
-    except ImportError:
-        # Fallback: inline a minimal v2 builder so the bridge works
-        # even when the addons package isn't importable (e.g., running
-        # as a standalone daemon via `python -m safeyolo.proxy_bridge`).
-        from .proxy_protocol_header import build_v2_header  # type: ignore[no-redef]
-
-    try:
-        header = build_v2_header(
-            src_ip=attribution_ip,
-            dst_ip=upstream[0],
-            src_port=0,
-            dst_port=upstream[1],
-            agent_name=agent,
-        )
-        tcp.sendall(header)
-    except OSError as exc:
-        log_.warning(
-            "flow=%d agent=%s PROXY v2 header send failed: %s: %s",
-            flow, agent, type(exc).__name__, exc,
-        )
-        tcp.close()
         uds_conn.close()
         return
 
@@ -441,6 +436,7 @@ def _daemon_main() -> int:
 
     def _sync_listeners() -> None:
         """Reconcile the live listener set against agent_map.json."""
+        global _agent_ports
         desired = _read_agent_map(map_path)
         desired_names = set(desired.keys())
         current_names = set(listeners.keys())
@@ -500,6 +496,19 @@ def _daemon_main() -> int:
                 # Stale path; nothing to remove.
                 pass
             listeners.pop(name)
+
+        # Rebuild the port→agent mapping from the desired state.
+        # Each agent gets PORT_BASE + its index in the sorted agent list.
+        new_ports: dict[str, int] = {}
+        for idx, name in enumerate(sorted(desired.keys())):
+            info = desired[name]
+            port = info.get("port")
+            if port is not None:
+                new_ports[name] = int(port)
+            else:
+                new_ports[name] = PORT_BASE + idx + 2
+        _agent_ports.clear()
+        _agent_ports.update(new_ports)
 
     _sync_listeners()
     log_.info("daemon ready, upstream %s:%d", *upstream)
