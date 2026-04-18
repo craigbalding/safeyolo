@@ -179,13 +179,19 @@ def has_aa_exec() -> bool:
 def has_apparmor_profile() -> bool:
     """Check if the SafeYolo AppArmor profile is loaded in the kernel.
 
-    Reads /sys/kernel/security/apparmor/profiles which lists actively
-    loaded profiles and is readable without root (unlike aa-status).
+    Probes functionally: runs `aa-exec -p safeyolo-runsc -- true`.
+    Succeeds only if the profile is loaded and usable by the current
+    user. No root needed.
     """
+    if not has_aa_exec():
+        return False
     try:
-        profiles = Path("/sys/kernel/security/apparmor/profiles").read_text()
-        return AA_PROFILE in profiles
-    except (FileNotFoundError, PermissionError):
+        result = subprocess.run(
+            ["aa-exec", "-p", AA_PROFILE, "--", "true"],
+            capture_output=True, check=False, timeout=3,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 
