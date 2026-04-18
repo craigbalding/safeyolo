@@ -135,31 +135,25 @@ _installed = False
 
 
 def _install_monkeypatch() -> None:
-    """Wrap handle_stream to parse PROXY protocol v2 before HTTP parsing."""
+    """Wrap handle_stream to parse PROXY protocol v2 before HTTP parsing.
+
+    asyncio.start_server captures a bound-method reference at server
+    creation time. If we only patch the class, a server that was
+    already started won't see the patch. So we also patch the listen()
+    method to wrap the callback at server-creation time — this covers
+    both existing and future servers.
+    """
     global _installed
     if _installed:
         return
     _installed = True
 
-    # Find the server instance class that has handle_stream.
-    # On mitmproxy 10+, this is on the metaclass hierarchy. We patch
-    # the base that ProxyConnectionHandler's server uses.
-    target_cls = None
-    for cls in mode_servers.ServerInstance.__mro__:
-        if "handle_stream" in cls.__dict__:
-            target_cls = cls
-            break
+    target_cls = mode_servers.AsyncioServerInstance
 
-    if target_cls is None:
-        log.warning("Cannot find handle_stream to monkeypatch — "
-                    "PROXY protocol identity will not work")
-        return
+    orig_listen = target_cls.listen
 
-    orig_handle_stream = target_cls.handle_stream
-
-    async def _patched_handle_stream(self, reader, writer=None):
-        # Try to read PROXY protocol v2 header. The 12-byte signature
-        # is unambiguous — it cannot be a valid HTTP request start.
+    async def _pp2_handle_stream(orig_fn, self_inst, reader, writer=None):
+        """Read PROXY protocol v2 header, then delegate to original."""
         peek = b""
         try:
             peek = await asyncio.wait_for(
@@ -167,19 +161,14 @@ def _install_monkeypatch() -> None:
                 timeout=2.0,
             )
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            # Connection closed or timed out before we got enough bytes.
-            # Not a PROXY protocol connection — but we may have consumed
-            # partial bytes, so wrap the reader to prepend them back.
             if peek:
                 reader = _PrependReader(peek, reader)
-            return await orig_handle_stream(self, reader, writer)
+            return await orig_fn(self_inst, reader, writer)
 
         if peek != PP2_SIGNATURE:
-            # Not PROXY protocol — prepend consumed bytes and proceed
             reader = _PrependReader(peek, reader)
-            return await orig_handle_stream(self, reader, writer)
+            return await orig_fn(self_inst, reader, writer)
 
-        # Read the rest of the fixed header (4 more bytes)
         try:
             rest_header = await asyncio.wait_for(
                 reader.readexactly(4),
@@ -191,7 +180,6 @@ def _install_monkeypatch() -> None:
 
         _, _, payload_len = struct.unpack("!BBH", rest_header)
 
-        # Read the payload (addresses + TLVs)
         try:
             payload = await asyncio.wait_for(
                 reader.readexactly(payload_len),
@@ -209,8 +197,6 @@ def _install_monkeypatch() -> None:
             src_port = parsed.get("src_port", 0)
             agent_name = parsed.get("agent_name", "")
 
-            # Patch writer.get_extra_info so LiveConnectionHandler.__init__
-            # picks up our claimed peername instead of the real TCP source.
             _orig_get = writer.get_extra_info
 
             def _patched_get(key, default=None, *, _ip=src_ip, _port=src_port, _orig=_orig_get):
@@ -223,10 +209,31 @@ def _install_monkeypatch() -> None:
             if agent_name:
                 log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
 
-        return await orig_handle_stream(self, reader, writer)
+        return await orig_fn(self_inst, reader, writer)
 
-    target_cls.handle_stream = _patched_handle_stream
-    log.info("PROXY protocol v2 monkeypatch installed on %s", target_cls.__name__)
+    async def _patched_listen(self, host, port):
+        """Wrap self.handle_stream with PROXY v2 parsing before passing
+        it to asyncio.start_server."""
+        # Save the original handle_stream from this instance
+        orig_hs = self.handle_stream.__func__
+
+        async def _wrapped_handle_stream(reader, writer=None):
+            return await _pp2_handle_stream(orig_hs, self, reader, writer)
+
+        # Temporarily replace self.handle_stream so start_server
+        # inside listen() picks up the wrapper
+        self.handle_stream = _wrapped_handle_stream
+        try:
+            result = await orig_listen(self, host, port)
+        finally:
+            # Restore so the instance attribute doesn't shadow the class
+            # method for other callers
+            del self.handle_stream
+        return result
+
+    target_cls.listen = _patched_listen
+    log.info("PROXY protocol v2 monkeypatch installed on %s.listen",
+             target_cls.__name__)
 
 
 class _PrependReader:
