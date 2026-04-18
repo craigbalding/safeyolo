@@ -554,7 +554,7 @@ class LinuxPlatform(AgentPlatform):
              "options": ["nosuid", "nodev", "mode=1777"]},
             {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
-             "options": ["rbind", "rw"]},
+             "options": ["rbind", "rw", "nosuid", "nodev"]},
             {"destination": "/safeyolo", "type": "bind",
              "source": str(config_share),
              "options": ["rbind", "ro"]},
