@@ -446,10 +446,24 @@ class LinuxPlatform(AgentPlatform):
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
+        # KVM fd passing: open /dev/kvm as the operator (who has access)
+        # BEFORE entering the userns. The fd survives nsenter and runsc
+        # uses it via --platform_device_path=/proc/self/fd/N. The
+        # subordinate root uid (100000) never touches /dev/kvm directly.
+        kvm_fd = None
+        platform_device_arg = ""
+        if platform == "kvm":
+            try:
+                kvm_fd = os.open("/dev/kvm", os.O_RDWR)
+                platform_device_arg = f"--platform_device_path=/proc/self/fd/{kvm_fd}"
+            except OSError:
+                log.warning("/dev/kvm not accessible, falling back to systrap")
+                platform = "systrap"
+
         inner = (
             f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
-            f"--network=host --platform={platform} "
+            f"--network=host --platform={platform} {platform_device_arg} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --root {root} --ignore-cgroups --network=host "
             f"start {cid}"
@@ -460,16 +474,25 @@ class LinuxPlatform(AgentPlatform):
             name, memory_mb, cpus,
         )
 
+        # pass_fds ensures the KVM fd is inherited by child processes.
+        # close_fds=False is needed for subprocess to not close our fd.
         with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            # Ensure the KVM fd is not close-on-exec so children inherit it
+            if kvm_fd is not None:
+                os.set_inheritable(kvm_fd, True)
             result = subprocess.run(
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_file,
+                close_fds=False,
                 check=False,
             )
             stderr_file.seek(0)
             err_text = stderr_file.read().decode(errors="replace")
+
+        if kvm_fd is not None:
+            os.close(kvm_fd)
 
         if result.returncode != 0:
             _kill_userns(name)
