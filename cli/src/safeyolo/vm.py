@@ -173,6 +173,7 @@ def prepare_config_share(
         ("guest-init-per-run.sh", "guest-init-per-run"),
         ("guest-proxy-forwarder.py", "guest-proxy-forwarder"),
         ("guest-shell-bridge.py", "guest-shell-bridge"),
+        ("guest-diag.py", "guest-diag"),
     ]:
         src = Path(__file__).parent / src_name
         dst = share_dir / dst_name
