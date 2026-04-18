@@ -194,10 +194,14 @@ class LinuxPlatform(AgentPlatform):
         alloc["guest_ip"] = "127.0.0.1"
         alloc["netns"] = netns
 
-        # Per-agent IP from the 10.200.0.0/16 range. Configured on the
-        # guest's loopback and used as the attribution IP in mitmproxy.
+        # Per-agent IP from the 10.200.0.0/16 range. Added to the
+        # netns loopback here (before gVisor starts) so the guest
+        # sees it on `ip addr show lo`. The same IP appears in
+        # mitmproxy flows via the port-identity addon.
         offset = agent_index + 1  # 0 → 10.200.0.1
         alloc["attribution_ip"] = f"10.200.{offset // 256}.{offset % 256}"
+        _sudo(["ip", "-n", netns, "addr", "add",
+               f"{alloc['attribution_ip']}/32", "dev", "lo"], check=False)
         # Linux agents reach mitmproxy via a per-agent UDS bridge socket
         # (structural isolation). Signals to agent.py that it should
         # coordinate with proxy_bridge before start_sandbox.
