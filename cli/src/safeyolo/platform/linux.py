@@ -266,9 +266,14 @@ def _kill_userns(name: str) -> None:
 
 
 def _nsenter_env_cmd(userns_pid: int) -> list[str]:
-    """Build nsenter prefix with clean environment for the userns."""
+    """Build nsenter prefix with clean environment for the userns.
+
+    Unset XDG_RUNTIME_DIR (owned by operator uid, inaccessible to
+    userns root) and set TMPDIR to /tmp so gVisor writes its control
+    socket there.
+    """
     return [
-        "env", "-u", "XDG_RUNTIME_DIR",
+        "env", "-u", "XDG_RUNTIME_DIR", "TMPDIR=/tmp",
         "nsenter", "--user", "--net", "--target", str(userns_pid), "--",
     ]
 
