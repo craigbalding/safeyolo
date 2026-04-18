@@ -1,104 +1,270 @@
 """
-proxy_protocol.py — Port-based agent identity for bridge connections.
+proxy_protocol.py — PROXY protocol v2 identity for agent connections.
 
-The proxy_bridge binds to a deterministic source port (PORT_BASE +
-agent_index) before connecting to mitmproxy. This addon's
-client_connected hook maps the source port back to the agent name
-via agent_map.json, then overwrites client.peername with the agent's
-attribution IP so service_discovery and all downstream addons work
-unchanged.
+Monkeypatches mitmproxy's listen() method to wrap handle_stream with
+a PROXY protocol v2 parser. The proxy_bridge prepends a v2 header to
+every connection carrying the agent's attribution IP and name. The
+parser reads the header before the HTTP parser sees it, rewrites
+peername with the agent's IP, and passes the remaining bytes through.
 
-No lo0 alias, no sudo, no PROXY protocol framing. Just bind() to
-127.0.0.1:<known_port> — which always works because 127.0.0.1 is
-always configured.
+Cross-platform: works identically on macOS and Linux. The bridge
+sends the same v2 header regardless of the platform's isolation
+mechanism (VZ microVM, gVisor userns).
+
+Load order: must be first in the addon chain so the monkeypatch is
+installed before any server starts listening.
 """
 
-import json
+import asyncio
 import logging
-import time
-from pathlib import Path
-from threading import Lock
+import struct
+from typing import Any
 
-from mitmproxy import connection, ctx
+from mitmproxy.proxy import mode_servers
 
 log = logging.getLogger("safeyolo.proxy-protocol")
 
-# Deterministic port range for bridge connections.
-# Agent index 0 → port 30002, index 1 → 30003, etc.
-# Matches the offset in proxy_bridge._handle_client's bind().
-PORT_BASE = 30000
+# -- PROXY protocol v2 constants ------------------------------------------
+
+PP2_SIGNATURE = b"\x0d\x0a\x0d\x0a\x00\x0d\x0a\x51\x55\x49\x54\x0a"
+PP2_SIGNATURE_LEN = 12
+PP2_HEADER_LEN = 16
+PP2_VERSION = 0x20
+PP2_CMD_PROXY = 0x01
+PP2_FAM_INET_STREAM = 0x11
+PP2_ADDR_LEN_INET = 12
+PP2_TYPE_SAFEYOLO_AGENT = 0xE0
 
 
-class PortIdentityAddon:
-    """Map bridge source ports to agent identity at connection time."""
+# -- v2 builder (used by proxy_bridge) ------------------------------------
 
-    name = "port-identity"
+def build_v2_header(
+    src_ip: str,
+    dst_ip: str = "127.0.0.1",
+    src_port: int = 0,
+    dst_port: int = 0,
+    agent_name: str = "",
+) -> bytes:
+    """Build a PROXY protocol v2 header with optional agent name TLV."""
+    import socket as _socket
 
-    def __init__(self):
-        self._port_to_agent: dict[int, dict] = {}
-        self._map_mtime: float = 0
-        self._map_path: str = ""
-        self._lock = Lock()
+    addr_block = (
+        _socket.inet_aton(src_ip)
+        + _socket.inet_aton(dst_ip)
+        + struct.pack("!HH", src_port, dst_port)
+    )
+
+    tlv_block = b""
+    if agent_name:
+        name_bytes = agent_name.encode("utf-8")
+        tlv_block = struct.pack("!BH", PP2_TYPE_SAFEYOLO_AGENT, len(name_bytes)) + name_bytes
+
+    payload_len = len(addr_block) + len(tlv_block)
+
+    return (
+        PP2_SIGNATURE
+        + struct.pack("!BBH", PP2_VERSION | PP2_CMD_PROXY, PP2_FAM_INET_STREAM, payload_len)
+        + addr_block
+        + tlv_block
+    )
+
+
+# -- v2 parser -------------------------------------------------------------
+
+def _parse_v2_header(data: bytes) -> dict[str, Any] | None:
+    if len(data) < PP2_HEADER_LEN:
+        return None
+    if data[:PP2_SIGNATURE_LEN] != PP2_SIGNATURE:
+        return None
+
+    ver_cmd, fam, payload_len = struct.unpack("!BBH", data[12:16])
+    if (ver_cmd & 0xF0) != PP2_VERSION:
+        return None
+
+    total_len = PP2_HEADER_LEN + payload_len
+    if len(data) < total_len:
+        return None
+
+    result: dict[str, Any] = {"header_len": total_len}
+    payload = data[PP2_HEADER_LEN:total_len]
+
+    if fam == PP2_FAM_INET_STREAM and len(payload) >= PP2_ADDR_LEN_INET:
+        import socket as _socket
+        result["src_ip"] = _socket.inet_ntoa(payload[0:4])
+        result["dst_ip"] = _socket.inet_ntoa(payload[4:8])
+        result["src_port"], result["dst_port"] = struct.unpack("!HH", payload[8:12])
+
+        tlv_data = payload[PP2_ADDR_LEN_INET:]
+        while len(tlv_data) >= 3:
+            tlv_type = tlv_data[0]
+            tlv_len = struct.unpack("!H", tlv_data[1:3])[0]
+            if 3 + tlv_len > len(tlv_data):
+                break
+            tlv_value = tlv_data[3:3 + tlv_len]
+            if tlv_type == PP2_TYPE_SAFEYOLO_AGENT:
+                result["agent_name"] = tlv_value.decode("utf-8", errors="replace")
+            tlv_data = tlv_data[3 + tlv_len:]
+
+    return result
+
+
+# -- Monkeypatch -----------------------------------------------------------
+
+_installed = False
+
+
+def _install_monkeypatch() -> None:
+    """Patch listen() to wrap handle_stream with PROXY v2 parsing.
+
+    The patch is installed during addon load(), before the proxy
+    server calls listen(). When listen() is called, it wraps
+    handle_stream so asyncio.start_server captures the wrapped
+    version. The wrapper reads the v2 header from the stream,
+    rewrites peername, then delegates to the original handler.
+    """
+    global _installed
+    if _installed:
+        return
+    _installed = True
+
+    target_cls = mode_servers.AsyncioServerInstance
+    orig_listen = target_cls.listen
+
+    async def _pp2_handle_stream(orig_fn, self_inst, reader, writer=None):
+        peek = b""
+        try:
+            peek = await asyncio.wait_for(
+                reader.readexactly(PP2_SIGNATURE_LEN),
+                timeout=2.0,
+            )
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            if peek:
+                reader = _PrependReader(peek, reader)
+            return await orig_fn(self_inst, reader, writer)
+
+        if peek != PP2_SIGNATURE:
+            reader = _PrependReader(peek, reader)
+            return await orig_fn(self_inst, reader, writer)
+
+        try:
+            rest_header = await asyncio.wait_for(
+                reader.readexactly(4), timeout=2.0,
+            )
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            log.warning("PROXY v2: incomplete header after signature")
+            return
+
+        _, _, payload_len = struct.unpack("!BBH", rest_header)
+
+        try:
+            payload = await asyncio.wait_for(
+                reader.readexactly(payload_len), timeout=2.0,
+            )
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            log.warning("PROXY v2: incomplete payload (%d expected)", payload_len)
+            return
+
+        full_header = peek + rest_header + payload
+        parsed = _parse_v2_header(full_header)
+
+        if parsed and writer is not None:
+            src_ip = parsed.get("src_ip", "127.0.0.1")
+            src_port = parsed.get("src_port", 0)
+            agent_name = parsed.get("agent_name", "")
+
+            _orig_get = writer.get_extra_info
+
+            def _patched_get(key, default=None, *, _ip=src_ip, _port=src_port, _orig=_orig_get):
+                if key == "peername":
+                    return (_ip, _port)
+                return _orig(key, default)
+
+            writer.get_extra_info = _patched_get
+
+            if agent_name:
+                log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
+
+        return await orig_fn(self_inst, reader, writer)
+
+    async def _patched_listen(self, host, port):
+        orig_hs = self.handle_stream.__func__
+
+        async def _wrapped(reader, writer=None):
+            return await _pp2_handle_stream(orig_hs, self, reader, writer)
+
+        self.handle_stream = _wrapped
+        try:
+            result = await orig_listen(self, host, port)
+        finally:
+            del self.handle_stream
+        return result
+
+    target_cls.listen = _patched_listen
+    log.info("PROXY v2 monkeypatch installed on %s.listen", target_cls.__name__)
+
+
+class _PrependReader:
+    """Wraps an asyncio.StreamReader with bytes prepended to the stream."""
+
+    def __init__(self, prepend: bytes, reader):
+        self._prepend = prepend
+        self._reader = reader
+
+    def __getattr__(self, name):
+        return getattr(self._reader, name)
+
+    async def read(self, n: int = -1) -> bytes:
+        if self._prepend:
+            if n < 0:
+                data = self._prepend + await self._reader.read(n)
+                self._prepend = b""
+                return data
+            if n <= len(self._prepend):
+                data = self._prepend[:n]
+                self._prepend = self._prepend[n:]
+                return data
+            data = self._prepend
+            self._prepend = b""
+            return data + await self._reader.read(n - len(data))
+        return await self._reader.read(n)
+
+    async def readexactly(self, n: int) -> bytes:
+        if self._prepend:
+            if n <= len(self._prepend):
+                data = self._prepend[:n]
+                self._prepend = self._prepend[n:]
+                return data
+            data = self._prepend
+            self._prepend = b""
+            return data + await self._reader.readexactly(n - len(data))
+        return await self._reader.readexactly(n)
+
+    async def readuntil(self, separator: bytes = b"\n") -> bytes:
+        if self._prepend:
+            idx = self._prepend.find(separator)
+            if idx >= 0:
+                end = idx + len(separator)
+                data = self._prepend[:end]
+                self._prepend = self._prepend[end:]
+                return data
+            data = self._prepend
+            self._prepend = b""
+            return data + await self._reader.readuntil(separator)
+        return await self._reader.readuntil(separator)
+
+    async def readline(self) -> bytes:
+        return await self.readuntil(b"\n")
+
+
+# -- Addon interface -------------------------------------------------------
+
+class ProxyProtocolAddon:
+    """mitmproxy addon that installs the PROXY protocol v2 monkeypatch."""
+
+    name = "proxy-protocol"
 
     def load(self, loader):
-        loader.add_option(
-            name="port_identity_map",
-            typespec=str,
-            default="",
-            help="Path to agent_map.json (same file as service_discovery uses)",
-        )
-
-    def configure(self, updates):
-        if "port_identity_map" in updates:
-            self._map_path = ctx.options.port_identity_map
-        if not self._map_path:
-            # Fall back to agent_map_file (service_discovery's option)
-            try:
-                self._map_path = ctx.options.agent_map_file
-            except AttributeError:
-                pass
-        if self._map_path:
-            self._reload()
-
-    def _reload(self):
-        if not self._map_path:
-            return
-        path = Path(self._map_path)
-        if not path.exists():
-            return
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return
-        if mtime == self._map_mtime:
-            return
-        try:
-            data = json.loads(path.read_text())
-            port_map: dict[int, dict] = {}
-            for name, info in data.items():
-                ip = info.get("ip", "")
-                port = info.get("port")
-                if port is not None:
-                    port_map[int(port)] = {"name": name, "ip": ip}
-            with self._lock:
-                self._port_to_agent = port_map
-                self._map_mtime = mtime
-        except (json.JSONDecodeError, OSError, ValueError) as e:
-            log.warning("port-identity: failed to load map: %s", e)
-
-    def client_connected(self, client: connection.Client):
-        """Rewrite peername if the source port matches a known agent."""
-        if not client.peername:
-            return
-        src_port = client.peername[1]
-        self._reload()
-        with self._lock:
-            entry = self._port_to_agent.get(src_port)
-        if entry:
-            ip = entry.get("ip", client.peername[0])
-            client.peername = (ip, src_port)
-            log.info("port-identity: port=%d -> agent=%s ip=%s",
-                     src_port, entry["name"], ip)
+        _install_monkeypatch()
 
 
-addons = [PortIdentityAddon()]
+addons = [ProxyProtocolAddon()]
