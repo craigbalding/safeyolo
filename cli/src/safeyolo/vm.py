@@ -473,7 +473,15 @@ def start_vm(
                 stderr=serial_fh,
             )
     else:
-        proc = subprocess.Popen(cmd)
+        # Foreground mode: the vsock terminal's stdout is the agent's
+        # interactive session — it must reach the user's terminal. But
+        # stderr carries bridge relay logs (proxy-relay, shell-bridge)
+        # which would corrupt the agent's TUI. Redirect stderr to the
+        # serial log so diagnostics are captured without leaking into
+        # the interactive session.
+        serial_log = get_agents_dir() / name / "serial.log"
+        with open(serial_log, "w") as serial_fh:
+            proc = subprocess.Popen(cmd, stderr=serial_fh)
 
     # Write PID file
     pid_path = get_agent_pid_path(name)
