@@ -450,9 +450,9 @@ class LinuxPlatform(AgentPlatform):
             f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
             f"--network=host --platform={platform} "
-            f"create --bundle {agent_dir} {cid} 2>&1 && "
+            f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --root {root} --ignore-cgroups --network=host "
-            f"start {cid} 2>&1"
+            f"start {cid}"
         )
 
         cmd = _wrap_in_systemd_scope(
