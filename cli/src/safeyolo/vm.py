@@ -292,7 +292,9 @@ def prepare_config_share(
     # CA certificate
     ca_cert = config_dir / "certs" / "mitmproxy-ca-cert.pem"
     if ca_cert.exists():
-        shutil.copy2(str(ca_cert), str(share_dir / "mitmproxy-ca-cert.pem"))
+        dest = share_dir / "mitmproxy-ca-cert.pem"
+        shutil.copy2(str(ca_cert), str(dest))
+        dest.chmod(0o644)  # public cert, must be readable by agent user
 
     # SSH authorized keys
     _ensure_ssh_key()
