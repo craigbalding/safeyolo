@@ -35,7 +35,7 @@ ls /safeyolo >/dev/null 2>&1 || true
 # for this marker to decide whether a restore attempt succeeded, rather
 # than racing on the stale vm-ip file that persists across runs. Written
 # after the VirtioFS readdir above so the host sees the write promptly.
-echo "$(date +%s)" > /safeyolo/per-run-started 2>/dev/null || true
+echo "$(date +%s)" > /safeyolo-status/per-run-started 2>/dev/null || true
 echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
@@ -157,10 +157,10 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
         done
         if [ "$_proxy_ok" -eq 0 ]; then
             echo "[per-run] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
         else
             echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
-            echo "installing" > /safeyolo/vm-status 2>/dev/null || true
+            echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
             timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
         fi
     fi
@@ -170,9 +170,9 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
     # from static is still on disk is exactly how the status went out of
     # sync in practice. `command -v` is the source of truth.
     if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "" > /safeyolo/vm-status 2>/dev/null || true
+        echo "" > /safeyolo-status/vm-status 2>/dev/null || true
     else
-        echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+        echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
     fi
 fi
 
@@ -184,12 +184,7 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 6. Remount config share read-only (all writes complete)
-# --------------------------------------------------------------------------
-mount -o remount,ro /safeyolo 2>/dev/null || true
-
-# --------------------------------------------------------------------------
-# 7. Run agent or stay alive for SSH access
+# 6. Run agent or stay alive for SSH access
 # --------------------------------------------------------------------------
 
 YOLO_ARGS=""

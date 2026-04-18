@@ -92,6 +92,17 @@ def get_agent_config_share_dir(name: str) -> Path:
     return get_agents_dir() / name / "config-share"
 
 
+def get_agent_status_dir(name: str) -> Path:
+    """Writable share for guest→host status signals.
+
+    Separate from the config share so the config share can be mounted
+    read-only from the start.
+    """
+    d = get_agents_dir() / name / "status"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # Rootfs management
 # ---------------------------------------------------------------------------
@@ -196,11 +207,13 @@ def prepare_config_share(
         # snapshot point before we get a chance to SIGUSR1.
         per_run_go.unlink(missing_ok=True)
     # Ensure no stale per-boot markers from a prior run mask progress —
-    # the guest writes these fresh on every boot. The CLI polls for
-    # per-run-started specifically as a definitive "restore succeeded"
-    # signal; a stale copy would make a failed restore look successful.
-    for marker in ("static-init-done", "per-run-started"):
-        (share_dir / marker).unlink(missing_ok=True)
+    # the guest writes these fresh on every boot to the status share.
+    # The CLI polls for per-run-started specifically as a definitive
+    # "restore succeeded" signal; a stale copy would make a failed
+    # restore look successful.
+    status_dir = get_agent_status_dir(name)
+    for marker in ("static-init-done", "per-run-started", "vm-status", "vm-ip"):
+        (status_dir / marker).unlink(missing_ok=True)
 
     # Debug-mode marker — presence enables per-iteration guest tracing.
     # Checked by guest-init orchestrator (which runs before agent.env is
@@ -436,7 +449,8 @@ def start_vm(
         "--cpus", str(cpus),
         "--memory", str(memory_mb),
         "--share", f"{workspace_path}:workspace:rw",
-        "--share", f"{config_share}:config:rw",
+        "--share", f"{config_share}:config:ro",
+        "--share", f"{get_agent_status_dir(name)}:status:rw",
         "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
     ]
 

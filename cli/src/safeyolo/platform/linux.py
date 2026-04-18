@@ -231,6 +231,10 @@ class LinuxPlatform(AgentPlatform):
         """No-op: nothing to unload."""
         log.debug("unload_firewall_rules: no-op")
 
+    def _status_dir(self, name: str) -> Path:
+        from ..vm import get_agent_status_dir  # noqa: PLC0415
+        return get_agent_status_dir(name)
+
     # --- Rootfs ---
 
     def agent_rootfs_path(self, name: str) -> Path:
@@ -617,12 +621,14 @@ class LinuxPlatform(AgentPlatform):
             {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
              "options": ["rbind", "rw"]},
-            # Config share — mounted RW during boot so guest-init can write
-            # /safeyolo/vm-ip (the host's readiness signal) and vm-status.
-            # guest-init-per-run:108 remounts it `ro` before going to sleep,
-            # matching the macOS microVM behaviour.
+            # Config share — read-only. Guest→host signals go to
+            # /safeyolo-status instead.
             {"destination": "/safeyolo", "type": "bind",
              "source": str(config_share),
+             "options": ["rbind", "ro"]},
+            # Status share — writable channel for guest→host signals.
+            {"destination": "/safeyolo-status", "type": "bind",
+             "source": str(self._status_dir(name)),
              "options": ["rbind", "rw"]},
         ]
 
@@ -718,7 +724,6 @@ class LinuxPlatform(AgentPlatform):
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
             "CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SYS_CHROOT",
-            "CAP_SYS_ADMIN",  # needed for mount -o remount,ro /safeyolo
             "CAP_NET_ADMIN",  # needed for ip addr add (agent IP on lo)
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]

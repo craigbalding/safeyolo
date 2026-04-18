@@ -34,6 +34,7 @@ from ..timing import enter as _t
 from ..vm import (
     _update_agent_map,
     get_agent_config_share_dir,
+    get_agent_status_dir,
     prepare_config_share,
 )
 from ._service_discovery import find_service
@@ -183,7 +184,8 @@ def _capture_snapshot_blocking(
         snapshot_path,
     )
 
-    static_done = config_share_dir / "static-init-done"
+    status_dir = get_agent_status_dir(name)
+    static_done = status_dir / "static-init-done"
     per_run_go = config_share_dir / "per-run-go"
     snap = snapshot_path(name)
 
@@ -520,7 +522,8 @@ def _run_agent(
         import time as _time
         config_share_dir = get_agent_config_share_dir(name)
         config_share = config_share_dir
-        ip_file = config_share_dir / "vm-ip"
+        status_dir = get_agent_status_dir(name)
+        ip_file = status_dir / "vm-ip"
 
         # --- Restore attempt (macOS warm-boot fast path) -------------------
         # If the valid-snapshot path fails — typically because VZ rejects
@@ -563,7 +566,7 @@ def _run_agent(
             # mismatch or VZ rejection), so is_sandbox_running catches
             # that quickly. 8s leaves headroom for slow disks / first-
             # boot cold caches without dragging out the fallback.
-            per_run_started = config_share_dir / "per-run-started"
+            per_run_started = status_dir / "per-run-started"
             deadline = _time.time() + 8.0
             restore_ok = False
             _t("wait per-run-started (guest wake + per-run prefix)")
@@ -664,7 +667,7 @@ def _run_agent(
             # restore), so if the agent binary isn't yet installed in the
             # rootfs we'll see the "installing" status mark.
             _t("install watch (guest per-run mise install if any)")
-            status_file = config_share_dir / "vm-status"
+            status_file = status_dir / "vm-status"
             shown_installing = False
             deadline2 = _time.time() + 120
             while _time.time() < deadline2 and plat.is_sandbox_running(name):
