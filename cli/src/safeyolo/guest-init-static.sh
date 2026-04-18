@@ -173,12 +173,11 @@ fi
 
 if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
     ssh-keygen -A >/dev/null 2>&1 || true
-    # In rootless userns, the base rootfs is owned by the mapped agent
-    # uid. ssh-keygen inherits that ownership, making host keys readable
-    # by the agent. Fix ownership so only root can read them.
-    chown root:root /etc/ssh/ssh_host_*_key 2>/dev/null || true
-    chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
 fi
+# SSH host keys must be root-owned and 600. In rootless userns the
+# base rootfs is owned by the mapped agent uid — fix unconditionally.
+chown root:root /etc/ssh/ssh_host_*_key 2>/dev/null || true
+chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
 
 mkdir -p /run/sshd
 /usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
