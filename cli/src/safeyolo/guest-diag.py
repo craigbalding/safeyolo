@@ -57,9 +57,10 @@ def _print(status: str, name: str, msg: str, hint: str = "") -> None:
 def check_identity() -> None:
     agent = "unknown"
     try:
-        agent = open("/safeyolo/agent-name").read().strip()
+        with open("/safeyolo/agent-name") as f:
+            agent = f.read().strip()
     except OSError:
-        pass
+        pass  # agent-name file absent — use default
     uid = os.getuid()
     user = os.environ.get("USER", f"uid={uid}")
     _print("INFO", "Agent identity", f"name={agent} user={user} uid={uid}")
@@ -93,7 +94,8 @@ def check_forwarder_process() -> None:
                 if not pid_dir.isdigit():
                     continue
                 try:
-                    cmdline = open(f"/proc/{pid_dir}/cmdline").read()
+                    with open(f"/proc/{pid_dir}/cmdline") as f:
+                        cmdline = f.read()
                     if "guest-proxy-forwarder" in cmdline:
                         out = f"pid={pid_dir}"
                         found = True
@@ -101,7 +103,7 @@ def check_forwarder_process() -> None:
                 except OSError:
                     continue
         except OSError:
-            pass
+            pass  # /proc not available on this platform
         if not found:
             _print("FAIL", "Forwarder process", "guest-proxy-forwarder not running",
                    "check console log: dmesg | grep -i proxy")
@@ -167,10 +169,7 @@ def check_transport_vsock() -> bool:
         _print("FAIL", "vsock proxy relay", f"vsock:{VSOCK_PROXY_PORT} — {e}",
                "safeyolo-vm may not have VSockProxyRelay enabled "
                "(check --proxy-socket was passed)")
-        try:
-            s.close()
-        except OSError:
-            pass
+        s.close()
 
     # Also probe the shell bridge port for context
     s2 = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -178,13 +177,10 @@ def check_transport_vsock() -> bool:
     try:
         s2.connect((VSOCK_HOST_CID, VSOCK_SHELL_PORT))
         _print("INFO", "vsock shell bridge", f"vsock:{VSOCK_SHELL_PORT} connected (shell bridge works)")
-        s2.close()
     except OSError as e:
         _print("INFO", "vsock shell bridge", f"vsock:{VSOCK_SHELL_PORT} — {e}")
-        try:
-            s2.close()
-        except OSError:
-            pass
+    finally:
+        s2.close()
 
     return False
 
