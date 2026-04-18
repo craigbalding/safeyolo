@@ -506,7 +506,7 @@ def _daemon_main() -> int:
             if port is not None:
                 new_ports[name] = int(port)
             else:
-                new_ports[name] = PORT_BASE + idx + 2
+                new_ports[name] = PORT_BASE + idx + 1
         _agent_ports.clear()
         _agent_ports.update(new_ports)
 

@@ -418,7 +418,7 @@ def _run_agent(
     if fw_alloc.get("needs_bridge_socket"):
         from ..proxy_bridge import socket_path_for as _bridge_sock_for, PORT_BASE
         bridge_sock = str(_bridge_sock_for(name))
-        bridge_port = PORT_BASE + agent_index + 2
+        bridge_port = PORT_BASE + agent_index + 1
     _update_agent_map(name, ip=attribution_ip, socket=bridge_sock, port=bridge_port)
     if bridge_sock:
         # Wait up to 5s for the bridge to create the listener socket.
@@ -500,6 +500,7 @@ def _run_agent(
             auto_args=auto_args,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            attribution_ip=attribution_ip,
             pre_write_per_run_go=(for_mode != "capture"),
             debug_mode=_debug_mode,
         )

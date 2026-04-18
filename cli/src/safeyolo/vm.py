@@ -147,6 +147,7 @@ def prepare_config_share(
     auto_args: str = "",
     gateway_ip: str = "127.0.0.1",
     guest_ip: str = "127.0.0.1",
+    attribution_ip: str = "",
     pre_write_per_run_go: bool = True,
     debug_mode: bool = False,
 ) -> Path:
@@ -260,11 +261,14 @@ def prepare_config_share(
         (share_dir / "instructions.md").write_text(instructions_content)
 
     # Network config for static IP (used by initramfs init)
-    (share_dir / "network.env").write_text(
+    net_env = (
         f"GUEST_IP={guest_ip}\n"
         f"GATEWAY_IP={gateway_ip}\n"
         f"NETMASK=255.255.255.0\n"
     )
+    if attribution_ip:
+        net_env += f"AGENT_IP={attribution_ip}\n"
+    (share_dir / "network.env").write_text(net_env)
 
     # Agent name → guest hostname. Read by guest-init-static which calls
     # `hostname <name>` and writes /etc/hostname. Agents in the Docker

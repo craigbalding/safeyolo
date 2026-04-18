@@ -62,6 +62,14 @@ ip link set lo up 2>/dev/null || true
 if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
 fi
+
+# Add the agent's unique IP to loopback. This is the same IP that
+# appears in mitmproxy flows, logs, and the agent map — giving the
+# operator a consistent per-agent identity inside and outside the
+# sandbox.
+if [ -n "${AGENT_IP:-}" ]; then
+    ip addr add "${AGENT_IP}/32" dev lo 2>/dev/null || true
+fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
     # (UP, IP assigned, default route) — bringing it up here would just

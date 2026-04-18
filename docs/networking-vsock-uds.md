@@ -101,16 +101,17 @@ sshd (inside guest)
 Each agent is assigned a **deterministic port and attribution IP** at
 `agent run` time, linked by the agent's index in the sorted agent list:
 
-| Agent index | Attribution IP    | Bridge source port |
-|-------------|-------------------|--------------------|
-| 0           | `127.0.0.2`       | `30002`            |
-| 1           | `127.0.0.3`       | `30003`            |
-| 254         | `127.0.1.0`       | `30256`            |
-| 510         | `127.0.2.0`       | `30512`            |
+| Agent index | Agent IP         | Bridge source port |
+|-------------|------------------|--------------------|
+| 0           | `10.200.0.1`     | `30001`            |
+| 1           | `10.200.0.2`     | `30002`            |
+| 255         | `10.200.1.0`     | `30256`            |
+| 511         | `10.200.2.0`     | `30512`            |
 
-The IP encoding is `127.0.{(N+2) / 256}.{(N+2) % 256}`, giving
-~65,000 agents before the port range exhausts. `127.0.0.1` is
-reserved for the proxy's own access.
+The IP is `10.200.{(N+1) / 256}.{(N+1) % 256}` from the `10.200.0.0/16`
+range. It's configured on the guest's loopback and used as the
+attribution IP in mitmproxy — the operator sees the same IP inside and
+outside the sandbox. Port range supports ~35,000 agents.
 
 The `proxy_bridge` binds its upstream TCP socket to `127.0.0.1` on the
 agent's deterministic port before connecting to mitmproxy. The

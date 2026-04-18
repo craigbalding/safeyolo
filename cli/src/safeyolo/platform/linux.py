@@ -194,11 +194,10 @@ class LinuxPlatform(AgentPlatform):
         alloc["guest_ip"] = "127.0.0.1"
         alloc["netns"] = netns
 
-        # Attribution IP for port-identity mapping. Pure bookkeeping —
-        # the bridge identifies by port, the addon rewrites peername
-        # with this IP. 127.0.0.1 reserved for mitmproxy.
-        offset = agent_index + 2
-        alloc["attribution_ip"] = f"127.0.{offset // 256}.{offset % 256}"
+        # Per-agent IP from the 10.200.0.0/16 range. Configured on the
+        # guest's loopback and used as the attribution IP in mitmproxy.
+        offset = agent_index + 1  # 0 → 10.200.0.1
+        alloc["attribution_ip"] = f"10.200.{offset // 256}.{offset % 256}"
         # Linux agents reach mitmproxy via a per-agent UDS bridge socket
         # (structural isolation). Signals to agent.py that it should
         # coordinate with proxy_bridge before start_sandbox.

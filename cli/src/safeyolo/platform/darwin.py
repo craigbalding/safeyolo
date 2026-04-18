@@ -33,13 +33,12 @@ class DarwinPlatform(AgentPlatform):
     """macOS agent isolation via Virtualization.framework microVMs."""
 
     def setup_networking(self, agent_index: int) -> dict:
-        # attribution_ip is a per-agent identity carried to mitmproxy
-        # via port-based identity. The bridge binds to a deterministic
-        # port; the port-identity addon rewrites peername with this IP.
-        # The IP is pure bookkeeping — it never touches a kernel
-        # interface.
-        offset = agent_index + 2  # 0 → 2, reserving 127.0.0.1
-        attribution_ip = f"127.0.{offset // 256}.{offset % 256}"
+        # Per-agent IP from the 10.200.0.0/16 range. Configured on the
+        # guest's loopback and used as the attribution IP in mitmproxy
+        # — one consistent identity visible inside and outside the
+        # sandbox.
+        offset = agent_index + 1  # 0 → 10.200.0.1
+        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"
 
         return {
             "attribution_ip": attribution_ip,
