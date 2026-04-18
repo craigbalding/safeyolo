@@ -151,24 +151,99 @@ def _needs_apparmor() -> bool:
         return False
 
 
-def _wrap_in_userns(inner_cmds: str, agent_ip: str = "") -> list[str]:
-    """Build the command to run inside a user namespace + network namespace.
+def _userns_pid_file(name: str) -> Path:
+    """Path to the file storing the userns holder PID for an agent."""
+    return get_agents_dir() / name / "userns.pid"
 
-    Creates a loopback-only netns via unshare -Urn, configures lo and
-    the agent IP, then runs the inner commands. The sandbox inherits
-    this isolated network via --network=host.
+
+def _start_userns(name: str) -> int:
+    """Create a user namespace with proper uid mapping and return its PID.
+
+    The userns holder is a `sleep` process that keeps the namespace
+    alive. The sandbox, started via nsenter, outlives this process
+    (T3 confirmed), but we need it for nsenter into exec/kill/delete.
+
+    uid mapping: container 0 → host subordinate (100000+), container
+    1000 → host operator uid. This gives the agent proper file
+    ownership: workspace and /home/agent are owned by container uid
+    1000 = host operator = the person who owns those files.
     """
-    setup = "ip link set lo up"
-    if agent_ip:
-        setup += f" && ip addr add {agent_ip}/32 dev lo"
-
-    shell_cmd = f"{setup} && {inner_cmds}"
-
-    cmd = []
+    aa_prefix = []
     if _needs_apparmor() and _has_aa_exec():
-        cmd = ["aa-exec", "-p", AA_PROFILE, "--"]
-    cmd += ["unshare", "-Urn", "bash", "-c", shell_cmd]
-    return cmd
+        aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
+
+    # Start the userns holder
+    proc = subprocess.Popen(
+        aa_prefix + ["unshare", "-Un", "sleep", "86400"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.5)
+
+    if proc.poll() is not None:
+        raise RuntimeError("userns holder exited immediately")
+
+    upid = proc.pid
+
+    # Write uid/gid maps: container 0 → host subordinate, container 1000 → host operator
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    try:
+        subprocess.run(
+            ["newuidmap", str(upid),
+             "0", "100000", "1000",
+             "1000", str(host_uid), "1",
+             "1001", "101001", "64534"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["newgidmap", str(upid),
+             "0", "100000", "1000",
+             "1000", str(host_gid), "1",
+             "1001", "101001", "64534"],
+            check=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        proc.kill()
+        raise RuntimeError(f"newuidmap/newgidmap failed: {e.stderr}") from e
+
+    # Persist the PID
+    _userns_pid_file(name).write_text(str(upid))
+    log.info("userns created for %s (holder pid=%d)", name, upid)
+    return upid
+
+
+def _get_userns_pid(name: str) -> int | None:
+    """Read the userns holder PID, verify it's alive."""
+    pid_file = _userns_pid_file(name)
+    if not pid_file.exists():
+        return None
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)  # check alive
+        return pid
+    except (ValueError, ProcessLookupError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return None
+
+
+def _nsenter_cmd(userns_pid: int) -> list[str]:
+    """Build nsenter prefix for entering the userns."""
+    return ["nsenter", "--user", "--net", "--target", str(userns_pid), "--"]
+
+
+def _kill_userns(name: str) -> None:
+    """Kill the userns holder process."""
+    pid_file = _userns_pid_file(name)
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 9)
+    except (ValueError, ProcessLookupError, OSError):
+        pass
+    pid_file.unlink(missing_ok=True)
 
 
 def _wrap_in_systemd_scope(
@@ -333,7 +408,6 @@ class LinuxPlatform(AgentPlatform):
 
         self.prepare_rootfs(name)
 
-        # Build OCI config
         config = self._generate_oci_config(
             name=name,
             rootfs_path=rootfs,
@@ -350,13 +424,30 @@ class LinuxPlatform(AgentPlatform):
 
         os.makedirs(rootfs / "workspace", exist_ok=True)
 
-        # Clean stale state
-        _run([runsc, "--root", root, "delete", "--force", cid], check=False)
+        # Make state dir world-accessible so nsenter'd processes
+        # (running as the subordinate root uid) can write state.
+        os.chmod(root, 0o777)
 
-        # Build the create+start commands to run inside the user namespace.
-        # unshare -Urn creates a loopback-only netns; --network=host
-        # makes gVisor inherit it. The sandbox persists after unshare exits.
+        # Clean stale state from previous run
+        old_upid = _get_userns_pid(name)
+        if old_upid:
+            _run(_nsenter_cmd(old_upid) +
+                 [runsc, "--root", root, "delete", "--force", cid],
+                 check=False)
+            _kill_userns(name)
+
+        # Create a user namespace with proper uid mapping:
+        # container 0 → host subordinate range (for gVisor internals)
+        # container 1000 → host operator uid (for workspace access)
+        upid = _start_userns(name)
+
+        # Configure networking and start the sandbox inside the userns.
+        setup = "ip link set lo up"
+        if agent_ip:
+            setup += f" && ip addr add {agent_ip}/32 dev lo"
+
         inner = (
+            f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
             f"--network=host --platform={platform} "
             f"create --bundle {agent_dir} {cid} 2>&1 && "
@@ -364,14 +455,11 @@ class LinuxPlatform(AgentPlatform):
             f"start {cid} 2>&1"
         )
 
-        cmd = _wrap_in_userns(inner, agent_ip=agent_ip)
-        cmd = _wrap_in_systemd_scope(cmd, name, memory_mb, cpus)
+        cmd = _wrap_in_systemd_scope(
+            _nsenter_cmd(upid) + ["bash", "-c", inner],
+            name, memory_mb, cpus,
+        )
 
-        # Use a tempfile for stderr to avoid the pipe-inheritance
-        # blocking problem: runsc create forks sandbox+gofer daemons
-        # that inherit stdout/stderr pipes, and subprocess.run blocks
-        # until all writers close — which never happens while the
-        # daemons are alive.
         with tempfile.TemporaryFile(mode="w+b") as stderr_file:
             result = subprocess.run(
                 cmd,
@@ -384,12 +472,16 @@ class LinuxPlatform(AgentPlatform):
             err_text = stderr_file.read().decode(errors="replace")
 
         if result.returncode != 0:
+            _kill_userns(name)
             log.error("Container start failed (rc=%d): %s",
                       result.returncode, err_text)
             raise RuntimeError(f"Failed to start container {cid}: {err_text}")
 
-        # Get PID (runsc state works from outside the userns)
-        state_result = _run([runsc, "--root", root, "state", cid], check=False)
+        # Get PID — nsenter into userns for state query
+        state_result = _run(
+            _nsenter_cmd(upid) + [runsc, "--root", root, "state", cid],
+            check=False,
+        )
         pid = 0
         if state_result.returncode == 0:
             try:
@@ -411,9 +503,11 @@ class LinuxPlatform(AgentPlatform):
         runsc = _find_runsc()
         root = _runsc_root()
 
-        # runsc state/kill/delete work from outside the userns
+        upid = _get_userns_pid(name)
+        prefix = _nsenter_cmd(upid) if upid else []
+
         state_result = _run(
-            [runsc, "--root", root, "state", cid], check=False,
+            prefix + [runsc, "--root", root, "state", cid], check=False,
         )
         has_state = state_result.returncode == 0
         is_running = False
@@ -424,13 +518,15 @@ class LinuxPlatform(AgentPlatform):
                 pass
 
         if is_running:
-            _run([runsc, "--root", root, "kill", cid, "SIGTERM"], check=False)
+            _run(prefix + [runsc, "--root", root, "kill", cid, "SIGTERM"], check=False)
             time.sleep(5)
-            _run([runsc, "--root", root, "kill", "--all", cid, "SIGKILL"], check=False)
+            _run(prefix + [runsc, "--root", root, "kill", "--all", cid, "SIGKILL"], check=False)
             time.sleep(1)
 
         if has_state:
-            _run([runsc, "--root", root, "delete", "--force", cid], check=False)
+            _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
+
+        _kill_userns(name)
 
         pid_path = agent_dir / "container.pid"
         pid_path.unlink(missing_ok=True)
@@ -445,16 +541,17 @@ class LinuxPlatform(AgentPlatform):
                         interactive: bool = True) -> int:
         """Execute a command in a running sandbox via runsc exec.
 
-        In the rootless userns path, all exec runs as uid 0. Container
-        root maps to the host operator (who owns the workspace and
-        rootfs), so file access works. gVisor's sandbox boundary
-        provides isolation, not in-container uid separation.
+        Requires nsenter into the userns because the runsc state dir
+        is owned by the mapped root (host uid from subordinate range).
         """
         cid = _container_id(name)
-        uid = "0:0"  # rootless userns: container root = host operator
+        uid = "0:0" if user == "root" else "1000:1000"
         root = _runsc_root()
 
-        cmd = [
+        upid = _get_userns_pid(name)
+        prefix = _nsenter_cmd(upid) if upid else []
+
+        cmd = prefix + [
             _find_runsc(), "--root", root, "exec",
             "--user", uid,
             "--cwd", "/workspace",
@@ -472,9 +569,11 @@ class LinuxPlatform(AgentPlatform):
         """Check if a gVisor sandbox is running."""
         cid = _container_id(name)
         root = _runsc_root()
+        upid = _get_userns_pid(name)
+        prefix = _nsenter_cmd(upid) if upid else []
         try:
             result = _run(
-                [_find_runsc(), "--root", root, "state", cid],
+                prefix + [_find_runsc(), "--root", root, "state", cid],
                 check=False,
             )
             if result.returncode != 0:
@@ -485,7 +584,7 @@ class LinuxPlatform(AgentPlatform):
             return False
 
     def cleanup_all(self, agents_dir: Path) -> None:
-        """Clean up all containers for this instance."""
+        """Clean up all containers and userns holders for this instance."""
         root = _runsc_root()
         runsc = _find_runsc()
         if not agents_dir.exists():
@@ -494,8 +593,13 @@ class LinuxPlatform(AgentPlatform):
         for agent_dir in sorted(agents_dir.iterdir()):
             if not agent_dir.is_dir():
                 continue
-            cid = _container_id(agent_dir.name)
-            _run([runsc, "--root", root, "delete", "--force", cid], check=False)
+            name = agent_dir.name
+            cid = _container_id(name)
+            upid = _get_userns_pid(name)
+            prefix = _nsenter_cmd(upid) if upid else []
+            _run(prefix + [runsc, "--root", root, "delete", "--force", cid],
+                 check=False)
+            _kill_userns(name)
 
     def remove_agent_dir(self, name: str) -> None:
         """Delete the agent's on-disk directory."""
