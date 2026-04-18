@@ -611,7 +611,7 @@ def _check_isolation_platform() -> DiagResult:
                 name="Isolation platform",
                 status="warn",
                 message="systrap (software isolation) — operator lacks /dev/kvm access",
-                remediation="Add user to kvm group or set ACL",
+                remediation="safeyolo setup",
             )
         # kvm exists, operator has access, but subordinate uid lacks ACL
         return DiagResult(
@@ -619,7 +619,7 @@ def _check_isolation_platform() -> DiagResult:
             status="warn",
             message="systrap (software isolation) — subordinate uid 100000 lacks /dev/kvm ACL",
             detail="KVM available but container root can't access it",
-            remediation="sudo setfacl -m u:100000:rw /dev/kvm",
+            remediation="safeyolo setup",
         )
 
     return DiagResult(

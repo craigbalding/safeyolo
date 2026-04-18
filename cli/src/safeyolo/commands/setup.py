@@ -97,11 +97,33 @@ def setup() -> None:
             console.print("    Coding agent performance is equivalent. Hardware isolation")
             console.print("    (KVM) is available on hosts with virtualization enabled.")
         elif kvm["kvm_operator_access"] and not kvm["kvm_subordinate_access"]:
-            console.print("  [yellow]SETUP[/yellow]  KVM available — grant access for hardware isolation")
-            console.print("    KVM provides hardware-enforced isolation (recommended).")
-            console.print("    Without it, SafeYolo uses systrap (software isolation,")
-            console.print("    equivalent performance for coding agents).")
-            console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+            udev_rule = 'KERNEL=="kvm", RUN+="/usr/bin/setfacl -m u:100000:rw /dev/kvm"'
+            udev_path = Path("/etc/udev/rules.d/99-safeyolo-kvm.rules")
+            if udev_path.exists():
+                # Rule file exists but ACL not applied (pre-reboot or udev not triggered)
+                console.print("  [yellow]SETUP[/yellow]  KVM udev rule installed but ACL not yet active")
+                console.print("    Apply now:  [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+                console.print("    (will persist across reboots via udev rule)")
+            else:
+                console.print("  [yellow]SETUP[/yellow]  KVM available — enable hardware isolation")
+                console.print("    Installing udev rule for persistent /dev/kvm access...")
+                try:
+                    subprocess.run(
+                        ["sudo", "tee", str(udev_path)],
+                        input=udev_rule.encode(),
+                        capture_output=True, check=True,
+                    )
+                    subprocess.run(
+                        ["sudo", "setfacl", "-m", "u:100000:rw", "/dev/kvm"],
+                        capture_output=True, check=True,
+                    )
+                    console.print("  [green]OK[/green]  KVM udev rule installed and ACL applied")
+                except subprocess.CalledProcessError as e:
+                    console.print(f"  [red]FAIL[/red]  Could not install udev rule: {e}")
+                    console.print("    Manual fix:")
+                    console.print(f'    [bold]echo \'{udev_rule}\' | sudo tee {udev_path}[/bold]')
+                    console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+                    all_ok = False
         else:
             console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
     else:
