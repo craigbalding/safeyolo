@@ -34,12 +34,12 @@ class DarwinPlatform(AgentPlatform):
 
     def setup_networking(self, agent_index: int) -> dict:
         # attribution_ip is a per-agent identity carried to mitmproxy
-        # via PROXY protocol v2. The bridge sends it in the header;
-        # the proxy_protocol addon overwrites peername so
-        # service_discovery can attribute flows. No lo0 alias, no
-        # bind(), no sudo — the IP is pure bookkeeping between the
-        # bridge and mitmproxy.
-        attribution_ip = f"127.0.0.{agent_index + 2}"
+        # via port-based identity. The bridge binds to a deterministic
+        # port; the port-identity addon rewrites peername with this IP.
+        # The IP is pure bookkeeping — it never touches a kernel
+        # interface.
+        offset = agent_index + 2  # 0 → 2, reserving 127.0.0.1
+        attribution_ip = f"127.0.{offset // 256}.{offset % 256}"
 
         return {
             "attribution_ip": attribution_ip,
