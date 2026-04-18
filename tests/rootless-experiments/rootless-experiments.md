@@ -253,9 +253,31 @@ The KVM ACL question remains: granting /dev/kvm to subordinate uid
 100000 relies on non-overlapping subuid allocation (tooling convention,
 not kernel guarantee).
 
-### Open: can gVisor accept a pre-opened /dev/kvm fd?
-If the operator opens /dev/kvm BEFORE entering the userns and passes
-the fd to the sentry, no ACL needed. Need to check gVisor source.
+### T23: KVM fd passing via /proc/self/fd — WORKS
+- Open /dev/kvm as operator (host uid 1000, has ACL) on fd 9
+- nsenter --user preserves the fd
+- runsc --platform_device_path=/proc/self/fd/9 opens the inherited fd
+- KVM platform: PASS
+- Agent uid 1000 workspace write: PASS
+- No ACL on subordinate uid needed
+- No udev rule needed
+- **THIS IS THE FINAL PATH**
+
+### FINAL RECIPE (v3 — fd passing, no KVM ACL):
+```
+exec 9</dev/kvm  # open as operator (has access)
+systemd-run --user --scope -p Delegate=yes -p MemoryMax=X --
+  nsenter --user --net --target <userns-pid> -- bash -c "
+    runsc --platform=kvm --platform_device_path=/proc/self/fd/9 \
+          --host-uds=open --ignore-cgroups --network=host \
+          --root <state> create --bundle <bundle> <cid>
+    runsc ... start <cid>
+  "
+exec 9<&-
+```
+One-time setup: AppArmor profile + fuse2fs
+Runtime sudo: ZERO
+KVM ACL changes: ZERO
 
 ## Second-order tests (continued)
 
