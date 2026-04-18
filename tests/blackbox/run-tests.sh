@@ -296,15 +296,13 @@ if [ "$RUN_PROXY" = true ]; then
         test_credential_guard.py test_network_guard.py
     PROXY_RESULT=$?
 
-    # Firewall structural tests (Linux only — iptables)
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        echo ""
-        echo "=== Firewall Structural Tests (host-side) ==="
-        echo ""
-        pytest $VERBOSE --tb=short --timeout=60 \
-            test_firewall_structural.py
-        FIREWALL_RESULT=$?
-    fi
+    # Process security tests (host-side)
+    echo ""
+    echo "=== Process Security Tests (host-side) ==="
+    echo ""
+    pytest $VERBOSE --tb=short --timeout=60 \
+        test_firewall_structural.py
+    FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
     echo ""
