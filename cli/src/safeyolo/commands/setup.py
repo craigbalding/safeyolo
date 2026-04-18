@@ -3,7 +3,6 @@
 import os
 import platform as _platform
 import re as _re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -22,19 +21,6 @@ setup_app = typer.Typer(
     no_args_is_help=False,
     invoke_without_command=True,
 )
-
-
-def check_runsc() -> tuple[bool, str]:
-    """Check if runsc (gVisor) is installed. Linux VM runtime."""
-    path = shutil.which("runsc")
-    if not path:
-        for p in ("/usr/local/bin/runsc", "/usr/bin/runsc"):
-            if os.path.exists(p) and os.access(p, os.X_OK):
-                path = p
-                break
-    if path:
-        return True, f"found at {path}"
-    return False, "not found on PATH or in /usr/local/bin, /usr/bin"
 
 
 @setup_app.callback(invoke_without_command=True)
@@ -77,34 +63,25 @@ def setup() -> None:
             console.print("    Build with: cd vm && make install")
             all_ok = False
     elif system == "Linux":
+        from ..platform.linux import (
+            check_userns_prerequisites,
+            detect_runsc_platform,
+            find_runsc,
+        )
+
         # runsc (gVisor) — the Linux VM runtime
-        has_runsc, reason = check_runsc()
-        if has_runsc:
-            console.print(f"  [green]OK[/green]  runsc ({reason})")
+        runsc_path = find_runsc()
+        if runsc_path:
+            console.print(f"  [green]OK[/green]  runsc (found at {runsc_path})")
         else:
-            console.print(f"  [red]MISSING[/red]  runsc: {reason}")
+            console.print("  [red]MISSING[/red]  runsc: not found on PATH or in /usr/local/bin, /usr/bin")
             console.print("    Install gVisor — see README 'Linux' section for apt commands.")
             all_ok = False
 
-        # AppArmor profile for user namespace creation
-        apparmor_restricts = False
-        try:
-            val = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip()
-            apparmor_restricts = val == "1"
-        except (FileNotFoundError, PermissionError):
-            pass
-
-        if apparmor_restricts:
-            import subprocess as _sp
-            profile_loaded = False
-            try:
-                r = _sp.run(["sudo", "aa-status", "--json"],
-                            capture_output=True, text=True, check=False, timeout=5)
-                profile_loaded = "safeyolo-runsc" in r.stdout
-            except (FileNotFoundError, _sp.TimeoutExpired):
-                pass
-
-            if profile_loaded:
+        # User namespace prerequisites
+        userns = check_userns_prerequisites()
+        if userns["apparmor_restricts"]:
+            if userns["apparmor_profile_loaded"]:
                 console.print("  [green]OK[/green]  AppArmor profile (safeyolo-runsc)")
             else:
                 console.print("  [yellow]SETUP[/yellow]  AppArmor profile needed (user namespace creation)")
@@ -112,33 +89,19 @@ def setup() -> None:
                 all_ok = False
 
         # KVM platform detection
-        import shutil as _shutil
-        kvm_exists = os.path.exists("/dev/kvm")
-        kvm_operator_access = kvm_exists and os.access("/dev/kvm", os.R_OK | os.W_OK)
-
-        if not kvm_exists:
+        kvm = detect_runsc_platform()
+        if kvm["platform"] == "kvm":
+            console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
+        elif not kvm["kvm_exists"]:
             console.print("  [dim]INFO[/dim]  /dev/kvm not available — using systrap (software isolation)")
             console.print("    Coding agent performance is equivalent. Hardware isolation")
             console.print("    (KVM) is available on hosts with virtualization enabled.")
-        elif kvm_operator_access:
-            # Operator can access KVM. Check if subordinate uid can too.
-            import subprocess as _sp
-            sub_uid_access = False
-            try:
-                r = _sp.run(["getfacl", "/dev/kvm"],
-                            capture_output=True, text=True, check=False, timeout=5)
-                sub_uid_access = "user:100000:rw" in r.stdout
-            except (FileNotFoundError, _sp.TimeoutExpired):
-                pass
-
-            if sub_uid_access:
-                console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
-            else:
-                console.print("  [yellow]SETUP[/yellow]  KVM available — grant access for hardware isolation")
-                console.print("    KVM provides hardware-enforced isolation (recommended).")
-                console.print("    Without it, SafeYolo uses systrap (software isolation,")
-                console.print("    equivalent performance for coding agents).")
-                console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+        elif kvm["kvm_operator_access"] and not kvm["kvm_subordinate_access"]:
+            console.print("  [yellow]SETUP[/yellow]  KVM available — grant access for hardware isolation")
+            console.print("    KVM provides hardware-enforced isolation (recommended).")
+            console.print("    Without it, SafeYolo uses systrap (software isolation,")
+            console.print("    equivalent performance for coding agents).")
+            console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
         else:
             console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
     else:

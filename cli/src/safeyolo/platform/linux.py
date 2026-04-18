@@ -96,47 +96,74 @@ def _run(
     )
 
 
-def _detect_runsc_platform() -> str:
-    """Detect best runsc platform.
+def detect_runsc_platform() -> dict:
+    """Detect best runsc platform with diagnostic detail.
 
-    KVM provides hardware isolation and is preferred. It requires
-    /dev/kvm access for both the operator (who has it via group/ACL)
-    and the subordinate root uid (100000, granted via setfacl during
-    setup). If either is missing, falls back to systrap.
+    Returns a dict with keys:
+      platform: "kvm" or "systrap"
+      kvm_exists: bool
+      kvm_operator_access: bool
+      kvm_subordinate_access: bool
+      reason: human-readable explanation
     """
-    if not os.path.exists("/dev/kvm"):
-        return "systrap"
-    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
-        return "systrap"
-    # Check if the subordinate uid (100000) has access via ACL
+    info: dict = {
+        "platform": "systrap",
+        "kvm_exists": os.path.exists("/dev/kvm"),
+        "kvm_operator_access": False,
+        "kvm_subordinate_access": False,
+        "reason": "",
+    }
+    if not info["kvm_exists"]:
+        info["reason"] = "/dev/kvm not found"
+        return info
+    info["kvm_operator_access"] = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    if not info["kvm_operator_access"]:
+        info["reason"] = "/dev/kvm exists but operator lacks rw access"
+        return info
     try:
         result = subprocess.run(
             ["getfacl", "/dev/kvm"],
             capture_output=True, text=True, check=False, timeout=3,
         )
-        if "user:100000:rw" not in result.stdout:
-            log.info("KVM available but subordinate uid lacks access, using systrap")
-            return "systrap"
+        info["kvm_subordinate_access"] = "user:100000:rw" in result.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return "systrap"
-    return "kvm"
+        pass
+    if not info["kvm_subordinate_access"]:
+        info["reason"] = "subordinate uid 100000 lacks /dev/kvm ACL"
+        return info
+    info["platform"] = "kvm"
+    info["reason"] = "KVM available with full access"
+    return info
 
 
-def _find_runsc() -> str:
-    """Find the runsc binary."""
+def _detect_runsc_platform() -> str:
+    """Internal: return just the platform string."""
+    return detect_runsc_platform()["platform"]
+
+
+def find_runsc() -> str | None:
+    """Find the runsc binary. Returns path or None."""
     path = shutil.which("runsc")
     if path:
         return path
     for p in ["/usr/local/bin/runsc", "/usr/bin/runsc"]:
         if os.path.exists(p) and os.access(p, os.X_OK):
             return p
-    raise RuntimeError(
-        "runsc not found. Install gVisor:\n"
-        "  curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg\n"
-        '  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] '
-        'https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list\n'
-        "  sudo apt update && sudo apt install -y runsc"
-    )
+    return None
+
+
+def _find_runsc() -> str:
+    """Internal: find runsc or raise."""
+    path = find_runsc()
+    if not path:
+        raise RuntimeError(
+            "runsc not found. Install gVisor:\n"
+            "  curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg\n"
+            '  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] '
+            'https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list\n'
+            "  sudo apt update && sudo apt install -y runsc"
+        )
+    return path
 
 
 def _container_id(name: str) -> str:
@@ -144,12 +171,12 @@ def _container_id(name: str) -> str:
     return f"safeyolo-{name}"
 
 
-def _has_aa_exec() -> bool:
+def has_aa_exec() -> bool:
     """Check if aa-exec is available."""
     return shutil.which("aa-exec") is not None
 
 
-def _has_apparmor_profile() -> bool:
+def has_apparmor_profile() -> bool:
     """Check if the SafeYolo AppArmor profile is installed."""
     try:
         result = subprocess.run(
@@ -161,13 +188,51 @@ def _has_apparmor_profile() -> bool:
         return False
 
 
-def _needs_apparmor() -> bool:
+def needs_apparmor() -> bool:
     """Check if AppArmor restricts unprivileged user namespaces."""
     try:
         val = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip()
         return val == "1"
     except (FileNotFoundError, PermissionError):
         return False
+
+
+def check_userns_prerequisites() -> dict:
+    """Check user namespace prerequisites for rootless gVisor.
+
+    Returns a dict with keys:
+      newuidmap: bool — newuidmap binary available
+      newgidmap: bool — newgidmap binary available
+      subuid: bool — /etc/subuid has entry for current user
+      subgid: bool — /etc/subgid has entry for current user
+      apparmor_restricts: bool — kernel restricts unprivileged userns
+      apparmor_profile_loaded: bool — safeyolo-runsc profile loaded
+    """
+    import getpass
+    username = getpass.getuser()
+
+    info = {
+        "newuidmap": shutil.which("newuidmap") is not None,
+        "newgidmap": shutil.which("newgidmap") is not None,
+        "subuid": False,
+        "subgid": False,
+        "apparmor_restricts": needs_apparmor(),
+        "apparmor_profile_loaded": False,
+    }
+
+    for fname, key in [("/etc/subuid", "subuid"), ("/etc/subgid", "subgid")]:
+        try:
+            content = Path(fname).read_text()
+            info[key] = any(
+                line.startswith(f"{username}:") for line in content.splitlines()
+            )
+        except (FileNotFoundError, PermissionError):
+            pass
+
+    if info["apparmor_restricts"]:
+        info["apparmor_profile_loaded"] = has_apparmor_profile()
+
+    return info
 
 
 def _userns_pid_file(name: str) -> Path:
@@ -188,7 +253,7 @@ def _start_userns(name: str) -> int:
     1000 = host operator = the person who owns those files.
     """
     aa_prefix = []
-    if _needs_apparmor() and _has_aa_exec():
+    if needs_apparmor() and has_aa_exec():
         aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
 
     # Start the userns holder
