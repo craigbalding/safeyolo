@@ -194,14 +194,12 @@ class LinuxPlatform(AgentPlatform):
         alloc["guest_ip"] = "127.0.0.1"
         alloc["netns"] = netns
 
-        # Per-agent IP from the 10.200.0.0/16 range. Added to the
-        # netns loopback here (before gVisor starts) so the guest
-        # sees it on `ip addr show lo`. The same IP appears in
-        # mitmproxy flows via the port-identity addon.
+        # Per-agent IP from the 10.200.0.0/16 range. Configured on the
+        # guest's loopback by guest-init-static (CAP_NET_ADMIN in the
+        # OCI spec). The same IP appears in mitmproxy flows via the
+        # port-identity addon.
         offset = agent_index + 1  # 0 → 10.200.0.1
         alloc["attribution_ip"] = f"10.200.{offset // 256}.{offset % 256}"
-        _sudo(["ip", "-n", netns, "addr", "add",
-               f"{alloc['attribution_ip']}/32", "dev", "lo"], check=False)
         # Linux agents reach mitmproxy via a per-agent UDS bridge socket
         # (structural isolation). Signals to agent.py that it should
         # coordinate with proxy_bridge before start_sandbox.
@@ -721,6 +719,7 @@ class LinuxPlatform(AgentPlatform):
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
             "CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SYS_CHROOT",
             "CAP_SYS_ADMIN",  # needed for mount -o remount,ro /safeyolo
+            "CAP_NET_ADMIN",  # needed for ip addr add (agent IP on lo)
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
         return {

@@ -30,7 +30,7 @@
 #
 # Intentionally NOT granted:
 #   ip netns exec                — allows running arbitrary binaries as root
-#   ip link / nft / iptables
+#   ip link / ip addr / nft / iptables
 #                               — no kernel firewall or veth in the new arch
 #   sysctl                      — no IP forwarding needed
 #   mount -t overlay            — fuse-overlayfs runs unprivileged
@@ -45,14 +45,10 @@
                                 /sbin/ip netns add safeyolo-*, \
                                 /sbin/ip netns del safeyolo-*
 
-# Loopback bring-up and agent IP inside the netns.
+# Loopback bring-up inside the netns (the only interface the sandbox has).
 # Scoped so `ip -n safeyolo-*` can only touch the lo device.
-# The agent IP (10.200.x.y/32) is added to lo so the guest sees its
-# identity on `ip addr show lo`.
 %safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip -n safeyolo-* link set lo up, \
-                                /sbin/ip -n safeyolo-* link set lo up, \
-                                /usr/sbin/ip -n safeyolo-* addr add 10.200.*.*/32 dev lo, \
-                                /sbin/ip -n safeyolo-* addr add 10.200.*.*/32 dev lo
+                                /sbin/ip -n safeyolo-* link set lo up
 
 # One-time base rootfs extraction — loop mount + umount pinned to exact paths.
 # Per-agent overlayfs uses fuse-overlayfs (unprivileged, no sudo needed).
