@@ -669,6 +669,8 @@ def _run_agent(
             # rootfs we'll see the "installing" status mark.
             _t("install watch (guest per-run mise install if any)")
             status_file = status_dir / "vm-status"
+            install_log = status_dir / "install.log"
+            install_log_pos = 0
             shown_installing = False
             deadline2 = _time.time() + 120
             while _time.time() < deadline2 and plat.is_sandbox_running(name):
@@ -682,6 +684,18 @@ def _run_agent(
                     break
                 elif status == "ready":
                     break
+                # Stream install log lines to the console.
+                if install_log.exists():
+                    try:
+                        with open(install_log) as f:
+                            f.seek(install_log_pos)
+                            new_data = f.read()
+                            if new_data:
+                                install_log_pos = f.tell()
+                                for line in new_data.splitlines():
+                                    console.print(f"  [dim]{line}[/dim]")
+                    except OSError:
+                        pass
                 _time.sleep(1)
 
             if detach:

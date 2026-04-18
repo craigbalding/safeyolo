@@ -161,7 +161,7 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
         else
             echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
             echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
     fi
     # Ground vm-status in reality — the install command's exit code can

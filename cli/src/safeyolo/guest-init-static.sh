@@ -254,7 +254,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # binary even when it's correctly installed.
         if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
             echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
         # Ground vm-status in reality. `mise use -g` can exit nonzero
         # (notably: the outer `timeout` fires *after* the package is
