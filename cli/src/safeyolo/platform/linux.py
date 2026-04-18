@@ -265,6 +265,14 @@ def _kill_userns(name: str) -> None:
     pid_file.unlink(missing_ok=True)
 
 
+def _nsenter_env_cmd(userns_pid: int) -> list[str]:
+    """Build nsenter prefix with clean environment for the userns."""
+    return [
+        "env", "-u", "XDG_RUNTIME_DIR",
+        "nsenter", "--user", "--net", "--target", str(userns_pid), "--",
+    ]
+
+
 def _wrap_in_systemd_scope(
     cmd: list[str],
     name: str,
@@ -436,12 +444,7 @@ class LinuxPlatform(AgentPlatform):
 
         netns_path = f"/proc/{upid}/ns/net"
 
-        # Unset XDG_RUNTIME_DIR inside the userns — it points to
-        # /run/user/<uid> which is owned by the operator (host uid 1000),
-        # not the userns root (host uid 100000). gVisor falls back to
-        # /tmp for its control socket.
         inner = (
-            "unset XDG_RUNTIME_DIR && "
             f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
@@ -451,7 +454,7 @@ class LinuxPlatform(AgentPlatform):
         )
 
         cmd = _wrap_in_systemd_scope(
-            _nsenter_cmd(upid) + ["bash", "-c", inner],
+            _nsenter_env_cmd(upid) + ["bash", "-c", inner],
             name, memory_mb, cpus,
         )
 
