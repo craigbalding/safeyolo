@@ -6,10 +6,10 @@ Auto-detects KVM availability for best isolation:
 
 No Docker, containerd, sudo, or other daemon required. Only needs:
   - runsc binary (single Go binary, ~30MB)
-  - fuse-overlayfs (rootfs layering)
   - iproute2 (standard)
   - systemd user session (resource limits via cgroup delegation)
   - AppArmor profile for runsc (one-time install, allows user namespaces)
+  - EROFS rootfs image (built by guest/build-all.sh)
 
 Network isolation is structural: each agent runs in its own user
 namespace with a loopback-only network namespace. The only egress
@@ -335,142 +335,29 @@ class LinuxPlatform(AgentPlatform):
         return get_agents_dir() / name / "rootfs"
 
     def prepare_rootfs(self, name: str) -> Path:
-        """Create agent rootfs using fuse-overlayfs on extracted base.
+        """Verify the EROFS rootfs image exists.
 
-        The base rootfs tarball is extracted inside a user namespace
-        with the same uid mapping used at runtime. This maps tarball
-        uid 0 (root) → host subordinate uid (100000), and tarball
-        uid 1000 (agent) → host operator uid. The resulting directory
-        tree has correct ownership for rootless gVisor — no permission
-        fixups needed.
+        With EROFS, gVisor mounts the image directly in its sentry and
+        handles the writable overlay internally (memory-backed). No
+        fuse-overlayfs, no per-agent copies, no uid remapping needed.
+        All agents share one read-only EROFS image.
         """
         share_dir = get_share_dir()
-        base_dir = share_dir / "rootfs-base"
-
-        if not base_dir.exists():
-            tar = share_dir / "rootfs-base.tar"
-            if not tar.exists():
-                raise RuntimeError(
-                    f"Base rootfs tarball not found at {tar}\n"
-                    f"Build guest images first: cd guest && ./build-all.sh"
-                )
-            log.info("Extracting rootfs from %s with uid remapping...", tar)
-            base_dir.mkdir(parents=True, exist_ok=True)
-
-            # Extract inside a userns with the subordinate uid mapping.
-            # tar preserves uids from the archive; the userns mapping
-            # translates them to host uids automatically.
-            aa_prefix = []
-            if _needs_apparmor() and _has_aa_exec():
-                aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
-
-            extract_proc = subprocess.Popen(
-                aa_prefix + ["unshare", "-Un", "sleep", "60"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+        erofs = share_dir / "rootfs-base.erofs"
+        if not erofs.exists():
+            raise RuntimeError(
+                f"EROFS rootfs image not found at {erofs}\n"
+                f"Build guest images first: cd guest && ./build-all.sh\n"
+                f"Requires: sudo apt install erofs-utils"
             )
-            time.sleep(0.5)
-            if extract_proc.poll() is not None:
-                raise RuntimeError("userns for extraction failed to start")
 
-            host_uid = os.getuid()
-            host_gid = os.getgid()
-            try:
-                subprocess.run(
-                    ["newuidmap", str(extract_proc.pid),
-                     "0", "100000", "1000",
-                     "1000", str(host_uid), "1",
-                     "1001", "101001", "64534"],
-                    check=True, capture_output=True,
-                )
-                subprocess.run(
-                    ["newgidmap", str(extract_proc.pid),
-                     "0", "100000", "1000",
-                     "1000", str(host_gid), "1",
-                     "1001", "101001", "64534"],
-                    check=True, capture_output=True,
-                )
-                # Extract as userns root (host uid 100000). Exclude
-                # device nodes (gVisor creates /dev internally) and
-                # sockets (can't be tar'd).
-                result = subprocess.run(
-                    ["nsenter", "--user", "--target", str(extract_proc.pid), "--",
-                     "tar", "xf", str(tar), "-C", str(base_dir),
-                     "--exclude=./dev/*"],
-                    capture_output=True, text=True, check=False,
-                )
-                if result.returncode != 0 and "Cannot mknod" not in (result.stderr or ""):
-                    log.error("Rootfs extraction failed: %s", result.stderr)
-                    raise RuntimeError(f"tar extraction failed: {result.stderr}")
-            finally:
-                extract_proc.kill()
-
-            log.info("Rootfs extracted with uid remapping to %s", base_dir)
-
+        # The OCI spec's root.path must point to a directory (OCI
+        # requirement), even though EROFS replaces it via annotations.
+        # Create an empty placeholder.
         agent_dir = get_agents_dir() / name
-        upper = agent_dir / "rootfs-upper"
-        work = agent_dir / "rootfs-work"
-        merged = agent_dir / "rootfs"
-
-        if merged.exists() and os.path.ismount(merged):
-            try:
-                os.listdir(merged)
-                return merged
-            except OSError:
-                log.warning("Stale FUSE mount at %s, forcing remount", merged)
-                _run(["fusermount3", "-u", str(merged)], check=False)
-
-        for d in (upper, work, merged):
-            d.mkdir(parents=True, exist_ok=True)
-
-        # The upper/work dirs must be writable by the userns root
-        # (host uid 100000) since the gofer writes to them. Create
-        # a temporary userns to chown them, then mount fuse-overlayfs.
-        aa_prefix = []
-        if _needs_apparmor() and _has_aa_exec():
-            aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
-        chown_proc = subprocess.Popen(
-            aa_prefix + ["unshare", "-Un", "sleep", "10"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(0.5)
-        if chown_proc.poll() is None:
-            host_uid = os.getuid()
-            host_gid = os.getgid()
-            try:
-                subprocess.run(
-                    ["newuidmap", str(chown_proc.pid),
-                     "0", "100000", "1000",
-                     "1000", str(host_uid), "1",
-                     "1001", "101001", "64534"],
-                    check=True, capture_output=True,
-                )
-                subprocess.run(
-                    ["newgidmap", str(chown_proc.pid),
-                     "0", "100000", "1000",
-                     "1000", str(host_gid), "1",
-                     "1001", "101001", "64534"],
-                    check=True, capture_output=True,
-                )
-                for d in (upper, work):
-                    subprocess.run(
-                        ["nsenter", "--user", "--target", str(chown_proc.pid),
-                         "--", "chown", "root:root", str(d)],
-                        check=False, capture_output=True,
-                    )
-            finally:
-                chown_proc.kill()
-
-        _run(["fuse-overlayfs",
-              "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work},"
-                    f"allow_other",
-              str(merged)])
-
-        log.info("fuse-overlayfs mounted for agent '%s'", name)
-        return merged
+        rootfs_dir = agent_dir / "rootfs"
+        rootfs_dir.mkdir(parents=True, exist_ok=True)
+        return rootfs_dir
 
     # --- Sandbox lifecycle ---
 
@@ -702,9 +589,6 @@ class LinuxPlatform(AgentPlatform):
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
-        merged = agent_dir / "rootfs"
-        if merged.exists() and os.path.ismount(merged):
-            _run(["fusermount3", "-u", str(merged)], check=False)
         shutil.rmtree(agent_dir)
 
     # --- OCI config generation ---
@@ -838,10 +722,22 @@ class LinuxPlatform(AgentPlatform):
             "CAP_NET_ADMIN",
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
+        # EROFS annotations — gVisor mounts the image directly in its
+        # sentry with an in-memory writable overlay. The OCI root.path
+        # is a placeholder directory; the actual rootfs comes from the
+        # EROFS image.
+        erofs_path = str(get_share_dir() / "rootfs-base.erofs")
+        annotations = {
+            "dev.gvisor.spec.rootfs.source": erofs_path,
+            "dev.gvisor.spec.rootfs.type": "erofs",
+            "dev.gvisor.spec.rootfs.overlay": "memory",
+        }
+
         return {
             "ociVersion": "1.0.0",
             "root": {"path": str(rootfs_path), "readonly": False},
             "hostname": f"safeyolo-{name}",
+            "annotations": annotations,
             "process": {
                 "terminal": False,
                 "user": {"uid": 0, "gid": 0},

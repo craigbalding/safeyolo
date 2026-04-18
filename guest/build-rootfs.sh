@@ -190,15 +190,26 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
         http://deb.debian.org/debian
 
 # Fixed ${ROOTFS_SIZE_MB}M sparse image, matching the original Docker-based
-# Tarball — preserves uids/permissions for extraction on Linux with uid
-# remapping. On Linux, the tarball is extracted inside a user namespace
-# where uid 0 maps to the subordinate range, so files are automatically
-# owned by the correct host uids for rootless gVisor.
-OUTPUT_TAR="$OUTPUT_DIR/rootfs-base.tar"
-echo "--- Creating rootfs tarball ---"
-sudo tar cf "$OUTPUT_TAR" -C "$WORK_DIR" .
-sudo chown "$(id -u):$(id -g)" "$OUTPUT_TAR"
-echo "Tarball: $OUTPUT_TAR ($(du -sh "$OUTPUT_TAR" | cut -f1))"
+# EROFS image — for Linux gVisor rootless path. gVisor mounts the EROFS
+# image directly in its sentry and handles writable overlay internally
+# (memory-backed). All agents share one read-only image. No fuse-overlayfs,
+# no uid remapping, no per-agent copies.
+#
+# -E noinline_data: gVisor's EROFS implementation on some releases can't
+# read inline file data layouts. This flag disables them at the cost of
+# ~5% larger images. Drop it when the target gVisor version supports
+# inline data reliably.
+OUTPUT_EROFS="$OUTPUT_DIR/rootfs-base.erofs"
+if command -v mkfs.erofs >/dev/null 2>&1; then
+    echo "--- Creating EROFS image ---"
+    sudo mkfs.erofs -E noinline_data "$OUTPUT_EROFS" "$WORK_DIR"
+    sudo chown "$(id -u):$(id -g)" "$OUTPUT_EROFS"
+    chmod 644 "$OUTPUT_EROFS"  # must be world-readable for rootless userns
+    echo "EROFS: $OUTPUT_EROFS ($(du -sh "$OUTPUT_EROFS" | cut -f1))"
+else
+    echo "--- mkfs.erofs not found, skipping EROFS image ---"
+    echo "    Install: sudo apt install erofs-utils"
+fi
 
 # ext4 image — for macOS microVMs (Virtualization.framework mounts ext4
 # directly). Leaves enough free space for agent-time installs.
