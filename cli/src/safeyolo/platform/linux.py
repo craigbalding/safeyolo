@@ -177,23 +177,16 @@ def has_aa_exec() -> bool:
 
 
 def has_apparmor_profile() -> bool:
-    """Check if the SafeYolo AppArmor profile is installed.
+    """Check if the SafeYolo AppArmor profile is loaded in the kernel.
 
-    aa-status --json needs root to list all profiles, so a non-root
-    check may miss it. Fall back to checking the profile file on disk
-    and /sys/kernel/security/apparmor/profiles.
+    Reads /sys/kernel/security/apparmor/profiles which lists actively
+    loaded profiles and is readable without root (unlike aa-status).
     """
-    # Fast path: check /sys directly (readable without root)
     try:
         profiles = Path("/sys/kernel/security/apparmor/profiles").read_text()
-        if AA_PROFILE in profiles:
-            return True
+        return AA_PROFILE in profiles
     except (FileNotFoundError, PermissionError):
-        pass
-    # Fallback: profile file exists on disk (loaded at boot)
-    if Path(f"/etc/apparmor.d/{AA_PROFILE}").exists():
-        return True
-    return False
+        return False
 
 
 def needs_apparmor() -> bool:
