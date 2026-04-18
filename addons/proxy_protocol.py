@@ -187,6 +187,8 @@ def _install_monkeypatch() -> None:
         return await orig_fn(self_inst, reader, writer)
 
     async def _patched_listen(self, host, port):
+        import sys
+        print(f"[PP2] _patched_listen called for {host}:{port}", file=sys.stderr, flush=True)
         orig_hs = self.handle_stream.__func__
         log.info("PROXY v2: patching handle_stream for %s:%s", host, port)
 
