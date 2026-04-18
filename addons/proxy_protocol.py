@@ -137,9 +137,11 @@ class ProxyProtocolAddon:
             log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
 
         # Strip the PROXY header from the buffered data so the HTTP
-        # parser doesn't see it. data_client() returns a bytearray
-        # — modify it in place.
-        del data[:header_len]
+        # parser doesn't see it.
+        log.info("PROXY v2: stripping %d bytes from %d-byte buffer", header_len, len(data))
+        remaining = bytes(data[header_len:])
+        data[:] = remaining
+        log.info("PROXY v2: buffer now %d bytes, starts with: %r", len(data), bytes(data[:20]))
 
 
 addons = [ProxyProtocolAddon()]
