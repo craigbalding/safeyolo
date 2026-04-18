@@ -337,42 +337,73 @@ class LinuxPlatform(AgentPlatform):
     def prepare_rootfs(self, name: str) -> Path:
         """Create agent rootfs using fuse-overlayfs on extracted base.
 
-        The base rootfs is extracted from ext4 via fuse2fs (no sudo).
-        Each agent gets a fuse-overlayfs upper layer for writes.
+        The base rootfs tarball is extracted inside a user namespace
+        with the same uid mapping used at runtime. This maps tarball
+        uid 0 (root) → host subordinate uid (100000), and tarball
+        uid 1000 (agent) → host operator uid. The resulting directory
+        tree has correct ownership for rootless gVisor — no permission
+        fixups needed.
         """
         share_dir = get_share_dir()
         base_dir = share_dir / "rootfs-base"
 
-        # One-time: extract base rootfs from ext4 image via fuse2fs
         if not base_dir.exists():
-            ext4 = share_dir / "rootfs-base.ext4"
-            if not ext4.exists():
+            tar = share_dir / "rootfs-base.tar"
+            if not tar.exists():
                 raise RuntimeError(
-                    f"Base rootfs not found at {ext4}\n"
+                    f"Base rootfs tarball not found at {tar}\n"
                     f"Build guest images first: cd guest && ./build-all.sh"
                 )
-            log.info("Extracting base rootfs from %s...", ext4)
-            mnt = Path("/tmp/safeyolo-rootfs-mnt")
-            mnt.mkdir(exist_ok=True)
+            log.info("Extracting rootfs from %s with uid remapping...", tar)
+            base_dir.mkdir(parents=True, exist_ok=True)
 
-            fuse2fs = shutil.which("fuse2fs")
-            if fuse2fs:
-                # Unprivileged extraction via FUSE
-                _run([fuse2fs, "-o", "ro,fakeroot", str(ext4), str(mnt)])
-                try:
-                    _run(["cp", "-a", f"{mnt}/.", str(base_dir)])
-                finally:
-                    _run(["fusermount", "-u", str(mnt)], check=False)
-                    _run(["fusermount3", "-u", str(mnt)], check=False)
-            else:
-                # Fallback: sudo mount (for systems without fuse2fs)
-                _run(["sudo", "mount", "-o", "loop,ro", str(ext4), str(mnt)])
-                try:
-                    _run(["sudo", "cp", "-a", f"{mnt}/.", str(base_dir)])
-                finally:
-                    _run(["sudo", "umount", str(mnt)])
-                _run(["sudo", "chown", "-R",
-                      f"{os.getuid()}:{os.getgid()}", str(base_dir)])
+            # Extract inside a userns with the subordinate uid mapping.
+            # tar preserves uids from the archive; the userns mapping
+            # translates them to host uids automatically.
+            aa_prefix = []
+            if _needs_apparmor() and _has_aa_exec():
+                aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
+
+            extract_proc = subprocess.Popen(
+                aa_prefix + ["unshare", "-Un", "sleep", "60"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(0.5)
+            if extract_proc.poll() is not None:
+                raise RuntimeError("userns for extraction failed to start")
+
+            host_uid = os.getuid()
+            host_gid = os.getgid()
+            try:
+                subprocess.run(
+                    ["newuidmap", str(extract_proc.pid),
+                     "0", "100000", "1000",
+                     "1000", str(host_uid), "1",
+                     "1001", "101001", "64534"],
+                    check=True, capture_output=True,
+                )
+                subprocess.run(
+                    ["newgidmap", str(extract_proc.pid),
+                     "0", "100000", "1000",
+                     "1000", str(host_gid), "1",
+                     "1001", "101001", "64534"],
+                    check=True, capture_output=True,
+                )
+                # Extract as userns root (host uid 100000)
+                result = subprocess.run(
+                    ["nsenter", "--user", "--target", str(extract_proc.pid), "--",
+                     "tar", "xf", str(tar), "-C", str(base_dir)],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode != 0:
+                    log.error("Rootfs extraction failed: %s", result.stderr)
+                    raise RuntimeError(f"tar extraction failed: {result.stderr}")
+            finally:
+                extract_proc.kill()
+
+            log.info("Rootfs extracted with uid remapping to %s", base_dir)
             mnt.rmdir()
 
         agent_dir = get_agents_dir() / name

@@ -85,29 +85,6 @@ if ip link show eth0 >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------------------
-# 1b. Fix file ownership for rootless user-namespace path.
-#
-# In the rootless userns, the rootfs base is owned by the host
-# operator uid which maps to the agent user (1000) inside the
-# container. System directories need root ownership for proper
-# privilege separation; /home/agent needs agent ownership.
-# CAP_CHOWN in the OCI spec grants permission.
-# --------------------------------------------------------------------------
-# System dirs → root (security boundary: agent can't write)
-for d in / /etc /usr /var /sbin /lib /opt /srv /root \
-         /usr/bin /usr/sbin /usr/lib /usr/share \
-         /usr/local /usr/local/bin /usr/local/share \
-         /usr/local/share/ca-certificates; do
-    chown root:root "$d" 2>/dev/null || true
-done
-# /etc files that must be root-owned
-chown root:root /etc/passwd /etc/shadow /etc/group \
-                /etc/hostname /etc/hosts /etc/resolv.conf \
-                /etc/ssh 2>/dev/null || true
-# Agent home → agent
-chown -R 1000:1000 /home/agent 2>/dev/null || true
-
-# --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
 # --------------------------------------------------------------------------
 mkdir -p /workspace
@@ -174,8 +151,9 @@ fi
 if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
     ssh-keygen -A >/dev/null 2>&1 || true
 fi
-# SSH host keys must be root-owned and 600. In rootless userns the
-# base rootfs is owned by the mapped agent uid — fix unconditionally.
+# SSH host keys must be root-owned and 600. Keys from the rootfs
+# tarball already have correct ownership, but ssh-keygen -A above
+# creates new ones as the current user — fix unconditionally.
 chown root:root /etc/ssh/ssh_host_*_key 2>/dev/null || true
 chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
 

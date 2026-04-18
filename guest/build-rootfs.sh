@@ -190,16 +190,23 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
         http://deb.debian.org/debian
 
 # Fixed ${ROOTFS_SIZE_MB}M sparse image, matching the original Docker-based
-# build. Leaves enough free space for agent-time installs (npm, pip, mise
-# tools). Sparse on-disk, so the actual bytes used are close to content size.
+# Tarball — preserves uids/permissions for extraction on Linux with uid
+# remapping. On Linux, the tarball is extracted inside a user namespace
+# where uid 0 maps to the subordinate range, so files are automatically
+# owned by the correct host uids for rootless gVisor.
+OUTPUT_TAR="$OUTPUT_DIR/rootfs-base.tar"
+echo "--- Creating rootfs tarball ---"
+sudo tar cf "$OUTPUT_TAR" -C "$WORK_DIR" .
+sudo chown "$(id -u):$(id -g)" "$OUTPUT_TAR"
+echo "Tarball: $OUTPUT_TAR ($(du -sh "$OUTPUT_TAR" | cut -f1))"
+
+# ext4 image — for macOS microVMs (Virtualization.framework mounts ext4
+# directly). Leaves enough free space for agent-time installs.
 echo "--- Building ${ROOTFS_SIZE_MB} MiB sparse ext4 image ---"
 truncate -s "${ROOTFS_SIZE_MB}M" "$OUTPUT_EXT4"
-# mkfs.ext4 -d populates directly from the unpacked tree. Requires the target
-# directory to be owned by root (it is, coming from --mode=root mmdebstrap).
 sudo mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$WORK_DIR" "$OUTPUT_EXT4"
-
-# Make the resulting image readable by the invoking user.
 sudo chown "$(id -u):$(id -g)" "$OUTPUT_EXT4"
 
-echo "=== Rootfs ready at $OUTPUT_EXT4 ==="
-echo "Actual size: $(du -sh "$OUTPUT_EXT4" | cut -f1)"
+echo "=== Rootfs ready ==="
+echo "  Tarball: $OUTPUT_TAR ($(du -sh "$OUTPUT_TAR" | cut -f1))"
+echo "  ext4:    $OUTPUT_EXT4 ($(du -sh "$OUTPUT_EXT4" | cut -f1))"
