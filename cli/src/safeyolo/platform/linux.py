@@ -436,7 +436,12 @@ class LinuxPlatform(AgentPlatform):
 
         netns_path = f"/proc/{upid}/ns/net"
 
+        # Unset XDG_RUNTIME_DIR inside the userns — it points to
+        # /run/user/<uid> which is owned by the operator (host uid 1000),
+        # not the userns root (host uid 100000). gVisor falls back to
+        # /tmp for its control socket.
         inner = (
+            "unset XDG_RUNTIME_DIR && "
             f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
