@@ -127,10 +127,14 @@ def _install_monkeypatch() -> None:
         return
     _installed = True
 
-    target_cls = mode_servers.AsyncioServerInstance
-    orig_listen = target_cls.listen
+    # Patch asyncio.start_server directly. This catches all server
+    # creation regardless of class method resolution order or when
+    # the server instance was created relative to addon loading.
+    import asyncio as _asyncio
+    _orig_start_server = _asyncio.start_server
 
-    async def _pp2_handle_stream(orig_fn, self_inst, reader, writer=None):
+    async def _pp2_wrap_callback(orig_cb, reader, writer):
+        """Read PROXY v2 header, rewrite peername, delegate."""
         peek = b""
         try:
             peek = await asyncio.wait_for(
@@ -140,18 +144,18 @@ def _install_monkeypatch() -> None:
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
             if peek:
                 reader = _PrependReader(peek, reader)
-            return await orig_fn(self_inst, reader, writer)
+            return await orig_cb(reader, writer)
 
         if peek != PP2_SIGNATURE:
             reader = _PrependReader(peek, reader)
-            return await orig_fn(self_inst, reader, writer)
+            return await orig_cb(reader, writer)
 
         try:
             rest_header = await asyncio.wait_for(
                 reader.readexactly(4), timeout=2.0,
             )
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            log.warning("PROXY v2: incomplete header after signature")
+            log.warning("PROXY v2: incomplete header")
             return
 
         _, _, payload_len = struct.unpack("!BBH", rest_header)
@@ -161,7 +165,7 @@ def _install_monkeypatch() -> None:
                 reader.readexactly(payload_len), timeout=2.0,
             )
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            log.warning("PROXY v2: incomplete payload (%d expected)", payload_len)
+            log.warning("PROXY v2: incomplete payload")
             return
 
         full_header = peek + rest_header + payload
@@ -184,30 +188,15 @@ def _install_monkeypatch() -> None:
             if agent_name:
                 log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
 
-        return await orig_fn(self_inst, reader, writer)
+        return await orig_cb(reader, writer)
 
-    async def _patched_listen(self, host, port):
-        import sys
-        print(f"[PP2] _patched_listen called for {host}:{port}", file=sys.stderr, flush=True)
-        orig_hs = self.handle_stream.__func__
-        log.info("PROXY v2: patching handle_stream for %s:%s", host, port)
+    async def _patched_start_server(client_connected_cb, host=None, port=None, **kwargs):
+        async def _wrapped(reader, writer):
+            return await _pp2_wrap_callback(client_connected_cb, reader, writer)
+        return await _orig_start_server(_wrapped, host, port, **kwargs)
 
-        async def _wrapped(reader, writer=None):
-            log.info("PROXY v2: handle_stream called")
-            return await _pp2_handle_stream(orig_hs, self, reader, writer)
-
-        self.handle_stream = _wrapped
-        try:
-            result = await orig_listen(self, host, port)
-        finally:
-            # Don't delete — asyncio.start_server captured the bound
-            # reference, but we need to keep it for the lifetime of
-            # the server in case Python GC's the closure.
-            pass
-        return result
-
-    target_cls.listen = _patched_listen
-    log.info("PROXY v2 monkeypatch installed on %s.listen", target_cls.__name__)
+    _asyncio.start_server = _patched_start_server
+    log.info("PROXY v2 monkeypatch installed on asyncio.start_server")
 
 
 class _PrependReader:
