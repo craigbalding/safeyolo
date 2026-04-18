@@ -222,6 +222,41 @@ guest-init: chown -R 1000:1000 /home/agent at boot
 One-time setup: AppArmor profile + fuse2fs
 Runtime sudo: ZERO
 
+## Workspace write investigation (post-KVM-ACL discussion)
+
+### T19: unshare -Urn workspace permissions
+- Workspace is 775 root:root inside container (host operator = container root)
+- Agent (uid 1000) gets "other" permissions (r-x), CANNOT write
+- chown /workspace inside sentry accepted but write still denied —
+  gofer does host-level DAC check independently
+- CONFIRMED: unshare -Urn blocks workspace writes for uid 1000
+
+### T20: fuse-overlayfs squash_to_uid on workspace
+- Same result — sentry DAC check denies before reaching the gofer
+- FAILED
+
+### T21: --directfs=false
+- Gofer mediates all access but still enforces container-level DAC
+- FAILED
+
+### T22: OCI uidMappings (container 1000 → host 0)
+- "invalid argument" — kernel rejects two container uids → same host uid
+- FAILED
+
+### Workspace write conclusion:
+With unshare -Urn, container uid 1000 CANNOT write to host bind mounts.
+The sentry enforces container-level DAC where workspace is root-owned.
+Only the newuidmap approach (container 1000 → host operator) gives
+the agent proper filesystem access to host bind mounts.
+
+The KVM ACL question remains: granting /dev/kvm to subordinate uid
+100000 relies on non-overlapping subuid allocation (tooling convention,
+not kernel guarantee).
+
+### Open: can gVisor accept a pre-opened /dev/kvm fd?
+If the operator opens /dev/kvm BEFORE entering the userns and passes
+the fd to the sentry, no ACL needed. Need to check gVisor source.
+
 ## Second-order tests (continued)
 
 ### T7: resource limits
