@@ -1,21 +1,17 @@
 """
 proxy_protocol.py — PROXY protocol v2 identity via mitmproxy's layer system.
 
-Uses the next_layer hook to detect PROXY protocol v2 headers on incoming
-connections. When detected, inserts a custom ProxyProtocolLayer that strips
-the v2 header, rewrites client.peername with the agent's attribution IP,
-and replays the remaining bytes to the HTTP layer.
-
-Cross-platform: the proxy_bridge sends the same v2 header on macOS and
-Linux. No kernel interface configuration needed.
+Uses the next_layer hook to detect PROXY protocol v2 headers. Parses the
+header, rewrites client.peername with the agent's attribution IP, and
+strips the header bytes from the buffered events so the HTTP parser
+sees clean data.
 """
 
 import logging
 import struct
 from typing import Any
 
-from mitmproxy import ctx
-from mitmproxy.proxy import layers, layer
+from mitmproxy.proxy import layer, events as mevents
 
 log = logging.getLogger("safeyolo.proxy-protocol")
 
@@ -106,21 +102,17 @@ def _parse_v2_header(data: bytes) -> dict[str, Any] | None:
 # -- Addon -----------------------------------------------------------------
 
 class ProxyProtocolAddon:
-    """Detect and handle PROXY protocol v2 via the next_layer hook."""
+    """Detect PROXY protocol v2 via next_layer hook."""
 
     name = "proxy-protocol"
 
     def next_layer(self, nextlayer: layer.NextLayer):
-        # Peek at the buffered client data for the v2 signature.
         data = nextlayer.data_client()
         if not data or len(data) < PP2_SIGNATURE_LEN:
             return
         if data[:PP2_SIGNATURE_LEN] != PP2_SIGNATURE:
             return
 
-        # Parse the full header (may need more bytes than currently
-        # buffered — but the v2 header is small, typically ~30 bytes,
-        # and mitmproxy buffers at least the first chunk).
         parsed = _parse_v2_header(bytes(data))
         if not parsed:
             return
@@ -130,18 +122,32 @@ class ProxyProtocolAddon:
         src_port = parsed.get("src_port", 0)
         agent_name = parsed.get("agent_name", "")
 
-        # Rewrite the client's peername with the agent's attribution IP.
+        # Rewrite peername with the agent's attribution IP.
         nextlayer.context.client.peername = (src_ip, src_port)
 
         if agent_name:
             log.info("PROXY v2: agent=%s ip=%s", agent_name, src_ip)
 
-        # Strip the PROXY header from the buffered data so the HTTP
-        # parser doesn't see it.
-        log.info("PROXY v2: stripping %d bytes from %d-byte buffer", header_len, len(data))
-        remaining = bytes(data[header_len:])
-        data[:] = remaining
-        log.info("PROXY v2: buffer now %d bytes, starts with: %r", len(data), bytes(data[:20]))
+        # Strip the PROXY header from the buffered events. NextLayer
+        # stores DataReceived events in self.events. The header bytes
+        # are in the first event(s). Replace the .data on those events
+        # with the header stripped.
+        remaining = header_len
+        for event in nextlayer.events:
+            if not isinstance(event, mevents.DataReceived):
+                continue
+            if event.connection != nextlayer.context.client:
+                continue
+            if remaining <= 0:
+                break
+            if remaining >= len(event.data):
+                # This entire event's data is part of the header
+                remaining -= len(event.data)
+                event.data = b""
+            else:
+                # Header ends partway through this event
+                event.data = event.data[remaining:]
+                remaining = 0
 
 
 addons = [ProxyProtocolAddon()]
