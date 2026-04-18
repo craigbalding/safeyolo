@@ -930,7 +930,7 @@ def add(
                 # Same config, no --force - idempotent, just run
                 console.print(f"Agent '{name}' already configured.")
                 if not no_run:
-                    exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)
+                    exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned, no_snapshot=True)
                     raise typer.Exit(exit_code)
                 return
             else:
@@ -1001,7 +1001,7 @@ def add(
     # Auto-run unless --no-run
     if not no_run:
         console.print()
-        exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned)
+        exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned, no_snapshot=True)
         raise typer.Exit(exit_code)
 
 
