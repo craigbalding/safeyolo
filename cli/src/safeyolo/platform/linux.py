@@ -38,8 +38,18 @@ RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
 
 
 def _runsc_root() -> str:
-    """Return the runsc state directory, creating it if needed."""
-    root = os.environ.get("SAFEYOLO_RUNSC_ROOT", RUNSC_ROOT_DEFAULT)
+    """Return the runsc state directory, creating it if needed.
+
+    Derives from SAFEYOLO_CONFIG_DIR so parallel instances (production
+    + blackbox tests) don't collide in the state directory.
+    """
+    explicit = os.environ.get("SAFEYOLO_RUNSC_ROOT")
+    if explicit:
+        root = explicit
+    else:
+        config_dir = os.environ.get("SAFEYOLO_CONFIG_DIR",
+                                    str(Path.home() / ".safeyolo"))
+        root = str(Path(config_dir) / "run")
     os.makedirs(root, exist_ok=True)
     return root
 
@@ -435,11 +445,13 @@ class LinuxPlatform(AgentPlatform):
                         interactive: bool = True) -> int:
         """Execute a command in a running sandbox via runsc exec.
 
-        Works from outside the user namespace — runsc connects to the
-        sandbox process via the state directory.
+        In the rootless userns path, all exec runs as uid 0. Container
+        root maps to the host operator (who owns the workspace and
+        rootfs), so file access works. gVisor's sandbox boundary
+        provides isolation, not in-container uid separation.
         """
         cid = _container_id(name)
-        uid = "0:0" if user == "root" else "1000:1000"
+        uid = "0:0"  # rootless userns: container root = host operator
         root = _runsc_root()
 
         cmd = [
