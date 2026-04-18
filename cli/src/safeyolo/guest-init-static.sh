@@ -198,6 +198,37 @@ echo 'export HOME=/home/agent' >> /etc/environment
     [ -f /safeyolo/proxy.env ] && . /safeyolo/proxy.env
     [ -f /safeyolo/agent.env ] && . /safeyolo/agent.env
     set +a
+
+    # Start the proxy forwarder early so the install can reach the host
+    # proxy. The forwarder is also started in per-run; duplicate launch
+    # is harmless (the second bind fails and the process exits).
+    if [ -x /safeyolo/guest-proxy-forwarder ]; then
+        setsid nohup /safeyolo/guest-proxy-forwarder >/dev/console 2>&1 </dev/null &
+        echo "[static] started guest-proxy-forwarder (pid=$!)" > /dev/console 2>/dev/null || true
+    fi
+
+    # Wait for egress connectivity before attempting install. The proxy
+    # chain (forwarder → vsock/UDS → bridge → mitmproxy) needs a moment
+    # to come up. Probe with a lightweight HTTP request through the
+    # proxy; fail fast with a clear message instead of letting mise/npm
+    # hang for 120s on a dead connection.
+    if [ -n "${HTTP_PROXY:-}" ] && [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ]; then
+        _proxy_ok=0
+        for _try in $(seq 1 20); do
+            if curl -sf -o /dev/null --max-time 2 -x "$HTTP_PROXY" http://registry.npmjs.org/ 2>/dev/null; then
+                _proxy_ok=1
+                break
+            fi
+            sleep 0.5
+        done
+        if [ "$_proxy_ok" -eq 0 ]; then
+            echo "[static] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
+            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            exit 0
+        fi
+        echo "[static] egress connectivity confirmed (attempt $_try)" > /dev/console 2>/dev/null || true
+    fi
+
     if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
         # `-lc` so mise's shell activation runs and puts its shims on
         # PATH; without `-l`, `command -v` can't find a mise-managed

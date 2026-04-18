@@ -145,8 +145,24 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
     # boot. This safety-net is meant to be a no-op after a healthy
     # static-phase install.
     if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "installing" > /safeyolo/vm-status 2>/dev/null || true
-        timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+        # Verify egress connectivity before attempting install. The
+        # forwarder was started above; give the chain up to 10s.
+        _proxy_ok=0
+        for _try in $(seq 1 20); do
+            if curl -sf -o /dev/null --max-time 2 -x "${HTTP_PROXY:-http://127.0.0.1:8080}" http://registry.npmjs.org/ 2>/dev/null; then
+                _proxy_ok=1
+                break
+            fi
+            sleep 0.5
+        done
+        if [ "$_proxy_ok" -eq 0 ]; then
+            echo "[per-run] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
+            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+        else
+            echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
+            echo "installing" > /safeyolo/vm-status 2>/dev/null || true
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+        fi
     fi
     # Ground vm-status in reality — the install command's exit code can
     # lie (timeout fires after the binary is already in place), and
