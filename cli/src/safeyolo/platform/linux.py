@@ -662,8 +662,6 @@ class LinuxPlatform(AgentPlatform):
             "USER=agent",
             "TERM=xterm-256color",
             "PATH=/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "BASH_ENV=/etc/mise-activate.sh",
-            "SAFEYOLO_DETACH=1",
         ]
 
         # Add agent-specific env from config share
