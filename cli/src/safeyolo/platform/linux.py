@@ -391,20 +391,22 @@ class LinuxPlatform(AgentPlatform):
                      "1001", "101001", "64534"],
                     check=True, capture_output=True,
                 )
-                # Extract as userns root (host uid 100000)
+                # Extract as userns root (host uid 100000). Exclude
+                # device nodes (gVisor creates /dev internally) and
+                # sockets (can't be tar'd).
                 result = subprocess.run(
                     ["nsenter", "--user", "--target", str(extract_proc.pid), "--",
-                     "tar", "xf", str(tar), "-C", str(base_dir)],
+                     "tar", "xf", str(tar), "-C", str(base_dir),
+                     "--exclude=./dev/*"],
                     capture_output=True, text=True, check=False,
                 )
-                if result.returncode != 0:
+                if result.returncode != 0 and "Cannot mknod" not in (result.stderr or ""):
                     log.error("Rootfs extraction failed: %s", result.stderr)
                     raise RuntimeError(f"tar extraction failed: {result.stderr}")
             finally:
                 extract_proc.kill()
 
             log.info("Rootfs extracted with uid remapping to %s", base_dir)
-            mnt.rmdir()
 
         agent_dir = get_agents_dir() / name
         upper = agent_dir / "rootfs-upper"
