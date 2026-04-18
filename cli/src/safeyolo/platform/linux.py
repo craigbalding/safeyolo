@@ -392,7 +392,8 @@ class LinuxPlatform(AgentPlatform):
         # (running as the subordinate root uid) can write state.
         os.chmod(root, 0o777)
 
-        # Clean stale state from previous run
+        # Clean stale state from previous run. Create a temporary
+        # userns if needed — runsc state is owned by uid 100000.
         old_upid = _get_userns_pid(name)
         if old_upid:
             _run(_nsenter_cmd(old_upid) +
@@ -400,9 +401,15 @@ class LinuxPlatform(AgentPlatform):
                  check=False)
             _kill_userns(name)
 
-        # Create user namespace first — we need the PID for the OCI
+        # Create user namespace — we need the PID for the OCI
         # spec's network namespace path.
         upid = _start_userns(name)
+
+        # Force-delete any stale state using the new userns (covers
+        # the case where the old userns holder was already dead).
+        _run(_nsenter_cmd(upid) +
+             [runsc, "--root", root, "delete", "--force", cid],
+             check=False)
 
         config = self._generate_oci_config(
             name=name,
@@ -487,6 +494,19 @@ class LinuxPlatform(AgentPlatform):
         root = _runsc_root()
 
         upid = _get_userns_pid(name)
+
+        # If the userns holder is dead, create a temporary one for
+        # cleanup. The state dir is owned by uid 100000 — we need
+        # to be in a userns where we're that uid to access it.
+        temp_userns = False
+        if not upid:
+            try:
+                upid = _start_userns(name)
+                temp_userns = True
+            except RuntimeError:
+                # Can't create userns — best-effort cleanup without it
+                upid = None
+
         prefix = _nsenter_cmd(upid) if upid else []
 
         state_result = _run(
@@ -508,8 +528,13 @@ class LinuxPlatform(AgentPlatform):
 
         if has_state:
             _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
+        else:
+            # State query failed — force delete anyway in case files exist
+            _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
 
         _kill_userns(name)
+        if temp_userns:
+            _kill_userns(name)
 
         pid_path = agent_dir / "container.pid"
         pid_path.unlink(missing_ok=True)
