@@ -447,16 +447,19 @@ class LinuxPlatform(AgentPlatform):
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
         # KVM fd passing: open /dev/kvm as the operator (who has access)
-        # BEFORE entering the userns. The fd survives nsenter and runsc
-        # uses it via --platform_device_path=/proc/self/fd/N. The
-        # subordinate root uid (100000) never touches /dev/kvm directly.
-        kvm_fd = None
+        # BEFORE entering the userns. Use bash exec redirection to bind
+        # it to a known fd number (9) so the inner command can reference
+        # it reliably as /proc/self/fd/9. The subordinate root uid
+        # (100000) never touches /dev/kvm directly.
+        kvm_setup = ""
         platform_device_arg = ""
         if platform == "kvm":
-            try:
-                kvm_fd = os.open("/dev/kvm", os.O_RDWR)
-                platform_device_arg = f"--platform_device_path=/proc/self/fd/{kvm_fd}"
-            except OSError:
+            if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
+                # The outer bash opens /dev/kvm on fd 9, then nsenter
+                # and the inner bash inherit it.
+                kvm_setup = "exec 9</dev/kvm && "
+                platform_device_arg = "--platform_device_path=/proc/self/fd/9"
+            else:
                 log.warning("/dev/kvm not accessible, falling back to systrap")
                 platform = "systrap"
 
@@ -469,30 +472,24 @@ class LinuxPlatform(AgentPlatform):
             f"start {cid}"
         )
 
+        # Wrap everything in a bash that opens the KVM fd first, then
+        # nsenter into the userns. The fd survives across nsenter.
+        full_cmd = f"{kvm_setup}{' '.join(_nsenter_cmd(upid))} bash -c '{inner}'"
         cmd = _wrap_in_systemd_scope(
-            _nsenter_cmd(upid) + ["bash", "-c", inner],
+            ["bash", "-c", full_cmd],
             name, memory_mb, cpus,
         )
 
-        # pass_fds ensures the KVM fd is inherited by child processes.
-        # close_fds=False is needed for subprocess to not close our fd.
         with tempfile.TemporaryFile(mode="w+b") as stderr_file:
-            # Ensure the KVM fd is not close-on-exec so children inherit it
-            if kvm_fd is not None:
-                os.set_inheritable(kvm_fd, True)
             result = subprocess.run(
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_file,
-                close_fds=False,
                 check=False,
             )
             stderr_file.seek(0)
             err_text = stderr_file.read().decode(errors="replace")
-
-        if kvm_fd is not None:
-            os.close(kvm_fd)
 
         if result.returncode != 0:
             _kill_userns(name)
