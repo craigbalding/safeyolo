@@ -288,7 +288,6 @@ def check_safeyolo_files() -> None:
         "mitmproxy-ca-cert.pem",
     ]
     missing = [f for f in expected if not os.path.exists(f"/safeyolo/{f}")]
-    present = [f for f in expected if os.path.exists(f"/safeyolo/{f}")]
 
     if not missing:
         _print("PASS", "Config share", f"all {len(expected)} expected files present")
@@ -312,7 +311,7 @@ def main() -> int:
     # Timeout the whole script so it doesn't hang forever on a broken
     # transport probe.
     def _alarm(signum, frame):
-        print(f"\n  FAIL  Diagnostic timed out after 30s")
+        print("\n  FAIL  Diagnostic timed out after 30s")
         sys.exit(1)
     if hasattr(signal, "SIGALRM"):
         signal.signal(signal.SIGALRM, _alarm)
