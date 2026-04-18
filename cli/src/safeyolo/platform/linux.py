@@ -447,18 +447,26 @@ class LinuxPlatform(AgentPlatform):
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
         # KVM fd passing: open /dev/kvm as the operator (who has access)
-        # BEFORE entering the userns. Use bash exec redirection to bind
-        # it to a known fd number (9) so the inner command can reference
-        # it reliably as /proc/self/fd/9. The subordinate root uid
+        # BEFORE entering the userns. The fd is opened by the Python
+        # process (running as the operator), inherited across the
+        # subprocess chain, and referenced via /proc/self/fd/N in the
+        # runsc --platform_device_path flag. The subordinate root uid
         # (100000) never touches /dev/kvm directly.
-        kvm_setup = ""
+        kvm_fd = None
         platform_device_arg = ""
+        KVM_FD_NUM = 9  # well-known fd number for the KVM device
+
         if platform == "kvm":
             if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
-                # The outer bash opens /dev/kvm on fd 9, then nsenter
-                # and the inner bash inherit it.
-                kvm_setup = "exec 9</dev/kvm && "
-                platform_device_arg = "--platform_device_path=/proc/self/fd/9"
+                kvm_fd = os.open("/dev/kvm", os.O_RDWR)
+                # Dup to the well-known fd number so inner commands
+                # can reference it reliably.
+                if kvm_fd != KVM_FD_NUM:
+                    os.dup2(kvm_fd, KVM_FD_NUM)
+                    os.close(kvm_fd)
+                    kvm_fd = KVM_FD_NUM
+                os.set_inheritable(kvm_fd, True)
+                platform_device_arg = f"--platform_device_path=/proc/self/fd/{KVM_FD_NUM}"
             else:
                 log.warning("/dev/kvm not accessible, falling back to systrap")
                 platform = "systrap"
@@ -472,11 +480,8 @@ class LinuxPlatform(AgentPlatform):
             f"start {cid}"
         )
 
-        # Wrap everything in a bash that opens the KVM fd first, then
-        # nsenter into the userns. The fd survives across nsenter.
-        full_cmd = f"{kvm_setup}{' '.join(_nsenter_cmd(upid))} bash -c '{inner}'"
         cmd = _wrap_in_systemd_scope(
-            ["bash", "-c", full_cmd],
+            _nsenter_cmd(upid) + ["bash", "-c", inner],
             name, memory_mb, cpus,
         )
 
@@ -486,10 +491,17 @@ class LinuxPlatform(AgentPlatform):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_file,
+                close_fds=False,  # preserve fd 9
                 check=False,
             )
             stderr_file.seek(0)
             err_text = stderr_file.read().decode(errors="replace")
+
+        if kvm_fd is not None:
+            try:
+                os.close(kvm_fd)
+            except OSError:
+                pass
 
         if result.returncode != 0:
             _kill_userns(name)
