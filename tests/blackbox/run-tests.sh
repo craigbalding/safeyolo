@@ -318,7 +318,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE --tb=short --timeout=60"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60"
     ISOLATION_RESULT=$?
     set -e
     echo ""
