@@ -158,6 +158,8 @@ STARTED_VM=false
 SINKHOLE_PID=""
 
 cleanup() {
+    # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
+    # config) intact for post-mortem analysis of failures.
     echo ""
     echo "=== Cleanup ==="
 
@@ -180,6 +182,14 @@ cleanup() {
     echo "Cleanup complete"
 }
 trap cleanup EXIT
+
+# --- Clean stale state from previous run ---
+# Done at start (not end) so post-mortem analysis of failures is possible.
+echo "Cleaning stale state..."
+safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
+safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
+rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
+rm -f "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/install.log"
 
 # --- Phase 1: Start infrastructure (idempotent) ---
 
@@ -232,10 +242,7 @@ fi
 
 # VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
-    # Always recreate agent fresh — avoids stale agent_map entries,
-    # orphaned bridge sockets, and identity state from previous runs.
-    safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
-    safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
+    # Agent was cleaned at the top of the run; create fresh.
     safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run
 
     echo "Booting test VM ($AGENT_NAME)..."
