@@ -215,12 +215,14 @@ class TestAgentAPICrossAgentIsolation:
 
         flows = data.get("flows", [])
         if not flows:
+            # Debug: query without host filter to see if any flows exist
+            status2, body2 = _curl_agent_api(
+                "/api/flows/search?limit=5",
+                token=token,
+            )
             pytest.skip(
-                "No flows returned — the test-instance flow recorder "
-                "isn't capturing flows (DB exists but is empty). The "
-                "cross-agent scoping fix is in agent_api.py regardless; "
-                "this test exercises it once the flow recorder is wired "
-                "into the test proxy config."
+                f"No flows for host=httpbin.org. "
+                f"Unfiltered search (status={status2}): {body2[:300]}"
             )
 
         # Check: every returned flow's client_address should be in OUR
