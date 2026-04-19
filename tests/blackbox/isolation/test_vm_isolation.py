@@ -15,7 +15,34 @@ import socket
 import struct
 import subprocess
 
+import platform as _platform
+
 import pytest
+
+
+def _is_gvisor() -> bool:
+    """Detect gVisor runtime (emulated kernel, not a real Linux VM)."""
+    try:
+        result = subprocess.run(
+            ["dmesg"], capture_output=True, text=True, timeout=5,
+        )
+        return "Starting gVisor" in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _is_microvm() -> bool:
+    """Detect a hardware-isolated microVM (Apple VZ or similar).
+
+    VZ VMs run a real Linux kernel inside a hypervisor. They have
+    standard /dev entries, kernel threads, and working syscalls — but
+    the VM itself IS the isolation boundary, so these are not security
+    issues.
+    """
+    if _is_gvisor():
+        return False
+    # VZ microVMs have /dev/vsock (virtio socket) and a real kernel
+    return os.path.exists("/dev/vsock")
 
 
 class TestNetworkEscape:
@@ -551,17 +578,15 @@ class TestSandboxExposure:
     """
 
     def test_dev_whitelist(self):
-        """Broad /dev enumeration — anything outside Docker's default
-        minimal set is a hardening gap.
+        """Broad /dev enumeration — anything outside the expected set
+        is a hardening gap.
 
         Instead of targeting known-bad devices by name (which misses
         novel entries), enumerate everything in /dev and assert it's
-        all on the whitelist. If gVisor adds a new device in a future
-        version, this test catches it before it ships into production.
+        all on the whitelist. If the runtime adds a new device in a
+        future version, this test catches it before it ships.
         """
-        # The whitelist: Docker-standard minimal /dev entries. These
-        # are harmless (null, zero, random, tty, pty, symlinks to
-        # /proc/self/fd, shm tmpfs, console emulated as a file).
+        # Minimal set common to both gVisor and microVMs.
         whitelist = {
             # Character devices
             "null", "zero", "full", "random", "urandom", "tty", "console",
@@ -572,12 +597,24 @@ class TestSandboxExposure:
             # tmpfs mount
             "shm",
         }
+        if _is_microvm():
+            # VZ microVMs run a real Linux kernel — standard VM devices
+            # are expected. The VM boundary IS the isolation layer.
+            whitelist |= {
+                "vsock", "vda", "rtc0", "hwrng", "kmsg", "port",
+                "vga_arbiter", "vport0p0", "vcs", "vcsu", "vcsa",
+            }
+            # hvc* (virtio console), tty*, pty*, vcs* are standard
+            # Linux kernel devices — allow all by prefix.
+            prefix_allow = ("hvc", "tty", "pty", "vcs")
+        else:
+            prefix_allow = ("pts",)
+
         unexpected = []
         for entry in os.listdir("/dev"):
             if entry in whitelist:
                 continue
-            # pts/ptmx is a subentry of the pts devpts mount — allow
-            if entry.startswith("pts"):
+            if any(entry.startswith(p) for p in prefix_allow):
                 continue
             unexpected.append(entry)
         assert not unexpected, (
@@ -632,15 +669,19 @@ class TestSandboxExposure:
 
     def test_pid_visibility_scoped(self):
         """The sandbox must not see host PIDs. /proc should show only
-        the container's own process tree. A host `ps aux` has dozens
-        to hundreds of processes — a sandbox has a handful. The
-        threshold is deliberately loose (≤50) to allow the agent's own
-        process tree to grow without flaking.
+        the container's own process tree. A host `ps aux` has hundreds
+        of processes — a sandbox has far fewer.
+
+        gVisor: handful of processes (threshold ≤50).
+        MicroVM: real kernel with kernel threads (kworkers, ksoftirqd,
+        etc.) — threshold ≤150. Still far fewer than a host which
+        typically has 200+.
         """
         pids = [e for e in os.listdir("/proc") if e.isdigit()]
-        assert len(pids) < 50, (
+        limit = 150 if _is_microvm() else 50
+        assert len(pids) < limit, (
             f"/proc reports {len(pids)} PIDs — likely host-PID leak "
-            f"(sandbox should see only its own small process tree)"
+            f"(sandbox should see only its own process tree, limit={limit})"
         )
 
     def test_firewall_rules_not_readable(self):
@@ -905,26 +946,22 @@ class TestSyscallSeccompEquivalents:
         libc = self._libc()
         ret = libc.syscall(num, CLONE_NEWUSER)
         if ret == 0:
-            # Succeeded — check if this is gVisor (accepted risk) or
-            # a native kernel (real breach).
-            is_gvisor = False
-            try:
-                # gVisor's emulated dmesg always starts with
-                # "Starting gVisor..." at boot.
-                result = subprocess.run(
-                    ["dmesg"], capture_output=True, text=True, timeout=5,
-                )
-                is_gvisor = "Starting gVisor" in result.stdout
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
-            if is_gvisor:
+            # Succeeded — check if this is an isolated runtime (accepted
+            # risk) or a bare host kernel (real breach).
+            if _is_gvisor():
                 pytest.xfail(
                     "unshare(CLONE_NEWUSER) succeeds on gVisor — accepted "
                     "risk: the userns is gVisor-internal, not on the host "
                     "kernel. See inline docstring for risk analysis."
                 )
+            if _is_microvm():
+                pytest.xfail(
+                    "unshare(CLONE_NEWUSER) succeeds in VZ microVM — accepted "
+                    "risk: the VM is hardware-isolated from the host. A user "
+                    "namespace inside the VM cannot reach host resources."
+                )
             pytest.fail(
-                "unshare(CLONE_NEWUSER) succeeded on a non-gVisor kernel — "
+                "unshare(CLONE_NEWUSER) succeeded on a non-isolated kernel — "
                 "this is a real privilege-escalation vector"
             )
 
