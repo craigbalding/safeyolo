@@ -35,7 +35,7 @@ ls /safeyolo >/dev/null 2>&1 || true
 # for this marker to decide whether a restore attempt succeeded, rather
 # than racing on the stale vm-ip file that persists across runs. Written
 # after the VirtioFS readdir above so the host sees the write promptly.
-echo "$(date +%s)" > /safeyolo-status/per-run-started 2>/dev/null || true
+echo "$(date +%s)" > /safeyolo-status/per-run-started
 echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
@@ -157,10 +157,10 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
         done
         if [ "$_proxy_ok" -eq 0 ]; then
             echo "[per-run] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status
         else
             echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
-            echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
+            echo "installing" > /safeyolo-status/vm-status
             timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
     fi
@@ -170,13 +170,13 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
     # from static is still on disk is exactly how the status went out of
     # sync in practice. `command -v` is the source of truth.
     if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "ready" > /safeyolo-status/vm-status 2>/dev/null || true
+        echo "ready" > /safeyolo-status/vm-status
     else
-        echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
+        echo "install-failed" > /safeyolo-status/vm-status
     fi
 else
     # No mise package configured — nothing to install.
-    echo "ready" > /safeyolo-status/vm-status 2>/dev/null || true
+    echo "ready" > /safeyolo-status/vm-status
 fi
 
 # --------------------------------------------------------------------------
@@ -229,7 +229,7 @@ elif [ -x "$VSOCK_TERM" ]; then
     fi
 else
     echo "Error: no terminal bridge available" >&2
-    echo "terminal-failed" > /safeyolo-status/vm-status 2>/dev/null || true
+    echo "terminal-failed" > /safeyolo-status/vm-status
 fi
 
 # Agent exited — shut down the VM cleanly.

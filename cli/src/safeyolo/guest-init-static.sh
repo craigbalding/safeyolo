@@ -94,23 +94,43 @@ fi
 
 # --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
+#
+# On macOS (VZ microVM), VirtioFS is the mount mechanism — failure is
+# fatal. On Linux (gVisor), the OCI spec handles mounts via bind — the
+# virtiofs mount calls legitimately fail and are skipped. Detect by
+# checking if /workspace is already mounted (OCI bind-mounts appear
+# before init runs).
 # --------------------------------------------------------------------------
+_needs_virtiofs_mount() { ! mountpoint -q /workspace 2>/dev/null; }
+
 mkdir -p /workspace
-mount -t virtiofs workspace /workspace 2>/dev/null || true
+if _needs_virtiofs_mount; then
+    mount -t virtiofs workspace /workspace
+else
+    mount -t virtiofs workspace /workspace 2>/dev/null || true
+fi
 
 # Status share — writable channel for guest→host signals (vm-status,
 # per-run-started, etc.). Separate from /safeyolo so the config share
 # can be read-only.
 mkdir -p /safeyolo-status
-mount -t virtiofs status /safeyolo-status 2>/dev/null || true
+if _needs_virtiofs_mount; then
+    mount -t virtiofs status /safeyolo-status
+else
+    mount -t virtiofs status /safeyolo-status 2>/dev/null || true
+fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
 if [ -f /safeyolo/host-mounts ]; then
     while IFS=: read -r tag guest_path; do
         [ -z "$tag" ] && continue
         mkdir -p "$guest_path"
-        mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
-        chown -R agent:agent "$guest_path" 2>/dev/null || true
+        if _needs_virtiofs_mount; then
+            mount -t virtiofs "$tag" "$guest_path"
+        else
+            mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
+        fi
+        chown -R agent:agent "$guest_path"
     done < /safeyolo/host-mounts
 fi
 
@@ -121,7 +141,7 @@ if [ -f /safeyolo/host-files-manifest ]; then
         if [ -f "/safeyolo/host-files/$src_name" ]; then
             mkdir -p "$(dirname "$guest_path")"
             cp "/safeyolo/host-files/$src_name" "$guest_path"
-            chown agent:agent "$guest_path" 2>/dev/null || true
+            chown agent:agent "$guest_path"
         fi
     done < /safeyolo/host-files-manifest
 fi
@@ -141,7 +161,7 @@ SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 if [ -f "$SY_CERT_SRC" ]; then
     if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
-        update-ca-certificates >/dev/null 2>&1 || true
+        update-ca-certificates >/dev/null 2>&1
     fi
 fi
 
@@ -157,13 +177,13 @@ if [ -f /safeyolo/authorized_keys ]; then
 fi
 
 if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
-    ssh-keygen -A >/dev/null 2>&1 || true
+    ssh-keygen -A >/dev/null 2>&1
 fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above
 # creates new ones as the current user — fix unconditionally.
-chown root:root /etc/ssh/ssh_host_*_key 2>/dev/null || true
-chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
+chown root:root /etc/ssh/ssh_host_*_key
+chmod 600 /etc/ssh/ssh_host_*_key
 
 mkdir -p /run/sshd
 /usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
@@ -181,7 +201,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # reliably appear there.
 VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
 if [ -n "$VM_IP" ]; then
-    echo "$VM_IP" > /safeyolo-status/vm-ip 2>/dev/null || true
+    echo "$VM_IP" > /safeyolo-status/vm-ip
 fi
 
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
@@ -191,10 +211,10 @@ fi
 # which triggers a kernel panic in init). /run is tmpfs, part of the
 # captured memory image, so the staged copy survives the save/restore
 # round trip.
-mkdir -p /run/safeyolo 2>/dev/null || true
+mkdir -p /run/safeyolo
 if [ -f /safeyolo/guest-init-per-run ]; then
-    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run 2>/dev/null || true
-    chmod +x /run/safeyolo/guest-init-per-run 2>/dev/null || true
+    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run
+    chmod +x /run/safeyolo/guest-init-per-run
 fi
 
 # --------------------------------------------------------------------------
@@ -250,7 +270,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
         done
         if [ "$_proxy_ok" -eq 0 ]; then
             echo "[static] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status
             exit 0
         fi
         echo "[static] egress connectivity confirmed (attempt $_try)" > /dev/console 2>/dev/null || true
@@ -261,7 +281,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # PATH; without `-l`, `command -v` can't find a mise-managed
         # binary even when it's correctly installed.
         if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
+            echo "installing" > /safeyolo-status/vm-status
             timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
         # Ground vm-status in reality. `mise use -g` can exit nonzero
@@ -272,9 +292,9 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # Per-run has a safety-net retry, so "install-failed" here is
         # only terminal if per-run's retry also fails.
         if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "" > /safeyolo-status/vm-status 2>/dev/null || true
+            echo "" > /safeyolo-status/vm-status
         else
-            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status
         fi
     fi
 )
