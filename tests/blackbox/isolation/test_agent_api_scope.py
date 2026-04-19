@@ -38,11 +38,15 @@ def _curl_agent_api(path: str, method: str = "GET",
                     token: str | None = None,
                     extra_flags: list[str] | None = None) -> tuple[int, str]:
     """Hit the agent API and return (http_status_code, body)."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as tf:
+        body_file = tf.name
+
     cmd = [
         "curl", "-s",
         "-X", method,
-        "-o", "/dev/stderr",   # body → stderr so we can capture it
-        "-w", "%{http_code}",  # status → stdout
+        "-o", body_file,
+        "-w", "%{http_code}",
         "--max-time", "5",
     ]
     if token is not None:
@@ -50,9 +54,12 @@ def _curl_agent_api(path: str, method: str = "GET",
     if extra_flags:
         cmd.extend(extra_flags)
     cmd.append(f"http://_safeyolo.proxy.internal{path}")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    status = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
-    body = result.stderr
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        status = int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
+        body = open(body_file).read()
+    finally:
+        os.unlink(body_file)
     return status, body
 
 
