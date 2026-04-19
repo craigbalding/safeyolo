@@ -295,10 +295,13 @@ def _run_agent(
     binary = _get_agent_binary(metadata)
 
     # Check SafeYolo proxy is running
+    config = load_config()
+    proxy_port = config.get("proxy", {}).get("port", 8080)
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
     if not is_proxy_running():
         console.print("[yellow]SafeYolo proxy is not running. Starting...[/yellow]")
         try:
-            start_proxy()
+            start_proxy(proxy_port=proxy_port, admin_port=admin_port)
             if not wait_for_healthy(timeout=30):
                 console.print("[red]SafeYolo proxy failed to start.[/red]")
                 raise typer.Exit(1)
@@ -379,10 +382,6 @@ def _run_agent(
             pass
 
     # Set up network isolation (platform-specific: vsock on macOS, netns on Linux)
-    config = load_config()
-    proxy_port = config.get("proxy", {}).get("port", 8080)
-    admin_port = config.get("proxy", {}).get("admin_port", 9090)
-
     from ..platform import get_platform
     plat = get_platform()
 
