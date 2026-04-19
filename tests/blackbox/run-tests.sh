@@ -190,6 +190,12 @@ safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
 safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
 rm -rf "$SAFEYOLO_CONFIG_DIR/agents/"
 rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
+# Kill stale sinkhole — certs are regenerated each run, so a sinkhole
+# from a previous run holds old certs that won't verify against the
+# new CA bundle.
+pkill -f "sinkhole/server.py" 2>/dev/null || true
+# Kill stale test proxy — it may hold old CA bundle or addons config.
+safeyolo stop 2>/dev/null || true
 
 # --- Phase 1: Start infrastructure (idempotent) ---
 
