@@ -1,34 +1,13 @@
 # SafeYolo sudoers configuration (macOS)
 #
-# Grants the operator passwordless sudo for the single command SafeYolo
-# needs to manage per-agent attribution IPs: aliasing a synthetic
-# 127.0.0.X address onto lo0. No other commands are permitted.
+# As of the PROXY protocol v2 migration, SafeYolo requires NO sudo
+# commands on macOS. Agent identity is conveyed from the proxy_bridge
+# to mitmproxy via PROXY protocol v2 headers — no lo0 aliases, no
+# ifconfig, no kernel interface configuration.
 #
-# Install:
-#   sudo cp safeyolo.sudoers /etc/sudoers.d/safeyolo
-#   sudo chmod 0440 /etc/sudoers.d/safeyolo
-#   sudo visudo -c   # validate syntax
+# This file is kept as a placeholder. If you have an older version
+# installed at /etc/sudoers.d/safeyolo, it is safe to remove:
 #
-# Or: safeyolo setup sudoers
+#   sudo rm /etc/sudoers.d/safeyolo
 #
-# %safeyolo_user is replaced with the invoking user's username
-# at install time by `safeyolo setup sudoers`.
-#
-# -----------------------------------------------------------------
-# Security model:
-#
-# Egress isolation is structural — agent sandboxes have no external
-# network interface. The only path out is a per-agent Unix socket
-# served by the host-side proxy_bridge. The bridge's upstream TCP
-# source is bound to 127.0.0.<N+2> so mitmproxy can attribute each
-# flow to the right agent.
-#
-# Darwin doesn't auto-route 127.0.0.0/8, so each synthetic loopback
-# IP must be explicitly aliased onto lo0 before bind() can use it.
-# That's the whole reason this file exists.
-# -----------------------------------------------------------------
-
-# lo0 alias for per-agent attribution IPs. The wildcard covers
-# 127.0.0.2/32 through 127.0.0.254/32 (one per agent index).
-%safeyolo_user ALL=(root) NOPASSWD: /sbin/ifconfig lo0 alias 127.0.0.*, \
-                            /sbin/ifconfig lo0 -alias 127.0.0.*
+# No SafeYolo functionality depends on sudoers entries.

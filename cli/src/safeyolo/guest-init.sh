@@ -43,7 +43,7 @@ echo "[orch start] pid=$$ date=$(date 2>/dev/null || echo nodate)" > /dev/consol
 # Tell the host static setup is complete. Best-effort write — if the
 # config share is already ro (shouldn't be at this point, but belt and
 # braces) we still proceed to the wait and exec per-run.
-echo "ready" > /safeyolo/static-init-done 2>/dev/null || true
+echo "ready" > /safeyolo-status/static-init-done 2>/dev/null || true
 
 # Wait up to ~30s for the host's per-run-go. Timeout is a safety net so
 # a crashed CLI doesn't strand us with a running VM and no agent —

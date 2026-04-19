@@ -35,7 +35,7 @@ ls /safeyolo >/dev/null 2>&1 || true
 # for this marker to decide whether a restore attempt succeeded, rather
 # than racing on the stale vm-ip file that persists across runs. Written
 # after the VirtioFS readdir above so the host sees the write promptly.
-echo "$(date +%s)" > /safeyolo/per-run-started 2>/dev/null || true
+echo "$(date +%s)" > /safeyolo-status/per-run-started 2>/dev/null || true
 echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
@@ -157,11 +157,11 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
         done
         if [ "$_proxy_ok" -eq 0 ]; then
             echo "[per-run] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
         else
             echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
-            echo "installing" > /safeyolo/vm-status 2>/dev/null || true
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+            echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
     fi
     # Ground vm-status in reality — the install command's exit code can
@@ -170,10 +170,13 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
     # from static is still on disk is exactly how the status went out of
     # sync in practice. `command -v` is the source of truth.
     if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "" > /safeyolo/vm-status 2>/dev/null || true
+        echo "ready" > /safeyolo-status/vm-status 2>/dev/null || true
     else
-        echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+        echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
     fi
+else
+    # No mise package configured — nothing to install.
+    echo "ready" > /safeyolo-status/vm-status 2>/dev/null || true
 fi
 
 # --------------------------------------------------------------------------
@@ -184,12 +187,7 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 6. Remount config share read-only (all writes complete)
-# --------------------------------------------------------------------------
-mount -o remount,ro /safeyolo 2>/dev/null || true
-
-# --------------------------------------------------------------------------
-# 7. Run agent or stay alive for SSH access
+# 6. Run agent or stay alive for SSH access
 # --------------------------------------------------------------------------
 
 YOLO_ARGS=""
@@ -212,11 +210,16 @@ if [ "${SAFEYOLO_DETACH:-}" = "1" ]; then
     exec sleep infinity
 fi
 
-if [ -x "$VSOCK_TERM" ]; then
-    # Exec the agent binary directly — no shell wrapper.
-    # vsock-term sets up the PTY, drops privileges, sets PATH with mise shims,
-    # and execs the command. A shell wrapper (bash -lc) would break the TTY
-    # connection, causing process.stdout.isTTY to be undefined in Node.js.
+if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
+    # Linux/gVisor: the host CLI launches the agent via `runsc exec`,
+    # which bridges the user's terminal into the sandbox directly.
+    # Keep the container alive so runsc exec has a target.
+    exec sleep infinity
+elif [ -x "$VSOCK_TERM" ]; then
+    # macOS: vsock-term sets up the PTY, drops privileges, sets PATH
+    # with mise shims, and execs the command. A shell wrapper (bash -lc)
+    # would break the TTY connection, causing process.stdout.isTTY to be
+    # undefined in Node.js.
     if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
             ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-} || true
@@ -225,8 +228,8 @@ if [ -x "$VSOCK_TERM" ]; then
             bash -l || true
     fi
 else
-    echo "Warning: vsock-term not found, falling back to basic shell" >&2
-    su agent -lc "cd /workspace && bash -l" || true
+    echo "Error: no terminal bridge available" >&2
+    echo "terminal-failed" > /safeyolo-status/vm-status 2>/dev/null || true
 fi
 
 # Agent exited — shut down the VM cleanly.

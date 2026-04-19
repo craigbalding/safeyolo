@@ -21,6 +21,9 @@ log = logging.getLogger("safeyolo.proxy")
 
 # Addon load order — mirrors scripts/start-safeyolo.sh exactly
 ADDON_CHAIN = [
+    # Layer -1: Connection identity (must be first — monkeypatches
+    # handle_stream before any connections arrive)
+    "proxy_protocol.py",
     # Layer 0: Infrastructure
     "file_logging.py",
     "memory_monitor.py",

@@ -88,7 +88,12 @@ def proxy_client():
     Uses the mitmproxy CA cert for TLS verification when available.
     Falls back to unverified if cert not found.
     """
-    verify = str(_CA_CERT) if _CA_CERT.exists() else False
+    if _CA_CERT.exists():
+        import ssl
+        ctx = ssl.create_default_context(cafile=str(_CA_CERT))
+        verify = ctx
+    else:
+        verify = False
     client = httpx.Client(
         proxy=PROXY_URL,
         verify=verify,

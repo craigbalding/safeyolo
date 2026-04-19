@@ -79,31 +79,10 @@ def _check_attribution_ip(entry: dict) -> Check:
     ip = entry.get("ip")
     if not ip:
         return Check("Attribution IP", "FAIL", "no 'ip' field in agent map entry")
-
-    if platform.system() == "Darwin":
-        # macOS doesn't auto-route 127/8; check lo0 alias.
-        try:
-            out = subprocess.run(
-                ["ifconfig", "lo0"], capture_output=True, text=True, check=False,
-            ).stdout
-        except FileNotFoundError:
-            return Check("Attribution IP", "WARN", "ifconfig not found")
-        if f"inet {ip} " in out or f"inet {ip}\n" in out:
-            return Check("Attribution IP", "PASS", f"{ip} aliased on lo0")
-        return Check("Attribution IP", "FAIL",
-                     f"{ip} not aliased on lo0",
-                     f"sudo ifconfig lo0 alias {ip}/32")
-
-    # Linux — kernel owns the whole 127/8 loopback block; a bind test
-    # is the cleanest probe.
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind((ip, 0))
-        sock.close()
-    except OSError as exc:
-        return Check("Attribution IP", "FAIL",
-                     f"bind({ip}) failed: {type(exc).__name__}: {exc}")
-    return Check("Attribution IP", "PASS", f"{ip} bindable")
+    # Attribution IP is conveyed to mitmproxy via PROXY protocol v2 —
+    # no lo0 alias or kernel bind required. Just verify it's present
+    # in the agent map.
+    return Check("Attribution IP", "PASS", f"{ip} (PROXY protocol v2)")
 
 
 def _check_bridge_socket(name: str, entry: dict) -> Check:

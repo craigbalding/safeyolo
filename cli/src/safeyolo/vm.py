@@ -92,6 +92,17 @@ def get_agent_config_share_dir(name: str) -> Path:
     return get_agents_dir() / name / "config-share"
 
 
+def get_agent_status_dir(name: str) -> Path:
+    """Writable share for guest→host status signals.
+
+    Separate from the config share so the config share can be mounted
+    read-only from the start.
+    """
+    d = get_agents_dir() / name / "status"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # Rootfs management
 # ---------------------------------------------------------------------------
@@ -147,6 +158,7 @@ def prepare_config_share(
     auto_args: str = "",
     gateway_ip: str = "127.0.0.1",
     guest_ip: str = "127.0.0.1",
+    attribution_ip: str = "",
     pre_write_per_run_go: bool = True,
     debug_mode: bool = False,
 ) -> Path:
@@ -195,11 +207,13 @@ def prepare_config_share(
         # snapshot point before we get a chance to SIGUSR1.
         per_run_go.unlink(missing_ok=True)
     # Ensure no stale per-boot markers from a prior run mask progress —
-    # the guest writes these fresh on every boot. The CLI polls for
-    # per-run-started specifically as a definitive "restore succeeded"
-    # signal; a stale copy would make a failed restore look successful.
-    for marker in ("static-init-done", "per-run-started"):
-        (share_dir / marker).unlink(missing_ok=True)
+    # the guest writes these fresh on every boot to the status share.
+    # The CLI polls for per-run-started specifically as a definitive
+    # "restore succeeded" signal; a stale copy would make a failed
+    # restore look successful.
+    status_dir = get_agent_status_dir(name)
+    for marker in ("static-init-done", "per-run-started", "vm-status", "vm-ip"):
+        (status_dir / marker).unlink(missing_ok=True)
 
     # Debug-mode marker — presence enables per-iteration guest tracing.
     # Checked by guest-init orchestrator (which runs before agent.env is
@@ -260,11 +274,14 @@ def prepare_config_share(
         (share_dir / "instructions.md").write_text(instructions_content)
 
     # Network config for static IP (used by initramfs init)
-    (share_dir / "network.env").write_text(
+    net_env = (
         f"GUEST_IP={guest_ip}\n"
         f"GATEWAY_IP={gateway_ip}\n"
         f"NETMASK=255.255.255.0\n"
     )
+    if attribution_ip:
+        net_env += f"AGENT_IP={attribution_ip}\n"
+    (share_dir / "network.env").write_text(net_env)
 
     # Agent name → guest hostname. Read by guest-init-static which calls
     # `hostname <name>` and writes /etc/hostname. Agents in the Docker
@@ -275,7 +292,9 @@ def prepare_config_share(
     # CA certificate
     ca_cert = config_dir / "certs" / "mitmproxy-ca-cert.pem"
     if ca_cert.exists():
-        shutil.copy2(str(ca_cert), str(share_dir / "mitmproxy-ca-cert.pem"))
+        dest = share_dir / "mitmproxy-ca-cert.pem"
+        shutil.copy2(str(ca_cert), str(dest))
+        dest.chmod(0o644)  # public cert, must be readable by agent user
 
     # SSH authorized keys
     _ensure_ssh_key()
@@ -432,7 +451,8 @@ def start_vm(
         "--cpus", str(cpus),
         "--memory", str(memory_mb),
         "--share", f"{workspace_path}:workspace:rw",
-        "--share", f"{config_share}:config:rw",
+        "--share", f"{config_share}:config:ro",
+        "--share", f"{get_agent_status_dir(name)}:status:rw",
         "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
     ]
 
@@ -564,16 +584,20 @@ def _update_agent_map(
     name: str,
     ip: str | None = None,
     socket: str | None = None,
+    port: int | None = None,
     remove: bool = False,
 ) -> None:
     """Update the agent-IP map file.
 
-    Read by two consumers:
+    Read by three consumers:
       - addons/service_discovery.py (in mitmproxy) — uses `ip` to map
         request source IPs back to agent names for audit/policy/rate-limit.
-      - safeyolo.proxy_bridge (on Linux) — uses `socket` to create a
-        per-agent listener, and `ip` as the upstream TCP source address
-        to stamp the agent's identity on flows to mitmproxy.
+      - addons/proxy_protocol.py (in mitmproxy) — uses `port` to map
+        the bridge's deterministic source port back to agent identity
+        at connection time (client_connected hook).
+      - safeyolo.proxy_bridge — uses `socket` to create a per-agent
+        listener, and `port` as the deterministic source port to bind
+        when connecting to mitmproxy.
     """
     map_path = get_agent_map_path()
     map_path.parent.mkdir(parents=True, exist_ok=True)
@@ -594,6 +618,8 @@ def _update_agent_map(
         }
         if socket:
             entry["socket"] = socket
+        if port is not None:
+            entry["port"] = port
         agent_map[name] = entry
 
     map_path.write_text(json.dumps(agent_map, indent=2) + "\n")

@@ -62,6 +62,14 @@ ip link set lo up 2>/dev/null || true
 if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
 fi
+
+# Add the agent's unique IP to loopback. This is the same IP that
+# appears in mitmproxy flows, logs, and the agent map — giving the
+# operator a consistent per-agent identity inside and outside the
+# sandbox.
+if [ -n "${AGENT_IP:-}" ]; then
+    ip addr add "${AGENT_IP}/32" dev lo 2>/dev/null || true
+fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
     # (UP, IP assigned, default route) — bringing it up here would just
@@ -81,6 +89,12 @@ fi
 # --------------------------------------------------------------------------
 mkdir -p /workspace
 mount -t virtiofs workspace /workspace 2>/dev/null || true
+
+# Status share — writable channel for guest→host signals (vm-status,
+# per-run-started, etc.). Separate from /safeyolo so the config share
+# can be read-only.
+mkdir -p /safeyolo-status
+mount -t virtiofs status /safeyolo-status 2>/dev/null || true
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
 if [ -f /safeyolo/host-mounts ]; then
@@ -137,6 +151,11 @@ fi
 if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
     ssh-keygen -A >/dev/null 2>&1 || true
 fi
+# SSH host keys must be root-owned and 600. Keys from the rootfs
+# tarball already have correct ownership, but ssh-keygen -A above
+# creates new ones as the current user — fix unconditionally.
+chown root:root /etc/ssh/ssh_host_*_key 2>/dev/null || true
+chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
 
 mkdir -p /run/sshd
 /usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
@@ -154,7 +173,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # reliably appear there.
 VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
 if [ -n "$VM_IP" ]; then
-    echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
+    echo "$VM_IP" > /safeyolo-status/vm-ip 2>/dev/null || true
 fi
 
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
@@ -223,7 +242,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
         done
         if [ "$_proxy_ok" -eq 0 ]; then
             echo "[static] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
             exit 0
         fi
         echo "[static] egress connectivity confirmed (attempt $_try)" > /dev/console 2>/dev/null || true
@@ -234,8 +253,8 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # PATH; without `-l`, `command -v` can't find a mise-managed
         # binary even when it's correctly installed.
         if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "installing" > /safeyolo/vm-status 2>/dev/null || true
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+            echo "installing" > /safeyolo-status/vm-status 2>/dev/null || true
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
         # Ground vm-status in reality. `mise use -g` can exit nonzero
         # (notably: the outer `timeout` fires *after* the package is
@@ -245,9 +264,9 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # Per-run has a safety-net retry, so "install-failed" here is
         # only terminal if per-run's retry also fails.
         if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "" > /safeyolo/vm-status 2>/dev/null || true
+            echo "" > /safeyolo-status/vm-status 2>/dev/null || true
         else
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status 2>/dev/null || true
         fi
     fi
 )

@@ -1,89 +1,23 @@
 # SafeYolo Linux sudoers configuration
 #
-# Grants the operator passwordless sudo for the specific commands
-# SafeYolo needs to manage gVisor containers and their network
-# namespaces. No firewall rules, no veth, no IP forwarding — the
-# new architecture uses structural egress control: the sandbox has
-# zero external network interfaces, reaching mitmproxy only through
-# a bind-mounted UDS.
+# SafeYolo runs gVisor in unprivileged user namespaces. No runtime
+# sudo commands are needed — network isolation, container lifecycle,
+# and rootfs extraction all run without elevated privileges.
 #
-# Install:
-#   sudo cp safeyolo-linux.sudoers /etc/sudoers.d/safeyolo
-#   sudo chmod 0440 /etc/sudoers.d/safeyolo
-#   sudo visudo -c   # validate syntax
+# One-time setup requirements:
 #
-# Or: safeyolo setup sudoers
+#   1. AppArmor profile (allows runsc to create user namespaces):
+#      sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
 #
-# Replace %safeyolo with a specific user or group if preferred.
+#   2. fuse2fs package (rootfs extraction without mount):
+#      sudo apt install fuse2fs
 #
-# -----------------------------------------------------------------
-# Why each command is needed:
-#
-#   ip netns add/del safeyolo-*  Loopback-only netns lifecycle
-#   ip -n safeyolo-* link set lo up  Bring up loopback inside netns
-#   runsc --root /run/safeyolo   gVisor lifecycle (pinned state dir)
-#   mkdir -p /run/safeyolo       Exact runsc state dir. No wildcard.
-#   mount -o loop,ro             One-time base rootfs extraction
-#   umount /tmp/safeyolo-rootfs-mnt   Unmount base rootfs after extraction
-#   cp -a ...                    Copy base rootfs (pinned source + destination)
-#   chown -R                     Make extracted base readable for fuse-overlayfs
-#
-# Intentionally NOT granted:
-#   ip netns exec                — allows running arbitrary binaries as root
-#   ip link / ip addr / nft / iptables
-#                               — no kernel firewall or veth in the new arch
-#   sysctl                      — no IP forwarding needed
-#   mount -t overlay            — fuse-overlayfs runs unprivileged
-#   rm -rf                      — squash_to_uid makes agent files operator-owned
-# -----------------------------------------------------------------
-
-# Network namespace lifecycle — scoped to safeyolo-* names.
-# IMPORTANT: `ip netns exec` is intentionally NOT granted — it allows
-# running arbitrary binaries as root. Use `ip -n <ns>` instead.
-%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip netns add safeyolo-*, \
-                                /usr/sbin/ip netns del safeyolo-*, \
-                                /sbin/ip netns add safeyolo-*, \
-                                /sbin/ip netns del safeyolo-*
-
-# Loopback bring-up inside the netns (the only interface the sandbox has).
-# Scoped so `ip -n safeyolo-*` can only touch the lo device.
-%safeyolo ALL=(root) NOPASSWD: /usr/sbin/ip -n safeyolo-* link set lo up, \
-                                /sbin/ip -n safeyolo-* link set lo up
-
-# One-time base rootfs extraction — loop mount + umount pinned to exact paths.
-# Per-agent overlayfs uses fuse-overlayfs (unprivileged, no sudo needed).
+# If fuse2fs is not available, the rootfs extraction falls back to
+# sudo mount/cp/chown (one-time only, not per-agent-run):
 %safeyolo ALL=(root) NOPASSWD: /usr/bin/mount -o loop\,ro %SAFEYOLO_BASE_EXT4% /tmp/safeyolo-rootfs-mnt, \
                                 /bin/mount -o loop\,ro %SAFEYOLO_BASE_EXT4% /tmp/safeyolo-rootfs-mnt, \
                                 /usr/bin/umount /tmp/safeyolo-rootfs-mnt, \
-                                /bin/umount /tmp/safeyolo-rootfs-mnt
-
-# gVisor container runtime — pinned to SafeYolo's state dir and --host-uds=open
-# which lets the sandbox connect() to UDS files bind-mounted from the host.
-%safeyolo ALL=(root) NOPASSWD: /usr/local/bin/runsc --root /run/safeyolo --host-uds=open --platform=kvm create *, \
-                                /usr/local/bin/runsc --root /run/safeyolo --host-uds=open --platform=systrap create *, \
-                                /usr/local/bin/runsc --root /run/safeyolo start *, \
-                                /usr/local/bin/runsc --root /run/safeyolo state *, \
-                                /usr/local/bin/runsc --root /run/safeyolo kill *, \
-                                /usr/local/bin/runsc --root /run/safeyolo delete *, \
-                                /usr/local/bin/runsc --root /run/safeyolo exec *, \
-                                /usr/bin/runsc --root /run/safeyolo --host-uds=open --platform=kvm create *, \
-                                /usr/bin/runsc --root /run/safeyolo --host-uds=open --platform=systrap create *, \
-                                /usr/bin/runsc --root /run/safeyolo start *, \
-                                /usr/bin/runsc --root /run/safeyolo state *, \
-                                /usr/bin/runsc --root /run/safeyolo kill *, \
-                                /usr/bin/runsc --root /run/safeyolo delete *, \
-                                /usr/bin/runsc --root /run/safeyolo exec *
-
-# State directory creation — exact path, no wildcard
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/mkdir -p /run/safeyolo, \
-                                /bin/mkdir -p /run/safeyolo
-
-# Base rootfs extraction — both source and destination are literal paths.
-# %SAFEYOLO_BASE_ROOTFS_DEST% is substituted by `safeyolo setup sudoers`
-# with the resolved path (default: /home/<user>/.safeyolo/share/rootfs-base).
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/cp -a /tmp/safeyolo-rootfs-mnt/. %SAFEYOLO_BASE_ROOTFS_DEST%
-
-# chown base rootfs to operator after extraction so fuse-overlayfs can
-# read the lowerdir. Pinned to the exact destination path.
-%safeyolo ALL=(root) NOPASSWD: /usr/bin/chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%, \
+                                /bin/umount /tmp/safeyolo-rootfs-mnt, \
+                                /usr/bin/cp -a /tmp/safeyolo-rootfs-mnt/. %SAFEYOLO_BASE_ROOTFS_DEST%, \
+                                /usr/bin/chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%, \
                                 /bin/chown -R %SAFEYOLO_CHOWN_TARGET% %SAFEYOLO_BASE_ROOTFS_DEST%
