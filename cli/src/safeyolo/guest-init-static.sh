@@ -49,6 +49,14 @@ rm -f /dev/net/tun 2>/dev/null || true
 rmdir /dev/net 2>/dev/null || true
 rm -f /dev/fuse 2>/dev/null || true
 
+# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# at boot, but this VM uses a minimal init with neither. Without these,
+# programs that write to /dev/stderr (curl, bash redirections, etc.) fail.
+ln -sf /proc/self/fd /dev/fd 2>/dev/null || true
+ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null || true
+ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null || true
+ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
+
 # --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
