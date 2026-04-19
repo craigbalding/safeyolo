@@ -141,10 +141,15 @@ class DarwinPlatform(AgentPlatform):
         if interactive and not command:
             cmd.append("-t")
         cmd.append(target)
+
+        stdin = None
         if command:
             cmd.append(command)
+            # Close stdin for non-interactive commands so nc's UDS
+            # ProxyCommand exits when the remote command finishes.
+            stdin = subprocess.DEVNULL
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, stdin=stdin)
         return result.returncode
 
     def is_sandbox_running(self, name: str) -> bool:
