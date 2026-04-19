@@ -211,7 +211,7 @@ class TestAgentAPICrossAgentIsolation:
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
-            pytest.skip(f"Flow search returned non-JSON: {body[:200]}")
+            pytest.fail(f"Flow search 200 but non-JSON (len={len(body)}): {body[:100]!r}")
 
         flows = data.get("flows", [])
         if not flows:
@@ -260,7 +260,7 @@ class TestAgentAPICrossAgentIsolation:
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
-            pytest.skip(f"Non-JSON response: {body[:200]}")
+            pytest.fail(f"/gateway/services 200 but non-JSON (len={len(body)}): {body[:100]!r}")
         # The response should be for THIS agent only. If it contains
         # services for named agents other than ours, scoping is broken.
         # (This is a structural check — the exact response shape
