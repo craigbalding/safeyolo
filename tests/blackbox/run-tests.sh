@@ -188,8 +188,8 @@ trap cleanup EXIT
 echo "Cleaning stale state..."
 safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
 safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
+rm -rf "$SAFEYOLO_CONFIG_DIR/agents/"
 rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
-rm -f "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/install.log"
 
 # --- Phase 1: Start infrastructure (idempotent) ---
 
