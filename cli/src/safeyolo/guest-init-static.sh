@@ -161,7 +161,9 @@ SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 if [ -f "$SY_CERT_SRC" ]; then
     if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
-        update-ca-certificates >/dev/null 2>&1
+        if ! update-ca-certificates >/dev/null 2>&1; then
+            echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
+        fi
     fi
 fi
 
@@ -182,8 +184,13 @@ fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above
 # creates new ones as the current user — fix unconditionally.
-chown root:root /etc/ssh/ssh_host_*_key
-chmod 600 /etc/ssh/ssh_host_*_key
+# The glob may not match on runtimes where keygen failed (gVisor
+# without /dev/random early in boot) — check before chown/chmod.
+for keyfile in /etc/ssh/ssh_host_*_key; do
+    [ -f "$keyfile" ] || continue
+    chown root:root "$keyfile"
+    chmod 600 "$keyfile"
+done
 
 mkdir -p /run/sshd
 /usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
