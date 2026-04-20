@@ -106,7 +106,7 @@ class TestPolicyHostAdd:
         doc = _read_toml(tmp_config_dir)
         agents = tomlkit.table()
         boris = tomlkit.table()
-        boris.add("template", "claude-code")
+        boris.add("folder", "/tmp/proj")
         agents.add("boris", boris)
         doc.add("agents", agents)
         (tmp_config_dir / "policy.toml").write_text(tomlkit.dumps(doc))

@@ -163,27 +163,6 @@ if [ -f /safeyolo/host-mounts ]; then
     done < /safeyolo/host-mounts
 fi
 
-# Host config files (e.g. ~/.claude.json) — host-authoritative, copy
-# on every boot. VirtioFS doesn't support single-file shares, so we
-# can't live-mount these the way directories are mounted; copying is
-# the closest we get to "host owns this". Guest-side writes to these
-# files during a session are scratch: they persist in the /home/agent
-# mount while the VM runs, but are overwritten from the host's latest
-# copy on the next boot. Intended for state that's truly owned by the
-# host's long-lived setup (onboarding, trust, account identity). If a
-# user needs to update one of these, they edit the host file, stop the
-# agent, and run again.
-if [ -f /safeyolo/host-files-manifest ]; then
-    while IFS=: read -r src_name guest_path; do
-        [ -z "$src_name" ] && continue
-        if [ -f "/safeyolo/host-files/$src_name" ]; then
-            mkdir -p "$(dirname "$guest_path")"
-            cp "/safeyolo/host-files/$src_name" "$guest_path"
-            chown agent:agent "$guest_path" 2>/dev/null || true
-        fi
-    done < /safeyolo/host-files-manifest
-fi
-
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
@@ -263,17 +242,12 @@ if [ -f /safeyolo/guest-init-per-run ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 6. Install the agent binary (pre-snapshot)
+# 6. Seed /etc/environment from proxy.env + agent.env.
 #
-# Runs here rather than in per-run so the installed binary is captured
-# in the rootfs clone and survives restore. Before this moved, every
-# restore re-ran mise install (~10s for claude-code), defeating most
-# of the snapshot speedup for coding-agent templates.
-#
-# /etc/environment is written now so that `su agent -l`'s login shell
-# picks up HTTP_PROXY / SSL_CERT_FILE via pam_env — mise install hits
-# HTTPS endpoints through the host proxy. Per-run will rewrite this
-# file with the same content on every boot (idempotent).
+# Subsequent shells (login or otherwise) pick up HTTP_PROXY / SSL_CERT_FILE
+# / etc. via pam_env. Under the host-script model there's no pre-snapshot
+# agent install step here — the host script populates /home/agent/
+# .safeyolo-entrypoint, which takes care of first-run install work.
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then
     cp /safeyolo/proxy.env /etc/environment
@@ -283,74 +257,11 @@ if [ -f /safeyolo/agent.env ]; then
 fi
 echo 'export HOME=/home/agent' >> /etc/environment
 
-(
-    # Subshell keeps the sourced env scope-limited; the static script's
-    # parent env stays minimal.
-    set -a
-    [ -f /safeyolo/proxy.env ] && . /safeyolo/proxy.env
-    [ -f /safeyolo/agent.env ] && . /safeyolo/agent.env
-    set +a
-
-    # Start the proxy forwarder early so the install can reach the host
-    # proxy. The forwarder is also started in per-run; duplicate launch
-    # is harmless (the second bind fails and the process exits).
-    if [ -x /safeyolo/guest-proxy-forwarder ]; then
-        setsid nohup /safeyolo/guest-proxy-forwarder >/dev/console 2>&1 </dev/null &
-        echo "[static] started guest-proxy-forwarder (pid=$!)" > /dev/console 2>/dev/null || true
-    fi
-
-    # Wait for egress connectivity before attempting install. The proxy
-    # chain (forwarder → vsock/UDS → bridge → mitmproxy) needs a moment
-    # to come up. Probe with a lightweight HTTP request through the
-    # proxy; fail fast with a clear message instead of letting mise/npm
-    # hang for 120s on a dead connection.
-    if [ -n "${HTTP_PROXY:-}" ] && [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ]; then
-        _proxy_ok=0
-        for _try in $(seq 1 20); do
-            if curl -sf -o /dev/null --max-time 2 -x "$HTTP_PROXY" http://registry.npmjs.org/ 2>/dev/null; then
-                _proxy_ok=1
-                break
-            fi
-            sleep 0.5
-        done
-        if [ "$_proxy_ok" -eq 0 ]; then
-            echo "[static] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo-status/vm-status
-            exit 0
-        fi
-        echo "[static] egress connectivity confirmed (attempt $_try)" > /dev/console 2>/dev/null || true
-    fi
-
-    if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
-        # `-lc` so mise's shell activation runs and puts its shims on
-        # PATH; without `-l`, `command -v` can't find a mise-managed
-        # binary even when it's correctly installed.
-        if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "installing" > /safeyolo-status/vm-status
-            # npm-backed packages need node+npm installed first — mise
-            # doesn't auto-install the backend runtime. Since MISE_DATA_DIR
-            # lives in the agent's persistent $HOME, this install runs
-            # once per agent and is cached thereafter.
-            case "${SAFEYOLO_MISE_PACKAGE}" in
-                npm:*)
-                    timeout 180 su agent -lc "mise use -g node@22" >> /safeyolo-status/install.log 2>&1 || true
-                    ;;
-            esac
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
-        fi
-        # Ground vm-status in reality. `mise use -g` can exit nonzero
-        # (notably: the outer `timeout` fires *after* the package is
-        # already installed on disk) yet leave a working binary behind —
-        # so trusting the install command's exit code leaves a stale
-        # "install-failed" even on healthy boots. Decide on command -v.
-        # Per-run has a safety-net retry, so "install-failed" here is
-        # only terminal if per-run's retry also fails.
-        if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "" > /safeyolo-status/vm-status
-        else
-            echo "install-failed" > /safeyolo-status/vm-status
-        fi
-    fi
-)
+# Start the proxy forwarder. Per-run also starts it; duplicate launch
+# is harmless (the second bind fails and the process exits).
+if [ -x /safeyolo/guest-proxy-forwarder ]; then
+    setsid nohup /safeyolo/guest-proxy-forwarder >/dev/console 2>&1 </dev/null &
+    echo "[static] started guest-proxy-forwarder (pid=$!)" > /dev/console 2>/dev/null || true
+fi
 
 echo "[static end] pid=$$" > /dev/console 2>/dev/null || true

@@ -171,17 +171,10 @@ def create_agent_rootfs(name: str) -> Path:
 def prepare_config_share(
     name: str,
     workspace_path: str,
-    agent_binary: str = "",
-    mise_package: str = "",
     agent_args: str = "",
     extra_env: dict[str, str] | None = None,
     proxy_port: int = 8080,
     host_mounts: list[tuple[str, str, bool]] | None = None,
-    host_config_files: list[str] | None = None,
-    host_config_file_patches: list | None = None,
-    instructions_content: str = "",
-    instructions_path: str = "",
-    auto_args: str = "",
     gateway_ip: str = "127.0.0.1",
     guest_ip: str = "127.0.0.1",
     attribution_ip: str = "",
@@ -277,27 +270,17 @@ def prepare_config_share(
     )
     (share_dir / "proxy.env").write_text(proxy_env)
 
-    # Agent environment
+    # Agent environment. The template system is gone — host scripts set
+    # up whatever the agent needs directly in the persistent home. The
+    # only thing we still surface is extra_env (yolo / detach / host-
+    # terminal flags) and user-supplied agent args.
     agent_env_lines = []
-    if agent_binary:
-        agent_env_lines.append(f'export SAFEYOLO_AGENT_BINARY="{agent_binary}"')
-        agent_env_lines.append(f'export SAFEYOLO_AGENT_CMD="{agent_binary}"')
-    if mise_package:
-        agent_env_lines.append(f'export SAFEYOLO_MISE_PACKAGE="{mise_package}"')
     if agent_args:
         agent_env_lines.append(f'export SAFEYOLO_AGENT_ARGS="{agent_args}"')
-    if instructions_path:
-        agent_env_lines.append(f'export SAFEYOLO_INSTRUCTIONS_PATH="{instructions_path}"')
-    if auto_args:
-        agent_env_lines.append(f'export SAFEYOLO_AUTO_ARGS="{auto_args}"')
     if extra_env:
         for k, v in extra_env.items():
             agent_env_lines.append(f'export {k}="{v}"')
     (share_dir / "agent.env").write_text("\n".join(agent_env_lines) + "\n")
-
-    # Instructions file (e.g., CLAUDE.md for Claude Code)
-    if instructions_content and instructions_path:
-        (share_dir / "instructions.md").write_text(instructions_content)
 
     # Network config for static IP (used by initramfs init)
     net_env = (
@@ -349,59 +332,7 @@ def prepare_config_share(
             lines.append(f"{tag}:{guest_path}")
         (share_dir / "host-mounts").write_text("\n".join(lines) + "\n")
 
-    # Host config files — copied into config share (not VirtioFS mounted,
-    # since mounting the parent dir could expose $HOME)
-    if host_config_files:
-        files_dir = share_dir / "host-files"
-        files_dir.mkdir(exist_ok=True)
-        manifest_lines = []
-        home = Path.home()
-        # Index patches by target file name so each file only pays for
-        # the patches that apply to it.
-        patches_by_file: dict[str, list] = {}
-        for p in host_config_file_patches or []:
-            patches_by_file.setdefault(p.file, []).append(p)
-        for file_name in host_config_files:
-            src = home / file_name
-            if src.exists() and src.is_file():
-                dest = files_dir / file_name.replace("/", "__")
-                shutil.copy2(str(src), str(dest))
-                manifest_lines.append(f"{dest.name}:/home/agent/{file_name}")
-                for patch in patches_by_file.get(file_name, []):
-                    _apply_file_patch(dest, patch)
-        if manifest_lines:
-            (share_dir / "host-files-manifest").write_text("\n".join(manifest_lines) + "\n")
-
     return share_dir
-
-
-def _apply_file_patch(path: Path, patch) -> None:
-    """Apply a FilePatchSpec to a staged copy in the config share.
-
-    Silent on parse errors: a malformed host file or an unknown format
-    shouldn't block boot; the user just sees the un-patched behaviour
-    and we can surface the warning in logs. Host file is never read or
-    written — only the staged copy at `path`.
-    """
-    if patch.format != "json":
-        log.warning("unsupported patch format %r for %s", patch.format, path)
-        return
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as err:
-        log.warning("couldn't parse %s for patching: %s", path, err)
-        return
-    node = data
-    for key in patch.path:
-        if not isinstance(node, dict):
-            log.warning("patch path %r in %s hit non-dict at %r", patch.path, path, key)
-            return
-        node = node.setdefault(key, {})
-    if not isinstance(node, dict):
-        log.warning("patch target in %s is not a dict, skipping set", path)
-        return
-    node.update(patch.set)
-    path.write_text(json.dumps(data, indent=2))
 
 
 # ---------------------------------------------------------------------------

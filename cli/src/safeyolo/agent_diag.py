@@ -50,7 +50,7 @@ def _check_agent_dir(name: str) -> Check:
     if not agent_dir.exists():
         return Check("Agent config", "FAIL",
                      f"{agent_dir} does not exist",
-                     "safeyolo agent add {name} <template> <folder>")
+                     "safeyolo agent add {name} <folder>")
     return Check("Agent config", "PASS", str(agent_dir))
 
 

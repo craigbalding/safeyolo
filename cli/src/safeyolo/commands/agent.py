@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
 import typer
@@ -28,7 +29,6 @@ from ..snapshot import (
     snapshot_path,
     write_snapshot_version,
 )
-from ..templates import TemplateError, get_agent_config, get_available_templates
 from ..timing import emit as _timing_emit
 from ..timing import enter as _t
 from ..vm import (
@@ -43,47 +43,6 @@ from .mount import is_path_protected
 log = logging.getLogger("safeyolo.agent")
 console = Console()
 
-
-
-def _ensure_host_config(template_name: str, ephemeral: bool) -> None:
-    """Ensure host config directories exist for the agent.
-
-    Creates directories from agent.toml [host] config if they don't exist.
-    """
-    try:
-        agent_config = get_agent_config(template_name)
-    except TemplateError:
-        return  # Will fail later in render_template
-
-    home = Path.home()
-    console.print("\n[bold]Host config:[/bold]")
-
-    has_any = False
-
-    # Check/create directories
-    for dir_name in agent_config.host.config_dirs:
-        dir_path = home / dir_name
-        if dir_path.exists():
-            console.print(f"  [green]Found[/green] {dir_path} (will mount)")
-            has_any = True
-        elif ephemeral:
-            console.print("  [yellow]Ephemeral mode[/yellow] - settings lost on container exit")
-        else:
-            dir_path.mkdir(mode=0o700, exist_ok=True)
-            console.print(f"  [green]Created[/green] {dir_path}")
-            has_any = True
-
-    # Check files (don't create, just report)
-    for file_name in agent_config.host.config_files:
-        file_path = home / file_name
-        if file_path.exists():
-            console.print(f"  [green]Found[/green] {file_path} (will mount)")
-            has_any = True
-
-    if not has_any and not ephemeral:
-        console.print("  [dim]No host config found[/dim]")
-
-    console.print()
 
 
 agent_app = typer.Typer(
@@ -141,18 +100,6 @@ def _validate_instance_name(name: str) -> None:
 def _load_agent_metadata(name: str) -> dict:
     """Load agent metadata from policy.toml [agents] section."""
     return _store_load_agent(name)
-
-
-def _get_agent_binary(metadata: dict) -> str | None:
-    """Get the agent binary name from template config."""
-    template_name = metadata.get("template")
-    if not template_name:
-        return None
-    try:
-        agent_config = get_agent_config(template_name)
-        return agent_config.install.binary
-    except TemplateError:
-        return None
 
 
 def _capture_snapshot_blocking(
@@ -287,12 +234,11 @@ def _run_agent(
     rootfs = get_platform().agent_rootfs_path(name)
     if not rootfs.exists():
         console.print(f"[red]Agent not found: {escape(name)}[/red]")
-        console.print("Run [bold]safeyolo agent add <name> <template> <folder>[/bold] first.")
+        console.print("Run [bold]safeyolo agent add <name> <folder>[/bold] first.")
         raise typer.Exit(1)
 
-    # Load metadata for user_default_args and binary name
+    # Load metadata for user_default_args
     metadata = _load_agent_metadata(name)
-    binary = _get_agent_binary(metadata)
 
     # Check SafeYolo proxy is running
     config = load_config()
@@ -317,7 +263,7 @@ def _run_agent(
         console.print(
             f"To open a shell in it:  [bold]safeyolo agent shell {name}[/bold]\n"
             f"To stop it first:       [bold]safeyolo agent stop {name}[/bold]\n"
-            f"To run another agent:   [bold]safeyolo agent add <new-name> <template> <folder>[/bold]"
+            f"To run another agent:   [bold]safeyolo agent add <new-name> <folder>[/bold]"
         )
         raise typer.Exit(1)
 
@@ -345,43 +291,6 @@ def _run_agent(
     import sys as _sys
     if _sys.platform == "linux" and not detach:
         extra_env["SAFEYOLO_HOST_TERMINAL"] = "1"
-
-    # Get mise package, host config, instructions, and auto_args from template
-    mise_package = ""
-    host_shares = []  # (host_path, tag, read_only) for VirtioFS mounts
-    host_config_files = []  # Individual files to copy into config share
-    host_config_file_patches = []  # FilePatchSpec list applied to staged copies
-    instructions_content = ""
-    instructions_path = ""
-    auto_args = ""
-    template_name = metadata.get("template", "")
-    if template_name:
-        try:
-            agent_config = get_agent_config(template_name)
-            mise_package = agent_config.install.mise
-            auto_args = agent_config.run.auto_args_str
-            # Instructions injection (e.g., CLAUDE.md)
-            if agent_config.instructions.content and agent_config.instructions.path:
-                instructions_content = agent_config.instructions.content
-                instructions_path = agent_config.instructions.path
-            # Mount host config dirs into guest /home/agent/
-            home = Path.home()
-            share_idx = 0
-            for dir_name in agent_config.host.config_dirs:
-                host_path = home / dir_name
-                if host_path.is_dir():
-                    host_shares.append((str(host_path), f"hostcfg{share_idx}", False))
-                    share_idx += 1
-            # Individual config files: copy into config share (not VirtioFS,
-            # since mounting parent dir could expose $HOME)
-            host_config_files = [f for f in agent_config.host.config_files
-                                 if (home / f).exists()]
-            host_config_file_patches = agent_config.host.patches
-        except TemplateError:
-            # Template missing or malformed — continue with empty host
-            # mounts/instructions; the agent name was already validated
-            # earlier so it's safe to proceed without template extras.
-            pass
 
     # Set up network isolation (platform-specific: vsock on macOS, netns on Linux)
     from ..platform import get_platform
@@ -467,8 +376,6 @@ def _run_agent(
             cpus=cpus_for_run,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
-            agent_binary=binary or "",
-            mise_package=mise_package,
         )
         if is_snapshot_valid(name, snapshot_version):
             snapshot_mode = "restore"
@@ -492,17 +399,9 @@ def _run_agent(
         prepare_config_share(
             name=name,
             workspace_path=str(workspace_path),
-            agent_binary=binary or "",
-            mise_package=mise_package,
             agent_args=agent_args_str,
             extra_env=extra_env,
             proxy_port=guest_proxy_port,
-            host_mounts=host_shares if host_shares else None,
-            host_config_files=host_config_files if host_config_files else None,
-            host_config_file_patches=host_config_file_patches if host_config_file_patches else None,
-            instructions_content=instructions_content,
-            instructions_path=instructions_path,
-            auto_args=auto_args,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
             attribution_ip=attribution_ip,
@@ -548,7 +447,7 @@ def _run_agent(
                 fw_alloc=fw_alloc,
                 cpus=cpus_for_run,
                 memory_mb=memory_for_run,
-                extra_shares=host_shares if host_shares else None,
+                extra_shares=None,
                 background=run_background,
                 restore_from_path=restore_src,
             )
@@ -625,7 +524,7 @@ def _run_agent(
                 fw_alloc=fw_alloc,
                 cpus=cpus_for_run,
                 memory_mb=memory_for_run,
-                extra_shares=host_shares if host_shares else None,
+                extra_shares=None,
                 background=run_background,
                 snapshot_capture_path=capture_path,
             )
@@ -666,43 +565,6 @@ def _run_agent(
 
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
-            # Watch for agent install. Per-run runs on every boot (including
-            # restore), so if the agent binary isn't yet installed in the
-            # rootfs we'll see the "installing" status mark.
-            _t("install watch (guest per-run mise install if any)")
-            status_file = status_dir / "vm-status"
-            install_log = status_dir / "install.log"
-            install_log_pos = 0
-            shown_installing = False
-            deadline2 = _time.time() + 120
-            while _time.time() < deadline2 and plat.is_sandbox_running(name):
-                status = status_file.read_text().strip() if status_file.exists() else ""
-                if status == "installing" and not shown_installing:
-                    agent_label = binary or template_name
-                    console.print(f"  Installing {agent_label}...")
-                    shown_installing = True
-                elif status == "install-failed":
-                    console.print("  [red]Install failed[/red]")
-                    break
-                elif status == "ready":
-                    break
-                # Stream install log lines to the console.
-                if install_log.exists():
-                    try:
-                        with open(install_log) as f:
-                            f.seek(install_log_pos)
-                            new_data = f.read()
-                            if new_data:
-                                install_log_pos = f.tell()
-                                for line in new_data.splitlines():
-                                    console.print(f"  [dim]{line}[/dim]")
-                    except OSError:
-                        # Install log is best-effort — if the file
-                        # disappeared or became unreadable mid-poll,
-                        # the install status file is the source of truth.
-                        pass
-                _time.sleep(1)
-
             if detach:
                 console.print("  VM running (detached)")
                 console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
@@ -713,17 +575,19 @@ def _run_agent(
 
             _t("interactive session")
             if _sys.platform == "linux":
-                # Linux: launch the agent via runsc exec — it bridges the
-                # user's terminal into the sandbox, same role vsock-term
-                # plays on macOS. The command comes from the template config.
-                agent_cmd_parts = []
-                if binary:
-                    agent_cmd_parts.append(binary)
-                    if yolo and auto_args:
-                        agent_cmd_parts.append(auto_args)
-                    if agent_args_str:
-                        agent_cmd_parts.append(agent_args_str)
-                full_cmd = " ".join(agent_cmd_parts) if agent_cmd_parts else None
+                # Linux: launch the agent via runsc exec. The guest runs
+                # /home/agent/.safeyolo-entrypoint if present (written by
+                # the host script into the persistent home), else drops
+                # to an interactive bash login.
+                from ..vm import get_agent_home_dir
+                entrypoint_host = get_agent_home_dir(name) / ".safeyolo-entrypoint"
+                if agent_args:
+                    # Explicit override from caller (`agent run -- cmd args`).
+                    full_cmd = " ".join(agent_args)
+                elif entrypoint_host.exists() and os.access(entrypoint_host, os.X_OK):
+                    full_cmd = "/home/agent/.safeyolo-entrypoint"
+                else:
+                    full_cmd = None
                 exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
                 plat.stop_sandbox(name)
             else:
@@ -867,13 +731,14 @@ def add(
         ...,
         help="Instance name (used for run/shell/remove commands)",
     ),
-    template: str = typer.Argument(
-        ...,
-        help="Agent template (e.g., claude-code, openai-codex, byoa)",
-    ),
     folder: str = typer.Argument(
         ...,
         help="Folder to mount in agent container",
+    ),
+    host_script: str = typer.Option(
+        None,
+        "--host-script",
+        help="Path to a host setup script (runs on the host, as you, before the sandbox boots). See contrib/HOST_SCRIPT_GUIDE.md.",
     ),
     force: bool = typer.Option(
         False,
@@ -885,11 +750,6 @@ def add(
         False,
         "--no-run",
         help="Don't run the agent after adding (just create config)",
-    ),
-    ephemeral: bool = typer.Option(
-        False,
-        "--ephemeral",
-        help="Don't persist config (credentials lost on container exit)",
     ),
     user_default_args: str = typer.Option(
         None,
@@ -913,17 +773,22 @@ def add(
         help="Allow mounting directories you don't own",
     ),
 ) -> None:
-    """Add an AI agent and run it.
+    """Add an AI agent sandbox and run it.
 
-    Creates config for the specified agent template, then runs it.
-    If agent already exists with same config, just runs it (idempotent).
+    Creates a persistent per-agent sandbox, optionally populated by a
+    host script that runs on the host (as you) before the sandbox
+    boots. The host script may write into ~/.safeyolo/agents/<name>/home/ to
+    seed auth, settings, user extensions — and in particular write a
+    .safeyolo-entrypoint file that `agent run` will execute.
+
+    Without --host-script, the sandbox boots to an interactive bash
+    shell with a fresh per-agent /home/agent (seeded from /etc/skel).
 
     Examples:
 
-        safeyolo agent add myproject claude-code .
-        safeyolo agent add work claude-code ~/projects/myapp
-        safeyolo agent add assistant openai-codex ~/code --no-run
-        safeyolo agent add boris claude-code . --mount ~/data:/data --mount ~/refs:/refs:ro
+        safeyolo agent add plain .
+        safeyolo agent add claude . --host-script contrib/claude-host-setup.sh
+        safeyolo agent add boris . --host-script ./my-setup.sh --mount ~/data:/data
     """
     # Validate instance name (hostname rules)
     _validate_instance_name(name)
@@ -949,12 +814,16 @@ def add(
     _check_project_ownership(folder_path, dangerously_allow_unowned)
     folder_str = str(folder_path)
 
-    # Validate template exists
-    try:
-        get_agent_config(template)
-    except TemplateError as err:
-        console.print(f"[red]Template error:[/red] {escape(str(err))}")
-        raise typer.Exit(1)
+    host_script_path: Path | None = None
+    if host_script:
+        host_script_path = Path(host_script).expanduser().resolve()
+        if not host_script_path.is_file():
+            console.print(f"[red]Host script not found: {host_script_path}[/red]")
+            raise typer.Exit(1)
+        if not os.access(host_script_path, os.X_OK):
+            console.print(f"[red]Host script is not executable: {host_script_path}[/red]")
+            console.print(f"  Fix: chmod +x {host_script_path}")
+            raise typer.Exit(1)
 
     # Instance directory = instance name
     agent_dir = get_agents_dir() / name
@@ -963,10 +832,11 @@ def add(
     existing = _load_agent_metadata(name)
     if agent_dir.exists():
         if existing:
-            existing_template = existing.get("template")
+            existing_script = existing.get("host_script")
             existing_folder = existing.get("folder")
+            requested_script = str(host_script_path) if host_script_path else None
 
-            if existing_template == template and existing_folder == folder_str and not force:
+            if existing_script == requested_script and existing_folder == folder_str and not force:
                 # Same config, no --force - idempotent, just run
                 console.print(f"Agent '{name}' already configured.")
                 if not no_run:
@@ -978,8 +848,8 @@ def add(
                 if not force:
                     console.print(
                         f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
-                        f"  Current:  {existing_template} → {existing_folder}\n"
-                        f"  Requested: {template} → {folder_str}\n"
+                        f"  Current:  {existing_script or '(no host script)'} → {existing_folder}\n"
+                        f"  Requested: {requested_script or '(no host script)'} → {folder_str}\n"
                         "Use --force to overwrite, or 'safeyolo agent run' to run existing."
                     )
                     raise typer.Exit(1)
@@ -990,9 +860,6 @@ def add(
                 console.print(f"[yellow]Agent '{name}' already exists[/yellow]")
                 console.print("Use --force to overwrite")
                 raise typer.Exit(1)
-
-    # Ensure host config directories exist
-    _ensure_host_config(template, ephemeral)
 
     # Create rootfs for this agent (platform-specific: APFS clone on macOS, overlayfs on Linux)
     from ..platform import get_platform
@@ -1005,9 +872,32 @@ def add(
 
     # Persistent /home/agent host-side dir. start_vm re-ensures this
     # so existing agents get backfilled, but creating it on `add`
-    # covers the --no-run path too.
-    from ..vm import ensure_agent_persistent_dirs
+    # covers the --no-run path and is required before running the
+    # host script (which writes into it).
+    from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
     ensure_agent_persistent_dirs(name)
+
+    # Run the host script (if provided). Host-side, as the invoking
+    # user. It sees SAFEYOLO_AGENT_NAME, SAFEYOLO_AGENT_HOME (the
+    # persistent bind-mount source for /home/agent), SAFEYOLO_AGENT_FOLDER.
+    if host_script_path is not None:
+        agent_home = get_agent_home_dir(name)
+        env = {
+            **os.environ,
+            "SAFEYOLO_AGENT_NAME": name,
+            "SAFEYOLO_AGENT_HOME": str(agent_home),
+            "SAFEYOLO_AGENT_FOLDER": folder_str,
+        }
+        console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+        try:
+            result = subprocess.run([str(host_script_path)], env=env, check=False)
+        except OSError as err:
+            console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
+            raise typer.Exit(1)
+        if result.returncode != 0:
+            console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+            console.print(f"  Agent '{name}' config persisted; re-run with --force after fixing the script.")
+            raise typer.Exit(result.returncode)
 
     # Validate and normalize mount specs
     parsed_mounts = [_parse_mount(m) for m in mount]
@@ -1016,7 +906,9 @@ def add(
     parsed_ports = [_parse_port(p) for p in port]
 
     # Write metadata to policy.toml [agents]
-    metadata = {"template": template, "folder": folder_str}
+    metadata: dict = {"folder": folder_str}
+    if host_script_path is not None:
+        metadata["host_script"] = str(host_script_path)
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
@@ -1028,10 +920,11 @@ def add(
 
     panel_lines = [
         f"[green]Agent '{name}' added![/green]\n",
-        f"Template: {template}",
         f"Folder: {folder_str}",
         f"Rootfs: {rootfs}",
     ]
+    if host_script_path is not None:
+        panel_lines.append(f"Host script: {host_script_path}")
     if parsed_args:
         panel_lines.append(f"Default args: {' '.join(parsed_args)}")
     if parsed_mounts:
@@ -1042,7 +935,10 @@ def add(
     panel_lines.append(f"Proxy: http://127.0.0.1:{cfg.get('proxy', {}).get('port', 8080)} (via in-guest forwarder)")
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
-    write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added (template={template})", agent=name, details={"template": template, "folder": folder_str})
+    event_details: dict = {"folder": folder_str}
+    if host_script_path is not None:
+        event_details["host_script"] = str(host_script_path)
+    write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added", agent=name, details=event_details)
 
     # Auto-run unless --no-run
     if not no_run:
@@ -1053,19 +949,7 @@ def add(
 
 @agent_app.command(name="list")
 def list_agents() -> None:
-    """List available agent templates and instances."""
-    # Show templates
-    templates = get_available_templates()
-    if templates:
-        table = Table(title="Available Templates")
-        table.add_column("Template", style="bold")
-        table.add_column("Description")
-        for tpl_name, description in templates.items():
-            table.add_row(tpl_name, description)
-        console.print(table)
-        console.print()
-
-    # Show instances
+    """List configured agent instances."""
     agents_dir = get_agents_dir()
     all_agents = load_all_agents()
 
@@ -1082,13 +966,13 @@ def list_agents() -> None:
         if instances:
             table = Table(title="Configured Agents")
             table.add_column("Name", style="bold")
-            table.add_column("Template")
             table.add_column("Folder")
+            table.add_column("Host script")
             for inst_dir in sorted(instances, key=lambda d: d.name):
                 metadata = all_agents.get(inst_dir.name, {})
-                template = metadata.get("template", "?")
                 folder = metadata.get("folder", "?")
-                table.add_row(inst_dir.name, template, folder)
+                host_script = metadata.get("host_script", "")
+                table.add_row(inst_dir.name, folder, host_script)
             console.print(table)
         else:
             console.print("[dim]No agents configured.[/dim]")
@@ -1438,8 +1322,10 @@ def config(
         table = Table(title=f"Agent: {name}")
         table.add_column("Setting", style="bold")
         table.add_column("Value")
-        table.add_row("Template", metadata.get("template", "?"))
         table.add_row("Folder", metadata.get("folder", "?"))
+        host_script = metadata.get("host_script")
+        if host_script:
+            table.add_row("Host script", host_script)
         current_args = metadata.get("user_default_args")
         if current_args:
             table.add_row("Default args", " ".join(current_args))
@@ -1542,41 +1428,6 @@ def config(
         changes.append("ports")
     write_event("agent.config_changed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} config changed: {', '.join(changes)}", agent=name, details={"changes": changes})
 
-
-@agent_app.command(name="help")
-def agent_help(
-    name: str = typer.Argument(..., help="Agent instance name"),
-) -> None:
-    """Show agent CLI help.
-
-    Runs the agent's --help command inside the container to show available flags.
-    Use 'safeyolo agent shell <name>' to experiment with other flags interactively.
-
-    Examples:
-
-        safeyolo agent help boris
-    """
-    _validate_instance_name(name)
-
-    # Use passthrough with --help (or configured help_arg)
-    metadata = _load_agent_metadata(name)
-    template_name = metadata.get("template")
-
-    help_arg = "--help"
-    if template_name:
-        try:
-            agent_config = get_agent_config(template_name)
-            help_arg = agent_config.run.help_arg
-        except TemplateError:
-            pass  # Optional - continue with default --help if template lookup fails
-
-    # Parse help_arg in case it has multiple parts
-    help_args = help_arg.split()
-
-    exit_code = _run_agent(name, agent_args=help_args, skip_default_args=True)
-
-    # Suggest shell for experimentation
-    console.print(f"\n[dim]To experiment with flags: safeyolo agent shell {name}[/dim]")
 
     raise typer.Exit(exit_code)
 

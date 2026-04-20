@@ -4,9 +4,12 @@ Example integrations. Copy and adapt for your own use.
 
 ## Available Examples
 
-| Directory | Description |
-|-----------|-------------|
-| `claude-code-chokepoint/` | **Recommended**: Claude Code in enforced chokepoint mode |
+| Entry | Description |
+|-------|-------------|
+| `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent add --host-script` |
+| `claude-host-setup.sh` | Host setup for Claude Code — stages auth/extensions from `~/.claude/` and writes an install-on-first-run entrypoint |
+| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI |
+| `claude-code-chokepoint/` | Claude Code in enforced chokepoint mode |
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
 

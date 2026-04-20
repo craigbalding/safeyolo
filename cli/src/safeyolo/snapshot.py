@@ -214,19 +214,12 @@ def compute_snapshot_version(
     cpus: int,
     gateway_ip: str,
     guest_ip: str,
-    agent_binary: str = "",
-    mise_package: str = "",
 ) -> dict:
     """Hash everything that must match for a snapshot to be restorable.
 
     Any change to these inputs between capture and restore makes the
     snapshot invalid — the guest would wake up inconsistent with its
     environment (different CA cert, different kernel, different IP, ...).
-
-    agent_binary / mise_package are included because the binary install
-    now happens in static (pre-snapshot) and is baked into the rootfs
-    clone. Switching templates on an existing agent without invalidating
-    would leave the wrong binary installed.
     """
     cli_dir = Path(__file__).parent
     static_script = cli_dir / "guest-init-static.sh"
@@ -247,8 +240,6 @@ def compute_snapshot_version(
         "network_gateway_ip": gateway_ip,
         "network_guest_ip": guest_ip,
         "vm_helper_version": _vm_helper_version(),
-        "agent_binary": agent_binary,
-        "mise_package": mise_package,
     }
 
 

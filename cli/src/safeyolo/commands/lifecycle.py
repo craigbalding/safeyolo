@@ -160,7 +160,7 @@ def start(
                 f"[green]SafeYolo is running![/green]\n\n"
                 f"Proxy: http://localhost:{proxy_port}\n\n"
                 f"Next:\n"
-                f"  safeyolo agent add myproject claude-code .   [dim]# Add and run an agent[/dim]\n",
+                f"  safeyolo agent add myproject . --host-script contrib/claude-host-setup.sh   [dim]# Add and run an agent[/dim]\n",
                 title="Ready",
             )
         )

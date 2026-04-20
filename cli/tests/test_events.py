@@ -36,7 +36,7 @@ class TestWriteEvent:
     def test_creates_logs_dir(self, tmp_path, monkeypatch):
         logs_dir = tmp_path / "nested" / "logs"
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
-        write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary="Added", agent="test", details={"template": "claude-code"})
+        write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary="Added", agent="test", details={"folder": "/tmp/proj"})
 
         assert (logs_dir / "safeyolo.jsonl").exists()
 
