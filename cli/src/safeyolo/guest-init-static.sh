@@ -163,19 +163,23 @@ if [ -f /safeyolo/host-mounts ]; then
     done < /safeyolo/host-mounts
 fi
 
-# Host config files (e.g. ~/.claude.json) — seed-once semantics. The
-# guest_path typically lives under the persistent /home/agent mount,
-# so once seeded on first boot the agent's in-session writes survive
-# across runs. Copying on every boot would clobber those writes (the
-# original misdesign that discarded Claude's trust/onboarding state).
-# Re-seeding from host: user runs `agent remove` + `agent add`.
+# Host config files (e.g. ~/.claude.json) — host-authoritative, copy
+# on every boot. VirtioFS doesn't support single-file shares, so we
+# can't live-mount these the way directories are mounted; copying is
+# the closest we get to "host owns this". Guest-side writes to these
+# files during a session are scratch: they persist in the /home/agent
+# mount while the VM runs, but are overwritten from the host's latest
+# copy on the next boot. Intended for state that's truly owned by the
+# host's long-lived setup (onboarding, trust, account identity). If a
+# user needs to update one of these, they edit the host file, stop the
+# agent, and run again.
 if [ -f /safeyolo/host-files-manifest ]; then
     while IFS=: read -r src_name guest_path; do
         [ -z "$src_name" ] && continue
-        if [ -f "/safeyolo/host-files/$src_name" ] && [ ! -f "$guest_path" ]; then
+        if [ -f "/safeyolo/host-files/$src_name" ]; then
             mkdir -p "$(dirname "$guest_path")"
             cp "/safeyolo/host-files/$src_name" "$guest_path"
-            chown agent:agent "$guest_path"
+            chown agent:agent "$guest_path" 2>/dev/null || true
         fi
     done < /safeyolo/host-files-manifest
 fi
