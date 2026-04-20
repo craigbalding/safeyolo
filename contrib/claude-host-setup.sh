@@ -129,11 +129,23 @@ with open(path, "w") as f:
 PY
 fi
 
-# --- 4. Write the entrypoint --------------------------------------------------
+# --- 4. Stage SafeYolo agent guide ------------------------------------------
+# Copy docs/AGENTS.md into the persistent home so the entrypoint can feed it
+# to Claude as system context on every run. We write to a path outside
+# .claude/ because .claude/ is a live VirtioFS mount from the host and we
+# don't want to shadow the user's own CLAUDE.md.
+GUIDE_SRC="$(cd "$(dirname "$0")/.." && pwd)/docs/AGENTS.md"
+mkdir -p "$AGENT_HOME/.safeyolo"
+if [ -f "$GUIDE_SRC" ]; then
+    cp "$GUIDE_SRC" "$AGENT_HOME/.safeyolo/AGENTS.md"
+fi
+
+# --- 5. Write the entrypoint --------------------------------------------------
 # Installs claude-code via mise on first run (idempotent: command -v
 # short-circuits on subsequent runs, since MISE_DATA_DIR lives in the
-# persistent home). Execs claude with nag-free flags. Any args after
-# `safeyolo agent run <name> -- ...` come through as "$@".
+# persistent home). Appends the SafeYolo agent guide as system context so
+# Claude knows about the agent API, block responses, security boundaries,
+# etc. Any args after `safeyolo agent run <name> -- ...` come through as "$@".
 
 cat > "$AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
 #!/usr/bin/env bash
@@ -146,7 +158,13 @@ if ! command -v claude >/dev/null 2>&1; then
     mise use -g npm:@anthropic-ai/claude-code@latest >&2
 fi
 
-exec claude --dangerously-skip-permissions "$@"
+# Inject SafeYolo agent guide as system context (non-fatal if missing).
+args=(--dangerously-skip-permissions)
+if [ -f "$HOME/.safeyolo/AGENTS.md" ]; then
+    args+=(--append-system-prompt "$(cat "$HOME/.safeyolo/AGENTS.md")")
+fi
+
+exec claude "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-entrypoint"
 

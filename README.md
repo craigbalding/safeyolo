@@ -178,6 +178,8 @@ Without `--host-script`, the sandbox boots to an interactive bash shell in a per
 
 Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE.md).
 
+Once inside the sandbox, the agent-facing reference lives at [`docs/AGENTS.md`](docs/AGENTS.md) -- agent environment, agent API endpoints, block-response anatomy, security boundaries, troubleshooting. The bundled host scripts stage it at `~/.safeyolo/AGENTS.md` inside the sandbox; the Claude Code host script also feeds it to `claude --append-system-prompt` so the model has it in context from turn 1.
+
 ## Controlling Agent Access
 
 Grant agents access to specific services with specific capabilities. Your credentials stay in SafeYolo's vault — agents make requests, SafeYolo handles authentication.
