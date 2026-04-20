@@ -241,60 +241,42 @@ class TestNetworkEscape:
             f"subdomain labels of any domain it controls."
         )
 
-    def test_host_header_mismatch_blocked(self):
-        """Host-header smuggling: send a request to an allowlisted URL
-        (httpbin.org) but override Host to a non-allowlisted domain
-        (evil.com). If the proxy evaluates policy based on the URL
-        rather than the Host header, the request reaches the upstream
-        server with evil.com in the Host header — the agent has smuggled
-        a request to a blocked domain through an allowed tunnel.
+    def test_host_header_mismatch_routes_by_url(self):
+        """When Host header disagrees with the request URL, policy
+        evaluation and routing MUST follow the URL, not the Host
+        header. The Host header is advisory (RFC 7230 §5.4 — when the
+        URL is absolute, Host is not authoritative).
 
-        This is a simpler, reproducible version of domain fronting: no
-        CDN needed, the sinkhole accepts both hostnames so we can
-        observe what actually reaches upstream.
+        Security property: an agent cannot smuggle a request to a
+        blocked domain by pointing the URL at an allowed domain and
+        putting the blocked domain in the Host header. The URL is
+        what gets evaluated and what receives the traffic.
 
-        The assertion: the proxy must either reject the request (403) or
-        rewrite the Host header to match the URL. A 200 with the
-        mismatched Host header reaching the sinkhole means the
-        enforcement gap is real.
+        This test sends URL=httpbin.org with Host=evil.com and
+        asserts the flow reaches the sinkhole as httpbin.org (not
+        evil.com).
         """
         proxy = os.environ.get("HTTP_PROXY", "")
         if not proxy:
             pytest.skip("HTTP_PROXY not set")
 
-        # HTTP (not HTTPS) so the proxy can fully inspect the request
-        # without TLS complexity. Override Host to a non-allowlisted
-        # domain.
+        marker = "host-header-mismatch-probe"
         result = subprocess.run(
             ["curl", "-s", "--proxy", proxy,
              "-H", "Host: evil.com",
+             "-H", f"X-Probe-Marker: {marker}",
              "-o", "/dev/null", "-w", "%{http_code}",
              "--max-time", "5",
-             "http://httpbin.org/get"],
+             f"http://httpbin.org/get?marker={marker}"],
             capture_output=True, text=True, timeout=10,
         )
         status = result.stdout.strip()
-        # Acceptable outcomes:
-        # - 403: proxy blocked based on Host header (strongest)
-        # - Non-200: some other rejection
-        # - 200: proxy allowed it — needs investigation (is it
-        #   evaluating URL or Host? Did the sinkhole get Host: evil.com?)
-        if status == "200":
-            # The request succeeded. In test mode with sinkhole, this
-            # means the proxy forwarded the request. The question is
-            # whether the proxy evaluated "httpbin.org" (URL, allowed)
-            # or "evil.com" (Host, should be blocked). Document as
-            # xfail if the proxy evaluates on URL — that's the
-            # mitmproxy default and consistent with RFC 7230 §5.4.
-            pytest.xfail(
-                "Host header mismatch (evil.com on httpbin.org URL) "
-                "returned 200 — proxy evaluates policy on request URL, "
-                "not Host header. This is mitmproxy's default per "
-                "RFC 7230 §5.4 (Host is advisory when URL is absolute). "
-                "Document as accepted behaviour for HTTP; for HTTPS "
-                "CONNECT tunnels, mitmproxy re-terminates TLS and "
-                "evaluates the inner request's actual destination."
-            )
+        # The URL is allowed (httpbin.org is a test allowlisted host),
+        # so the request must succeed — routed by URL.
+        assert status == "200", (
+            f"Request with mismatched Host header got {status}; "
+            f"expected 200 (URL is the authoritative destination)."
+        )
 
     def test_proxy_reachable(self):
         """Proxy must be reachable (the one allowed network path)."""

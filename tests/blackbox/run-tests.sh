@@ -156,6 +156,7 @@ STARTED_SINKHOLE=false
 STARTED_PROXY=false
 STARTED_VM=false
 SINKHOLE_PID=""
+HOST_LISTENER_PID=""
 
 cleanup() {
     # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
@@ -172,6 +173,12 @@ cleanup() {
         echo "Stopping sinkhole (PID $SINKHOLE_PID)..."
         kill "$SINKHOLE_PID" 2>/dev/null || true
         wait "$SINKHOLE_PID" 2>/dev/null || true
+    fi
+
+    if [ -n "$HOST_LISTENER_PID" ]; then
+        echo "Stopping host listener (PID $HOST_LISTENER_PID)..."
+        kill "$HOST_LISTENER_PID" 2>/dev/null || true
+        wait "$HOST_LISTENER_PID" 2>/dev/null || true
     fi
 
     if [ "$STARTED_PROXY" = true ]; then
@@ -250,6 +257,27 @@ fi
 if [ "$RUN_ISOLATION" = true ]; then
     # Agent was cleaned at the top of the run; create fresh.
     safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run
+
+    # Start a host TCP listener on a random port. The in-VM
+    # test_host_listener_unreachable probes this port to prove a
+    # live host listener remains unreachable — stronger than the
+    # 44444 test which proves only that an unused port is unreachable.
+    echo "Starting host listener..."
+    CONFIG_SHARE="$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share"
+    python3 "$SCRIPT_DIR/harness/host_listener.py" > "$CONFIG_SHARE/host-listener-port" &
+    HOST_LISTENER_PID=$!
+    # Wait for the port to be written (listener prints it on bind).
+    for i in $(seq 1 20); do
+        if [ -s "$CONFIG_SHARE/host-listener-port" ]; then
+            echo "  Listener on port $(cat "$CONFIG_SHARE/host-listener-port")"
+            break
+        fi
+        sleep 0.1
+    done
+    if [ ! -s "$CONFIG_SHARE/host-listener-port" ]; then
+        echo "ERROR: Host listener didn't start"
+        exit 2
+    fi
 
     echo "Booting test VM ($AGENT_NAME)..."
     safeyolo agent run "$AGENT_NAME" --detach
