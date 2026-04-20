@@ -9,6 +9,7 @@ Example integrations. Copy and adapt for your own use.
 | `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent add --host-script` |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions from `~/.claude/` and writes an install-on-first-run entrypoint |
 | `codex-host-setup.sh` | Host setup for OpenAI Codex CLI |
+| `mise-shell-host-setup.sh` | Minimal BYOA -- drops into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 | `claude-code-chokepoint/` | Claude Code in enforced chokepoint mode |
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |
