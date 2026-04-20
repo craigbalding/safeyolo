@@ -350,6 +350,7 @@ def _run_agent(
     mise_package = ""
     host_shares = []  # (host_path, tag, read_only) for VirtioFS mounts
     host_config_files = []  # Individual files to copy into config share
+    host_config_file_patches = []  # FilePatchSpec list applied to staged copies
     instructions_content = ""
     instructions_path = ""
     auto_args = ""
@@ -375,6 +376,7 @@ def _run_agent(
             # since mounting parent dir could expose $HOME)
             host_config_files = [f for f in agent_config.host.config_files
                                  if (home / f).exists()]
+            host_config_file_patches = agent_config.host.patches
         except TemplateError:
             # Template missing or malformed — continue with empty host
             # mounts/instructions; the agent name was already validated
@@ -497,6 +499,7 @@ def _run_agent(
             proxy_port=guest_proxy_port,
             host_mounts=host_shares if host_shares else None,
             host_config_files=host_config_files if host_config_files else None,
+            host_config_file_patches=host_config_file_patches if host_config_file_patches else None,
             instructions_content=instructions_content,
             instructions_path=instructions_path,
             auto_args=auto_args,

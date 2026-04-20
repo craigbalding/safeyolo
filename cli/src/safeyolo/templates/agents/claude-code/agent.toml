@@ -23,6 +23,18 @@ setup_hint = "Set ANTHROPIC_API_KEY in .env"
 config_dirs = [".claude", ".safeyolo-hooks"]
 config_files = [".claude.json"]
 
+# Pre-trust the guest-only /workspace path so Claude Code doesn't
+# re-prompt on every boot. The user can't set these flags from the
+# host (no /workspace dir there), and `safeyolo agent add` already
+# represents the user authorising the workspace — the in-claude
+# prompt is asking the same question twice. Applied to the staged
+# copy in config-share, never to the host file.
+[[host.patches]]
+file = ".claude.json"
+format = "json"
+path = ["projects", "/workspace"]
+set = { hasTrustDialogAccepted = true, hasCompletedProjectOnboarding = true, hasClaudeMdExternalIncludesApproved = true, hasClaudeMdExternalIncludesWarningShown = true }
+
 [vm]
 cpus = 4
 memory = 4096

@@ -47,11 +47,40 @@ class AuthConfig:
 
 
 @dataclass
+class FilePatchSpec:
+    """Declarative patch to apply to a staged host_config_files copy.
+
+    Used when the host file's on-disk state needs tweaks before it
+    reaches the guest — e.g., suppressing a per-project prompt whose
+    state key references a guest-only path the user can't set from
+    the host. The patch is applied to the staged copy in the config
+    share, not to the host file, so the host's version is never
+    touched.
+
+    Fields:
+        file: host_config_files entry this patch applies to (e.g. ".claude.json").
+        format: on-disk format of the file (only "json" for now).
+        path: list of keys to walk/create within the parsed structure,
+              ending at the dict where `set` merges. List form (not
+              dotted-string) so keys can contain '/' or '.' without
+              escaping.
+        set: key→value pairs to merge into the dict at the end of `path`.
+             Existing keys not mentioned in `set` are preserved.
+    """
+
+    file: str
+    format: str = "json"
+    path: list[str] = field(default_factory=list)
+    set: dict = field(default_factory=dict)
+
+
+@dataclass
 class HostConfig:
     """Host directories/files to mount."""
 
     config_dirs: list[str] = field(default_factory=list)  # e.g., [".codex"]
     config_files: list[str] = field(default_factory=list)  # e.g., [".claude.json"]
+    patches: list[FilePatchSpec] = field(default_factory=list)
 
 
 @dataclass
@@ -167,6 +196,16 @@ def load_agent_config(agent_dir: Path) -> AgentConfig:
         host=HostConfig(
             config_dirs=host.get("config_dirs", []),
             config_files=host.get("config_files", []),
+            patches=[
+                FilePatchSpec(
+                    file=p.get("file", ""),
+                    format=p.get("format", "json"),
+                    path=p.get("path", []),
+                    set=p.get("set", {}),
+                )
+                for p in host.get("patches", [])
+                if p.get("file")
+            ],
         ),
         vm=VMConfig(
             cpus=vm.get("cpus", 4),
