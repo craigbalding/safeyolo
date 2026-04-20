@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Paths where certificates are expected in the guest
 CERT_TRUST_STORE = Path("/usr/local/share/ca-certificates")
 CONFIG_SHARE = Path("/safeyolo")
