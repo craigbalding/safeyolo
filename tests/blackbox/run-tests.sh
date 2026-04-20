@@ -264,6 +264,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     # 44444 test which proves only that an unused port is unreachable.
     echo "Starting host listener..."
     CONFIG_SHARE="$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share"
+    mkdir -p "$CONFIG_SHARE"
     python3 "$SCRIPT_DIR/harness/host_listener.py" > "$CONFIG_SHARE/host-listener-port" &
     HOST_LISTENER_PID=$!
     # Wait for the port to be written (listener prints it on bind).
