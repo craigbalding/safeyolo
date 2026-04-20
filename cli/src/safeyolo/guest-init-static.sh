@@ -137,7 +137,12 @@ else
     mount -t virtiofs home /home/agent 2>/dev/null || true
 fi
 if [ -z "$(ls -A /home/agent 2>/dev/null)" ] && [ -d /etc/skel ]; then
-    cp -a /etc/skel/. /home/agent/
+    # `cp -r` (not `-a`) — VirtioFS on VZ rejects utimes, which makes
+    # `cp -a`'s timestamp-preserve step fail, and `set -e` takes PID 1
+    # down with it (kernel panic "Attempted to kill init"). Timestamps
+    # on skel dotfiles aren't load-bearing; default modes under umask
+    # are fine for .bashrc / .profile / .bash_logout.
+    cp -r /etc/skel/. /home/agent/
 fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
