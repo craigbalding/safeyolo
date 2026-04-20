@@ -9,12 +9,26 @@ based on request content (headers, host), not source IP.
 """
 
 import os
+import sys
 import time
 from pathlib import Path
 
 import httpx
 import pytest
 from sinkhole_client import SinkholeClient
+
+# Import the shared docstring linter from the parent blackbox dir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _docstring_lint import validate_items  # noqa: E402
+
+
+def pytest_collection_modifyitems(config, items):
+    """Reject collection if any test's docstring is missing structure.
+
+    Schema lives in tests/blackbox/_docstring_lint.py and is shared
+    with the isolation suite and docs/blackbox-coverage.md generator.
+    """
+    validate_items(items)
 
 # ---------------------------------------------------------------------------
 # Host-side configuration — everything on localhost

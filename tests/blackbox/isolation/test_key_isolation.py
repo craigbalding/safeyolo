@@ -20,23 +20,49 @@ PUBLIC_CERT = CERT_TRUST_STORE / "safeyolo.crt"
 
 
 class TestPublicCertPresent:
-    """Verify the public CA cert is installed and usable."""
+    """Public CA cert is installed in the agent's trust store.
+
+    Why: The agent validates HTTPS traffic against this CA. Without
+    it, every HTTPS request through the proxy fails with certificate
+    errors and the agent can't do useful work — or it's tempted to
+    use --insecure flags that undermine interception security.
+    """
 
     def test_public_cert_exists(self):
-        """Public CA cert must be installed in the trust store."""
+        """Public CA cert file is present in /usr/local/share/ca-certificates.
+
+        What: Check `PUBLIC_CERT.exists()` for safeyolo.crt.
+        Why: Missing file means update-ca-certificates never added
+        it — the agent can't verify proxy-signed certs.
+        """
         assert PUBLIC_CERT.exists(), (
             f"Public CA cert not found at {PUBLIC_CERT}"
         )
 
     def test_public_cert_readable(self):
-        """Public CA cert must be readable by the agent user."""
+        """Public CA cert file is readable and contains a PEM certificate.
+
+        What: Read safeyolo.crt; assert contents include 'BEGIN
+        CERTIFICATE'.
+        Why: A zero-byte or non-PEM file would pass the existence
+        check but still break TLS. Confirms the file is actually a
+        usable cert, not a stub.
+        """
         content = PUBLIC_CERT.read_text()
         assert "BEGIN CERTIFICATE" in content, (
             "Certificate file does not contain a valid PEM certificate"
         )
 
     def test_public_cert_has_no_private_key(self):
-        """Public CA cert must NOT contain private key material."""
+        """Public CA cert file contains no PRIVATE KEY block.
+
+        What: Read safeyolo.crt; assert 'PRIVATE KEY' is not in
+        the content.
+        Why: If the install script accidentally concatenates the
+        public cert with the private key, shipping both to every
+        sandbox, the agent has root of trust on arbitrary domains —
+        complete interception bypass.
+        """
         content = PUBLIC_CERT.read_text()
         assert "PRIVATE KEY" not in content, (
             f"SECURITY FAILURE: Private key found in {PUBLIC_CERT}"
@@ -44,10 +70,24 @@ class TestPublicCertPresent:
 
 
 class TestPrivateKeyAbsent:
-    """Verify the CA private key is not accessible anywhere in the VM."""
+    """CA private key never enters the sandbox, anywhere.
+
+    Why: The CA private key is the root of trust for mitmproxy's
+    TLS interception. An agent that obtains it can sign certificates
+    for any domain and impersonate any service — defeating every
+    network/credential guard that depends on TLS inspection. This
+    class probes multiple filesystem locations from the adversary's
+    perspective to prove the key is structurally absent.
+    """
 
     def test_no_key_files_in_cert_store(self):
-        """Certificate trust store must not contain .key files."""
+        """No .key files in /usr/local/share/ca-certificates.
+
+        What: List the trust store dir; assert no file has suffix .key.
+        Why: The trust store is the obvious place to accidentally
+        drop a private key alongside its cert. A .key file here is
+        the simplest possible leak pattern.
+        """
         if not CERT_TRUST_STORE.is_dir():
             pytest.skip("Trust store not present")
 
@@ -57,7 +97,13 @@ class TestPrivateKeyAbsent:
         )
 
     def test_no_key_files_in_config_share(self):
-        """Config share must not contain .key files."""
+        """No .key files in /safeyolo (the config share).
+
+        What: List files in /safeyolo; assert no .key suffix.
+        Why: The config share is mounted from the host and could
+        accidentally include key material if prepare_config_share
+        is too greedy about what it copies.
+        """
         if not CONFIG_SHARE.is_dir():
             pytest.skip("Config share not mounted")
 
@@ -68,7 +114,14 @@ class TestPrivateKeyAbsent:
         )
 
     def test_no_private_key_content_in_pem_files(self):
-        """No .pem or .crt file in the VM should contain PRIVATE KEY."""
+        """No .pem/.crt file in cert directories contains PRIVATE KEY.
+
+        What: Walk the trust store, config share, and /etc/ssl/certs;
+        read every .pem/.crt; assert none contain 'PRIVATE KEY'.
+        Why: Catches the naming-convention dodge — even if the file
+        is called .crt (public), it could carry private key content.
+        Tests the content, not the name.
+        """
         search_dirs = [
             CERT_TRUST_STORE,
             CONFIG_SHARE,
@@ -95,16 +148,15 @@ class TestPrivateKeyAbsent:
         )
 
     def test_full_filesystem_scan_for_private_keys(self):
-        """Deep scan: no SafeYolo-related private key exists anywhere in the VM.
+        """Whole-filesystem scan finds no PRIVATE KEY content.
 
-        Walks the entire filesystem (skipping pseudo-filesystems) looking
-        for PEM private key markers in SafeYolo-managed locations and any
-        .key files. Third-party package test fixtures (e.g. in .venv)
-        are excluded — they are not useful for TLS interception.
-
-        The targeted checks above (trust store, config share, cert dirs)
-        already cover the critical paths. This scan catches anything that
-        leaked to unexpected locations.
+        What: os.walk from / (skipping /proc, /sys, /dev, /run and
+        third-party site-packages); read the first 1 KiB of each
+        regular file; assert 'PRIVATE KEY' doesn't appear.
+        Why: The targeted tests above check known-critical paths.
+        This is the catch-all: if the key leaked to a surprising
+        location (/tmp, /var/log, an agent workspace subdir), the
+        targeted tests would miss it but this scan would catch it.
         """
         found = []
         for root, dirs, files in os.walk("/"):

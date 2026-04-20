@@ -12,14 +12,22 @@ import pytest
 
 
 class TestProcessSecrecy:
-    """Verify the proxy process doesn't leak secrets via its cmdline."""
+    """Proxy process doesn't leak SafeYolo tokens via its cmdline.
+
+    Why: Process command lines are readable by any local user via
+    `ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
+    the mitmdump invocation, a non-root user on the host (or a
+    process that escaped the sandbox) can read them and gain full
+    admin control. Tokens must be passed via file or env var instead.
+    """
 
     def test_no_tokens_in_process_cmdline(self):
-        """The mitmdump/proxy process cmdline (visible via ps aux or
-        /proc/PID/cmdline to any user on the host) must not contain
-        tokens or secrets. If the admin token appears there, any
-        local user (or an agent that escapes the sandbox) can read it
-        and gain full SafeYolo admin control.
+        """Admin and agent tokens do not appear in the mitmdump cmdline.
+
+        What: `pgrep -a -f mitmdump` to get the cmdline string; assert
+        the admin and agent token contents are not substrings of it.
+        Why: A token in the cmdline is readable by any local user —
+        full admin access leaks to anyone with shell on the host.
         """
         from pathlib import Path
         config_dir = Path(os.environ.get(

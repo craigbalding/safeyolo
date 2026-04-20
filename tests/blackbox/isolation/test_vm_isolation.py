@@ -46,10 +46,22 @@ def _is_microvm() -> bool:
 
 
 class TestNetworkEscape:
-    """Verify the VM cannot bypass the proxy."""
+    """Sandbox cannot reach external networks except through the proxy.
+
+    Why: The proxy is the sole authorised egress path. Every other
+    network-layer route — direct IP, raw sockets, alternate ports,
+    IPv6, DNS, cloud metadata IPs — must be unreachable. A gap here
+    means data exfiltrates outside the credential/network guards
+    entirely, and the agent operates with no policy enforcement.
+    """
 
     def test_direct_http_blocked(self):
-        """Direct HTTP to external IP (bypassing proxy) must fail."""
+        """Direct HTTP to an external IP (bypassing proxy) fails.
+
+        What: curl --noproxy to http://1.1.1.1; assert non-zero exit.
+        Why: The most basic egress escape — if the agent can just
+        curl any IP directly, the proxy is decorative.
+        """
         result = subprocess.run(
             ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
              "-o", "/dev/null", "http://1.1.1.1"],
@@ -58,7 +70,13 @@ class TestNetworkEscape:
         assert result.returncode != 0, "Direct HTTP to 1.1.1.1 succeeded — firewall breach"
 
     def test_direct_https_blocked(self):
-        """Direct HTTPS to external IP (bypassing proxy) must fail."""
+        """Direct HTTPS to an external IP (bypassing proxy) fails.
+
+        What: curl -k --noproxy to https://8.8.8.8; assert non-zero exit.
+        Why: A firewall that only blocks port 80 would let port 443
+        traffic through. TLS at the IP layer bypasses URL-based
+        inspection entirely.
+        """
         result = subprocess.run(
             ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
              "-k", "-o", "/dev/null", "https://8.8.8.8"],
@@ -67,7 +85,14 @@ class TestNetworkEscape:
         assert result.returncode != 0, "Direct HTTPS to 8.8.8.8 succeeded — firewall breach"
 
     def test_dns_udp_blocked(self):
-        """Raw UDP to external DNS port must fail."""
+        """Raw UDP to 8.8.8.8:53 fails.
+
+        What: Craft a DNS query, sendto() a UDP socket pointed at
+        8.8.8.8:53; assert the receive times out.
+        Why: DNS is a classic covert-channel egress. If UDP/53 is
+        open, an agent can stream data via DNS tunnelling, which
+        never touches the HTTP proxy.
+        """
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(3)
         try:
@@ -87,7 +112,13 @@ class TestNetworkEscape:
             sock.close()
 
     def test_raw_socket_blocked(self):
-        """Raw sockets to external IPs must fail (no ICMP exfiltration)."""
+        """AF_INET raw socket creation fails (no CAP_NET_RAW in sandbox).
+
+        What: socket(AF_INET, SOCK_RAW, IPPROTO_ICMP) then sendto a
+        crafted ICMP echo to 1.1.1.1; assert PermissionError/OSError.
+        Why: ICMP tunnelling and ping-based exfiltration rely on raw
+        sockets. Without CAP_NET_RAW the syscall fails at creation.
+        """
         with pytest.raises((PermissionError, OSError)):
             sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
             try:
@@ -99,12 +130,14 @@ class TestNetworkEscape:
                 sock.close()
 
     def test_direct_alt_port_blocked(self):
-        """Direct TCP to an external IP on non-standard ports must fail.
+        """Direct TCP to 1.1.1.1 on 8443, 22, 6667, 25 all fail.
 
-        Existing tests cover :80 and :443. This widens to ports an
-        agent might try if the firewall whitelisted only the common
-        HTTP/S ports: :8443 (alt-HTTPS), :22 (SSH to external host),
-        :6667 (IRC — historical C2 channel), :25 (SMTP).
+        What: curl --noproxy to 1.1.1.1 on each non-standard port;
+        assert non-zero exit for every port.
+        Why: A firewall that only blocked :80 and :443 would leave
+        every other port open. Alt-HTTPS (:8443), SSH (:22), IRC
+        (:6667, historical C2), SMTP (:25) are all realistic C2/
+        exfil channels the agent might attempt.
         """
         for port in (8443, 22, 6667, 25):
             result = subprocess.run(
@@ -118,13 +151,15 @@ class TestNetworkEscape:
             )
 
     def test_libc_resolver_blocked(self):
-        """DNS via the libc resolver (getaddrinfo) must not resolve an
-        external name. Existing tests probe raw UDP to 8.8.8.8:53 — but
-        an agent using the system resolver routes through whatever
-        /etc/resolv.conf points at; if that nameserver is reachable,
-        the agent can bypass the proxy for lookups (and then stream
-        data via DNS tunnelling). Assert getaddrinfo on an external
-        name fails — no valid resolver should be reachable.
+        """getaddrinfo() on an external name raises gaierror.
+
+        What: socket.getaddrinfo("blackbox-probe-should-not-resolve.
+        example", 80, ...); assert gaierror.
+        Why: Raw UDP/53 blocking alone doesn't cover the libc
+        resolver path. If /etc/resolv.conf points at a reachable
+        nameserver, getaddrinfo quietly succeeds — agents using
+        the system resolver bypass the proxy for lookups and can
+        DNS-tunnel data.
         """
         # "blackbox-probe.example" isn't a real host; we care only whether
         # DNS is reachable at all. An EAI_AGAIN / EAI_NODATA / EAI_NONAME
@@ -134,11 +169,15 @@ class TestNetworkEscape:
                                80, socket.AF_INET, socket.SOCK_STREAM)
 
     def test_non_icmp_raw_protocols_blocked(self):
-        """Raw sockets using non-ICMP IP protocols must also fail. Existing
-        test only covers IPPROTO_ICMP; if the kernel filter scopes raw-
-        socket restriction by protocol number, an agent could try
-        IPPROTO_SCTP, IPPROTO_GRE, IPPROTO_IPIP (tunnelling) to
-        exfiltrate data outside the proxy's TCP/UDP observation window.
+        """Raw sockets for SCTP/GRE/IPIP also fail.
+
+        What: socket(AF_INET, SOCK_RAW, proto) for proto in
+        [132=SCTP, 47=GRE, 4=IPIP]; assert PermissionError/OSError
+        for each.
+        Why: If the sandbox filter scopes raw sockets only by
+        IPPROTO_ICMP, tunnelling protocols (GRE, IPIP, SCTP) leak
+        through and provide alternate exfil paths invisible to
+        TCP/UDP observers.
         """
         # IPPROTO_SCTP = 132, IPPROTO_GRE = 47, IPPROTO_IPIP = 4.
         # Use raw numeric constants since some are absent from socket
@@ -152,11 +191,13 @@ class TestNetworkEscape:
                     sock.close()
 
     def test_ipv6_egress_blocked(self):
-        """IPv6 egress must fail. mitmproxy binds to IPv4; if the sandbox
-        has v6 connectivity, it routes around the proxy entirely.
-        guest-init disables IPv6 at the sysctl level — assert the
-        observable property (no v6 destination reachable), not the
-        mechanism.
+        """IPv6 egress via curl -6 and AF_INET6 socket both fail.
+
+        What: curl -6 to a literal v6 address; AF_INET6 socket
+        connect to the same; both must fail/timeout.
+        Why: mitmproxy binds to IPv4 only. If the sandbox has v6
+        connectivity, the agent can reach any v6-capable destination
+        outside the proxy's view entirely — a complete bypass.
         """
         # Try a AAAA literal (Google DNS v6) via curl.
         result = subprocess.run(
@@ -182,14 +223,13 @@ class TestNetworkEscape:
             sock.close()
 
     def test_metadata_ips_unreachable(self):
-        """Cloud metadata services (AWS/GCP/Azure IMDS at 169.254.169.254,
-        DigitalOcean at 169.254.169.254, GCE alias gateway 10.0.0.1)
-        must be unreachable. A sandbox running on a cloud VM could
-        otherwise SSRF the host's IAM credentials via metadata.
+        """Cloud metadata IPs (169.254.169.254, 169.254.170.2) are unreachable.
 
-        Link-local 169.254.0.0/16 in particular must be blocked — the
-        proxy's allowlist likely doesn't cover it, so this relies on
-        the firewall's block-by-default behaviour.
+        What: curl --noproxy to each metadata IP; assert non-zero exit.
+        Why: On a cloud VM host, link-local metadata endpoints expose
+        instance IAM credentials and user-data. A sandbox that can
+        reach them SSRFs the host's IAM role — often full access to
+        the cloud account.
         """
         for ip in ("169.254.169.254", "169.254.170.2"):  # AWS IMDSv1 + ECS creds
             result = subprocess.run(
@@ -203,10 +243,14 @@ class TestNetworkEscape:
             )
 
     def test_af_packet_blocked(self):
-        """AF_PACKET raw Ethernet sockets must fail (CAP_NET_RAW required).
-        If granted, agent can forge L2 frames on its veth — ARP spoofing,
-        source-IP spoofing past L3 firewall rules, MAC-level probing of
-        the host side.
+        """AF_PACKET socket creation fails.
+
+        What: socket(17 /* AF_PACKET */, SOCK_RAW, 0); assert
+        PermissionError/OSError.
+        Why: AF_PACKET lets the process craft Ethernet frames
+        directly. With it, an agent can ARP-spoof, forge source
+        IPs (bypassing L3 firewall rules by appearing to be the
+        host), or probe the L2 neighbourhood.
         """
         with pytest.raises((PermissionError, OSError)):
             # AF_PACKET = 17 on Linux (not always in socket module namespace
@@ -215,15 +259,15 @@ class TestNetworkEscape:
             sock.close()
 
     def test_dns_tunnel_subdomain_blocked(self):
-        """DNS tunnelling: encode data in subdomain labels, resolve via
-        the system resolver. If the sandbox can resolve arbitrary
-        subdomains, an agent can exfiltrate data by encoding it as
-        DNS queries to a domain it controls (e.g.
-        <base64-chunk>.exfil.attacker.com) — each query leaks ~60
-        bytes and the proxy never sees it because it's DNS, not HTTP.
+        """Arbitrary subdomain under a real TLD does not resolve.
 
-        The sandbox must NOT be able to resolve external names. If
-        getaddrinfo succeeds, the DNS exfiltration path is open.
+        What: getaddrinfo("exfil-data-here.tunnel-probe.httpbin.org",
+        ...); assert gaierror. If it resolves, fail.
+        Why: DNS tunnelling encodes data in subdomain labels
+        (<base64>.exfil.attacker.com) — every query leaks ~60 bytes
+        to a nameserver the attacker controls. The proxy never sees
+        it because it's DNS, not HTTP. The only safe posture is no
+        external name resolution at all.
         """
         exfil_host = "exfil-data-here.tunnel-probe.httpbin.org"
         try:
@@ -242,19 +286,16 @@ class TestNetworkEscape:
         )
 
     def test_host_header_mismatch_routes_by_url(self):
-        """When Host header disagrees with the request URL, policy
-        evaluation and routing MUST follow the URL, not the Host
-        header. The Host header is advisory (RFC 7230 §5.4 — when the
-        URL is absolute, Host is not authoritative).
+        """Host-header mismatch with URL routes by URL (200, not 4xx).
 
-        Security property: an agent cannot smuggle a request to a
-        blocked domain by pointing the URL at an allowed domain and
-        putting the blocked domain in the Host header. The URL is
-        what gets evaluated and what receives the traffic.
-
-        This test sends URL=httpbin.org with Host=evil.com and
-        asserts the flow reaches the sinkhole as httpbin.org (not
-        evil.com).
+        What: Send a proxy'd GET with URL=httpbin.org and
+        Host=evil.com; assert 200 (URL is authoritative; Host is
+        advisory per RFC 7230 §5.4).
+        Why: An agent must not be able to smuggle a blocked
+        destination by putting it in the Host header while keeping
+        an allowed URL. The URL is what gets evaluated and where the
+        traffic goes; confirming that guarantees no Host-based
+        domain-fronting evasion.
         """
         proxy = os.environ.get("HTTP_PROXY", "")
         if not proxy:
@@ -279,7 +320,15 @@ class TestNetworkEscape:
         )
 
     def test_proxy_reachable(self):
-        """Proxy must be reachable (the one allowed network path)."""
+        """HTTP via the proxy to an allowlisted host succeeds (200).
+
+        What: curl through HTTP_PROXY to an allowlisted host with
+        an X-Test-Context header; assert 200.
+        Why: Positive control for the entire isolation suite. If
+        this fails, the agent has no connectivity at all — all
+        other "reachability blocked" assertions become meaningless
+        ("everything is blocked including what should work").
+        """
         proxy = os.environ.get("HTTP_PROXY", "")
         assert proxy, "HTTP_PROXY not set — cannot test proxy reachability"
         # Include X-Test-Context so the test_context addon doesn't
@@ -298,13 +347,14 @@ class TestNetworkEscape:
 
 
 class TestHostAdjacentReachability:
-    """Verify the sandbox cannot reach the host beyond the proxy.
+    """Sandbox cannot reach host-side services other than the proxy.
 
-    The migration from Docker's private bridge to host-level firewall
-    rules (iptables on Linux, pf on macOS) introduces the risk of
-    "pass by default" leaks: anything the firewall didn't explicitly
-    block is reachable. These tests actively probe that — any success
-    connecting to a host-side service other than the proxy is a breach.
+    Why: The agent is meant to reach only the proxy, and everything
+    else on the host (admin API, SSH, arbitrary local services,
+    other agents' subnets) must be off-limits. A pass-by-default
+    configuration (whatever isn't explicitly blocked is reachable)
+    would let an agent pivot to local-only services assumed safe
+    because they're bound to loopback or LAN.
     """
 
     @staticmethod
@@ -342,22 +392,30 @@ class TestHostAdjacentReachability:
             sock.close()
 
     def test_admin_api_unreachable(self):
-        """SafeYolo admin API (default 9090, test instance 9190) must not be
-        reachable from the sandbox. Admin API grants policy/mode control —
-        agent reachability would defeat the sandbox.
+        """SafeYolo admin API ports (9090, 9190) are unreachable.
+
+        What: TCP connect to host:9090 and host:9190 from inside the
+        sandbox; assert both fail.
+        Why: The admin API can change policy modes (block → warn),
+        add allowlist entries, or approve credentials. Agent access
+        to it would defeat every other control SafeYolo enforces —
+        a single-request sandbox escape.
         """
         host = self._host_ip_from_proxy()
         for port in (9090, 9190):
             self._assert_tcp_unreachable(host, port, f"admin API port {port}")
 
     def test_host_ssh_unreachable(self):
-        """Port 22 on loopback must be the sandbox's own sshd (if any),
-        not the host's. Check by comparing the SSH banner: the sandbox's
-        sshd runs inside gVisor and its host key was generated at boot,
-        so the banner won't match the host's known key fingerprint.
+        """Port 22 reachable from sandbox is its own sshd, not the host's.
 
-        If no sshd is listening at all, that's also fine — the property
-        we care about is that the HOST's sshd is unreachable.
+        What: Connect to port 22 on the resolved proxy host; if a
+        banner comes back, the connection terminated to the
+        sandbox-internal sshd (or nothing at all). Pass if
+        timeout/refused.
+        Why: If the agent can reach the host's SSH, it can try
+        password brute force or probe for authorized_keys leaks.
+        The sandbox-internal sshd is a separate service that
+        doesn't run against host keys.
         """
         host = self._host_ip_from_proxy()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -377,14 +435,16 @@ class TestHostAdjacentReachability:
             sock.close()
 
     def test_host_listener_unreachable(self):
-        """Start a listener on a known port on the host before the
-        sandbox boots, then try to reach it from inside. This tests
-        the actual isolation boundary — not whether a specific service
-        happens to be running.
+        """A live TCP listener on the host is unreachable.
 
-        The test harness writes a marker file with the host listener
-        port. If the file doesn't exist, the test was not set up
-        (skip rather than false-pass).
+        What: Read the marker file /safeyolo/host-listener-port
+        (harness starts a real TCP listener on 127.0.0.1:<port>
+        before booting the VM); assert the sandbox cannot connect.
+        Why: Distinguishes "blocked by isolation" from "nothing
+        listening." The listener test guards against future
+        implementation changes — a regression that gave the sandbox
+        routable paths to the host would silently break isolation
+        but pass the arbitrary-port test.
         """
         marker = "/safeyolo/host-listener-port"
         if not os.path.exists(marker):
@@ -395,20 +455,29 @@ class TestHostAdjacentReachability:
         self._assert_tcp_unreachable(host, port, f"host listener on port {port}")
 
     def test_arbitrary_host_port_unreachable(self):
-        """An unused ephemeral port on the host must be unreachable — proves
-        the firewall is block-by-default for host-destined traffic, not
-        pass-by-default with a narrow deny list. Uses 44444 (IANA
-        unregistered) as a port nothing legitimate is listening on.
+        """An unused port (44444) on the host is unreachable.
+
+        What: TCP connect to host:44444; assert fail.
+        Why: Together with test_host_listener_unreachable, confirms
+        block-by-default — an arbitrary port nothing listens on
+        should still be unreachable (not just refused by the
+        kernel because no service is bound). Complements the
+        live-listener test for full coverage.
         """
         host = self._host_ip_from_proxy()
         self._assert_tcp_unreachable(host, 44444, "arbitrary unused port 44444")
 
     def test_cross_agent_ip_unreachable(self):
-        """Other agents' attribution IPs (10.200.0.0/16 range) must not
-        be reachable from this sandbox. Each agent runs in its own
-        loopback-only network namespace — there is no shared network
-        between agents. Probe neighbouring agent IPs to confirm
-        structural isolation.
+        """Adjacent agents' attribution IPs are unreachable.
+
+        What: Derive this agent's attribution IP (10.200.x.y) from
+        loopback; probe TCP on the neighbouring ±1 offsets; assert
+        both unreachable.
+        Why: Each agent runs in an isolated netns with its own
+        loopback. If one agent could reach another's attribution
+        IP, cross-agent lateral movement would be possible — an
+        agent compromised by the user's content could pivot to a
+        neighbouring agent's workspace.
         """
         # Derive our own agent IP from loopback
         try:
@@ -443,13 +512,14 @@ class TestHostAdjacentReachability:
                     )
 
     def test_sinkhole_direct_unreachable(self):
-        """Sinkhole ports bind to 0.0.0.0 on the host during test runs, so
-        they're a real, listening target. Sandbox traffic to those ports
-        must only reach them *via the proxy* (which routes specific
-        hostnames there); direct sandbox → host-sinkhole-port connects
-        must be firewall-blocked. This is the strongest version of the
-        "arbitrary port" check because it can't pass trivially — there
-        is definitely something listening.
+        """Sinkhole ports 18080/18443/19999 unreachable direct from sandbox.
+
+        What: TCP connect to host:18080, :18443, :19999 (sinkhole
+        HTTP, HTTPS, control API); assert all fail.
+        Why: Sinkhole ports bind 0.0.0.0 during test runs, so they
+        ARE listening — unlike the 44444 test. A direct sandbox →
+        sinkhole connect succeeding here would mean the isolation
+        boundary has a real hole, not just absence of services.
         """
         host = self._host_ip_from_proxy()
         for port in (18080, 18443, 19999):
@@ -457,30 +527,55 @@ class TestHostAdjacentReachability:
 
 
 class TestPrivilegeEscalation:
-    """Verify privilege escalation vectors are blocked."""
+    """Agent cannot gain root, load modules, or poke kernel memory.
+
+    Why: Every local privilege-escalation vector — running as root,
+    setuid(0), kernel module loading, /dev/mem, eBPF — is a path
+    to full sandbox escape. The agent must run unprivileged and be
+    unable to acquire privileges through any of these mechanisms.
+    """
 
     def test_runs_as_nonroot(self):
-        """Agent process must not run as root."""
+        """Agent process uid is not 0.
+
+        What: os.getuid() != 0.
+        Why: Running as root in the sandbox elevates the impact of
+        every subsequent bug. Even with namespaces, root-inside-a-
+        container is one kernel vuln away from host root.
+        """
         assert os.getuid() != 0, "Running as root (UID 0)"
 
     def test_expected_uid(self):
-        """Agent process should run as uid 1000."""
+        """Agent process runs as uid 1000.
+
+        What: os.getuid() == 1000.
+        Why: The attribution chain (service_discovery, bind-mount
+        ownership, userns mapping) all assume uid 1000 inside the
+        sandbox. A different uid means ownership mismatches and
+        identity confusion.
+        """
         assert os.getuid() == 1000, f"Expected UID 1000, got {os.getuid()}"
 
     def test_cannot_gain_root(self):
-        """Agent must not be able to escalate to root."""
+        """setuid(0) raises PermissionError.
+
+        What: os.setuid(0) under pytest.raises(PermissionError).
+        Why: If setuid to root works, the agent is 'nonroot' only
+        by convention. Any suid binary or kernel bug that bypasses
+        normal checks could elevate. Must fail at the syscall level.
+        """
         with pytest.raises(PermissionError):
             os.setuid(0)
 
     def test_kernel_modules_disabled(self):
-        """Kernel module loading must be disabled.
+        """init_module(2) syscall returns non-success.
 
-        Calls init_module(2) directly. A hardened kernel (CONFIG_MODULES=n)
-        or a gVisor sandbox returns a non-success errno; either keeps the
-        agent from loading kernel code. We assert only that the syscall
-        did not succeed — the specific errno varies by platform
-        (ENOSYS on a modules-disabled kernel; EPERM/EACCES on gVisor's
-        user-space kernel layer).
+        What: Direct syscall to init_module with null args; assert
+        return value is -1 and errno non-zero.
+        Why: Loading a kernel module is immediate, total compromise
+        — the module runs in ring 0. Blocked either by
+        CONFIG_MODULES=n in the guest kernel, or by gVisor's
+        user-space kernel rejecting the syscall.
         """
         import platform as _platform
         # SYS_init_module is architecture-specific.
@@ -499,15 +594,35 @@ class TestPrivilegeEscalation:
         assert err != 0, f"init_module returned -1 with errno=0 (unexpected)"
 
     def test_no_dev_mem(self):
-        """/dev/mem must not exist (no physical memory access)."""
+        """/dev/mem does not exist in the sandbox.
+
+        What: os.path.exists("/dev/mem") is False.
+        Why: /dev/mem is a direct view of physical RAM. If present
+        and readable, the agent can dump kernel data structures and
+        potentially extract secrets from other processes.
+        """
         assert not os.path.exists("/dev/mem"), "/dev/mem exists — physical memory accessible"
 
     def test_no_dev_kmem(self):
-        """/dev/kmem must not exist (no kernel memory access)."""
+        """/dev/kmem does not exist in the sandbox.
+
+        What: os.path.exists("/dev/kmem") is False.
+        Why: /dev/kmem exposes kernel virtual memory directly —
+        easier to parse than /dev/mem and equally dangerous for
+        secret extraction.
+        """
         assert not os.path.exists("/dev/kmem"), "/dev/kmem exists — kernel memory accessible"
 
     def test_ebpf_blocked(self):
-        """BPF syscall must not be available (no eBPF programs)."""
+        """bpf(2) syscall fails.
+
+        What: Invoke syscall numbers 321 (x86_64) and 280 (aarch64)
+        for SYS_bpf with zero args; if any returns 0, fail.
+        Why: eBPF programs run in kernel context with wide access —
+        network introspection, kprobe instrumentation, cgroup
+        hooks. Even with verifier constraints, eBPF has been a
+        recurring privilege-escalation vector.
+        """
         libc_name = ctypes.util.find_library("c")
         if not libc_name:
             pytest.skip("libc not found")
@@ -521,16 +636,38 @@ class TestPrivilegeEscalation:
 
 
 class TestFilesystemIsolation:
-    """Verify filesystem isolation properties."""
+    """Config share mount is read-only and holds no private keys.
+
+    Why: /safeyolo contains configuration and agent metadata from
+    the host. It is mounted read-only so a compromised agent can't
+    write back to the host's config, and must never contain private
+    key material that a TLS-intercept attack would benefit from.
+    """
 
     def test_config_share_readonly(self):
-        """Config share (/safeyolo) must be read-only."""
+        """Writes to /safeyolo raise OSError.
+
+        What: open("/safeyolo/test-write-attempt", "w") under
+        pytest.raises(OSError).
+        Why: A writable config share would let the agent modify
+        its own configuration (proxy settings, policy files) and
+        potentially affect the host's view of agent state. Must
+        be read-only.
+        """
         with pytest.raises(OSError):
             with open("/safeyolo/test-write-attempt", "w") as f:
                 f.write("should fail")
 
     def test_no_private_key_in_config_share(self):
-        """Config share must not contain any private key files."""
+        """No file in /safeyolo contains PRIVATE KEY markers or has .key suffix.
+
+        What: List /safeyolo files; reject any whose name contains
+        'private' or ends in '.key', or whose first 500 bytes
+        contain 'PRIVATE KEY'.
+        Why: The CA private key is the root of trust for TLS
+        interception. A stray copy on the config share is
+        game-over for cert verification.
+        """
         if not os.path.isdir("/safeyolo"):
             pytest.skip("/safeyolo not mounted")
 
@@ -553,20 +690,25 @@ class TestFilesystemIsolation:
 
 
 class TestSandboxExposure:
-    """Verify attack-surface reduction: device nodes, /proc/sys leaks,
-    firewall-rule disclosure, process visibility. Each probe is a thing
-    a captured-agent adversary would reach for when hunting for escape
-    vectors; if any succeed, that's a hardening gap.
+    """Sandbox surfaces (/dev, /proc, PID namespace) expose nothing useful.
+
+    Why: A hardened sandbox minimises what the adversary can inspect
+    or manipulate. Each leaked surface — an unexpected device node,
+    a readable /proc/kcore, a full host process list — is a rung on
+    the escalation ladder. These probes test the reduction, not the
+    mechanism (which varies between gVisor and VZ).
     """
 
     def test_dev_whitelist(self):
-        """Broad /dev enumeration — anything outside the expected set
-        is a hardening gap.
+        """Every /dev entry is on the expected whitelist.
 
-        Instead of targeting known-bad devices by name (which misses
-        novel entries), enumerate everything in /dev and assert it's
-        all on the whitelist. If the runtime adds a new device in a
-        future version, this test catches it before it ships.
+        What: Enumerate /dev; compare against the expected set
+        (plus prefixed exceptions for microVMs); assert no
+        unexpected entries.
+        Why: Novel device entries are attack surface. This test is
+        deliberately allowlist-based rather than blocklist-based —
+        if the runtime adds a new device, the test fails until a
+        human evaluates whether it should be there.
         """
         # Minimal set common to both gVisor and microVMs.
         whitelist = {
@@ -607,8 +749,13 @@ class TestSandboxExposure:
         )
 
     def test_proc_kcore_unreadable(self):
-        """/proc/kcore exposes kernel memory as an ELF. Must not be
-        readable from the sandbox.
+        """/proc/kcore is absent or unreadable.
+
+        What: Skip if /proc/kcore doesn't exist; otherwise, open
+        it under pytest.raises(PermissionError/OSError).
+        Why: /proc/kcore is a live view of kernel memory as an ELF
+        core dump. Reading it leaks kernel data structures and
+        credentials from other processes.
         """
         if not os.path.exists("/proc/kcore"):
             return  # absent is acceptable
@@ -617,9 +764,14 @@ class TestSandboxExposure:
                 f.read(16)
 
     def test_proc_kallsyms_redacted(self):
-        """/proc/kallsyms leaks kernel symbol addresses (ROP gadgets). If
-        present, symbols must be redacted to 0x0 when read by an
-        unprivileged process.
+        """/proc/kallsyms (if readable) shows addresses redacted to zero.
+
+        What: Read first 50 lines of /proc/kallsyms; assert every
+        line starts with '0000000000000000'.
+        Why: Unredacted kernel symbol addresses give attackers
+        exact offsets for ROP/JOP gadgets — a major leg-up for
+        kernel-exploit chains. Modern kernels redact to zero for
+        unprivileged readers; this test catches regressions.
         """
         if not os.path.exists("/proc/kallsyms"):
             return
@@ -637,8 +789,14 @@ class TestSandboxExposure:
         )
 
     def test_sys_kernel_debug_inaccessible(self):
-        """/sys/kernel/debug exposes kernel internals (tracefs). Must
-        not be readable.
+        """/sys/kernel/debug is absent or unreadable.
+
+        What: Skip if /sys/kernel/debug doesn't exist; else, call
+        os.listdir() under pytest.raises(PermissionError/OSError).
+        Why: debugfs/tracefs expose kernel internals (probes, event
+        tracers, module lists). A listable /sys/kernel/debug is a
+        broad surface for kernel introspection and — via tracefs —
+        a privilege-escalation vector.
         """
         debug = "/sys/kernel/debug"
         if not os.path.exists(debug):
@@ -650,12 +808,14 @@ class TestSandboxExposure:
         pytest.fail(f"{debug} is listable from the sandbox")
 
     def test_pid_namespace_isolated(self):
-        """PID 1 must be the sandbox's own init, not the host's.
+        """PID 1's cmdline is the sandbox init, not the host's.
 
-        If PID namespace isolation is broken, /proc/1/cmdline exposes
-        the host's init system (systemd, /sbin/init). In a properly
-        isolated sandbox, PID 1 is the container entrypoint (guest-init
-        on both gVisor and microVM).
+        What: Read /proc/1/cmdline; assert it does NOT contain
+        'systemd', '/sbin/init', or 'launchd'.
+        Why: If PID 1 is the host's init, the PID namespace is
+        leaking through and the agent can read the full host
+        process table — every running service's cmdline, including
+        argv secrets and parent hierarchies.
         """
         try:
             cmdline = open("/proc/1/cmdline", "rb").read().decode(
@@ -673,9 +833,14 @@ class TestSandboxExposure:
             )
 
     def test_firewall_rules_not_readable(self):
-        """iptables(-save) / pfctl must fail inside the sandbox — the
-        firewall topology is not a property the agent should enumerate.
-        CAP_NET_ADMIN would be required on Linux and isn't granted.
+        """iptables/pfctl don't emit rules from inside the sandbox.
+
+        What: Run `iptables -L`, `iptables-save`, `pfctl` if present;
+        fail if any exits 0 with non-empty output.
+        Why: An agent that can enumerate host firewall rules learns
+        exactly which ports/IPs are reachable via which path — a
+        map of the egress surface to probe. Also implies CAP_NET_ADMIN,
+        which the sandbox must not have.
         """
         # `iptables -L` prints and exits 0 on an empty table but needs
         # CAP_NET_ADMIN and the kernel netfilter namespace to read. In
@@ -694,12 +859,15 @@ class TestSandboxExposure:
                 )
 
     def test_host_ssh_not_reachable_via_sandbox_sshd(self):
-        """Defence-in-depth: even if an agent rooted itself inside the
-        sandbox (which the other tests assert it cannot), the sandbox's
-        own sshd — running to let the operator connect IN — must not
-        provide an egress channel to the host. Assert no ssh-client
-        credential material is present that would let the sandbox ssh
-        OUT to the host or another agent.
+        """No SSH private keys are present in the sandbox filesystem.
+
+        What: Check /root/.ssh/ and /home/agent/.ssh/ for id_ed25519
+        or id_rsa; fail if any exists.
+        Why: Defence-in-depth. The sandbox runs sshd for inbound
+        operator access, but must not possess client private keys
+        that could be used to ssh OUT to the host or another agent.
+        A leaked private key turns the sandbox into a lateral-
+        movement pivot.
         """
         for path in ("/root/.ssh/id_ed25519", "/root/.ssh/id_rsa",
                      "/home/agent/.ssh/id_ed25519", "/home/agent/.ssh/id_rsa"):
@@ -714,19 +882,26 @@ class TestSandboxExposure:
 
 
 class TestFilesystemBoundary:
-    """Verify workspace/virtiofs and overlayfs boundaries can't be abused
-    to escape or compromise the host.
+    """Workspace mount is contained; no setuid, mknod, or traversal escape.
+
+    Why: /workspace is a shared surface between agent and host. If
+    the agent can create setuid binaries, device nodes, or symlinks
+    that leak outside the mount, it can either escalate inside the
+    sandbox or trick the host into touching files outside /workspace.
     """
 
     def test_workspace_symlink_traversal(self):
-        """Create a symlink inside /workspace pointing to /etc/shadow on
-        the host. If the host follows it (e.g. via virtiofs passthrough),
-        the agent can read host files outside the mount.
+        """Symlink to /etc/shadow inside /workspace doesn't reach host files.
 
-        On gVisor (lisafs gofer) this should resolve within the sandbox's
-        rootfs, not the host. On VZ microVMs (virtiofs) the mount layer
-        prevents traversal. Either way, the read must fail or return the
-        sandbox's own /etc/shadow (which has no real credentials).
+        What: Create /workspace/.../shadow-link → /etc/shadow; try
+        to read it. If readable, assert the content does NOT look
+        like the host's real shadow file (which would have many
+        colon-separated fields and 'root:' entries).
+        Why: virtiofs/lisafs gofer mounts are supposed to contain
+        traversal within the sandbox rootfs. A bug that followed
+        symlinks on the host side would let the agent read any host
+        file the mount process can see — /etc/shadow, SSH keys,
+        cloud credentials.
         """
         import tempfile
         link_dir = tempfile.mkdtemp(dir="/workspace", prefix="symtest-")
@@ -749,9 +924,15 @@ class TestFilesystemBoundary:
             os.rmdir(link_dir)
 
     def test_workspace_no_setuid(self):
-        """setuid bits on files written to /workspace must not take effect.
-        The workspace mount should have `nosuid` — otherwise an agent
-        can create a setuid-root binary and escalate.
+        """setuid bit on a /workspace binary doesn't execute as root.
+
+        What: Create a script in /workspace, chmod 4755 (setuid
+        root), execute it; if it reports 'root', fail. Bit present
+        on disk but not effective at exec is acceptable.
+        Why: /workspace should be mounted `nosuid`. Otherwise the
+        agent (uid 1000) could make a suid-root shell and
+        immediately gain root inside the sandbox — the first step
+        of most escape paths.
         """
         import stat
         import tempfile
@@ -785,8 +966,14 @@ class TestFilesystemBoundary:
             os.unlink(test_file.name)
 
     def test_workspace_no_mknod(self):
-        """mknod on /workspace must fail. If allowed, agent can create
-        device nodes (e.g. /dev/sda equivalent) on the shared mount.
+        """mknod on /workspace fails with PermissionError/OSError.
+
+        What: os.mknod('/workspace/.../testdev', S_IFCHR, makedev(1,3));
+        assert the call fails.
+        Why: /workspace should be mounted `nodev` and the sandbox
+        should lack CAP_MKNOD. Device nodes on a shared mount let
+        the agent access arbitrary devices (raw block devices like
+        /dev/sda, tty, etc.) once the host views the file.
         """
         import tempfile
         mknod_path = os.path.join(
@@ -806,10 +993,14 @@ class TestFilesystemBoundary:
             os.rmdir(os.path.dirname(mknod_path))
 
     def test_ca_trust_store_immutable(self):
-        """An agent must not be able to add CAs to the trust store and
-        then MITM its own traffic to hide from the proxy. The system
-        trust store (update-ca-certificates target) should be read-only
-        or the addition should have no effect on proxy behaviour.
+        """Writes to /usr/local/share/ca-certificates fail.
+
+        What: Attempt to write a fake-CA PEM to the trust store
+        directory; expect PermissionError/OSError.
+        Why: If the agent can add a CA to its own trust store, it
+        can stand up a local MITM for its own traffic — TLS-
+        inspecting requests that should have gone through SafeYolo.
+        The trust store must be read-only to uid 1000.
         """
         # Attempt to write a fake CA cert. The target dir is
         # /usr/local/share/ca-certificates/ — if writable, the agent
@@ -848,14 +1039,14 @@ class TestFilesystemBoundary:
 
 
 class TestSyscallSeccompEquivalents:
-    """Verify syscalls that Docker's default seccomp profile drops are
-    also unreachable on this runtime. Docker-on-Linux drops ~44 syscalls
-    by default; the most security-relevant are keyctl/add_key (kernel
-    keyring injection), pivot_root/mount (namespace manipulation),
-    unshare(CLONE_NEWUSER) (user-namespace creation, historical escape
-    vehicle), and ptrace (process introspection). gVisor's user-space
-    kernel should either reject or no-op these; if any *succeed*, the
-    hardening gap matters.
+    """Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.
+
+    Why: Docker's default seccomp profile drops ~44 syscalls that
+    are rarely legitimate and historically exploited — kernel
+    keyring injection (CVE-2017-6074), pivot_root filesystem
+    escape, user-namespace creation as escalation vehicle, ptrace
+    process introspection. Blackbox checks confirm the same
+    exposures are closed on the current runtime (gVisor or VZ).
     """
 
     @staticmethod
@@ -881,9 +1072,14 @@ class TestSyscallSeccompEquivalents:
         assert err != 0, f"{name} returned -1 with errno=0"
 
     def test_keyctl_blocked(self):
-        """keyctl(2) — kernel keyring manipulation. In Docker's default
-        seccomp drop list because it's the vector used in CVE-2017-6074
-        and various keyring-related privilege escalations.
+        """keyctl(2) returns -1 with non-zero errno.
+
+        What: Call SYS_keyctl with KEYCTL_GET_KEYRING_ID=0 and zero
+        args; assert ret == -1 and errno != 0.
+        Why: The kernel keyring is a shared store across processes.
+        CVE-2017-6074 and several related issues exploited keyctl
+        to escalate privileges. Blocked in Docker's default seccomp
+        for exactly this reason.
         """
         # SYS_keyctl: x86_64=250, aarch64=217
         num = self._syscall_num({"x86_64": 250, "aarch64": 217})
@@ -891,7 +1087,12 @@ class TestSyscallSeccompEquivalents:
         self._assert_syscall_fails(num, (0, 0, 0, 0, 0), "keyctl")
 
     def test_add_key_blocked(self):
-        """add_key(2) — adds keys to kernel keyring. Dropped by Docker
+        """add_key(2) returns -1 with non-zero errno.
+
+        What: Call SYS_add_key with zero args; assert ret == -1 and
+        errno != 0.
+        Why: Companion to keyctl — adds keys to the kernel keyring.
+        Same privilege-escalation exposure. Blocked in Docker's
         default seccomp.
         """
         # SYS_add_key: x86_64=248, aarch64=217 (note: keyctl and add_key
@@ -900,21 +1101,31 @@ class TestSyscallSeccompEquivalents:
         self._assert_syscall_fails(num, (0, 0, 0, 0, 0), "add_key")
 
     def test_pivot_root_blocked(self):
-        """pivot_root(2) — moves the root filesystem. Escape technique
-        when combined with a mount from a controlled directory.
+        """pivot_root(2) returns -1 with non-zero errno.
+
+        What: Call SYS_pivot_root with zero args; assert ret == -1
+        and errno != 0.
+        Why: pivot_root moves the root filesystem — combined with
+        a mount from an attacker-controlled directory, it's a
+        classic container escape. Must not be callable from the
+        sandbox.
         """
         # SYS_pivot_root: x86_64=155, aarch64=41
         num = self._syscall_num({"x86_64": 155, "aarch64": 41})
         self._assert_syscall_fails(num, (0, 0), "pivot_root")
 
     def test_unshare_user_ns_contained(self):
-        """unshare(CLONE_NEWUSER) — if it succeeds, the new namespace
-        must not grant access to anything the sandbox doesn't already
-        have. Tests the escape, not the syscall.
+        """unshare(CLONE_NEWUSER) grants no new access even if it succeeds.
 
-        On gVisor, unshare succeeds (emulated in the sentry). On VZ
-        microVMs, unshare succeeds (real kernel, but VM-isolated).
-        Both are fine IF the new namespace can't escalate privileges.
+        What: Call unshare with CLONE_NEWUSER. If it fails, pass
+        (strongest outcome). If it succeeds, verify /etc/shadow is
+        still unreadable, PID 1's cmdline still doesn't reveal host
+        init, and /safeyolo is still read-only.
+        Why: gVisor's sentry emulates namespaces, and VZ microVMs
+        run real kernels — both allow the syscall. The property
+        that matters is that the new namespace doesn't grant
+        privileges the agent didn't already have. Tests the
+        escape, not the syscall.
         """
         # SYS_unshare: x86_64=272, aarch64=97
         num = self._syscall_num({"x86_64": 272, "aarch64": 97})
@@ -962,9 +1173,14 @@ class TestSyscallSeccompEquivalents:
             pass  # expected
 
     def test_ptrace_init_blocked(self):
-        """ptrace(PTRACE_ATTACH, 1, ...) — attach to pid 1. If granted,
-        agent can read init's memory / inject code. Docker's seccomp
-        drops ptrace entirely by default; gVisor has its own layer.
+        """ptrace(PTRACE_ATTACH, 1, ...) returns -1.
+
+        What: Call SYS_ptrace with PTRACE_ATTACH on pid 1; assert
+        ret == -1 and errno != 0.
+        Why: Attaching to init lets the agent read memory (keys,
+        tokens) from the most privileged process in the sandbox
+        and potentially inject code. Docker drops ptrace entirely
+        in its default seccomp.
         """
         # SYS_ptrace: x86_64=101, aarch64=117
         num = self._syscall_num({"x86_64": 101, "aarch64": 117})
