@@ -653,11 +653,17 @@ def _check_userns() -> DiagResult:
         issues.append("/etc/subuid: no entry for current user")
     if not info["subgid"]:
         issues.append("/etc/subgid: no entry for current user")
+    if not info["setfacl"]:
+        issues.append("setfacl not found (install the `acl` package)")
     if info["apparmor_restricts"] and not info["apparmor_profile_loaded"]:
         issues.append("AppArmor restricts userns but safeyolo-runsc profile not loaded")
 
     if not issues:
-        parts = ["newuidmap/newgidmap available", "subuid/subgid configured"]
+        parts = [
+            "newuidmap/newgidmap available",
+            "subuid/subgid configured",
+            "setfacl available",
+        ]
         if info["apparmor_restricts"]:
             parts.append("AppArmor profile loaded")
         return DiagResult(

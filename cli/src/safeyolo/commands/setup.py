@@ -80,6 +80,10 @@ def setup() -> None:
 
         # User namespace prerequisites
         userns = check_userns_prerequisites()
+        if not userns["setfacl"]:
+            console.print("  [red]MISSING[/red]  setfacl (required for rootless rootfs ACL)")
+            console.print("    Debian/Ubuntu: [bold]sudo apt-get install acl[/bold]")
+            all_ok = False
         if userns["apparmor_restricts"]:
             if userns["apparmor_profile_loaded"]:
                 console.print("  [green]OK[/green]  AppArmor profile (safeyolo-runsc)")

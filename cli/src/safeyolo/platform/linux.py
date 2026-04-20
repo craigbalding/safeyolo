@@ -214,6 +214,7 @@ def check_userns_prerequisites() -> dict:
       newgidmap: bool — newgidmap binary available
       subuid: bool — /etc/subuid has entry for current user
       subgid: bool — /etc/subgid has entry for current user
+      setfacl: bool — setfacl available (grants runsc state dir to uid 100000)
       apparmor_restricts: bool — kernel restricts unprivileged userns
       apparmor_profile_loaded: bool — safeyolo-runsc profile loaded
     """
@@ -225,6 +226,7 @@ def check_userns_prerequisites() -> dict:
         "newgidmap": shutil.which("newgidmap") is not None,
         "subuid": False,
         "subgid": False,
+        "setfacl": shutil.which("setfacl") is not None,
         "apparmor_restricts": needs_apparmor(),
         "apparmor_profile_loaded": False,
     }
@@ -469,17 +471,23 @@ class LinuxPlatform(AgentPlatform):
 
         # runsc inside the userns operates as subordinate uid 100000
         # on the host filesystem and needs rwx on its state dir.
-        # Preferred: ACL scoped to that single uid. Fallback: 0o777
-        # (the parent ~/.safeyolo/ is 0o700 so no non-operator can
-        # reach here anyway; this is only effective on the handful
-        # of uids inside the operator's subordinate range).
+        # Scope the grant tightly via ACL to that single uid rather
+        # than widening the mode bits. setfacl ships in the same
+        # `acl` package as getfacl, which we already depend on.
         try:
             subprocess.run(
                 ["setfacl", "-m", "u:100000:rwx", str(root)],
                 check=True, capture_output=True,
             )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            os.chmod(root, 0o777)  # noqa: S103 - scoped by parent 0o700
+        except FileNotFoundError as err:
+            raise RuntimeError(
+                "setfacl not found. Install the `acl` package "
+                "(Debian/Ubuntu: `sudo apt-get install acl`)."
+            ) from err
+        except subprocess.CalledProcessError as err:
+            raise RuntimeError(
+                f"setfacl failed on {root}: {err.stderr.decode(errors='replace')}"
+            ) from err
 
         # Clean stale state from previous run. Create a temporary
         # userns if needed — runsc state is owned by uid 100000.
