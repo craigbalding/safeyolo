@@ -133,7 +133,11 @@ if [ -f /safeyolo/host-mounts ]; then
         else
             mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
         fi
-        chown -R agent:agent "$guest_path"
+        # No chown: on gVisor the userns map (container uid 1000 →
+        # host operator uid) already presents host-owned files as
+        # agent-owned; on macOS VZ VirtioFS maps ownership at the FS
+        # layer (verified: /home/agent/.safeyolo-hooks reads+writes
+        # as agent without any chown). chown on VirtioFS fails anyway.
     done < /safeyolo/host-mounts
 fi
 
