@@ -161,6 +161,13 @@ if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; t
         else
             echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
             echo "installing" > /safeyolo-status/vm-status
+            # Match the static-phase backend-install logic — npm-backed
+            # packages need node+npm first.
+            case "${SAFEYOLO_MISE_PACKAGE}" in
+                npm:*)
+                    timeout 180 su agent -lc "mise use -g node@22" >> /safeyolo-status/install.log 2>&1 || true
+                    ;;
+            esac
             timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
     fi

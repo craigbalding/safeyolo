@@ -323,6 +323,15 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # binary even when it's correctly installed.
         if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
             echo "installing" > /safeyolo-status/vm-status
+            # npm-backed packages need node+npm installed first — mise
+            # doesn't auto-install the backend runtime. Since MISE_DATA_DIR
+            # lives in the agent's persistent $HOME, this install runs
+            # once per agent and is cached thereafter.
+            case "${SAFEYOLO_MISE_PACKAGE}" in
+                npm:*)
+                    timeout 180 su agent -lc "mise use -g node@22" >> /safeyolo-status/install.log 2>&1 || true
+                    ;;
+            esac
             timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
         # Ground vm-status in reality. `mise use -g` can exit nonzero
