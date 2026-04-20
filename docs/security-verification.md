@@ -2,46 +2,76 @@
 
 Evidence and verification procedures for SafeYolo's security claims. For the security model and properties, see [SECURITY.md](../SECURITY.md).
 
-## Container Security
+## Proxy Process
 
-**Don't trust pre-built images?** Build locally from source:
+mitmproxy runs as a host process — not in a container. The proxy's
+integrity depends on pinned dependencies and the guest images it
+provisions to sandboxes.
 
-```bash
-docker build -t safeyolo .
-```
-
-### Container Hardening
+### Proxy Hardening
 
 | Aspect | Implementation | Where |
 |--------|----------------|-------|
-| Base image | `python:3.13-slim` pinned by SHA256 digest | [Dockerfile](../Dockerfile) |
-| OS packages | Single package: tmux (no curl, no network tools) | [Dockerfile](../Dockerfile) |
-| Python deps | Locked with hashes in `uv.lock` | [uv.lock](../uv.lock) |
-| No Docker socket | Container cannot access Docker API | [docker-compose.yml](../docker-compose.yml) |
-| Non-root | Runs as host UID/GID via compose | [docker-compose.yml](../docker-compose.yml) |
-| Read-only root | `read_only: true` with tmpfs for /tmp | [docker-compose.yml](../docker-compose.yml) |
+| Python deps | Locked with hashes in `uv.lock` (hash-pinned, `--frozen`) | [uv.lock](../uv.lock) |
+| mitmproxy version | Pinned in `pyproject.toml` | [pyproject.toml](../pyproject.toml) |
+| No root at runtime | Started by the operator, runs as the operator's uid | n/a |
+| Bind address | Loopback by default; listen host configurable | [cli/src/safeyolo/proxy.py](../cli/src/safeyolo/proxy.py) |
+| Admin API gating | Bearer token in `~/.safeyolo/data/admin_token`, mode 0600 | [addons/admin_api.py](../addons/admin_api.py), [addons/admin_shield.py](../addons/admin_shield.py) |
+| Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/test_firewall_structural.py](../tests/blackbox/host/test_firewall_structural.py) |
 
-### What the Container Can Access
+## Agent Sandbox
 
-- **Mounted volumes only:** `~/.safeyolo/` for config, logs, certs
-- **Network:** Listens on configured ports (8080, 9090 by default)
-- **No host filesystem:** Cannot read/write outside mounted paths
-- **No Docker socket:** Neither proxy nor agent containers have `/var/run/docker.sock` mounted — all Docker operations are performed by the CLI on the host
+Each agent runs in an isolated sandbox with **no external network interface**.
+
+| Platform | Runtime | Rootfs | Isolation |
+|----------|---------|--------|-----------|
+| macOS (Apple Silicon) | `safeyolo-vm` on Apple Virtualization.framework | per-agent ext4 disk image | Hardware-backed microVM |
+| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | single shared EROFS image, memory-backed writable overlay | Sentry-emulated kernel; optional KVM hardware platform |
+
+### Sandbox Hardening
+
+| Aspect | Implementation | Where |
+|--------|----------------|-------|
+| No external interface | Sandbox netns has only loopback (Linux); VM has no virtio-net (macOS) | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py), [cli/src/safeyolo/platform/darwin.py](../cli/src/safeyolo/platform/darwin.py) |
+| Only egress = proxy UDS | Per-agent Unix socket bind-mounted at `/safeyolo/proxy.sock` inside the sandbox | [cli/src/safeyolo/proxy_bridge.py](../cli/src/safeyolo/proxy_bridge.py) |
+| Identity on every flow | PROXY protocol v2 header stamped by the bridge; parsed by `next_layer` addon | [addons/proxy_protocol.py](../addons/proxy_protocol.py) |
+| Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
+| Agent user | Runs as uid 1000 inside the sandbox; host operator uid maps to 1000 via userns | [guest/rootfs-customize-hook.sh](../guest/rootfs-customize-hook.sh) |
+| Minimal capabilities | CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_NET_ADMIN for init only — no CAP_NET_RAW, no CAP_SYS_ADMIN | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
+| Read-only config share | `/safeyolo` mounted `ro` | [cli/src/safeyolo/vm.py](../cli/src/safeyolo/vm.py) |
+| Read-only rootfs (Linux) | EROFS image; writable overlay lives in gVisor's sentry, not on disk | [guest/build-rootfs.sh](../guest/build-rootfs.sh) |
 
 ### Build Verification
 
+Build everything from source (no pre-built images):
+
 ```bash
-# Build from source
-docker build -t safeyolo:local .
+# Build the guest rootfs and kernel artefacts
+cd guest && ./build-all.sh && cd ..
+mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
 
-# Verify digest matches Dockerfile
-docker inspect safeyolo:local --format='{{.Config.Image}}'
+# Install the CLI + proxy dependencies from the hash-pinned lockfile
+uv sync --all-packages --frozen
 
-# Check no unexpected SUID binaries
-docker run --rm safeyolo:local find / -perm -4000 2>/dev/null
+# macOS only: the Swift VM helper
+cd vm && make install && cd ..
+```
 
-# Verify runs as non-root
-docker run --rm safeyolo:local id
+Verify the shipped artefacts:
+
+```bash
+# Hash-check the EROFS rootfs (Linux) or ext4 image (macOS)
+sha256sum ~/.safeyolo/share/rootfs-base.erofs     # Linux
+sha256sum ~/.safeyolo/share/rootfs-base.ext4      # macOS
+
+# See what the proxy is actually running with (tokens never appear here)
+pgrep -a mitmdump
+
+# Host-level prerequisites + current sandbox runtime detection
+safeyolo setup       # apply one-time config (AppArmor, /dev/kvm udev rule)
+safeyolo doctor      # full health check; reports runtime, isolation
+                     # platform (KVM vs systrap), userns prerequisites,
+                     # guest images, running agents
 ```
 
 ## Automated Security Testing
