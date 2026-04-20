@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# SafeYolo guest-init — STATIC phase.
+# SafeYolo guest-init -- STATIC phase.
 #
 # Runs the setup that is identical across every run of this agent and
 # therefore snapshottable: network bring-up, VirtioFS mounts, CA trust,
 # sshd, ipv6 disable, VM-IP discovery. Does NOT touch per-run state
 # (agent.env, instructions, agent_token, mise install, remount ro,
-# agent launch) — those live in guest-init-per-run.
+# agent launch) -- those live in guest-init-per-run.
 #
 # Invoked by /safeyolo/guest-init (orchestrator) before the per-run-go
 # gate. On restore, this script has already executed into snapshotted
@@ -19,7 +19,7 @@ export DEBIAN_FRONTEND=noninteractive
 echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
-# Hostname — set to agent name so `hostname`, the shell prompt, syslog,
+# Hostname -- set to agent name so `hostname`, the shell prompt, syslog,
 # and sshd all identify the guest correctly. The Docker stack did this
 # via container-name=hostname inheritance; the VM stack has to do it
 # explicitly. Runs pre-snapshot so the hostname lands in the captured
@@ -49,10 +49,10 @@ rm -f /dev/net/tun 2>/dev/null || true
 rmdir /dev/net 2>/dev/null || true
 rm -f /dev/fuse 2>/dev/null || true
 
-# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# Standard /dev symlinks -- normally created by udev or systemd-tmpfiles
 # at boot, but this VM uses a minimal init with neither. Without these,
 # programs that write to /dev/stderr (curl, bash redirections, etc.) fail.
-# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# Standard /dev symlinks -- normally created by udev or systemd-tmpfiles
 # at boot, but this VM uses a minimal init with neither. gVisor already
 # provides these; only create if missing.
 [ -e /dev/fd ]     || ln -s /proc/self/fd /dev/fd
@@ -65,17 +65,17 @@ rm -f /dev/fuse 2>/dev/null || true
 # --------------------------------------------------------------------------
 ip link set lo up 2>/dev/null || true
 
-# Source network.env unconditionally — GUEST_IP is needed later for the
+# Source network.env unconditionally -- GUEST_IP is needed later for the
 # /safeyolo/vm-ip readiness signal even on runtimes where `ip link show
 # eth0` is unhappy (notably gVisor: its netstack doesn't surface the
 # netns's eth0 as a kernel interface, so standard `ip` queries find
-# only lo — yet traffic flows fine because netstack forwards transparently).
+# only lo -- yet traffic flows fine because netstack forwards transparently).
 if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
 fi
 
 # Add the agent's unique IP to loopback. This is the same IP that
-# appears in mitmproxy flows, logs, and the agent map — giving the
+# appears in mitmproxy flows, logs, and the agent map -- giving the
 # operator a consistent per-agent identity inside and outside the
 # sandbox.
 if [ -n "${AGENT_IP:-}" ]; then
@@ -83,7 +83,7 @@ if [ -n "${AGENT_IP:-}" ]; then
 fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
-    # (UP, IP assigned, default route) — bringing it up here would just
+    # (UP, IP assigned, default route) -- bringing it up here would just
     # EPERM, and set -e would kill the script. Detect that and skip.
     # On the macOS microVM path the guest kernel sees a bare interface
     # and we have to configure it ourselves; failure here IS a bug and
@@ -98,8 +98,8 @@ fi
 # --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
 #
-# On macOS (VZ microVM), VirtioFS is the mount mechanism — failure is
-# fatal. On Linux (gVisor), the OCI spec handles mounts via bind — the
+# On macOS (VZ microVM), VirtioFS is the mount mechanism -- failure is
+# fatal. On Linux (gVisor), the OCI spec handles mounts via bind -- the
 # virtiofs mount calls legitimately fail and are skipped. Detect by
 # checking if /workspace is already mounted (OCI bind-mounts appear
 # before init runs).
@@ -113,7 +113,7 @@ else
     mount -t virtiofs workspace /workspace 2>/dev/null || true
 fi
 
-# Status share — writable channel for guest→host signals (vm-status,
+# Status share -- writable channel for guest→host signals (vm-status,
 # per-run-started, etc.). Separate from /safeyolo so the config share
 # can be read-only.
 mkdir -p /safeyolo-status
@@ -123,7 +123,7 @@ else
     mount -t virtiofs status /safeyolo-status 2>/dev/null || true
 fi
 
-# Persistent /home/agent — must mount before the host-config-mount
+# Persistent /home/agent -- must mount before the host-config-mount
 # loop, SSH key drop, install block, and host-files copy so writes
 # from each land in the host-side mount (~/.safeyolo/agents/<name>/
 # home/) rather than the ephemeral rootfs. MISE_DATA_DIR is
@@ -137,7 +137,7 @@ else
     mount -t virtiofs home /home/agent 2>/dev/null || true
 fi
 if [ -z "$(ls -A /home/agent 2>/dev/null)" ] && [ -d /etc/skel ]; then
-    # `cp -r` (not `-a`) — VirtioFS on VZ rejects utimes, which makes
+    # `cp -r` (not `-a`) -- VirtioFS on VZ rejects utimes, which makes
     # `cp -a`'s timestamp-preserve step fail, and `set -e` takes PID 1
     # down with it (kernel panic "Attempted to kill init"). Timestamps
     # on skel dotfiles aren't load-bearing; default modes under umask
@@ -166,7 +166,7 @@ fi
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
-# Skip the rebuild on every boot — the CA cert is the same across runs.
+# Skip the rebuild on every boot -- the CA cert is the same across runs.
 # Trigger update-ca-certificates only if either:
 #   - the source cert differs from what's installed
 #   - the bundle file is missing (recovery from a corrupt/missing state)
@@ -200,9 +200,9 @@ if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
 fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above
-# creates new ones as the current user — fix unconditionally.
+# creates new ones as the current user -- fix unconditionally.
 # The glob may not match on runtimes where keygen failed (gVisor
-# without /dev/random early in boot) — check before chown/chmod.
+# without /dev/random early in boot) -- check before chown/chmod.
 for keyfile in /etc/ssh/ssh_host_*_key; do
     [ -f "$keyfile" ] || continue
     chown root:root "$keyfile"
@@ -221,7 +221,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # Prefer GUEST_IP from network.env (host-written, accurate on every runtime);
 # fall back to `ip addr` for legacy paths or for cases where the env wasn't
 # staged. On gVisor the `ip addr` path returns nothing because eth0 isn't
-# visible from inside the sandbox — the env-var path is what makes vm-ip
+# visible from inside the sandbox -- the env-var path is what makes vm-ip
 # reliably appear there.
 VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
 if [ -n "$VM_IP" ]; then
@@ -231,7 +231,7 @@ fi
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
 # to exec after a restore. VirtioFS file reads are unreliable post-
 # resume in this framework (stat works via cached dentry, but open+read
-# may fail — observed as exit 127 when exec'ing a /safeyolo/ path,
+# may fail -- observed as exit 127 when exec'ing a /safeyolo/ path,
 # which triggers a kernel panic in init). /run is tmpfs, part of the
 # captured memory image, so the staged copy survives the save/restore
 # round trip.
@@ -246,7 +246,7 @@ fi
 #
 # Subsequent shells (login or otherwise) pick up HTTP_PROXY / SSL_CERT_FILE
 # / etc. via pam_env. Under the host-script model there's no pre-snapshot
-# agent install step here — the host script populates /home/agent/
+# agent install step here -- the host script populates /home/agent/
 # .safeyolo-entrypoint, which takes care of first-run install work.
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then

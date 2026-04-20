@@ -30,10 +30,10 @@ from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
-# AppArmor profile name — must match the installed profile.
+# AppArmor profile name -- must match the installed profile.
 AA_PROFILE = "safeyolo-runsc"
 
-# runsc state directory — user-writable, no sudo needed.
+# runsc state directory -- user-writable, no sudo needed.
 RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
 
 
@@ -127,7 +127,7 @@ def detect_runsc_platform() -> dict:
         )
         info["kvm_subordinate_access"] = "user:100000:rw" in result.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        # getfacl missing or hung — assume no subordinate access
+        # getfacl missing or hung -- assume no subordinate access
         # and fall back to systrap (the safe default).
         pass
     if not info["kvm_subordinate_access"]:
@@ -210,13 +210,13 @@ def check_userns_prerequisites() -> dict:
     """Check user namespace prerequisites for rootless gVisor.
 
     Returns a dict with keys:
-      newuidmap: bool — newuidmap binary available
-      newgidmap: bool — newgidmap binary available
-      subuid: bool — /etc/subuid has entry for current user
-      subgid: bool — /etc/subgid has entry for current user
-      setfacl: bool — setfacl available (grants runsc state dir to uid 100000)
-      apparmor_restricts: bool — kernel restricts unprivileged userns
-      apparmor_profile_loaded: bool — safeyolo-runsc profile loaded
+      newuidmap: bool -- newuidmap binary available
+      newgidmap: bool -- newgidmap binary available
+      subuid: bool -- /etc/subuid has entry for current user
+      subgid: bool -- /etc/subgid has entry for current user
+      setfacl: bool -- setfacl available (grants runsc state dir to uid 100000)
+      apparmor_restricts: bool -- kernel restricts unprivileged userns
+      apparmor_profile_loaded: bool -- safeyolo-runsc profile loaded
     """
     import getpass
     username = getpass.getuser()
@@ -238,7 +238,7 @@ def check_userns_prerequisites() -> dict:
                 line.startswith(f"{username}:") for line in content.splitlines()
             )
         except (FileNotFoundError, PermissionError):
-            # subuid/subgid not provisioned or unreadable — leave
+            # subuid/subgid not provisioned or unreadable -- leave
             # info[key] False so doctor reports "not configured".
             pass
 
@@ -339,7 +339,7 @@ def _kill_userns(name: str) -> None:
         pid = int(pid_file.read_text().strip())
         os.kill(pid, 9)
     except (ValueError, ProcessLookupError, OSError):
-        # Stale/corrupt PID file or process already gone — either
+        # Stale/corrupt PID file or process already gone -- either
         # way, unlinking below is the correct next step.
         pass
     pid_file.unlink(missing_ok=True)
@@ -490,7 +490,7 @@ class LinuxPlatform(AgentPlatform):
             ) from err
 
         # Clean stale state from previous run. Create a temporary
-        # userns if needed — runsc state is owned by uid 100000.
+        # userns if needed -- runsc state is owned by uid 100000.
         old_upid = _get_userns_pid(name)
         if old_upid:
             _run(_nsenter_cmd(old_upid) +
@@ -498,7 +498,7 @@ class LinuxPlatform(AgentPlatform):
                  check=False)
             _kill_userns(name)
 
-        # Create user namespace — we need the PID for the OCI
+        # Create user namespace -- we need the PID for the OCI
         # spec's network namespace path.
         upid = _start_userns(name)
 
@@ -565,7 +565,7 @@ class LinuxPlatform(AgentPlatform):
                       result.returncode, err_text)
             raise RuntimeError(f"Failed to start container {cid}: {err_text}")
 
-        # Get PID — nsenter into userns for state query
+        # Get PID -- nsenter into userns for state query
         state_result = _run(
             _nsenter_cmd(upid) + [runsc, "--root", root, "state", cid],
             check=False,
@@ -576,7 +576,7 @@ class LinuxPlatform(AgentPlatform):
                 pid = json.loads(state_result.stdout).get("pid", 0)
             except json.JSONDecodeError:
                 # runsc state returned non-JSON (shouldn't happen
-                # on a healthy runsc) — leave pid=0 and move on.
+                # on a healthy runsc) -- leave pid=0 and move on.
                 pass
 
         pid_path = agent_dir / "container.pid"
@@ -596,7 +596,7 @@ class LinuxPlatform(AgentPlatform):
         upid = _get_userns_pid(name)
 
         # If the userns holder is dead, create a temporary one for
-        # cleanup. The state dir is owned by uid 100000 — we need
+        # cleanup. The state dir is owned by uid 100000 -- we need
         # to be in a userns where we're that uid to access it.
         temp_userns = False
         if not upid:
@@ -604,7 +604,7 @@ class LinuxPlatform(AgentPlatform):
                 upid = _start_userns(name)
                 temp_userns = True
             except RuntimeError:
-                # Can't create userns — best-effort cleanup without it
+                # Can't create userns -- best-effort cleanup without it
                 upid = None
 
         prefix = _nsenter_cmd(upid) if upid else []
@@ -629,12 +629,12 @@ class LinuxPlatform(AgentPlatform):
         if has_state:
             _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
         else:
-            # State query failed — force delete anyway in case files exist
+            # State query failed -- force delete anyway in case files exist
             _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
 
         # Clean stale control socket from /tmp. gVisor creates it as
         # the userns root (uid 100000) so the operator can't delete it
-        # directly — use the userns prefix.
+        # directly -- use the userns prefix.
         sock_path = f"/tmp/runsc-{cid}.sock"
         _run(prefix + ["rm", "-f", sock_path], check=False)
 
@@ -852,7 +852,7 @@ class LinuxPlatform(AgentPlatform):
             "CAP_NET_ADMIN",
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
-        # EROFS annotations — gVisor mounts the image directly in its
+        # EROFS annotations -- gVisor mounts the image directly in its
         # sentry with an in-memory writable overlay. The OCI root.path
         # is a placeholder directory; the actual rootfs comes from the
         # EROFS image.

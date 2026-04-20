@@ -111,7 +111,7 @@ def get_agent_home_dir(name: str) -> Path:
     a pristine rootfs image, wiping any in-rootfs writes) and the
     ephemeral memory overlay on Linux gVisor. MISE_DATA_DIR points at
     $HOME/.mise (set in /etc/profile.d/mise.sh and vsock-term), so
-    mise installs land here too — first-run installs persist and the
+    mise installs land here too -- first-run installs persist and the
     install block in guest-init-static is a no-op thereafter.
     """
     return get_agents_dir() / name / "home"
@@ -121,7 +121,7 @@ def ensure_agent_persistent_dirs(name: str) -> None:
     """Create per-agent host dirs used as persistent bind-mount sources.
 
     Idempotent so `agent add` and `agent run` can both call it without
-    care — backfills agents created before the persistent-home design.
+    care -- backfills agents created before the persistent-home design.
     """
     d = get_agent_home_dir(name)
     d.mkdir(parents=True, exist_ok=True)
@@ -190,7 +190,7 @@ def prepare_config_share(
     share_dir = get_agent_config_share_dir(name)
     share_dir.mkdir(parents=True, exist_ok=True)
 
-    # Guest init scripts — served from config share, not baked into rootfs.
+    # Guest init scripts -- served from config share, not baked into rootfs.
     # Changes here take effect on next agent run without rootfs rebuild.
     # Three scripts split the boot into a snapshottable static phase and
     # a per-run phase; the orchestrator gates between them on per-run-go.
@@ -221,11 +221,11 @@ def prepare_config_share(
     if pre_write_per_run_go:
         per_run_go.write_text("")
     else:
-        # CAPTURE mode needs a clean slate — a stale per-run-go from an
+        # CAPTURE mode needs a clean slate -- a stale per-run-go from an
         # earlier passthrough run would let the guest skip past the
         # snapshot point before we get a chance to SIGUSR1.
         per_run_go.unlink(missing_ok=True)
-    # Ensure no stale per-boot markers from a prior run mask progress —
+    # Ensure no stale per-boot markers from a prior run mask progress --
     # the guest writes these fresh on every boot to the status share.
     # The CLI polls for per-run-started specifically as a definitive
     # "restore succeeded" signal; a stale copy would make a failed
@@ -234,7 +234,7 @@ def prepare_config_share(
     for marker in ("static-init-done", "per-run-started", "vm-status", "vm-ip"):
         (status_dir / marker).unlink(missing_ok=True)
 
-    # Debug-mode marker — presence enables per-iteration guest tracing.
+    # Debug-mode marker -- presence enables per-iteration guest tracing.
     # Checked by guest-init orchestrator (which runs before agent.env is
     # sourced, so a file marker is cleaner than an env var).
     debug_marker = share_dir / "debug-mode"
@@ -243,13 +243,13 @@ def prepare_config_share(
     else:
         debug_marker.unlink(missing_ok=True)
 
-    # vsock-term binary — cross-compiled, served from config share
+    # vsock-term binary -- cross-compiled, served from config share
     vsock_term_src = config_dir / "bin" / "vsock-term"
     if vsock_term_src.exists():
         shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
         (share_dir / "vsock-term").chmod(0o755)
 
-    # Proxy environment variables. proxy_port is 8080 — the fixed port
+    # Proxy environment variables. proxy_port is 8080 -- the fixed port
     # where guest-proxy-forwarder listens inside the sandbox. The host
     # bridge (UDS on Linux, vsock on macOS) decouples it from whatever
     # port mitmproxy is on. gateway_ip is the guest-side loopback.
@@ -270,7 +270,7 @@ def prepare_config_share(
     )
     (share_dir / "proxy.env").write_text(proxy_env)
 
-    # Agent environment. The template system is gone — host scripts set
+    # Agent environment. The template system is gone -- host scripts set
     # up whatever the agent needs directly in the persistent home. The
     # only thing we still surface is extra_env (yolo / detach / host-
     # terminal flags) and user-supplied agent args.
@@ -316,7 +316,7 @@ def prepare_config_share(
     if agent_token.exists():
         shutil.copy2(str(agent_token), str(share_dir / "agent_token"))
 
-    # Host config mount manifest — tells the guest init which VirtioFS tags
+    # Host config mount manifest -- tells the guest init which VirtioFS tags
     # to mount and where. Format: one line per mount, "tag:guest_path"
     if host_mounts:
         lines = []
@@ -400,7 +400,7 @@ def start_vm(
 
     # On restore, VZ requires the disk image to match byte-for-byte the
     # state it had at save time. snapshot.bin.rootfs is that pristine
-    # clone — but during a restore session the guest writes to its
+    # clone -- but during a restore session the guest writes to its
     # rootfs, and those writes would corrupt the pristine clone if we
     # passed it directly as --rootfs. Next restore would then hit EXT4
     # journal replay / inode bitmap inconsistencies against the memory
@@ -408,7 +408,7 @@ def start_vm(
     #
     # Solution: clone the pristine clone to a per-run working copy and
     # use that as --rootfs. APFS clonefile makes this ~instant (tens of
-    # ms regardless of logical size). The working copy is disposable —
+    # ms regardless of logical size). The working copy is disposable --
     # next restore starts from the pristine clone again.
     if restore_from_path is not None:
         pristine = Path(f"{restore_from_path}.rootfs")
@@ -495,7 +495,7 @@ def start_vm(
             )
     else:
         # Foreground mode: the vsock terminal's stdout is the agent's
-        # interactive session — it must reach the user's terminal. But
+        # interactive session -- it must reach the user's terminal. But
         # stderr carries bridge relay logs (proxy-relay, shell-bridge)
         # which would corrupt the agent's TUI. Redirect stderr to the
         # serial log so diagnostics are captured without leaking into
@@ -538,7 +538,7 @@ def stop_vm(name: str) -> None:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
-            # Process died between the SIGTERM wait loop and SIGKILL — fine.
+            # Process died between the SIGTERM wait loop and SIGKILL -- fine.
             pass
 
     pid_path.unlink(missing_ok=True)
@@ -558,7 +558,7 @@ def is_vm_running(name: str) -> bool:
         pid_path.unlink(missing_ok=True)
         return False
 
-    # os.kill(pid, 0) also succeeds for zombies — a Popen whose child has
+    # os.kill(pid, 0) also succeeds for zombies -- a Popen whose child has
     # exited but hasn't been waited on. Ask ps for the state letter; 'Z'
     # means zombie, which we treat as not running.
     try:
@@ -570,7 +570,7 @@ def is_vm_running(name: str) -> bool:
             pid_path.unlink(missing_ok=True)
             return False
     except (subprocess.SubprocessError, OSError):
-        # ps unavailable or errored — can't distinguish zombie from live.
+        # ps unavailable or errored -- can't distinguish zombie from live.
         # os.kill already said the pid exists, so fall through to "running".
         pass
 
@@ -591,12 +591,12 @@ def _update_agent_map(
     """Update the agent-IP map file.
 
     Read by three consumers:
-      - addons/service_discovery.py (in mitmproxy) — uses `ip` to map
+      - addons/service_discovery.py (in mitmproxy) -- uses `ip` to map
         request source IPs back to agent names for audit/policy/rate-limit.
-      - addons/proxy_protocol.py (in mitmproxy) — uses `port` to map
+      - addons/proxy_protocol.py (in mitmproxy) -- uses `port` to map
         the bridge's deterministic source port back to agent identity
         at connection time (client_connected hook).
-      - safeyolo.proxy_bridge — uses `socket` to create a per-agent
+      - safeyolo.proxy_bridge -- uses `socket` to create a per-agent
         listener, and `port` as the deterministic source port to bind
         when connecting to mitmproxy.
     """
@@ -634,7 +634,7 @@ def check_guest_images() -> bool:
     """Check if required guest image artifacts exist.
 
     On macOS (Virtualization.framework) all three are required: kernel,
-    initramfs, and rootfs. On Linux (gVisor) only the rootfs is needed —
+    initramfs, and rootfs. On Linux (gVisor) only the rootfs is needed --
     gVisor provides its own kernel.
     """
     if not get_base_rootfs_path().exists():

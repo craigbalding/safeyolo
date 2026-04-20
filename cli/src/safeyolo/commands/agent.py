@@ -117,7 +117,7 @@ def _capture_snapshot_blocking(
     snapshot.version.json on success.
 
     Always writes per-run-go before returning so the guest is never
-    stranded on the gate — even if the snapshot fails, we fall back to
+    stranded on the gate -- even if the snapshot fails, we fall back to
     a normal cold boot and the agent still launches.
 
     Returns True on success, False if we gave up (snapshot unusable).
@@ -228,7 +228,7 @@ def _run_agent(
     _t("cli entry (metadata, proxy check)")
     _validate_instance_name(name)
 
-    # Rootfs path is platform-specific — Darwin uses an ext4 disk image file,
+    # Rootfs path is platform-specific -- Darwin uses an ext4 disk image file,
     # Linux uses an overlayfs merged directory. Ask the platform which to check.
     from ..platform import get_platform
     rootfs = get_platform().agent_rootfs_path(name)
@@ -322,7 +322,7 @@ def _run_agent(
     # Identity attribution: `attribution_ip` is the source IP mitmproxy
     # sees, which service_discovery maps back to the agent name. Both
     # platforms populate it in setup_networking as a synthetic 127.0.0.X
-    # — the proxy_bridge binds its upstream TCP source to this address
+    # -- the proxy_bridge binds its upstream TCP source to this address
     # and listens on a per-agent UDS (needs_bridge_socket=True).
     # agent_map.json is written BEFORE start_sandbox so service_discovery
     # is ready when the first request arrives, and the bridge polls it
@@ -352,12 +352,12 @@ def _run_agent(
                 "Is `safeyolo start` running?"
             )
 
-    # Snapshot mode decision (macOS only for now — Linux is always
+    # Snapshot mode decision (macOS only for now -- Linux is always
     # passthrough until PR 5 adds runsc checkpoint/restore).
     #
-    # restore      — valid snapshot on disk; resume from it (fast path).
-    # capture      — no valid snapshot; cold-boot and take one.
-    # passthrough  — --no-snapshot or unsupported platform; cold-boot
+    # restore      -- valid snapshot on disk; resume from it (fast path).
+    # capture      -- no valid snapshot; cold-boot and take one.
+    # passthrough  -- --no-snapshot or unsupported platform; cold-boot
     #                with no snapshot interaction.
     cpus_for_run = 4
     memory_for_run = 4096
@@ -387,7 +387,7 @@ def _run_agent(
     # Prepare config share (proxy env, CA cert, SSH key, agent env, instructions).
     # Capture mode writes per-run-go itself, after snapshot completes,
     # so the guest pauses at the static/per-run boundary long enough for
-    # us to send SIGUSR1. Restore and passthrough pre-write — on restore
+    # us to send SIGUSR1. Restore and passthrough pre-write -- on restore
     # the snapshotted guest wakes up on the gate and sees it immediately.
     _debug_mode = os.environ.get("SAFEYOLO_DEBUG") == "1"
     # Guest's HTTP_PROXY port. Both platforms use the in-guest forwarder
@@ -428,8 +428,8 @@ def _run_agent(
         ip_file = status_dir / "vm-ip"
 
         # --- Restore attempt (macOS warm-boot fast path) -------------------
-        # If the valid-snapshot path fails — typically because VZ rejects
-        # the save data (exit 75 from safeyolo-vm) — we invalidate the
+        # If the valid-snapshot path fails -- typically because VZ rejects
+        # the save data (exit 75 from safeyolo-vm) -- we invalidate the
         # snapshot, re-prepare the config share for capture, and fall
         # through to the cold-boot path below. The user's agent always
         # comes up; a broken snapshot never blocks startup.
@@ -459,7 +459,7 @@ def _run_agent(
             # forcing a VirtioFS readdir so the host sees the write
             # promptly. prepare_config_share unlinked any stale copy, so
             # appearance of this file means the restored VM actually
-            # resumed and got into per-run — no race against stale
+            # resumed and got into per-run -- no race against stale
             # vm-ip, no need for a settle wait.
             #
             # Budget: 8s. On success the happy path is ~1-2s (VZ restore
@@ -503,7 +503,7 @@ def _run_agent(
                 plat.stop_sandbox(name)
                 invalidate_snapshot(name)
                 snapshot_mode = "capture"
-                # Re-prepare the share so per-run-go isn't pre-written —
+                # Re-prepare the share so per-run-go isn't pre-written --
                 # capture needs the guest to pause on the gate.
                 try:
                     _do_prepare_config_share("capture")
@@ -532,7 +532,7 @@ def _run_agent(
             # optional bridge socket). Nothing to re-register here.
 
             if snapshot_mode == "capture":
-                # Capture happens between static and per-run — static has
+                # Capture happens between static and per-run -- static has
                 # already written vm-ip by the time we get here, so the
                 # subsequent vm-ip poll will complete on the first iteration.
                 _t("capture orchestration (static-done → SIGUSR1 → save + clone)")
@@ -608,7 +608,7 @@ def _run_agent(
 
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped (exit {exit_code})", agent=name, details={"exit_code": exit_code})
 
-    # Clean up PID file (not for detach — VM is still running).
+    # Clean up PID file (not for detach -- VM is still running).
     if not detach:
         pid_path = get_agents_dir() / name / "vm.pid"
         pid_path.unlink(missing_ok=True)
@@ -778,7 +778,7 @@ def add(
     Creates a persistent per-agent sandbox, optionally populated by a
     host script that runs on the host (as you) before the sandbox
     boots. The host script may write into ~/.safeyolo/agents/<name>/home/ to
-    seed auth, settings, user extensions — and in particular write a
+    seed auth, settings, user extensions -- and in particular write a
     .safeyolo-entrypoint file that `agent run` will execute.
 
     Without --host-script, the sandbox boots to an interactive bash
@@ -1010,7 +1010,7 @@ def remove(
     plat = get_platform()
 
     # Agent index must be computed before the agent dir disappears,
-    # since it's derived from the sorted list of agent dirs — the same
+    # since it's derived from the sorted list of agent dirs -- the same
     # allocation rule used by setup_networking. Using the stale index
     # here is what lets us target this agent's netns/veth for teardown
     # rather than leaking them.
@@ -1021,14 +1021,14 @@ def remove(
     # state first; Darwin's stop_vm returns early if no pid). Calling
     # unconditionally ensures cleanup of `stopped` or `created` runsc
     # containers too, which is_sandbox_running() doesn't report as running
-    # and therefore the old conditional skipped — leaving stale state
+    # and therefore the old conditional skipped -- leaving stale state
     # that broke the next `runsc create`.
     if plat.is_sandbox_running(name):
         console.print(f"  Stopping {name}...")
     plat.stop_sandbox(name)
 
     # Teardown per-agent networking. Linux's stop_sandbox already did
-    # this (idempotent netns delete), but Darwin's didn't — it only
+    # this (idempotent netns delete), but Darwin's didn't -- it only
     # shuts the VM down. Explicit call here keeps the remove semantics
     # consistent across platforms: after remove, the agent has no
     # residual networking state.
@@ -1553,7 +1553,7 @@ def authorize(
         console.print("Available capabilities:")
         for i, cn in enumerate(cap_names, 1):
             desc = capabilities[cn].get("description", "")
-            desc_str = f" — {escape(desc)}" if desc else ""
+            desc_str = f" -- {escape(desc)}" if desc else ""
             console.print(f"  \\[{i}] {escape(cn)}{desc_str}")
         choice = input("Select capability [1]: ").strip()
         if not choice:
@@ -1751,4 +1751,4 @@ def revoke(
                     f"To remove: [bold]safeyolo vault remove {escape(cred_name)}[/bold]"
                 )
         except (OSError, ValueError):
-            pass  # Vault unavailable or locked — skip reminder
+            pass  # Vault unavailable or locked -- skip reminder

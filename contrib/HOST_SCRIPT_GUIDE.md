@@ -1,7 +1,7 @@
 # Host scripts
 
 Host scripts are plain shell scripts that run **on the host** (the machine
-you're running SafeYolo on — macOS or Linux), as **you**, before a
+you're running SafeYolo on -- macOS or Linux), as **you**, before a
 SafeYolo agent boots. They're how you install an agent (e.g. Claude
 Code, OpenAI Codex, aider), stage auth, and define what the sandbox
 should execute.
@@ -12,7 +12,7 @@ SafeYolo invokes them via:
 safeyolo agent add <name> <folder> --host-script path/to/my-host-setup.sh
 ```
 
-There is no template system, no DSL, no TOML — just a shell script that
+There is no template system, no DSL, no TOML -- just a shell script that
 does what any shell script does. Read it, edit it, run it anywhere else
 to confirm what it does.
 
@@ -25,7 +25,7 @@ script host-side means no magic between "I wrote the script" and "this
 is what ran."
 
 The sandbox's trust boundary is between the **agent** (what runs
-inside) and the host. The script itself is your code — there's nothing
+inside) and the host. The script itself is your code -- there's nothing
 to gain by running it in the sandbox.
 
 ## The contract
@@ -38,7 +38,7 @@ Your script is called with these env vars set:
 | `SAFEYOLO_AGENT_HOME` | Absolute path to the persistent host dir that's bind-mounted to `/home/agent` inside the VM. Write files here. |
 | `SAFEYOLO_AGENT_FOLDER` | Absolute path to the workspace folder (mounted as `/workspace` in the VM). |
 
-Exit `0` to proceed. Any non-zero exit aborts `agent add` — SafeYolo
+Exit `0` to proceed. Any non-zero exit aborts `agent add` -- SafeYolo
 prints your stderr and leaves the agent in a half-configured state so
 you can re-run with `--force` after fixing the script.
 
@@ -48,7 +48,7 @@ Typical tasks:
 
 1. **Stage auth, settings, user extensions** into `$SAFEYOLO_AGENT_HOME`
    so the agent finds them on first boot.
-2. **Write `$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint`** — an executable
+2. **Write `$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint`** -- an executable
    that is exec'd by `safeyolo agent run` as the default command. Use
    it to install the agent binary on first run (idempotently) and then
    exec it with the flags you want.
@@ -66,7 +66,7 @@ mkdir -p "$SAFEYOLO_AGENT_HOME/.myagent"
 [ -f "$HOME/.myagent/credentials.json" ] && \
     cp "$HOME/.myagent/credentials.json" "$SAFEYOLO_AGENT_HOME/.myagent/"
 
-# Entrypoint — installs on first run, then execs the agent
+# Entrypoint -- installs on first run, then execs the agent
 cat > "$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
 #!/usr/bin/env bash
 set -e
@@ -81,7 +81,7 @@ chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint"
 
 ## Idempotency
 
-Host scripts don't run on every boot — only on `safeyolo agent add`.
+Host scripts don't run on every boot -- only on `safeyolo agent add`.
 Re-running `agent add --force` reruns the script, so make yours
 re-runnable: check before creating, overwrite what you own, don't
 assume a blank slate.
@@ -92,7 +92,7 @@ Writing a host script for a new tool is a good use of Claude Code
 running inside an existing safeyolo agent. Share this guide and the
 existing examples (`contrib/claude-host-setup.sh`,
 `contrib/codex-host-setup.sh`) with it. The agent won't see the host's
-filesystem — that's the sandbox's job — but it doesn't need to. It
+filesystem -- that's the sandbox's job -- but it doesn't need to. It
 writes a script based on this contract + knowledge of where the tool
 you're adding typically stores its config, then you read it and run
 it.
@@ -110,4 +110,4 @@ and use it via `safeyolo agent add`.
 
 The script runs with your host permissions. That's fine when the
 script is yours or from a source you trust. Don't run host scripts
-from strangers without reading them — same rule as any shell script.
+from strangers without reading them -- same rule as any shell script.

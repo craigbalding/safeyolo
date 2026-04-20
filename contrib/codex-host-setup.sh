@@ -19,7 +19,7 @@ mkdir -p "$AGENT_HOME/.codex"
 
 # --- Stage host codex state --------------------------------------------------
 # Codex stores auth + config under ~/.codex/. Copy the whole dir if present.
-# Session transcripts etc. are inside the same tree — we're choosing to stage
+# Session transcripts etc. are inside the same tree -- we're choosing to stage
 # the lot because codex doesn't have the same scale of transcript state as
 # Claude Code. If that stops being true, narrow this to specific files.
 if [ -d "$HOME/.codex" ]; then

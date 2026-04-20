@@ -23,7 +23,7 @@ mkdir -p "$AGENT_HOME/.claude"
 # curated setup is available inside the sandbox. Everything else in ~/.claude/
 # (projects, sessions, history.jsonl, file-history, paste-cache, plans,
 # backups, session-env, shell-snapshots, statsig, cache, debug) is deliberately
-# NOT staged — those are session-scope and would leak transcripts cross-agent.
+# NOT staged -- those are session-scope and would leak transcripts cross-agent.
 
 host_claude="$HOME/.claude"
 
@@ -52,8 +52,8 @@ done
 
 # --- 2. Seed .claude.json with nag-free defaults ------------------------------
 # Minimum set of top-level keys Claude Code checks on launch. /workspace is a
-# guest-only path — the user can't pre-trust it from the host because it
-# doesn't exist there — so we set its entry explicitly.
+# guest-only path -- the user can't pre-trust it from the host because it
+# doesn't exist there -- so we set its entry explicitly.
 
 if command -v python3 >/dev/null 2>&1; then
     python3 - "$AGENT_HOME/.claude.json" <<'PY'

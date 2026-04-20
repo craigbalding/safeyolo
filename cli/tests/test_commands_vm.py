@@ -679,7 +679,7 @@ class TestRunAgent:
 
         mock_platform = MagicMock()
         mock_platform.is_sandbox_running.return_value = True
-        # agent_rootfs_path is platform-dispatched — return the same file we
+        # agent_rootfs_path is platform-dispatched -- return the same file we
         # just touched so the existence check passes regardless of host OS.
         mock_platform.agent_rootfs_path.return_value = rootfs_path
         with (
@@ -835,7 +835,7 @@ class TestSetup:
         assert "all prerequisites met" in result.output.lower()
 
     # Linux branch: runsc replaces safeyolo-vm. find_runsc() does
-    # the actual PATH lookup, so mock it directly — no need to stub shutil.
+    # the actual PATH lookup, so mock it directly -- no need to stub shutil.
     def test_runsc_ok_on_linux(self, runner, config_dir):
         """Linux: reports OK when runsc is present."""
         with (
@@ -1104,7 +1104,7 @@ class TestGuestImageChecks:
             assert check_guest_images() is False
 
     def test_linux_only_needs_rootfs(self, config_dir):
-        """On Linux, rootfs alone is sufficient — gVisor provides its own kernel."""
+        """On Linux, rootfs alone is sufficient -- gVisor provides its own kernel."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"

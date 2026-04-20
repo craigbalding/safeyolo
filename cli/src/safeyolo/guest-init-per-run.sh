@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SafeYolo guest-init — PER-RUN phase.
+# SafeYolo guest-init -- PER-RUN phase.
 #
 # Runs after the /safeyolo/per-run-go gate, which the host opens either
 # immediately (passthrough / restore) or after taking a snapshot (capture).
@@ -10,7 +10,7 @@
 #   - VirtioFS readdir (host-side per-run files may be invisible to a
 #     resumed guest until the directory is re-read)
 #   - agent.env / proxy.env sourcing (agent_token, mise package, argv
-#     overrides — all per-run)
+#     overrides -- all per-run)
 #   - instructions injection
 #   - mise install of the agent binary if missing
 #   - remount /safeyolo read-only and launch the agent
@@ -23,7 +23,7 @@ echo "[per-run start] pid=$$" > /dev/console 2>/dev/null || true
 # --------------------------------------------------------------------------
 # 0. Post-restore fixups (no-ops on cold boot)
 # --------------------------------------------------------------------------
-# System clock jumps across restore — sync from the VZ-provided hwclock.
+# System clock jumps across restore -- sync from the VZ-provided hwclock.
 hwclock -s 2>/dev/null || true
 
 # Invalidate VirtioFS readdir cache so per-run files the host wrote while
@@ -62,7 +62,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
 # gVisor --host-uds=open) or vsock on macOS (port 1080 on the VM helper).
 #
 # Runs unconditionally: if neither transport is available, the forwarder
-# logs the reason and exits — harmless on agents still using the legacy
+# logs the reason and exits -- harmless on agents still using the legacy
 # veth/feth path. Runs as daemon; stderr lands on console for diagnostics.
 # Not blocking: guest-init continues even if the forwarder fails to start.
 # --------------------------------------------------------------------------
@@ -79,7 +79,7 @@ fi
 # lives in safeyolo-vm's VSockShellBridge. socat is already in the
 # image (installed at rootfs build time).
 #
-# Harmless on Linux-gVisor agents — vsock is available but the host
+# Harmless on Linux-gVisor agents -- vsock is available but the host
 # side doesn't listen, so no connections are ever accepted.
 # --------------------------------------------------------------------------
 if [ -x /safeyolo/guest-shell-bridge ]; then
@@ -112,7 +112,7 @@ if [ -x /safeyolo/guest-shell-bridge ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 2. Agent API token (may rotate between runs — always refresh)
+# 2. Agent API token (may rotate between runs -- always refresh)
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/agent_token ]; then
     mkdir -p /app
@@ -177,7 +177,7 @@ else
     echo "terminal-failed" > /safeyolo-status/vm-status
 fi
 
-# Agent exited — shut down the VM cleanly.
+# Agent exited -- shut down the VM cleanly.
 # We are PID 1, so /sbin/{reboot,poweroff,halt} don't work: they signal init,
 # which is us. Call the reboot() syscall directly via busybox, which relies
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.

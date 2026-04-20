@@ -1,4 +1,4 @@
-"""Tests for safeyolo.vm — microVM lifecycle management."""
+"""Tests for safeyolo.vm -- microVM lifecycle management."""
 
 import json
 import os
@@ -103,16 +103,16 @@ class TestFindVmHelper:
 
     def test_falls_back_to_repo_layout(self, tmp_config_dir, monkeypatch):
         """Falls back to repo dev build directory when config/bin and PATH miss."""
-        # Block PATH lookup — config/bin doesn't have it (tmp_config_dir is clean)
+        # Block PATH lookup -- config/bin doesn't have it (tmp_config_dir is clean)
         monkeypatch.setattr("shutil.which", lambda name: None)
 
-        # The real repo has vm/.build/release/safeyolo-vm — verify the
+        # The real repo has vm/.build/release/safeyolo-vm -- verify the
         # fallback finds it. This test is environment-dependent by design:
         # it validates the dev-layout heuristic in the actual repo.
         import safeyolo.vm as vm_mod
         repo_bin = Path(vm_mod.__file__).resolve().parents[3] / "vm" / ".build" / "release" / "safeyolo-vm"
         if not (repo_bin.exists() and os.access(repo_bin, os.X_OK)):
-            pytest.skip("repo dev binary not present — cannot test repo layout fallback")
+            pytest.skip("repo dev binary not present -- cannot test repo layout fallback")
 
         result = find_vm_helper()
         assert result == repo_bin
@@ -309,7 +309,7 @@ class TestPrepareConfigShare:
         assert os.access(guest_init, os.X_OK)
 
     def test_guest_init_static_and_per_run_are_executable(self, tmp_config_dir):
-        """The orchestrator execs two phase scripts — both must be present
+        """The orchestrator execs two phase scripts -- both must be present
         and executable on the config share or the guest hangs."""
         share = prepare_config_share("agent1", "/workspace")
         for name in ("guest-init-static", "guest-init-per-run"):
@@ -342,7 +342,7 @@ class TestPrepareConfigShare:
 
     def test_stale_static_init_done_is_cleared(self, tmp_config_dir):
         """A static-init-done left over from a prior run must not persist
-        into the next run — the orchestrator writes it fresh on the
+        into the next run -- the orchestrator writes it fresh on the
         (writable) status share."""
         status_dir = tmp_config_dir / "agents" / "agent1" / "status"
         status_dir.mkdir(parents=True, exist_ok=True)
@@ -352,7 +352,7 @@ class TestPrepareConfigShare:
 
     def test_stale_per_run_started_is_cleared(self, tmp_config_dir):
         """A per-run-started left over from a prior run would make a
-        failed restore look successful — the CLI polls for this file
+        failed restore look successful -- the CLI polls for this file
         specifically as the definitive readiness signal. Lives on the
         status share."""
         status_dir = tmp_config_dir / "agents" / "agent1" / "status"
@@ -363,10 +363,10 @@ class TestPrepareConfigShare:
 
     def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
         """proxy.env uses whatever (gateway_ip, proxy_port) the caller
-        passes. Both platforms pass (127.0.0.1, 8080) — the guest-proxy-forwarder
+        passes. Both platforms pass (127.0.0.1, 8080) -- the guest-proxy-forwarder
         listens on that address inside the sandbox and the host bridge
         decouples it from mitmproxy's actual port. prepare_config_share
-        is platform-agnostic — it just renders."""
+        is platform-agnostic -- it just renders."""
         share = prepare_config_share(
             "agent1", "/workspace",
             gateway_ip="10.0.0.1", proxy_port=9999,
@@ -829,7 +829,7 @@ class TestStartVm:
 
     def test_restore_working_copy_overwrites_stale_one(self, tmp_config_dir, monkeypatch):
         """A .run file left behind by a previous restore session must be
-        replaced, not appended to — otherwise subsequent restores reuse
+        replaced, not appended to -- otherwise subsequent restores reuse
         a rootfs that drifted from save-time state."""
         def mock_popen(cmd, **kw):
             return MagicMock(pid=1)
@@ -855,7 +855,7 @@ class TestStartVm:
         assert stale_run.read_bytes() == b"pristine"
 
     def test_restore_without_clone_raises(self, tmp_config_dir, monkeypatch):
-        """If the paired clone is missing, restore can't possibly succeed —
+        """If the paired clone is missing, restore can't possibly succeed --
         refuse early rather than hand VZ a mismatched rootfs."""
         monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
@@ -912,7 +912,7 @@ class TestStopVm:
             killed_signals.append((pid, sig))
             if sig == signal.SIGTERM:
                 return  # Success
-            # For os.kill(pid, 0) — pretend process is dead after SIGTERM
+            # For os.kill(pid, 0) -- pretend process is dead after SIGTERM
             raise ProcessLookupError()
 
         monkeypatch.setattr("os.kill", mock_kill)

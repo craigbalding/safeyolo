@@ -77,7 +77,7 @@ def _check_attribution_ip(entry: dict) -> Check:
     ip = entry.get("ip")
     if not ip:
         return Check("Attribution IP", "FAIL", "no 'ip' field in agent map entry")
-    # Attribution IP is conveyed to mitmproxy via PROXY protocol v2 —
+    # Attribution IP is conveyed to mitmproxy via PROXY protocol v2 --
     # no lo0 alias or kernel bind required. Just verify it's present
     # in the agent map.
     return Check("Attribution IP", "PASS", f"{ip} (PROXY protocol v2)")
@@ -130,7 +130,7 @@ def _check_sandbox_running(name: str) -> Check:
 def _check_end_to_end(name: str, entry: dict) -> Check:
     """Send a minimal HTTP request through the bridge's per-agent UDS.
 
-    We don't need a 200 from upstream — mitmproxy answering at all
+    We don't need a 200 from upstream -- mitmproxy answering at all
     (even with 400 Bad Request for our empty Host header) proves the
     full chain: UDS → bridge accept → TCP bind+connect from attribution
     IP → mitmproxy parsed the request. That's every hop on the host
@@ -158,17 +158,17 @@ def _check_end_to_end(name: str, entry: dict) -> Check:
                      f"{type(exc).__name__}: {exc}")
     if not buf:
         return Check("End-to-end probe", "FAIL",
-                     "no response from bridge/mitmproxy — chain broken")
+                     "no response from bridge/mitmproxy -- chain broken")
     first_line = buf.split(b"\n", 1)[0].decode(errors="replace").strip()
     if not first_line.startswith("HTTP/"):
-        # Something responded but it's not HTTP — something's wrong on
+        # Something responded but it's not HTTP -- something's wrong on
         # the other side (firewall mangling? wrong port?).
         return Check("End-to-end probe", "FAIL",
                      f"unexpected response (not HTTP): {first_line[:60]!r}")
     # We intentionally send an incomplete request (no Host header) so
     # mitmproxy rejects it with 400. A 400 *proves* the full host
-    # chain works — UDS accept + attribution-IP bind + TCP to mitmproxy
-    # + reply back — without touching any upstream or policy allowlist.
+    # chain works -- UDS accept + attribution-IP bind + TCP to mitmproxy
+    # + reply back -- without touching any upstream or policy allowlist.
     # Operators: this is the expected outcome; PASS is PASS.
     return Check("End-to-end probe", "PASS",
                  f"mitmproxy answered ({len(buf)}B, probe request rejected as expected)")

@@ -82,7 +82,7 @@ def start(
     test: bool = typer.Option(
         False,
         "--test",
-        help="Enable test mode (sinkhole routing, test CA — reads test section from config.yaml)",
+        help="Enable test mode (sinkhole routing, test CA -- reads test section from config.yaml)",
     ),
 ) -> None:
     """Start SafeYolo proxy and firewall."""
@@ -142,7 +142,7 @@ def start(
         console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)
 
-    # No per-agent firewall setup — egress isolation is structural (sandbox
+    # No per-agent firewall setup -- egress isolation is structural (sandbox
     # has no external interface). The bridge daemon and per-agent UDS
     # listeners are the moving parts; they come up with the proxy itself.
 
@@ -189,7 +189,7 @@ def stop(
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
-    # Stop proxy only — agents and bridge sockets stay intact. Agents get
+    # Stop proxy only -- agents and bridge sockets stay intact. Agents get
     # "connection refused" on the proxy port but remain alive and accessible
     # via SSH. When the proxy restarts, connectivity resumes.
     stop_proxy()
@@ -235,7 +235,7 @@ def stop_all() -> None:
     try:
         plat.cleanup_all(agents_dir)
     except Exception:
-        # Best-effort teardown — partial state is better than aborting stop.
+        # Best-effort teardown -- partial state is better than aborting stop.
         pass
 
     # Unload host firewall rules (Linux: iptables. macOS: no-op).
@@ -248,7 +248,7 @@ def stop_all() -> None:
     if is_proxy_running():
         stop_proxy()
 
-    # Stop the UDS bridge only here — `safeyolo stop` deliberately keeps
+    # Stop the UDS bridge only here -- `safeyolo stop` deliberately keeps
     # it alive so running agents don't lose their /safeyolo/proxy.sock
     # inode when mitmproxy restarts. With all agents stopped above, no
     # one is holding the handle, so tearing the bridge down is safe.
@@ -299,7 +299,7 @@ def status() -> None:
     else:
         table.add_row("Guest Images", "[yellow]missing[/yellow]")
 
-    # Host firewall row removed — egress isolation is structural (agent
+    # Host firewall row removed -- egress isolation is structural (agent
     # sandbox has no external interface; the only path out is a per-agent
     # UDS). iptables on Linux is a belt-and-braces guard, not the primary
     # control, and doesn't warrant a dashboard row.
@@ -343,11 +343,11 @@ def status() -> None:
         console.print(mode_table)
 
     except APIError:
-        # Proxy may be down or unreachable — status view still shows the
+        # Proxy may be down or unreachable -- status view still shows the
         # rest of the system; mode table simply isn't rendered.
         pass
 
-    # Running agents. The displayed IP is the agent's attribution address —
+    # Running agents. The displayed IP is the agent's attribution address --
     # what mitmproxy sees as the request source and what service_discovery
     # maps back to the name for audit/policy. On Linux's UDS-only arch
     # every guest has HTTP_PROXY pointing at 127.0.0.1, so the guest-side

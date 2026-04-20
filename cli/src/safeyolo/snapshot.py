@@ -2,16 +2,16 @@
 
 Three files per snapshottable agent live under ~/.safeyolo/agents/<name>/:
 
-    snapshot.bin             — VM memory image, written by safeyolo-vm
+    snapshot.bin             -- VM memory image, written by safeyolo-vm
                                on SIGUSR1 (see vm/Sources/SafeYoloVM).
-    snapshot.bin.meta.json   — hardware fingerprint, also written by
+    snapshot.bin.meta.json   -- hardware fingerprint, also written by
                                safeyolo-vm. Matches what the helper
                                reads back at restore time.
-    snapshot.bin.rootfs      — APFS clone of the live rootfs captured at
+    snapshot.bin.rootfs      -- APFS clone of the live rootfs captured at
                                the same paused moment as snapshot.bin.
                                VZ requires the restore-time disk to be
                                byte-identical to its state at save time.
-    snapshot.version.json    — CLI-owned fingerprint of the inputs that
+    snapshot.version.json    -- CLI-owned fingerprint of the inputs that
                                determine whether the snapshot is still
                                restorable. Written by this module; read
                                by the mode-decision in commands/agent.py.
@@ -67,7 +67,7 @@ def snapshot_version_path(name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Hash cache — avoids re-reading 2 GB of rootfs + kernel/initrd on every
+# Hash cache -- avoids re-reading 2 GB of rootfs + kernel/initrd on every
 # agent run just to produce a fingerprint that rarely changes.
 #
 # Key by (path, mtime_ns, size). Same convention as ccache / make: if any
@@ -76,7 +76,7 @@ def snapshot_version_path(name: str) -> Path:
 # so cache hits dominate.
 #
 # Cache file is a plain JSON map stored under the data dir. Corrupted /
-# missing cache files are treated as empty — worst case we redo the
+# missing cache files are treated as empty -- worst case we redo the
 # hashing once and rewrite. No locking: `safeyolo agent run` invocations
 # are interactive and typically not concurrent; if they were, two writers
 # would at worst duplicate work or lose one entry, not corrupt downstream
@@ -133,7 +133,7 @@ def _sha256_file(path: Path) -> str:
     try:
         st = path.stat()
     except OSError:
-        # Fall through — caller handles missing files per their own logic.
+        # Fall through -- caller handles missing files per their own logic.
         raise
 
     cache = _load_hash_cache()
@@ -156,7 +156,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _vm_helper_version() -> str:
-    """Ask safeyolo-vm for its version string. "unknown" on any failure —
+    """Ask safeyolo-vm for its version string. "unknown" on any failure --
     this field participates in the fingerprint, so two hosts running
     different helper versions won't share a snapshot even if we can't
     parse one side's version output.
@@ -218,7 +218,7 @@ def compute_snapshot_version(
     """Hash everything that must match for a snapshot to be restorable.
 
     Any change to these inputs between capture and restore makes the
-    snapshot invalid — the guest would wake up inconsistent with its
+    snapshot invalid -- the guest would wake up inconsistent with its
     environment (different CA cert, different kernel, different IP, ...).
     """
     cli_dir = Path(__file__).parent
@@ -280,9 +280,9 @@ def invalidate_snapshot(name: str) -> None:
     """Best-effort delete of every snapshot artefact for an agent.
     Leaves the agent's other state (rootfs, config-share) alone.
 
-    The `.run` working copy — a per-restore clone of the pristine rootfs
+    The `.run` working copy -- a per-restore clone of the pristine rootfs
     that start_vm creates so the restored VM doesn't corrupt the
-    pristine clone — is also removed here. It's recreated on the next
+    pristine clone -- is also removed here. It's recreated on the next
     restore and has no meaning after a snapshot is invalidated."""
     agent_dir = get_agents_dir() / name
     for path in (
@@ -293,7 +293,7 @@ def invalidate_snapshot(name: str) -> None:
         agent_dir / "snapshot.bin.run",
     ):
         # missing_ok covers the common "already gone" case; any other
-        # OSError (permission, EBUSY) should surface — we own these
+        # OSError (permission, EBUSY) should surface -- we own these
         # files, if unlink fails there's something the user needs to
         # know about (disk full, corrupted FS, manual chmod).
         path.unlink(missing_ok=True)
