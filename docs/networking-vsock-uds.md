@@ -14,11 +14,13 @@ agent comms, team proxy, fleet PDP).
 
 The sandbox has **no external network interface**. All agent-initiated
 traffic is routed through a per-agent socket pair to a host-side
-`proxy_bridge` daemon, which stamps agent identity by binding the
-upstream TCP socket to `127.0.0.1` on a **deterministic source port**
-(`30000 + agent_index + 2`). A `port-identity` mitmproxy addon maps
-that port back to the agent name at connection time and rewrites
-`peername` with the agent's attribution IP (`127.0.0.<N+2>`), so
+`proxy_bridge` daemon, which stamps agent identity by prepending a
+**PROXY protocol v2 header** (RFC) on every upstream TCP connection
+to mitmproxy. The header carries the agent's attribution IP
+(`10.200.X.Y`) and a SafeYolo-specific TLV (type `0xE0`) carrying the
+agent name. A `proxy-protocol` mitmproxy addon parses the header in
+the `next_layer` hook, rewrites `peername` with the attribution IP,
+and strips the header bytes before the HTTP parser sees them.
 `service_discovery` and all downstream addons see per-agent identity
 for audit, policy, and rate limiting.
 
@@ -98,31 +100,44 @@ sshd (inside guest)
 
 ## Attribution
 
-Each agent is assigned a **deterministic port and attribution IP** at
-`agent run` time, linked by the agent's index in the sorted agent list:
+Each agent is assigned a **deterministic attribution IP** at
+`agent run` time, derived from the agent's index in the sorted list:
 
-| Agent index | Agent IP         | Bridge source port |
-|-------------|------------------|--------------------|
-| 0           | `10.200.0.1`     | `30001`            |
-| 1           | `10.200.0.2`     | `30002`            |
-| 255         | `10.200.1.0`     | `30256`            |
-| 511         | `10.200.2.0`     | `30512`            |
+| Agent index | Attribution IP   |
+|-------------|------------------|
+| 0           | `10.200.0.1`     |
+| 1           | `10.200.0.2`     |
+| 255         | `10.200.1.0`     |
+| 511         | `10.200.2.0`     |
 
 The IP is `10.200.{(N+1) / 256}.{(N+1) % 256}` from the `10.200.0.0/16`
-range. It's configured on the guest's loopback and used as the
-attribution IP in mitmproxy — the operator sees the same IP inside and
-outside the sandbox. Port range supports ~35,000 agents.
+range — `/16` supports ~65k agents. It's configured on the guest's
+loopback (for in-sandbox visibility) and carried on every upstream
+TCP connection via a PROXY protocol v2 header the bridge prepends.
 
-The `proxy_bridge` binds its upstream TCP socket to `127.0.0.1` on the
-agent's deterministic port before connecting to mitmproxy. The
-`port-identity` mitmproxy addon (loaded as the first addon) uses the
-`client_connected` hook to look up the source port in `agent_map.json`,
-then rewrites `client.peername` with the agent's attribution IP.
-`service_discovery` and all downstream addons see a distinct source IP
-per agent — no changes needed anywhere else in the stack.
+Identity mechanism:
 
-Both the port and attribution IP are written to `agent_map.json` by the
-CLI at `agent run` time, so the bridge and addon agree on the mapping.
+1. Bridge accepts an agent's UDS connection, reads the agent name
+   from `agent_map.json` (keyed on socket path).
+2. Bridge opens a fresh TCP connection to mitmproxy on an ephemeral
+   local port.
+3. Bridge writes a PROXY-v2 header (binary, RFC-compliant) containing
+   the attribution IP + a custom TLV (type `0xE0`) carrying the agent
+   name.
+4. Bridge pumps bytes between the two sockets.
+5. mitmproxy's `proxy_protocol` addon (loaded as the first layer via
+   `next_layer`) parses the header on each flow, rewrites
+   `flow.client_conn.peername` to the attribution IP, and strips the
+   header bytes from the buffered events so the HTTP parser sees
+   clean data.
+6. `service_discovery` sees the attribution IP as the client address
+   and resolves it to the agent name via `agent_map.json`.
+
+Attribution IP + agent name are written to `agent_map.json` by the
+CLI at `agent run` time so the bridge and mitmproxy agree on the
+mapping. No sudo, no lo0 aliases, no per-agent listen ports — one
+bridge daemon, ephemeral upstream ports, PROXY-v2 identity on each
+flow.
 
 This means:
 
@@ -242,12 +257,13 @@ hop to see one specific connection's accept + done pair.
 
 |                        | Linux                          | macOS                                     |
 |------------------------|--------------------------------|-------------------------------------------|
-| Isolation runtime      | gVisor (`runsc`)              | Virtualization.framework                  |
+| Isolation runtime      | gVisor (`runsc`) in rootless userns | Virtualization.framework             |
 | Guest sees sandbox as  | loopback-only netns            | no network interface (vsock only)         |
 | Agent → bridge path    | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
 | Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
-| Attribution mechanism  | port-based identity           | port-based identity                       |
-| Host firewall          | iptables (belt-and-braces)    | none (structural)                         |
+| Attribution mechanism  | PROXY protocol v2 header      | PROXY protocol v2 header                  |
+| Host firewall          | none (structural)             | none (structural)                         |
+| Sudo at runtime        | none                          | none                                      |
 
 ---
 

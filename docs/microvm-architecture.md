@@ -15,12 +15,13 @@ The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCS
 │  │   - mitmdump with ~15 addons       │                          │
 │  │   - admin API on :9090             │                          │
 │  └──────────────▲─────────────────────┘                          │
-│                 │  127.0.0.N  (attribution IP, one per agent)    │
+│                 │  PROXY-v2 over 127.0.0.1 (attribution IP, agent)│
 │  ┌──────────────┴─────────────────────┐                          │
 │  │ proxy_bridge (Python daemon)       │                          │
 │  │   per-agent UDS listener →         │                          │
 │  │   TCP connect to mitmproxy,        │                          │
-│  │   upstream bind()ed to 127.0.0.N   │                          │
+│  │   upstream prefixed with PROXY-v2  │                          │
+│  │   header (attribution IP + agent)  │                          │
 │  └──────────────▲─────────────────────┘                          │
 │                 │  AF_UNIX                                        │
 │  ┌──────────────┴─────────────────────┐                          │

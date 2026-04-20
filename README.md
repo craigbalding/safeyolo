@@ -70,9 +70,10 @@ If `uv sync --all-packages` did not install `mitmproxy` into the workspace venv 
 # policy), addons.yaml, an admin token, and the certs/data/lists directories.
 safeyolo init
 
-# Linux only: install sudoers rules for gVisor/iptables/overlay-mount.
-# macOS does not require sudo.
-safeyolo setup sudoers   # skip on macOS
+# Check and apply any host-level prerequisites (Linux: AppArmor profile
+# for user namespaces, /dev/kvm udev rule for hardware isolation).
+# Safe to re-run; idempotent. No effect on macOS.
+safeyolo setup
 
 # Start the proxy
 safeyolo start
@@ -87,6 +88,7 @@ The last argument (`~/code`) is your project directory — mounted read-write in
 - **API keys are protected** — credentials only reach their intended hosts
 - **Everything is logged** — JSONL audit trail for review
 - **Dev-ready VMs** — agents install toolchains via mise, state persists across restarts
+- **Linux agents run rootless** — `safeyolo agent run` is zero-sudo; setup applies a one-time AppArmor profile and a KVM udev rule so ongoing operation needs no elevated privileges
 
 ### Verify isolation
 
@@ -96,10 +98,18 @@ From inside the agent:
 # This works (routed through proxy):
 curl https://httpbin.org/ip
 
-# This is blocked (host firewall drops it):
+# This is blocked (no external network interface — nothing to route through):
 curl --noproxy '*' https://ifconfig.co
 # Error: Could not resolve host
 ```
+
+### Health check
+
+```bash
+safeyolo doctor
+```
+
+On Linux this reports the sandbox runtime (runsc version), isolation platform (KVM vs systrap and why), user-namespace prerequisites (newuidmap, subuid, AppArmor profile), the guest image, and any running agents. On macOS it confirms Apple Silicon + the safeyolo-vm helper.
 
 ## How It Works
 
@@ -121,7 +131,9 @@ SafeYolo mitmproxy (host process)
 Internet
 ```
 
-The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + vsock) and a gVisor container on Linux (runsc + `--host-uds=open`). Either way: if the agent unsets proxy vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable (no external interface). **Enforcement is structural, not policy-based** — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
+The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + vsock) and a rootless gVisor container on Linux (runsc in an unprivileged user namespace, with `--network=sandbox` and `--host-uds=open`). Either way: if the agent unsets proxy vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable (no external interface). **Enforcement is structural, not policy-based** — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
+
+Agent identity is cross-platform via PROXY protocol v2 — the host bridge stamps every upstream connection with the agent's attribution IP, and mitmproxy's `next_layer` hook resolves it. No per-agent lo0 aliases, no sudo at runtime.
 
 See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
 
@@ -187,14 +199,19 @@ $ safeyolo watch
 
 ## Architecture
 
-Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.md) (macOS microVM path) and [docs/linux-port-design.md](docs/linux-port-design.md) (Linux gVisor path). Highlights from the macOS microVM path:
+Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.md) (macOS microVM path) and [docs/linux-port-design.md](docs/linux-port-design.md) (Linux gVisor path). Highlights common to both paths:
 
-- **Networking**: no virtio-net at all — egress is via vsock → host UDS → proxy bridge → mitmproxy (structural isolation; the guest has no other path out)
-- **Terminal**: vsock PTY bridge with proper resize (not serial console)
-- **Guest init**: served from VirtioFS config share (changes without rootfs rebuild)
-- **Service discovery**: file-based agent map; the host bridge identifies each agent by a deterministic source port so mitmproxy attributes flows to agent names
+- **Networking**: no external interface in the sandbox — egress is UDS/vsock to a per-agent host socket → proxy bridge → mitmproxy (structural isolation)
+- **Terminal**: full PTY with resize — vsock PTY bridge on macOS, `runsc exec` on Linux
+- **Guest init**: served from a writable status share + read-only config share (changes without rootfs rebuild)
+- **Identity**: PROXY protocol v2 — the bridge stamps upstream TCP with each agent's attribution IP; mitmproxy's `next_layer` hook parses it
 
-The Linux path runs the same guest rootfs under `runsc` in a loopback-only netns with iptables as a belt-and-braces guard and overlayfs for per-agent writable layers — see `docs/linux-port-design.md` for the full design.
+Linux specifics:
+
+- **Rootless**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`). Agents operate with zero sudo; container uid 0 maps to a subordinate uid (100000), container uid 1000 maps to the operator.
+- **Rootfs**: a single shared EROFS image mounted read-only by gVisor's sentry, with a memory-backed writable overlay inside the sandbox. No per-agent on-disk overlays.
+- **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by `safeyolo setup` and surfaced in `safeyolo doctor`.
+- **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by `safeyolo setup`.
 
 ## Trust Model
 
@@ -210,13 +227,13 @@ See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, an
 - macOS Apple Silicon (M1+) **or** Linux (x86_64/arm64)
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
 - macOS only: Lima (build-time, for the guest image) — `brew install lima`
-- Linux only: gVisor `runsc` (VM runtime) — see the Build section above for the install command
+- Linux only: gVisor `runsc` (VM runtime) — see the Build section above for the install command; plus `newuidmap`/`newgidmap` (from `uidmap` on Debian/Ubuntu) and a subuid/subgid range for the operator. `safeyolo setup` verifies all of this.
 
-Run `safeyolo setup` to check all prerequisites.
+Run `safeyolo setup` to check and apply one-time prerequisites, then `safeyolo doctor` any time to see the current state of runtime, isolation platform, user namespaces, guest images, and running agents.
 
 ## Status
 
-SafeYolo is **pre-v1**. The current sandbox design — hardware-backed microVMs on macOS, gVisor on Linux — replaces the earlier Docker-based implementation; the container-era code is preserved on the [`docker`](https://github.com/craigbalding/safeyolo/tree/docker) branch for reference.
+SafeYolo is **pre-v1**. The current sandbox design — hardware-backed microVMs on macOS, rootless gVisor on Linux — replaces the earlier Docker-based implementation; the container-era code is preserved on the [`docker`](https://github.com/craigbalding/safeyolo/tree/docker) branch for reference.
 
 ## Documentation
 
