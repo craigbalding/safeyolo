@@ -361,6 +361,26 @@ def prepare_config_share(
                 dest = files_dir / file_name.replace("/", "__")
                 shutil.copy2(str(src), str(dest))
                 manifest_lines.append(f"{dest.name}:/home/agent/{file_name}")
+                # Patch staged copy for known Claude Code prompts the user
+                # can't dismiss from the host: /workspace is a guest-only
+                # path, so `hasTrustDialogAccepted` and friends can't be
+                # set by running `claude` on the host. We ensure they're
+                # present in the agent's view without touching the host
+                # file. Silent on parse errors — if claude ever changes
+                # the format, the user just sees the prompt once and
+                # we fix the patcher.
+                if file_name == ".claude.json":
+                    try:
+                        data = json.loads(dest.read_text())
+                        projects = data.setdefault("projects", {})
+                        ws = projects.setdefault("/workspace", {})
+                        ws["hasTrustDialogAccepted"] = True
+                        ws["hasCompletedProjectOnboarding"] = True
+                        ws["hasClaudeMdExternalIncludesApproved"] = True
+                        ws["hasClaudeMdExternalIncludesWarningShown"] = True
+                        dest.write_text(json.dumps(data, indent=2))
+                    except (json.JSONDecodeError, OSError) as err:
+                        log.warning("couldn't pre-trust /workspace in %s: %s", dest, err)
         if manifest_lines:
             (share_dir / "host-files-manifest").write_text("\n".join(manifest_lines) + "\n")
 
