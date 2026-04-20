@@ -1,6 +1,5 @@
 """Tests for agent port mapping features."""
 
-from unittest.mock import patch
 
 import pytest
 import typer

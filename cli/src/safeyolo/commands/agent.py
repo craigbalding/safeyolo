@@ -34,6 +34,7 @@ from ..timing import enter as _t
 from ..vm import (
     _update_agent_map,
     get_agent_config_share_dir,
+    get_agent_status_dir,
     prepare_config_share,
 )
 from ._service_discovery import find_service
@@ -183,7 +184,8 @@ def _capture_snapshot_blocking(
         snapshot_path,
     )
 
-    static_done = config_share_dir / "static-init-done"
+    status_dir = get_agent_status_dir(name)
+    static_done = status_dir / "static-init-done"
     per_run_go = config_share_dir / "per-run-go"
     snap = snapshot_path(name)
 
@@ -293,10 +295,13 @@ def _run_agent(
     binary = _get_agent_binary(metadata)
 
     # Check SafeYolo proxy is running
+    config = load_config()
+    proxy_port = config.get("proxy", {}).get("port", 8080)
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
     if not is_proxy_running():
         console.print("[yellow]SafeYolo proxy is not running. Starting...[/yellow]")
         try:
-            start_proxy()
+            start_proxy(proxy_port=proxy_port, admin_port=admin_port)
             if not wait_for_healthy(timeout=30):
                 console.print("[red]SafeYolo proxy failed to start.[/red]")
                 raise typer.Exit(1)
@@ -337,6 +342,9 @@ def _run_agent(
         extra_env["SAFEYOLO_YOLO_MODE"] = "1"
     if detach:
         extra_env["SAFEYOLO_DETACH"] = "1"
+    import sys as _sys
+    if _sys.platform == "linux" and not detach:
+        extra_env["SAFEYOLO_HOST_TERMINAL"] = "1"
 
     # Get mise package, host config, instructions, and auto_args from template
     mise_package = ""
@@ -374,10 +382,6 @@ def _run_agent(
             pass
 
     # Set up network isolation (platform-specific: vsock on macOS, netns on Linux)
-    config = load_config()
-    proxy_port = config.get("proxy", {}).get("port", 8080)
-    admin_port = config.get("proxy", {}).get("admin_port", 9090)
-
     from ..platform import get_platform
     plat = get_platform()
 
@@ -498,6 +502,7 @@ def _run_agent(
             auto_args=auto_args,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            attribution_ip=attribution_ip,
             pre_write_per_run_go=(for_mode != "capture"),
             debug_mode=_debug_mode,
         )
@@ -517,7 +522,8 @@ def _run_agent(
         import time as _time
         config_share_dir = get_agent_config_share_dir(name)
         config_share = config_share_dir
-        ip_file = config_share_dir / "vm-ip"
+        status_dir = get_agent_status_dir(name)
+        ip_file = status_dir / "vm-ip"
 
         # --- Restore attempt (macOS warm-boot fast path) -------------------
         # If the valid-snapshot path fails — typically because VZ rejects
@@ -560,7 +566,7 @@ def _run_agent(
             # mismatch or VZ rejection), so is_sandbox_running catches
             # that quickly. 8s leaves headroom for slow disks / first-
             # boot cold caches without dragging out the fallback.
-            per_run_started = config_share_dir / "per-run-started"
+            per_run_started = status_dir / "per-run-started"
             deadline = _time.time() + 8.0
             restore_ok = False
             _t("wait per-run-started (guest wake + per-run prefix)")
@@ -661,7 +667,9 @@ def _run_agent(
             # restore), so if the agent binary isn't yet installed in the
             # rootfs we'll see the "installing" status mark.
             _t("install watch (guest per-run mise install if any)")
-            status_file = config_share_dir / "vm-status"
+            status_file = status_dir / "vm-status"
+            install_log = status_dir / "install.log"
+            install_log_pos = 0
             shown_installing = False
             deadline2 = _time.time() + 120
             while _time.time() < deadline2 and plat.is_sandbox_running(name):
@@ -673,10 +681,23 @@ def _run_agent(
                 elif status == "install-failed":
                     console.print("  [red]Install failed[/red]")
                     break
-                elif status == "" and shown_installing:
-                    break  # Install finished (file removed or empty)
-                if not shown_installing and status == "":
-                    break  # No install needed
+                elif status == "ready":
+                    break
+                # Stream install log lines to the console.
+                if install_log.exists():
+                    try:
+                        with open(install_log) as f:
+                            f.seek(install_log_pos)
+                            new_data = f.read()
+                            if new_data:
+                                install_log_pos = f.tell()
+                                for line in new_data.splitlines():
+                                    console.print(f"  [dim]{line}[/dim]")
+                    except OSError:
+                        # Install log is best-effort — if the file
+                        # disappeared or became unreadable mid-poll,
+                        # the install status file is the source of truth.
+                        pass
                 _time.sleep(1)
 
             if detach:
@@ -687,13 +708,29 @@ def _run_agent(
                 _timing_emit()
                 return 0
 
-            console.print("  Connecting terminal...")
-            console.print()
-            _t("interactive session (agent running; user in claude)")
-            # Wait for sandbox to exit (interactive mode)
-            while plat.is_sandbox_running(name):
-                _time.sleep(0.5)
-            exit_code = 0
+            _t("interactive session")
+            if _sys.platform == "linux":
+                # Linux: launch the agent via runsc exec — it bridges the
+                # user's terminal into the sandbox, same role vsock-term
+                # plays on macOS. The command comes from the template config.
+                agent_cmd_parts = []
+                if binary:
+                    agent_cmd_parts.append(binary)
+                    if yolo and auto_args:
+                        agent_cmd_parts.append(auto_args)
+                    if agent_args_str:
+                        agent_cmd_parts.append(agent_args_str)
+                full_cmd = " ".join(agent_cmd_parts) if agent_cmd_parts else None
+                exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
+                plat.stop_sandbox(name)
+            else:
+                # macOS: safeyolo-vm + vsock-term handle the interactive
+                # session. Wait for the VM to exit.
+                while plat.is_sandbox_running(name):
+                    try:
+                        _time.sleep(0.5)
+                    except KeyboardInterrupt:
+                        break
 
     except Exception as err:
         console.print(" [red]error[/red]")

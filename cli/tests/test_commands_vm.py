@@ -861,14 +861,25 @@ class TestSetup:
         assert result.exit_code == 0
         assert "all prerequisites met" in result.output.lower()
 
-    # Linux branch: runsc replaces safeyolo-vm. check_runsc() does
+    # Linux branch: runsc replaces safeyolo-vm. find_runsc() does
     # the actual PATH lookup, so mock it directly — no need to stub shutil.
     def test_runsc_ok_on_linux(self, runner, config_dir):
         """Linux: reports OK when runsc is present."""
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.commands.setup.check_runsc", return_value=(True, "found at /usr/bin/runsc")),
+            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc"),
+            patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
+                "newuidmap": True, "newgidmap": True,
+                "subuid": True, "subgid": True,
+                "setfacl": True,
+                "apparmor_restricts": False, "apparmor_profile_loaded": False,
+            }),
+            patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
+                "platform": "kvm", "kvm_exists": True,
+                "kvm_operator_access": True, "kvm_subordinate_access": True,
+                "reason": "KVM available with full access",
+            }),
         ):
             result = runner.invoke(app, ["setup"])
 
@@ -883,7 +894,18 @@ class TestSetup:
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
-            patch("safeyolo.commands.setup.check_runsc", return_value=(False, "not found on PATH")),
+            patch("safeyolo.platform.linux.find_runsc", return_value=None),
+            patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
+                "newuidmap": True, "newgidmap": True,
+                "subuid": True, "subgid": True,
+                "setfacl": True,
+                "apparmor_restricts": False, "apparmor_profile_loaded": False,
+            }),
+            patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
+                "platform": "systrap", "kvm_exists": False,
+                "kvm_operator_access": False, "kvm_subordinate_access": False,
+                "reason": "/dev/kvm not found",
+            }),
         ):
             result = runner.invoke(app, ["setup"])
 

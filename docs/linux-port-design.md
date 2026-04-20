@@ -14,6 +14,8 @@ Same blackbox tests: verify the security contract regardless of mechanism.
 - Works on any Linux server — no KVM/nested virtualization required
 - Auto-detects KVM when available (hardware-enforced isolation)
 - Falls back to systrap (seccomp-bpf interception) on VPS without KVM
+- Runs rootless — unprivileged user namespaces + `newuidmap`
+  eliminate sudo at agent-run time entirely
 - Used in production by Google Cloud Run, DigitalOcean, GKE Sandbox
 - Google's Kubernetes Agent Sandbox project chose gVisor specifically
   for AI agent isolation
@@ -23,14 +25,15 @@ Same blackbox tests: verify the security contract regardless of mechanism.
 ## Architecture
 
 ```
-macOS (current)                     Linux (new)
-safeyolo-vm (Swift)                 runsc (gVisor)
-  Virtualization.framework            KVM or systrap (auto-detected)
-  no virtio-net, vsock → UDS bridge   loopback-only netns + UDS bind-mount + iptables
-  VirtioFS mounts                     bind mounts
-  SSH for agent shell                 runsc exec (direct process injection)
-  guest-init.sh in VM                 OCI config.json (no guest init needed)
-  ext4 image (block device)           overlayfs (directory-based)
+macOS                                Linux
+safeyolo-vm (Swift)                  runsc (gVisor) in unprivileged user namespace
+  Virtualization.framework             KVM or systrap (auto-detected)
+  no virtio-net, vsock → UDS bridge    loopback-only netns + per-agent UDS bind-mount
+  VirtioFS mounts                      OCI bind mounts (workspace, config share, status share)
+  SSH for agent shell                  runsc exec (direct process injection)
+  guest-init.sh in VM                  guest-init.sh in gVisor sandbox (same script, same phases)
+  ext4 image (block device)            shared EROFS image (read-only, memory-backed overlay)
+  sudo for lo0 aliases                 zero sudo at runtime (rootless user namespace)
 ```
 
 Both share:
@@ -43,14 +46,16 @@ Both share:
 
 | Component | macOS | Linux |
 |-----------|-------|-------|
-| VM/sandbox launcher | `safeyolo-vm` (Swift) | `runsc` (Go binary) |
-| Networking | no virtio-net; vsock → UDS bridge (structural) | loopback-only netns + bind-mounted UDS; iptables as belt-and-braces |
-| Filesystem sharing | VirtioFS | bind mounts |
-| Rootfs format | ext4 image file | overlayfs (extracted dir) |
+| VM/sandbox launcher | `safeyolo-vm` (Swift) | `runsc` (Go binary) inside unprivileged user namespace |
+| Networking | no virtio-net; vsock → UDS bridge (structural) | loopback-only netns + per-agent UDS bind-mount (structural) |
+| Filesystem sharing | VirtioFS | OCI bind mounts |
+| Rootfs format | per-agent ext4 image file | single shared EROFS image, mounted r/o by sentry with memory-backed overlay |
 | Shell access | SSH via vsock shell-bridge UDS | `runsc exec` (no SSH needed) |
-| Guest init | guest-init.sh (runs in VM) | Not needed (OCI config.json) |
+| Guest init | guest-init.sh (runs as PID 1 in VM) | guest-init.sh (runs as PID 1 inside sandbox — same script) |
 | Kernel | Custom Linux kernel in VM | gVisor Sentry (userspace kernel) |
-| KVM | N/A (Hypervisor.framework) | Optional, auto-detected |
+| KVM | N/A (Hypervisor.framework) | Optional, auto-detected; systrap fallback |
+| Runtime privileges | none (sudo only if user opts into lo0 aliases, now unused) | none (rootless user namespace via `newuidmap`/`newgidmap`) |
+| Identity attribution | PROXY protocol v2 header on bridge's upstream TCP | PROXY protocol v2 header on bridge's upstream TCP (same mechanism) |
 
 ## What Does NOT Change
 
@@ -140,7 +145,7 @@ def get_platform() -> AgentPlatform:
 cli/src/safeyolo/platform/
     __init__.py          # AgentPlatform ABC + get_platform()
     darwin.py            # macOS: Virtualization.framework + vsock UDS bridge
-    linux.py             # Linux: gVisor + loopback-only netns + iptables
+    linux.py             # Linux: rootless gVisor + loopback-only netns
 ```
 
 `darwin.py` delegates VM lifecycle to `vm.py` and sets up the per-agent
@@ -160,149 +165,139 @@ def _detect_runsc_platform(self) -> str:
 
 Passed to all runsc invocations: `runsc --platform=kvm|systrap ...`
 
-### Networking (loopback-only netns + UDS bind-mount + iptables)
+### Rootless user namespace
+
+runsc itself runs inside an unprivileged user namespace created via
+`unshare -Un` and configured with `newuidmap`/`newgidmap`:
+
+```
+_start_userns(name):
+    1. unshare -Un sleep 86400                 # the userns "holder"
+    2. newuidmap holder_pid  0 100000 1000  1000 <operator_uid> 1  1001 101001 64534
+    3. newgidmap holder_pid  (same shape)
+    4. Persist holder pid so nsenter can re-enter the userns for
+       subsequent runsc calls (exec, state, delete)
+```
+
+Result:
+- Container uid 0 → host subordinate uid 100000 (the "sandbox root"
+  that gVisor operates as)
+- Container uid 1000 → host operator uid (the user launching
+  agents; owns workspace, config share, etc.)
+
+The operator launches agents with zero sudo. AppArmor on Ubuntu 24.04+
+restricts unprivileged userns creation unless a profile allows it;
+`safeyolo setup` installs `safeyolo-runsc` if needed.
+
+### Networking (loopback-only netns + per-agent UDS)
 
 Structural isolation, not policy-based:
 
 ```
 setup_networking(agent_index):
-    1. ip netns add safeyolo-idx<N>
-    2. ip -n safeyolo-idx<N> link set lo up
-    3. Allocate attribution IP 127.0.0.<N+2> (for mitmproxy attribution)
-    4. Signal needs_bridge_socket=True so agent.py coordinates with
+    1. Allocate attribution IP 10.200.X.Y (within a /16 — agent index
+       → deterministic IP; visible to both the operator and mitmproxy
+       for log correlation)
+    2. Signal needs_bridge_socket=True so agent.py coordinates with
        proxy_bridge to create the per-agent UDS before start_sandbox
 
-(no veth, no external IP, no routing)
+(the sandbox's netns is the userns holder's netns; loopback only —
+ no veth, no external IP, no routing)
 ```
 
 The sandbox has no external network interface. The per-agent UDS at
-`~/.safeyolo/data/sockets/<name>.sock` is bind-mounted into the guest
+`~/.safeyolo/data/sockets/<name>.sock` is bind-mounted into the sandbox
 at `/safeyolo/proxy.sock` (via `runsc --host-uds=open`); the in-guest
-forwarder relays HTTP to it, and `proxy_bridge` stamps the attribution
-IP on upstream TCP as it connects to mitmproxy.
+forwarder relays HTTP to it, and `proxy_bridge` stamps a PROXY
+protocol v2 header carrying the attribution IP on upstream TCP.
+mitmproxy's `next_layer` addon parses the header and rewrites
+`client_conn.peername` so every flow is attributed to the right agent.
 
-iptables is a belt-and-braces guard for any traffic that tries to
-escape the netns — in practice there is no interface for it to leave
-through, but the rules catch configuration drift:
+No iptables rules, no firewall, no netfilter state. The sandbox has
+nowhere to leak to; misconfiguration scenarios have been engineered
+out rather than guarded by rules.
 
-```
-load_firewall_rules():
-    iptables-restore --noflush with a rendered table that only permits
-    traffic leaving via the agent UDS and drops anything else.
-```
+`SAFEYOLO_SUBNET_BASE` (default 65) offsets the attribution-IP slot
+so a second instance (blackbox test harness or per-operator dev)
+doesn't collide with production's allocation.
 
-`SAFEYOLO_SUBNET_BASE` (default 65) offsets the netns slot number so
-a second instance (blackbox test harness or per-operator dev) doesn't
-collide with production's netns names.
+### Rootfs (shared EROFS image)
 
-### Rootfs (overlayfs)
-
-macOS clones ext4 images via APFS reflink. Linux uses overlayfs for
-the same CoW semantics:
+macOS per-agent ext4 images are cloned via APFS reflink. Linux ships
+a single read-only EROFS image built by `guest/build-rootfs.sh`:
 
 ```
-prepare_rootfs(name):
-    # One-time: extract base rootfs from ext4 image
-    if not base_dir.exists():
-        mount -o loop,ro rootfs-base.ext4 /tmp/mnt
-        cp -a /tmp/mnt/. <share_dir>/rootfs-base/
-        umount /tmp/mnt
-
-    # Per agent: overlayfs
-    mkdir -p agents/<name>/{upper,work,rootfs}
-    mount -t overlay overlay \
-        -o lowerdir=<share>/rootfs-base,upperdir=agents/<name>/upper,workdir=agents/<name>/work \
-        agents/<name>/rootfs
+share_dir/rootfs-base.erofs       # ~400MB, mounted r/o by gVisor sentry
 ```
+
+gVisor mounts the EROFS image internally (via `--overlay-filestores`
+annotations in the OCI spec) and provides a memory-backed writable
+overlay to every sandbox. No per-agent on-disk overlays; no
+fuse-overlayfs; no boot-time chown loop.
 
 Benefits:
-- Instant agent creation (no copy)
-- Minimal disk (only changed files stored in upper)
-- Base rootfs shared read-only across all agents
+- Instant agent creation (no copy, no extraction)
+- Zero disk per agent for the rootfs itself — persistent state
+  (config share, status share) is the only on-disk footprint
+- Ownership is handled at image-build time; no runtime chown fix-ups
 
-### OCI Config Generation
+EROFS build flags: `-E noinline_data` is required (gVisor's EROFS
+reader rejects inline-data layouts). Compression is off for the same
+reason — gVisor's `FeatureIncompatSupported` is 0x0, rejecting any
+non-zero incompat features.
 
-Instead of guest-init.sh configuring the environment inside a VM,
-the OCI config.json declares everything up front:
+### OCI Config
 
-```python
-def _generate_oci_config(self, name: str, config: AgentConfig) -> dict:
-    return {
-        "ociVersion": "1.0.0",
-        "root": {"path": "rootfs", "readonly": False},
-        "hostname": f"safeyolo-{name}",
-        "process": {
-            "terminal": False,
-            "user": {"uid": 1000, "gid": 1000},
-            "args": ["/bin/sleep", "infinity"],  # init process, agent shell attaches later
-            "env": [
-                f"HTTP_PROXY=http://{config.host_ip}:{config.proxy_port}",
-                f"HTTPS_PROXY=http://{config.host_ip}:{config.proxy_port}",
-                "HOME=/home/agent",
-                "PATH=/opt/mise/shims:/usr/local/bin:/usr/bin:/bin",
-                ...
-            ],
-            "cwd": "/home/agent",
-            "noNewPrivileges": True,
-            "capabilities": {
-                # Minimal capabilities — no NET_RAW, no SYS_ADMIN
-                "bounding": ["CAP_KILL", "CAP_NET_BIND_SERVICE"],
-                ...
-            },
-        },
-        "mounts": [
-            {"destination": "/home/agent/workspace", "type": "bind",
-             "source": config.workspace_path, "options": ["rbind", "rw"]},
-            {"destination": "/safeyolo", "type": "bind",
-             "source": config.config_share_path, "options": ["rbind", "ro"]},
-            {"destination": "/usr/local/share/ca-certificates/safeyolo.crt",
-             "type": "bind", "source": config.ca_cert_path,
-             "options": ["bind", "ro"]},
-        ],
-        "linux": {
-            "namespaces": [
-                {"type": "pid"},
-                {"type": "network", "path": f"/var/run/netns/safeyolo-{name}"},
-                {"type": "ipc"},
-                {"type": "uts"},
-                {"type": "mount"},
-            ],
-            "resources": {
-                "memory": {"limit": config.memory_bytes},
-                "cpu": {"quota": config.cpu_quota, "period": 100000},
-                "pids": {"limit": 4096},
-            },
-        },
-    }
-```
+The OCI runtime spec declares the sandbox shape: entrypoint is
+`/bin/bash -c "... exec /safeyolo/guest-init ..."`, running as uid
+0 initially so `guest-init-static.sh` can configure networking,
+trust the CA, launch sshd (macOS) or skip (Linux), and then drop
+to the agent user. Key fields:
+
+- `process.user`: `{uid: 0, gid: 0}` — init runs as root-in-sandbox
+  (mapped to host uid 100000 via the userns); `guest-init-per-run.sh`
+  drops to uid 1000 via `su agent -l` before launching the agent
+- `process.capabilities`: only what init needs (CAP_CHOWN,
+  CAP_DAC_OVERRIDE, CAP_NET_ADMIN to configure loopback, CAP_SETUID,
+  CAP_SETGID) — no CAP_NET_RAW, no CAP_SYS_ADMIN
+- `mounts`: workspace (rw), `/safeyolo` (ro, the config share),
+  `/safeyolo-status` (rw, the status share for guest→host signals),
+  `/safeyolo/proxy.sock` (rw, the per-agent UDS)
+- `linux.namespaces`: PID, IPC, UTS, mount — and a `network` namespace
+  path pointing at the userns holder's netns (`/proc/<holder>/ns/net`),
+  so the sandbox's network is the loopback-configured netns we set up
+- EROFS annotations pointing runsc at `rootfs-base.erofs`
 
 ### Agent Lifecycle
 
 ```
-start_agent(name, config):
-    1. Generate OCI config.json
-    2. runsc --root /run/safeyolo --platform=<auto> create --bundle <path> safeyolo-<name>
-    3. runsc start safeyolo-<name>
-    4. Write PID file from runsc state
+start_sandbox(name, ...):
+    1. _start_userns(name)                          # unshare -Un sleep + newuidmap
+    2. Write OCI config.json with netns_path =
+       /proc/<userns_holder_pid>/ns/net
+    3. nsenter <userns> runsc --root <root> create/start safeyolo-<name>
+    4. Wrap the whole thing in systemd-run --user --scope for cgroup limits
 
-stop_agent(name):
-    1. runsc kill safeyolo-<name> SIGTERM
-    2. Wait 10s
-    3. runsc kill --all safeyolo-<name> SIGKILL
-    4. runsc delete safeyolo-<name>
-    5. Teardown networking
-    6. Unmount overlayfs
+stop_sandbox(name):
+    1. nsenter <userns> runsc kill safeyolo-<name> SIGTERM; wait 5s
+    2. nsenter <userns> runsc kill --all SIGKILL; wait 1s
+    3. nsenter <userns> runsc delete --force
+    4. Clean /tmp/runsc-<cid>.sock (owned by subordinate uid 100000)
+    5. _kill_userns(name)
 
-exec_in_agent(name, command, interactive):
-    if command:
-        runsc exec --user 1000:1000 safeyolo-<name> -- /bin/bash -c "<command>"
-    else:
-        runsc exec --user 1000:1000 safeyolo-<name> -- /bin/bash -l
+exec_in_sandbox(name, command, user):
+    nsenter <userns> runsc exec --user <uid>:<gid> --cwd /workspace \
+        safeyolo-<name> /bin/bash -lc "<command>"
 
-is_agent_running(name):
-    state = runsc state safeyolo-<name>
+is_sandbox_running(name):
+    state = nsenter <userns> runsc state safeyolo-<name>
     return state["status"] == "running"
 ```
+
+The nsenter wrapping is necessary for every runsc call because the
+runsc state directory is owned by uid 100000 (the subordinate root);
+without nsenter into the userns, the operator (uid 1000 on the host)
+can't read it.
 
 ### Shell Access (runsc exec vs SSH)
 
@@ -324,39 +319,44 @@ The `safeyolo agent shell` command detects the platform and dispatches:
 - macOS → SSH
 - Linux → runsc exec
 
-## What guest-init.sh Did That OCI Config.json Replaces
+## Guest init
 
-| guest-init.sh step | Linux equivalent |
-|---------------------|-----------------|
-| Read network.env, configure IP | netns + veth created externally |
-| Source proxy.env | process.env in config.json |
-| Trust CA cert | Bind mount cert into trust store path |
-| Install SSH keys | Not needed (runsc exec) |
-| Start sshd | Not needed |
-| Write vm-ip | runsc state returns container info |
-| Remount /safeyolo ro | Mount option "ro" in config.json |
-| Run agent binary | process.args in config.json |
+Both platforms run the same `guest-init.sh` orchestrator inside the
+sandbox as PID 1. The Linux path is the same logic as macOS — there
+was an earlier design that tried to push everything into the OCI
+config, but shared logic (CA trust, mise install, agent launch) is
+easier to keep in one script that runs in both environments. The
+OCI spec handles the surrounding plumbing (mounts, user, env, caps).
+
+What's different on Linux:
+- No sshd or SSH host keys (runsc exec is the shell channel)
+- VirtioFS mounts are no-ops (OCI bind-mounts already in place;
+  `mountpoint -q /workspace` detects this and skips the mount)
+- CAP_NET_ADMIN is granted only to configure loopback's attribution
+  IP at boot, nothing else
 
 ## Security Properties (Blackbox Test Mapping)
 
-Every blackbox isolation test maps to a gVisor property:
+Every blackbox isolation test maps to a property of the runtime:
 
 | Test | macOS mechanism | Linux/gVisor mechanism |
 |------|----------------|----------------------|
-| Direct HTTP blocked | pf blocks non-proxy | iptables blocks non-proxy |
-| Direct HTTPS blocked | pf blocks non-proxy | iptables blocks non-proxy |
-| DNS UDP blocked | pf blocks all non-proxy | iptables blocks all non-proxy |
-| Raw socket blocked | VM kernel has no route | gVisor Sentry blocks SOCK_RAW |
-| Proxy reachable | pf allows proxy port | iptables allows proxy port |
-| Non-root (uid 1000) | VM runs as agent user | OCI config.json user.uid=1000 |
-| Cannot gain root | setuid(0) in VM kernel | setuid(0) in Sentry — noNewPrivileges |
+| Direct HTTP/HTTPS/DNS blocked | VM has no external interface | sandbox has no external interface (loopback-only netns) |
+| Raw socket blocked | VM kernel lacks CAP_NET_RAW | gVisor Sentry blocks SOCK_RAW without the cap |
+| Proxy reachable | vsock → host UDS → mitmproxy | bind-mounted UDS → mitmproxy |
+| Non-root (uid 1000) | VM runs as agent user | OCI config user.uid=1000; userns maps to operator uid |
+| Cannot gain root | setuid(0) in VM kernel fails | Sentry blocks setuid(0); noNewPrivileges set |
 | Kernel modules disabled | CONFIG_MODULES=n | gVisor: init_module returns ENOSYS |
-| No /dev/mem | CONFIG_DEVMEM=n | gVisor: /dev/mem not exposed |
-| No /dev/kmem | Not in VM | gVisor: /dev/kmem not exposed |
+| No /dev/mem or /dev/kmem | VM kernel doesn't expose | gVisor's /dev doesn't include them |
 | No eBPF | VM kernel blocks BPF | gVisor: BPF syscall not implemented |
 | Config share read-only | VirtioFS remount ro | Bind mount with "ro" option |
-| No private keys | Keys outside workspace | Keys outside workspace |
-| Public cert present | VirtioFS mount | Bind mount |
+| Host listener unreachable | no network path out of VM | no network path out of sandbox's netns |
+| Public cert trusted | VirtioFS bind + update-ca-certificates | OCI bind mount + update-ca-certificates |
+
+The test files (`test_vm_isolation.py`, `test_key_isolation.py`) run
+unchanged. They test outcomes, not mechanisms. See
+[docs/blackbox-coverage.md](blackbox-coverage.md) for the full
+test list with threat mapping.
 
 The test files (`test_vm_isolation.py`, `test_key_isolation.py`) run
 unchanged. They test outcomes, not mechanisms.
@@ -366,53 +366,57 @@ unchanged. They test outcomes, not mechanisms.
 **Host requirements:**
 - Linux kernel 4.14.77+ (for seccomp-bpf)
 - `runsc` binary (single Go binary, ~30MB)
-- `iptables` or `nftables` (standard on all distros)
+- `newuidmap`/`newgidmap` (from `uidmap` on Debian/Ubuntu)
+- Subordinate uid/gid range for the operator in `/etc/subuid` and
+  `/etc/subgid` (provisioned by default on modern Debian/Ubuntu)
 - `iproute2` (ip command, standard)
-- Root or sudo for networking setup (same as macOS)
+- `systemd-run --user` (for cgroup resource limits via delegation)
+
+**One-time setup** (idempotent, applied by `safeyolo setup`):
+- AppArmor profile `safeyolo-runsc` — only needed if the kernel has
+  `apparmor_restrict_unprivileged_userns=1` (Ubuntu 24.04+)
+- udev rule `/etc/udev/rules.d/99-safeyolo-kvm.rules` granting the
+  subordinate uid access to `/dev/kvm` (only when KVM is available
+  and hardware isolation is desired; systrap fallback needs no ACL)
 
 **Not required:**
 - Docker / containerd / podman
-- KVM / nested virtualization (used when available, not required)
+- KVM / nested virtualization (used when available; systrap otherwise)
 - Any daemon process
+- Sudo at agent-run time (setup is the only sudo step, and it's
+  one-time per host)
 
 **Install runsc:**
 ```bash
 # Debian/Ubuntu
 curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
-sudo apt update && sudo apt install -y runsc
-
-# Or direct download
-wget https://storage.googleapis.com/gvisor/releases/release/latest/$(uname -m)/runsc
-chmod +x runsc && sudo mv runsc /usr/local/bin/
+sudo apt update && sudo apt install -y runsc uidmap
 ```
 
-## Implementation Order
+## Implementation Status
 
-1. **Platform abstraction** — create `platform/` package with ABC,
-   extract macOS code into `darwin.py`, update agent.py to use the
-   abstraction
-2. **Linux networking** — `linux.py` networking: veth + netns + iptables
-3. **Linux rootfs** — overlayfs setup, base rootfs extraction
-4. **Linux sandbox** — OCI config.json generation, runsc lifecycle
-5. **Linux shell** — `runsc exec` for `safeyolo agent shell`
-6. **Blackbox tests on Linux** — run the existing test suite, fix any
-   platform-specific assumptions
-7. **Documentation** — install guide, platform comparison, security model
+All sections above describe the implemented design on the
+`feat/proxy-protocol-identity` branch / master (pre-v1). Key
+decisions that landed differently from the original plan:
 
-Step 1 is the riskiest — refactoring existing working code. Steps 2-5
-are additive (new code, no macOS regression risk). Step 6 validates
-everything.
-
-## Open Questions
-
-1. **Sudoers on Linux** — networking needs root. Ship a sudoers template
-   like macOS, or use rootless networking (slirp4netns)?
-2. **cgroup v1 vs v2** — resource limits differ. Most modern distros use
-   v2 but some VPS providers still use v1. Need detection.
-3. **Fallback without gVisor** — should we support plain runc as a
-   third tier? Weaker isolation but zero dependencies beyond the kernel.
-   The blackbox tests would show exactly which properties hold.
-4. **x86_64 rootfs** — current rootfs is aarch64. Need x86_64 build
-   for most VPS. The `build-rootfs.sh` already runs in a container
-   so cross-compilation is straightforward with `--platform linux/amd64`.
+- **No iptables.** Earlier drafts described iptables as a belt-and-
+  braces guard. Structural isolation (no external interface) made
+  firewall rules redundant, and the netfilter state was removed to
+  simplify the architecture.
+- **Rootless user namespaces instead of sudo.** The original design
+  assumed sudoers for `ip netns add` / `ip link` / mount. The final
+  design eliminates sudo at runtime entirely by running gVisor
+  inside an unprivileged userns.
+- **Shared EROFS image instead of overlayfs.** The per-agent
+  overlayfs design was replaced by a single read-only EROFS image
+  with gVisor's sentry providing memory-backed writable overlays.
+  Zero per-agent disk for rootfs; no boot-time uid fix-ups.
+- **Same guest-init.sh on both platforms.** The plan to replace
+  guest-init with OCI config lost out to keeping a single source
+  of truth for CA trust, mise install, and agent launch.
+- **PROXY protocol v2 for identity.** Earlier designs used per-agent
+  bridge source ports bound to synthetic 127.0.0.X IPs (macOS lo0
+  aliases, Linux attribution IPs) with mitmproxy looking them up.
+  Final design uses a standard PROXY-v2 header parsed by an addon —
+  cross-platform, no sudo needed on macOS, no lo0 aliasing.

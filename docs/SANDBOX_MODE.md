@@ -22,8 +22,9 @@ Agent sandbox (loopback-only; no eth0)
     ▼
 Per-agent bridge socket (one per agent, host-owned)
     │
-    │  bridge binds upstream TCP source to a synthetic 127.0.0.N
-    │  so mitmproxy attributes every request to the right agent
+    │  bridge stamps upstream TCP with a PROXY protocol v2 header
+    │  carrying the agent's attribution IP; mitmproxy parses it
+    │  via next_layer and attributes every request to the right agent
     ▼
 SafeYolo mitmproxy (host process)
     │  addon chain: policy, credential guard, rate limits, audit
@@ -70,7 +71,10 @@ curl --noproxy '*' https://ifconfig.co
 
 ## Persistence
 
-Agent state persists across restarts: mise installs, shell history, config files. Each agent has its own ext4 disk image at `~/.safeyolo/agents/<name>/rootfs.ext4`.
+Agent state persists across restarts: mise installs, shell history, config files.
+
+- **macOS**: each agent has its own ext4 disk image at `~/.safeyolo/agents/<name>/rootfs.ext4`.
+- **Linux**: agents share a single read-only EROFS image at `~/.safeyolo/share/rootfs-base.erofs`; gVisor's sentry provides a memory-backed writable overlay per sandbox, and per-agent persistent state lives under `~/.safeyolo/agents/<name>/` (config share, status share, agent metadata).
 
 ## Troubleshooting
 

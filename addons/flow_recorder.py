@@ -114,10 +114,13 @@ class FlowRecorder:
         agent_id = agent
         source_id = get_client_ip(flow)
 
-        # URL parts
+        # URL parts — pretty_host returns the Host header value (the
+        # logical destination) rather than the connection target, which
+        # may differ when an addon rewrites flow.request.host (e.g.
+        # sinkhole router in test mode).
         url = flow.request.url
         scheme = flow.request.scheme
-        host = flow.request.host
+        host = flow.request.pretty_host
         port = flow.request.port
         method = flow.request.method
         path = flow.request.path.split("?")[0]

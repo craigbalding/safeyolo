@@ -2,15 +2,21 @@
 
 ## Overview
 
-Security tests run against real infrastructure — real proxy, real firewall
-rules, real microVMs. No mocks, no Docker, no shortcuts.
+Security tests run against real infrastructure — real proxy, real
+sandbox, real microVM or rootless gVisor container. No mocks, no
+Docker, no shortcuts. Every test class has a structured docstring
+(Title + Why) and every test function states the probe and the
+consequence if the property didn't hold; `docs/blackbox-coverage.md`
+is generated from those docstrings.
 
 Tests are split across two execution domains:
 
-- **Host pytest** (`tests/blackbox/host/`): Proxy functional tests. Runs on
-  the host where sinkhole, admin API, and proxy are directly accessible.
-- **VM pytest** (`tests/blackbox/isolation/`): Isolation tests. Runs inside
-  a real microVM via SSH, probing from the adversary's perspective.
+- **Host pytest** (`tests/blackbox/host/`): Proxy functional tests and
+  agent-identity checks. Runs on the host where sinkhole, admin API,
+  and proxy are directly accessible.
+- **VM pytest** (`tests/blackbox/isolation/`): Isolation tests. Runs
+  inside the sandbox (VZ microVM on macOS, gVisor on Linux) via
+  `safeyolo agent shell`, probing from the adversary's perspective.
 
 ## Quick Start
 

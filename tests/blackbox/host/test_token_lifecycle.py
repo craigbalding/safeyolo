@@ -25,6 +25,17 @@ import pytest
 
 @pytest.mark.skipif(sys.platform != "linux", reason="gVisor sandbox is Linux-only")
 class TestAgentTokenLifecycle:
+    """Agent token survives proxy restart without breaking a running sandbox.
+
+    Why: The agent_token authenticates the sandbox's requests to the
+    agent API. If a proxy restart regenerates the token but the
+    sandbox still holds the old value, the agent gets 401 on every
+    diagnostic call — breaking `safeyolo explain`, credential
+    approval UX, and any other observability feature the agent
+    exposes to itself. In the Docker stack this worked via bind-mount;
+    the microVM migration introduced a copy step that is the common
+    regression point.
+    """
 
     def _safeyolo(self, *args, **kwargs):
         env = {
@@ -55,9 +66,15 @@ class TestAgentTokenLifecycle:
             return 0
 
     def test_agent_api_survives_proxy_restart(self):
-        """The agent API must remain accessible from a running sandbox
-        after the proxy is restarted. This is the regression test for
-        the Docker→microVM token lifecycle break.
+        """Agent API stays reachable from the sandbox across proxy restart.
+
+        What: Verify agent API /health returns 200 from inside the
+        sandbox; stop + start the test proxy; assert /health still
+        returns 200 from the same running sandbox.
+        Why: If the sandbox's cached token goes stale on proxy
+        restart, every agent-originated diagnostic call fails 401.
+        This regression killed `safeyolo explain` when we first
+        migrated from Docker bind-mounts to microVM copies.
         """
         from pathlib import Path
         config_dir = Path(os.environ.get(

@@ -3,7 +3,6 @@
 import os
 import platform as _platform
 import re as _re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -22,19 +21,6 @@ setup_app = typer.Typer(
     no_args_is_help=False,
     invoke_without_command=True,
 )
-
-
-def check_runsc() -> tuple[bool, str]:
-    """Check if runsc (gVisor) is installed. Linux VM runtime."""
-    path = shutil.which("runsc")
-    if not path:
-        for p in ("/usr/local/bin/runsc", "/usr/bin/runsc"):
-            if os.path.exists(p) and os.access(p, os.X_OK):
-                path = p
-                break
-    if path:
-        return True, f"found at {path}"
-    return False, "not found on PATH or in /usr/local/bin, /usr/bin"
 
 
 @setup_app.callback(invoke_without_command=True)
@@ -77,34 +63,73 @@ def setup() -> None:
             console.print("    Build with: cd vm && make install")
             all_ok = False
     elif system == "Linux":
+        from ..platform.linux import (
+            check_userns_prerequisites,
+            detect_runsc_platform,
+            find_runsc,
+        )
+
         # runsc (gVisor) — the Linux VM runtime
-        has_runsc, reason = check_runsc()
-        if has_runsc:
-            console.print(f"  [green]OK[/green]  runsc ({reason})")
+        runsc_path = find_runsc()
+        if runsc_path:
+            console.print(f"  [green]OK[/green]  runsc (found at {runsc_path})")
         else:
-            console.print(f"  [red]MISSING[/red]  runsc: {reason}")
+            console.print("  [red]MISSING[/red]  runsc: not found on PATH or in /usr/local/bin, /usr/bin")
             console.print("    Install gVisor — see README 'Linux' section for apt commands.")
             all_ok = False
 
-        # sudoers rules — present means no sudo prompts during agent lifecycle.
-        # /etc/sudoers.d/ is typically 0750 (unreadable without sudo), so
-        # .exists() can raise PermissionError; treat that as "unknown" and
-        # surface the pointer anyway.
-        sudoers_path = Path("/etc/sudoers.d/safeyolo")
-        try:
-            sudoers_installed = sudoers_path.exists()
-        except PermissionError:
-            sudoers_installed = None
+        # User namespace prerequisites
+        userns = check_userns_prerequisites()
+        if not userns["setfacl"]:
+            console.print("  [red]MISSING[/red]  setfacl (required for rootless rootfs ACL)")
+            console.print("    Debian/Ubuntu: [bold]sudo apt-get install acl[/bold]")
+            all_ok = False
+        if userns["apparmor_restricts"]:
+            if userns["apparmor_profile_loaded"]:
+                console.print("  [green]OK[/green]  AppArmor profile (safeyolo-runsc)")
+            else:
+                console.print("  [yellow]SETUP[/yellow]  AppArmor profile needed (user namespace creation)")
+                console.print("    [bold]sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc[/bold]")
+                all_ok = False
 
-        if sudoers_installed is True:
-            console.print(f"  [green]OK[/green]  sudoers rules installed ({sudoers_path})")
-        elif sudoers_installed is False:
-            console.print(f"  [yellow]WARN[/yellow]  sudoers rules not installed ({sudoers_path})")
-            console.print("    Without them, every agent start/stop/remove prompts for sudo.")
-            console.print("    Run [bold]safeyolo setup sudoers[/bold] to install.")
+        # KVM platform detection
+        kvm = detect_runsc_platform()
+        if kvm["platform"] == "kvm":
+            console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
+        elif not kvm["kvm_exists"]:
+            console.print("  [dim]INFO[/dim]  /dev/kvm not available — using systrap (software isolation)")
+            console.print("    Coding agent performance is equivalent. Hardware isolation")
+            console.print("    (KVM) is available on hosts with virtualization enabled.")
+        elif kvm["kvm_operator_access"] and not kvm["kvm_subordinate_access"]:
+            udev_rule = 'KERNEL=="kvm", RUN+="/usr/bin/setfacl -m u:100000:rw /dev/kvm"'
+            udev_path = Path("/etc/udev/rules.d/99-safeyolo-kvm.rules")
+            if udev_path.exists():
+                # Rule file exists but ACL not applied (pre-reboot or udev not triggered)
+                console.print("  [yellow]SETUP[/yellow]  KVM udev rule installed but ACL not yet active")
+                console.print("    Apply now:  [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+                console.print("    (will persist across reboots via udev rule)")
+            else:
+                console.print("  [yellow]SETUP[/yellow]  KVM available — enable hardware isolation")
+                console.print("    Installing udev rule for persistent /dev/kvm access...")
+                try:
+                    subprocess.run(
+                        ["sudo", "tee", str(udev_path)],
+                        input=udev_rule.encode(),
+                        capture_output=True, check=True,
+                    )
+                    subprocess.run(
+                        ["sudo", "setfacl", "-m", "u:100000:rw", "/dev/kvm"],
+                        capture_output=True, check=True,
+                    )
+                    console.print("  [green]OK[/green]  KVM udev rule installed and ACL applied")
+                except subprocess.CalledProcessError as e:
+                    console.print(f"  [red]FAIL[/red]  Could not install udev rule: {e}")
+                    console.print("    Manual fix:")
+                    console.print(f'    [bold]echo \'{udev_rule}\' | sudo tee {udev_path}[/bold]')
+                    console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+                    all_ok = False
         else:
-            console.print(f"  [dim]?[/dim]  sudoers rules: cannot read {sudoers_path.parent}")
-            console.print("    If not already installed, run [bold]safeyolo setup sudoers[/bold].")
+            console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
     else:
         console.print(f"  [yellow]WARN[/yellow]  unsupported platform {system!r}: skipping runtime checks")
 

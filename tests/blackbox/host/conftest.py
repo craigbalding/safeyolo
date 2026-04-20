@@ -9,12 +9,26 @@ based on request content (headers, host), not source IP.
 """
 
 import os
+import sys
 import time
 from pathlib import Path
 
 import httpx
 import pytest
 from sinkhole_client import SinkholeClient
+
+# Import the shared docstring linter from the parent blackbox dir.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _docstring_lint import validate_items  # noqa: E402
+
+
+def pytest_collection_modifyitems(config, items):
+    """Reject collection if any test's docstring is missing structure.
+
+    Schema lives in tests/blackbox/_docstring_lint.py and is shared
+    with the isolation suite and docs/blackbox-coverage.md generator.
+    """
+    validate_items(items)
 
 # ---------------------------------------------------------------------------
 # Host-side configuration — everything on localhost
@@ -88,7 +102,12 @@ def proxy_client():
     Uses the mitmproxy CA cert for TLS verification when available.
     Falls back to unverified if cert not found.
     """
-    verify = str(_CA_CERT) if _CA_CERT.exists() else False
+    if _CA_CERT.exists():
+        import ssl
+        ctx = ssl.create_default_context(cafile=str(_CA_CERT))
+        verify = ctx
+    else:
+        verify = False
     client = httpx.Client(
         proxy=PROXY_URL,
         verify=verify,

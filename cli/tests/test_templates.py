@@ -3,7 +3,6 @@
 Tests the TOML config loader, template management, and real agent.toml validation.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -18,11 +17,11 @@ from safeyolo.templates.loader import (
     AgentConfig,
     AgentConfigError,
     AuthConfig,
-    VMConfig,
     HostConfig,
     InstallConfig,
     InstructionsConfig,
     RunConfig,
+    VMConfig,
     load_agent_config,
 )
 

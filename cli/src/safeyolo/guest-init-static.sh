@@ -49,6 +49,17 @@ rm -f /dev/net/tun 2>/dev/null || true
 rmdir /dev/net 2>/dev/null || true
 rm -f /dev/fuse 2>/dev/null || true
 
+# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# at boot, but this VM uses a minimal init with neither. Without these,
+# programs that write to /dev/stderr (curl, bash redirections, etc.) fail.
+# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# at boot, but this VM uses a minimal init with neither. gVisor already
+# provides these; only create if missing.
+[ -e /dev/fd ]     || ln -s /proc/self/fd /dev/fd
+[ -e /dev/stdin ]  || ln -s /proc/self/fd/0 /dev/stdin
+[ -e /dev/stdout ] || ln -s /proc/self/fd/1 /dev/stdout
+[ -e /dev/stderr ] || ln -s /proc/self/fd/2 /dev/stderr
+
 # --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
@@ -61,6 +72,14 @@ ip link set lo up 2>/dev/null || true
 # only lo — yet traffic flows fine because netstack forwards transparently).
 if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
+fi
+
+# Add the agent's unique IP to loopback. This is the same IP that
+# appears in mitmproxy flows, logs, and the agent map — giving the
+# operator a consistent per-agent identity inside and outside the
+# sandbox.
+if [ -n "${AGENT_IP:-}" ]; then
+    ip addr add "${AGENT_IP}/32" dev lo 2>/dev/null || true
 fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
@@ -78,17 +97,47 @@ fi
 
 # --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
+#
+# On macOS (VZ microVM), VirtioFS is the mount mechanism — failure is
+# fatal. On Linux (gVisor), the OCI spec handles mounts via bind — the
+# virtiofs mount calls legitimately fail and are skipped. Detect by
+# checking if /workspace is already mounted (OCI bind-mounts appear
+# before init runs).
 # --------------------------------------------------------------------------
+_needs_virtiofs_mount() { ! mountpoint -q /workspace 2>/dev/null; }
+
 mkdir -p /workspace
-mount -t virtiofs workspace /workspace 2>/dev/null || true
+if _needs_virtiofs_mount; then
+    mount -t virtiofs workspace /workspace
+else
+    mount -t virtiofs workspace /workspace 2>/dev/null || true
+fi
+
+# Status share — writable channel for guest→host signals (vm-status,
+# per-run-started, etc.). Separate from /safeyolo so the config share
+# can be read-only.
+mkdir -p /safeyolo-status
+if _needs_virtiofs_mount; then
+    mount -t virtiofs status /safeyolo-status
+else
+    mount -t virtiofs status /safeyolo-status 2>/dev/null || true
+fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
 if [ -f /safeyolo/host-mounts ]; then
     while IFS=: read -r tag guest_path; do
         [ -z "$tag" ] && continue
         mkdir -p "$guest_path"
-        mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
-        chown -R agent:agent "$guest_path" 2>/dev/null || true
+        if _needs_virtiofs_mount; then
+            mount -t virtiofs "$tag" "$guest_path"
+        else
+            mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
+        fi
+        # No chown: on gVisor the userns map (container uid 1000 →
+        # host operator uid) already presents host-owned files as
+        # agent-owned; on macOS VZ VirtioFS maps ownership at the FS
+        # layer (verified: /home/agent/.safeyolo-hooks reads+writes
+        # as agent without any chown). chown on VirtioFS fails anyway.
     done < /safeyolo/host-mounts
 fi
 
@@ -99,7 +148,7 @@ if [ -f /safeyolo/host-files-manifest ]; then
         if [ -f "/safeyolo/host-files/$src_name" ]; then
             mkdir -p "$(dirname "$guest_path")"
             cp "/safeyolo/host-files/$src_name" "$guest_path"
-            chown agent:agent "$guest_path" 2>/dev/null || true
+            chown agent:agent "$guest_path"
         fi
     done < /safeyolo/host-files-manifest
 fi
@@ -119,7 +168,9 @@ SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 if [ -f "$SY_CERT_SRC" ]; then
     if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
-        update-ca-certificates >/dev/null 2>&1 || true
+        if ! update-ca-certificates >/dev/null 2>&1; then
+            echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
+        fi
     fi
 fi
 
@@ -135,8 +186,18 @@ if [ -f /safeyolo/authorized_keys ]; then
 fi
 
 if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
-    ssh-keygen -A >/dev/null 2>&1 || true
+    ssh-keygen -A >/dev/null 2>&1
 fi
+# SSH host keys must be root-owned and 600. Keys from the rootfs
+# tarball already have correct ownership, but ssh-keygen -A above
+# creates new ones as the current user — fix unconditionally.
+# The glob may not match on runtimes where keygen failed (gVisor
+# without /dev/random early in boot) — check before chown/chmod.
+for keyfile in /etc/ssh/ssh_host_*_key; do
+    [ -f "$keyfile" ] || continue
+    chown root:root "$keyfile"
+    chmod 600 "$keyfile"
+done
 
 mkdir -p /run/sshd
 /usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
@@ -154,7 +215,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # reliably appear there.
 VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
 if [ -n "$VM_IP" ]; then
-    echo "$VM_IP" > /safeyolo/vm-ip 2>/dev/null || true
+    echo "$VM_IP" > /safeyolo-status/vm-ip
 fi
 
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
@@ -164,10 +225,10 @@ fi
 # which triggers a kernel panic in init). /run is tmpfs, part of the
 # captured memory image, so the staged copy survives the save/restore
 # round trip.
-mkdir -p /run/safeyolo 2>/dev/null || true
+mkdir -p /run/safeyolo
 if [ -f /safeyolo/guest-init-per-run ]; then
-    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run 2>/dev/null || true
-    chmod +x /run/safeyolo/guest-init-per-run 2>/dev/null || true
+    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run
+    chmod +x /run/safeyolo/guest-init-per-run
 fi
 
 # --------------------------------------------------------------------------
@@ -223,7 +284,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
         done
         if [ "$_proxy_ok" -eq 0 ]; then
             echo "[static] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status
             exit 0
         fi
         echo "[static] egress connectivity confirmed (attempt $_try)" > /dev/console 2>/dev/null || true
@@ -234,8 +295,8 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # PATH; without `-l`, `command -v` can't find a mise-managed
         # binary even when it's correctly installed.
         if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "installing" > /safeyolo/vm-status 2>/dev/null || true
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >/dev/null 2>&1 || true
+            echo "installing" > /safeyolo-status/vm-status
+            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
         fi
         # Ground vm-status in reality. `mise use -g` can exit nonzero
         # (notably: the outer `timeout` fires *after* the package is
@@ -245,9 +306,9 @@ echo 'export HOME=/home/agent' >> /etc/environment
         # Per-run has a safety-net retry, so "install-failed" here is
         # only terminal if per-run's retry also fails.
         if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "" > /safeyolo/vm-status 2>/dev/null || true
+            echo "" > /safeyolo-status/vm-status
         else
-            echo "install-failed" > /safeyolo/vm-status 2>/dev/null || true
+            echo "install-failed" > /safeyolo-status/vm-status
         fi
     fi
 )

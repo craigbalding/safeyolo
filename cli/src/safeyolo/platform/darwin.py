@@ -33,20 +33,12 @@ class DarwinPlatform(AgentPlatform):
     """macOS agent isolation via Virtualization.framework microVMs."""
 
     def setup_networking(self, agent_index: int) -> dict:
-        # attribution_ip is a synthetic 127.0.0.X that proxy_bridge binds
-        # to as the upstream TCP source so mitmproxy's service_discovery
-        # can map each flow back to the originating agent.
-        attribution_ip = f"127.0.0.{agent_index + 2}"
-
-        # macOS quirk: Linux auto-routes the whole 127.0.0.0/8 loopback
-        # range, but Darwin only owns 127.0.0.1 by default. The bridge's
-        # bind() to 127.0.0.X fails with EADDRNOTAVAIL unless we alias
-        # the address onto lo0 first. Idempotent — re-aliasing is a no-op.
-        subprocess.run(
-            ["sudo", "-n", "ifconfig", "lo0", "alias",
-             f"{attribution_ip}/32"],
-            capture_output=True, check=False,
-        )
+        # Per-agent IP from the 10.200.0.0/16 range. Configured on the
+        # guest's loopback and used as the attribution IP in mitmproxy
+        # — one consistent identity visible inside and outside the
+        # sandbox.
+        offset = agent_index + 1  # 0 → 10.200.0.1
+        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"
 
         return {
             "attribution_ip": attribution_ip,
@@ -56,11 +48,9 @@ class DarwinPlatform(AgentPlatform):
         }
 
     def teardown_networking(self, agent_index: int) -> None:
-        attribution_ip = f"127.0.0.{agent_index + 2}"
-        subprocess.run(
-            ["sudo", "-n", "ifconfig", "lo0", "-alias", attribution_ip],
-            capture_output=True, check=False,
-        )
+        # No lo0 aliases to clean up — identity is conveyed via
+        # PROXY protocol, not kernel interface configuration.
+        pass
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
                             active_subnets: list[str]) -> None:
@@ -151,30 +141,28 @@ class DarwinPlatform(AgentPlatform):
         if interactive and not command:
             cmd.append("-t")
         cmd.append(target)
+
+        stdin = None
         if command:
             cmd.append(command)
+            # Close stdin for non-interactive commands so nc's UDS
+            # ProxyCommand exits when the remote command finishes.
+            stdin = subprocess.DEVNULL
 
-        result = subprocess.run(cmd)
+        result = subprocess.run(cmd, stdin=stdin)
         return result.returncode
 
     def is_sandbox_running(self, name: str) -> bool:
         return is_vm_running(name)
 
     def cleanup_all(self, agents_dir: Path) -> None:
-        """Drop any lingering lo0 aliases for agents that belonged to this
-        instance. vsock state and bridge sockets are process-scoped and
-        get cleaned up with the respective daemons — nothing else to do."""
-        if not agents_dir.exists():
-            return
+        """Clean up agent resources for this instance.
 
-        for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
-            if not agent_dir.is_dir():
-                continue
-            attribution_ip = f"127.0.0.{idx + 2}"
-            subprocess.run(
-                ["sudo", "-n", "ifconfig", "lo0", "-alias", attribution_ip],
-                capture_output=True, check=False,
-            )
+        No lo0 aliases to remove — identity is conveyed via PROXY protocol.
+        vsock state and bridge sockets are process-scoped and get cleaned
+        up with the respective daemons.
+        """
+        pass
 
     def remove_agent_dir(self, name: str) -> None:
         """Delete the agent's on-disk directory (Darwin: all user-owned)."""

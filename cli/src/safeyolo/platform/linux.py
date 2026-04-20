@@ -1,14 +1,19 @@
-"""Linux platform: gVisor (runsc) container + veth + iptables.
+"""Linux platform: gVisor (runsc) containers in unprivileged user namespaces.
 
 Auto-detects KVM availability for best isolation:
   - /dev/kvm accessible → runsc --platform=kvm (hardware isolation)
   - otherwise → runsc --platform=systrap (seccomp-bpf interception)
 
-No Docker, containerd, or other daemon required. Only needs:
+No Docker, containerd, sudo, or other daemon required. Only needs:
   - runsc binary (single Go binary, ~30MB)
-  - iptables (standard)
   - iproute2 (standard)
-  - root/sudo for networking and container lifecycle
+  - systemd user session (resource limits via cgroup delegation)
+  - AppArmor profile for runsc (one-time install, allows user namespaces)
+  - EROFS rootfs image (built by guest/build-all.sh)
+
+Network isolation is structural: each agent runs in its own user
+namespace with a loopback-only network namespace. The only egress
+path is a bind-mounted UDS routed through the proxy bridge.
 """
 
 import json
@@ -25,49 +30,51 @@ from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
 
-# runsc state directory
-RUNSC_ROOT = "/run/safeyolo"
+# AppArmor profile name — must match the installed profile.
+AA_PROFILE = "safeyolo-runsc"
 
-# Offset for the netns slot number so a second SafeYolo instance (blackbox
-# test harness or per-operator dev run) doesn't collide with production in
-# the kernel's flat netns namespace. Historically this was the third octet
-# of the feth-era /24 subnet; it survives the feth removal because the
-# netns name still has to be unique per instance.
-SUBNET_BASE = int(os.environ.get("SAFEYOLO_SUBNET_BASE", "65"))
+# runsc state directory — user-writable, no sudo needed.
+RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
 
 
-def _sudo(
+def _runsc_root() -> str:
+    """Return the runsc state directory, creating it if needed.
+
+    Derives from SAFEYOLO_CONFIG_DIR so parallel instances (production
+    + blackbox tests) don't collide in the state directory.
+    """
+    explicit = os.environ.get("SAFEYOLO_RUNSC_ROOT")
+    if explicit:
+        root = explicit
+    else:
+        config_dir = os.environ.get("SAFEYOLO_CONFIG_DIR",
+                                    str(Path.home() / ".safeyolo"))
+        root = str(Path(config_dir) / "run")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _run(
     cmd: list[str],
     check: bool = True,
     capture: bool = True,
     detach: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run a command with sudo.
+    """Run a command without sudo.
 
-    detach=True: for commands that fork daemons (notably `runsc create`,
-    which spawns runsc-sandbox and runsc-gofer as long-lived children of
-    init). Daemon children inherit any pipe we opened for sudo's
-    stdout/stderr, and subprocess.run's communicate() then blocks until
-    EOF — which never comes while the daemon holds the pipe open.
-    detach swaps stderr onto a real tempfile rather than a pipe: regular
-    files have no "EOF-blocks-until-all-writers-close" semantics, so
-    daemon inheritance is harmless. stdout is discarded (runsc create
-    prints nothing useful on success anyway); errors still come through
-    via stderr exactly like the non-detach path, both on the returned
-    CompletedProcess and on CalledProcessError.
+    detach=True: for commands that fork daemons (runsc create spawns
+    sandbox + gofer). Uses a tempfile for stderr to avoid blocking on
+    inherited pipes.
     """
     if detach:
-        # tempfile.TemporaryFile unlinks on close; fd is inheritable.
-        # Unbuffered so the runsc-cli's stderr lands on disk before
-        # it exits, even if daemon children are still writing.
         stderr_file = tempfile.TemporaryFile(mode="w+b", buffering=0)
         try:
             result = subprocess.run(
-                ["sudo"] + cmd,
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_file,
-                check=False,  # handle manually so we can attach stderr text
+                check=False,
             )
             stderr_file.seek(0)
             err_text = stderr_file.read().decode(errors="replace")
@@ -75,23 +82,12 @@ def _sudo(
             stderr_file.close()
         if check and result.returncode != 0:
             raise subprocess.CalledProcessError(
-                result.returncode, ["sudo"] + cmd, output=None, stderr=err_text,
+                result.returncode, cmd, output=None, stderr=err_text,
             )
-        # Preserve the CompletedProcess shape callers expect.
         return subprocess.CompletedProcess(
             args=result.args, returncode=result.returncode,
             stdout=None, stderr=err_text,
         )
-    return subprocess.run(
-        ["sudo"] + cmd,
-        capture_output=capture,
-        text=True,
-        check=check,
-    )
-
-
-def _run(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
-    """Run a command without sudo."""
     return subprocess.run(
         cmd,
         capture_output=capture,
@@ -100,41 +96,76 @@ def _run(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess
     )
 
 
+def detect_runsc_platform() -> dict:
+    """Detect best runsc platform with diagnostic detail.
+
+    Returns a dict with keys:
+      platform: "kvm" or "systrap"
+      kvm_exists: bool
+      kvm_operator_access: bool
+      kvm_subordinate_access: bool
+      reason: human-readable explanation
+    """
+    info: dict = {
+        "platform": "systrap",
+        "kvm_exists": os.path.exists("/dev/kvm"),
+        "kvm_operator_access": False,
+        "kvm_subordinate_access": False,
+        "reason": "",
+    }
+    if not info["kvm_exists"]:
+        info["reason"] = "/dev/kvm not found"
+        return info
+    info["kvm_operator_access"] = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    if not info["kvm_operator_access"]:
+        info["reason"] = "/dev/kvm exists but operator lacks rw access"
+        return info
+    try:
+        result = subprocess.run(
+            ["getfacl", "/dev/kvm"],
+            capture_output=True, text=True, check=False, timeout=3,
+        )
+        info["kvm_subordinate_access"] = "user:100000:rw" in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        # getfacl missing or hung — assume no subordinate access
+        # and fall back to systrap (the safe default).
+        pass
+    if not info["kvm_subordinate_access"]:
+        info["reason"] = "subordinate uid 100000 lacks /dev/kvm ACL"
+        return info
+    info["platform"] = "kvm"
+    info["reason"] = "KVM available with full access"
+    return info
+
+
 def _detect_runsc_platform() -> str:
-    """Detect best runsc platform: kvm if available, otherwise systrap."""
-    if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
-        return "kvm"
-    return "systrap"
+    """Internal: return just the platform string."""
+    return detect_runsc_platform()["platform"]
 
 
-def _find_runsc() -> str:
-    """Find the runsc binary."""
+def find_runsc() -> str | None:
+    """Find the runsc binary. Returns path or None."""
     path = shutil.which("runsc")
     if path:
         return path
-    # Common install locations
     for p in ["/usr/local/bin/runsc", "/usr/bin/runsc"]:
         if os.path.exists(p) and os.access(p, os.X_OK):
             return p
-    raise RuntimeError(
-        "runsc not found. Install gVisor:\n"
-        "  curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg\n"
-        '  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] '
-        'https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list\n'
-        "  sudo apt update && sudo apt install -y runsc"
-    )
+    return None
 
 
-def _detect_cgroup_version() -> int:
-    """Detect cgroup version (1 or 2)."""
-    try:
-        with open("/proc/mounts") as f:
-            for line in f:
-                if "cgroup2" in line and "/sys/fs/cgroup" in line:
-                    return 2
-        return 1
-    except FileNotFoundError:
-        return 2  # assume modern
+def _find_runsc() -> str:
+    """Internal: find runsc or raise."""
+    path = find_runsc()
+    if not path:
+        raise RuntimeError(
+            "runsc not found. Install gVisor:\n"
+            "  curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg\n"
+            '  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] '
+            'https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list\n'
+            "  sudo apt update && sudo apt install -y runsc"
+        )
+    return path
 
 
 def _container_id(name: str) -> str:
@@ -142,17 +173,196 @@ def _container_id(name: str) -> str:
     return f"safeyolo-{name}"
 
 
-def _netns_offset(agent_index: int) -> int:
-    """Global slot number for an agent, offset by SUBNET_BASE so multiple
-    SafeYolo instances (production + blackbox test) don't collide in the
-    kernel's flat netns namespace.
+def has_aa_exec() -> bool:
+    """Check if aa-exec is available."""
+    return shutil.which("aa-exec") is not None
+
+
+def has_apparmor_profile() -> bool:
+    """Check if the SafeYolo AppArmor profile is loaded in the kernel.
+
+    Probes functionally: runs `aa-exec -p safeyolo-runsc -- true`.
+    Succeeds only if the profile is loaded and usable by the current
+    user. No root needed.
     """
-    return SUBNET_BASE - 65 + agent_index
+    if not has_aa_exec():
+        return False
+    try:
+        result = subprocess.run(
+            ["aa-exec", "-p", AA_PROFILE, "--", "true"],
+            capture_output=True, check=False, timeout=3,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
 
-def _netns_name(agent_index: int) -> str:
-    """Derive network namespace name from agent index."""
-    return f"safeyolo-idx{_netns_offset(agent_index)}"
+def needs_apparmor() -> bool:
+    """Check if AppArmor restricts unprivileged user namespaces."""
+    try:
+        val = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip()
+        return val == "1"
+    except (FileNotFoundError, PermissionError):
+        return False
+
+
+def check_userns_prerequisites() -> dict:
+    """Check user namespace prerequisites for rootless gVisor.
+
+    Returns a dict with keys:
+      newuidmap: bool — newuidmap binary available
+      newgidmap: bool — newgidmap binary available
+      subuid: bool — /etc/subuid has entry for current user
+      subgid: bool — /etc/subgid has entry for current user
+      setfacl: bool — setfacl available (grants runsc state dir to uid 100000)
+      apparmor_restricts: bool — kernel restricts unprivileged userns
+      apparmor_profile_loaded: bool — safeyolo-runsc profile loaded
+    """
+    import getpass
+    username = getpass.getuser()
+
+    info = {
+        "newuidmap": shutil.which("newuidmap") is not None,
+        "newgidmap": shutil.which("newgidmap") is not None,
+        "subuid": False,
+        "subgid": False,
+        "setfacl": shutil.which("setfacl") is not None,
+        "apparmor_restricts": needs_apparmor(),
+        "apparmor_profile_loaded": False,
+    }
+
+    for fname, key in [("/etc/subuid", "subuid"), ("/etc/subgid", "subgid")]:
+        try:
+            content = Path(fname).read_text()
+            info[key] = any(
+                line.startswith(f"{username}:") for line in content.splitlines()
+            )
+        except (FileNotFoundError, PermissionError):
+            # subuid/subgid not provisioned or unreadable — leave
+            # info[key] False so doctor reports "not configured".
+            pass
+
+    if info["apparmor_restricts"]:
+        info["apparmor_profile_loaded"] = has_apparmor_profile()
+
+    return info
+
+
+def _userns_pid_file(name: str) -> Path:
+    """Path to the file storing the userns holder PID for an agent."""
+    return get_agents_dir() / name / "userns.pid"
+
+
+def _start_userns(name: str) -> int:
+    """Create a user namespace with proper uid mapping and return its PID.
+
+    The userns holder is a `sleep` process that keeps the namespace
+    alive. The sandbox, started via nsenter, outlives this process
+    (T3 confirmed), but we need it for nsenter into exec/kill/delete.
+
+    uid mapping: container 0 → host subordinate (100000+), container
+    1000 → host operator uid. This gives the agent proper file
+    ownership: workspace and /home/agent are owned by container uid
+    1000 = host operator = the person who owns those files.
+    """
+    aa_prefix = []
+    if needs_apparmor() and has_aa_exec():
+        aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
+
+    # Start the userns holder
+    proc = subprocess.Popen(
+        aa_prefix + ["unshare", "-Un", "sleep", "86400"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.5)
+
+    if proc.poll() is not None:
+        raise RuntimeError("userns holder exited immediately")
+
+    upid = proc.pid
+
+    # Write uid/gid maps: container 0 → host subordinate, container 1000 → host operator
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    try:
+        subprocess.run(
+            ["newuidmap", str(upid),
+             "0", "100000", "1000",
+             "1000", str(host_uid), "1",
+             "1001", "101001", "64534"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["newgidmap", str(upid),
+             "0", "100000", "1000",
+             "1000", str(host_gid), "1",
+             "1001", "101001", "64534"],
+            check=True, capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        proc.kill()
+        raise RuntimeError(f"newuidmap/newgidmap failed: {e.stderr}") from e
+
+    # Persist the PID
+    _userns_pid_file(name).write_text(str(upid))
+    log.info("userns created for %s (holder pid=%d)", name, upid)
+    return upid
+
+
+def _get_userns_pid(name: str) -> int | None:
+    """Read the userns holder PID, verify it's alive."""
+    pid_file = _userns_pid_file(name)
+    if not pid_file.exists():
+        return None
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)  # check alive
+        return pid
+    except (ValueError, ProcessLookupError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return None
+
+
+def _nsenter_cmd(userns_pid: int) -> list[str]:
+    """Build nsenter prefix for entering the userns."""
+    return ["nsenter", "--user", "--net", "--target", str(userns_pid), "--"]
+
+
+def _kill_userns(name: str) -> None:
+    """Kill the userns holder process."""
+    pid_file = _userns_pid_file(name)
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 9)
+    except (ValueError, ProcessLookupError, OSError):
+        # Stale/corrupt PID file or process already gone — either
+        # way, unlinking below is the correct next step.
+        pass
+    pid_file.unlink(missing_ok=True)
+
+
+
+def _wrap_in_systemd_scope(
+    cmd: list[str],
+    name: str,
+    memory_mb: int,
+    cpus: int,
+) -> list[str]:
+    """Wrap a command in a systemd user scope for resource limits."""
+    memory_max = f"{memory_mb}M"
+    cpu_quota = f"{cpus * 100}%"
+    return [
+        "systemd-run", "--user", "--scope",
+        "-p", "Delegate=yes",
+        "-p", f"MemoryMax={memory_max}",
+        "-p", f"CPUQuota={cpu_quota}",
+        "-p", f"Description=safeyolo-{name}",
+        "--",
+    ] + cmd
 
 
 # ---------------------------------------------------------------------------
@@ -160,151 +370,75 @@ def _netns_name(agent_index: int) -> str:
 # ---------------------------------------------------------------------------
 
 class LinuxPlatform(AgentPlatform):
-    """Linux agent isolation via gVisor (runsc)."""
+    """Linux agent isolation via gVisor (runsc) in unprivileged user namespaces."""
 
     # --- Networking ---
 
     def setup_networking(self, agent_index: int) -> dict:
-        """Create a loopback-only network namespace for the agent.
+        """Compute the agent's identity. No host-side setup needed.
 
-        The new architecture gives the sandbox ZERO external network
-        interfaces — only loopback (127.0.0.1). All traffic the agent
-        initiates to "the host" is caught by the guest-proxy-forwarder
-        on 127.0.0.1:8080 and relayed over a bind-mounted UDS to the
-        host-side proxy_bridge, which forwards to mitmproxy.
-
-        With no veth, no IP assignment, no routing, and no firewall
-        rules, the container has no path out except through the UDS.
-        The enforcement is structural, not policy-based.
-
-        Loopback is still needed because the guest-proxy-forwarder
-        binds 127.0.0.1:8080 — gVisor with --network=none has no
-        loopback at all and can't satisfy that bind.
+        Network isolation is handled at container start time via
+        unshare -Urn (user namespace + loopback-only network namespace).
+        The agent IP is configured on the guest's loopback by guest-init.
         """
-        alloc: dict = {}
-        netns = _netns_name(agent_index)
+        offset = agent_index + 1  # 0 → 10.200.0.1
+        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"
 
-        _sudo(["ip", "netns", "add", netns], check=False)  # may already exist
-        # Bring up loopback so 127.0.0.1 is available to the guest.
-        _sudo(["ip", "-n", netns, "link", "set", "lo", "up"])
-
-        # The agent's HTTP_PROXY points at the in-guest forwarder
-        # (loopback) — these two IPs are what end up in proxy.env.
-        alloc["host_ip"] = "127.0.0.1"
-        alloc["guest_ip"] = "127.0.0.1"
-        alloc["netns"] = netns
-
-        # Synthetic loopback IP used to stamp agent identity on upstream
-        # TCP flows from the host proxy_bridge to mitmproxy. 127.0.0.0/8
-        # is all loopback, so bind() + connect() with any 127.x address
-        # works without config. 127.0.0.1 is reserved for mitmproxy's
-        # own traffic; agents start at 127.0.0.2.
-        alloc["attribution_ip"] = f"127.0.0.{agent_index + 2}"
-        # Linux agents reach mitmproxy via a per-agent UDS bridge socket
-        # (structural isolation). Signals to agent.py that it should
-        # coordinate with proxy_bridge before start_sandbox.
-        alloc["needs_bridge_socket"] = True
-        log.info("Loopback-only netns %s created (attribution_ip=%s)",
-                 netns, alloc["attribution_ip"])
-        return alloc
+        return {
+            "host_ip": "127.0.0.1",
+            "guest_ip": "127.0.0.1",
+            "attribution_ip": attribution_ip,
+            "needs_bridge_socket": True,
+        }
 
     def teardown_networking(self, agent_index: int) -> None:
-        """Remove the agent's network namespace."""
-        netns = _netns_name(agent_index)
-        _sudo(["ip", "netns", "del", netns], check=False)
-        log.info("Network namespace %s removed", netns)
+        """No-op: network namespace is owned by the unshare process and
+        cleaned up automatically when the sandbox exits."""
+        pass
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,  # noqa: ARG002
                             active_subnets: list[str]) -> None:  # noqa: ARG002
-        """No-op: the new architecture has no kernel firewall requirement.
-
-        The container has no external network interface — there's nothing
-        to firewall. The only egress is the bind-mounted UDS, which is
-        intrinsically proxy-only (the socket is the proxy endpoint).
-
-        Signature preserved so the platform abstraction stays stable
-        while macOS still uses its pf anchor path.
-        """
-        log.debug("load_firewall_rules: no-op (loopback-only netns, UDS proxy)")
+        """No-op: structural isolation, no firewall rules."""
+        pass
 
     def unload_firewall_rules(self) -> None:
-        """No-op: nothing to unload."""
-        log.debug("unload_firewall_rules: no-op")
+        """No-op."""
+        pass
+
+    def _status_dir(self, name: str) -> Path:
+        from ..vm import get_agent_status_dir  # noqa: PLC0415
+        return get_agent_status_dir(name)
 
     # --- Rootfs ---
 
     def agent_rootfs_path(self, name: str) -> Path:
-        """Return the overlayfs merged-dir path for this agent's rootfs.
-
-        On Linux the rootfs is a directory (overlayfs merge of a shared
-        read-only base + a per-agent upper layer), not an ext4 image file.
-        """
+        """Return the overlayfs merged-dir path for this agent's rootfs."""
         return get_agents_dir() / name / "rootfs"
 
     def prepare_rootfs(self, name: str) -> Path:
-        """Create agent rootfs using fuse-overlayfs on extracted base.
+        """Verify the EROFS rootfs image exists.
 
-        The base rootfs is extracted from ext4 once and shared read-only.
-        Each agent gets a fuse-overlayfs upper layer for writes.
-
-        fuse-overlayfs runs unprivileged (no sudo for per-agent mounts).
-        squash_to_uid/gid ensures all upper-layer files are owned by the
-        operator on the host, so cleanup needs no sudo either.
-        Requires: fuse-overlayfs binary, /dev/fuse, user_allow_other
-        in /etc/fuse.conf (same as rootless Podman).
+        With EROFS, gVisor mounts the image directly in its sentry and
+        handles the writable overlay internally (memory-backed). No
+        fuse-overlayfs, no per-agent copies, no uid remapping needed.
+        All agents share one read-only EROFS image.
         """
         share_dir = get_share_dir()
-        base_dir = share_dir / "rootfs-base"
+        erofs = share_dir / "rootfs-base.erofs"
+        if not erofs.exists():
+            raise RuntimeError(
+                f"EROFS rootfs image not found at {erofs}\n"
+                f"Build guest images first: cd guest && ./build-all.sh\n"
+                f"Requires: sudo apt install erofs-utils"
+            )
 
-        # One-time: extract base rootfs from ext4 image
-        if not base_dir.exists():
-            ext4 = share_dir / "rootfs-base.ext4"
-            if not ext4.exists():
-                raise RuntimeError(
-                    f"Base rootfs not found at {ext4}\n"
-                    f"Build guest images first: cd guest && ./build-all.sh"
-                )
-            log.info("Extracting base rootfs from %s...", ext4)
-            mnt = Path("/tmp/safeyolo-rootfs-mnt")
-            mnt.mkdir(exist_ok=True)
-            _sudo(["mount", "-o", "loop,ro", str(ext4), str(mnt)])
-            try:
-                _sudo(["cp", "-a", f"{mnt}/.", str(base_dir)])
-            finally:
-                _sudo(["umount", str(mnt)])
-            mnt.rmdir()
-            # chown the extracted base to the operator so fuse-overlayfs
-            # can read the lowerdir. Safe: gVisor maps UIDs via OCI config.
-            _sudo(["chown", "-R", f"{os.getuid()}:{os.getgid()}", str(base_dir)])
-
+        # The OCI spec's root.path must point to a directory (OCI
+        # requirement), even though EROFS replaces it via annotations.
+        # Create an empty placeholder.
         agent_dir = get_agents_dir() / name
-        upper = agent_dir / "rootfs-upper"
-        work = agent_dir / "rootfs-work"
-        merged = agent_dir / "rootfs"
-
-        # Check for an actual overlay mount, not just dir-has-contents.
-        if merged.exists() and os.path.ismount(merged):
-            # Verify mount is healthy (FUSE mounts can go stale if the
-            # fuse-overlayfs process dies). A stale mount returns ENOTCONN
-            # on any access attempt.
-            try:
-                os.listdir(merged)
-                return merged  # Genuinely mounted and healthy
-            except OSError:
-                log.warning("Stale FUSE mount at %s, forcing remount", merged)
-                _run(["fusermount3", "-u", str(merged)], check=False)
-
-        for d in (upper, work, merged):
-            d.mkdir(parents=True, exist_ok=True)
-
-        uid, gid = os.getuid(), os.getgid()
-        _run(["fuse-overlayfs",
-              "-o", f"lowerdir={base_dir},upperdir={upper},workdir={work},"
-                    f"allow_other,squash_to_uid={uid},squash_to_gid={gid}",
-              str(merged)])
-
-        log.info("fuse-overlayfs mounted for agent '%s'", name)
-        return merged
+        rootfs_dir = agent_dir / "rootfs"
+        rootfs_dir.mkdir(parents=True, exist_ok=True)
+        return rootfs_dir
 
     # --- Sandbox lifecycle ---
 
@@ -318,34 +452,65 @@ class LinuxPlatform(AgentPlatform):
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
         background: bool,
-        snapshot_capture_path: Path | None = None,  # noqa: ARG002 — PR 5
-        restore_from_path: Path | None = None,      # noqa: ARG002 — PR 5
+        snapshot_capture_path: Path | None = None,  # noqa: ARG002
+        restore_from_path: Path | None = None,      # noqa: ARG002
     ) -> int:
-        """Start a gVisor sandbox via runsc.
-
-        snapshot_capture_path / restore_from_path are accepted for
-        interface parity with DarwinPlatform but ignored here; PR 5 will
-        add runsc checkpoint/restore.
-        """
+        """Start a gVisor sandbox in an unprivileged user namespace."""
         runsc = _find_runsc()
         platform = _detect_runsc_platform()
-        cgroup_v = _detect_cgroup_version()
+        root = _runsc_root()
 
         agent_dir = get_agents_dir() / name
         rootfs = agent_dir / "rootfs"
         cid = _container_id(name)
-        netns = fw_alloc.get("netns", "")
+        agent_ip = fw_alloc.get("attribution_ip", "")
 
-        # Ensure the overlay is mounted for this run. prepare_rootfs is
-        # idempotent (checks ismount) and originally only runs at
-        # `agent add` time — but a host reboot, an accidental umount,
-        # or a buggy stop_sandbox umount (now fixed) can leave the
-        # overlay off between runs. Without this call, runsc create
-        # would see only rootfs-upper skeletons and start would fail
-        # with "failed to load /bin/bash: no such file or directory".
         self.prepare_rootfs(name)
 
-        # Build OCI config
+        os.makedirs(rootfs / "workspace", exist_ok=True)
+
+        # runsc inside the userns operates as subordinate uid 100000
+        # on the host filesystem and needs rwx on its state dir.
+        # Scope the grant tightly via ACL to that single uid rather
+        # than widening the mode bits. setfacl ships in the same
+        # `acl` package as getfacl, which we already depend on.
+        try:
+            subprocess.run(
+                ["setfacl", "-m", "u:100000:rwx", str(root)],
+                check=True, capture_output=True,
+            )
+        except FileNotFoundError as err:
+            raise RuntimeError(
+                "setfacl not found. Install the `acl` package "
+                "(Debian/Ubuntu: `sudo apt-get install acl`)."
+            ) from err
+        except subprocess.CalledProcessError as err:
+            raise RuntimeError(
+                f"setfacl failed on {root}: {err.stderr.decode(errors='replace')}"
+            ) from err
+
+        # Clean stale state from previous run. Create a temporary
+        # userns if needed — runsc state is owned by uid 100000.
+        old_upid = _get_userns_pid(name)
+        if old_upid:
+            _run(_nsenter_cmd(old_upid) +
+                 [runsc, "--root", root, "delete", "--force", cid],
+                 check=False)
+            _kill_userns(name)
+
+        # Create user namespace — we need the PID for the OCI
+        # spec's network namespace path.
+        upid = _start_userns(name)
+
+        # Force-delete any stale state using the new userns (covers
+        # the case where the old userns holder was already dead).
+        _run(_nsenter_cmd(upid) +
+             [runsc, "--root", root, "delete", "--force", cid],
+             check=False)
+        _run(_nsenter_cmd(upid) +
+             ["rm", "-f", f"/tmp/runsc-{cid}.sock"],
+             check=False)
+
         config = self._generate_oci_config(
             name=name,
             rootfs_path=rootfs,
@@ -355,67 +520,70 @@ class LinuxPlatform(AgentPlatform):
             cpus=cpus,
             memory_mb=memory_mb,
             extra_shares=extra_shares,
-            netns=netns,
-            cgroup_version=cgroup_v,
+            userns_pid=upid,
         )
 
         config_path = agent_dir / "config.json"
         config_path.write_text(json.dumps(config, indent=2))
 
-        # Ensure runsc root dir exists
-        _sudo(["mkdir", "-p", RUNSC_ROOT])
+        # Configure networking inside the userns. lo gets configured
+        # in the userns's netns; the OCI spec points gVisor at this
+        # netns via /proc/<holder>/ns/net so gVisor's sandbox netstack
+        # imports the loopback (with agent IP) into its internal stack.
+        setup = "ip link set lo up"
+        if agent_ip:
+            setup += f" && ip addr add {agent_ip}/32 dev lo"
 
-        # Ensure the workspace bind-mount target exists inside the
-        # rootfs. The base rootfs doesn't ship `/workspace`; without
-        # this, `runsc start` fails to attach the workspace bind mount
-        # and the container lands in `stopped` state before guest-init
-        # ever runs. Create through the merged mount point (not directly
-        # in rootfs-upper) — fuse-overlayfs only surfaces changes made
-        # through the merge, not direct upper-layer writes.
-        os.makedirs(rootfs / "workspace", exist_ok=True)
-
-        # Clear any stale state entry for this cid before create. runsc
-        # create fails with ID-already-exists if a previous run's state
-        # is still in the root dir (e.g. `stopped` after a failed boot,
-        # or leftover from an un-clean shutdown). --force makes delete
-        # a no-op when the container doesn't exist, so this is safe on
-        # a clean slate.
-        _sudo([runsc, "--root", RUNSC_ROOT, "delete", "--force", cid],
-              check=False)
-
-        # Create container. detach=True: `runsc create` forks the sandbox
-        # and gofer as daemons that inherit our stdout pipe — without
-        # detach, Python blocks forever in communicate() waiting for EOF
-        # on a pipe the daemons hold open for the container's lifetime.
-        #
-        # --host-uds=open lets the container connect() to UDS files
-        # bind-mounted from the host (the proxy socket lands at
-        # /safeyolo/proxy.sock via the config-share bind mount).
-        # --network=none isn't used because it also suppresses loopback;
-        # the loopback-only netns from setup_networking gives us 127.0.0.1
-        # (needed by guest-proxy-forwarder) without any external path.
-        _sudo([runsc, "--root", RUNSC_ROOT, "--host-uds=open",
-               f"--platform={platform}",
-               "create", "--bundle", str(agent_dir), cid], detach=True)
-
-        # Start container
-        _sudo([runsc, "--root", RUNSC_ROOT, "start", cid])
-
-        # Get PID
-        state = json.loads(
-            _sudo([runsc, "--root", RUNSC_ROOT, "state", cid]).stdout
+        inner = (
+            f"{setup} && "
+            f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
+            f"--network=sandbox --platform={platform} "
+            f"create --bundle {agent_dir} {cid} && "
+            f"{runsc} --ignore-cgroups --root {root} "
+            f"start {cid}"
         )
-        pid = state.get("pid", 0)
 
-        # Write PID file for is_sandbox_running
+        cmd = _wrap_in_systemd_scope(
+            _nsenter_cmd(upid) + ["bash", "-c", inner],
+            name, memory_mb, cpus,
+        )
+
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            result = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                check=False,
+            )
+            stderr_file.seek(0)
+            err_text = stderr_file.read().decode(errors="replace")
+
+        if result.returncode != 0:
+            _kill_userns(name)
+            log.error("Container start failed (rc=%d): %s",
+                      result.returncode, err_text)
+            raise RuntimeError(f"Failed to start container {cid}: {err_text}")
+
+        # Get PID — nsenter into userns for state query
+        state_result = _run(
+            _nsenter_cmd(upid) + [runsc, "--root", root, "state", cid],
+            check=False,
+        )
+        pid = 0
+        if state_result.returncode == 0:
+            try:
+                pid = json.loads(state_result.stdout).get("pid", 0)
+            except json.JSONDecodeError:
+                # runsc state returned non-JSON (shouldn't happen
+                # on a healthy runsc) — leave pid=0 and move on.
+                pass
+
         pid_path = agent_dir / "container.pid"
         pid_path.write_text(str(pid))
 
-        # Write container IP for compatibility with existing code
-        ip_file = config_share / "vm-ip"
-        ip_file.write_text(fw_alloc["guest_ip"])
-
-        log.info("Container %s started (pid=%d, platform=%s)", cid, pid, platform)
+        log.info("Container %s started (pid=%d, platform=%s, rootless=true)",
+                 cid, pid, platform)
         return pid
 
     def stop_sandbox(self, name: str) -> None:
@@ -423,12 +591,26 @@ class LinuxPlatform(AgentPlatform):
         cid = _container_id(name)
         agent_dir = get_agents_dir() / name
         runsc = _find_runsc()
+        root = _runsc_root()
 
-        # Probe state so we only pay for the graceful-kill cycle when a
-        # live init exists. `stopped` and `created` both mean "runsc has
-        # state dir entries that need cleanup" but no process to signal.
-        state_result = _sudo(
-            [runsc, "--root", RUNSC_ROOT, "state", cid], check=False,
+        upid = _get_userns_pid(name)
+
+        # If the userns holder is dead, create a temporary one for
+        # cleanup. The state dir is owned by uid 100000 — we need
+        # to be in a userns where we're that uid to access it.
+        temp_userns = False
+        if not upid:
+            try:
+                upid = _start_userns(name)
+                temp_userns = True
+            except RuntimeError:
+                # Can't create userns — best-effort cleanup without it
+                upid = None
+
+        prefix = _nsenter_cmd(upid) if upid else []
+
+        state_result = _run(
+            prefix + [runsc, "--root", root, "state", cid], check=False,
         )
         has_state = state_result.returncode == 0
         is_running = False
@@ -439,64 +621,59 @@ class LinuxPlatform(AgentPlatform):
                 pass
 
         if is_running:
-            # Graceful then forced.
-            _sudo([runsc, "--root", RUNSC_ROOT, "kill", cid, "SIGTERM"], check=False)
+            _run(prefix + [runsc, "--root", root, "kill", cid, "SIGTERM"], check=False)
             time.sleep(5)
-            _sudo([runsc, "--root", RUNSC_ROOT, "kill", "--all", cid, "SIGKILL"], check=False)
+            _run(prefix + [runsc, "--root", root, "kill", "--all", cid, "SIGKILL"], check=False)
             time.sleep(1)
 
         if has_state:
-            # --force so delete works on created/stopped/running alike.
-            # Without --force runsc errors on non-running states, leaving
-            # stale entries that break the next `runsc create`.
-            _sudo([runsc, "--root", RUNSC_ROOT, "delete", "--force", cid],
-                  check=False)
+            _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
+        else:
+            # State query failed — force delete anyway in case files exist
+            _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
 
-        # Teardown networking
-        agents_dir = get_agents_dir()
-        existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
-        agent_index = existing.index(name) if name in existing else -1
-        if agent_index >= 0:
-            self.teardown_networking(agent_index)
+        # Clean stale control socket from /tmp. gVisor creates it as
+        # the userns root (uid 100000) so the operator can't delete it
+        # directly — use the userns prefix.
+        sock_path = f"/tmp/runsc-{cid}.sock"
+        _run(prefix + ["rm", "-f", sock_path], check=False)
 
-        # Intentionally do NOT unmount the overlay here. stop_sandbox
-        # is called for graceful halts that expect a subsequent
-        # restart — if we umount, the next `runsc create` finds only
-        # rootfs-upper's leftover skeletons and fails at "/bin/bash:
-        # no such file or directory" before guest-init ever runs. The
-        # overlay is torn down in remove_agent_dir when the agent is
-        # actually being deleted.
+        _kill_userns(name)
+        if temp_userns:
+            _kill_userns(name)
 
-        # Clean up PID file
         pid_path = agent_dir / "container.pid"
         pid_path.unlink(missing_ok=True)
 
-        # Update agent map
-        from ..vm import _update_agent_map
+        from ..vm import _update_agent_map  # noqa: PLC0415
         _update_agent_map(name, remove=True)
 
-        log.info("Container %s stopped and cleaned up", cid)
+        log.info("Container %s stopped", cid)
 
     def exec_in_sandbox(self, name: str, command: str | None,
                         user: str = "agent",
                         interactive: bool = True) -> int:
-        """Execute a command in a running sandbox via runsc exec."""
+        """Execute a command in a running sandbox via runsc exec.
+
+        Requires nsenter into the userns because the runsc state dir
+        is owned by the mapped root (host uid from subordinate range).
+        """
         cid = _container_id(name)
         uid = "0:0" if user == "root" else "1000:1000"
+        root = _runsc_root()
 
-        # No `--` separator before the command — runsc exec parses the
-        # first non-flag arg as the container ID and everything after
-        # it as the command, without treating `--` as a flag terminator.
-        # Including `--` makes runsc try to exec `--` itself and fail
-        # with "error finding executable \"--\" in PATH".
-        cmd = [
-            "sudo", _find_runsc(), "--root", RUNSC_ROOT, "exec",
+        upid = _get_userns_pid(name)
+        prefix = _nsenter_cmd(upid) if upid else []
+
+        cmd = prefix + [
+            _find_runsc(), "--root", root, "exec",
             "--user", uid,
             "--cwd", "/workspace",
             cid,
         ]
         if command:
-            cmd.extend(["/bin/bash", "-c", command])
+            # -lc sources the login profile (mise shims on PATH).
+            cmd.extend(["/bin/bash", "-lc", command])
         else:
             cmd.extend(["/bin/bash", "-l"])
 
@@ -506,9 +683,12 @@ class LinuxPlatform(AgentPlatform):
     def is_sandbox_running(self, name: str) -> bool:
         """Check if a gVisor sandbox is running."""
         cid = _container_id(name)
+        root = _runsc_root()
+        upid = _get_userns_pid(name)
+        prefix = _nsenter_cmd(upid) if upid else []
         try:
-            result = _sudo(
-                [_find_runsc(), "--root", RUNSC_ROOT, "state", cid],
+            result = _run(
+                prefix + [_find_runsc(), "--root", root, "state", cid],
                 check=False,
             )
             if result.returncode != 0:
@@ -519,28 +699,28 @@ class LinuxPlatform(AgentPlatform):
             return False
 
     def cleanup_all(self, agents_dir: Path) -> None:
-        """Clean up all networking for this instance."""
+        """Clean up all containers and userns holders for this instance."""
+        root = _runsc_root()
+        runsc = _find_runsc()
         if not agents_dir.exists():
             return
 
-        for idx, agent_dir in enumerate(sorted(agents_dir.iterdir())):
-            if agent_dir.is_dir():
-                netns = _netns_name(idx)
-                _sudo(["ip", "netns", "del", netns], check=False)
+        for agent_dir in sorted(agents_dir.iterdir()):
+            if not agent_dir.is_dir():
+                continue
+            name = agent_dir.name
+            cid = _container_id(name)
+            upid = _get_userns_pid(name)
+            prefix = _nsenter_cmd(upid) if upid else []
+            _run(prefix + [runsc, "--root", root, "delete", "--force", cid],
+                 check=False)
+            _kill_userns(name)
 
     def remove_agent_dir(self, name: str) -> None:
-        """Delete the agent's on-disk directory.
-
-        With fuse-overlayfs + squash_to_uid, all files in the upper and
-        work layers are owned by the operator — shutil.rmtree works
-        without sudo. Defensively unmount via fusermount3 first.
-        """
+        """Delete the agent's on-disk directory."""
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
-        merged = agent_dir / "rootfs"
-        if merged.exists() and os.path.ismount(merged):
-            _run(["fusermount3", "-u", str(merged)], check=False)
         shutil.rmtree(agent_dir)
 
     # --- OCI config generation ---
@@ -555,23 +735,13 @@ class LinuxPlatform(AgentPlatform):
         cpus: int,
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
-        netns: str,
-        cgroup_version: int,
+        userns_pid: int | None = None,
     ) -> dict:
-        """Generate an OCI runtime spec for runsc."""
-        # The container's HTTP_PROXY always targets the in-guest forwarder
-        # on a fixed port — the forwarder decouples the container view
-        # from the host port (prod 8080 vs test 8180). Only the bridge's
-        # upstream port cares about which mitmproxy is running.
+        """Generate an OCI runtime spec for rootless runsc."""
         guest_proxy_port = 8080
         proxy_url = f"http://{fw_alloc['host_ip']}:{guest_proxy_port}"
         ca_cert_path = "/usr/local/share/ca-certificates/safeyolo.crt"
 
-        # Environment variables matching what guest-init.sh would set.
-        # SAFEYOLO_DETACH=1 routes guest-init-per-run into its "stay alive
-        # for SSH access" branch (`exec sleep infinity`) instead of trying
-        # to launch vsock-term (which is macOS-only). The container then
-        # stays up and `exec_in_sandbox` uses `runsc exec` to open shells.
         env = [
             f"HTTP_PROXY={proxy_url}",
             f"HTTPS_PROXY={proxy_url}",
@@ -588,8 +758,6 @@ class LinuxPlatform(AgentPlatform):
             "USER=agent",
             "TERM=xterm-256color",
             "PATH=/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "BASH_ENV=/etc/mise-activate.sh",
-            "SAFEYOLO_DETACH=1",
         ]
 
         # Add agent-specific env from config share
@@ -598,9 +766,7 @@ class LinuxPlatform(AgentPlatform):
             for line in agent_env_file.read_text().splitlines():
                 line = line.strip()
                 if line.startswith("export "):
-                    # export KEY="VALUE" → KEY=VALUE
-                    kv = line[7:]
-                    kv = kv.replace('"', '')
+                    kv = line[7:].replace('"', '')
                     if "=" in kv:
                         env.append(kv)
 
@@ -613,30 +779,19 @@ class LinuxPlatform(AgentPlatform):
              "options": ["nosuid", "noexec", "nodev", "ro"]},
             {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs",
              "options": ["nosuid", "nodev", "mode=1777"]},
-            # Workspace (rw)
             {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
-             "options": ["rbind", "rw"]},
-            # Config share — mounted RW during boot so guest-init can write
-            # /safeyolo/vm-ip (the host's readiness signal) and vm-status.
-            # guest-init-per-run:108 remounts it `ro` before going to sleep,
-            # matching the macOS microVM behaviour.
+             "options": ["rbind", "rw", "nosuid", "nodev"]},
             {"destination": "/safeyolo", "type": "bind",
              "source": str(config_share),
+             "options": ["rbind", "ro"]},
+            {"destination": "/safeyolo-status", "type": "bind",
+             "source": str(self._status_dir(name)),
              "options": ["rbind", "rw"]},
         ]
 
-        # Per-agent proxy UDS — bind THIS agent's bridge socket into
-        # /safeyolo/proxy.sock inside the container. Agent A literally
-        # cannot see or address agent B's socket because B's path isn't
-        # bind-mounted in A's filesystem view. Identity is therefore
-        # structural, not policy-based.
-        #
-        # The bridge's accept() on this socket stamps upstream TCP flows
-        # with the agent's synthetic loopback IP (attribution_ip), which
-        # mitmproxy's service_discovery addon maps back to the agent
-        # name for audit/rate-limit/policy decisions.
-        from ..proxy_bridge import socket_path_for as _proxy_sock_for
+        # Per-agent proxy UDS
+        from ..proxy_bridge import socket_path_for as _proxy_sock_for  # noqa: PLC0415
         proxy_sock = _proxy_sock_for(name)
         if proxy_sock.exists():
             mounts.append({
@@ -646,7 +801,7 @@ class LinuxPlatform(AgentPlatform):
                 "options": ["bind", "rw"],
             })
 
-        # CA cert bind mount into trust store
+        # CA cert
         ca_cert_src = config_share / "mitmproxy-ca-cert.pem"
         if ca_cert_src.exists():
             mounts.append({
@@ -672,67 +827,50 @@ class LinuxPlatform(AgentPlatform):
                     "options": ["rbind", "ro" if read_only else "rw"],
                 })
 
-        # Namespaces
         namespaces = [
             {"type": "pid"},
             {"type": "ipc"},
             {"type": "uts"},
             {"type": "mount"},
         ]
-        if netns:
-            namespaces.append({"type": "network", "path": f"/var/run/netns/{netns}"})
-        else:
-            namespaces.append({"type": "network"})
+        # Point gVisor at the userns holder's netns so sandbox
+        # networking imports the loopback (with agent IP) into its
+        # internal netstack.
+        if userns_pid:
+            namespaces.append({
+                "type": "network",
+                "path": f"/proc/{userns_pid}/ns/net",
+            })
 
-        # Resource limits
-        memory_bytes = memory_mb * 1024 * 1024
-        cpu_quota = cpus * 100000  # period is 100000
-        cgroups_path = f"/safeyolo/{name}" if cgroup_version == 2 else f"safeyolo/{name}"
-
-        # Init process: run the guest-init orchestrator as PID 1 (as root,
-        # with a Docker-ish cap set) so it can do the same setup it does on
-        # the macOS microVM path — mounts, CA trust install, sshd, writing
-        # /safeyolo/vm-ip (the host-side readiness signal) — before the
-        # SAFEYOLO_DETACH branch leaves the container sleeping for
-        # `runsc exec` sessions to land in.
-        #
-        # Shell/agent sessions come in via `exec_in_sandbox`, which passes
-        # `--user 1000:1000` to `runsc exec` — so actual user-facing
-        # activity is scoped to the `agent` user even though PID 1 is root.
-        # Docker-default capability set. CAP_SYS_ADMIN is included because
-        # guest-init-per-run.sh needs `mount -o remount,ro /safeyolo` and
-        # gVisor DOES enforce the cap check for mount operations (verified:
-        # dropping it breaks the remount, leaving /safeyolo writable).
-        #
-        # Known residual: unshare(CLONE_NEWUSER) succeeds inside gVisor
-        # regardless of this cap set — gVisor's sentry emulates namespace
-        # creation in its own user-space kernel without checking the OCI
-        # capability bitmask. We cannot block it via seccomp either (gVisor
-        # ignores OCI seccomp profiles). The risk is mitigated by gVisor's
-        # own sandbox boundary: the new userns exists entirely within the
-        # sentry, not on the host kernel, so capabilities gained there are
-        # scoped to gVisor's emulated environment and don't grant host
-        # access. Filed as an accepted risk with a blackbox test that
-        # documents the behaviour.
+        # Capabilities: CAP_CHOWN for guest-init to chown /home/agent
+        # to uid 1000 (gVisor's sentry handles this internally).
+        # CAP_NET_ADMIN for ip addr add (agent IP on lo).
         root_caps = [
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
-            "CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SYS_CHROOT",
-            "CAP_SYS_ADMIN",  # needed for mount -o remount,ro /safeyolo
+            "CAP_NET_BIND_SERVICE", "CAP_SYS_CHROOT",
+            "CAP_NET_ADMIN",
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
+        # EROFS annotations — gVisor mounts the image directly in its
+        # sentry with an in-memory writable overlay. The OCI root.path
+        # is a placeholder directory; the actual rootfs comes from the
+        # EROFS image.
+        erofs_path = str(get_share_dir() / "rootfs-base.erofs")
+        annotations = {
+            "dev.gvisor.spec.rootfs.source": erofs_path,
+            "dev.gvisor.spec.rootfs.type": "erofs",
+            "dev.gvisor.spec.rootfs.overlay": "memory",
+        }
+
         return {
             "ociVersion": "1.0.0",
             "root": {"path": str(rootfs_path), "readonly": False},
             "hostname": f"safeyolo-{name}",
+            "annotations": annotations,
             "process": {
                 "terminal": False,
                 "user": {"uid": 0, "gid": 0},
-                # Capture guest-init stdout+stderr to a log file in the
-                # rootfs overlay upper layer — accessible post-mortem from
-                # the host at ~/.safeyolo/agents/<name>/rootfs-upper/var/log/
-                # safeyolo-boot.log even if the container exits. Without this,
-                # runsc swallows the streams and a boot crash is invisible.
                 "args": [
                     "/bin/bash", "-c",
                     "mkdir -p /var/log && exec /safeyolo/guest-init >> /var/log/safeyolo-boot.log 2>&1",
@@ -753,46 +891,14 @@ class LinuxPlatform(AgentPlatform):
             "mounts": mounts,
             "linux": {
                 "namespaces": namespaces,
-                "resources": {
-                    "memory": {"limit": memory_bytes},
-                    "cpu": {"quota": cpu_quota, "period": 100000},
-                    "pids": {"limit": 4096},
-                },
-                "cgroupsPath": cgroups_path,
-                # Minimal seccomp profile: block syscalls whose default
-                # behaviour is an escape vector in a containerised
-                # context. Default-allow (we don't replicate Docker's
-                # ~44-syscall blocklist here; gVisor's user-space
-                # kernel already rejects most of them) with targeted
-                # denials for the cases blackbox tests proved were
-                # reachable otherwise.
-                # Minimal seccomp profile: block syscalls whose default
-                # behaviour is an escape vector. Default-allow — we
-                # don't replicate Docker's 44-syscall blocklist here
-                # because gVisor's user-space kernel already rejects
-                # most of them (blackbox tests confirm). Target only
-                # what the probes proved reachable.
-                #
-                # Note: gVisor does NOT honour SCMP_CMP_MASKED_EQ arg
-                # filters (as of 20260416-release); per-arg rules are
-                # silently ignored so we must block the entire syscall,
-                # not just specific flag combinations.
                 "seccomp": {
                     "defaultAction": "SCMP_ACT_ALLOW",
                     "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
                     "syscalls": [
                         {
-                            # unshare: user/mount/pid/net namespace
-                            # creation. Inside a fresh userns the agent
-                            # appears as uid 0 with a full cap set,
-                            # enabling escape attempts the other controls
-                            # didn't anticipate. Historical escape
-                            # vehicle (CVE-2013-1956 and others).
-                            # guest-init doesn't use unshare at all
-                            # (verified via grep); safe to block entirely.
                             "names": ["unshare"],
                             "action": "SCMP_ACT_ERRNO",
-                            "errnoRet": 1,  # EPERM
+                            "errnoRet": 1,
                         },
                     ],
                 },

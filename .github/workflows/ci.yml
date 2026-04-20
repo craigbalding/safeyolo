@@ -89,3 +89,15 @@ jobs:
 
       - name: Lint with ruff
         run: uv run ruff check addons/ cli/src/ tests/ --exclude tests/blackbox/
+
+      # Blackbox docstring schema — every test class and function must
+      # declare Title/What/Why. Uses AST validation (no pytest collection),
+      # so runs without VM, sinkhole, or runsc — just parses the source.
+      - name: Blackbox docstring schema
+        run: uv run python tests/blackbox/_docstring_lint.py
+
+      # docs/blackbox-coverage.md is generated from test docstrings.
+      # --check mode fails if the on-disk doc is stale, catching
+      # regressions where a test was updated but the doc wasn't regen'd.
+      - name: Blackbox coverage doc in sync
+        run: uv run python tests/blackbox/gen_docs.py --check

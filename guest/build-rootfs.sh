@@ -190,16 +190,34 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
         http://deb.debian.org/debian
 
 # Fixed ${ROOTFS_SIZE_MB}M sparse image, matching the original Docker-based
-# build. Leaves enough free space for agent-time installs (npm, pip, mise
-# tools). Sparse on-disk, so the actual bytes used are close to content size.
+# EROFS image — for Linux gVisor rootless path. gVisor mounts the EROFS
+# image directly in its sentry and handles writable overlay internally
+# (memory-backed). All agents share one read-only image. No fuse-overlayfs,
+# no uid remapping, no per-agent copies.
+#
+# -E noinline_data: gVisor's EROFS implementation on some releases can't
+# read inline file data layouts. This flag disables them at the cost of
+# ~5% larger images. Drop it when the target gVisor version supports
+# inline data reliably.
+OUTPUT_EROFS="$OUTPUT_DIR/rootfs-base.erofs"
+if command -v mkfs.erofs >/dev/null 2>&1; then
+    echo "--- Creating EROFS image ---"
+    sudo mkfs.erofs -E noinline_data "$OUTPUT_EROFS" "$WORK_DIR"
+    sudo chown "$(id -u):$(id -g)" "$OUTPUT_EROFS"
+    chmod 644 "$OUTPUT_EROFS"  # must be world-readable for rootless userns
+    echo "EROFS: $OUTPUT_EROFS ($(du -sh "$OUTPUT_EROFS" | cut -f1))"
+else
+    echo "--- mkfs.erofs not found, skipping EROFS image ---"
+    echo "    Install: sudo apt install erofs-utils"
+fi
+
+# ext4 image — for macOS microVMs (Virtualization.framework mounts ext4
+# directly). Leaves enough free space for agent-time installs.
 echo "--- Building ${ROOTFS_SIZE_MB} MiB sparse ext4 image ---"
 truncate -s "${ROOTFS_SIZE_MB}M" "$OUTPUT_EXT4"
-# mkfs.ext4 -d populates directly from the unpacked tree. Requires the target
-# directory to be owned by root (it is, coming from --mode=root mmdebstrap).
 sudo mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$WORK_DIR" "$OUTPUT_EXT4"
-
-# Make the resulting image readable by the invoking user.
 sudo chown "$(id -u):$(id -g)" "$OUTPUT_EXT4"
 
-echo "=== Rootfs ready at $OUTPUT_EXT4 ==="
-echo "Actual size: $(du -sh "$OUTPUT_EXT4" | cut -f1)"
+echo "=== Rootfs ready ==="
+echo "  Tarball: $OUTPUT_TAR ($(du -sh "$OUTPUT_TAR" | cut -f1))"
+echo "  ext4:    $OUTPUT_EXT4 ($(du -sh "$OUTPUT_EXT4" | cut -f1))"

@@ -274,9 +274,11 @@ def _handle_client(
 ) -> None:
     """Pump one agent->mitmproxy TCP flow.
 
-    Binds the upstream TCP socket's source to the agent's synthetic
-    loopback address before connecting. mitmproxy sees src=attribution_ip
-    and service_discovery maps that back to the agent name.
+    Connects to mitmproxy and sends a PROXY protocol v2 header
+    carrying the agent's attribution IP and name. mitmproxy's
+    proxy_protocol addon parses this and overwrites peername so
+    service_discovery can attribute the flow — no bind() to a
+    synthetic loopback IP, no lo0 alias, no sudo.
     """
     flow = next(_flow_counter)
     started = time.monotonic()
@@ -288,17 +290,42 @@ def _handle_client(
 
     try:
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        tcp.bind((attribution_ip, 0))
         tcp.settimeout(5)
         tcp.connect(upstream)
         tcp.settimeout(None)
     except OSError as exc:
         log_.warning(
-            "flow=%d agent=%s upstream %s:%d from %s connect failed: %s: %s",
-            flow, agent, upstream[0], upstream[1], attribution_ip,
+            "flow=%d agent=%s upstream %s:%d connect failed: %s: %s",
+            flow, agent, upstream[0], upstream[1],
             type(exc).__name__, exc,
         )
+        uds_conn.close()
+        return
+
+    # Send PROXY protocol v2 header before application data.
+    # The proxy_protocol addon parses this and rewrites peername
+    # with the agent's attribution IP. Cross-platform, supports
+    # concurrent flows (each connection has its own header).
+    try:
+        from addons.proxy_protocol import build_v2_header
+    except ImportError:
+        from .proxy_protocol_header import build_v2_header  # type: ignore[no-redef]
+
+    try:
+        header = build_v2_header(
+            src_ip=attribution_ip,
+            dst_ip=upstream[0],
+            src_port=0,
+            dst_port=upstream[1],
+            agent_name=agent,
+        )
+        tcp.sendall(header)
+    except OSError as exc:
+        log_.warning(
+            "flow=%d agent=%s PROXY v2 send failed: %s: %s",
+            flow, agent, type(exc).__name__, exc,
+        )
+        tcp.close()
         uds_conn.close()
         return
 

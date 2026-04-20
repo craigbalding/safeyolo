@@ -7,12 +7,10 @@ PID file lifecycle, and directory discovery.
 
 import os
 import signal
-import stat
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # TestAddonChain
@@ -22,14 +20,20 @@ class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
     def test_addon_chain_has_expected_count(self):
-        """ADDON_CHAIN contains exactly 19 addons."""
+        """ADDON_CHAIN contains exactly 20 addons (proxy_protocol added)."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 19
+        assert len(ADDON_CHAIN) == 20
 
-    def test_addon_chain_starts_with_infrastructure(self):
-        """First addon loaded is file_logging.py (infrastructure layer)."""
+    def test_addon_chain_starts_with_proxy_protocol(self):
+        """First addon loaded is proxy_protocol.py.
+
+        Parses the PROXY protocol v2 header from upstream TCP via
+        next_layer, which must run before any other layer inspects
+        the flow so the rewritten peername and stripped header are
+        available to every downstream addon.
+        """
         from safeyolo.proxy import ADDON_CHAIN
-        assert ADDON_CHAIN[0] == "file_logging.py"
+        assert ADDON_CHAIN[0] == "proxy_protocol.py"
 
     def test_addon_chain_ends_with_admin_api(self):
         """Last addon loaded is admin_api.py (observability layer)."""
@@ -398,11 +402,11 @@ class TestMergeSystemCasIntoCertifi:
 
     def test_skips_when_certifi_not_importable(self, tmp_path):
         """certifi import raises ImportError -> returns with warning log."""
-        from safeyolo.proxy import _merge_system_cas_into_certifi
-
         # Remove certifi from sys.modules so the function's `import certifi`
         # hits our patched importer.
         import builtins
+
+        from safeyolo.proxy import _merge_system_cas_into_certifi
 
         original_import = builtins.__import__
 
@@ -1095,8 +1099,9 @@ class TestCidrToIgnoreRegex:
 
     def test_slash_10_tailscale_cgnat(self):
         """Tailscale CGNAT: the main driving case. 100.64.0.0 – 100.127.x.x."""
-        from safeyolo.proxy import _cidr_to_ignore_regex
         import re
+
+        from safeyolo.proxy import _cidr_to_ignore_regex
         regex = _cidr_to_ignore_regex("100.64.0.0/10")
         # Structural shape
         assert regex.startswith(r"^100\.(?:64|")
@@ -1121,24 +1126,27 @@ class TestCidrToIgnoreRegex:
         assert a == b
 
     def test_rejects_invalid_cidr(self):
-        from safeyolo.proxy import _cidr_to_ignore_regex
         import pytest as _pytest
+
+        from safeyolo.proxy import _cidr_to_ignore_regex
         with _pytest.raises(ValueError, match="Invalid CIDR"):
             _cidr_to_ignore_regex("not-a-cidr")
         with _pytest.raises(ValueError, match="Invalid CIDR"):
             _cidr_to_ignore_regex("10.0.0.0/99")
 
     def test_rejects_ipv6(self):
-        from safeyolo.proxy import _cidr_to_ignore_regex
         import pytest as _pytest
+
+        from safeyolo.proxy import _cidr_to_ignore_regex
         with _pytest.raises(ValueError, match="IPv6"):
             _cidr_to_ignore_regex("fd00::/8")
 
     def test_rejects_too_wide(self):
         """Prefixes < /8 are refused — footgun guard against opening huge
         ranges by typo."""
-        from safeyolo.proxy import _cidr_to_ignore_regex
         import pytest as _pytest
+
+        from safeyolo.proxy import _cidr_to_ignore_regex
         with _pytest.raises(ValueError, match="too wide"):
             _cidr_to_ignore_regex("0.0.0.0/0")
         with _pytest.raises(ValueError, match="too wide"):
@@ -1616,7 +1624,6 @@ class TestWaitForHealthy:
 
     def test_returns_false_on_timeout(self, tmp_path, monkeypatch):
         """Returns False when health endpoint never responds within timeout."""
-        import urllib.error
 
         from safeyolo.proxy import wait_for_healthy
 

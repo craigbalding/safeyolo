@@ -156,8 +156,11 @@ STARTED_SINKHOLE=false
 STARTED_PROXY=false
 STARTED_VM=false
 SINKHOLE_PID=""
+HOST_LISTENER_PID=""
 
 cleanup() {
+    # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
+    # config) intact for post-mortem analysis of failures.
     echo ""
     echo "=== Cleanup ==="
 
@@ -172,6 +175,12 @@ cleanup() {
         wait "$SINKHOLE_PID" 2>/dev/null || true
     fi
 
+    if [ -n "$HOST_LISTENER_PID" ]; then
+        echo "Stopping host listener (PID $HOST_LISTENER_PID)..."
+        kill "$HOST_LISTENER_PID" 2>/dev/null || true
+        wait "$HOST_LISTENER_PID" 2>/dev/null || true
+    fi
+
     if [ "$STARTED_PROXY" = true ]; then
         echo "Stopping test proxy..."
         safeyolo stop 2>/dev/null || true
@@ -180,6 +189,20 @@ cleanup() {
     echo "Cleanup complete"
 }
 trap cleanup EXIT
+
+# --- Clean stale state from previous run ---
+# Done at start (not end) so post-mortem analysis of failures is possible.
+echo "Cleaning stale state..."
+safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
+safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
+rm -rf "$SAFEYOLO_CONFIG_DIR/agents/"
+rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
+# Kill stale test processes — certs are regenerated each run, so
+# anything from a previous run holds old state. Match on test-specific
+# paths to avoid killing production agents.
+pkill -f "sinkhole/server.py" 2>/dev/null || true
+pkill -f "safeyolo-test.*safeyolo-vm" 2>/dev/null || true
+safeyolo stop 2>/dev/null || true
 
 # --- Phase 1: Start infrastructure (idempotent) ---
 
@@ -232,50 +255,53 @@ fi
 
 # VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
-    # Create agent if not exists
-    safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run 2>/dev/null || true
+    # Agent was cleaned at the top of the run; create fresh.
+    safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run
 
-    # Platform-portable readiness: `safeyolo agent shell -c true` dispatches
-    # to SSH on Darwin and `runsc exec` on Linux, so it works on both without
-    # this script reaching for platform primitives. SSH keys only exist on
-    # the Darwin path; runsc exec uses its own channel.
-    VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
+    # Start a host TCP listener on a random port. The in-VM
+    # test_host_listener_unreachable probes this port to prove a
+    # live host listener remains unreachable — stronger than the
+    # 44444 test which proves only that an unused port is unreachable.
+    echo "Starting host listener..."
+    CONFIG_SHARE="$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share"
+    mkdir -p "$CONFIG_SHARE"
+    python3 "$SCRIPT_DIR/harness/host_listener.py" > "$CONFIG_SHARE/host-listener-port" &
+    HOST_LISTENER_PID=$!
+    # Wait for the port to be written (listener prints it on bind).
+    for i in $(seq 1 20); do
+        if [ -s "$CONFIG_SHARE/host-listener-port" ]; then
+            echo "  Listener on port $(cat "$CONFIG_SHARE/host-listener-port")"
+            break
+        fi
+        sleep 0.1
+    done
+    if [ ! -s "$CONFIG_SHARE/host-listener-port" ]; then
+        echo "ERROR: Host listener didn't start"
+        exit 2
+    fi
 
-    VM_RUNNING=false
-    if [ -n "$VM_IP" ]; then
+    echo "Booting test VM ($AGENT_NAME)..."
+    safeyolo agent run "$AGENT_NAME" --detach
+    STARTED_VM=true
+
+    echo "  Waiting for VM..."
+    VM_IP=""
+    for i in $(seq 1 15); do
+        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/vm-ip" 2>/dev/null || echo "")
+        [ -n "$VM_IP" ] && break
+        sleep 1
+    done
+    if [ -z "$VM_IP" ]; then
+        echo "ERROR: Could not determine VM IP"
+        exit 2
+    fi
+    for i in $(seq 1 60); do
         if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
-            VM_RUNNING=true
+            echo "  VM ready ($VM_IP)"
+            break
         fi
-    fi
-
-    if [ "$VM_RUNNING" = true ]; then
-        echo "VM already running ($VM_IP)"
-    else
-        echo "Booting test VM ($AGENT_NAME)..."
-        safeyolo agent run "$AGENT_NAME" --detach
-        STARTED_VM=true
-
-        echo "  Waiting for VM..."
-        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
-        if [ -z "$VM_IP" ]; then
-            for i in $(seq 1 15); do
-                sleep 1
-                VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/config-share/vm-ip" 2>/dev/null || echo "")
-                [ -n "$VM_IP" ] && break
-            done
-        fi
-        if [ -z "$VM_IP" ]; then
-            echo "ERROR: Could not determine VM IP"
-            exit 2
-        fi
-        for i in $(seq 1 60); do
-            if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
-                echo "  VM ready ($VM_IP)"
-                break
-            fi
-            sleep 1
-        done
-    fi
+        sleep 1
+    done
 fi
 
 echo ""
@@ -296,26 +322,38 @@ if [ "$RUN_PROXY" = true ]; then
         test_credential_guard.py test_network_guard.py
     PROXY_RESULT=$?
 
-    # Firewall structural tests (Linux only — iptables)
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        echo ""
-        echo "=== Firewall Structural Tests (host-side) ==="
-        echo ""
-        pytest $VERBOSE --tb=short --timeout=60 \
-            test_firewall_structural.py
-        FIREWALL_RESULT=$?
-    fi
+    # Process security tests (host-side)
+    echo ""
+    echo "=== Process Security Tests (host-side) ==="
+    echo ""
+    pytest $VERBOSE --tb=short --timeout=60 \
+        test_firewall_structural.py
+    FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
     echo ""
 fi
 
+IDENTITY_RESULT=0
 if [ "$RUN_ISOLATION" = true ]; then
+    # Host-side identity validation — agent_map must have correct
+    # entries before in-VM tests rely on the identity chain.
+    echo "=== Agent Identity Tests (host-side, sandbox running) ==="
+    echo ""
+    cd "$SCRIPT_DIR/host"
+    set +e
+    pytest $VERBOSE --tb=short --timeout=30 \
+        test_agent_identity.py
+    IDENTITY_RESULT=$?
+    set -e
+    cd "$SCRIPT_DIR"
+    echo ""
+
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE --tb=short --timeout=60"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60"
     ISOLATION_RESULT=$?
     set -e
     echo ""
@@ -350,12 +388,17 @@ if [ "$RUN_PROXY" = true ]; then
 fi
 
 if [ "$FIREWALL_RESULT" != "0" ]; then
-    echo "Firewall tests:  FAILED (exit code: $FIREWALL_RESULT)"
-elif [[ "$(uname -s)" == "Linux" ]] && [ "$RUN_PROXY" = true ]; then
-    echo "Firewall tests:  PASSED"
+    echo "Security tests:  FAILED (exit code: $FIREWALL_RESULT)"
+elif [ "$RUN_PROXY" = true ]; then
+    echo "Security tests:  PASSED"
 fi
 
 if [ "$RUN_ISOLATION" = true ]; then
+    if [ "$IDENTITY_RESULT" = "0" ]; then
+        echo "Identity tests:  PASSED"
+    else
+        echo "Identity tests:  FAILED (exit code: $IDENTITY_RESULT)"
+    fi
     if [ "$ISOLATION_RESULT" = "0" ]; then
         echo "Isolation tests: PASSED"
     else
@@ -368,7 +411,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
+if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ] || [ "$IDENTITY_RESULT" != "0" ]; then
     echo ""
     echo "Result: FAILED"
     exit 1

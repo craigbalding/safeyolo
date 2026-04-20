@@ -514,6 +514,239 @@ def _check_flow_store() -> DiagResult:
         )
 
 
+def _check_sandbox_runtime() -> DiagResult:
+    """Check sandbox runtime availability (runsc on Linux, safeyolo-vm on macOS)."""
+    import platform as _plat
+    system = _plat.system()
+
+    if system == "Darwin":
+        machine = _plat.machine()
+        if machine != "arm64":
+            return DiagResult(
+                name="Sandbox runtime",
+                status="fail",
+                message=f"Intel Mac ({machine}) — Virtualization.framework requires Apple Silicon (arm64)",
+            )
+        from ..vm import VMError, find_vm_helper
+        try:
+            helper = find_vm_helper()
+        except VMError:
+            return DiagResult(
+                name="Sandbox runtime",
+                status="fail",
+                message="Apple Silicon detected but safeyolo-vm binary not found",
+                remediation="cd vm && make install",
+            )
+        return DiagResult(
+            name="Sandbox runtime",
+            status="pass",
+            message=f"Apple Silicon, safeyolo-vm at {helper}",
+        )
+
+    if system == "Linux":
+        from ..platform.linux import find_runsc
+        path = find_runsc()
+        if not path:
+            return DiagResult(
+                name="Sandbox runtime",
+                status="fail",
+                message="runsc (gVisor) not found",
+                remediation="Install gVisor: see README 'Linux' section",
+            )
+        # Get version
+        version = ""
+        try:
+            r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=3)
+            version = r.stdout.strip().split("\n")[0] if r.returncode == 0 else ""
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            # Version probe is best-effort diagnostic info — report
+            # the path without it if the binary is missing/hung.
+            pass
+        label = f"runsc at {path}"
+        if version:
+            label = f"{version} at {path}"
+        return DiagResult(
+            name="Sandbox runtime",
+            status="pass",
+            message=label,
+        )
+
+    return DiagResult(
+        name="Sandbox runtime",
+        status="fail",
+        message=f"Unsupported platform: {system}",
+    )
+
+
+def _check_isolation_platform() -> DiagResult:
+    """Check isolation platform (KVM vs systrap vs Apple VZ)."""
+    import platform as _plat
+    system = _plat.system()
+
+    if system == "Darwin":
+        return DiagResult(
+            name="Isolation platform",
+            status="pass",
+            message="Apple Virtualization.framework (hardware isolation)",
+        )
+
+    if system == "Linux":
+        from ..platform.linux import detect_runsc_platform
+        info = detect_runsc_platform()
+        if info["platform"] == "kvm":
+            return DiagResult(
+                name="Isolation platform",
+                status="pass",
+                message="KVM (hardware isolation)",
+                detail="/dev/kvm: operator rw, subordinate uid 100000 ACL set",
+            )
+        # systrap — report why
+        if not info["kvm_exists"]:
+            return DiagResult(
+                name="Isolation platform",
+                status="pass",
+                message="systrap (software isolation) — /dev/kvm not found",
+                detail="Hardware isolation (KVM) available on hosts with virtualization enabled",
+            )
+        if not info["kvm_operator_access"]:
+            return DiagResult(
+                name="Isolation platform",
+                status="warn",
+                message="systrap (software isolation) — operator lacks /dev/kvm access",
+                remediation="safeyolo setup",
+            )
+        # kvm exists, operator has access, but subordinate uid lacks ACL
+        return DiagResult(
+            name="Isolation platform",
+            status="warn",
+            message="systrap (software isolation) — subordinate uid 100000 lacks /dev/kvm ACL",
+            detail="KVM available but container root can't access it",
+            remediation="safeyolo setup",
+        )
+
+    return DiagResult(
+        name="Isolation platform",
+        status="skip",
+        message=f"Unsupported platform: {system}",
+    )
+
+
+def _check_userns() -> DiagResult:
+    """Check user namespace prerequisites (Linux only)."""
+    import platform as _plat
+    if _plat.system() != "Linux":
+        return DiagResult(
+            name="User namespaces",
+            status="skip",
+            message="Not applicable (macOS uses Virtualization.framework)",
+        )
+
+    from ..platform.linux import check_userns_prerequisites
+    info = check_userns_prerequisites()
+    issues = []
+
+    if not info["newuidmap"]:
+        issues.append("newuidmap not found")
+    if not info["newgidmap"]:
+        issues.append("newgidmap not found")
+    if not info["subuid"]:
+        issues.append("/etc/subuid: no entry for current user")
+    if not info["subgid"]:
+        issues.append("/etc/subgid: no entry for current user")
+    if not info["setfacl"]:
+        issues.append("setfacl not found (install the `acl` package)")
+    if info["apparmor_restricts"] and not info["apparmor_profile_loaded"]:
+        issues.append("AppArmor restricts userns but safeyolo-runsc profile not loaded")
+
+    if not issues:
+        parts = [
+            "newuidmap/newgidmap available",
+            "subuid/subgid configured",
+            "setfacl available",
+        ]
+        if info["apparmor_restricts"]:
+            parts.append("AppArmor profile loaded")
+        return DiagResult(
+            name="User namespaces",
+            status="pass",
+            message=", ".join(parts),
+        )
+
+    return DiagResult(
+        name="User namespaces",
+        status="fail",
+        message="; ".join(issues),
+        remediation="safeyolo setup",
+    )
+
+
+def _check_guest_images() -> DiagResult:
+    """Check guest image availability."""
+    import platform as _plat
+
+    from ..vm import check_guest_images, guest_image_status
+
+    if not check_guest_images():
+        status = guest_image_status()
+        missing = [k for k, v in status.items() if not v]
+        return DiagResult(
+            name="Guest images",
+            status="fail",
+            message=f"Missing: {', '.join(missing)}",
+            remediation="cd guest && ./build-all.sh",
+        )
+
+    system = _plat.system()
+    if system == "Linux":
+        from ..config import get_share_dir
+        erofs = get_share_dir() / "rootfs-base.erofs"
+        if erofs.exists():
+            size_mb = erofs.stat().st_size / 1_000_000
+            return DiagResult(
+                name="Guest images",
+                status="pass",
+                message=f"EROFS rootfs ({size_mb:.0f} MB)",
+            )
+
+    return DiagResult(
+        name="Guest images",
+        status="pass",
+        message="Available",
+    )
+
+
+def _check_running_agents() -> DiagResult:
+    """List running agent sandboxes."""
+    from ..config import get_agents_dir
+    from ..platform import get_platform
+
+    agents_dir = get_agents_dir()
+    if not agents_dir.exists():
+        return DiagResult(
+            name="Running agents",
+            status="pass",
+            message="No agents configured",
+        )
+
+    plat = get_platform()
+    running = []
+    for d in sorted(agents_dir.iterdir()):
+        if d.is_dir() and plat.is_sandbox_running(d.name):
+            running.append(d.name)
+
+    if running:
+        return DiagResult(
+            name="Running agents",
+            status="pass",
+            message=f"{len(running)} running: {', '.join(running)}",
+        )
+    return DiagResult(
+        name="Running agents",
+        status="pass",
+        message="None running",
+    )
+
+
 def _check_addon_loading() -> DiagResult:
     """Check if addons are loaded and reporting via /stats."""
     config = load_config()
@@ -561,6 +794,8 @@ def _check_addon_loading() -> DiagResult:
 
 # Dependency map: check_name -> list of check_names it depends on
 _DEPENDS_ON = {
+    "Isolation platform": ["Sandbox runtime"],
+    "User namespaces": ["Sandbox runtime"],
     "Admin API": ["Proxy running"],
     "Addon loading": ["Admin API"],
     "Proxy port": ["Proxy running"],
@@ -571,7 +806,11 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
     """Run all diagnostic checks with cascade logic."""
     checks_funcs = [
         ("Config directory", _check_config_dir),
-        ("Proxy running", _check_docker),  # Reused — now checks proxy, not Docker
+        ("Sandbox runtime", _check_sandbox_runtime),
+        ("Isolation platform", _check_isolation_platform),
+        ("User namespaces", _check_userns),
+        ("Guest images", _check_guest_images),
+        ("Proxy running", _check_docker),
         ("Admin API", _check_admin_api),
         ("Addon loading", _check_addon_loading),
         ("Proxy port", _check_proxy_port),
@@ -583,6 +822,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Crash detection", _check_crash_logs),
         ("Log health", _check_log_health),
         ("Flow store", _check_flow_store),
+        ("Running agents", _check_running_agents),
     ]
 
     results = []

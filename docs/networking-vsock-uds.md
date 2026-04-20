@@ -14,10 +14,15 @@ agent comms, team proxy, fleet PDP).
 
 The sandbox has **no external network interface**. All agent-initiated
 traffic is routed through a per-agent socket pair to a host-side
-`proxy_bridge` daemon, which stamps agent identity by binding the
-upstream TCP socket to a synthetic loopback address (`127.0.0.<N>`).
-`mitmproxy`'s service_discovery addon maps that address back to the
-agent name for audit, policy, and rate limiting.
+`proxy_bridge` daemon, which stamps agent identity by prepending a
+**PROXY protocol v2 header** (RFC) on every upstream TCP connection
+to mitmproxy. The header carries the agent's attribution IP
+(`10.200.X.Y`) and a SafeYolo-specific TLV (type `0xE0`) carrying the
+agent name. A `proxy-protocol` mitmproxy addon parses the header in
+the `next_layer` hook, rewrites `peername` with the attribution IP,
+and strips the header bytes before the HTTP parser sees them.
+`service_discovery` and all downstream addons see per-agent identity
+for audit, policy, and rate limiting.
 
 On macOS, a Swift `VSockProxyRelay` in the `safeyolo-vm` helper bridges
 the guest's vsock endpoint to a host UDS; on Linux, the guest's socket
@@ -58,11 +63,15 @@ macOS) or `runsc exec` (on Linux) reaches the guest's `sshd` for
 │       ▼                          │
 │  proxy_bridge (cross-platform)   │
 │    └── listen: sockets/<N>.sock  │
-│        bind upstream: 127.0.0.<N>│
+│        bind: 127.0.0.1:<30000+N> │
 │        connect: 127.0.0.1:<port> │
 │       │                          │
 │       ▼                          │
 │  mitmproxy                       │
+│    └── port-identity addon maps  │
+│        port 3000N → agent name,  │
+│        rewrites peername →       │
+│        127.0.0.<N>               │
 │    └── service_discovery maps    │
 │        127.0.0.<N> → agent name  │
 └──────────────────────────────────┘
@@ -91,37 +100,56 @@ sshd (inside guest)
 
 ## Attribution
 
-Each agent is allocated a **synthetic loopback IP** at `agent run` time:
-agent index `N` → `127.0.0.<N+2>` (index 0 → `127.0.0.2`, agent 1 →
-`127.0.0.3`, etc.). `127.0.0.1` is reserved for the proxy's own access.
+Each agent is assigned a **deterministic attribution IP** at
+`agent run` time, derived from the agent's index in the sorted list:
 
-The `proxy_bridge` binds the upstream TCP socket to that address before
-`connect()`-ing to `mitmproxy`. `mitmproxy` sees a distinct source IP
-per agent; `service_discovery` reads `~/.safeyolo/data/agent_map.json`
-to map IP→agent name.
+| Agent index | Attribution IP   |
+|-------------|------------------|
+| 0           | `10.200.0.1`     |
+| 1           | `10.200.0.2`     |
+| 255         | `10.200.1.0`     |
+| 511         | `10.200.2.0`     |
+
+The IP is `10.200.{(N+1) / 256}.{(N+1) % 256}` from the `10.200.0.0/16`
+range — `/16` supports ~65k agents. It's configured on the guest's
+loopback (for in-sandbox visibility) and carried on every upstream
+TCP connection via a PROXY protocol v2 header the bridge prepends.
+
+Identity mechanism:
+
+1. Bridge accepts an agent's UDS connection, reads the agent name
+   from `agent_map.json` (keyed on socket path).
+2. Bridge opens a fresh TCP connection to mitmproxy on an ephemeral
+   local port.
+3. Bridge writes a PROXY-v2 header (binary, RFC-compliant) containing
+   the attribution IP + a custom TLV (type `0xE0`) carrying the agent
+   name.
+4. Bridge pumps bytes between the two sockets.
+5. mitmproxy's `proxy_protocol` addon (loaded as the first layer via
+   `next_layer`) parses the header on each flow, rewrites
+   `flow.client_conn.peername` to the attribution IP, and strips the
+   header bytes from the buffered events so the HTTP parser sees
+   clean data.
+6. `service_discovery` sees the attribution IP as the client address
+   and resolves it to the agent name via `agent_map.json`.
+
+Attribution IP + agent name are written to `agent_map.json` by the
+CLI at `agent run` time so the bridge and mitmproxy agree on the
+mapping. No sudo, no lo0 aliases, no per-agent listen ports — one
+bridge daemon, ephemeral upstream ports, PROXY-v2 identity on each
+flow.
 
 This means:
 
 - **Identity is enforced by the host bridge**, never trusted from the
-  guest. A compromised agent cannot forge another agent's IP because
+  guest. A compromised agent cannot forge another agent's port because
   the bridge binds the outbound socket itself.
 - **Structural isolation**: agent A's bridge socket (`sockets/A.sock`)
   is only bind-mounted into agent A's sandbox. Agent A literally cannot
   address agent B's socket.
-
-### macOS quirk: `lo0` aliases
-
-macOS doesn't auto-route `127.0.0.0/8` the way Linux does. `bind()` to
-`127.0.0.2` fails with `EADDRNOTAVAIL` unless the address is explicitly
-aliased onto `lo0`:
-
-```
-sudo ifconfig lo0 alias 127.0.0.2/32
-```
-
-`platform.darwin.setup_networking` handles this at agent-run time;
-`teardown_networking` removes it. The relevant sudoers grant is in
-`/etc/sudoers.d/safeyolo-macos-test` (or the production equivalent).
+- **Userspace-only**. The bridge binds to `127.0.0.1` on a userspace
+  port — no elevated privileges or kernel interface configuration
+  required on any platform.
 
 ---
 
@@ -189,12 +217,11 @@ $ safeyolo agent diag syone
 
   PASS  Agent config: /Users/…/agents/syone
   PASS  Agent map: ip=127.0.0.2 socket=/Users/…/sockets/syone.sock
-  FAIL  Attribution IP: 127.0.0.2 not aliased on lo0
-        → sudo ifconfig lo0 alias 127.0.0.2/32
+  PASS  Attribution IP: 127.0.0.2 (port 30002)
   PASS  Bridge socket: /Users/…/syone.sock mode=0o600
   PASS  Bridge process: pid=35520
   PASS  Sandbox/VM: running
-  FAIL  End-to-end probe: no response from bridge/mitmproxy — chain broken
+  PASS  End-to-end probe: mitmproxy answered (292B)
 ```
 
 Exit code 0 on all-pass, 1 on any fail.
@@ -203,11 +230,11 @@ Exit code 0 on all-pass, 1 on any fail.
 
 | Symptom                                   | Most likely cause                                        | Check / fix                                                   |
 |-------------------------------------------|----------------------------------------------------------|---------------------------------------------------------------|
-| `curl: (56) Recv failure: Connection reset by peer` inside agent | `proxy_bridge` not running, or attribution IP not aliased on lo0 (macOS) | `safeyolo agent diag`                                         |
-| Agent traffic shows in mitmproxy as `(unknown, 127.0.0.1)` | Bridge didn't pick up agent's entry in `agent_map.json` | `cat ~/.safeyolo/data/agent_map.json` — entry present? Bridge PID alive? |
+| `curl: (56) Recv failure: Connection reset by peer` inside agent | `proxy_bridge` not running | `safeyolo agent diag`                                         |
+| Agent traffic shows in mitmproxy as `unknown` | Bridge didn't pick up agent's entry in `agent_map.json`, or port-identity addon not loaded | `cat ~/.safeyolo/data/agent_map.json` — entry with `port` present? Check mitmproxy log for `port-identity` |
 | `safeyolo agent shell` hangs              | Shell-bridge relay not firing, or `sshd` not in guest   | `ls ~/.safeyolo/data/shell-sockets/<name>.sock`; serial.log for `listen agent=…` |
 | `VM running (detached)` but dies seconds later | Helper process `proc_exit`ed silently (historically SIGPIPE, RunLoop exit) | `sudo log show --last 60s --predicate 'processID == <pid>'` — shows exit reason |
-| macOS-only: "bind(127.0.0.X) failed: EADDRNOTAVAIL" | lo0 alias missing                                       | `sudo ifconfig lo0 alias 127.0.0.X/32` (happens automatically in `setup_networking`; manual fix only if state got out of sync) |
+| "bind(127.0.0.1, 3000X) failed: EADDRINUSE" | Port conflict — another process is using that port | `lsof -i :3000X` to find the conflict |
 
 ### Reading logs
 
@@ -230,12 +257,13 @@ hop to see one specific connection's accept + done pair.
 
 |                        | Linux                          | macOS                                     |
 |------------------------|--------------------------------|-------------------------------------------|
-| Isolation runtime      | gVisor (`runsc`)              | Virtualization.framework                  |
+| Isolation runtime      | gVisor (`runsc`) in rootless userns | Virtualization.framework             |
 | Guest sees sandbox as  | loopback-only netns            | no network interface (vsock only)         |
 | Agent → bridge path    | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
 | Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
-| Attribution IP setup   | kernel routes all of 127/8    | explicit `ifconfig lo0 alias`             |
-| Host firewall          | iptables (belt-and-braces)    | none (structural)                         |
+| Attribution mechanism  | PROXY protocol v2 header      | PROXY protocol v2 header                  |
+| Host firewall          | none (structural)             | none (structural)                         |
+| Sudo at runtime        | none                          | none                                      |
 
 ---
 
@@ -255,4 +283,4 @@ hop to see one specific connection's accept + done pair.
 - `docs/microvm-architecture.md` — how the VM boots, snapshots, mounts
 - `docs/SANDBOX_MODE.md` — the agent sandbox from a user's perspective
 - `docs/SERVICE_DISCOVERY.md` — how the `service_discovery` addon maps IP→agent
-- Source: `cli/src/safeyolo/proxy_bridge.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`
+- Source: `cli/src/safeyolo/proxy_bridge.py`, `addons/proxy_protocol.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`
