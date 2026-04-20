@@ -510,8 +510,6 @@ class LinuxPlatform(AgentPlatform):
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
-        netns_path = f"/proc/{upid}/ns/net"
-
         inner = (
             f"{setup} && "
             f"{runsc} --root {root} --host-uds=open --ignore-cgroups "

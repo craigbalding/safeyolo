@@ -527,21 +527,21 @@ def _check_sandbox_runtime() -> DiagResult:
                 status="fail",
                 message=f"Intel Mac ({machine}) — Virtualization.framework requires Apple Silicon (arm64)",
             )
+        from ..vm import VMError, find_vm_helper
         try:
-            from ..vm import VMError, find_vm_helper
             helper = find_vm_helper()
-            return DiagResult(
-                name="Sandbox runtime",
-                status="pass",
-                message=f"Apple Silicon, safeyolo-vm at {helper}",
-            )
-        except (VMError, Exception):
+        except VMError:
             return DiagResult(
                 name="Sandbox runtime",
                 status="fail",
                 message="Apple Silicon detected but safeyolo-vm binary not found",
                 remediation="cd vm && make install",
             )
+        return DiagResult(
+            name="Sandbox runtime",
+            status="pass",
+            message=f"Apple Silicon, safeyolo-vm at {helper}",
+        )
 
     if system == "Linux":
         from ..platform.linux import find_runsc
@@ -558,7 +558,7 @@ def _check_sandbox_runtime() -> DiagResult:
         try:
             r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=3)
             version = r.stdout.strip().split("\n")[0] if r.returncode == 0 else ""
-        except Exception:
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             pass
         label = f"runsc at {path}"
         if version:
@@ -675,6 +675,7 @@ def _check_userns() -> DiagResult:
 def _check_guest_images() -> DiagResult:
     """Check guest image availability."""
     import platform as _plat
+
     from ..vm import check_guest_images, guest_image_status
 
     if not check_guest_images():

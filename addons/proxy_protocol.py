@@ -11,7 +11,8 @@ import logging
 import struct
 from typing import Any
 
-from mitmproxy.proxy import layer, events as mevents
+from mitmproxy.proxy import events as mevents
+from mitmproxy.proxy import layer
 
 log = logging.getLogger("safeyolo.proxy-protocol")
 

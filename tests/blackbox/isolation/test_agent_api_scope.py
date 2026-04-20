@@ -306,7 +306,7 @@ class TestAgentAPICrossAgentIsolation:
 
         # Now search flows and inspect results.
         status, body = _curl_agent_api(
-            f"/api/flows/search?host=httpbin.org&limit=50",
+            "/api/flows/search?host=httpbin.org&limit=50",
             token=token,
         )
         if status != 200:
@@ -370,12 +370,8 @@ class TestAgentAPICrossAgentIsolation:
             data = json.loads(body)
         except json.JSONDecodeError:
             pytest.fail(f"/gateway/services 200 but non-JSON (len={len(body)}): {body[:100]!r}")
-        # The response should be for THIS agent only. If it contains
-        # services for named agents other than ours, scoping is broken.
-        # (This is a structural check — the exact response shape
-        # varies, so we just verify no OTHER agent names appear.)
-        body_str = json.dumps(data)
-        # We don't know other agent names, but we can check that the
-        # endpoint at least WORKS without error — the scoping assertion
-        # is in the flow search test above.
+        # The response should be for THIS agent only. Structural
+        # check — we don't know other agents' names, but the endpoint
+        # must WORK for the calling agent (no error). Cross-agent
+        # scoping is asserted in test_flow_search_scoped_to_calling_agent.
         assert "error" not in data, f"Unexpected error: {data}"

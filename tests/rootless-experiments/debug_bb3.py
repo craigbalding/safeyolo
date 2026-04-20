@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-import sys, os, subprocess
+import os
+import subprocess
+import sys
+
 os.environ["SAFEYOLO_CONFIG_DIR"] = os.path.expanduser("~/.safeyolo-test")
 sys.path.insert(0, "cli/src")
 
 from safeyolo.platform.linux import (
-    _find_runsc, _detect_runsc_platform, _runsc_root,
-    _container_id, _start_userns, _nsenter_cmd, _kill_userns,
-    _wrap_in_systemd_scope, get_agents_dir,
+    _container_id,
+    _detect_runsc_platform,
+    _find_runsc,
+    _kill_userns,
+    _nsenter_cmd,
+    _runsc_root,
+    _start_userns,
+    _wrap_in_systemd_scope,
+    get_agents_dir,
 )
 
 name = "bbtest"

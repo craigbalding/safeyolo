@@ -14,7 +14,6 @@ remains valuable as a regression guard: if the implementation ever
 regains a routable path to the host, this test will catch it.
 """
 import socket
-import sys
 
 
 def main() -> None:
