@@ -22,3 +22,7 @@ models/piguard-onnx/tokenizer.json
 # Archive folders (old prototype code, not for public release)
 _archive_prototype/
 _archive_plugins/
+
+# Guest build artifacts (kernel Image, initramfs, rootfs-base.ext4).
+# Regenerate via `cd guest && ./build-all.sh`.
+guest/out/
