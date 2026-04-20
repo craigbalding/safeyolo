@@ -872,6 +872,7 @@ class TestSetup:
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": True, "subgid": True,
+                "setfacl": True,
                 "apparmor_restricts": False, "apparmor_profile_loaded": False,
             }),
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
@@ -897,6 +898,7 @@ class TestSetup:
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": True, "subgid": True,
+                "setfacl": True,
                 "apparmor_restricts": False, "apparmor_profile_loaded": False,
             }),
             patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
