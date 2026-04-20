@@ -26,6 +26,16 @@ if [ -d "$HOME/.codex" ]; then
     cp -R "$HOME/.codex/." "$AGENT_HOME/.codex/" 2>/dev/null || true
 fi
 
+# --- Stage SafeYolo agent guide ----------------------------------------------
+# Codex doesn't currently expose a system-prompt file flag, so we stage the
+# guide at a conventional path and surface a reminder in the entrypoint.
+# Users / codex can reference ~/.safeyolo/AGENTS.md as needed.
+GUIDE_SRC="$(cd "$(dirname "$0")/.." && pwd)/docs/AGENTS.md"
+mkdir -p "$AGENT_HOME/.safeyolo"
+if [ -f "$GUIDE_SRC" ]; then
+    cp "$GUIDE_SRC" "$AGENT_HOME/.safeyolo/AGENTS.md"
+fi
+
 # --- Write the entrypoint ----------------------------------------------------
 cat > "$AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
 #!/usr/bin/env bash
@@ -37,6 +47,10 @@ if ! command -v codex >/dev/null 2>&1; then
     mise use -g node@22 >&2
     mise use -g npm:@openai/codex@latest >&2
 fi
+
+# Brief SafeYolo reminder -- full agent API / troubleshooting guide at
+# ~/.safeyolo/AGENTS.md (staged by codex-host-setup.sh on the host).
+echo "SafeYolo: see ~/.safeyolo/AGENTS.md for agent API + troubleshooting guide." >&2
 
 exec codex --full-auto "$@"
 EOF
