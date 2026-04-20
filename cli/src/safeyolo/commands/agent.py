@@ -1429,9 +1429,6 @@ def config(
     write_event("agent.config_changed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} config changed: {', '.join(changes)}", agent=name, details={"changes": changes})
 
 
-    raise typer.Exit(exit_code)
-
-
 def _load_vault():
     """Import Vault class and return an unlocked vault instance.
 

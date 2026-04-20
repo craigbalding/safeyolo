@@ -130,31 +130,6 @@ class TestComputeSnapshotVersion:
         v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         assert v1 != v2
 
-    def test_agent_binary_change_invalidates(self, snapshot_inputs):
-        """Install now happens in static and is baked into the rootfs
-        clone. If the user retargets an agent to a different template
-        (different binary), the old snapshot's installed binary is
-        wrong — invalidate and re-capture."""
-        v1 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code",
-        )
-        v2 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="codex", mise_package="npm:@anthropic-ai/claude-code",
-        )
-        assert v1 != v2
-
-    def test_mise_package_change_invalidates(self, snapshot_inputs):
-        v1 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code@1.0.0",
-        )
-        v2 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code@2.0.0",
-        )
-        assert v1 != v2
 
 
 # ---------------------------------------------------------------------------

@@ -409,7 +409,7 @@ class TestAgentAdd:
 
         with (
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
-            patch("safeyolo.commands.agent.ensure_agent_persistent_dirs"),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
             patch("safeyolo.commands.agent.save_agent"),
             patch("safeyolo.commands.agent.write_event"),
             patch("safeyolo.commands.agent._check_project_ownership"),
