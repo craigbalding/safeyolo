@@ -96,17 +96,16 @@ Watch handles both credential routing approvals and risky route grant approvals.
 
 ### Agent Management (Sandbox Mode)
 
-Sandbox Mode runs AI agents in isolated Docker containers with all traffic routed through SafeYolo.
+Sandbox Mode runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gVisor on Linux) with all traffic routed through SafeYolo.
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo agent add <name> <template> <folder>` | Add an agent and run it |
-| `safeyolo agent run <name> [-f folder]` | Run an existing agent |
+| `safeyolo agent add <name> <folder> [--host-script PATH]` | Add an agent and run it |
+| `safeyolo agent run <name> [-f folder] [-- cmd args…]` | Run an existing agent |
 | `safeyolo agent stop <name>` | Stop a running agent |
-| `safeyolo agent list` | List templates and configured agents |
+| `safeyolo agent list` | List configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
 | `safeyolo agent config <name>` | View or update agent configuration |
-| `safeyolo agent help <name>` | Show agent CLI help (runs `--help` inside container) |
 | `safeyolo agent remove <name>` | Remove an agent |
 
 **Quick start:**
@@ -115,8 +114,8 @@ Sandbox Mode runs AI agents in isolated Docker containers with all traffic route
 # Initialize (sandbox mode is the default)
 safeyolo init
 
-# Add and run a Claude Code agent
-safeyolo agent add myproject claude-code ~/code
+# Add and run a Claude Code agent using the bundled host script
+safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
 
 # Later, just run by name
 safeyolo agent run myproject
@@ -124,29 +123,27 @@ safeyolo agent run myproject
 # Or run with a different folder
 safeyolo agent run myproject -f ~/other-project
 
-# Run with passthrough args to the agent CLI
-safeyolo agent run myproject -- --verbose
+# Override the default command (the host script's .safeyolo-entrypoint)
+safeyolo agent run myproject -- bash -l
 
-# Yolo mode is on by default (auto-accepts permission prompts)
+# Yolo mode is on by default (auto-accepts permission prompts where supported)
 safeyolo agent run myproject
 
-# Disable yolo mode (requires manual approval of prompts)
+# Disable yolo mode
 safeyolo agent run myproject --no-yolo
-
-# Fresh session (new container, no state from previous runs)
-safeyolo agent run myproject --fresh
 ```
 
-**Available templates:**
-- `claude-code` - Anthropic's Claude Code CLI
-- `openai-codex` - OpenAI Codex CLI
-- `byoa` - Bring Your Own Agent (bash shell, install your own agent via mise)
+**Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
+- `contrib/claude-host-setup.sh` — Claude Code (stages host auth/extensions, install-on-first-run entrypoint)
+- `contrib/codex-host-setup.sh` — OpenAI Codex CLI
+- `contrib/mise-shell-host-setup.sh` — BYOA interactive shell with mise
+- See `contrib/HOST_SCRIPT_GUIDE.md` to write your own.
 
 **Notes:**
 - Agent names must be lowercase alphanumeric with hyphens (hostname rules)
-- `add` is idempotent: running it twice just runs the existing agent
+- `add` is idempotent: running it twice with the same folder + script just runs the existing agent
 - Use `--no-run` with `add` to create config without running
-- Use `--ephemeral` with `add` for throwaway containers
+- Without `--host-script`, the sandbox boots to a plain bash shell
 
 ### Service Gateway
 

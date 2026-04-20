@@ -79,7 +79,7 @@ safeyolo setup
 safeyolo start
 
 # Run Claude Code in an isolated sandbox
-safeyolo agent add myproject claude-code ~/code
+safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
 ```
 
 The last argument (`~/code`) is your project directory — mounted read-write into the sandbox (VirtioFS on macOS, bind mount on Linux). The agent runs in an isolated Linux sandbox where:
@@ -139,7 +139,7 @@ See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop 
 
 ## Key Features
 
-- **One-command agent setup** — pre-configured templates for Claude Code and Codex, plus a `byoa` (Bring Your Own Agent) template for installing your own
+- **One-command agent setup** — host scripts in `contrib/` install and configure Claude Code, OpenAI Codex, or any tool of your choice; a minimal `mise-shell-host-setup.sh` drops you into a ready sandbox for BYO agents
 - **Strong isolation** — each agent in its own sandbox: hardware-backed microVM on macOS, gVisor on Linux
 - **Structural egress control** — sandbox has no external network interface; the only path out is a per-agent host socket routed through the proxy. No firewall rules to misconfigure.
 - **Scoped API access** — grant agents specific capabilities per service
@@ -155,22 +155,28 @@ See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop 
 Run multiple agents with separate policies and isolated networks:
 
 ```bash
-safeyolo agent add work claude-code ~/work
-safeyolo agent add side-project claude-code ~/side-project
-safeyolo agent add codex openai-codex ~/experiments
+safeyolo agent add work         ~/work           --host-script contrib/claude-host-setup.sh
+safeyolo agent add side-project ~/side-project   --host-script contrib/claude-host-setup.sh
+safeyolo agent add codex        ~/experiments    --host-script contrib/codex-host-setup.sh
 
 safeyolo agent run work       # Each agent gets its own isolated sandbox
 ```
 
-## Templates
+## Host scripts
 
-| Template | Agent |
-|----------|-------|
-| `claude-code` | Anthropic Claude Code CLI |
-| `openai-codex` | OpenAI Codex CLI |
-| `byoa` | Bring Your Own Agent — bash shell for custom agent installation |
+`safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-entrypoint` file the guest execs as the default command.
 
-If you've already authenticated on your host (via `claude` or `codex`), credentials are mounted automatically via VirtioFS.
+The `contrib/` directory has ready-made host scripts:
+
+| Script | Purpose |
+|--------|---------|
+| `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, installs claude-code via mise on first boot, launches nag-free |
+| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, installs codex via mise on first boot, launches with `--full-auto` |
+| `contrib/mise-shell-host-setup.sh` | BYOA — boots into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
+
+Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
+
+Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE.md).
 
 ## Controlling Agent Access
 
