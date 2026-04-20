@@ -194,11 +194,13 @@ int main(int argc, char *argv[]) {
         setenv("USER", "agent", 1);
         setenv("SHELL", "/bin/bash", 1);
         setenv("LANG", "C.UTF-8", 1);
-        /* mise paths — so the child can find installed tools */
-        setenv("MISE_DATA_DIR", "/opt/mise", 1);
-        setenv("MISE_CONFIG_DIR", "/opt/mise", 1);
-        setenv("MISE_CACHE_DIR", "/opt/mise/cache", 1);
-        setenv("PATH", "/opt/mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
+        /* mise paths — must match /etc/profile.d/mise.sh. Under the
+         * agent's persistent $HOME (VirtioFS-bound from host) so mise
+         * installs survive restart. */
+        setenv("MISE_DATA_DIR", "/home/agent/.mise", 1);
+        setenv("MISE_CONFIG_DIR", "/home/agent/.mise", 1);
+        setenv("MISE_CACHE_DIR", "/home/agent/.mise/cache", 1);
+        setenv("PATH", "/home/agent/.mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
 
         /* Source proxy/agent env if present */
         /* These were written to /etc/environment by the guest init */

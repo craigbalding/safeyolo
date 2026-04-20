@@ -1000,6 +1000,12 @@ def add(
         console.print(f"[red]Failed to create agent rootfs:[/red] {escape(str(err))}")
         raise typer.Exit(1)
 
+    # Persistent /home/agent host-side dir. start_vm re-ensures this
+    # so existing agents get backfilled, but creating it on `add`
+    # covers the --no-run path too.
+    from ..vm import ensure_agent_persistent_dirs
+    ensure_agent_persistent_dirs(name)
+
     # Validate and normalize mount specs
     parsed_mounts = [_parse_mount(m) for m in mount]
 

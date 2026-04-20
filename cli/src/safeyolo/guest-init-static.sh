@@ -123,6 +123,23 @@ else
     mount -t virtiofs status /safeyolo-status 2>/dev/null || true
 fi
 
+# Persistent /home/agent — must mount before the host-config-mount
+# loop, SSH key drop, install block, and host-files copy so writes
+# from each land in the host-side mount (~/.safeyolo/agents/<name>/
+# home/) rather than the ephemeral rootfs. MISE_DATA_DIR is
+# $HOME/.mise (see /etc/profile.d/mise.sh + vsock-term), so mise
+# installs persist here too. First boot: /etc/skel seeds sensible
+# dotfiles for the agent's login shell.
+mkdir -p /home/agent
+if _needs_virtiofs_mount; then
+    mount -t virtiofs home /home/agent
+else
+    mount -t virtiofs home /home/agent 2>/dev/null || true
+fi
+if [ -z "$(ls -A /home/agent 2>/dev/null)" ] && [ -d /etc/skel ]; then
+    cp -a /etc/skel/. /home/agent/
+fi
+
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
 if [ -f /safeyolo/host-mounts ]; then
     while IFS=: read -r tag guest_path; do
@@ -141,11 +158,16 @@ if [ -f /safeyolo/host-mounts ]; then
     done < /safeyolo/host-mounts
 fi
 
-# Host config files (copied into config share)
+# Host config files (e.g. ~/.claude.json) — seed-once semantics. The
+# guest_path typically lives under the persistent /home/agent mount,
+# so once seeded on first boot the agent's in-session writes survive
+# across runs. Copying on every boot would clobber those writes (the
+# original misdesign that discarded Claude's trust/onboarding state).
+# Re-seeding from host: user runs `agent remove` + `agent add`.
 if [ -f /safeyolo/host-files-manifest ]; then
     while IFS=: read -r src_name guest_path; do
         [ -z "$src_name" ] && continue
-        if [ -f "/safeyolo/host-files/$src_name" ]; then
+        if [ -f "/safeyolo/host-files/$src_name" ] && [ ! -f "$guest_path" ]; then
             mkdir -p "$(dirname "$guest_path")"
             cp "/safeyolo/host-files/$src_name" "$guest_path"
             chown agent:agent "$guest_path"

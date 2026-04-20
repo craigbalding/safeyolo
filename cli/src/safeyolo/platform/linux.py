@@ -757,7 +757,7 @@ class LinuxPlatform(AgentPlatform):
             "HOME=/home/agent",
             "USER=agent",
             "TERM=xterm-256color",
-            "PATH=/opt/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         ]
 
         # Add agent-specific env from config share

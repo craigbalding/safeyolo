@@ -103,6 +103,31 @@ def get_agent_status_dir(name: str) -> Path:
     return d
 
 
+def get_agent_home_dir(name: str) -> Path:
+    """Host-side backing for /home/agent inside the guest.
+
+    Bind-mounted over the rootfs /home/agent via VirtioFS so writes
+    survive the snapshot/restore dance on macOS (where restore clones
+    a pristine rootfs image, wiping any in-rootfs writes) and the
+    ephemeral memory overlay on Linux gVisor. MISE_DATA_DIR points at
+    $HOME/.mise (set in /etc/profile.d/mise.sh and vsock-term), so
+    mise installs land here too — first-run installs persist and the
+    install block in guest-init-static is a no-op thereafter.
+    """
+    return get_agents_dir() / name / "home"
+
+
+def ensure_agent_persistent_dirs(name: str) -> None:
+    """Create per-agent host dirs used as persistent bind-mount sources.
+
+    Idempotent so `agent add` and `agent run` can both call it without
+    care — backfills agents created before the persistent-home design.
+    """
+    d = get_agent_home_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)
+
+
 # ---------------------------------------------------------------------------
 # Rootfs management
 # ---------------------------------------------------------------------------
@@ -443,6 +468,13 @@ def start_vm(
 
     config_share = get_agent_config_share_dir(name)
 
+    # Per-agent persistent /home/agent. VirtioFS bind-mount from host
+    # keeps state (mise installs, .claude.json, shell history) outside
+    # the rootfs so it survives macOS snapshot restore (which rewinds
+    # the rootfs to a pristine clone) and Linux overlay discard.
+    ensure_agent_persistent_dirs(name)
+    agent_home = get_agent_home_dir(name)
+
     cmd = [
         str(helper), "run",
         "--kernel", str(kernel),
@@ -453,6 +485,7 @@ def start_vm(
         "--share", f"{workspace_path}:workspace:rw",
         "--share", f"{config_share}:config:ro",
         "--share", f"{get_agent_status_dir(name)}:status:rw",
+        "--share", f"{agent_home}:home:rw",
         "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
     ]
 
