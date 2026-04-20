@@ -66,3 +66,51 @@ def validate_items(items) -> None:
             f"  Class: Title (first line) + 'Why:' section\n"
             f"  Function: Title + 'What:' section + 'Why:' section\n"
         )
+
+
+def _validate_via_ast() -> list[str]:
+    """Parse blackbox test files via AST and return schema violations.
+
+    Standalone validator — doesn't require pytest collection or any
+    test dependencies (runsc, httpx, etc.). Used in CI where the full
+    test infra isn't present.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent
+    suites = [root / "host", root / "isolation"]
+    violations: list[str] = []
+
+    for suite in suites:
+        for path in sorted(suite.glob("test_*.py")):
+            tree = ast.parse(path.read_text())
+            rel = path.relative_to(root.parent.parent)
+            for node in tree.body:
+                if not (isinstance(node, ast.ClassDef) and node.name.startswith("Test")):
+                    continue
+                cls_qual = f"{rel}::{node.name}"
+                violations.extend(check_class(ast.get_docstring(node), cls_qual))
+                for item in node.body:
+                    if isinstance(item, ast.FunctionDef) and item.name.startswith("test_"):
+                        fn_qual = f"{rel}::{node.name}.{item.name}"
+                        violations.extend(check_function(ast.get_docstring(item), fn_qual))
+    return violations
+
+
+if __name__ == "__main__":
+    import sys
+
+    violations = _validate_via_ast()
+    if violations:
+        print("Blackbox test docstring violations:", file=sys.stderr)
+        for v in violations:
+            print(f"  {v}", file=sys.stderr)
+        print(
+            "\nSchema:\n"
+            "  Class: Title (first line) + 'Why:' section\n"
+            "  Function: Title + 'What:' section + 'Why:' section",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print("All blackbox tests conform to the docstring schema.")
