@@ -11,11 +11,10 @@ python3 stdlib (os, socket, ctypes, subprocess).
 import ctypes
 import ctypes.util
 import os
+import platform as _platform
 import socket
 import struct
 import subprocess
-
-import platform as _platform
 
 import pytest
 
@@ -106,7 +105,7 @@ class TestNetworkEscape:
             sock.sendto(dns_query, ("8.8.8.8", 53))
             sock.recvfrom(512)
             pytest.fail("UDP DNS query to 8.8.8.8:53 succeeded — firewall breach")
-        except (socket.timeout, OSError):
+        except (TimeoutError, OSError):
             pass  # Expected: blocked
         finally:
             sock.close()
@@ -216,7 +215,7 @@ class TestNetworkEscape:
         try:
             try:
                 sock.connect(("2001:4860:4860::8888", 80))
-            except (socket.timeout, ConnectionRefusedError, OSError):
+            except (TimeoutError, ConnectionRefusedError, OSError):
                 return  # expected
             pytest.fail("IPv6 connect to 2001:4860:4860::8888:80 succeeded")
         finally:
@@ -381,7 +380,7 @@ class TestHostAdjacentReachability:
         try:
             try:
                 sock.connect((host, port))
-            except (socket.timeout, ConnectionRefusedError, OSError):
+            except (TimeoutError, ConnectionRefusedError, OSError):
                 return  # expected: firewall blocked the connect
             pytest.fail(
                 f"TCP connect to {host}:{port} ({context}) succeeded — "
@@ -422,15 +421,13 @@ class TestHostAdjacentReachability:
         sock.settimeout(3)
         try:
             sock.connect((host, 22))
-            banner = sock.recv(256).decode(errors="replace")
-            sock.close()
-            # If we got a banner, it should be from the in-sandbox sshd.
-            # The sandbox's sshd is acceptable — it's our own service.
-            # We can't distinguish by banner alone, but the structural
-            # test (test_host_listener_unreachable) covers the real
-            # isolation property.
-        except (socket.timeout, ConnectionRefusedError, OSError):
-            pass  # not listening or unreachable — fine
+            # If the connect succeeded, we're talking to the sandbox's own
+            # sshd -- that's our service, not a host-side listener. The
+            # structural check (test_host_listener_unreachable) proves the
+            # real isolation property; this test is mostly a sanity check
+            # that connect() doesn't return a host-side peer.
+        except (TimeoutError, ConnectionRefusedError, OSError):
+            pass  # not listening or unreachable -- fine
         finally:
             sock.close()
 
@@ -577,7 +574,6 @@ class TestPrivilegeEscalation:
         CONFIG_MODULES=n in the guest kernel, or by gVisor's
         user-space kernel rejecting the syscall.
         """
-        import platform as _platform
         # SYS_init_module is architecture-specific.
         _SYS_INIT_MODULE = {"x86_64": 175, "aarch64": 105}.get(_platform.machine())
         if _SYS_INIT_MODULE is None:
@@ -591,7 +587,7 @@ class TestPrivilegeEscalation:
         assert ret == -1, (
             "init_module syscall succeeded — kernel-module loading is not blocked"
         )
-        assert err != 0, f"init_module returned -1 with errno=0 (unexpected)"
+        assert err != 0, "init_module returned -1 with errno=0 (unexpected)"
 
     def test_no_dev_mem(self):
         """/dev/mem does not exist in the sandbox.
@@ -1140,7 +1136,7 @@ class TestSyscallSeccompEquivalents:
 
         # 1. Can't read /etc/shadow (would indicate real root)
         try:
-            with open("/etc/shadow", "r") as f:
+            with open("/etc/shadow") as f:
                 f.read(1)
             pytest.fail(
                 "unshare(CLONE_NEWUSER) granted read access to /etc/shadow"

@@ -145,8 +145,8 @@ def init(
         next_steps = (
             "Next steps:\n"
             "  1. Run: [bold]safeyolo start[/bold]\n"
-            "  2. Run: [bold]safeyolo agent add claude-code[/bold]\n"
-            "  3. Run your agent from [bold]./safeyolo/agents/claude-code/[/bold]"
+            "  2. Run: [bold]safeyolo agent add <name> <folder> --host-script contrib/claude-host-setup.sh[/bold]\n"
+            "  3. See [bold]contrib/HOST_SCRIPT_GUIDE.md[/bold] to adapt for other agents"
         )
     else:
         next_steps = (

@@ -54,7 +54,7 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
         } else if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN) {
-                /* fd is non-blocking and buffer is full — poll until writable */
+                /* fd is non-blocking and buffer is full -- poll until writable */
                 struct pollfd pfd = { .fd = fd, .events = POLLOUT };
                 poll(&pfd, 1, 100);
                 continue;
@@ -194,11 +194,13 @@ int main(int argc, char *argv[]) {
         setenv("USER", "agent", 1);
         setenv("SHELL", "/bin/bash", 1);
         setenv("LANG", "C.UTF-8", 1);
-        /* mise paths — so the child can find installed tools */
-        setenv("MISE_DATA_DIR", "/opt/mise", 1);
-        setenv("MISE_CONFIG_DIR", "/opt/mise", 1);
-        setenv("MISE_CACHE_DIR", "/opt/mise/cache", 1);
-        setenv("PATH", "/opt/mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
+        /* mise paths -- must match /etc/profile.d/mise.sh. Under the
+         * agent's persistent $HOME (VirtioFS-bound from host) so mise
+         * installs survive restart. */
+        setenv("MISE_DATA_DIR", "/home/agent/.mise", 1);
+        setenv("MISE_CONFIG_DIR", "/home/agent/.mise", 1);
+        setenv("MISE_CACHE_DIR", "/home/agent/.mise/cache", 1);
+        setenv("PATH", "/home/agent/.mise/shims:/usr/local/bin:/usr/bin:/bin", 1);
 
         /* Source proxy/agent env if present */
         /* These were written to /etc/environment by the guest init */
@@ -210,7 +212,7 @@ int main(int argc, char *argv[]) {
         initgroups("agent", gid);
         setuid(uid);
 
-        /* Exec the command directly — no shell wrapper */
+        /* Exec the command directly -- no shell wrapper */
         execvp(argv[cmd_start], &argv[cmd_start]);
         perror("vsock-term: exec failed");
         _exit(127);
@@ -219,7 +221,7 @@ int main(int argc, char *argv[]) {
     /* === PARENT === */
     close(slave_fd);
 
-    /* Keep fds BLOCKING for the bridge — prevents partial writes.
+    /* Keep fds BLOCKING for the bridge -- prevents partial writes.
      * Use poll() to check readability before read(). */
     /* master_fd and data_fd stay blocking */
 
@@ -270,7 +272,7 @@ int main(int argc, char *argv[]) {
         }
 
         if ((fds[0].revents | fds[1].revents) & POLLERR) break;
-        /* Don't break on POLLHUP from PTY — drain remaining data first */
+        /* Don't break on POLLHUP from PTY -- drain remaining data first */
     }
 
     /* Drain remaining PTY output after child exits */

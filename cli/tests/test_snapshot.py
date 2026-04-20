@@ -1,9 +1,9 @@
-"""Tests for snapshot.py — version fingerprinting, validity checks,
+"""Tests for snapshot.py -- version fingerprinting, validity checks,
 invalidation, and platform gating.
 
 These tests exercise the Python-side orchestration that sits on top of
 the safeyolo-vm save/restore primitives from PR #133. They don't run a
-real VM; the focus is on "is a given snapshot still restorable?" — a
+real VM; the focus is on "is a given snapshot still restorable?" -- a
 decision the CLI makes before it ever launches the helper.
 """
 
@@ -106,7 +106,7 @@ class TestComputeSnapshotVersion:
 
     def test_static_script_content_change_invalidates(self, snapshot_inputs, monkeypatch, tmp_path):
         """Changing guest-init-static.sh on disk must yield a different
-        fingerprint — the script runs inside the snapshot, so stale
+        fingerprint -- the script runs inside the snapshot, so stale
         captured state would diverge from what the new script expects."""
         fake_cli_dir = tmp_path / "fakepkg"
         fake_cli_dir.mkdir()
@@ -130,31 +130,6 @@ class TestComputeSnapshotVersion:
         v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         assert v1 != v2
 
-    def test_agent_binary_change_invalidates(self, snapshot_inputs):
-        """Install now happens in static and is baked into the rootfs
-        clone. If the user retargets an agent to a different template
-        (different binary), the old snapshot's installed binary is
-        wrong — invalidate and re-capture."""
-        v1 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code",
-        )
-        v2 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="codex", mise_package="npm:@anthropic-ai/claude-code",
-        )
-        assert v1 != v2
-
-    def test_mise_package_change_invalidates(self, snapshot_inputs):
-        v1 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code@1.0.0",
-        )
-        v2 = compute_snapshot_version(
-            memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y",
-            agent_binary="claude", mise_package="npm:@anthropic-ai/claude-code@2.0.0",
-        )
-        assert v1 != v2
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +162,7 @@ class TestSha256FileCache:
 
     def test_second_call_does_not_read_file(self, tmp_config_dir, tmp_path, monkeypatch):
         """If cache key matches, the file is never opened. This is the
-        load-bearing assertion — the whole point is skipping the I/O."""
+        load-bearing assertion -- the whole point is skipping the I/O."""
         from safeyolo.snapshot import _sha256_file
 
         f = tmp_path / "big.bin"
@@ -200,7 +175,7 @@ class TestSha256FileCache:
         import safeyolo.snapshot as snap_mod
         real_uncached = snap_mod._sha256_file_uncached
         def should_not_run(p):
-            raise AssertionError(f"cache miss — _sha256_file_uncached called on {p}")
+            raise AssertionError(f"cache miss -- _sha256_file_uncached called on {p}")
         monkeypatch.setattr(snap_mod, "_sha256_file_uncached", should_not_run)
 
         digest2 = _sha256_file(f)  # must NOT call the uncached path
@@ -236,7 +211,7 @@ class TestSha256FileCache:
         assert digest1 != digest2
 
     def test_corrupt_cache_file_is_tolerated(self, tmp_config_dir, tmp_path):
-        """A garbage cache file shouldn't break hashing — just redo the
+        """A garbage cache file shouldn't break hashing -- just redo the
         work and rewrite."""
         from safeyolo.snapshot import _hash_cache_path, _sha256_file
 
@@ -290,14 +265,14 @@ class TestIsSnapshotValid:
 
     def test_mismatched_version_is_invalid(self, agent_dir, snapshot_inputs):
         """Version.json on disk differs from what the CLI computed now
-        (e.g., memory was bumped between runs) — snapshot is stale."""
+        (e.g., memory was bumped between runs) -- snapshot is stale."""
         saved = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         self._write_full_snapshot(agent_dir, "agent1", saved, MIN_SNAPSHOT_BYTES + 1)
         current = compute_snapshot_version(memory_mb=8192, cpus=4, gateway_ip="x", guest_ip="y")
         assert is_snapshot_valid("agent1", current) is False
 
     def test_tiny_snapshot_is_invalid(self, agent_dir, snapshot_inputs):
-        """Files exist but snapshot.bin is below the corruption floor —
+        """Files exist but snapshot.bin is below the corruption floor --
         almost certainly a partial write. Treat as invalid."""
         version = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         self._write_full_snapshot(agent_dir, "agent1", version, 1024)  # 1 KiB
@@ -329,7 +304,7 @@ class TestInvalidateSnapshot:
 
     def test_is_no_op_when_nothing_exists(self, agent_dir):
         """Running invalidate before any capture has happened must not
-        raise — the CLI calls this unconditionally in capture-mode
+        raise -- the CLI calls this unconditionally in capture-mode
         preparation."""
         invalidate_snapshot("agent1")  # no artefacts yet
 
@@ -361,7 +336,7 @@ class TestWriteSnapshotVersion:
 
     def test_creates_parent_dir_if_missing(self, tmp_config_dir):
         """write_snapshot_version must not assume the agent dir already
-        exists — first-ever run might race against directory creation."""
+        exists -- first-ever run might race against directory creation."""
         # Agent dir intentionally does NOT exist yet.
         write_snapshot_version("fresh-agent", {"snapshot_schema": 1})
         assert (tmp_config_dir / "agents" / "fresh-agent" / "snapshot.version.json").exists()
@@ -386,7 +361,7 @@ class TestPlatformSupportsSnapshot:
         assert platform_supports_snapshot() is True
 
     def test_darwin_13_not_supported(self, monkeypatch):
-        """VZVirtualMachine.save requires macOS 14+ — older hosts must
+        """VZVirtualMachine.save requires macOS 14+ -- older hosts must
         fall through to cold boot."""
         import platform as pymod
         monkeypatch.setattr(pymod, "system", lambda: "Darwin")
@@ -400,7 +375,7 @@ class TestPlatformSupportsSnapshot:
         assert platform_supports_snapshot() is False
 
     def test_empty_mac_ver_handled(self, monkeypatch):
-        """mac_ver() can return empty string on some platforms/errors —
+        """mac_ver() can return empty string on some platforms/errors --
         must not raise."""
         import platform as pymod
         monkeypatch.setattr(pymod, "system", lambda: "Darwin")

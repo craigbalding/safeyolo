@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SafeYolo guest-init — PER-RUN phase.
+# SafeYolo guest-init -- PER-RUN phase.
 #
 # Runs after the /safeyolo/per-run-go gate, which the host opens either
 # immediately (passthrough / restore) or after taking a snapshot (capture).
@@ -10,7 +10,7 @@
 #   - VirtioFS readdir (host-side per-run files may be invisible to a
 #     resumed guest until the directory is re-read)
 #   - agent.env / proxy.env sourcing (agent_token, mise package, argv
-#     overrides — all per-run)
+#     overrides -- all per-run)
 #   - instructions injection
 #   - mise install of the agent binary if missing
 #   - remount /safeyolo read-only and launch the agent
@@ -23,7 +23,7 @@ echo "[per-run start] pid=$$" > /dev/console 2>/dev/null || true
 # --------------------------------------------------------------------------
 # 0. Post-restore fixups (no-ops on cold boot)
 # --------------------------------------------------------------------------
-# System clock jumps across restore — sync from the VZ-provided hwclock.
+# System clock jumps across restore -- sync from the VZ-provided hwclock.
 hwclock -s 2>/dev/null || true
 
 # Invalidate VirtioFS readdir cache so per-run files the host wrote while
@@ -62,7 +62,7 @@ echo 'export HOME=/home/agent' >> /etc/environment
 # gVisor --host-uds=open) or vsock on macOS (port 1080 on the VM helper).
 #
 # Runs unconditionally: if neither transport is available, the forwarder
-# logs the reason and exits — harmless on agents still using the legacy
+# logs the reason and exits -- harmless on agents still using the legacy
 # veth/feth path. Runs as daemon; stderr lands on console for diagnostics.
 # Not blocking: guest-init continues even if the forwarder fails to start.
 # --------------------------------------------------------------------------
@@ -79,7 +79,7 @@ fi
 # lives in safeyolo-vm's VSockShellBridge. socat is already in the
 # image (installed at rootfs build time).
 #
-# Harmless on Linux-gVisor agents — vsock is available but the host
+# Harmless on Linux-gVisor agents -- vsock is available but the host
 # side doesn't listen, so no connections are ever accepted.
 # --------------------------------------------------------------------------
 if [ -x /safeyolo/guest-shell-bridge ]; then
@@ -112,15 +112,7 @@ if [ -x /safeyolo/guest-shell-bridge ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 2. Inject agent instructions (e.g., /etc/claude-code/CLAUDE.md)
-# --------------------------------------------------------------------------
-if [ -f /safeyolo/instructions.md ] && [ -n "${SAFEYOLO_INSTRUCTIONS_PATH:-}" ]; then
-    mkdir -p "$(dirname "$SAFEYOLO_INSTRUCTIONS_PATH")"
-    cp /safeyolo/instructions.md "$SAFEYOLO_INSTRUCTIONS_PATH"
-fi
-
-# --------------------------------------------------------------------------
-# 3. Agent API token (may rotate between runs — always refresh)
+# 2. Agent API token (may rotate between runs -- always refresh)
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/agent_token ]; then
     mkdir -p /app
@@ -128,72 +120,25 @@ if [ -f /safeyolo/agent_token ]; then
     chmod 644 /app/agent_token
 fi
 
-# --------------------------------------------------------------------------
-# 4. Install agent binary via mise — safety net only
-#
-# The real install happens in guest-init-static (pre-snapshot) so the
-# binary is captured in the rootfs clone and restore doesn't re-install.
-# This block is a no-op on the happy path (command -v succeeds). It
-# only fires when static's install failed at capture time, or when
-# something external removed the binary — either way we retry here and
-# the agent still gets to launch.
-# --------------------------------------------------------------------------
-if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
-    # `-lc` so mise's shell activation sources the profile and adds its
-    # shims to PATH — otherwise `command -v` reports a correctly-installed
-    # binary as missing and we redundantly re-run `mise use -g` on every
-    # boot. This safety-net is meant to be a no-op after a healthy
-    # static-phase install.
-    if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        # Verify egress connectivity before attempting install. The
-        # forwarder was started above; give the chain up to 10s.
-        _proxy_ok=0
-        for _try in $(seq 1 20); do
-            if curl -sf -o /dev/null --max-time 2 -x "${HTTP_PROXY:-http://127.0.0.1:8080}" http://registry.npmjs.org/ 2>/dev/null; then
-                _proxy_ok=1
-                break
-            fi
-            sleep 0.5
-        done
-        if [ "$_proxy_ok" -eq 0 ]; then
-            echo "[per-run] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo-status/vm-status
-        else
-            echo "[per-run] egress connectivity confirmed" > /dev/console 2>/dev/null || true
-            echo "installing" > /safeyolo-status/vm-status
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
-        fi
-    fi
-    # Ground vm-status in reality — the install command's exit code can
-    # lie (timeout fires after the binary is already in place), and
-    # skipping the install block entirely because a stale install-failed
-    # from static is still on disk is exactly how the status went out of
-    # sync in practice. `command -v` is the source of truth.
-    if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-        echo "ready" > /safeyolo-status/vm-status
-    else
-        echo "install-failed" > /safeyolo-status/vm-status
-    fi
-else
-    # No mise package configured — nothing to install.
-    echo "ready" > /safeyolo-status/vm-status
-fi
+echo "ready" > /safeyolo-status/vm-status
 
 # --------------------------------------------------------------------------
-# 5. Run user init hook
+# 3. Run user init hook (legacy; host script can write here too)
 # --------------------------------------------------------------------------
 if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
     su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
 fi
 
 # --------------------------------------------------------------------------
-# 6. Run agent or stay alive for SSH access
+# 4. Run the host-script-provided entrypoint, or bash
+#
+# The host script (`safeyolo agent add --host-script ...`) may write an
+# executable at /home/agent/.safeyolo-entrypoint. If present, we exec
+# that. Otherwise the sandbox boots to an interactive bash login. In
+# both cases SAFEYOLO_AGENT_ARGS (from `agent run -- …`) is appended
+# as extra arguments to the entrypoint, for users who want to pass
+# flags at run time rather than baking them into the entrypoint.
 # --------------------------------------------------------------------------
-
-YOLO_ARGS=""
-if [ -n "${SAFEYOLO_YOLO_MODE:-}" ] && [ -n "${SAFEYOLO_AUTO_ARGS:-}" ]; then
-    YOLO_ARGS="${SAFEYOLO_AUTO_ARGS}"
-fi
 
 # vsock-term is on the config share (cross-compiled, no rootfs rebuild needed)
 VSOCK_TERM="/safeyolo/vsock-term"
@@ -216,13 +161,13 @@ if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
     # Keep the container alive so runsc exec has a target.
     exec sleep infinity
 elif [ -x "$VSOCK_TERM" ]; then
-    # macOS: vsock-term sets up the PTY, drops privileges, sets PATH
-    # with mise shims, and execs the command. A shell wrapper (bash -lc)
-    # would break the TTY connection, causing process.stdout.isTTY to be
-    # undefined in Node.js.
-    if [ -n "${SAFEYOLO_AGENT_CMD:-}" ]; then
+    # macOS: vsock-term sets up the PTY, drops privileges, sets PATH,
+    # and execs the command. A shell wrapper (bash -lc) would break
+    # the TTY connection, causing process.stdout.isTTY to be undefined
+    # in Node.js.
+    if [ -x /home/agent/.safeyolo-entrypoint ]; then
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
-            ${SAFEYOLO_AGENT_CMD} ${YOLO_ARGS} ${SAFEYOLO_AGENT_ARGS:-} || true
+            /home/agent/.safeyolo-entrypoint ${SAFEYOLO_AGENT_ARGS:-} || true
     else
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
             bash -l || true
@@ -232,7 +177,7 @@ else
     echo "terminal-failed" > /safeyolo-status/vm-status
 fi
 
-# Agent exited — shut down the VM cleanly.
+# Agent exited -- shut down the VM cleanly.
 # We are PID 1, so /sbin/{reboot,poweroff,halt} don't work: they signal init,
 # which is us. Call the reboot() syscall directly via busybox, which relies
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.

@@ -62,7 +62,7 @@ def _write_policy(config_dir: Path, hosts: dict | None = None) -> None:
 
 def _create_agent(config_dir: Path, name: str, extra: dict | None = None) -> None:
     """Save minimal agent metadata."""
-    meta = {"template": "claude-code", "folder": "/tmp/proj"}
+    meta = {"folder": "/tmp/proj"}
     if extra:
         meta.update(extra)
     save_agent(name, meta)

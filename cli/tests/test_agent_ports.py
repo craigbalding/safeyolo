@@ -75,12 +75,12 @@ class TestParsePort:
         assert _parse_port("9090:3000") == "127.0.0.1:9090:3000"
 
 
-def _setup_agent(config_dir, name="test-agent", template="claude-code", ports=None):
+def _setup_agent(config_dir, name="test-agent", ports=None):
     """Helper to create a minimal agent directory with metadata in policy.toml."""
     agent_dir = config_dir / "agents" / name
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "docker-compose.yml").write_text("version: '3'\n")
-    metadata = {"template": template, "folder": "/tmp/project"}
+    metadata = {"folder": "/tmp/project"}
     if ports:
         metadata["ports"] = ports
     save_agent(name, metadata)

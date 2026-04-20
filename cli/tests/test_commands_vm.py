@@ -376,61 +376,52 @@ class TestAgentAdd:
     def test_no_config_exits_one(self, runner, tmp_path, monkeypatch):
         """No config directory exits 1."""
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path / "nonexistent"))
-        result = runner.invoke(app, ["agent", "add", "test", "claude-code", "."])
+        result = runner.invoke(app, ["agent", "add", "test", "."])
         assert result.exit_code == 1
         assert "no safeyolo configuration" in result.output.lower()
 
     def test_folder_not_found_exits_one(self, runner, config_dir, tmp_path):
         """Non-existent folder path exits 1."""
         bad_folder = str(tmp_path / "nonexistent")
-        with patch("safeyolo.commands.agent.get_agent_config", return_value=MagicMock()):
-            result = runner.invoke(app, ["agent", "add", "test", "claude-code", bad_folder])
+        result = runner.invoke(app, ["agent", "add", "test", bad_folder])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
-    def test_invalid_template_exits_one(self, runner, config_dir, tmp_path):
-        """Invalid template name exits 1."""
-        from safeyolo.templates import TemplateError
+    def test_host_script_not_found_exits_one(self, runner, config_dir, tmp_path):
+        """--host-script pointing at a missing file exits 1."""
         folder = tmp_path / "project"
         folder.mkdir()
-        with patch("safeyolo.commands.agent.get_agent_config", side_effect=TemplateError("unknown template")):
-            result = runner.invoke(app, ["agent", "add", "test", "nonexistent", str(folder)])
+        result = runner.invoke(
+            app,
+            ["agent", "add", "test", str(folder), "--host-script", str(tmp_path / "missing.sh")],
+        )
         assert result.exit_code == 1
-        assert "template" in result.output.lower()
+        assert "host script" in result.output.lower()
 
     def test_creates_rootfs_on_add(self, runner, config_dir, tmp_path):
-        """add calls plat.prepare_rootfs and saves metadata."""
+        """add calls plat.prepare_rootfs and saves metadata (no host script)."""
         folder = tmp_path / "project"
         folder.mkdir()
-
-        mock_agent_config = MagicMock()
-        mock_agent_config.host.config_dirs = []
-        mock_agent_config.host.config_files = []
-        mock_agent_config.install.binary = "claude"
-        mock_agent_config.install.mise = ""
-        mock_agent_config.run.auto_args_str = ""
-        mock_agent_config.instructions.content = ""
-        mock_agent_config.instructions.path = ""
 
         mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
         mock_platform = MagicMock()
         mock_platform.prepare_rootfs.return_value = mock_rootfs
 
         with (
-            patch("safeyolo.commands.agent.get_agent_config", return_value=mock_agent_config),
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
             patch("safeyolo.commands.agent.save_agent"),
             patch("safeyolo.commands.agent.write_event"),
             patch("safeyolo.commands.agent._check_project_ownership"),
         ):
-            result = runner.invoke(app, ["agent", "add", "test", "claude-code", str(folder), "--no-run"])
+            result = runner.invoke(app, ["agent", "add", "test", str(folder), "--no-run"])
 
         assert result.exit_code == 0
         mock_platform.prepare_rootfs.assert_called_once_with("test")
         assert "added" in result.output.lower()
 
     def test_idempotent_readd_with_same_config(self, runner, config_dir, tmp_path):
-        """Re-adding with same template and folder is idempotent (runs agent)."""
+        """Re-adding with same folder + no host-script is idempotent (runs agent)."""
         folder = tmp_path / "project"
         folder.mkdir()
         folder_str = str(folder.resolve())
@@ -440,49 +431,34 @@ class TestAgentAdd:
         agent_dir.mkdir()
         (agent_dir / "rootfs.ext4").touch()
 
-        mock_agent_config = MagicMock()
-        mock_agent_config.host.config_dirs = []
-        mock_agent_config.host.config_files = []
-        mock_agent_config.install.binary = "claude"
-        mock_agent_config.install.mise = ""
-        mock_agent_config.run.auto_args_str = ""
-        mock_agent_config.instructions.content = ""
-        mock_agent_config.instructions.path = ""
-
         with (
-            patch("safeyolo.commands.agent.get_agent_config", return_value=mock_agent_config),
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
-                return_value={"template": "claude-code", "folder": folder_str},
+                return_value={"folder": folder_str},
             ),
             patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
         ):
-            result = runner.invoke(app, ["agent", "add", "test", "claude-code", str(folder)])
+            result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
         assert "already configured" in result.output.lower()
         mock_run.assert_called_once()
 
     def test_different_config_without_force_exits_one(self, runner, config_dir, tmp_path):
-        """Re-adding with different config and no --force exits 1."""
+        """Re-adding with different folder and no --force exits 1."""
         folder = tmp_path / "project"
         folder.mkdir()
 
         agent_dir = config_dir / "agents" / "test"
         agent_dir.mkdir()
 
-        mock_agent_config = MagicMock()
-        mock_agent_config.host.config_dirs = []
-        mock_agent_config.host.config_files = []
-
         with (
-            patch("safeyolo.commands.agent.get_agent_config", return_value=mock_agent_config),
             patch(
                 "safeyolo.commands.agent._load_agent_metadata",
-                return_value={"template": "openai-codex", "folder": "/other"},
+                return_value={"folder": "/other"},
             ),
             patch("safeyolo.commands.agent._check_project_ownership"),
         ):
-            result = runner.invoke(app, ["agent", "add", "test", "claude-code", str(folder)])
+            result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
         assert result.exit_code == 1
         assert "force" in result.output.lower()
@@ -520,9 +496,8 @@ class TestAgentList:
         )
 
         with (
-            patch("safeyolo.commands.agent.get_available_templates", return_value={}),
             patch("safeyolo.commands.agent.load_all_agents", return_value={
-                "vm-agent": {"template": "claude-code", "folder": "/proj"},
+                "vm-agent": {"folder": "/proj"},
             }),
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
         ):
@@ -535,7 +510,6 @@ class TestAgentList:
     def test_no_agents_shows_message(self, runner, config_dir):
         """No agents configured shows appropriate message."""
         with (
-            patch("safeyolo.commands.agent.get_available_templates", return_value={}),
             patch("safeyolo.commands.agent.load_all_agents", return_value={}),
         ):
             result = runner.invoke(app, ["agent", "list"])
@@ -690,7 +664,7 @@ class TestRunAgent:
         """_run_agent via `agent run` exits 1 if rootfs doesn't exist."""
         # Use the run command which calls _run_agent
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"template": "t", "folder": "."}),
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}),
         ):
             result = runner.invoke(app, ["agent", "run", "no-rootfs"])
         assert result.exit_code == 1
@@ -705,12 +679,11 @@ class TestRunAgent:
 
         mock_platform = MagicMock()
         mock_platform.is_sandbox_running.return_value = True
-        # agent_rootfs_path is platform-dispatched — return the same file we
+        # agent_rootfs_path is platform-dispatched -- return the same file we
         # just touched so the existence check passes regardless of host OS.
         mock_platform.agent_rootfs_path.return_value = rootfs_path
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"template": "t", "folder": "."}),
-            patch("safeyolo.commands.agent._get_agent_binary", return_value=None),
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}),
             patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
         ):
@@ -862,7 +835,7 @@ class TestSetup:
         assert "all prerequisites met" in result.output.lower()
 
     # Linux branch: runsc replaces safeyolo-vm. find_runsc() does
-    # the actual PATH lookup, so mock it directly — no need to stub shutil.
+    # the actual PATH lookup, so mock it directly -- no need to stub shutil.
     def test_runsc_ok_on_linux(self, runner, config_dir):
         """Linux: reports OK when runsc is present."""
         with (
@@ -1000,33 +973,6 @@ class TestDoctorDependencyCascade:
 
 
 # ---------------------------------------------------------------------------
-# sandbox.py
-# ---------------------------------------------------------------------------
-
-
-class TestSandboxList:
-
-    def test_lists_templates(self, runner, config_dir):
-        """Lists available templates."""
-        with patch(
-            "safeyolo.commands.sandbox.get_available_templates",
-            return_value={"claude-code": "Claude Code agent"},
-        ):
-            result = runner.invoke(app, ["sandbox", "list"])
-
-        assert result.exit_code == 0
-        assert "claude-code" in result.output
-
-    def test_no_templates_shows_message(self, runner, config_dir):
-        """Shows message when no templates available."""
-        with patch("safeyolo.commands.sandbox.get_available_templates", return_value={}):
-            result = runner.invoke(app, ["sandbox", "list"])
-
-        assert result.exit_code == 0
-        assert "no templates" in result.output.lower()
-
-
-# ---------------------------------------------------------------------------
 # cert.py
 # ---------------------------------------------------------------------------
 
@@ -1158,7 +1104,7 @@ class TestGuestImageChecks:
             assert check_guest_images() is False
 
     def test_linux_only_needs_rootfs(self, config_dir):
-        """On Linux, rootfs alone is sufficient — gVisor provides its own kernel."""
+        """On Linux, rootfs alone is sufficient -- gVisor provides its own kernel."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"

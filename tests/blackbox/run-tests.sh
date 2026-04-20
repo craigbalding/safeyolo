@@ -256,7 +256,7 @@ fi
 # VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
     # Agent was cleaned at the top of the run; create fresh.
-    safeyolo agent add "$AGENT_NAME" byoa "$REPO_ROOT" --no-run
+    safeyolo agent add "$AGENT_NAME" "$REPO_ROOT" --no-run
 
     # Start a host TCP listener on a random port. The in-VM
     # test_host_listener_unreachable probes this port to prove a

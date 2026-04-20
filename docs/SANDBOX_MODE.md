@@ -6,10 +6,10 @@ Sandbox Mode runs AI coding agents in isolated Linux sandboxes — hardware-back
 
 ```bash
 safeyolo start
-safeyolo agent add myproject claude-code ~/projects/myapp
+safeyolo agent add myproject ~/projects/myapp --host-script contrib/claude-host-setup.sh
 ```
 
-The agent boots in its sandbox with CA trust and proxy configuration handled automatically.
+The agent boots in its sandbox with CA trust and proxy configuration handled automatically. The host script (`contrib/claude-host-setup.sh`) stages your existing `~/.claude/` state and writes a first-run install-and-exec entrypoint — you get a nag-free, authenticated Claude Code session inside the sandbox.
 
 ## How It Works
 
@@ -34,17 +34,17 @@ Internet
 
 If the agent unsets proxy env vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable. The enforcement is **structural**, not policy-based — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
 
-## Available Templates
+## Host scripts (`--host-script`)
 
-```bash
-safeyolo sandbox list
-```
+Agents are configured via plain shell scripts that run on the host before the sandbox boots. `contrib/` ships three examples:
 
-| Template | Description |
-|----------|-------------|
-| `claude-code` | Claude Code with Node.js, mise, git, gh |
-| `openai-codex` | OpenAI Codex CLI with similar tooling |
-| `byoa` | Bring Your Own Agent — bash shell for custom agent installation |
+| Script | Purpose |
+|--------|---------|
+| `contrib/claude-host-setup.sh` | Claude Code — stages `~/.claude/` auth + user extensions, installs claude-code on first boot |
+| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, installs codex on first boot |
+| `contrib/mise-shell-host-setup.sh` | BYOA — interactive shell with mise ready; install whatever you want |
+
+Running `safeyolo agent add <name> <folder>` without `--host-script` boots the sandbox to an interactive bash shell. Writing your own host script: see [`contrib/HOST_SCRIPT_GUIDE.md`](../contrib/HOST_SCRIPT_GUIDE.md).
 
 ## Verification
 

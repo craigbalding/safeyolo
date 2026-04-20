@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# SafeYolo guest-init — STATIC phase.
+# SafeYolo guest-init -- STATIC phase.
 #
 # Runs the setup that is identical across every run of this agent and
 # therefore snapshottable: network bring-up, VirtioFS mounts, CA trust,
 # sshd, ipv6 disable, VM-IP discovery. Does NOT touch per-run state
 # (agent.env, instructions, agent_token, mise install, remount ro,
-# agent launch) — those live in guest-init-per-run.
+# agent launch) -- those live in guest-init-per-run.
 #
 # Invoked by /safeyolo/guest-init (orchestrator) before the per-run-go
 # gate. On restore, this script has already executed into snapshotted
@@ -19,7 +19,7 @@ export DEBIAN_FRONTEND=noninteractive
 echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
-# Hostname — set to agent name so `hostname`, the shell prompt, syslog,
+# Hostname -- set to agent name so `hostname`, the shell prompt, syslog,
 # and sshd all identify the guest correctly. The Docker stack did this
 # via container-name=hostname inheritance; the VM stack has to do it
 # explicitly. Runs pre-snapshot so the hostname lands in the captured
@@ -49,10 +49,10 @@ rm -f /dev/net/tun 2>/dev/null || true
 rmdir /dev/net 2>/dev/null || true
 rm -f /dev/fuse 2>/dev/null || true
 
-# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# Standard /dev symlinks -- normally created by udev or systemd-tmpfiles
 # at boot, but this VM uses a minimal init with neither. Without these,
 # programs that write to /dev/stderr (curl, bash redirections, etc.) fail.
-# Standard /dev symlinks — normally created by udev or systemd-tmpfiles
+# Standard /dev symlinks -- normally created by udev or systemd-tmpfiles
 # at boot, but this VM uses a minimal init with neither. gVisor already
 # provides these; only create if missing.
 [ -e /dev/fd ]     || ln -s /proc/self/fd /dev/fd
@@ -65,17 +65,17 @@ rm -f /dev/fuse 2>/dev/null || true
 # --------------------------------------------------------------------------
 ip link set lo up 2>/dev/null || true
 
-# Source network.env unconditionally — GUEST_IP is needed later for the
+# Source network.env unconditionally -- GUEST_IP is needed later for the
 # /safeyolo/vm-ip readiness signal even on runtimes where `ip link show
 # eth0` is unhappy (notably gVisor: its netstack doesn't surface the
 # netns's eth0 as a kernel interface, so standard `ip` queries find
-# only lo — yet traffic flows fine because netstack forwards transparently).
+# only lo -- yet traffic flows fine because netstack forwards transparently).
 if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
 fi
 
 # Add the agent's unique IP to loopback. This is the same IP that
-# appears in mitmproxy flows, logs, and the agent map — giving the
+# appears in mitmproxy flows, logs, and the agent map -- giving the
 # operator a consistent per-agent identity inside and outside the
 # sandbox.
 if [ -n "${AGENT_IP:-}" ]; then
@@ -83,7 +83,7 @@ if [ -n "${AGENT_IP:-}" ]; then
 fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
-    # (UP, IP assigned, default route) — bringing it up here would just
+    # (UP, IP assigned, default route) -- bringing it up here would just
     # EPERM, and set -e would kill the script. Detect that and skip.
     # On the macOS microVM path the guest kernel sees a bare interface
     # and we have to configure it ourselves; failure here IS a bug and
@@ -98,8 +98,8 @@ fi
 # --------------------------------------------------------------------------
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
 #
-# On macOS (VZ microVM), VirtioFS is the mount mechanism — failure is
-# fatal. On Linux (gVisor), the OCI spec handles mounts via bind — the
+# On macOS (VZ microVM), VirtioFS is the mount mechanism -- failure is
+# fatal. On Linux (gVisor), the OCI spec handles mounts via bind -- the
 # virtiofs mount calls legitimately fail and are skipped. Detect by
 # checking if /workspace is already mounted (OCI bind-mounts appear
 # before init runs).
@@ -113,7 +113,7 @@ else
     mount -t virtiofs workspace /workspace 2>/dev/null || true
 fi
 
-# Status share — writable channel for guest→host signals (vm-status,
+# Status share -- writable channel for guest→host signals (vm-status,
 # per-run-started, etc.). Separate from /safeyolo so the config share
 # can be read-only.
 mkdir -p /safeyolo-status
@@ -121,6 +121,28 @@ if _needs_virtiofs_mount; then
     mount -t virtiofs status /safeyolo-status
 else
     mount -t virtiofs status /safeyolo-status 2>/dev/null || true
+fi
+
+# Persistent /home/agent -- must mount before the host-config-mount
+# loop, SSH key drop, install block, and host-files copy so writes
+# from each land in the host-side mount (~/.safeyolo/agents/<name>/
+# home/) rather than the ephemeral rootfs. MISE_DATA_DIR is
+# $HOME/.mise (see /etc/profile.d/mise.sh + vsock-term), so mise
+# installs persist here too. First boot: /etc/skel seeds sensible
+# dotfiles for the agent's login shell.
+mkdir -p /home/agent
+if _needs_virtiofs_mount; then
+    mount -t virtiofs home /home/agent
+else
+    mount -t virtiofs home /home/agent 2>/dev/null || true
+fi
+if [ -z "$(ls -A /home/agent 2>/dev/null)" ] && [ -d /etc/skel ]; then
+    # `cp -r` (not `-a`) -- VirtioFS on VZ rejects utimes, which makes
+    # `cp -a`'s timestamp-preserve step fail, and `set -e` takes PID 1
+    # down with it (kernel panic "Attempted to kill init"). Timestamps
+    # on skel dotfiles aren't load-bearing; default modes under umask
+    # are fine for .bashrc / .profile / .bash_logout.
+    cp -r /etc/skel/. /home/agent/
 fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
@@ -141,22 +163,10 @@ if [ -f /safeyolo/host-mounts ]; then
     done < /safeyolo/host-mounts
 fi
 
-# Host config files (copied into config share)
-if [ -f /safeyolo/host-files-manifest ]; then
-    while IFS=: read -r src_name guest_path; do
-        [ -z "$src_name" ] && continue
-        if [ -f "/safeyolo/host-files/$src_name" ]; then
-            mkdir -p "$(dirname "$guest_path")"
-            cp "/safeyolo/host-files/$src_name" "$guest_path"
-            chown agent:agent "$guest_path"
-        fi
-    done < /safeyolo/host-files-manifest
-fi
-
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
-# Skip the rebuild on every boot — the CA cert is the same across runs.
+# Skip the rebuild on every boot -- the CA cert is the same across runs.
 # Trigger update-ca-certificates only if either:
 #   - the source cert differs from what's installed
 #   - the bundle file is missing (recovery from a corrupt/missing state)
@@ -190,9 +200,9 @@ if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
 fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above
-# creates new ones as the current user — fix unconditionally.
+# creates new ones as the current user -- fix unconditionally.
 # The glob may not match on runtimes where keygen failed (gVisor
-# without /dev/random early in boot) — check before chown/chmod.
+# without /dev/random early in boot) -- check before chown/chmod.
 for keyfile in /etc/ssh/ssh_host_*_key; do
     [ -f "$keyfile" ] || continue
     chown root:root "$keyfile"
@@ -211,7 +221,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # Prefer GUEST_IP from network.env (host-written, accurate on every runtime);
 # fall back to `ip addr` for legacy paths or for cases where the env wasn't
 # staged. On gVisor the `ip addr` path returns nothing because eth0 isn't
-# visible from inside the sandbox — the env-var path is what makes vm-ip
+# visible from inside the sandbox -- the env-var path is what makes vm-ip
 # reliably appear there.
 VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
 if [ -n "$VM_IP" ]; then
@@ -221,7 +231,7 @@ fi
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
 # to exec after a restore. VirtioFS file reads are unreliable post-
 # resume in this framework (stat works via cached dentry, but open+read
-# may fail — observed as exit 127 when exec'ing a /safeyolo/ path,
+# may fail -- observed as exit 127 when exec'ing a /safeyolo/ path,
 # which triggers a kernel panic in init). /run is tmpfs, part of the
 # captured memory image, so the staged copy survives the save/restore
 # round trip.
@@ -232,17 +242,12 @@ if [ -f /safeyolo/guest-init-per-run ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 6. Install the agent binary (pre-snapshot)
+# 6. Seed /etc/environment from proxy.env + agent.env.
 #
-# Runs here rather than in per-run so the installed binary is captured
-# in the rootfs clone and survives restore. Before this moved, every
-# restore re-ran mise install (~10s for claude-code), defeating most
-# of the snapshot speedup for coding-agent templates.
-#
-# /etc/environment is written now so that `su agent -l`'s login shell
-# picks up HTTP_PROXY / SSL_CERT_FILE via pam_env — mise install hits
-# HTTPS endpoints through the host proxy. Per-run will rewrite this
-# file with the same content on every boot (idempotent).
+# Subsequent shells (login or otherwise) pick up HTTP_PROXY / SSL_CERT_FILE
+# / etc. via pam_env. Under the host-script model there's no pre-snapshot
+# agent install step here -- the host script populates /home/agent/
+# .safeyolo-entrypoint, which takes care of first-run install work.
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then
     cp /safeyolo/proxy.env /etc/environment
@@ -252,65 +257,11 @@ if [ -f /safeyolo/agent.env ]; then
 fi
 echo 'export HOME=/home/agent' >> /etc/environment
 
-(
-    # Subshell keeps the sourced env scope-limited; the static script's
-    # parent env stays minimal.
-    set -a
-    [ -f /safeyolo/proxy.env ] && . /safeyolo/proxy.env
-    [ -f /safeyolo/agent.env ] && . /safeyolo/agent.env
-    set +a
-
-    # Start the proxy forwarder early so the install can reach the host
-    # proxy. The forwarder is also started in per-run; duplicate launch
-    # is harmless (the second bind fails and the process exits).
-    if [ -x /safeyolo/guest-proxy-forwarder ]; then
-        setsid nohup /safeyolo/guest-proxy-forwarder >/dev/console 2>&1 </dev/null &
-        echo "[static] started guest-proxy-forwarder (pid=$!)" > /dev/console 2>/dev/null || true
-    fi
-
-    # Wait for egress connectivity before attempting install. The proxy
-    # chain (forwarder → vsock/UDS → bridge → mitmproxy) needs a moment
-    # to come up. Probe with a lightweight HTTP request through the
-    # proxy; fail fast with a clear message instead of letting mise/npm
-    # hang for 120s on a dead connection.
-    if [ -n "${HTTP_PROXY:-}" ] && [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ]; then
-        _proxy_ok=0
-        for _try in $(seq 1 20); do
-            if curl -sf -o /dev/null --max-time 2 -x "$HTTP_PROXY" http://registry.npmjs.org/ 2>/dev/null; then
-                _proxy_ok=1
-                break
-            fi
-            sleep 0.5
-        done
-        if [ "$_proxy_ok" -eq 0 ]; then
-            echo "[static] WARNING: no egress connectivity after 10s — skipping install" > /dev/console 2>/dev/null || true
-            echo "install-failed" > /safeyolo-status/vm-status
-            exit 0
-        fi
-        echo "[static] egress connectivity confirmed (attempt $_try)" > /dev/console 2>/dev/null || true
-    fi
-
-    if [ -n "${SAFEYOLO_MISE_PACKAGE:-}" ] && [ -n "${SAFEYOLO_AGENT_BINARY:-}" ]; then
-        # `-lc` so mise's shell activation runs and puts its shims on
-        # PATH; without `-l`, `command -v` can't find a mise-managed
-        # binary even when it's correctly installed.
-        if ! su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "installing" > /safeyolo-status/vm-status
-            timeout 120 su agent -lc "mise use -g ${SAFEYOLO_MISE_PACKAGE}@latest" >> /safeyolo-status/install.log 2>&1 || true
-        fi
-        # Ground vm-status in reality. `mise use -g` can exit nonzero
-        # (notably: the outer `timeout` fires *after* the package is
-        # already installed on disk) yet leave a working binary behind —
-        # so trusting the install command's exit code leaves a stale
-        # "install-failed" even on healthy boots. Decide on command -v.
-        # Per-run has a safety-net retry, so "install-failed" here is
-        # only terminal if per-run's retry also fails.
-        if su agent -lc "command -v $SAFEYOLO_AGENT_BINARY" >/dev/null 2>&1; then
-            echo "" > /safeyolo-status/vm-status
-        else
-            echo "install-failed" > /safeyolo-status/vm-status
-        fi
-    fi
-)
+# Start the proxy forwarder. Per-run also starts it; duplicate launch
+# is harmless (the second bind fails and the process exits).
+if [ -x /safeyolo/guest-proxy-forwarder ]; then
+    setsid nohup /safeyolo/guest-proxy-forwarder >/dev/console 2>&1 </dev/null &
+    echo "[static] started guest-proxy-forwarder (pid=$!)" > /dev/console 2>/dev/null || true
+fi
 
 echo "[static end] pid=$$" > /dev/console 2>/dev/null || true

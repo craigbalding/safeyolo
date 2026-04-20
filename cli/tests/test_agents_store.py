@@ -47,23 +47,23 @@ class TestSaveAndLoadAgent:
     def test_round_trip(self, tmp_config_dir):
         """Save then load returns same data."""
         _write_policy(tmp_config_dir)
-        meta = {"template": "claude-code", "folder": "/tmp/proj"}
+        meta = {"host_script": "/tmp/claude.sh", "folder": "/tmp/proj"}
         save_agent("boris", meta)
         assert load_agent("boris") == meta
 
     def test_preserves_others(self, tmp_config_dir):
         """Saving boris doesn't clobber alice."""
         _write_policy(tmp_config_dir)
-        save_agent("alice", {"template": "t1", "folder": "/a"})
-        save_agent("boris", {"template": "t2", "folder": "/b"})
+        save_agent("alice", {"host_script": "/tmp/t1.sh", "folder": "/a"})
+        save_agent("boris", {"host_script": "/tmp/t2.sh", "folder": "/b"})
 
-        assert load_agent("alice") == {"template": "t1", "folder": "/a"}
-        assert load_agent("boris") == {"template": "t2", "folder": "/b"}
+        assert load_agent("alice") == {"host_script": "/tmp/t1.sh", "folder": "/a"}
+        assert load_agent("boris") == {"host_script": "/tmp/t2.sh", "folder": "/b"}
 
     def test_preserves_host_config(self, tmp_config_dir):
         """Saving an agent doesn't clobber the [hosts] section."""
         _write_policy(tmp_config_dir)
-        save_agent("boris", {"template": "claude-code", "folder": "/tmp/proj"})
+        save_agent("boris", {"host_script": "/tmp/claude.sh", "folder": "/tmp/proj"})
         content = (tmp_config_dir / "policy.toml").read_text()
         assert '[hosts]' in content
         assert 'version = "2.0"' in content
@@ -72,7 +72,7 @@ class TestSaveAndLoadAgent:
         """Services nested tables survive round-trip."""
         _write_policy(tmp_config_dir)
         meta = {
-            "template": "claude-code",
+            "host_script": "/tmp/claude.sh",
             "folder": "/tmp/proj",
             "services": {"gmail": {"capability": "read_and_send", "token": "gmail-oauth2"}},
         }
@@ -118,21 +118,21 @@ class TestSavePreservesAllSections:
         doc.add("required", ["credential_guard", "network_guard"])
         (tmp_config_dir / "policy.toml").write_text(tomlkit.dumps(doc))
 
-        save_agent("boris", {"template": "claude-code", "folder": "/tmp/proj"})
+        save_agent("boris", {"host_script": "/tmp/claude.sh", "folder": "/tmp/proj"})
 
         content = (tmp_config_dir / "policy.toml").read_text()
         reparsed = tomlkit.parse(content)
         assert reparsed["version"] == "2.0"
         assert "api.openai.com" in reparsed["hosts"]
         assert reparsed["required"] == ["credential_guard", "network_guard"]
-        assert reparsed["agents"]["boris"]["template"] == "claude-code"
+        assert reparsed["agents"]["boris"]["host_script"] == "/tmp/claude.sh"
 
 
 class TestRemoveAgent:
     def test_remove_existing(self, tmp_config_dir):
         """Returns True when agent exists."""
         _write_policy(tmp_config_dir)
-        save_agent("boris", {"template": "t", "folder": "/f"})
+        save_agent("boris", {"host_script": "/tmp/t.sh", "folder": "/f"})
         assert remove_agent("boris") is True
         assert load_agent("boris") == {}
 

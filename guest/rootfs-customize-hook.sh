@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# mmdebstrap customize-hook — runs inside the fresh Debian rootfs after
+# mmdebstrap customize-hook -- runs inside the fresh Debian rootfs after
 # package installation, adds SafeYolo-specific tooling and configuration.
 #
 # Invoked by guest/build-rootfs.sh via --customize-hook=<this-script>.
@@ -15,7 +15,7 @@
 #   GUEST_SRC_DIR    absolute path to the repo's guest/ directory
 #                    (where rootfs/safeyolo-guest-init lives)
 #
-# Running this script directly (for debugging) is supported — just set the
+# Running this script directly (for debugging) is supported -- just set the
 # vars above and pass the rootfs path as $1.
 #
 set -euo pipefail
@@ -25,7 +25,7 @@ set -euo pipefail
 
 ROOTFS="$1"
 
-# Required vars — fail early with a clear message rather than getting a
+# Required vars -- fail early with a clear message rather than getting a
 # weird error later.
 : "${DEB_ARCH:?DEB_ARCH not set}"
 : "${MISE_VERSION:?MISE_VERSION not set}"
@@ -55,37 +55,28 @@ curl -fsSL "$MISE_URL" -o "$ROOTFS/tmp/mise.tar.gz"
 if [ -n "${MISE_SHA256:-}" ]; then
     echo "${MISE_SHA256}  $ROOTFS/tmp/mise.tar.gz" | sha256sum -c -
 else
-    echo "WARNING: no pinned SHA256 for mise ${DEB_ARCH} — proceeding unverified" >&2
+    echo "WARNING: no pinned SHA256 for mise ${DEB_ARCH} -- proceeding unverified" >&2
 fi
 tar -xzf "$ROOTFS/tmp/mise.tar.gz" -C "$ROOTFS/tmp"
 cp "$ROOTFS/tmp/mise/bin/mise" "$ROOTFS/usr/local/bin/mise"
 chmod +x "$ROOTFS/usr/local/bin/mise"
 rm -rf "$ROOTFS/tmp/mise.tar.gz" "$ROOTFS/tmp/mise"
 
-# Shared mise dirs so `mise use -g` config reaches all users
-mkdir -p "$ROOTFS/opt/mise"
+# Per-agent mise data dir lives under the agent's persistent $HOME
+# (which vm.py bind-mounts from ~/.safeyolo/agents/<name>/home via
+# VirtioFS). Installs made through `mise use -g` land on the host and
+# survive rootfs snapshot/restore. Agents install their own runtimes
+# on first boot -- no shared /opt/mise preinstall any more.
 cat > "$ROOTFS/etc/profile.d/mise.sh" <<'MISE_PROFILE'
-export MISE_DATA_DIR="/opt/mise"
-export MISE_CONFIG_DIR="/opt/mise"
-export MISE_CACHE_DIR="/opt/mise/cache"
-export PATH="/opt/mise/shims:$PATH"
+export MISE_DATA_DIR="${HOME:-/home/agent}/.mise"
+export MISE_CONFIG_DIR="${HOME:-/home/agent}/.mise"
+export MISE_CACHE_DIR="${HOME:-/home/agent}/.mise/cache"
+export PATH="${HOME:-/home/agent}/.mise/shims:$PATH"
 eval "$(mise activate bash)" 2>/dev/null || true
 MISE_PROFILE
 chmod +x "$ROOTFS/etc/profile.d/mise.sh"
 cp "$ROOTFS/etc/profile.d/mise.sh" "$ROOTFS/etc/mise-activate.sh"
 echo "BASH_ENV=/etc/mise-activate.sh" >> "$ROOTFS/etc/environment"
-
-echo "--- Installing node@22 via mise ---"
-chroot "$ROOTFS" env \
-    MISE_DATA_DIR=/opt/mise \
-    MISE_CONFIG_DIR=/opt/mise \
-    MISE_CACHE_DIR=/opt/mise/cache \
-    mise install node@22 || true
-chroot "$ROOTFS" env \
-    MISE_DATA_DIR=/opt/mise \
-    MISE_CONFIG_DIR=/opt/mise \
-    MISE_CACHE_DIR=/opt/mise/cache \
-    mise use -g node@22 || true
 
 # ---------------------------------------------------------------------------
 # gh CLI
@@ -96,22 +87,12 @@ curl -fsSL "$GH_URL" -o "$ROOTFS/tmp/gh.tar.gz"
 if [ -n "${GH_SHA256:-}" ]; then
     echo "${GH_SHA256}  $ROOTFS/tmp/gh.tar.gz" | sha256sum -c -
 else
-    echo "WARNING: no pinned SHA256 for gh ${DEB_ARCH} — proceeding unverified" >&2
+    echo "WARNING: no pinned SHA256 for gh ${DEB_ARCH} -- proceeding unverified" >&2
 fi
 tar -xzf "$ROOTFS/tmp/gh.tar.gz" -C "$ROOTFS/tmp"
 cp "$ROOTFS/tmp/gh_${GH_VERSION}_linux_${DEB_ARCH}/bin/gh" "$ROOTFS/usr/local/bin/gh"
 chmod +x "$ROOTFS/usr/local/bin/gh"
 rm -rf "$ROOTFS/tmp/gh.tar.gz" "$ROOTFS/tmp/gh_${GH_VERSION}_linux_${DEB_ARCH}"
-
-# Regenerate mise shims with the right config
-chroot "$ROOTFS" env \
-    MISE_DATA_DIR=/opt/mise \
-    MISE_CONFIG_DIR=/opt/mise \
-    MISE_CACHE_DIR=/opt/mise/cache \
-    mise reshim || true
-
-# Agent user can install additional tools via mise
-chroot "$ROOTFS" chmod -R 777 /opt/mise
 
 # ---------------------------------------------------------------------------
 # Users, sshd, init stub, hostname, DNS
@@ -158,14 +139,11 @@ rm -rf "$ROOTFS/usr/share/man/"*
 rm -rf "$ROOTFS/usr/share/info/"*
 find "$ROOTFS/usr/share/locale" -maxdepth 1 ! -name "en*" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# Python pyc caches — pip leaves __pycache__ dirs everywhere.
+# Python pyc caches -- pip leaves __pycache__ dirs everywhere.
 find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-# Mise download cache (the node@22 tarball we just extracted)
-rm -rf "$ROOTFS/opt/mise/cache/"* 2>/dev/null || true
-
 # ---------------------------------------------------------------------------
-# Package-manager intercepts — agents inside the guest VM must install
+# Package-manager intercepts -- agents inside the guest VM must install
 # tools via mise, not apt. Run LAST so earlier apt-get calls aren't shadowed.
 # ---------------------------------------------------------------------------
 for cmd in apt apt-get yum dnf apk; do
