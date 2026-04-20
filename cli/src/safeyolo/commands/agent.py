@@ -694,6 +694,9 @@ def _run_agent(
                                 for line in new_data.splitlines():
                                     console.print(f"  [dim]{line}[/dim]")
                     except OSError:
+                        # Install log is best-effort — if the file
+                        # disappeared or became unreadable mid-poll,
+                        # the install status file is the source of truth.
                         pass
                 _time.sleep(1)
 

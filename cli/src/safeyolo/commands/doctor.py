@@ -559,6 +559,8 @@ def _check_sandbox_runtime() -> DiagResult:
             r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=3)
             version = r.stdout.strip().split("\n")[0] if r.returncode == 0 else ""
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            # Version probe is best-effort diagnostic info — report
+            # the path without it if the binary is missing/hung.
             pass
         label = f"runsc at {path}"
         if version:

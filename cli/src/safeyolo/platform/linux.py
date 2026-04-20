@@ -127,6 +127,8 @@ def detect_runsc_platform() -> dict:
         )
         info["kvm_subordinate_access"] = "user:100000:rw" in result.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
+        # getfacl missing or hung — assume no subordinate access
+        # and fall back to systrap (the safe default).
         pass
     if not info["kvm_subordinate_access"]:
         info["reason"] = "subordinate uid 100000 lacks /dev/kvm ACL"
@@ -234,6 +236,8 @@ def check_userns_prerequisites() -> dict:
                 line.startswith(f"{username}:") for line in content.splitlines()
             )
         except (FileNotFoundError, PermissionError):
+            # subuid/subgid not provisioned or unreadable — leave
+            # info[key] False so doctor reports "not configured".
             pass
 
     if info["apparmor_restricts"]:
@@ -333,6 +337,8 @@ def _kill_userns(name: str) -> None:
         pid = int(pid_file.read_text().strip())
         os.kill(pid, 9)
     except (ValueError, ProcessLookupError, OSError):
+        # Stale/corrupt PID file or process already gone — either
+        # way, unlinking below is the correct next step.
         pass
     pid_file.unlink(missing_ok=True)
 
@@ -461,9 +467,19 @@ class LinuxPlatform(AgentPlatform):
 
         os.makedirs(rootfs / "workspace", exist_ok=True)
 
-        # Make state dir world-accessible so nsenter'd processes
-        # (running as the subordinate root uid) can write state.
-        os.chmod(root, 0o777)
+        # runsc inside the userns operates as subordinate uid 100000
+        # on the host filesystem and needs rwx on its state dir.
+        # Preferred: ACL scoped to that single uid. Fallback: 0o777
+        # (the parent ~/.safeyolo/ is 0o700 so no non-operator can
+        # reach here anyway; this is only effective on the handful
+        # of uids inside the operator's subordinate range).
+        try:
+            subprocess.run(
+                ["setfacl", "-m", "u:100000:rwx", str(root)],
+                check=True, capture_output=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            os.chmod(root, 0o777)  # noqa: S103 - scoped by parent 0o700
 
         # Clean stale state from previous run. Create a temporary
         # userns if needed — runsc state is owned by uid 100000.
@@ -551,6 +567,8 @@ class LinuxPlatform(AgentPlatform):
             try:
                 pid = json.loads(state_result.stdout).get("pid", 0)
             except json.JSONDecodeError:
+                # runsc state returned non-JSON (shouldn't happen
+                # on a healthy runsc) — leave pid=0 and move on.
                 pass
 
         pid_path = agent_dir / "container.pid"

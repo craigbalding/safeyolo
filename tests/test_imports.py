@@ -28,6 +28,7 @@ ADDON_MODULES = [
     "metrics",
     "network_guard",
     "pattern_scanner",
+    "proxy_protocol",
     "test_context",
     "toml_normalize",
     "toml_roundtrip",

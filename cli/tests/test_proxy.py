@@ -22,14 +22,20 @@ class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
     def test_addon_chain_has_expected_count(self):
-        """ADDON_CHAIN contains exactly 19 addons."""
+        """ADDON_CHAIN contains exactly 20 addons (proxy_protocol added)."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 19
+        assert len(ADDON_CHAIN) == 20
 
-    def test_addon_chain_starts_with_infrastructure(self):
-        """First addon loaded is file_logging.py (infrastructure layer)."""
+    def test_addon_chain_starts_with_proxy_protocol(self):
+        """First addon loaded is proxy_protocol.py.
+
+        Parses the PROXY protocol v2 header from upstream TCP via
+        next_layer, which must run before any other layer inspects
+        the flow so the rewritten peername and stripped header are
+        available to every downstream addon.
+        """
         from safeyolo.proxy import ADDON_CHAIN
-        assert ADDON_CHAIN[0] == "file_logging.py"
+        assert ADDON_CHAIN[0] == "proxy_protocol.py"
 
     def test_addon_chain_ends_with_admin_api(self):
         """Last addon loaded is admin_api.py (observability layer)."""

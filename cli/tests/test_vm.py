@@ -342,22 +342,24 @@ class TestPrepareConfigShare:
 
     def test_stale_static_init_done_is_cleared(self, tmp_config_dir):
         """A static-init-done left over from a prior run must not persist
-        into the next run — the orchestrator writes it fresh."""
-        share_dir = tmp_config_dir / "agents" / "agent1" / "config-share"
-        share_dir.mkdir(parents=True, exist_ok=True)
-        (share_dir / "static-init-done").write_text("stale")
+        into the next run — the orchestrator writes it fresh on the
+        (writable) status share."""
+        status_dir = tmp_config_dir / "agents" / "agent1" / "status"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        (status_dir / "static-init-done").write_text("stale")
         prepare_config_share("agent1", "/workspace")
-        assert not (share_dir / "static-init-done").exists()
+        assert not (status_dir / "static-init-done").exists()
 
     def test_stale_per_run_started_is_cleared(self, tmp_config_dir):
         """A per-run-started left over from a prior run would make a
         failed restore look successful — the CLI polls for this file
-        specifically as the definitive readiness signal."""
-        share_dir = tmp_config_dir / "agents" / "agent1" / "config-share"
-        share_dir.mkdir(parents=True, exist_ok=True)
-        (share_dir / "per-run-started").write_text("stale")
+        specifically as the definitive readiness signal. Lives on the
+        status share."""
+        status_dir = tmp_config_dir / "agents" / "agent1" / "status"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        (status_dir / "per-run-started").write_text("stale")
         prepare_config_share("agent1", "/workspace")
-        assert not (share_dir / "per-run-started").exists()
+        assert not (status_dir / "per-run-started").exists()
 
     def test_proxy_env_uses_gateway_ip_and_port(self, tmp_config_dir):
         """proxy.env uses whatever (gateway_ip, proxy_port) the caller
@@ -740,7 +742,7 @@ class TestStartVm:
                 share_args.append(captured_cmd[i + 1])
 
         assert any(a.startswith("/my/workspace:workspace:rw") for a in share_args)
-        assert any(":config:rw" in a for a in share_args)
+        assert any(":config:ro" in a for a in share_args)
 
     def test_proxy_socket_flag_threaded_through(self, tmp_config_dir, monkeypatch):
         captured_cmd = []
