@@ -405,6 +405,13 @@ def _build_command(
             raise RuntimeError(f"Sinkhole router addon not found: {sinkhole_router}")
         log.info("Loading sinkhole router addon: %s", sinkhole_router)
         cmd.extend(["-s", str(router_path)])
+        # Defer upstream connect until AFTER the request hook runs so
+        # the sinkhole router can rewrite flow.request.host to the
+        # local sinkhole BEFORE mitmproxy resolves DNS. Without this,
+        # blackbox test hostnames that don't resolve (e.g. *.test)
+        # fail at CONNECT with [Errno 8] nodename nor servname. Real
+        # upstreams aren't affected because the router no-ops for them.
+        cmd.extend(["--set", "connection_strategy=lazy"])
 
     return cmd
 
