@@ -29,7 +29,13 @@ else
     upstream="VSOCK-CONNECT:$VSOCK_HOST_CID:$VSOCK_HOST_PORT"
 fi
 
-echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream}" >&2
+echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream} (running as agent)" >&2
+# su=agent: socat opens the TCP listener as root (launched via sudo from
+# guest-init-per-run), then setuid()'s to the agent user before any
+# client connection is accepted. Per-connection AF_VSOCK creation and
+# UNIX-CONNECT work fine as agent (UDS perms are granted via gVisor
+# userns mapping on Linux; AF_VSOCK socket() itself is unprivileged).
+# Narrowing the attack surface: a socat bug can't give root in the VM.
 exec socat \
-    "TCP-LISTEN:${LISTEN_PORT},bind=127.0.0.1,reuseaddr,fork" \
+    "TCP-LISTEN:${LISTEN_PORT},bind=127.0.0.1,reuseaddr,fork,su=agent" \
     "${upstream}"

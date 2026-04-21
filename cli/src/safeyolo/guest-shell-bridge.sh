@@ -19,7 +19,10 @@ VSOCK_LISTEN_PORT=2220
 TARGET_HOST=127.0.0.1
 TARGET_PORT=22
 
-echo "[guest-shell-bridge] vsock:${VSOCK_LISTEN_PORT} -> ${TARGET_HOST}:${TARGET_PORT}" >&2
+echo "[guest-shell-bridge] vsock:${VSOCK_LISTEN_PORT} -> ${TARGET_HOST}:${TARGET_PORT} (running as agent)" >&2
+# su=agent: see comment in guest-proxy-forwarder.sh for rationale.
+# VSOCK-LISTEN:2220 is an unprivileged vsock port (>1024), so binding
+# works as root-at-start, and per-fork client sockets work as agent.
 exec socat \
-    "VSOCK-LISTEN:${VSOCK_LISTEN_PORT},reuseaddr,fork" \
+    "VSOCK-LISTEN:${VSOCK_LISTEN_PORT},reuseaddr,fork,su=agent" \
     "TCP:${TARGET_HOST}:${TARGET_PORT}"
