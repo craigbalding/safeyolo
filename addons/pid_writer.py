@@ -38,6 +38,9 @@ class PidWriter:
         try:
             os.unlink(self.path)
         except FileNotFoundError:
+            # Pid file already gone (e.g. CLI beat us to it on restart,
+            # or `running` never fired so we never wrote it). Both are
+            # fine -- nothing to clean up.
             pass
 
 

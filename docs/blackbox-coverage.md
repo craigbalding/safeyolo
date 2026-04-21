@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**81 tests across 22 threat categories.**
+**82 tests across 23 threat categories.**
 
 ## Host-side
 
@@ -203,6 +203,27 @@ returns 200 from the same running sandbox.
 restart, every agent-originated diagnostic call fails 401.
 This regression killed `safeyolo explain` when we first
 migrated from Docker bind-mounts to microVM copies.
+
+### `tests/blackbox/host/test_upstream_cert_validation.py`
+
+#### TestEccCrossSignedChain — Upstream validation of an ECC leaf whose chain reaches the
+
+**Threat:** Mirrors example.com's shape. If certifi's bundle lacks a root
+the merge was supposed to supply, or the chain builder fails to
+traverse the bridge cert, validation drops and the curl hangs
+(the failure surfaces as time-out or 502 from mitmproxy).
+
+- **`test_chain_validates_end_to_end`** — GET https://example-chain-test.test/ through the proxy returns 200.
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18444 HTTPS endpoint. The sinkhole presents the chain
+[ECC leaf, ECC intermediate, test-ca-b cross-signed by
+test-ca]. mitmproxy validates it against the merged bundle,
+accepts, MITMs, and forwards to us.
+  - *Consequence if unasserted:* A green 200 confirms the chain-shape regression that
+has bitten us twice is not currently present. A red (timeout,
+502, or TLS verify error from mitmproxy) means something in
+`_merge_system_cas_into_certifi` or the upstream TLS context
+is broken.
 
 ## In-sandbox (isolation)
 
