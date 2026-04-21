@@ -16,7 +16,9 @@
 #   * agent user (uid 1000, shell /bin/bash, home /home/agent)
 #   * /usr/local/bin/safeyolo-guest-init stub (exec'd as PID 1)
 #   * sshd: pubkey auth only, password off, host keys generated
+#   * baseline PATH glue at /etc/profile.d/00-path.sh + /etc/environment
 #   * mise profile glue at /etc/profile.d/mise.sh (only if mise present)
+#   * BusyBox applet shims (`hexdump`, `nc`) when busybox is present
 #   * package-manager intercepts at /usr/local/bin/{apt,apt-get,yum,dnf,apk}
 #     pointing users at mise (agents must not apt-install at runtime)
 #   * hostname = safeyolo
@@ -68,12 +70,31 @@ install_safeyolo_guest_common() {
         chroot "$rootfs" ssh-keygen -A >/dev/null 2>&1 || true
     fi
 
+    # Keep sbin directories visible in both login and non-login shells so
+    # service binaries like sshd don't disappear from PATH.
+    install -d -m 0755 "$rootfs/etc/profile.d"
+    cat > "$rootfs/etc/profile.d/00-path.sh" <<'PATH_PROFILE'
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PATH_PROFILE
+    chmod 0755 "$rootfs/etc/profile.d/00-path.sh"
+    if [ -f "$rootfs/etc/environment" ]; then
+        if grep -q '^PATH=' "$rootfs/etc/environment"; then
+            sed -i 's|^PATH=.*|PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|' \
+                "$rootfs/etc/environment"
+        else
+            echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> \
+                "$rootfs/etc/environment"
+        fi
+    else
+        echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > \
+            "$rootfs/etc/environment"
+    fi
+
     # mise profile glue -- sources only if mise is present in the rootfs.
     # Custom rootfs authors who don't want mise can skip -- guest-init
     # tolerates its absence. See guest/rootfs-customize-hook.sh for the
     # canonical version baked into the default base.
     if [ -x "$rootfs/usr/local/bin/mise" ] || [ -x "$rootfs/usr/bin/mise" ]; then
-        install -d -m 0755 "$rootfs/etc/profile.d"
         cat > "$rootfs/etc/profile.d/mise.sh" <<'MISE_PROFILE'
 export MISE_DATA_DIR="${HOME:-/home/agent}/.mise"
 export MISE_CONFIG_DIR="${HOME:-/home/agent}/.mise"
@@ -92,6 +113,13 @@ MISE_PROFILE
     # go through the SafeYolo proxy. Intercepts placed in /usr/local/bin so
     # they shadow the real binaries on $PATH.
     install -d -m 0755 "$rootfs/usr/local/bin"
+    for busybox_path in /bin/busybox /usr/bin/busybox; do
+        if [ -x "$rootfs$busybox_path" ]; then
+            ln -sf "$busybox_path" "$rootfs/usr/local/bin/hexdump"
+            ln -sf "$busybox_path" "$rootfs/usr/local/bin/nc"
+            break
+        fi
+    done
     for cmd in apt apt-get yum dnf apk; do
         cat > "$rootfs/usr/local/bin/$cmd" <<'INTERCEPT'
 #!/bin/sh

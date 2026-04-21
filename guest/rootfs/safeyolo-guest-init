@@ -13,10 +13,12 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /dev/pts
-mount -t devpts devpts /dev/pts -o gid=5,mode=620 2>/dev/null || true
+mkdir -p /dev/shm /run /tmp
+mount -t devpts devpts /dev/pts -o gid=5,mode=620,ptmxmode=666 2>/dev/null || true
 ln -sf pts/ptmx /dev/ptmx 2>/dev/null || true
-mount -t tmpfs tmpfs /tmp 2>/dev/null || true
-mount -t tmpfs tmpfs /run 2>/dev/null || true
+mount -t tmpfs tmpfs /dev/shm -o mode=1777,nosuid,nodev 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp -o mode=1777,nosuid,nodev 2>/dev/null || true
+mount -t tmpfs tmpfs /run -o mode=755,nosuid,nodev 2>/dev/null || true
 
 # Mount config share (contains the real init script, vsock-term, env files)
 mkdir -p /safeyolo

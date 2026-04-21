@@ -4,8 +4,9 @@
 # Runs on the host (macOS or Linux), as you, when `safeyolo agent add
 # <name> <folder> --host-script contrib/codex-host-setup.sh` is
 # invoked. Stages host ~/.codex/ into the agent's persistent home and
-# writes an entrypoint that installs codex via mise on first boot and
-# runs it with --full-auto thereafter.
+# writes a foreground command script that installs codex via mise on first boot and
+# runs it with Codex sandboxing disabled thereafter. SafeYolo remains
+# the outer containment boundary.
 #
 # See contrib/HOST_SCRIPT_GUIDE.md for the contract.
 
@@ -28,7 +29,7 @@ fi
 
 # --- Stage SafeYolo agent guide ----------------------------------------------
 # Codex doesn't currently expose a system-prompt file flag, so we stage the
-# guide at a conventional path and surface a reminder in the entrypoint.
+# guide at a conventional path and surface a reminder in the command.
 # Users / codex can reference ~/.safeyolo/AGENTS.md as needed.
 GUIDE_SRC="$(cd "$(dirname "$0")/.." && pwd)/docs/AGENTS.md"
 mkdir -p "$AGENT_HOME/.safeyolo"
@@ -36,24 +37,26 @@ if [ -f "$GUIDE_SRC" ]; then
     cp "$GUIDE_SRC" "$AGENT_HOME/.safeyolo/AGENTS.md"
 fi
 
-# --- Write the entrypoint ----------------------------------------------------
-cat > "$AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
+# --- Write the foreground command --------------------------------------------
+cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 set -e
 
 export CODEX_HOME=/home/agent/.codex
+: "${SAFEYOLO_CODEX_NODE_SPEC:=node@22}"
+: "${SAFEYOLO_CODEX_NPM_SPEC:=npm:@openai/codex@latest}"
 
 if ! command -v codex >/dev/null 2>&1; then
-    mise use -g node@22 >&2
-    mise use -g npm:@openai/codex@latest >&2
+    mise use -g "$SAFEYOLO_CODEX_NODE_SPEC" >&2
+    mise use -g "$SAFEYOLO_CODEX_NPM_SPEC" >&2
 fi
 
 # Brief SafeYolo reminder -- full agent API / troubleshooting guide at
 # ~/.safeyolo/AGENTS.md (staged by codex-host-setup.sh on the host).
 echo "SafeYolo: see ~/.safeyolo/AGENTS.md for agent API + troubleshooting guide." >&2
 
-exec codex --full-auto "$@"
+exec codex -s danger-full-access -a never "$@"
 EOF
-chmod +x "$AGENT_HOME/.safeyolo-entrypoint"
+chmod +x "$AGENT_HOME/.safeyolo-command"
 
 echo "codex-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"

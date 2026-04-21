@@ -577,16 +577,16 @@ def _run_agent(
             _t("interactive session")
             if _sys.platform == "linux":
                 # Linux: launch the agent via runsc exec. The guest runs
-                # /home/agent/.safeyolo-entrypoint if present (written by
+                # /home/agent/.safeyolo-command if present (written by
                 # the host script into the persistent home), else drops
                 # to an interactive bash login.
                 from ..vm import get_agent_home_dir
-                entrypoint_host = get_agent_home_dir(name) / ".safeyolo-entrypoint"
+                command_host = get_agent_home_dir(name) / ".safeyolo-command"
                 if agent_args:
                     # Explicit override from caller (`agent run -- cmd args`).
                     full_cmd = " ".join(agent_args)
-                elif entrypoint_host.exists() and os.access(entrypoint_host, os.X_OK):
-                    full_cmd = "/home/agent/.safeyolo-entrypoint"
+                elif command_host.exists() and os.access(command_host, os.X_OK):
+                    full_cmd = "/home/agent/.safeyolo-command"
                 else:
                     full_cmd = None
                 exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
@@ -785,7 +785,7 @@ def add(
     host script that runs on the host (as you) before the sandbox
     boots. The host script may write into ~/.safeyolo/agents/<name>/home/ to
     seed auth, settings, user extensions -- and in particular write a
-    .safeyolo-entrypoint file that `agent run` will execute.
+    .safeyolo-command file that `agent run` will execute.
 
     Without --host-script, the sandbox boots to an interactive bash
     shell with a fresh per-agent /home/agent (seeded from /etc/skel).

@@ -148,14 +148,14 @@ if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 4. Run the host-script-provided entrypoint, or bash
+# 4. Run the host-script-provided foreground command, or bash
 #
 # The host script (`safeyolo agent add --host-script ...`) may write an
-# executable at /home/agent/.safeyolo-entrypoint. If present, we exec
+# executable at /home/agent/.safeyolo-command. If present, we exec
 # that. Otherwise the sandbox boots to an interactive bash login. In
 # both cases SAFEYOLO_AGENT_ARGS (from `agent run -- …`) is appended
-# as extra arguments to the entrypoint, for users who want to pass
-# flags at run time rather than baking them into the entrypoint.
+# as extra arguments to the command, for users who want to pass
+# flags at run time rather than baking them into the command file.
 # --------------------------------------------------------------------------
 
 # vsock-term is on the config share (cross-compiled, no rootfs rebuild needed)
@@ -183,9 +183,9 @@ elif [ -x "$VSOCK_TERM" ]; then
     # and execs the command. A shell wrapper (bash -lc) would break
     # the TTY connection, causing process.stdout.isTTY to be undefined
     # in Node.js.
-    if [ -x /home/agent/.safeyolo-entrypoint ]; then
+    if [ -x /home/agent/.safeyolo-command ]; then
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
-            /home/agent/.safeyolo-entrypoint ${SAFEYOLO_AGENT_ARGS:-} || true
+            /home/agent/.safeyolo-command ${SAFEYOLO_AGENT_ARGS:-} || true
     else
         "$VSOCK_TERM" --uid 1000 --gid 1000 --home /home/agent --cwd /workspace \
             bash -l || true

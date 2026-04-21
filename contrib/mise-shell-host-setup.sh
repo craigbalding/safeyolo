@@ -57,17 +57,17 @@ SafeYolo agent guide: ~/.safeyolo/AGENTS.md
 =========================================================
 EOF
 
-# Entrypoint -- shows the MOTD once on first login of a session, then
+# Foreground command -- shows the MOTD once on first login of a session, then
 # drops to an interactive login shell. mise's profile.d is sourced
 # automatically by bash -l, so `mise`, installed runtimes, and shims
 # are all on PATH from the first prompt.
-cat > "$AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
+cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 if [ -f /home/agent/.safeyolo-motd ]; then
     cat /home/agent/.safeyolo-motd
 fi
 exec bash -l "$@"
 EOF
-chmod +x "$AGENT_HOME/.safeyolo-entrypoint"
+chmod +x "$AGENT_HOME/.safeyolo-command"
 
 echo "mise-shell-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"
