@@ -45,12 +45,14 @@ if [ "$1" = "--force" ]; then
     rm -f expired_leaf.crt expired_chain.pem
     rm -f wrong_san_leaf.crt wrong_san_chain.pem
     rm -f self_signed_chain.pem
+    rm -f aia_int.crt aia_leaf.crt aia_chain.pem
     rm -f "$KEY_DIR/ca.key" "$KEY_DIR/sinkhole.key"
     rm -f "$KEY_DIR/test-ca-b.key" "$KEY_DIR/ecc_intermediate.key" "$KEY_DIR/ecc_chain.key"
     rm -f "$KEY_DIR/rsa_int_b.key" "$KEY_DIR/rsa_int_a.key" "$KEY_DIR/rsa_deep_chain.key"
     rm -f "$KEY_DIR/nc_intermediate.key" "$KEY_DIR/nc_chain.key"
     rm -f "$KEY_DIR/extra_int.key" "$KEY_DIR/extra_chain.key" "$KEY_DIR/junk_a.key" "$KEY_DIR/junk_b.key"
     rm -f "$KEY_DIR/expired_chain.key" "$KEY_DIR/wrong_san_chain.key" "$KEY_DIR/self_signed_chain.key"
+    rm -f "$KEY_DIR/aia_int.key" "$KEY_DIR/aia_chain.key"
 fi
 
 # Skip if ALL certs already exist. If any is missing we fall through and
@@ -61,8 +63,9 @@ if [ -f ca.crt ] && [ -f sinkhole.crt ] \
    && [ -f rsa_deep_chain.pem ] && [ -f nc_chain.pem ] \
    && [ -f extra_chain.pem ] && [ -f expired_chain.pem ] \
    && [ -f wrong_san_chain.pem ] && [ -f self_signed_chain.pem ] \
+   && [ -f aia_chain.pem ] \
    && [ -f "$KEY_DIR/ca.key" ] && [ -f "$KEY_DIR/sinkhole.key" ] \
-   && [ -f "$KEY_DIR/ecc_chain.key" ]; then
+   && [ -f "$KEY_DIR/ecc_chain.key" ] && [ -f "$KEY_DIR/aia_chain.key" ]; then
     echo "Certificates already exist. Use --force to regenerate."
     exit 0
 fi
@@ -649,4 +652,94 @@ if [ ! -f self_signed_chain.pem ] || [ ! -f "$KEY_DIR/self_signed_chain.key" ]; 
         -out self_signed_chain.pem
     rm -f self_signed.cnf
     echo "   Created: self_signed_chain.pem (no path to ca.crt; upstream verify MUST reject)"
+fi
+
+# ===========================================================================
+# Tricky chain #8 -- AIA-only (missing intermediate, MUST fail)
+#
+# Pattern: server presents [leaf] only -- no intermediate. The leaf's AIA
+# caIssuers extension points to a local URL that could (conceptually)
+# serve the intermediate. OpenSSL / Python ssl do NOT chase AIA by
+# default; mitmproxy inherits that. Result: chain cannot be completed
+# and upstream verify fails.
+#
+# Why this matters: if mitmproxy ever flips to AIA-chasing (e.g. someone
+# enables a custom X509_STORE_CTX verify callback), an attacker who
+# controls the AIA URL or can MITM the HTTP fetch could inject an
+# arbitrary intermediate. This test is the canary -- current behavior
+# is documented as "fails deterministically", and a 200 would mean
+# chain policy changed silently.
+#
+# SAN: aia-only.test
+# Expected: 502 / transport error -- chain cannot be completed.
+# ===========================================================================
+if [ ! -f aia_chain.pem ] || [ ! -f "$KEY_DIR/aia_chain.key" ]; then
+    echo "10. Generating AIA-only chain (leaf presented alone; MUST fail)..."
+
+    # 10a. Dedicated intermediate signed by ca.crt. Kept separate from the
+    #      other intermediates so this test's shape is self-contained --
+    #      nothing else references aia_int, so regenerating won't ripple.
+    openssl genrsa -out "$KEY_DIR/aia_int.key" 2048
+    cat > aia_int.cnf << 'EOF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = SafeYolo AIA-Only Intermediate
+O = SafeYolo Test
+C = US
+[v3_int]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+EOF
+    openssl req -new -key "$KEY_DIR/aia_int.key" \
+        -out aia_int.csr -config aia_int.cnf
+    openssl x509 -req -in aia_int.csr \
+        -CA ca.crt -CAkey "$KEY_DIR/ca.key" -CAcreateserial \
+        -days 3650 -sha256 \
+        -extensions v3_int -extfile aia_int.cnf \
+        -out aia_int.crt
+    rm -f aia_int.csr aia_int.cnf
+
+    # 10b. Leaf signed by aia_int with an AIA caIssuers URL. The URL
+    #      targets the sinkhole's HTTP port; it is NOT wired up to
+    #      actually serve the intermediate (handlers return JSON), so
+    #      even if a future mitmproxy build chased the URL the fetched
+    #      bytes would not parse as a cert. The URL exists so the cert
+    #      structurally mirrors real-world AIA-only leaves.
+    openssl genrsa -out "$KEY_DIR/aia_chain.key" 2048
+    cat > aia_leaf.cnf << 'EOF'
+[req]
+distinguished_name = dn
+req_extensions = v3_leaf
+prompt = no
+[dn]
+CN = aia-only.test
+O = SafeYolo Blackbox Test
+C = US
+[v3_leaf]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @sans
+authorityInfoAccess = caIssuers;URI:http://127.0.0.1:18080/aia/aia-int.crt
+[sans]
+DNS.1 = aia-only.test
+DNS.2 = *.aia-only.test
+IP.1 = 127.0.0.1
+EOF
+    openssl req -new -key "$KEY_DIR/aia_chain.key" \
+        -out aia_leaf.csr -config aia_leaf.cnf
+    openssl x509 -req -in aia_leaf.csr \
+        -CA aia_int.crt -CAkey "$KEY_DIR/aia_int.key" -CAcreateserial \
+        -days 365 -sha256 \
+        -extensions v3_leaf -extfile aia_leaf.cnf \
+        -out aia_leaf.crt
+    rm -f aia_leaf.csr aia_leaf.cnf
+
+    # 10c. Chain PEM: leaf ONLY. Intermediate is deliberately absent --
+    #      that is what makes this test a missing-intermediate case.
+    cp aia_leaf.crt aia_chain.pem
+    rm -f ca.srl aia_int.srl
+    echo "   Created: aia_chain.pem (leaf only; intermediate MUST remain absent)"
 fi

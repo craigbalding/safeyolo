@@ -237,6 +237,7 @@ else
         --extra-cert "expired:18448:$SCRIPT_DIR/certs/expired_chain.pem:$HOME/.safeyolo/test-certs/expired_chain.key" \
         --extra-cert "wrong-san:18449:$SCRIPT_DIR/certs/wrong_san_chain.pem:$HOME/.safeyolo/test-certs/wrong_san_chain.key" \
         --extra-cert "self-signed:18450:$SCRIPT_DIR/certs/self_signed_chain.pem:$HOME/.safeyolo/test-certs/self_signed_chain.key" \
+        --extra-cert "aia-only:18451:$SCRIPT_DIR/certs/aia_chain.pem:$HOME/.safeyolo/test-certs/aia_chain.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true

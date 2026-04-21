@@ -29,7 +29,6 @@ test class here that curls through the proxy to that hostname.
 
 import httpx
 
-
 # mitmproxy surfaces upstream TLS-verify failures as 502. Some client
 # configurations (older httpx/openssl combinations) may raise a connect
 # error instead -- both outcomes prove the chain was rejected, which is
@@ -110,8 +109,8 @@ class TestEccCrossSignedChain:
         # response without forwarding).
         requests = sinkhole.get_requests(host="example-chain-test.test")
         assert len(requests) >= 1, (
-            f"Sinkhole saw no requests for example-chain-test.test. "
-            f"mitmproxy returned 200 without forwarding?"
+            "Sinkhole saw no requests for example-chain-test.test. "
+            "mitmproxy returned 200 without forwarding?"
         )
 
 
@@ -321,5 +320,44 @@ class TestSelfSignedLeafRejected:
             proxy_client,
             "https://self-signed.test/",
             "self-signed.test",
+            sinkhole,
+        )
+
+
+class TestAiaOnlyRejected:
+    """Must-fail: upstream MUST reject a chain that presents only the leaf.
+
+    Why: When the server omits intermediates, the verifier has no path
+    to a trusted root unless it chases the AIA caIssuers URL. Python
+    ssl / OpenSSL default to NOT chasing AIA -- servers are expected
+    to ship the full chain. mitmproxy inherits that. If it ever flips
+    to AIA-chasing (custom verify callback, new OpenSSL flag), an
+    attacker who controls the AIA URL or can MITM the HTTP fetch
+    could inject arbitrary intermediates -- a silent widening of the
+    trust surface. This test documents current "fails deterministically"
+    behavior; a 200 here means chain-building policy changed and the
+    assertion needs an explicit update.
+    """
+
+    def test_missing_intermediate_causes_failure(
+        self, proxy_client, sinkhole, clear_sinkhole, wait_for_services,
+    ):
+        """GET https://aia-only.test/ through the proxy returns 502 (or errors).
+
+        What: Route through SafeYolo's mitmproxy to the sinkhole's
+        port-18451 HTTPS endpoint, which presents ONLY the leaf --
+        the intermediate is deliberately absent from the chain PEM.
+        The leaf's AIA caIssuers extension points at a local URL
+        that a future AIA-chaser could hit, but today nothing fetches
+        it; chain-building halts at the missing issuer.
+        Why: Any response other than an upstream-verify failure means
+        mitmproxy started AIA-chasing without an explicit policy
+        decision -- a silent, auditable change to what SafeYolo
+        accepts as a valid upstream chain.
+        """
+        _assert_upstream_rejected(
+            proxy_client,
+            "https://aia-only.test/",
+            "aia-only.test",
             sinkhole,
         )

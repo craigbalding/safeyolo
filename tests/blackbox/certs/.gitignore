@@ -42,3 +42,8 @@ expired_leaf.crt
 wrong_san_chain.pem
 wrong_san_leaf.crt
 self_signed_chain.pem
+
+# AIA-only (missing intermediate, MUST fail)
+aia_chain.pem
+aia_int.crt
+aia_leaf.crt

@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**88 tests across 29 threat categories.**
+**89 tests across 30 threat categories.**
 
 ## Host-side
 
@@ -333,6 +333,31 @@ leaf (SAN=self-signed.test, 127.0.0.1). The leaf signs itself;
 no trusted issuer is present in the chain.
   - *Consequence if unasserted:* Any response other than an upstream-verify failure means
 SafeYolo is accepting untrusted roots -- TLS trust is broken.
+
+#### TestAiaOnlyRejected — Must-fail: upstream MUST reject a chain that presents only the leaf.
+
+**Threat:** When the server omits intermediates, the verifier has no path
+to a trusted root unless it chases the AIA caIssuers URL. Python
+ssl / OpenSSL default to NOT chasing AIA -- servers are expected
+to ship the full chain. mitmproxy inherits that. If it ever flips
+to AIA-chasing (custom verify callback, new OpenSSL flag), an
+attacker who controls the AIA URL or can MITM the HTTP fetch
+could inject arbitrary intermediates -- a silent widening of the
+trust surface. This test documents current "fails deterministically"
+behavior; a 200 here means chain-building policy changed and the
+assertion needs an explicit update.
+
+- **`test_missing_intermediate_causes_failure`** — GET https://aia-only.test/ through the proxy returns 502 (or errors).
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18451 HTTPS endpoint, which presents ONLY the leaf --
+the intermediate is deliberately absent from the chain PEM.
+The leaf's AIA caIssuers extension points at a local URL
+that a future AIA-chaser could hit, but today nothing fetches
+it; chain-building halts at the missing issuer.
+  - *Consequence if unasserted:* Any response other than an upstream-verify failure means
+mitmproxy started AIA-chasing without an explicit policy
+decision -- a silent, auditable change to what SafeYolo
+accepts as a valid upstream chain.
 
 ## In-sandbox (isolation)
 
