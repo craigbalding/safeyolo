@@ -141,3 +141,123 @@ echo "  $KEY_DIR/sinkhole.key"
 echo ""
 echo "The sinkhole cert includes SANs for: api.openai.com, api.anthropic.com,"
 echo "evil.com, attacker.com, httpbin.org, localhost, 127.0.0.1, and other test hostnames."
+
+# ===========================================================================
+# Tricky chain #1 - ECC leaf + cross-signed bridge root
+#
+# Mirrors real-world example.com's chain (Cloudflare/SSL.com/Comodo-AAA
+# cross-sign pattern) so SafeYolo's upstream-cert-validation code gets
+# exercised against the same shape that has regressed twice:
+#
+#   leaf (ECDSA P-256)
+#     -> ecc_intermediate (ECC issuing CA, analogous to Cloudflare's)
+#       -> test-ca-b (ECC root, analogous to SSL.com TLS ECC Root 2022)
+#         -> test-ca-b-crosssigned-by-test-ca (bridge to THE trusted root)
+#
+# SafeYolo trusts only ca.crt. The chain served to sinkhole clients is:
+#   [ leaf, ecc_intermediate, test-ca-b-crosssigned-by-test-ca ]
+# Validators find the bridge cert, chain up to test-ca, and validate.
+# If the bundle merge breaks or chain-builder regresses, validation fails.
+#
+# SAN: example-chain-test.test  (reserved .test TLD, routed to sinkhole
+#      port 18444 by tests/blackbox/harness/sinkhole_router.py)
+# ===========================================================================
+if [ ! -f ecc_chain.pem ] || [ ! -f "$KEY_DIR/ecc_chain.key" ]; then
+    echo "3. Generating ECC cross-signed chain (example.com shape)..."
+
+    # 3a. Secondary root CA (mimics SSL.com's ECC Root 2022 — normally
+    #     not directly in SafeYolo's trust bundle).
+    openssl ecparam -name prime256v1 -genkey -noout \
+        -out "$KEY_DIR/test-ca-b.key"
+    openssl req -x509 -new -nodes \
+        -key "$KEY_DIR/test-ca-b.key" \
+        -sha256 \
+        -days 3650 \
+        -out test-ca-b.crt \
+        -subj "/CN=SafeYolo Blackbox Test ECC Root B/O=SafeYolo Test/C=US"
+
+    # 3b. Cross-sign test-ca-b with the primary trusted CA so chains
+    #     served by sinkhole can reach ca.crt via the bridge.
+    #     openssl x509 -req reuses the public key from test-ca-b.crt
+    #     but issues a fresh cert signed by ca.key.
+    cat > test-ca-b-crosssign.cnf << 'EOF'
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+EOF
+    openssl x509 -req \
+        -in <(openssl x509 -x509toreq -signkey "$KEY_DIR/test-ca-b.key" -in test-ca-b.crt) \
+        -CA ca.crt -CAkey "$KEY_DIR/ca.key" -CAcreateserial \
+        -days 3650 -sha256 \
+        -extensions v3_ca -extfile test-ca-b-crosssign.cnf \
+        -out test-ca-b-crosssigned.crt
+    rm -f test-ca-b-crosssign.cnf
+
+    # 3c. ECC issuing intermediate (analogous to Cloudflare's ECC CA),
+    #     signed by test-ca-b.
+    openssl ecparam -name prime256v1 -genkey -noout \
+        -out "$KEY_DIR/ecc_intermediate.key"
+    cat > ecc_intermediate.cnf << 'EOF'
+[req]
+distinguished_name = dn
+prompt = no
+[dn]
+CN = SafeYolo Blackbox ECC Issuing CA
+O = SafeYolo Test
+C = US
+[v3_int]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+EOF
+    openssl req -new -key "$KEY_DIR/ecc_intermediate.key" \
+        -out ecc_intermediate.csr -config ecc_intermediate.cnf
+    openssl x509 -req \
+        -in ecc_intermediate.csr \
+        -CA test-ca-b.crt -CAkey "$KEY_DIR/test-ca-b.key" -CAcreateserial \
+        -days 3650 -sha256 \
+        -extensions v3_int -extfile ecc_intermediate.cnf \
+        -out ecc_intermediate.crt
+    rm -f ecc_intermediate.csr ecc_intermediate.cnf
+
+    # 3d. ECDSA P-256 leaf with SAN for example-chain-test.test.
+    openssl ecparam -name prime256v1 -genkey -noout \
+        -out "$KEY_DIR/ecc_chain.key"
+    cat > ecc_leaf.cnf << 'EOF'
+[req]
+distinguished_name = dn
+req_extensions = v3_leaf
+prompt = no
+[dn]
+CN = example-chain-test.test
+O = SafeYolo Blackbox Test
+C = US
+[v3_leaf]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @sans
+[sans]
+DNS.1 = example-chain-test.test
+DNS.2 = *.example-chain-test.test
+EOF
+    openssl req -new -key "$KEY_DIR/ecc_chain.key" \
+        -out ecc_leaf.csr -config ecc_leaf.cnf
+    openssl x509 -req \
+        -in ecc_leaf.csr \
+        -CA ecc_intermediate.crt -CAkey "$KEY_DIR/ecc_intermediate.key" -CAcreateserial \
+        -days 365 -sha256 \
+        -extensions v3_leaf -extfile ecc_leaf.cnf \
+        -out ecc_leaf.crt
+    rm -f ecc_leaf.csr ecc_leaf.cnf
+
+    # 3e. Chain PEM served by sinkhole: leaf + intermediate +
+    #     cross-signed bridge. Order matters (leaf first).
+    cat ecc_leaf.crt ecc_intermediate.crt test-ca-b-crosssigned.crt \
+        > ecc_chain.pem
+
+    rm -f ca.srl test-ca-b.srl ecc_intermediate.srl
+
+    echo "   Created: ecc_chain.pem (public, chain: leaf + intermediate + bridge)"
+    echo "            ~/.safeyolo/test-certs/ecc_chain.key (private leaf key)"
+    echo "   Terminates at ca.crt via cross-signed bridge root."
+fi

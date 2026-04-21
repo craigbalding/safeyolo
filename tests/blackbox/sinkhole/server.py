@@ -229,11 +229,19 @@ def run_servers(
     control_port: int = 9999,
     cert_path: str = "/certs/sinkhole.crt",
     key_path: str = "/certs/sinkhole.key",
+    extra_https_certs: Optional[list] = None,
 ):
     """Run sinkhole (HTTP + HTTPS) and control API servers.
 
     HTTPS requires a certificate signed by the test CA. This mirrors production
     where SafeYolo verifies upstream certificates against trusted CAs.
+
+    extra_https_certs lets the blackbox suite expose additional HTTPS
+    endpoints on separate ports, each presenting a different cert chain.
+    Tests that exercise SafeYolo's upstream cert-validation (cross-signs,
+    ECC chains, long chains) use these to get a chain shape that differs
+    from the default sinkhole cert without breaking existing tests.
+    Format: list of dicts with keys `port`, `cert`, `key`, `name`.
 
     Uses ThreadingHTTPServer for concurrent request handling (important for
     tests that make multiple parallel requests through the proxy).
@@ -250,6 +258,20 @@ def run_servers(
         https_server.socket = ssl_context.wrap_socket(https_server.socket, server_side=True)
         log.info(f"Sinkhole HTTPS server listening on port {https_port}")
 
+    # Extra HTTPS servers -- each one uses its own cert chain so tests
+    # can exercise different chain shapes against the proxy's upstream
+    # TLS validation code path.
+    extra_servers = []
+    for spec in (extra_https_certs or []):
+        ctx = load_tls_cert(Path(spec["cert"]), Path(spec["key"]))
+        if ctx is None:
+            log.warning(f"Extra HTTPS cert missing for {spec.get('name', '?')}, skipping port {spec['port']}")
+            continue
+        srv = SSLSafeThreadingHTTPServer(("0.0.0.0", spec["port"]), SinkholeHandler)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        extra_servers.append((srv, spec))
+        log.info(f"Sinkhole HTTPS server listening on port {spec['port']} (cert: {spec.get('name', '?')})")
+
     # Control API (threading for concurrent health checks during tests)
     control = ThreadingHTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
     log.info(f"Control API listening on port {control_port}")
@@ -261,6 +283,11 @@ def run_servers(
     ]
     if https_server:
         threads.append(threading.Thread(target=https_server.serve_forever, daemon=True, name="https"))
+    for srv, spec in extra_servers:
+        threads.append(threading.Thread(
+            target=srv.serve_forever, daemon=True,
+            name=f"https-{spec.get('name', spec['port'])}",
+        ))
 
     for thread in threads:
         thread.start()
@@ -274,6 +301,8 @@ def run_servers(
         http_server.shutdown()
         if https_server:
             https_server.shutdown()
+        for srv, _ in extra_servers:
+            srv.shutdown()
         control.shutdown()
 
 
@@ -286,7 +315,20 @@ if __name__ == "__main__":
     parser.add_argument("--control-port", type=int, default=9999, help="Port for control API")
     parser.add_argument("--cert", type=str, default="/certs/sinkhole.crt", help="TLS certificate path")
     parser.add_argument("--key", type=str, default="/certs/sinkhole.key", help="TLS key path")
+    parser.add_argument(
+        "--extra-cert", action="append", default=[],
+        metavar="NAME:PORT:CERT:KEY",
+        help="Add a second HTTPS endpoint with a different cert chain. Repeatable.",
+    )
     args = parser.parse_args()
+
+    extras = []
+    for spec in args.extra_cert:
+        parts = spec.split(":", 3)
+        if len(parts) != 4:
+            raise SystemExit(f"--extra-cert expects NAME:PORT:CERT:KEY, got: {spec}")
+        name, port, cert, key = parts
+        extras.append({"name": name, "port": int(port), "cert": cert, "key": key})
 
     run_servers(
         http_port=args.http_port,
@@ -294,4 +336,5 @@ if __name__ == "__main__":
         control_port=args.control_port,
         cert_path=args.cert,
         key_path=args.key,
+        extra_https_certs=extras,
     )

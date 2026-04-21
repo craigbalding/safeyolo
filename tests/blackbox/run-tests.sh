@@ -217,6 +217,7 @@ else
         --control-port 19999 \
         --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
         --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
+        --extra-cert "ecc-chain:18444:$SCRIPT_DIR/certs/ecc_chain.pem:$HOME/.safeyolo/test-certs/ecc_chain.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
