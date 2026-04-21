@@ -230,16 +230,20 @@ def _build_command(
     test_config: dict | None = None,
 ) -> list[str]:
     """Build the mitmdump command line."""
-    # Find mitmdump in the same venv/prefix as this Python process
-    mitmdump = shutil.which("mitmdump")
-    if not mitmdump:
-        # Check sibling of the running Python interpreter
-        python_dir = Path(sys.executable).parent
-        candidate = python_dir / "mitmdump"
-        if candidate.exists():
-            mitmdump = str(candidate)
-        else:
-            mitmdump = "mitmdump"  # Fall back to PATH
+    # Find mitmdump matching the running Python interpreter FIRST.
+    # SafeYolo addons import PyYAML, mitmproxy2swagger, etc. which live in
+    # the project's .venv; Homebrew's mitmdump bottle ships its own sealed
+    # Python env that does NOT have those deps and crashes on startup with
+    # "ModuleNotFoundError: No module named 'yaml'". PATH lookup can find
+    # the wrong one (depends on PATH ordering vs /opt/homebrew/bin). Prefer
+    # the sibling of sys.executable (the interpreter that's running us) so
+    # the addon deps are always resolvable.
+    python_dir = Path(sys.executable).parent
+    candidate = python_dir / "mitmdump"
+    if candidate.exists():
+        mitmdump = str(candidate)
+    else:
+        mitmdump = shutil.which("mitmdump") or "mitmdump"
 
     # Bind to all interfaces so VMs on the bridge can reach the proxy
     cmd = [mitmdump, "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
