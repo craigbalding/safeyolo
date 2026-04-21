@@ -402,15 +402,19 @@ def _ensure_lima_vm(limactl: str) -> None:
     Lima 2.x's interactive "Do you want to start the instance now?"
     prompt on `limactl shell`.
     """
+    # One list call, parsed locally. `limactl list --filter name=X` isn't
+    # supported on all Lima versions (2.x returns exit 1), so we avoid it.
     listing = subprocess.run(
-        [limactl, "list", "--format", "{{.Name}}"],
-        check=False, capture_output=True, text=True,
+        [limactl, "list", "--format", "{{.Name}}\t{{.Status}}"],
+        check=True, capture_output=True, text=True,
     )
-    vm_exists = (
-        listing.returncode == 0 and LIMA_VM_NAME in listing.stdout.split()
-    )
+    status_by_name: dict[str, str] = {}
+    for line in listing.stdout.splitlines():
+        name, _, status = line.partition("\t")
+        if name:
+            status_by_name[name] = status
 
-    if not vm_exists:
+    if LIMA_VM_NAME not in status_by_name:
         lima_yaml = _guest_src_dir() / "lima.yaml"
         if not lima_yaml.is_file():
             raise VMError(f"Missing {lima_yaml}; cannot create Lima VM.")
@@ -423,12 +427,7 @@ def _ensure_lima_vm(limactl: str) -> None:
         )
         return
 
-    status = subprocess.run(
-        [limactl, "list", "--format", "{{.Status}}",
-         "--filter", f"name={LIMA_VM_NAME}"],
-        check=True, capture_output=True, text=True,
-    )
-    if status.stdout.strip() != "Running":
+    if status_by_name[LIMA_VM_NAME] != "Running":
         log.info("Starting Lima VM '%s'", LIMA_VM_NAME)
         subprocess.run(
             [limactl, "start", "--tty=false", LIMA_VM_NAME],

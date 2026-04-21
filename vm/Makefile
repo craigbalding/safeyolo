@@ -37,9 +37,11 @@ else ifeq ($(UNAME),Darwin)
 		echo "Error: Lima not found. Install with: brew install lima"; \
 		echo "See guest/README.md for details."; \
 		exit 1; }
-	@if ! limactl list --format '{{.Name}}' | grep -qx $(LIMA_VM); then \
+	@set -e; \
+	status=$$(limactl list --format '{{.Name}}\t{{.Status}}' | awk -F'\t' -v n=$(LIMA_VM) '$$1==n {print $$2}'); \
+	if [ -z "$$status" ]; then \
 		limactl start --name=$(LIMA_VM) --tty=false $(GUEST_DIR)/lima.yaml; \
-	elif [ "$$(limactl list --format '{{.Status}}' --filter name=$(LIMA_VM))" != "Running" ]; then \
+	elif [ "$$status" != "Running" ]; then \
 		limactl start --tty=false $(LIMA_VM); \
 	fi
 	@limactl shell $(LIMA_VM) -- \
