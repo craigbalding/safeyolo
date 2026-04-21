@@ -137,6 +137,10 @@ probes:
     script: |
       #!/bin/bash
       set -eux -o pipefail
+      # Lima's probe SSH env doesn't reliably expose /usr/sbin:/sbin, so
+      # tools like mkfs.ext4 (at /usr/sbin/mkfs.ext4) go missing even
+      # though they're installed. Set an explicit superset PATH.
+      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       command -v mmdebstrap
       command -v aarch64-linux-gnu-gcc
       command -v busybox
