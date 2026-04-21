@@ -40,18 +40,37 @@ echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # 1. Configure environment
+#
+# We publish the env two ways so interactive shells find it regardless
+# of whether the distro uses PAM:
+#
+#   /etc/environment        -- picked up by Debian/Ubuntu via pam_env.so
+#                              when sshd's PAM stack runs. Alpine's sshd
+#                              isn't PAM-linked so this file is inert
+#                              there; we keep it for PAM distros and
+#                              for tooling that reads it directly.
+#   /etc/profile.d/safeyolo-proxy.sh -- sourced by /etc/profile on every
+#                              bash-login shell (Debian, Alpine, Fedora,
+#                              Arch all iterate /etc/profile.d/*.sh from
+#                              /etc/profile). This is what makes
+#                              `safeyolo agent shell <name>` interactive
+#                              sessions pick up HTTP_PROXY etc. on
+#                              non-PAM distros.
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then
     set -a; . /safeyolo/proxy.env; set +a
     cp /safeyolo/proxy.env /etc/environment
+    install -D -m 0644 /safeyolo/proxy.env /etc/profile.d/safeyolo-proxy.sh
 fi
 
 if [ -f /safeyolo/agent.env ]; then
     set -a; . /safeyolo/agent.env; set +a
     cat /safeyolo/agent.env >> /etc/environment
+    cat /safeyolo/agent.env >> /etc/profile.d/safeyolo-proxy.sh
 fi
 
 echo 'export HOME=/home/agent' >> /etc/environment
+echo 'export HOME=/home/agent' >> /etc/profile.d/safeyolo-proxy.sh
 
 # --------------------------------------------------------------------------
 # 1b. Guest-side proxy forwarder (localhost:8080 -> UDS or vsock)
