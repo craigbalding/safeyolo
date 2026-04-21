@@ -39,10 +39,12 @@ else ifeq ($(UNAME),Darwin)
 		exit 1; }
 	@limactl list --format '{{.Name}}' 2>/dev/null | grep -qx $(LIMA_VM) || \
 		limactl start --name=$(LIMA_VM) --tty=false $(GUEST_DIR)/lima.yaml
-	limactl shell $(LIMA_VM) -- \
+	@limactl shell $(LIMA_VM) -- \
 		aarch64-linux-gnu-gcc -static -O2 \
 		-o /build/vm/.build/release/vsock-term \
-		/build/guest/vsock-term.c -lutil
+		/build/guest/vsock-term.c -lutil; ret=$$?; \
+	limactl stop $(LIMA_VM) >/dev/null 2>&1 || true; \
+	exit $$ret
 else
 	$(error Unsupported platform for guest-tools: $(UNAME))
 endif

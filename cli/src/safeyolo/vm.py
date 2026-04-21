@@ -384,6 +384,12 @@ def _run_rootfs_script_lima(
         # SIGKILL from the host), it's under /tmp and the VM reboot will
         # clear it.
         shutil.rmtree(host_scratch, ignore_errors=True)
+        # Stop the builder VM so it doesn't keep CPU/RAM pinned on the host
+        # between builds. Boot cost on re-use is trivial.
+        subprocess.run(
+            [limactl, "stop", LIMA_VM_NAME],
+            check=False, capture_output=True,
+        )
 
 
 def _ensure_lima_vm(limactl: str) -> None:

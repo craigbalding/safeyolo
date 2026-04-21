@@ -112,6 +112,9 @@ Check guest/lima.yaml 'mounts:' block."
 
 run_builds_via_lima() {
     ensure_lima_vm
+    # Stop the VM on exit so it doesn't keep CPU/RAM pinned between builds.
+    # Boot cost on re-use is trivial.
+    trap 'echo "=== Stopping Lima VM ${LIMA_VM_NAME} ==="; limactl stop "$LIMA_VM_NAME" >/dev/null 2>&1 || true' EXIT
     verify_no_home_mount
 
     echo "=== SafeYolo Guest Image Build (via Lima VM '$LIMA_VM_NAME') ==="
