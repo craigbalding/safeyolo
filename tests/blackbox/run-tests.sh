@@ -320,7 +320,7 @@ if [ "$RUN_PROXY" = true ]; then
     cd "$SCRIPT_DIR/host"
     set +e
     pytest $VERBOSE --tb=short --timeout=60 \
-        test_credential_guard.py test_network_guard.py
+        test_credential_guard.py test_network_guard.py test_upstream_cert_validation.py
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
