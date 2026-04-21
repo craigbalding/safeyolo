@@ -341,9 +341,14 @@ def _run_rootfs_script_lima(
             f"SAFEYOLO_GUEST_SRC_DIR={vm_guest_dir}",
             f"SAFEYOLO_TARGET_ARCH={_host_target_arch()}",
         ]
+        # --workdir=/ silences Lima's "cd: <cwd>: No such file or directory"
+        # for callers whose host CWD isn't inside the VM's narrow mount set.
+        # sudo -E: rootfs builders need root (chroot, mkfs, apt-get --install-root,
+        # etc.); Lima's default user has NOPASSWD sudo. -E preserves the env
+        # vars we already set so the script sees SAFEYOLO_* without re-plumbing.
         cmd = [
-            limactl, "shell", LIMA_VM_NAME, "--",
-            "bash", "-c",
+            limactl, "shell", "--workdir=/", LIMA_VM_NAME, "--",
+            "sudo", "-E", "bash", "-c",
             f"mkdir -p {vm_work_dir} && "
             f"env {' '.join(env_args)} {vm_script_path}"
         ]
