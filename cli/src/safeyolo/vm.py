@@ -287,16 +287,23 @@ def _run_rootfs_script_lima(
 ) -> None:
     """Run the rootfs-script inside the shared safeyolo-builder Lima VM.
 
-    Staging strategy: use a per-run scratch dir under guest/.scratch/ on
-    the host. guest/ is already bind-mounted into the VM at
-    /build/guest, so the VM sees the scratch dir without any config
-    change. We avoid mutating the Lima instance's mount list (which would
-    require stop/start and accumulate stale entries across runs).
+    Staging strategy: two-tier storage because macOS→VM VirtioFS confuses
+    libext2fs's `mkfs.ext4 -d` walker (it ENOENTs on files like
+    /etc/passwd- after useradd, which read fine on a regular Linux mount).
 
-    Flow:
-      1. host-side: copy user's script + resolve guest-src into the scratch dir
-      2. VM-side:   run the script with env vars pointing inside the scratch dir
-      3. host-side: move the produced output to the agent dir
+      - WORK dir: VM-local /tmp/safeyolo-rootfs-<uuid>/ -- every heavy
+        operation (skopeo unpack, chroot+apt/apk, mkfs.ext4 -d reading
+        the source tree) happens here, on a plain Linux filesystem.
+      - STAGING dir: host guest/.scratch/<uuid>/ (virtiofs-mounted into
+        the VM at /build/guest/.scratch/<uuid>/) -- holds only the final
+        packed rootfs image. Script writes to $SAFEYOLO_ROOTFS_OUT_* here;
+        host-side then plain-moves it to the agent dir.
+
+    The script itself is staged into the staging dir (single small file,
+    crossing virtiofs once is fine).
+
+    Avoiding mutation of the Lima instance's mount list keeps the VM
+    config reusable and avoids stop/start overhead.
     """
     import uuid
 
@@ -314,23 +321,21 @@ def _run_rootfs_script_lima(
 
     _ensure_lima_vm(limactl)
 
-    # Per-run scratch: host guest/.scratch/<uuid>/ == VM /build/guest/.scratch/<uuid>/
     run_id = uuid.uuid4().hex[:12]
     host_scratch = guest_src / ".scratch" / run_id
     host_scratch.mkdir(parents=True, exist_ok=False)
     vm_scratch = f"{LIMA_GUEST_MOUNT}/.scratch/{run_id}"
+    vm_work_dir = f"/tmp/safeyolo-rootfs-{run_id}"
 
     try:
-        # Stage the user's script into the scratch dir so the VM can exec it.
-        # We use a fixed name inside the VM regardless of the host-side name
-        # so the command line stays predictable.
+        # Stage the user's script into the (virtiofs) staging dir so the VM
+        # sees it. Fixed name inside the VM keeps the command line predictable.
         staged_script = host_scratch / "rootfs-script"
         shutil.copy2(str(script_path), str(staged_script))
         staged_script.chmod(0o755)
 
         out_name = out_path.name  # rootfs.ext4 or rootfs.erofs
         vm_script_path = f"{vm_scratch}/rootfs-script"
-        vm_work_dir = f"{vm_scratch}/work"
         vm_out_path = f"{vm_scratch}/{out_name}"
         vm_guest_dir = LIMA_GUEST_MOUNT
 
@@ -346,10 +351,13 @@ def _run_rootfs_script_lima(
         # sudo -E: rootfs builders need root (chroot, mkfs, apt-get --install-root,
         # etc.); Lima's default user has NOPASSWD sudo. -E preserves the env
         # vars we already set so the script sees SAFEYOLO_* without re-plumbing.
+        # Trap on the bash line cleans up the VM-local work dir even if the
+        # script crashes mid-way.
         cmd = [
             limactl, "shell", "--workdir=/", LIMA_VM_NAME, "--",
             "sudo", "-E", "bash", "-c",
             f"mkdir -p {vm_work_dir} && "
+            f"trap 'rm -rf {vm_work_dir}' EXIT && "
             f"env {' '.join(env_args)} {vm_script_path}"
         ]
         log.info("Running rootfs script in Lima VM %s: %s", LIMA_VM_NAME, script_path)
@@ -361,8 +369,7 @@ def _run_rootfs_script_lima(
             )
 
         # Pull the output back to the agent dir. The script wrote it into
-        # the scratch dir (visible on the host via the guest/ bind mount),
-        # so this is a plain filesystem move.
+        # the virtiofs-backed staging dir, so this is a plain filesystem move.
         produced = host_scratch / out_name
         if not produced.exists():
             raise VMError(
@@ -371,6 +378,10 @@ def _run_rootfs_script_lima(
             )
         shutil.move(str(produced), str(out_path))
     finally:
+        # Host-side: staging dir cleanup is unconditional. VM-local work dir
+        # is cleaned up by the bash trap above; if that didn't run (e.g.
+        # SIGKILL from the host), it's under /tmp and the VM reboot will
+        # clear it.
         shutil.rmtree(host_scratch, ignore_errors=True)
 
 
