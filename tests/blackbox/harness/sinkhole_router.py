@@ -23,6 +23,7 @@ upstream-cert-validation test suite):
     18448 Expired leaf            (expired-leaf.test)     [MUST fail]
     18449 Hostname/SAN mismatch   (wrong-san.test)        [MUST fail]
     18450 Self-signed leaf        (self-signed.test)      [MUST fail]
+    18451 AIA-only (leaf alone)   (aia-only.test)         [MUST fail]
 """
 
 import logging
@@ -51,6 +52,7 @@ SINKHOLE_WRONG_SAN_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_WRONG_SAN_PORT",
 SINKHOLE_SELF_SIGNED_PORT = int(
     os.environ.get("SAFEYOLO_SINKHOLE_SELF_SIGNED_PORT", "18450"),
 )
+SINKHOLE_AIA_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_AIA_PORT", "18451"))
 
 # Only redirect these hostnames — must match sinkhole cert SANs.
 # All other traffic passes through to real upstreams.
@@ -70,6 +72,7 @@ SINKHOLE_HOSTS = {
     "expired-leaf.test",
     "wrong-san.test",
     "self-signed.test",
+    "aia-only.test",
 }
 
 # Hostnames that get their HTTPS traffic steered to a non-default sinkhole
@@ -83,6 +86,7 @@ SINKHOLE_HOST_HTTPS_PORTS = {
     "expired-leaf.test": SINKHOLE_EXPIRED_PORT,
     "wrong-san.test": SINKHOLE_WRONG_SAN_PORT,
     "self-signed.test": SINKHOLE_SELF_SIGNED_PORT,
+    "aia-only.test": SINKHOLE_AIA_PORT,
 }
 
 
