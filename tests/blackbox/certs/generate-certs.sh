@@ -246,6 +246,12 @@ subjectAltName = @sans
 [sans]
 DNS.1 = example-chain-test.test
 DNS.2 = *.example-chain-test.test
+# IP SAN: the sinkhole_router rewrites flow.request.host to
+# 127.0.0.1 before mitmproxy's upstream TLS verify runs, so the
+# cert must include 127.0.0.1 as an IP SAN or mitmproxy reports
+# "Certificate verify failed: IP address mismatch". Same trick the
+# default sinkhole.crt uses.
+IP.1 = 127.0.0.1
 EOF
     openssl req -new -key "$KEY_DIR/ecc_chain.key" \
         -out ecc_leaf.csr -config ecc_leaf.cnf
