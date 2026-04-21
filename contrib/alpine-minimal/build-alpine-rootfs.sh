@@ -51,7 +51,10 @@ skopeo --override-arch="$SAFEYOLO_TARGET_ARCH" --override-os=linux \
     copy "$ALPINE_IMAGE" "oci:$OCI_DIR:alpine-${ALPINE_TAG}"
 
 echo "=== Unpacking ==="
-umoci unpack --rootless --image "$OCI_DIR:alpine-${ALPINE_TAG}" "$SAFEYOLO_ROOTFS_WORK_DIR/unpack"
+# No --rootless: SafeYolo runs this script as VM-root (sudo -E wrapper in
+# vm.py::_run_rootfs_script_lima). --rootless leaves xattrs/modes that
+# mkfs.ext4 -d can't read back when packing the final image.
+umoci unpack --image "$OCI_DIR:alpine-${ALPINE_TAG}" "$SAFEYOLO_ROOTFS_WORK_DIR/unpack"
 # umoci lays out `rootfs/` + `config.json` + `umoci.json`; we only want rootfs.
 rm -rf "$TREE"
 mv "$SAFEYOLO_ROOTFS_WORK_DIR/unpack/rootfs" "$TREE"
