@@ -114,6 +114,7 @@ provision:
         erofs-utils \
         skopeo \
         umoci \
+        unzip \
         build-essential \
         bc \
         flex \
@@ -141,6 +142,7 @@ probes:
       command -v busybox
       command -v skopeo
       command -v umoci
+      command -v unzip
       command -v mkfs.erofs
       command -v mkfs.ext4
     hint: |
