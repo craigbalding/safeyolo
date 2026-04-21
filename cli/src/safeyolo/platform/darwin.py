@@ -65,6 +65,12 @@ class DarwinPlatform(AgentPlatform):
         return get_agent_rootfs_path(name)
 
     def prepare_rootfs(self, name: str) -> Path:
+        # If --rootfs-script already wrote the per-agent ext4, use it as-is
+        # (no reflink clone). create_agent_rootfs also short-circuits on
+        # existence, but the explicit check reads cleaner.
+        existing = get_agent_rootfs_path(name)
+        if existing.exists():
+            return existing
         return create_agent_rootfs(name)
 
     def start_sandbox(

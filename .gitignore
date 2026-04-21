@@ -27,6 +27,11 @@ _archive_plugins/
 # Regenerate via `cd guest && ./build-all.sh`.
 guest/out/
 
+# Scratch dirs for --rootfs-script builds on macOS (staged under the
+# already-mounted guest/ path so the Lima VM can read/write without a
+# per-run mount change).
+guest/.scratch/
+
 # Swift build artifacts for the safeyolo-vm helper.
 # Regenerate via `cd vm && make build` (or `make install`).
 vm/.build/

@@ -416,26 +416,29 @@ class LinuxPlatform(AgentPlatform):
         return get_agents_dir() / name / "rootfs"
 
     def prepare_rootfs(self, name: str) -> Path:
-        """Verify the EROFS rootfs image exists.
+        """Verify an EROFS rootfs image exists for this agent.
 
         With EROFS, gVisor mounts the image directly in its sentry and
         handles the writable overlay internally (memory-backed). No
         fuse-overlayfs, no per-agent copies, no uid remapping needed.
-        All agents share one read-only EROFS image.
+        A per-agent rootfs.erofs (from --rootfs-script) overrides the
+        shared base when present.
         """
-        share_dir = get_share_dir()
-        erofs = share_dir / "rootfs-base.erofs"
-        if not erofs.exists():
-            raise RuntimeError(
-                f"EROFS rootfs image not found at {erofs}\n"
-                f"Build guest images first: cd guest && ./build-all.sh\n"
-                f"Requires: sudo apt install erofs-utils"
-            )
+        agent_dir = get_agents_dir() / name
+        per_agent = agent_dir / "rootfs.erofs"
+        if not per_agent.exists():
+            share_dir = get_share_dir()
+            erofs = share_dir / "rootfs-base.erofs"
+            if not erofs.exists():
+                raise RuntimeError(
+                    f"EROFS rootfs image not found at {erofs}\n"
+                    f"Build guest images first: cd guest && ./build-all.sh\n"
+                    f"Requires: sudo apt install erofs-utils"
+                )
 
         # The OCI spec's root.path must point to a directory (OCI
         # requirement), even though EROFS replaces it via annotations.
         # Create an empty placeholder.
-        agent_dir = get_agents_dir() / name
         rootfs_dir = agent_dir / "rootfs"
         rootfs_dir.mkdir(parents=True, exist_ok=True)
         return rootfs_dir
@@ -855,8 +858,13 @@ class LinuxPlatform(AgentPlatform):
         # EROFS annotations -- gVisor mounts the image directly in its
         # sentry with an in-memory writable overlay. The OCI root.path
         # is a placeholder directory; the actual rootfs comes from the
-        # EROFS image.
-        erofs_path = str(get_share_dir() / "rootfs-base.erofs")
+        # EROFS image. Prefer a per-agent rootfs.erofs (from
+        # --rootfs-script) over the shared base.
+        per_agent_erofs = get_agents_dir() / name / "rootfs.erofs"
+        erofs_path = str(
+            per_agent_erofs if per_agent_erofs.exists()
+            else get_share_dir() / "rootfs-base.erofs"
+        )
         annotations = {
             "dev.gvisor.spec.rootfs.source": erofs_path,
             "dev.gvisor.spec.rootfs.type": "erofs",

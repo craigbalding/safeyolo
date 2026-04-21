@@ -33,6 +33,7 @@ from ..timing import emit as _timing_emit
 from ..timing import enter as _t
 from ..vm import (
     _update_agent_map,
+    build_custom_rootfs,
     get_agent_config_share_dir,
     get_agent_status_dir,
     prepare_config_share,
@@ -740,6 +741,11 @@ def add(
         "--host-script",
         help="Path to a host setup script (runs on the host, as you, before the sandbox boots). See contrib/HOST_SCRIPT_GUIDE.md.",
     ),
+    rootfs_script: str = typer.Option(
+        None,
+        "--rootfs-script",
+        help="Path to a rootfs builder script. Produces a custom per-agent rootfs image instead of cloning the default base. See contrib/ROOTFS_SCRIPT_GUIDE.md.",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -784,11 +790,19 @@ def add(
     Without --host-script, the sandbox boots to an interactive bash
     shell with a fresh per-agent /home/agent (seeded from /etc/skel).
 
+    --rootfs-script replaces the default SafeYolo base rootfs with one the
+    script produces (full replacement, any distro). On Linux the script
+    runs natively; on macOS it runs inside the shared safeyolo-builder
+    Lima VM. See contrib/ROOTFS_SCRIPT_GUIDE.md.
+
     Examples:
 
         safeyolo agent add plain .
         safeyolo agent add claude . --host-script contrib/claude-host-setup.sh
         safeyolo agent add boris . --host-script ./my-setup.sh --mount ~/data:/data
+        safeyolo agent add pentest ~/target \\
+            --rootfs-script contrib/kali-pentest/build-kali-rootfs.sh \\
+            --host-script contrib/claude-host-setup.sh
     """
     # Validate instance name (hostname rules)
     _validate_instance_name(name)
@@ -825,6 +839,17 @@ def add(
             console.print(f"  Fix: chmod +x {host_script_path}")
             raise typer.Exit(1)
 
+    rootfs_script_path: Path | None = None
+    if rootfs_script:
+        rootfs_script_path = Path(rootfs_script).expanduser().resolve()
+        if not rootfs_script_path.is_file():
+            console.print(f"[red]Rootfs script not found: {rootfs_script_path}[/red]")
+            raise typer.Exit(1)
+        if not os.access(rootfs_script_path, os.X_OK):
+            console.print(f"[red]Rootfs script is not executable: {rootfs_script_path}[/red]")
+            console.print(f"  Fix: chmod +x {rootfs_script_path}")
+            raise typer.Exit(1)
+
     # Instance directory = instance name
     agent_dir = get_agents_dir() / name
 
@@ -832,11 +857,18 @@ def add(
     existing = _load_agent_metadata(name)
     if agent_dir.exists():
         if existing:
-            existing_script = existing.get("host_script")
+            existing_host = existing.get("host_script")
+            existing_rootfs = existing.get("rootfs_script")
             existing_folder = existing.get("folder")
-            requested_script = str(host_script_path) if host_script_path else None
+            requested_host = str(host_script_path) if host_script_path else None
+            requested_rootfs = str(rootfs_script_path) if rootfs_script_path else None
 
-            if existing_script == requested_script and existing_folder == folder_str and not force:
+            same_config = (
+                existing_host == requested_host
+                and existing_rootfs == requested_rootfs
+                and existing_folder == folder_str
+            )
+            if same_config and not force:
                 # Same config, no --force - idempotent, just run
                 console.print(f"Agent '{name}' already configured.")
                 if not no_run:
@@ -846,10 +878,16 @@ def add(
             else:
                 # Different config
                 if not force:
+                    def _fmt(host, rootfs, folder):
+                        bits = []
+                        bits.append(host or "(no host script)")
+                        if rootfs:
+                            bits.append(f"rootfs-script={rootfs}")
+                        return f"{' '.join(bits)} → {folder}"
                     console.print(
                         f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
-                        f"  Current:  {existing_script or '(no host script)'} → {existing_folder}\n"
-                        f"  Requested: {requested_script or '(no host script)'} → {folder_str}\n"
+                        f"  Current:  {_fmt(existing_host, existing_rootfs, existing_folder)}\n"
+                        f"  Requested: {_fmt(requested_host, requested_rootfs, folder_str)}\n"
                         "Use --force to overwrite, or 'safeyolo agent run' to run existing."
                     )
                     raise typer.Exit(1)
@@ -860,6 +898,19 @@ def add(
                 console.print(f"[yellow]Agent '{name}' already exists[/yellow]")
                 console.print("Use --force to overwrite")
                 raise typer.Exit(1)
+
+    # --rootfs-script runs before platform.prepare_rootfs so the script's
+    # output is in place when the platform layer goes looking for the image.
+    # On Linux, writes ~/.safeyolo/agents/<name>/rootfs.erofs. On Darwin,
+    # writes rootfs.ext4. Platform layer then finds the pre-built image and
+    # skips its default clone/share step.
+    if rootfs_script_path is not None:
+        console.print(f"  [bold]Running rootfs script:[/bold] {rootfs_script_path}")
+        try:
+            build_custom_rootfs(name, rootfs_script_path)
+        except Exception as err:
+            console.print(f"[red]Rootfs script failed:[/red] {escape(str(err))}")
+            raise typer.Exit(1)
 
     # Create rootfs for this agent (platform-specific: APFS clone on macOS, overlayfs on Linux)
     from ..platform import get_platform
@@ -909,6 +960,8 @@ def add(
     metadata: dict = {"folder": folder_str}
     if host_script_path is not None:
         metadata["host_script"] = str(host_script_path)
+    if rootfs_script_path is not None:
+        metadata["rootfs_script"] = str(rootfs_script_path)
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
@@ -925,6 +978,8 @@ def add(
     ]
     if host_script_path is not None:
         panel_lines.append(f"Host script: {host_script_path}")
+    if rootfs_script_path is not None:
+        panel_lines.append(f"Rootfs script: {rootfs_script_path}")
     if parsed_args:
         panel_lines.append(f"Default args: {' '.join(parsed_args)}")
     if parsed_mounts:
@@ -938,6 +993,8 @@ def add(
     event_details: dict = {"folder": folder_str}
     if host_script_path is not None:
         event_details["host_script"] = str(host_script_path)
+    if rootfs_script_path is not None:
+        event_details["rootfs_script"] = str(rootfs_script_path)
     write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added", agent=name, details=event_details)
 
     # Auto-run unless --no-run
@@ -1326,6 +1383,9 @@ def config(
         host_script = metadata.get("host_script")
         if host_script:
             table.add_row("Host script", host_script)
+        rootfs_script = metadata.get("rootfs_script")
+        if rootfs_script:
+            table.add_row("Rootfs script", rootfs_script)
         current_args = metadata.get("user_default_args")
         if current_args:
             table.add_row("Default args", " ".join(current_args))

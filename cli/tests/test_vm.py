@@ -1264,3 +1264,166 @@ class TestGuestImageChecks:
             "initramfs": False,
             "rootfs": False,
         }
+
+
+# ---------------------------------------------------------------------------
+# build_custom_rootfs (--rootfs-script orchestrator)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCustomRootfs:
+    """Contract verification for the custom-rootfs builder.
+
+    On Linux the script runs natively; on macOS it runs inside Lima. These
+    tests exercise the Linux path end-to-end with a tiny script, and the
+    Lima path via subprocess mocking.
+    """
+
+    def _write_script(self, tmp_path: Path, body: str) -> Path:
+        script = tmp_path / "builder.sh"
+        script.write_text(body)
+        script.chmod(0o755)
+        return script
+
+    def test_linux_writes_erofs_and_validates_output(
+        self, tmp_config_dir, tmp_path, monkeypatch
+    ):
+        """On Linux, script writes erofs to the requested path; builder
+        validates it exists and is non-empty."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(
+            tmp_path,
+            '#!/bin/sh\n'
+            'set -e\n'
+            ': "${SAFEYOLO_AGENT_NAME:?}"\n'
+            ': "${SAFEYOLO_ROOTFS_OUT_EROFS:?}"\n'
+            ': "${SAFEYOLO_ROOTFS_WORK_DIR:?}"\n'
+            ': "${SAFEYOLO_GUEST_SRC_DIR:?}"\n'
+            ': "${SAFEYOLO_TARGET_ARCH:?}"\n'
+            '[ -d "$SAFEYOLO_ROOTFS_WORK_DIR" ]\n'
+            'echo -n stub > "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+        )
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            out = build_custom_rootfs("myagent", script)
+
+        assert out == tmp_config_dir / "agents" / "myagent" / "rootfs.erofs"
+        assert out.read_bytes() == b"stub"
+
+    def test_linux_empty_output_raises(
+        self, tmp_config_dir, tmp_path
+    ):
+        """Script that produces a zero-byte output file fails validation."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(
+            tmp_path,
+            '#!/bin/sh\ntouch "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+        )
+        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+             pytest.raises(VMError, match="empty file"):
+            build_custom_rootfs("agent0", script)
+
+    def test_linux_missing_output_raises(
+        self, tmp_config_dir, tmp_path
+    ):
+        """Script that exits 0 but never writes the output fails validation."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(tmp_path, '#!/bin/sh\nexit 0\n')
+        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+             pytest.raises(VMError, match="did not produce"):
+            build_custom_rootfs("agent0", script)
+
+    def test_linux_script_failure_propagates(
+        self, tmp_config_dir, tmp_path
+    ):
+        """Non-zero script exit surfaces as a VMError."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(tmp_path, '#!/bin/sh\nexit 7\n')
+        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+             pytest.raises(VMError, match="exited with code 7"):
+            build_custom_rootfs("agent0", script)
+
+    def test_linux_work_dir_cleaned_up_on_success(
+        self, tmp_config_dir, tmp_path
+    ):
+        """The scratch work dir is removed even on the happy path."""
+        from safeyolo.vm import build_custom_rootfs
+
+        leaked = {}
+        script = self._write_script(
+            tmp_path,
+            '#!/bin/sh\n'
+            'echo "$SAFEYOLO_ROOTFS_WORK_DIR" > /tmp/_safeyolo_test_workdir\n'
+            'echo -n x > "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+        )
+        try:
+            with patch("safeyolo.vm.platform.system", return_value="Linux"):
+                build_custom_rootfs("agent0", script)
+            leaked["workdir"] = Path("/tmp/_safeyolo_test_workdir").read_text().strip()
+        finally:
+            Path("/tmp/_safeyolo_test_workdir").unlink(missing_ok=True)
+
+        assert not Path(leaked["workdir"]).exists(), (
+            f"Scratch dir leaked: {leaked['workdir']}"
+        )
+
+    def test_linux_work_dir_cleaned_up_on_failure(
+        self, tmp_config_dir, tmp_path
+    ):
+        """The scratch work dir is removed even when the script fails."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(
+            tmp_path,
+            '#!/bin/sh\n'
+            'echo "$SAFEYOLO_ROOTFS_WORK_DIR" > /tmp/_safeyolo_test_workdir\n'
+            'exit 1\n',
+        )
+        try:
+            with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+                 pytest.raises(VMError):
+                build_custom_rootfs("agent0", script)
+            workdir = Path("/tmp/_safeyolo_test_workdir").read_text().strip()
+        finally:
+            Path("/tmp/_safeyolo_test_workdir").unlink(missing_ok=True)
+
+        assert not Path(workdir).exists(), f"Scratch dir leaked: {workdir}"
+
+    def test_linux_stale_output_is_cleared(
+        self, tmp_config_dir, tmp_path
+    ):
+        """A previous rebuild's output is removed before the script runs,
+        so a script that fails mid-way doesn't leave a stale image the VM
+        would happily boot."""
+        from safeyolo.vm import build_custom_rootfs
+
+        stale = tmp_config_dir / "agents" / "agent0" / "rootfs.erofs"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"stale content from a prior build")
+
+        script = self._write_script(
+            tmp_path,
+            '#!/bin/sh\n[ ! -e "$SAFEYOLO_ROOTFS_OUT_EROFS" ] || exit 5\n'
+            'echo -n fresh > "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+        )
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            out = build_custom_rootfs("agent0", script)
+
+        assert out.read_bytes() == b"fresh"
+
+    def test_macos_requires_limactl(
+        self, tmp_config_dir, tmp_path
+    ):
+        """Darwin path fails fast with a brew-install hint when Lima is
+        missing."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(tmp_path, '#!/bin/sh\nexit 0\n')
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"), \
+             patch("safeyolo.vm.shutil.which", return_value=None), \
+             pytest.raises(VMError, match="brew install lima"):
+            build_custom_rootfs("agent0", script)
