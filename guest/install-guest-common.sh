@@ -19,9 +19,13 @@
 #   * baseline PATH glue at /etc/profile.d/00-path.sh + /etc/environment
 #   * mise profile glue at /etc/profile.d/mise.sh (only if mise present)
 #   * BusyBox applet shims (`hexdump`, `nc`) when busybox is present
-#   * package-manager intercepts at /usr/local/bin/{apt,apt-get,yum,dnf,apk}
-#     pointing users at mise (agents must not apt-install at runtime)
 #   * hostname = safeyolo
+#
+# What it deliberately does NOT install:
+#   * Package-manager intercepts (apt/yum/dnf/apk). Custom rootfs authors
+#     own their package-manager policy; this library doesn't force mise.
+#     The Debian base rootfs's own customize-hook installs the intercept
+#     there because that image is opinionated.
 #
 # Idempotent -- safe to re-run on the same rootfs.
 
@@ -108,10 +112,10 @@ MISE_PROFILE
             || echo "BASH_ENV=/etc/mise-activate.sh" >> "$rootfs/etc/environment"
     fi
 
-    # Package-manager intercepts. Agents inside the VM must install tools
-    # via mise, not the distro package manager -- apt/yum/apk egress doesn't
-    # go through the SafeYolo proxy. Intercepts placed in /usr/local/bin so
-    # they shadow the real binaries on $PATH.
+    # BusyBox applet shims (`hexdump`, `nc`) -- convenience only, installed
+    # when the rootfs ships busybox. Package-manager policy (whether to
+    # shadow apt/yum/apk with mise-pointing stubs) is deliberately left to
+    # the custom rootfs author; see the module header.
     install -d -m 0755 "$rootfs/usr/local/bin"
     for busybox_path in /bin/busybox /usr/bin/busybox; do
         if [ -x "$rootfs$busybox_path" ]; then
@@ -119,19 +123,6 @@ MISE_PROFILE
             ln -sf "$busybox_path" "$rootfs/usr/local/bin/nc"
             break
         fi
-    done
-    for cmd in apt apt-get yum dnf apk; do
-        cat > "$rootfs/usr/local/bin/$cmd" <<'INTERCEPT'
-#!/bin/sh
-echo "Error: Package manager not available in SafeYolo sandbox."
-echo ""
-echo "Use mise to install languages and tools:"
-echo "  mise install go@latest"
-echo "  mise install python@3.12"
-echo "  mise install rust@latest"
-exit 1
-INTERCEPT
-        chmod 0755 "$rootfs/usr/local/bin/$cmd"
     done
 
     # Hostname. DNS is overridden by DHCP / guest-init at boot.
