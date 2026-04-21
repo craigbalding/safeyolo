@@ -1,12 +1,17 @@
 # Lima VM config for SafeYolo guest-artifact builds on macOS.
 #
-# This VM is used by guest/build-all.sh on macOS to run the Linux-only
-# build scripts (mmdebstrap, debootstrap, native Linux cross-compile).
+# Two workflows share this VM:
+#   1. guest/build-all.sh — builds the default Debian-trixie base rootfs,
+#      kernel, and initramfs using mmdebstrap + native Linux cross-compile.
+#   2. `safeyolo agent add --rootfs-script …` — invokes a user's rootfs
+#      builder script inside this VM, with the script dir + target agent
+#      dir added as extra mounts at `limactl start` time (see
+#      cli/src/safeyolo/vm.py::_run_rootfs_script_lima).
 #
 # SECURITY: mounts are explicit and narrow. Lima's default template mounts
 # ~/ read-only into the VM, which would expose SSH keys, browser data, and
 # credentials to the build environment. We override the defaults by declaring
-# our own mounts: block — only guest/ is exposed, writable, for artifact output.
+# our own mounts: block — only guest/ + vm/ are exposed by default.
 #
 # On Linux hosts, build-all.sh runs the scripts natively and never creates
 # this VM.
@@ -85,7 +90,17 @@ containerd:
   user: false
 
 # Pre-install build dependencies so subsequent `./build-all.sh` invocations
-# are fast. First-run provision takes ~2-3 min.
+# and `--rootfs-script` runs are fast. First-run provision takes ~2-3 min.
+#
+# Toolchain split:
+#   mmdebstrap, gcc-aarch64-linux-gnu, busybox-static, cpio, pax-utils,
+#   libelf-dev, libssl-dev, bc, flex, bison  — default base build
+#   skopeo, umoci                             — OCI image pulls for
+#                                               custom rootfs scripts
+#   erofs-utils                               — mkfs.erofs for Linux
+#                                               target rootfs images
+#   e2fsprogs                                 — mkfs.ext4 for Darwin
+#                                               target rootfs images
 provision:
   - mode: system
     script: |
@@ -96,6 +111,9 @@ provision:
       apt-get install -y -qq --no-install-recommends \
         mmdebstrap \
         e2fsprogs \
+        erofs-utils \
+        skopeo \
+        umoci \
         build-essential \
         bc \
         flex \
@@ -111,7 +129,8 @@ provision:
         xz-utils \
         sudo
 
-# Health probe — confirms mmdebstrap is callable before build-all.sh shells in.
+# Health probe — confirms every tool that either workflow relies on is
+# callable before anything shells in.
 probes:
   - description: "build dependencies installed"
     script: |
@@ -120,6 +139,10 @@ probes:
       command -v mmdebstrap
       command -v aarch64-linux-gnu-gcc
       command -v busybox
+      command -v skopeo
+      command -v umoci
+      command -v mkfs.erofs
+      command -v mkfs.ext4
     hint: |
       Build dependencies didn't install cleanly. Try:
         limactl delete safeyolo-builder

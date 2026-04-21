@@ -65,6 +65,12 @@ class DarwinPlatform(AgentPlatform):
         return get_agent_rootfs_path(name)
 
     def prepare_rootfs(self, name: str) -> Path:
+        # If --rootfs-script already wrote the per-agent ext4, use it as-is
+        # (no reflink clone). create_agent_rootfs also short-circuits on
+        # existence, but the explicit check reads cleaner.
+        existing = get_agent_rootfs_path(name)
+        if existing.exists():
+            return existing
         return create_agent_rootfs(name)
 
     def start_sandbox(
@@ -144,7 +150,13 @@ class DarwinPlatform(AgentPlatform):
 
         stdin = None
         if command:
-            cmd.append(command)
+            # Source /etc/environment so HTTP_PROXY, SSL_CERT_FILE, and
+            # friends are visible to the user's command. sshd's non-login
+            # non-interactive shell doesn't source it (and Alpine's sshd
+            # has no PAM path that would); without this, a plain
+            # `safeyolo agent shell X -c 'curl ...'` bypasses the proxy.
+            # 2>/dev/null so rootfs without the file still runs fine.
+            cmd.append(f". /etc/environment 2>/dev/null; {command}")
             # Close stdin for non-interactive commands so nc's UDS
             # ProxyCommand exits when the remote command finishes.
             stdin = subprocess.DEVNULL

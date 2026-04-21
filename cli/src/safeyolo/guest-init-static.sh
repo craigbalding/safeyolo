@@ -210,7 +210,12 @@ for keyfile in /etc/ssh/ssh_host_*_key; do
 done
 
 mkdir -p /run/sshd
-/usr/sbin/sshd -D >/var/log/sshd.log 2>&1 &
+# -e routes syslog messages to stderr, which we capture in sshd.log.
+# Without it, auth failures go to syslog -- and custom rootfs images
+# (Alpine, etc.) often have no syslog daemon, so diagnosing
+# "Permission denied (publickey)" required rebuilding to add -e.
+# Silent is worse than verbose here; the log file is per-agent and small.
+/usr/sbin/sshd -D -e >/var/log/sshd.log 2>&1 &
 echo "[static] sshd launched pid=$!" > /dev/console 2>/dev/null || true
 
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true

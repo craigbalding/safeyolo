@@ -32,6 +32,8 @@ brew install lima
 
 That's it. The first `./build-all.sh` run creates a Lima VM named `safeyolo-builder` from `guest/lima.yaml` and provisions it with the required build tools (~2-3 min). Subsequent runs reuse the VM.
 
+The same VM is reused by `safeyolo agent add --rootfs-script` on macOS when you build a custom per-agent rootfs. Its provisioning includes `mmdebstrap` + the kernel toolchain (for the default base) *and* `skopeo` + `umoci` + `erofs-utils` (for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`).
+
 ### Why Lima
 
 `mmdebstrap` and `debootstrap` use Linux-specific syscalls and can't run natively on macOS. Docker Desktop worked because it's a hidden Linux VM — Lima makes the VM explicit and user-controlled. See `lima.yaml` for the config.

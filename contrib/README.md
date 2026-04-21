@@ -7,10 +7,14 @@ Example integrations. Copy and adapt for your own use.
 | Entry | Description |
 |-------|-------------|
 | `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent add --host-script` |
+| `ROOTFS_SCRIPT_GUIDE.md` | How to write custom rootfs builders for `safeyolo agent add --rootfs-script` (replace the default base with any distro) |
 | `../docs/AGENTS.md` | Agent-facing reference (environment, agent API, block responses, troubleshooting). Staged into each sandbox at `~/.safeyolo/AGENTS.md` by the bundled host scripts. |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions from `~/.claude/` and writes an install-on-first-run entrypoint |
 | `codex-host-setup.sh` | Host setup for OpenAI Codex CLI |
 | `mise-shell-host-setup.sh` | Minimal BYOA -- drops into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
+| `alpine-minimal/build-alpine-rootfs.sh` | Minimal custom rootfs example -- Alpine Linux via skopeo+umoci+apk |
+| `kali-pentest/build-kali-rootfs.sh` | Kali Linux pentest toolkit rootfs (nuclei, httpx, ffuf, sqlmap, ...) |
+| `kali-pentest/pentest-tools.md` | Tool reference for the Kali rootfs -- usage, proxy integration notes |
 | `claude-code-chokepoint/` | Claude Code in enforced chokepoint mode |
 | `monitors/` | Log monitoring and visualization tools |
 | `notifiers/` | Push notifications via ntfy with optional approval buttons |

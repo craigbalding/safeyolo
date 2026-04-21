@@ -178,6 +178,10 @@ Without `--host-script`, the sandbox boots to an interactive bash shell in a per
 
 Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE.md).
 
+## Custom rootfs
+
+`safeyolo agent add` also takes an optional `--rootfs-script PATH` for agents that need a different base system than SafeYolo's default Debian-trixie rootfs — e.g. Kali for a pentest agent or Alpine for a minimal shell. The script builds a full per-agent rootfs from any distro's OCI image or bootstrap tarball. Examples: [`contrib/kali-pentest/build-kali-rootfs.sh`](contrib/kali-pentest/build-kali-rootfs.sh), [`contrib/alpine-minimal/build-alpine-rootfs.sh`](contrib/alpine-minimal/build-alpine-rootfs.sh). Writing your own: see [`contrib/ROOTFS_SCRIPT_GUIDE.md`](contrib/ROOTFS_SCRIPT_GUIDE.md).
+
 Once inside the sandbox, the agent-facing reference lives at [`docs/AGENTS.md`](docs/AGENTS.md) -- agent environment, agent API endpoints, block-response anatomy, security boundaries, troubleshooting. The bundled host scripts stage it at `~/.safeyolo/AGENTS.md` inside the sandbox; the Claude Code host script also feeds it to `claude --append-system-prompt` so the model has it in context from turn 1.
 
 ## Controlling Agent Access

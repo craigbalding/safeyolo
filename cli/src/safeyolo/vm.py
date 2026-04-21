@@ -11,6 +11,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -165,6 +166,253 @@ def create_agent_rootfs(name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Custom rootfs builder (--rootfs-script)
+# ---------------------------------------------------------------------------
+#
+# build_custom_rootfs invokes a user-supplied shell script that produces a
+# per-agent rootfs image. The script always runs on Linux -- either on the
+# user's Linux host, or inside the shared safeyolo-builder Lima VM on macOS.
+# Scripts receive env vars telling them where to write the output image;
+# SafeYolo validates afterward. See contrib/ROOTFS_SCRIPT_GUIDE.md.
+
+LIMA_VM_NAME = "safeyolo-builder"
+LIMA_GUEST_MOUNT = "/build/guest"
+
+
+def _host_target_arch() -> str:
+    """Map the host's arch name to the DEB-style names scripts expect.
+
+    On macOS the kernel is arm64 only; on Linux we match the host arch.
+    """
+    m = platform.machine()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    raise VMError(f"Unsupported host architecture for rootfs build: {m}")
+
+
+def _guest_src_dir() -> Path:
+    """Return the repo's guest/ directory.
+
+    cli/src/safeyolo/vm.py → parents[3] is the repo root.
+    """
+    return Path(__file__).resolve().parents[3] / "guest"
+
+
+def build_custom_rootfs(name: str, script_path: Path) -> Path:
+    """Invoke a user rootfs-script to produce a per-agent rootfs image.
+
+    Returns the output image path. Raises VMError on failure.
+
+    Env contract (see contrib/ROOTFS_SCRIPT_GUIDE.md):
+      SAFEYOLO_AGENT_NAME
+      SAFEYOLO_ROOTFS_OUT_EXT4    (set when target is Darwin)
+      SAFEYOLO_ROOTFS_OUT_EROFS   (set when target is Linux)
+      SAFEYOLO_ROOTFS_WORK_DIR
+      SAFEYOLO_GUEST_SRC_DIR
+      SAFEYOLO_TARGET_ARCH
+    """
+    agent_dir = get_agents_dir() / name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    system = platform.system()
+    if system == "Darwin":
+        out_path = agent_dir / "rootfs.ext4"
+        out_key = "SAFEYOLO_ROOTFS_OUT_EXT4"
+    elif system == "Linux":
+        out_path = agent_dir / "rootfs.erofs"
+        out_key = "SAFEYOLO_ROOTFS_OUT_EROFS"
+    else:
+        raise VMError(f"Unsupported platform for --rootfs-script: {system}")
+
+    # Start with a clean output slot so a failed rebuild doesn't leave a
+    # stale image around that a later agent-run picks up.
+    if out_path.exists():
+        out_path.unlink()
+
+    if system == "Linux":
+        _run_rootfs_script_native(name, script_path, out_key, out_path)
+    else:
+        _run_rootfs_script_lima(name, script_path, out_key, out_path)
+
+    if not out_path.exists():
+        raise VMError(
+            f"Rootfs script {script_path} did not produce {out_path}.\n"
+            f"Scripts must write their output to ${out_key}."
+        )
+    if out_path.stat().st_size == 0:
+        raise VMError(
+            f"Rootfs script {script_path} produced an empty file at {out_path}."
+        )
+    log.info("Custom rootfs built for '%s': %s (%d bytes)",
+             name, out_path, out_path.stat().st_size)
+    return out_path
+
+
+def _run_rootfs_script_native(
+    name: str, script_path: Path, out_key: str, out_path: Path,
+) -> None:
+    """Run the rootfs-script directly on the Linux host."""
+    guest_src = _guest_src_dir()
+    if not guest_src.is_dir():
+        raise VMError(
+            f"guest/ directory not found at {guest_src}. "
+            f"SafeYolo must be run from a repo checkout or installed image."
+        )
+
+    work_dir = Path(tempfile.mkdtemp(prefix="safeyolo-rootfs-"))
+    try:
+        env = {
+            **os.environ,
+            "SAFEYOLO_AGENT_NAME": name,
+            out_key: str(out_path),
+            "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
+            "SAFEYOLO_GUEST_SRC_DIR": str(guest_src),
+            "SAFEYOLO_TARGET_ARCH": _host_target_arch(),
+        }
+        log.info("Running rootfs script: %s", script_path)
+        result = subprocess.run([str(script_path)], env=env, check=False)
+        if result.returncode != 0:
+            raise VMError(
+                f"Rootfs script {script_path} exited with code "
+                f"{result.returncode}."
+            )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _run_rootfs_script_lima(
+    name: str, script_path: Path, out_key: str, out_path: Path,
+) -> None:
+    """Run the rootfs-script inside the shared safeyolo-builder Lima VM.
+
+    Staging strategy: two-tier storage because macOS→VM VirtioFS confuses
+    libext2fs's `mkfs.ext4 -d` walker (it ENOENTs on files like
+    /etc/passwd- after useradd, which read fine on a regular Linux mount).
+
+      - WORK dir: VM-local /tmp/safeyolo-rootfs-<uuid>/ -- every heavy
+        operation (skopeo unpack, chroot+apt/apk, mkfs.ext4 -d reading
+        the source tree) happens here, on a plain Linux filesystem.
+      - STAGING dir: host guest/.scratch/<uuid>/ (virtiofs-mounted into
+        the VM at /build/guest/.scratch/<uuid>/) -- holds only the final
+        packed rootfs image. Script writes to $SAFEYOLO_ROOTFS_OUT_* here;
+        host-side then plain-moves it to the agent dir.
+
+    The script itself is staged into the staging dir (single small file,
+    crossing virtiofs once is fine).
+
+    Avoiding mutation of the Lima instance's mount list keeps the VM
+    config reusable and avoids stop/start overhead.
+    """
+    import uuid
+
+    limactl = shutil.which("limactl")
+    if not limactl:
+        raise VMError(
+            "Lima is not installed. --rootfs-script on macOS needs Lima.\n"
+            "Install: brew install lima\n"
+            "See contrib/ROOTFS_SCRIPT_GUIDE.md."
+        )
+
+    guest_src = _guest_src_dir()
+    if not guest_src.is_dir():
+        raise VMError(f"guest/ directory not found at {guest_src}.")
+
+    _ensure_lima_vm(limactl)
+
+    run_id = uuid.uuid4().hex[:12]
+    host_scratch = guest_src / ".scratch" / run_id
+    host_scratch.mkdir(parents=True, exist_ok=False)
+    vm_scratch = f"{LIMA_GUEST_MOUNT}/.scratch/{run_id}"
+    vm_work_dir = f"/tmp/safeyolo-rootfs-{run_id}"
+
+    try:
+        # Stage the user's script into the (virtiofs) staging dir so the VM
+        # sees it. Fixed name inside the VM keeps the command line predictable.
+        staged_script = host_scratch / "rootfs-script"
+        shutil.copy2(str(script_path), str(staged_script))
+        staged_script.chmod(0o755)
+
+        out_name = out_path.name  # rootfs.ext4 or rootfs.erofs
+        vm_script_path = f"{vm_scratch}/rootfs-script"
+        vm_out_path = f"{vm_scratch}/{out_name}"
+        vm_guest_dir = LIMA_GUEST_MOUNT
+
+        env_args = [
+            f"SAFEYOLO_AGENT_NAME={name}",
+            f"{out_key}={vm_out_path}",
+            f"SAFEYOLO_ROOTFS_WORK_DIR={vm_work_dir}",
+            f"SAFEYOLO_GUEST_SRC_DIR={vm_guest_dir}",
+            f"SAFEYOLO_TARGET_ARCH={_host_target_arch()}",
+        ]
+        # --workdir=/ silences Lima's "cd: <cwd>: No such file or directory"
+        # for callers whose host CWD isn't inside the VM's narrow mount set.
+        # sudo -E: rootfs builders need root (chroot, mkfs, apt-get --install-root,
+        # etc.); Lima's default user has NOPASSWD sudo. -E preserves the env
+        # vars we already set so the script sees SAFEYOLO_* without re-plumbing.
+        # Trap on the bash line cleans up the VM-local work dir even if the
+        # script crashes mid-way.
+        cmd = [
+            limactl, "shell", "--workdir=/", LIMA_VM_NAME, "--",
+            "sudo", "-E", "bash", "-c",
+            f"mkdir -p {vm_work_dir} && "
+            f"trap 'rm -rf {vm_work_dir}' EXIT && "
+            f"env {' '.join(env_args)} {vm_script_path}"
+        ]
+        log.info("Running rootfs script in Lima VM %s: %s", LIMA_VM_NAME, script_path)
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            raise VMError(
+                f"Rootfs script {script_path} exited with code "
+                f"{result.returncode} inside Lima VM."
+            )
+
+        # Pull the output back to the agent dir. The script wrote it into
+        # the virtiofs-backed staging dir, so this is a plain filesystem move.
+        produced = host_scratch / out_name
+        if not produced.exists():
+            raise VMError(
+                f"Rootfs script {script_path} did not produce "
+                f"${out_key} ({produced})."
+            )
+        shutil.move(str(produced), str(out_path))
+    finally:
+        # Host-side: staging dir cleanup is unconditional. VM-local work dir
+        # is cleaned up by the bash trap above; if that didn't run (e.g.
+        # SIGKILL from the host), it's under /tmp and the VM reboot will
+        # clear it.
+        shutil.rmtree(host_scratch, ignore_errors=True)
+
+
+def _ensure_lima_vm(limactl: str) -> None:
+    """Make sure the safeyolo-builder Lima VM exists.
+
+    Creates it from guest/lima.yaml if missing. Matches the pattern in
+    guest/build-all.sh so the default-base and custom-rootfs flows share
+    one VM.
+    """
+    listing = subprocess.run(
+        [limactl, "list", "--format", "{{.Name}}"],
+        check=False, capture_output=True, text=True,
+    )
+    if listing.returncode == 0 and LIMA_VM_NAME in listing.stdout.split():
+        return
+
+    lima_yaml = _guest_src_dir() / "lima.yaml"
+    if not lima_yaml.is_file():
+        raise VMError(f"Missing {lima_yaml}; cannot create Lima VM.")
+
+    repo_dir = _guest_src_dir().parent.resolve()
+    log.info("Creating Lima VM '%s' (first run; ~2-3 min)", LIMA_VM_NAME)
+    subprocess.run(
+        [limactl, "start", f"--name={LIMA_VM_NAME}", "--tty=false",
+         f"--set=.param.REPO_DIR = \"{repo_dir}\"", str(lima_yaml)],
+        check=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Config share (VirtioFS directory mounted read-only in the guest)
 # ---------------------------------------------------------------------------
 
@@ -195,15 +443,19 @@ def prepare_config_share(
     # Three scripts split the boot into a snapshottable static phase and
     # a per-run phase; the orchestrator gates between them on per-run-go.
     #
-    # guest-proxy-forwarder.py bridges the agent's HTTP_PROXY (localhost
-    # TCP) to the host-side proxy (UDS on Linux / vsock on macOS). Started
-    # by guest-init before the agent.
+    # guest-proxy-forwarder.sh bridges the agent's HTTP_PROXY (localhost
+    # TCP) to the host-side proxy (UDS on Linux / vsock on macOS) via
+    # socat. Started by guest-init before the agent. guest-shell-bridge.sh
+    # mirrors in the other direction for `safeyolo agent shell`.
+    # guest-diag.py is an opt-in user diagnostic and requires python3
+    # in the rootfs (default base includes it? no -- users install if
+    # needed, it's not on the boot path).
     for src_name, dst_name in [
         ("guest-init.sh", "guest-init"),
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
-        ("guest-proxy-forwarder.py", "guest-proxy-forwarder"),
-        ("guest-shell-bridge.py", "guest-shell-bridge"),
+        ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
+        ("guest-shell-bridge.sh", "guest-shell-bridge"),
         ("guest-diag.py", "guest-diag"),
     ]:
         src = Path(__file__).parent / src_name

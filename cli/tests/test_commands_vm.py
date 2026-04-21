@@ -398,6 +398,105 @@ class TestAgentAdd:
         assert result.exit_code == 1
         assert "host script" in result.output.lower()
 
+    def test_rootfs_script_not_found_exits_one(self, runner, config_dir, tmp_path):
+        """--rootfs-script pointing at a missing file exits 1."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        result = runner.invoke(
+            app,
+            ["agent", "add", "test", str(folder),
+             "--rootfs-script", str(tmp_path / "missing.sh")],
+        )
+        assert result.exit_code == 1
+        assert "rootfs script" in result.output.lower()
+
+    def test_rootfs_script_not_executable_exits_one(self, runner, config_dir, tmp_path):
+        """--rootfs-script pointing at a non-executable file exits 1 with a fix hint."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        script = tmp_path / "builder.sh"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o644)  # readable but not executable
+        result = runner.invoke(
+            app,
+            ["agent", "add", "test", str(folder),
+             "--rootfs-script", str(script)],
+        )
+        assert result.exit_code == 1
+        assert "not executable" in result.output.lower()
+        assert "chmod +x" in result.output
+
+    def test_rootfs_script_invoked_and_metadata_saved(
+        self, runner, config_dir, tmp_path
+    ):
+        """Happy path: --rootfs-script runs before platform.prepare_rootfs,
+        its path is stored in metadata."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        script = tmp_path / "builder.sh"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o755)
+
+        mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
+        mock_platform = MagicMock()
+        mock_platform.prepare_rootfs.return_value = mock_rootfs
+
+        saved = {}
+
+        def _capture_save(name, metadata):
+            saved["name"] = name
+            saved["metadata"] = metadata
+
+        with (
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
+            patch("safeyolo.commands.agent.save_agent", side_effect=_capture_save),
+            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.build_custom_rootfs") as mock_build,
+        ):
+            result = runner.invoke(
+                app,
+                ["agent", "add", "test", str(folder),
+                 "--rootfs-script", str(script), "--no-run"],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_build.assert_called_once()
+        # Script path handed to the builder is the resolved absolute path
+        (_, script_arg) = mock_build.call_args[0]
+        assert Path(script_arg) == script.resolve()
+        assert saved["metadata"]["rootfs_script"] == str(script.resolve())
+
+    def test_rootfs_script_failure_surfaces_error(
+        self, runner, config_dir, tmp_path
+    ):
+        """If build_custom_rootfs raises, agent add exits 1 with the error."""
+        from safeyolo.vm import VMError
+
+        folder = tmp_path / "project"
+        folder.mkdir()
+        script = tmp_path / "builder.sh"
+        script.write_text("#!/bin/sh\nexit 1\n")
+        script.chmod(0o755)
+
+        with (
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch(
+                "safeyolo.commands.agent.build_custom_rootfs",
+                side_effect=VMError("builder returned 1"),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                ["agent", "add", "test", str(folder),
+                 "--rootfs-script", str(script), "--no-run"],
+            )
+
+        assert result.exit_code == 1
+        assert "rootfs script failed" in result.output.lower()
+        assert "builder returned 1" in result.output
+
     def test_creates_rootfs_on_add(self, runner, config_dir, tmp_path):
         """add calls plat.prepare_rootfs and saves metadata (no host script)."""
         folder = tmp_path / "project"

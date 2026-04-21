@@ -8,9 +8,11 @@ This addon MUST be loaded last in the addon chain so that
 credential_guard and network_guard see the original host/URL.
 
 Environment variables:
-    SAFEYOLO_SINKHOLE_HTTP_PORT:  Sinkhole HTTP port  (default: 18080)
-    SAFEYOLO_SINKHOLE_HTTPS_PORT: Sinkhole HTTPS port (default: 18443)
-    SAFEYOLO_SINKHOLE_HOST:       Sinkhole host       (default: 127.0.0.1)
+    SAFEYOLO_SINKHOLE_HTTP_PORT:       Sinkhole HTTP port  (default: 18080)
+    SAFEYOLO_SINKHOLE_HTTPS_PORT:      Sinkhole HTTPS port (default: 18443)
+    SAFEYOLO_SINKHOLE_ECC_CHAIN_PORT:  HTTPS port for the cross-signed ECC
+                                       chain (default: 18444)
+    SAFEYOLO_SINKHOLE_HOST:            Sinkhole host       (default: 127.0.0.1)
 """
 
 import logging
@@ -21,6 +23,13 @@ log = logging.getLogger("safeyolo.sinkhole_router")
 SINKHOLE_HOST = os.environ.get("SAFEYOLO_SINKHOLE_HOST", "127.0.0.1")
 SINKHOLE_HTTP_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_HTTP_PORT", "18080"))
 SINKHOLE_HTTPS_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_HTTPS_PORT", "18443"))
+# Dedicated HTTPS port serving an ECC + cross-signed bridge chain that
+# mirrors example.com's real-world shape. Used by the upstream-cert-
+# validation tests so a chain-shape regression surfaces without having
+# to hit the public internet.
+SINKHOLE_ECC_CHAIN_PORT = int(
+    os.environ.get("SAFEYOLO_SINKHOLE_ECC_CHAIN_PORT", "18444"),
+)
 
 # Only redirect these hostnames — must match sinkhole cert SANs.
 # All other traffic passes through to real upstreams.
@@ -33,6 +42,14 @@ SINKHOLE_HOSTS = {
     "httpbin.org",
     "failing.test",
     "legitimate-api.com",
+    "example-chain-test.test",
+}
+
+# Hostnames that get their HTTPS traffic steered to a non-default sinkhole
+# HTTPS port (different cert chain served on each). Lets the cert-shape
+# tests live side-by-side with the default-cert tests without breaking them.
+SINKHOLE_HOST_HTTPS_PORTS = {
+    "example-chain-test.test": SINKHOLE_ECC_CHAIN_PORT,
 }
 
 
@@ -54,7 +71,9 @@ class SinkholeRouter:
 
         if flow.request.scheme == "https":
             flow.request.host = SINKHOLE_HOST
-            flow.request.port = SINKHOLE_HTTPS_PORT
+            flow.request.port = SINKHOLE_HOST_HTTPS_PORTS.get(
+                original_host, SINKHOLE_HTTPS_PORT,
+            )
         else:
             flow.request.host = SINKHOLE_HOST
             flow.request.port = SINKHOLE_HTTP_PORT

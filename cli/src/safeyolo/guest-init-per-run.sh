@@ -40,18 +40,37 @@ echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # 1. Configure environment
+#
+# We publish the env two ways so interactive shells find it regardless
+# of whether the distro uses PAM:
+#
+#   /etc/environment        -- picked up by Debian/Ubuntu via pam_env.so
+#                              when sshd's PAM stack runs. Alpine's sshd
+#                              isn't PAM-linked so this file is inert
+#                              there; we keep it for PAM distros and
+#                              for tooling that reads it directly.
+#   /etc/profile.d/safeyolo-proxy.sh -- sourced by /etc/profile on every
+#                              bash-login shell (Debian, Alpine, Fedora,
+#                              Arch all iterate /etc/profile.d/*.sh from
+#                              /etc/profile). This is what makes
+#                              `safeyolo agent shell <name>` interactive
+#                              sessions pick up HTTP_PROXY etc. on
+#                              non-PAM distros.
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then
     set -a; . /safeyolo/proxy.env; set +a
     cp /safeyolo/proxy.env /etc/environment
+    install -D -m 0644 /safeyolo/proxy.env /etc/profile.d/safeyolo-proxy.sh
 fi
 
 if [ -f /safeyolo/agent.env ]; then
     set -a; . /safeyolo/agent.env; set +a
     cat /safeyolo/agent.env >> /etc/environment
+    cat /safeyolo/agent.env >> /etc/profile.d/safeyolo-proxy.sh
 fi
 
 echo 'export HOME=/home/agent' >> /etc/environment
+echo 'export HOME=/home/agent' >> /etc/profile.d/safeyolo-proxy.sh
 
 # --------------------------------------------------------------------------
 # 1b. Guest-side proxy forwarder (localhost:8080 -> UDS or vsock)
@@ -76,15 +95,14 @@ fi
 #
 # Lets `safeyolo agent shell` reach sshd from the host when the VM has
 # no network interface (macOS vsock mode). The host side of the bridge
-# lives in safeyolo-vm's VSockShellBridge. socat is already in the
-# image (installed at rootfs build time).
+# lives in safeyolo-vm's VSockShellBridge. Uses socat (1.8+ required
+# for VSOCK-LISTEN); socat is a runtime dep of both the default base
+# and any custom rootfs -- see contrib/ROOTFS_SCRIPT_GUIDE.md.
 #
 # Harmless on Linux-gVisor agents -- vsock is available but the host
 # side doesn't listen, so no connections are ever accepted.
 # --------------------------------------------------------------------------
 if [ -x /safeyolo/guest-shell-bridge ]; then
-    # Pre-check python3 + AF_VSOCK
-    /usr/bin/python3 -c "import socket; assert hasattr(socket, 'AF_VSOCK'); print('[per-run] python AF_VSOCK available')" >/dev/console 2>&1 || echo "[per-run] python AF_VSOCK MISSING" >/dev/console
     # Probe sshd reachability so failures are diagnosable from the host.
     (
       (echo > /dev/tcp/127.0.0.1/22) 2>/dev/null \

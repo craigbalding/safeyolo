@@ -33,6 +33,15 @@ cd "$SCRIPT_DIR"
 # --- Isolated test instance configuration ---
 # These env vars scope all SafeYolo operations to a separate instance
 # so blackbox tests don't interfere with production agents.
+#
+# We preserve the CALLER's SAFEYOLO_CONFIG_DIR as the "source" instance
+# that owns the built rootfs + helper binaries (share/, bin/). The test
+# instance symlinks to these at provisioning time (lines ~130-145). This
+# matters for users whose main SafeYolo install is at a non-default path
+# (e.g. SAFEYOLO_CONFIG_DIR=~/.safeyolo-dev via ~/.zshrc): without this,
+# run-tests.sh would hardcode ~/.safeyolo as the artifact source -- wrong
+# for anyone not running production there.
+SAFEYOLO_SOURCE_CONFIG_DIR="${SAFEYOLO_CONFIG_DIR:-$HOME/.safeyolo}"
 export SAFEYOLO_CONFIG_DIR="${SAFEYOLO_TEST_CONFIG_DIR:-$HOME/.safeyolo-test}"
 export SAFEYOLO_SUBNET_BASE=75
 # Logs + flow store scoped to the test instance so blackbox runs
@@ -125,9 +134,12 @@ addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] =
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "
 
-# Symlink shared guest artifacts (rootfs, kernel) from production.
-# init creates an empty share/ dir — replace it with a symlink.
-PROD_SHARE="$HOME/.safeyolo/share"
+# Symlink shared guest artifacts (rootfs, kernel) from the caller's
+# source instance. init creates an empty share/ dir — replace it with
+# a symlink. Using SAFEYOLO_SOURCE_CONFIG_DIR (caller's env) means
+# `SAFEYOLO_CONFIG_DIR=~/.safeyolo-dev ./run-tests.sh` borrows artifacts
+# from ~/.safeyolo-dev, not hardcoded ~/.safeyolo.
+PROD_SHARE="$SAFEYOLO_SOURCE_CONFIG_DIR/share"
 TEST_SHARE="$SAFEYOLO_CONFIG_DIR/share"
 if [ -d "$PROD_SHARE" ] && [ ! -L "$TEST_SHARE" ]; then
     rm -rf "$TEST_SHARE"
@@ -135,8 +147,9 @@ if [ -d "$PROD_SHARE" ] && [ ! -L "$TEST_SHARE" ]; then
     echo "  Linked guest artifacts: $TEST_SHARE -> $PROD_SHARE"
 fi
 
-# Symlink host binaries (safeyolo-vm + vsock-term) from production
-PROD_BIN="$HOME/.safeyolo/bin"
+# Symlink host binaries (safeyolo-vm + vsock-term) from the caller's
+# source instance -- same reasoning as share/.
+PROD_BIN="$SAFEYOLO_SOURCE_CONFIG_DIR/bin"
 TEST_BIN="$SAFEYOLO_CONFIG_DIR/bin"
 if [ -d "$PROD_BIN" ] && [ ! -L "$TEST_BIN" ]; then
     rm -rf "$TEST_BIN"
@@ -217,6 +230,7 @@ else
         --control-port 19999 \
         --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
         --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
+        --extra-cert "ecc-chain:18444:$SCRIPT_DIR/certs/ecc_chain.pem:$HOME/.safeyolo/test-certs/ecc_chain.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
@@ -319,7 +333,7 @@ if [ "$RUN_PROXY" = true ]; then
     cd "$SCRIPT_DIR/host"
     set +e
     pytest $VERBOSE --tb=short --timeout=60 \
-        test_credential_guard.py test_network_guard.py
+        test_credential_guard.py test_network_guard.py test_upstream_cert_validation.py
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
