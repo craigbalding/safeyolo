@@ -15,7 +15,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sinkhole_client import SinkholeClient
+
+# host/ is this conftest's directory — sinkhole_client.py lives here.
+# When pytest is invoked against a subdirectory (e.g. `pytest proxy/`),
+# the subdir gets injected into sys.path but host/ does not, so the
+# bare `from sinkhole_client import ...` would fail. Inject host/
+# explicitly so the import works regardless of invocation cwd/args.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sinkhole_client import SinkholeClient  # noqa: E402
 
 # Import the shared docstring linter from the parent blackbox dir.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

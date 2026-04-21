@@ -339,16 +339,17 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest $VERBOSE --tb=short --timeout=60 \
-        test_credential_guard.py test_network_guard.py test_upstream_cert_validation.py
+    # Directory-based invocation: any test file dropped into proxy/
+    # runs automatically. Avoids the silent-skip failure mode where a
+    # new test file was forgotten from a filename allowlist.
+    pytest $VERBOSE --tb=short --timeout=60 proxy/
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
     echo ""
     echo "=== Process Security Tests (host-side) ==="
     echo ""
-    pytest $VERBOSE --tb=short --timeout=60 \
-        test_firewall_structural.py
+    pytest $VERBOSE --tb=short --timeout=60 security/
     FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -363,8 +364,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest $VERBOSE --tb=short --timeout=30 \
-        test_agent_identity.py
+    pytest $VERBOSE --tb=short --timeout=30 identity/
     IDENTITY_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -388,8 +388,7 @@ if [ "$RUN_ISOLATION" = true ]; then
         echo ""
         cd "$SCRIPT_DIR/host"
         set +e
-        pytest $VERBOSE --tb=short --timeout=120 \
-            test_token_lifecycle.py
+        pytest $VERBOSE --tb=short --timeout=120 lifecycle/
         LIFECYCLE_RESULT=$?
         set -e
         cd "$SCRIPT_DIR"

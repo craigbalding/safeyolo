@@ -17,7 +17,7 @@ provisions to sandboxes.
 | No root at runtime | Started by the operator, runs as the operator's uid | n/a |
 | Bind address | Loopback by default; listen host configurable | [cli/src/safeyolo/proxy.py](../cli/src/safeyolo/proxy.py) |
 | Admin API gating | Bearer token in `~/.safeyolo/data/admin_token`, mode 0600 | [addons/admin_api.py](../addons/admin_api.py), [addons/admin_shield.py](../addons/admin_shield.py) |
-| Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/test_firewall_structural.py](../tests/blackbox/host/test_firewall_structural.py) |
+| Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/security/test_firewall_structural.py](../tests/blackbox/host/security/test_firewall_structural.py) |
 
 ## Agent Sandbox
 

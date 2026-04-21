@@ -168,7 +168,10 @@ def main() -> int:
     suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]] = []
     for label, root in SUITES:
         files: list[tuple[Path, list[TestClass]]] = []
-        for path in sorted(root.glob("test_*.py")):
+        # rglob so phase subdirectories (host/proxy/, host/security/, ...)
+        # are walked. A flat glob here was the reason silently-dropped
+        # test files went unnoticed in the coverage doc too.
+        for path in sorted(root.rglob("test_*.py")):
             classes = _parse_file(path)
             if classes:
                 files.append((path, classes))

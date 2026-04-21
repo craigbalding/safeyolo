@@ -8,7 +8,7 @@ Each entry states the security property the test asserts and the threat it defen
 
 ## Host-side
 
-### `tests/blackbox/host/test_agent_identity.py`
+### `tests/blackbox/host/identity/test_agent_identity.py`
 
 #### TestAgentMap — Agent identity is registered in agent_map.json after start.
 
@@ -38,7 +38,29 @@ A missing or stale socket means every agent request fails with
 ENOENT — effectively a denial of service, not a security
 issue, but a strong signal that the identity chain is broken.
 
-### `tests/blackbox/host/test_credential_guard.py`
+### `tests/blackbox/host/lifecycle/test_token_lifecycle.py`
+
+#### TestAgentTokenLifecycle — Agent token survives proxy restart without breaking a running sandbox.
+
+**Threat:** The agent_token authenticates the sandbox's requests to the
+agent API. If a proxy restart regenerates the token but the
+sandbox still holds the old value, the agent gets 401 on every
+diagnostic call — breaking `safeyolo explain`, credential
+approval UX, and any other observability feature the agent
+exposes to itself. In the Docker stack this worked via bind-mount;
+the microVM migration introduced a copy step that is the common
+regression point.
+
+- **`test_agent_api_survives_proxy_restart`** — Agent API stays reachable from the sandbox across proxy restart.
+  - *Probe:* Verify agent API /health returns 200 from inside the
+sandbox; stop + start the test proxy; assert /health still
+returns 200 from the same running sandbox.
+  - *Consequence if unasserted:* If the sandbox's cached token goes stale on proxy
+restart, every agent-originated diagnostic call fails 401.
+This regression killed `safeyolo explain` when we first
+migrated from Docker bind-mounts to microVM copies.
+
+### `tests/blackbox/host/proxy/test_credential_guard.py`
 
 #### TestCredentialRouting — Credentials reach only their authorised destinations.
 
@@ -121,23 +143,7 @@ surface an approval UX to the user or just fail. Without a
 clear signal in the body, agents default to treating 428 as
 a permanent failure.
 
-### `tests/blackbox/host/test_firewall_structural.py`
-
-#### TestProcessSecrecy — Proxy process doesn't leak SafeYolo tokens via its cmdline.
-
-**Threat:** Process command lines are readable by any local user via
-`ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
-the mitmdump invocation, a non-root user on the host (or a
-process that escaped the sandbox) can read them and gain full
-admin control. Tokens must be passed via file or env var instead.
-
-- **`test_no_tokens_in_process_cmdline`** — Admin and agent tokens do not appear in the mitmdump cmdline.
-  - *Probe:* `pgrep -a -f mitmdump` to get the cmdline string; assert
-the admin and agent token contents are not substrings of it.
-  - *Consequence if unasserted:* A token in the cmdline is readable by any local user —
-full admin access leaks to anyone with shell on the host.
-
-### `tests/blackbox/host/test_network_guard.py`
+### `tests/blackbox/host/proxy/test_network_guard.py`
 
 #### TestAccessControl — Allowlisted domains pass through; blocked domains are stopped.
 
@@ -182,29 +188,7 @@ contain Proxy-Authorization.
   - *Consequence if unasserted:* Hop-by-hop header leak would expose the proxy credential
 to every upstream — a straight credential disclosure bug.
 
-### `tests/blackbox/host/test_token_lifecycle.py`
-
-#### TestAgentTokenLifecycle — Agent token survives proxy restart without breaking a running sandbox.
-
-**Threat:** The agent_token authenticates the sandbox's requests to the
-agent API. If a proxy restart regenerates the token but the
-sandbox still holds the old value, the agent gets 401 on every
-diagnostic call — breaking `safeyolo explain`, credential
-approval UX, and any other observability feature the agent
-exposes to itself. In the Docker stack this worked via bind-mount;
-the microVM migration introduced a copy step that is the common
-regression point.
-
-- **`test_agent_api_survives_proxy_restart`** — Agent API stays reachable from the sandbox across proxy restart.
-  - *Probe:* Verify agent API /health returns 200 from inside the
-sandbox; stop + start the test proxy; assert /health still
-returns 200 from the same running sandbox.
-  - *Consequence if unasserted:* If the sandbox's cached token goes stale on proxy
-restart, every agent-originated diagnostic call fails 401.
-This regression killed `safeyolo explain` when we first
-migrated from Docker bind-mounts to microVM copies.
-
-### `tests/blackbox/host/test_upstream_cert_validation.py`
+### `tests/blackbox/host/proxy/test_upstream_cert_validation.py`
 
 #### TestEccCrossSignedChain — Upstream validation of an ECC leaf whose chain reaches the
 
@@ -358,6 +342,22 @@ it; chain-building halts at the missing issuer.
 mitmproxy started AIA-chasing without an explicit policy
 decision -- a silent, auditable change to what SafeYolo
 accepts as a valid upstream chain.
+
+### `tests/blackbox/host/security/test_firewall_structural.py`
+
+#### TestProcessSecrecy — Proxy process doesn't leak SafeYolo tokens via its cmdline.
+
+**Threat:** Process command lines are readable by any local user via
+`ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
+the mitmdump invocation, a non-root user on the host (or a
+process that escaped the sandbox) can read them and gain full
+admin control. Tokens must be passed via file or env var instead.
+
+- **`test_no_tokens_in_process_cmdline`** — Admin and agent tokens do not appear in the mitmdump cmdline.
+  - *Probe:* `pgrep -a -f mitmdump` to get the cmdline string; assert
+the admin and agent token contents are not substrings of it.
+  - *Consequence if unasserted:* A token in the cmdline is readable by any local user —
+full admin access leaks to anyone with shell on the host.
 
 ## In-sandbox (isolation)
 
