@@ -675,8 +675,12 @@ class LinuxPlatform(AgentPlatform):
             cid,
         ]
         if command:
-            # -lc sources the login profile (mise shims on PATH).
-            cmd.extend(["/bin/bash", "-lc", command])
+            # -lc sources the login profile (mise shims on PATH). We also
+            # explicitly source /etc/environment so HTTP_PROXY, SSL_CERT_FILE,
+            # etc. reach the user's command -- under `runsc exec` there's
+            # no PAM path that would otherwise load /etc/environment.
+            wrapped = f". /etc/environment 2>/dev/null; {command}"
+            cmd.extend(["/bin/bash", "-lc", wrapped])
         else:
             cmd.extend(["/bin/bash", "-l"])
 
