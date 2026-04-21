@@ -7,11 +7,11 @@ GUEST_DIR = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../guest
 
 build:
 	swift build -c release
-	codesign --entitlements safeyolo-vm.entitlements --force -s - $(BINARY)
+	codesign --entitlements safeyolo-vm.entitlements --options runtime --force -s - $(BINARY)
 
 debug:
 	swift build
-	codesign --entitlements safeyolo-vm.entitlements --force -s - .build/debug/safeyolo-vm
+	codesign --entitlements safeyolo-vm.entitlements --options runtime --force -s - .build/debug/safeyolo-vm
 
 LIMA_VM = safeyolo-builder
 UNAME := $(shell uname)
