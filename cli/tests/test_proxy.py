@@ -20,9 +20,9 @@ class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
     def test_addon_chain_has_expected_count(self):
-        """ADDON_CHAIN contains exactly 20 addons (proxy_protocol added)."""
+        """ADDON_CHAIN contains exactly 21 addons (proxy_protocol + pid_writer)."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 20
+        assert len(ADDON_CHAIN) == 21
 
     def test_addon_chain_starts_with_proxy_protocol(self):
         """First addon loaded is proxy_protocol.py.
@@ -1563,8 +1563,14 @@ class TestStartProxy:
             with pytest.raises(RuntimeError, match="Cannot find addons directory"):
                 start_proxy()
 
-    def test_writes_pid_file_on_success(self, tmp_path, monkeypatch):
-        """start_proxy writes PID file after launching the process."""
+    def test_success_when_pid_file_appears(self, tmp_path, monkeypatch):
+        """start_proxy returns when addons/pid_writer.py writes the pid file.
+
+        The CLI no longer writes the pid file itself -- it polls for the
+        file to appear, signalling mitmproxy's `running` lifecycle event
+        (= listener bound, addons loaded). Simulate the addon by writing
+        the file from Popen's side_effect.
+        """
         from safeyolo.proxy import start_proxy
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
@@ -1574,12 +1580,19 @@ class TestStartProxy:
         (tmp_path / "logs").mkdir(exist_ok=True)
         (tmp_path / "policy.toml").touch()
 
-        # Create minimal addons dir
         addons_dir = tmp_path / "addons"
         addons_dir.mkdir()
+        pid_file = data_dir / "proxy.pid"
 
         mock_proc = MagicMock()
         mock_proc.pid = 42
+        mock_proc.poll.return_value = None  # still alive
+
+        def _popen_simulate_addon(*args, **kwargs):
+            # Simulate addons/pid_writer.py's `running` hook writing the
+            # pid file after mitmproxy binds the listener.
+            pid_file.write_text("42\n")
+            return mock_proc
 
         with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
              patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
@@ -1587,13 +1600,47 @@ class TestStartProxy:
              patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
              patch("safeyolo.proxy._build_command", return_value=["mitmdump"]), \
-             patch("safeyolo.proxy.subprocess.Popen", return_value=mock_proc), \
+             patch("safeyolo.proxy.subprocess.Popen", side_effect=_popen_simulate_addon), \
+             patch("safeyolo.proxy_bridge.start_proxy_bridge"), \
              patch("builtins.open", MagicMock()):
             start_proxy()
 
-        pid_file = data_dir / "proxy.pid"
         assert pid_file.exists()
-        assert pid_file.read_text() == "42"
+        assert pid_file.read_text().strip() == "42"
+
+    def test_raises_when_mitmdump_dies_during_startup(self, tmp_path, monkeypatch):
+        """start_proxy surfaces exit code + log tail when mitmdump dies early."""
+        from safeyolo.proxy import start_proxy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        (tmp_path / "policy.toml").touch()
+        (logs_dir / "mitmproxy.log").write_text(
+            "Loading script /app/addons/file_logging.py\n"
+            "ModuleNotFoundError: No module named 'yaml'\n"
+        )
+
+        addons_dir = tmp_path / "addons"
+        addons_dir.mkdir()
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 99
+        mock_proc.poll.return_value = 1  # already dead
+        mock_proc.returncode = 1
+
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
+             patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
+             patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
+             patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
+             patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
+             patch("safeyolo.proxy._build_command", return_value=["mitmdump"]), \
+             patch("safeyolo.proxy.subprocess.Popen", return_value=mock_proc):
+            with pytest.raises(RuntimeError, match="mitmdump exited during startup"):
+                start_proxy()
 
 
 # ---------------------------------------------------------------------------

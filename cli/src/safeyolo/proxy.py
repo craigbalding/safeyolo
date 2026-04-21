@@ -56,6 +56,32 @@ def _pid_file() -> Path:
     return get_data_dir() / "proxy.pid"
 
 
+def _read_log_tail(path: Path, lines: int = 15) -> str:
+    """Read the last N lines of a log file for user-facing error output.
+
+    Used on startup failure: the log already contains mitmdump's own
+    error output (stdout+stderr are redirected to it), so a tail tells
+    the user what actually went wrong (ImportError, port collision,
+    config typo, etc.).
+    """
+    try:
+        with open(path, "rb") as f:
+            try:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                # 8KB is plenty for ~15 log lines even with long addon
+                # tracebacks; avoids reading megabytes of prior runs.
+                read_size = min(size, 8192)
+                f.seek(size - read_size)
+                data = f.read()
+            except OSError:
+                f.seek(0)
+                data = f.read()
+        return b"\n".join(data.splitlines()[-lines:]).decode(errors="replace")
+    except OSError:
+        return "(log file not readable)"
+
+
 def _find_addons_dir() -> Path | None:
     """Find the addons directory. Check repo layout first, then installed package."""
     # Repo layout: safeyolo/addons/
@@ -515,12 +541,24 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     env["MITMPROXY_LOG_PATH"] = str(logs_dir / "mitmproxy.log")
     env["SAFEYOLO_DATA_DIR"] = str(config_dir / "data")
     env["SAFEYOLO_SERVICES_DIR"] = str(config_dir / "services")
+    # Where addons/pid_writer.py will drop the pid when mitmproxy reaches
+    # `running` (= listener bound, all addons loaded). We poll for this
+    # file below rather than sleeping -- the absence of the file during
+    # the poll window tells us mitmdump crashed.
+    env["SAFEYOLO_PROXY_PID_FILE"] = str(_pid_file())
 
     # Pass test sinkhole config to child process (read by sinkhole_router addon)
     if test_config:
         env["SAFEYOLO_SINKHOLE_HOST"] = str(test_config.get("sinkhole_host", "127.0.0.1"))
         env["SAFEYOLO_SINKHOLE_HTTP_PORT"] = str(test_config.get("sinkhole_http_port", 18080))
         env["SAFEYOLO_SINKHOLE_HTTPS_PORT"] = str(test_config.get("sinkhole_https_port", 18443))
+
+    # Clear any stale pid file from a previous crashed run so the poll
+    # below doesn't mistake it for "ready". addons/pid_writer.py will
+    # recreate it on `running`.
+    pid_file = _pid_file()
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.unlink(missing_ok=True)
 
     # Start as background process
     log_file = logs_dir / "mitmproxy.log"
@@ -533,10 +571,30 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
             start_new_session=True,  # Detach from terminal
         )
 
-    # Write PID file
-    pid_file = _pid_file()
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(proc.pid))
+    # Wait for addons/pid_writer.py to signal ready, OR for mitmdump to
+    # die (whichever first). No fixed sleep: the pid file usually appears
+    # in 150-300ms; poll interval 50ms = sub-tick on success. On failure
+    # proc.poll() surfaces the exit code immediately.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if pid_file.exists():
+            break
+        if proc.poll() is not None:
+            tail = _read_log_tail(log_file, lines=15)
+            raise RuntimeError(
+                f"mitmdump exited during startup (rc={proc.returncode}).\n"
+                f"Last {15} log lines:\n{tail}"
+            )
+        time.sleep(0.05)
+    else:
+        # Ran past the deadline with mitmdump still alive but no pid
+        # file -- bound but `running` never fired? Unusual. Surface log
+        # tail so whatever hung shows up.
+        tail = _read_log_tail(log_file, lines=15)
+        raise RuntimeError(
+            f"Proxy did not signal ready within 10s (pid={proc.pid}).\n"
+            f"Last {15} log lines:\n{tail}"
+        )
 
     log.info("Proxy started (PID %d) on port %d", proc.pid, proxy_port)
 
