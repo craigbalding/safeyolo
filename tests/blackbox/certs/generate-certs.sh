@@ -38,11 +38,18 @@ cd "$CERT_DIR"
 # Check if regeneration requested
 if [ "$1" = "--force" ]; then
     rm -f ca.crt sinkhole.crt sinkhole.csr
+    rm -f test-ca-b.crt test-ca-b-crosssigned.crt ecc_intermediate.crt ecc_leaf.crt ecc_chain.pem
     rm -f "$KEY_DIR/ca.key" "$KEY_DIR/sinkhole.key"
+    rm -f "$KEY_DIR/test-ca-b.key" "$KEY_DIR/ecc_intermediate.key" "$KEY_DIR/ecc_chain.key"
 fi
 
-# Skip if certs already exist
-if [ -f ca.crt ] && [ -f sinkhole.crt ] && [ -f "$KEY_DIR/ca.key" ] && [ -f "$KEY_DIR/sinkhole.key" ]; then
+# Skip if ALL certs already exist. If any is missing we fall through and
+# regenerate from scratch -- dependent artifacts (ECC chain cross-signed by
+# ca.key) must be rebuilt when ca.key gets rolled.
+if [ -f ca.crt ] && [ -f sinkhole.crt ] \
+   && [ -f ecc_chain.pem ] && [ -f test-ca-b-crosssigned.crt ] \
+   && [ -f "$KEY_DIR/ca.key" ] && [ -f "$KEY_DIR/sinkhole.key" ] \
+   && [ -f "$KEY_DIR/ecc_chain.key" ]; then
     echo "Certificates already exist. Use --force to regenerate."
     exit 0
 fi
