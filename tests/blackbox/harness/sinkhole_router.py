@@ -43,7 +43,7 @@ SINKHOLE_ECC_CHAIN_PORT = int(
 )
 # Additional chain-shape ports. Each port serves a different chain from
 # tests/blackbox/certs/generate-certs.sh and is targeted by a dedicated
-# test class in tests/blackbox/host/test_upstream_cert_validation.py.
+# test class in tests/blackbox/host/proxy/test_upstream_cert_validation.py.
 SINKHOLE_RSA_DEEP_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_RSA_DEEP_PORT", "18445"))
 SINKHOLE_NC_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_NC_PORT", "18446"))
 SINKHOLE_EXTRA_INTS_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_EXTRA_INTS_PORT", "18447"))

@@ -121,8 +121,8 @@ same way it verifies production certs. No `ssl_insecure` flags. See
 | `run-tests.sh` | Orchestrator (idempotent, reuses running services) |
 | `host/conftest.py` | Host-side fixtures (sinkhole, proxy, admin clients) |
 | `host/sinkhole_client.py` | Sinkhole control API client |
-| `host/test_credential_guard.py` | Credential routing/blocking tests |
-| `host/test_network_guard.py` | Access control, rate limiting tests |
+| `host/proxy/test_credential_guard.py` | Credential routing/blocking tests |
+| `host/proxy/test_network_guard.py` | Access control, rate limiting tests |
 | `isolation/test_vm_isolation.py` | Network escape, privilege escalation tests |
 | `isolation/test_key_isolation.py` | Private key isolation tests |
 | `harness/sinkhole_router.py` | mitmproxy addon redirecting test traffic to sinkhole |
