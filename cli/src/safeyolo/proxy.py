@@ -25,6 +25,7 @@ ADDON_CHAIN = [
     # handle_stream before any connections arrive)
     "proxy_protocol.py",
     # Layer 0: Infrastructure
+    "pid_writer.py",     # writes SAFEYOLO_PROXY_PID_FILE on `running`
     "file_logging.py",
     "memory_monitor.py",
     "admin_shield.py",
