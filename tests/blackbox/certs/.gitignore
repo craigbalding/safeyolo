@@ -1,6 +1,44 @@
-# Generated certificates - created by generate-certs.sh at test time
-# Do NOT commit private keys to version control
+# Generated certificates - created by generate-certs.sh at test time.
+# Do NOT commit private keys to version control.
+#
+# The patterns below cover every artifact generate-certs.sh writes
+# into this directory (the private keys land in ~/.safeyolo/test-certs/
+# and are never near the repo). Listed by shape for readability.
+
+# Default sinkhole cert + test CA
 ca.crt
 ca.key
 sinkhole.crt
 sinkhole.key
+
+# ECC cross-signed chain
+ecc_chain.pem
+ecc_intermediate.crt
+ecc_leaf.crt
+test-ca-b.crt
+test-ca-b-crosssigned.crt
+
+# RSA 4-deep chain
+rsa_deep_chain.pem
+rsa_deep_leaf.crt
+rsa_int_a.crt
+rsa_int_b.crt
+
+# Name-constrained intermediate
+nc_chain.pem
+nc_intermediate.crt
+nc_leaf.crt
+
+# Extra unrelated intermediates
+extra_chain.pem
+extra_int.crt
+extra_leaf.crt
+junk_a.crt
+junk_b.crt
+
+# Must-fail shapes
+expired_chain.pem
+expired_leaf.crt
+wrong_san_chain.pem
+wrong_san_leaf.crt
+self_signed_chain.pem
