@@ -74,7 +74,7 @@ curl --noproxy '*' https://ifconfig.co
 Agent state persists across restarts: mise installs, shell history, config files.
 
 - **macOS**: each agent has its own ext4 disk image at `~/.safeyolo/agents/<name>/rootfs.ext4`.
-- **Linux**: agents share a single read-only EROFS image at `~/.safeyolo/share/rootfs-base.erofs`; gVisor's sentry provides a memory-backed writable overlay per sandbox, and per-agent persistent state lives under `~/.safeyolo/agents/<name>/` (config share, status share, agent metadata).
+- **Linux**: agents share a single read-only EROFS image at `~/.safeyolo/share/rootfs-base.erofs`; gVisor's sentry provides a memory-backed writable overlay per sandbox for most of the rootfs. Per-agent persistent state lives under `~/.safeyolo/agents/<name>/` (config share, status share, agent metadata, plus `home/` — OCI-bind-mounted over `/home/agent` inside the sandbox so mise installs, shell history, and host-script-staged auth persist across restarts).
 
 ## Troubleshooting
 

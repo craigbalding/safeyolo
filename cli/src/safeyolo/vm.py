@@ -107,13 +107,14 @@ def get_agent_status_dir(name: str) -> Path:
 def get_agent_home_dir(name: str) -> Path:
     """Host-side backing for /home/agent inside the guest.
 
-    Bind-mounted over the rootfs /home/agent via VirtioFS so writes
-    survive the snapshot/restore dance on macOS (where restore clones
-    a pristine rootfs image, wiping any in-rootfs writes) and the
-    ephemeral memory overlay on Linux gVisor. MISE_DATA_DIR points at
-    $HOME/.mise (set in /etc/profile.d/mise.sh and vsock-term), so
-    mise installs land here too -- first-run installs persist and the
-    install block in guest-init-static is a no-op thereafter.
+    Bind-mounted over the rootfs /home/agent -- VirtioFS on macOS VZ,
+    OCI bind-mount on Linux gVisor -- so writes survive the macOS
+    snapshot/restore dance (restore clones a pristine rootfs image,
+    wiping any in-rootfs writes) and Linux gVisor's ephemeral memory
+    overlay. MISE_DATA_DIR points at $HOME/.mise (set in
+    /etc/profile.d/mise.sh and vsock-term), so mise installs land here
+    too -- first-run installs persist and the install block in
+    guest-init-static is a no-op thereafter.
     """
     return get_agents_dir() / name / "home"
 

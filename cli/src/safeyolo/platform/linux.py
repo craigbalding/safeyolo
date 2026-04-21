@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from ..config import get_agents_dir, get_share_dir
+from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 from . import AgentPlatform
 
 log = logging.getLogger("safeyolo.platform.linux")
@@ -470,6 +471,13 @@ class LinuxPlatform(AgentPlatform):
 
         self.prepare_rootfs(name)
 
+        # Backfill the per-agent host-side /home/agent source for
+        # agents created before the persistent-home feature. `agent
+        # add` already runs this, but an existing agent created on an
+        # older build won't have it until first run after upgrade.
+        # Idempotent; matches the Darwin pattern at vm.py:start_vm.
+        ensure_agent_persistent_dirs(name)
+
         os.makedirs(rootfs / "workspace", exist_ok=True)
 
         # runsc inside the userns operates as subordinate uid 100000
@@ -795,6 +803,17 @@ class LinuxPlatform(AgentPlatform):
             {"destination": "/safeyolo-status", "type": "bind",
              "source": str(self._status_dir(name)),
              "options": ["rbind", "rw"]},
+            # Persistent /home/agent. Without this, writes to
+            # /home/agent land in gVisor's memory-backed rootfs overlay
+            # and vanish on sandbox stop -- mise installs, shell
+            # history, .claude.json, host-script-staged auth. The host
+            # source is per-agent so cross-agent isolation is preserved
+            # structurally (each agent's own dir, no sharing).
+            # guest-init-static.sh seeds /etc/skel on first boot when
+            # this dir is empty; subsequent boots skip the seed.
+            {"destination": "/home/agent", "type": "bind",
+             "source": str(get_agent_home_dir(name)),
+             "options": ["rbind", "rw", "nosuid", "nodev"]},
         ]
 
         # Per-agent proxy UDS
@@ -820,11 +839,18 @@ class LinuxPlatform(AgentPlatform):
 
         # Extra shares (host config dirs)
         if extra_shares:
+            agent_home = get_agent_home_dir(name)
             for host_path, tag, read_only in extra_shares:
                 home = Path.home()
                 try:
                     rel = Path(host_path).relative_to(home)
                     guest_path = f"/home/agent/{rel}"
+                    # /home/agent is an OCI bind to the host-side agent
+                    # home dir (possibly empty on first boot). gVisor
+                    # requires nested bind destinations to pre-exist on
+                    # the host; create the mount point here so runsc
+                    # finds it when consuming the spec.
+                    (agent_home / rel).mkdir(parents=True, exist_ok=True)
                 except ValueError:
                     guest_path = f"/mnt/{tag}"
                 mounts.append({
