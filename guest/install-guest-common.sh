@@ -49,6 +49,13 @@ install_safeyolo_guest_common() {
         return 1
     fi
     chroot "$rootfs" useradd -m -s /bin/bash -u 1000 agent 2>/dev/null || true
+    # Unlock the agent account's password field so OpenSSH accepts pubkey
+    # auth. useradd creates accounts with pw="!" (locked). OpenSSH on
+    # Alpine (9.7+) refuses any auth for locked accounts, including
+    # pubkey. Setting pw="*" means "no password set" without the locked
+    # flag; pubkey auth then works. PasswordAuthentication is off in our
+    # sshd_config so this cannot be abused for passwordless login.
+    chroot "$rootfs" usermod -p '*' agent 2>/dev/null || true
 
     # sshd config: pubkey only, no passwords. Skip silently if no sshd
     # package is installed -- some minimal rootfs don't ship one and the
