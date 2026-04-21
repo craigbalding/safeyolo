@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**82 tests across 23 threat categories.**
+**88 tests across 29 threat categories.**
 
 ## Host-side
 
@@ -224,6 +224,115 @@ has bitten us twice is not currently present. A red (timeout,
 502, or TLS verify error from mitmproxy) means something in
 `_merge_system_cas_into_certifi` or the upstream TLS context
 is broken.
+
+#### TestRsaDeepChain — Upstream validation of a 4-deep RSA chain (leaf -> intA -> intB -> root).
+
+**Threat:** Many real-world CDN chains (Amazon CloudFront, Microsoft,
+some Akamai deployments) are 4-deep. Chain builder regressions
+around depth limits, path-length constraints, or intermediate
+caching surface here without needing public internet access.
+
+- **`test_four_deep_chain_validates`** — GET https://rsa-deep-chain.test/ through the proxy returns 200.
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18445 HTTPS endpoint. The sinkhole presents the chain
+[RSA leaf, RSA intermediate A (pathlen:0), RSA intermediate B
+(pathlen:1)]. mitmproxy walks leaf -> A -> B -> ca.crt and
+accepts.
+  - *Consequence if unasserted:* A green 200 confirms the chain builder handles 4-deep
+chains with path-length-constrained intermediates. A red means
+either the depth is being truncated, or the pathlen constraint
+is being misinterpreted -- both would break real CDN upstreams.
+
+#### TestNameConstrainedIntermediate — Upstream validation of a leaf under a name-constrained intermediate.
+
+**Threat:** X.509 nameConstraints (RFC 5280 s4.2.1.10) is implemented
+inconsistently across TLS stacks -- OpenSSL, Python ssl, and
+mitmproxy have each had bugs at various versions. An intermediate
+that permits DNS:nc-constrained.test must still validate a leaf
+whose SAN is within that subtree.
+
+- **`test_leaf_in_permitted_subtree_validates`** — GET https://nc-constrained.test/ through the proxy returns 200.
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18446 HTTPS endpoint. The intermediate has critical
+nameConstraints permitting DNS:nc-constrained.test and
+  - *Consequence if unasserted:* A green 200 confirms mitmproxy honours nameConstraints
+correctly when the leaf is within the permitted subtree. A red
+502 likely means the validator is rejecting leaves under
+name-constrained intermediates outright (a known bug class in
+some TLS stacks).
+
+#### TestExtraIntermediatesIgnored — Upstream validation when server presents extra, unrelated intermediates.
+
+**Threat:** Real-world servers sometimes include extras in the chain due
+to SSLCertificateChainFile misconfiguration or bundle generation
+errors. An over-strict validator that refuses any chain containing
+certs outside the verification path would break these upstreams.
+mitmproxy should find the correct path and silently ignore the rest.
+
+- **`test_junk_certs_in_chain_dont_break_verify`** — GET https://extra-intermediates.test/ through the proxy returns 200.
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18447 HTTPS endpoint. The sinkhole presents the chain
+[leaf, real intermediate, junk CA A, junk CA B]. Only
+`leaf -> real intermediate -> ca.crt` is on the verification
+path; the two junk CAs are unrelated self-signed certs.
+  - *Consequence if unasserted:* A green 200 confirms the chain builder picks the right
+path and ignores extras. A red means either the builder got
+confused by the junk, or it rejected the whole chain for
+containing unrelated certs -- either would break real upstreams
+that ship mis-bundled intermediates.
+
+#### TestExpiredLeafRejected — Must-fail: upstream MUST reject a cert whose notAfter is in the past.
+
+**Threat:** Accepting expired certs has historically regressed in TLS
+stacks (most famously GnuTLS CVE-2014-3466, but also ssl stacks
+whose expiry check lived in a flag disabled by default). If SafeYolo
+ever accepts an expired upstream cert, attackers who compromised an
+expired key long after its issuer stopped caring could impersonate
+the upstream. This test is the canary.
+
+- **`test_expired_cert_causes_upstream_failure`** — GET https://expired-leaf.test/ through the proxy returns 502 (or errors).
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18448 HTTPS endpoint, which presents a valid chain whose
+leaf has notAfter=2021-01-01 (years in the past). mitmproxy
+walks the chain, validates the signatures (all fine), then
+checks validity windows and MUST reject.
+  - *Consequence if unasserted:* Any response other than an upstream-verify failure
+(connection error or 502) means SafeYolo accepted an expired
+cert -- a regression that would silently weaken upstream
+authentication across the board.
+
+#### TestWrongSanRejected — Must-fail: upstream MUST reject a cert whose SAN doesn't match the host.
+
+**Threat:** Hostname verification is the most basic TLS invariant after
+chain trust. A bug that accepts any valid-chained cert regardless
+of hostname would let anyone with ANY cert signed by a trusted CA
+impersonate ANY upstream. This test ensures the SAN-match check
+still fires.
+
+- **`test_cert_with_mismatched_san_causes_failure`** — GET https://wrong-san.test/ through the proxy returns 502 (or errors).
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18449 HTTPS endpoint. The leaf has SAN=DNS:other-name.test
+only -- neither the requested hostname (wrong-san.test) nor the
+connection target IP (127.0.0.1) appears. The chain itself is
+valid, so the only reason to reject is the hostname mismatch.
+  - *Consequence if unasserted:* Any response other than an upstream-verify failure means
+SafeYolo is accepting certs without checking SAN -- a
+catastrophic regression that breaks TLS authentication entirely.
+
+#### TestSelfSignedLeafRejected — Must-fail: upstream MUST reject a self-signed leaf with no trust path.
+
+**Threat:** A self-signed leaf whose issuer isn't in the trust store has
+no path to a trusted root. Accepting it would mean anyone with a
+key can generate a cert for any hostname and pass verification.
+This test ensures SafeYolo's trust store isn't being bypassed.
+
+- **`test_self_signed_cert_causes_failure`** — GET https://self-signed.test/ through the proxy returns 502 (or errors).
+  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
+port-18450 HTTPS endpoint, which presents a single self-signed
+leaf (SAN=self-signed.test, 127.0.0.1). The leaf signs itself;
+no trusted issuer is present in the chain.
+  - *Consequence if unasserted:* Any response other than an upstream-verify failure means
+SafeYolo is accepting untrusted roots -- TLS trust is broken.
 
 ## In-sandbox (isolation)
 

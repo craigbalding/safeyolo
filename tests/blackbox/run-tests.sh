@@ -231,6 +231,12 @@ else
         --cert "$SCRIPT_DIR/certs/sinkhole.crt" \
         --key "$HOME/.safeyolo/test-certs/sinkhole.key" \
         --extra-cert "ecc-chain:18444:$SCRIPT_DIR/certs/ecc_chain.pem:$HOME/.safeyolo/test-certs/ecc_chain.key" \
+        --extra-cert "rsa-deep:18445:$SCRIPT_DIR/certs/rsa_deep_chain.pem:$HOME/.safeyolo/test-certs/rsa_deep_chain.key" \
+        --extra-cert "nc-constrained:18446:$SCRIPT_DIR/certs/nc_chain.pem:$HOME/.safeyolo/test-certs/nc_chain.key" \
+        --extra-cert "extra-ints:18447:$SCRIPT_DIR/certs/extra_chain.pem:$HOME/.safeyolo/test-certs/extra_chain.key" \
+        --extra-cert "expired:18448:$SCRIPT_DIR/certs/expired_chain.pem:$HOME/.safeyolo/test-certs/expired_chain.key" \
+        --extra-cert "wrong-san:18449:$SCRIPT_DIR/certs/wrong_san_chain.pem:$HOME/.safeyolo/test-certs/wrong_san_chain.key" \
+        --extra-cert "self-signed:18450:$SCRIPT_DIR/certs/self_signed_chain.pem:$HOME/.safeyolo/test-certs/self_signed_chain.key" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
