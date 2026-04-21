@@ -393,30 +393,47 @@ def _run_rootfs_script_lima(
 
 
 def _ensure_lima_vm(limactl: str) -> None:
-    """Make sure the safeyolo-builder Lima VM exists.
+    """Make sure the safeyolo-builder Lima VM exists and is running.
 
-    Creates it from guest/lima.yaml if missing. Matches the pattern in
-    guest/build-all.sh so the default-base and custom-rootfs flows share
-    one VM.
+    Creates it from guest/lima.yaml if missing. Starts it if stopped.
+    Matches the pattern in guest/build-all.sh so the default-base and
+    custom-rootfs flows share one VM, and the post-build stop() in
+    _run_rootfs_script_lima doesn't leave the next run to trip over
+    Lima 2.x's interactive "Do you want to start the instance now?"
+    prompt on `limactl shell`.
     """
     listing = subprocess.run(
         [limactl, "list", "--format", "{{.Name}}"],
         check=False, capture_output=True, text=True,
     )
-    if listing.returncode == 0 and LIMA_VM_NAME in listing.stdout.split():
+    vm_exists = (
+        listing.returncode == 0 and LIMA_VM_NAME in listing.stdout.split()
+    )
+
+    if not vm_exists:
+        lima_yaml = _guest_src_dir() / "lima.yaml"
+        if not lima_yaml.is_file():
+            raise VMError(f"Missing {lima_yaml}; cannot create Lima VM.")
+        repo_dir = _guest_src_dir().parent.resolve()
+        log.info("Creating Lima VM '%s' (first run; ~2-3 min)", LIMA_VM_NAME)
+        subprocess.run(
+            [limactl, "start", f"--name={LIMA_VM_NAME}", "--tty=false",
+             f"--set=.param.REPO_DIR = \"{repo_dir}\"", str(lima_yaml)],
+            check=True,
+        )
         return
 
-    lima_yaml = _guest_src_dir() / "lima.yaml"
-    if not lima_yaml.is_file():
-        raise VMError(f"Missing {lima_yaml}; cannot create Lima VM.")
-
-    repo_dir = _guest_src_dir().parent.resolve()
-    log.info("Creating Lima VM '%s' (first run; ~2-3 min)", LIMA_VM_NAME)
-    subprocess.run(
-        [limactl, "start", f"--name={LIMA_VM_NAME}", "--tty=false",
-         f"--set=.param.REPO_DIR = \"{repo_dir}\"", str(lima_yaml)],
-        check=True,
+    status = subprocess.run(
+        [limactl, "list", "--format", "{{.Status}}",
+         "--filter", f"name={LIMA_VM_NAME}"],
+        check=True, capture_output=True, text=True,
     )
+    if status.stdout.strip() != "Running":
+        log.info("Starting Lima VM '%s'", LIMA_VM_NAME)
+        subprocess.run(
+            [limactl, "start", "--tty=false", LIMA_VM_NAME],
+            check=True,
+        )
 
 
 # ---------------------------------------------------------------------------
