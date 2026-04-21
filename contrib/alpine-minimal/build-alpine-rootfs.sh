@@ -63,12 +63,16 @@ mv "$SAFEYOLO_ROOTFS_WORK_DIR/unpack/rootfs" "$TREE"
 # This assumes the host kernel can run ${SAFEYOLO_TARGET_ARCH} binaries
 # (true on matching-arch hosts; cross-arch needs qemu-user-static). ---
 echo "=== Installing Alpine packages ==="
-# Minimal: bash for the safeyolo-guest-init shebang, ca-certificates for
-# HTTPS, shadow for useradd, openssh for `safeyolo agent shell`, curl +
-# git + jq as a baseline developer toolkit. Users extend this list.
+# Baseline SafeYolo runtime needs:
+#   bash     -- shebang on safeyolo-guest-init and entrypoints
+#   python3  -- guest-shell-bridge (vsock→sshd) is a Python script
+#   shadow   -- useradd used by install_safeyolo_guest_common
+#   openssh-server -- `safeyolo agent shell` SSH target
+#   ca-certificates -- HTTPS trust store (SafeYolo CA appended at boot)
+# Plus a baseline developer toolkit (curl, git, jq). Users extend this.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash ca-certificates shadow openssh-server curl git jq
+    bash python3 ca-certificates shadow openssh-server curl git jq
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"

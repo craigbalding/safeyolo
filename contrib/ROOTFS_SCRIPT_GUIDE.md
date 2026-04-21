@@ -45,7 +45,7 @@ with `--force`.
 ## What the rootfs must contain
 
 SafeYolo boots the rootfs you produce, bypassing the distro's own init.
-Three things are required:
+What's required:
 
 1. **`/usr/local/bin/safeyolo-guest-init`** — exec'd as PID 1 on macOS
    (via the initramfs `switch_root`) and as the OCI entrypoint on Linux.
@@ -54,6 +54,15 @@ Three things are required:
    modern distro from 2018 onwards is fine.
 3. **The right architecture** — use `$SAFEYOLO_TARGET_ARCH` to pull the
    matching image or bootstrap the right package set.
+4. **These runtime packages**, which SafeYolo's boot scripts rely on:
+   - `bash` (shebang on our init stubs + default shell)
+   - `python3` at `/usr/bin/python3` (used by `guest-shell-bridge`, the
+     vsock↔sshd pump that makes `safeyolo agent shell` work on macOS)
+   - `openssh-server` (sshd — entrypoint for `safeyolo agent shell`)
+   - `ca-certificates` (trust store — SafeYolo's MITM CA is appended at
+     boot by `guest-init-static`)
+   - `shadow` or equivalent (provides `useradd` for
+     `install_safeyolo_guest_common`)
 
 Everything else (systemd, SELinux policy, unit files, distro-specific
 boot choreography) is ignored because our init runs instead of the
