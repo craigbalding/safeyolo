@@ -49,8 +49,8 @@ endif
 
 install: build guest-tools
 	mkdir -p $(INSTALL_DIR)
-	cp $(BINARY) $(INSTALL_DIR)/safeyolo-vm
-	cp $(BUILD_DIR)/vsock-term $(INSTALL_DIR)/vsock-term
+	install -m 0755 $(BINARY) $(INSTALL_DIR)/safeyolo-vm
+	install -m 0755 $(BUILD_DIR)/vsock-term $(INSTALL_DIR)/vsock-term
 
 clean:
 	swift package clean
