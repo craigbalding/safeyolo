@@ -379,21 +379,21 @@ if [ "$RUN_ISOLATION" = true ]; then
     set -e
     echo ""
 
-    # Token lifecycle test — runs on the host but needs the sandbox
-    # still running (tests agent API across a proxy restart). Must
-    # run BEFORE cleanup tears down the VM.
-    LIFECYCLE_RESULT=0
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        echo "=== Token Lifecycle Tests (host-side, sandbox running) ==="
-        echo ""
-        cd "$SCRIPT_DIR/host"
-        set +e
-        pytest $VERBOSE --tb=short --timeout=120 lifecycle/
-        LIFECYCLE_RESULT=$?
-        set -e
-        cd "$SCRIPT_DIR"
-        echo ""
-    fi
+    # Lifecycle tests — host-side but need the sandbox still running
+    # (write/read state across a stop+start cycle, verify agent API
+    # after proxy restart, etc.). MUST run BEFORE cleanup tears down
+    # the VM. Cross-platform now that home-persistence lives here;
+    # individual tests that only apply to one platform carry their
+    # own pytest skipif (see test_token_lifecycle.py).
+    echo "=== Lifecycle Tests (host-side, sandbox running) ==="
+    echo ""
+    cd "$SCRIPT_DIR/host"
+    set +e
+    pytest $VERBOSE -rs --tb=short --timeout=120 lifecycle/
+    LIFECYCLE_RESULT=$?
+    set -e
+    cd "$SCRIPT_DIR"
+    echo ""
 fi
 
 # --- Phase 3: Summary ---
@@ -426,7 +426,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
     if [ "${LIFECYCLE_RESULT:-0}" != "0" ]; then
         echo "Lifecycle tests: FAILED (exit code: $LIFECYCLE_RESULT)"
-    elif [[ "$(uname -s)" == "Linux" ]]; then
+    else
         echo "Lifecycle tests: PASSED"
     fi
 fi
