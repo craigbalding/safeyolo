@@ -56,13 +56,21 @@ What's required:
    matching image or bootstrap the right package set.
 4. **These runtime packages**, which SafeYolo's boot scripts rely on:
    - `bash` (shebang on our init stubs + default shell)
-   - `python3` at `/usr/bin/python3` (used by `guest-shell-bridge`, the
-     vsock↔sshd pump that makes `safeyolo agent shell` work on macOS)
+   - `socat` 1.8+ (used by `guest-proxy-forwarder` and
+     `guest-shell-bridge`; the 1.8 release added `VSOCK-LISTEN` /
+     `VSOCK-CONNECT`, which these pumps require on macOS. Debian trixie,
+     Alpine 3.20+, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
    - `openssh-server` (sshd — entrypoint for `safeyolo agent shell`)
    - `ca-certificates` (trust store — SafeYolo's MITM CA is appended at
      boot by `guest-init-static`)
-   - `shadow` or equivalent (provides `useradd` for
-     `install_safeyolo_guest_common`)
+   - `shadow` or equivalent (provides `useradd` + `usermod`; the latter
+     is used to unlock the agent account so OpenSSH accepts pubkey auth
+     — Alpine's OpenSSH refuses locked accounts even for pubkey)
+
+   Optional:
+   - `python3` — only needed if you want `safeyolo agent shell <name>
+     -- python3 /safeyolo/guest-diag` (an interactive egress-chain
+     diagnostic). Nothing on the boot path depends on Python any more.
 
 Everything else (systemd, SELinux policy, unit files, distro-specific
 boot choreography) is ignored because our init runs instead of the

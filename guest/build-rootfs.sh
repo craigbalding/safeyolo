@@ -182,7 +182,7 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
         --variant=minbase \
         --arch="$DEB_ARCH" \
         --keyring="$DAK_GPG" \
-        --include=ca-certificates,curl,git,jq,build-essential,gnupg,openssh-server,iproute2,iputils-ping,procps,less,xz-utils,libgomp1,libatomic1,python3,python3-pip,busybox-static \
+        --include=ca-certificates,curl,git,jq,build-essential,gnupg,openssh-server,iproute2,iputils-ping,procps,less,xz-utils,libgomp1,libatomic1,python3,python3-pip,busybox-static,socat \
         --essential-hook="$ESSENTIAL_HOOK_SCRIPT" \
         --customize-hook="bash $CUSTOMIZE_HOOK_SCRIPT \"\$1\"" \
         trixie \

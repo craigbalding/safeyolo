@@ -76,15 +76,14 @@ fi
 #
 # Lets `safeyolo agent shell` reach sshd from the host when the VM has
 # no network interface (macOS vsock mode). The host side of the bridge
-# lives in safeyolo-vm's VSockShellBridge. socat is already in the
-# image (installed at rootfs build time).
+# lives in safeyolo-vm's VSockShellBridge. Uses socat (1.8+ required
+# for VSOCK-LISTEN); socat is a runtime dep of both the default base
+# and any custom rootfs -- see contrib/ROOTFS_SCRIPT_GUIDE.md.
 #
 # Harmless on Linux-gVisor agents -- vsock is available but the host
 # side doesn't listen, so no connections are ever accepted.
 # --------------------------------------------------------------------------
 if [ -x /safeyolo/guest-shell-bridge ]; then
-    # Pre-check python3 + AF_VSOCK
-    /usr/bin/python3 -c "import socket; assert hasattr(socket, 'AF_VSOCK'); print('[per-run] python AF_VSOCK available')" >/dev/console 2>&1 || echo "[per-run] python AF_VSOCK MISSING" >/dev/console
     # Probe sshd reachability so failures are diagnosable from the host.
     (
       (echo > /dev/tcp/127.0.0.1/22) 2>/dev/null \

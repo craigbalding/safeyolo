@@ -65,14 +65,17 @@ mv "$SAFEYOLO_ROOTFS_WORK_DIR/unpack/rootfs" "$TREE"
 echo "=== Installing Alpine packages ==="
 # Baseline SafeYolo runtime needs:
 #   bash     -- shebang on safeyolo-guest-init and entrypoints
-#   python3  -- guest-shell-bridge (vsock→sshd) is a Python script
-#   shadow   -- useradd used by install_safeyolo_guest_common
+#   socat    -- guest-proxy-forwarder + guest-shell-bridge (1.8+ for
+#               VSOCK-LISTEN / VSOCK-CONNECT; Alpine 3.20 ships 1.8)
+#   shadow   -- useradd + usermod used by install_safeyolo_guest_common
 #   openssh-server -- `safeyolo agent shell` SSH target
 #   ca-certificates -- HTTPS trust store (SafeYolo CA appended at boot)
 # Plus a baseline developer toolkit (curl, git, jq). Users extend this.
+# Add python3 too if you want `safeyolo agent shell <name> -- python3
+# /safeyolo/guest-diag` (optional, not on the boot path).
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash python3 ca-certificates shadow openssh-server curl git jq
+    bash socat ca-certificates shadow openssh-server curl git jq
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"

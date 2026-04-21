@@ -443,15 +443,19 @@ def prepare_config_share(
     # Three scripts split the boot into a snapshottable static phase and
     # a per-run phase; the orchestrator gates between them on per-run-go.
     #
-    # guest-proxy-forwarder.py bridges the agent's HTTP_PROXY (localhost
-    # TCP) to the host-side proxy (UDS on Linux / vsock on macOS). Started
-    # by guest-init before the agent.
+    # guest-proxy-forwarder.sh bridges the agent's HTTP_PROXY (localhost
+    # TCP) to the host-side proxy (UDS on Linux / vsock on macOS) via
+    # socat. Started by guest-init before the agent. guest-shell-bridge.sh
+    # mirrors in the other direction for `safeyolo agent shell`.
+    # guest-diag.py is an opt-in user diagnostic and requires python3
+    # in the rootfs (default base includes it? no -- users install if
+    # needed, it's not on the boot path).
     for src_name, dst_name in [
         ("guest-init.sh", "guest-init"),
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
-        ("guest-proxy-forwarder.py", "guest-proxy-forwarder"),
-        ("guest-shell-bridge.py", "guest-shell-bridge"),
+        ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
+        ("guest-shell-bridge.sh", "guest-shell-bridge"),
         ("guest-diag.py", "guest-diag"),
     ]:
         src = Path(__file__).parent / src_name
