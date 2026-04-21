@@ -204,7 +204,12 @@ if command -v mkfs.erofs >/dev/null 2>&1; then
     echo "--- Creating EROFS image ---"
     sudo mkfs.erofs -E noinline_data "$OUTPUT_EROFS" "$WORK_DIR"
     sudo chown "$(id -u):$(id -g)" "$OUTPUT_EROFS"
-    chmod 644 "$OUTPUT_EROFS"  # must be world-readable for rootless userns
+    # mkfs.erofs writes 644 by default -- this explicit chmod is defensive
+    # for rootless userns. On macOS Lima virtiofs it fails with EPERM
+    # (the mount layer rejects chmod even when ownership matches), and
+    # set -e kills the build before the ext4 step. The file already has
+    # the right mode from mkfs, so swallow the error.
+    chmod 644 "$OUTPUT_EROFS" 2>/dev/null || true
     echo "EROFS: $OUTPUT_EROFS ($(du -sh "$OUTPUT_EROFS" | cut -f1))"
 else
     echo "--- mkfs.erofs not found, skipping EROFS image ---"
