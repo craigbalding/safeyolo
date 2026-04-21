@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**89 tests across 30 threat categories.**
+**90 tests across 31 threat categories.**
 
 ## Host-side
 
@@ -37,6 +37,30 @@ live Unix domain socket (Path.is_socket()).
 A missing or stale socket means every agent request fails with
 ENOENT — effectively a denial of service, not a security
 issue, but a strong signal that the identity chain is broken.
+
+### `tests/blackbox/host/lifecycle/test_home_persistence.py`
+
+#### TestAgentHomePersistence — Writes to /home/agent persist across `agent stop` and `agent run`.
+
+**Threat:** The persistent home is where mise installs, shell history,
+host-script-staged auth (e.g. ~/.claude.json), and any user state
+live. If it doesn't survive a sandbox restart, every `agent run`
+is effectively a fresh install — no auth, no cached tools, no
+shell history. On Linux the memory-backed overlay silently
+discarded those writes before the OCI bind-mount landed; this
+test guards against a regression to that behavior.
+
+- **`test_home_persists_across_restart`** — Marker written to /home/agent is still there after stop/start.
+  - *Probe:* Write a random-token marker file to /home/agent from
+inside the running agent, stop the sandbox, start it again,
+read the marker back from the fresh sandbox, assert the
+content is identical.
+  - *Consequence if unasserted:* A missing file or mismatched content means writes to
+/home/agent landed somewhere ephemeral (the memory overlay
+on Linux, or an un-mounted location on either platform) —
+the OCI bind-mount is broken or was never wired. Host-script
+auth staging, mise installs, and shell history all rely on
+this invariant.
 
 ### `tests/blackbox/host/lifecycle/test_token_lifecycle.py`
 
