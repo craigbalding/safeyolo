@@ -25,6 +25,7 @@ echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 # explicitly. Runs pre-snapshot so the hostname lands in the captured
 # memory state and restores along with everything else.
 # --------------------------------------------------------------------------
+_agent_name=""
 if [ -f /safeyolo/agent-name ]; then
     _agent_name=$(cat /safeyolo/agent-name 2>/dev/null || echo "")
     if [ -n "$_agent_name" ]; then
@@ -80,6 +81,15 @@ fi
 # sandbox.
 if [ -n "${AGENT_IP:-}" ]; then
     ip addr add "${AGENT_IP}/32" dev lo
+fi
+
+# /etc/hosts -- make the agent hostname resolve so sudo, hostname -f, and
+# any getaddrinfo() caller don't fail with "Temporary failure in name
+# resolution". Append only if no existing entry maps the name; leaves
+# any distro-default or user-added lines intact.
+if [ -n "$_agent_name" ] \
+   && ! grep -qE "^[[:space:]]*[^#]*[[:space:]]${_agent_name}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+    printf '%s %s\n' "${AGENT_IP:-127.0.1.1}" "$_agent_name" >> /etc/hosts
 fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
