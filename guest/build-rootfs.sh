@@ -219,5 +219,7 @@ sudo mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$WORK_DIR" "$OUTPUT_EXT4"
 sudo chown "$(id -u):$(id -g)" "$OUTPUT_EXT4"
 
 echo "=== Rootfs ready ==="
-echo "  Tarball: $OUTPUT_TAR ($(du -sh "$OUTPUT_TAR" | cut -f1))"
-echo "  ext4:    $OUTPUT_EXT4 ($(du -sh "$OUTPUT_EXT4" | cut -f1))"
+echo "  ext4:  $OUTPUT_EXT4 ($(du -sh "$OUTPUT_EXT4" | cut -f1))"
+if [ -f "$OUTPUT_EROFS" ]; then
+    echo "  erofs: $OUTPUT_EROFS ($(du -sh "$OUTPUT_EROFS" | cut -f1))"
+fi
