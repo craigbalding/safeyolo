@@ -4,7 +4,7 @@
 # Runs on the host (macOS or Linux), as you, when `safeyolo agent add
 # <name> <folder> --host-script contrib/claude-host-setup.sh` is
 # invoked. Stages host auth + user extensions into the agent's
-# persistent home, and writes the entrypoint that installs claude-code
+# persistent home, and writes the foreground command that installs claude-code
 # (via mise) on first boot and runs it nag-free thereafter.
 #
 # See contrib/HOST_SCRIPT_GUIDE.md for the contract.
@@ -130,7 +130,7 @@ PY
 fi
 
 # --- 4. Stage SafeYolo agent guide ------------------------------------------
-# Copy docs/AGENTS.md into the persistent home so the entrypoint can feed it
+# Copy docs/AGENTS.md into the persistent home so the foreground command can feed it
 # to Claude as system context on every run. We write to a path outside
 # .claude/ because .claude/ is a live VirtioFS mount from the host and we
 # don't want to shadow the user's own CLAUDE.md.
@@ -140,14 +140,14 @@ if [ -f "$GUIDE_SRC" ]; then
     cp "$GUIDE_SRC" "$AGENT_HOME/.safeyolo/AGENTS.md"
 fi
 
-# --- 5. Write the entrypoint --------------------------------------------------
+# --- 5. Write the foreground command -----------------------------------------
 # Installs claude-code via mise on first run (idempotent: command -v
 # short-circuits on subsequent runs, since MISE_DATA_DIR lives in the
 # persistent home). Appends the SafeYolo agent guide as system context so
 # Claude knows about the agent API, block responses, security boundaries,
 # etc. Any args after `safeyolo agent run <name> -- ...` come through as "$@".
 
-cat > "$AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
+cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 set -e
 
@@ -166,6 +166,6 @@ fi
 
 exec claude "${args[@]}" "$@"
 EOF
-chmod +x "$AGENT_HOME/.safeyolo-entrypoint"
+chmod +x "$AGENT_HOME/.safeyolo-command"
 
 echo "claude-host-setup: $SAFEYOLO_AGENT_NAME ready at $AGENT_HOME"

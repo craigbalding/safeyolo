@@ -30,9 +30,16 @@ Key paths inside the sandbox:
 Pre-set environment: `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`,
 `NO_PROXY=localhost,127.0.0.1`, plus the three CA-cert env vars above.
 
+The base image also has a few universal tools already present: `rg`, `fdfind`,
+`git`, `jq`, `less`, `tmux`, `lsof`, `strace`, `file`, `unzip`, `zip`,
+`python3 -m venv`, and BusyBox-backed `nc` / `hexdump`. Use those first;
+reach for `mise` when you actually need a language runtime or project-specific
+toolchain.
+
 ## 2. Installing tools
 
-Use mise. `apt` / `apt-get` / `yum` are intercepted and redirect to mise:
+Use mise for language runtimes and project-specific CLIs. `apt` / `apt-get` /
+`yum` are intercepted and redirect to mise:
 
 ```sh
 mise install go@latest

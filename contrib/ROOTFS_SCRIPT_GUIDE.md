@@ -15,7 +15,8 @@ box to reproduce what SafeYolo would run. No DSL, no templates.
 ## Why this is safe to skip for most users
 
 You don't need `--rootfs-script` unless you actually want a different
-distro. The default base (Debian trixie with mise + node) covers the
+distro. The default base (Debian trixie with `mise` plus a compact
+agent-oriented Unix toolkit) covers the
 common agent workflows and ships with SafeYolo. Reach for a rootfs-script
 when you're building something specialised — a pentest toolbox, a
 scientific-Python stack with native libs, a minimal shell over a weird
@@ -91,7 +92,10 @@ This installs:
 - `agent` user (uid 1000, shell `/bin/bash`, home `/home/agent`)
 - `/usr/local/bin/safeyolo-guest-init`
 - sshd pubkey-only config + host keys (for `safeyolo agent shell`)
+- `/etc/profile.d/00-path.sh` + `/etc/environment` PATH glue so `sshd` and
+  other `sbin` tools are visible in non-login shells
 - mise profile glue at `/etc/profile.d/mise.sh` (if `mise` is in the tree)
+- BusyBox-backed `hexdump` / `nc` shims (if BusyBox is in the tree)
 - `apt` / `apt-get` / `yum` / `dnf` / `apk` intercepts pointing to mise
   (agents must not install packages at runtime; egress doesn't go through
   the SafeYolo proxy)
@@ -102,8 +106,9 @@ The helper is idempotent — safe to re-run.
 ## Minimal example
 
 See `contrib/alpine-minimal/build-alpine-rootfs.sh` — ~60 lines, pulls an
-Alpine OCI image with `skopeo`, unpacks with `umoci`, adds a few packages
-with `apk add`, calls `install_safeyolo_guest_common`, packs to the
+Alpine OCI image with `skopeo`, unpacks with `umoci`, adds the same small
+agent-facing toolkit as the default base with `apk add`, calls
+`install_safeyolo_guest_common`, packs to the
 requested format. The Kali pentest example
 (`contrib/kali-pentest/build-kali-rootfs.sh`) follows the same shape with
 more packages.

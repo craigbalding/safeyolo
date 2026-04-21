@@ -252,7 +252,7 @@ fi
 # Subsequent shells (login or otherwise) pick up HTTP_PROXY / SSL_CERT_FILE
 # / etc. via pam_env. Under the host-script model there's no pre-snapshot
 # agent install step here -- the host script populates /home/agent/
-# .safeyolo-entrypoint, which takes care of first-run install work.
+# .safeyolo-command, which takes care of first-run install work.
 # --------------------------------------------------------------------------
 if [ -f /safeyolo/proxy.env ]; then
     cp /safeyolo/proxy.env /etc/environment

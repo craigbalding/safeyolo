@@ -164,14 +164,14 @@ safeyolo agent run work       # Each agent gets its own isolated sandbox
 
 ## Host scripts
 
-`safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-entrypoint` file the guest execs as the default command.
+`safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-command` file the guest execs as the default foreground command.
 
 The `contrib/` directory has ready-made host scripts:
 
 | Script | Purpose |
 |--------|---------|
 | `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, installs claude-code via mise on first boot, launches nag-free |
-| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, installs codex via mise on first boot, launches with `--full-auto` |
+| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, installs codex via mise on first boot, launches with sandboxing disabled inside the guest (`-s danger-full-access -a never`) while SafeYolo remains the outer boundary |
 | `contrib/mise-shell-host-setup.sh` | BYOA — boots into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
@@ -181,6 +181,8 @@ Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE
 ## Custom rootfs
 
 `safeyolo agent add` also takes an optional `--rootfs-script PATH` for agents that need a different base system than SafeYolo's default Debian-trixie rootfs — e.g. Kali for a pentest agent or Alpine for a minimal shell. The script builds a full per-agent rootfs from any distro's OCI image or bootstrap tarball. Examples: [`contrib/kali-pentest/build-kali-rootfs.sh`](contrib/kali-pentest/build-kali-rootfs.sh), [`contrib/alpine-minimal/build-alpine-rootfs.sh`](contrib/alpine-minimal/build-alpine-rootfs.sh). Writing your own: see [`contrib/ROOTFS_SCRIPT_GUIDE.md`](contrib/ROOTFS_SCRIPT_GUIDE.md).
+
+The default Debian base is intentionally small but agent-friendly. It includes common search and debugging tools (`ripgrep`, `fd-find`, `file`, `unzip`, `zip`, `tmux`, `lsof`, `strace`, `jq`, `less`), Python venv support, and BusyBox-backed `nc`/`hexdump` shims. Language ecosystems still come from `mise`, not from stuffing extra runtimes into the image.
 
 Once inside the sandbox, the agent-facing reference lives at [`docs/AGENTS.md`](docs/AGENTS.md) -- agent environment, agent API endpoints, block-response anatomy, security boundaries, troubleshooting. The bundled host scripts stage it at `~/.safeyolo/AGENTS.md` inside the sandbox; the Claude Code host script also feeds it to `claude --append-system-prompt` so the model has it in context from turn 1.
 

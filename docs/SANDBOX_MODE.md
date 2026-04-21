@@ -9,7 +9,7 @@ safeyolo start
 safeyolo agent add myproject ~/projects/myapp --host-script contrib/claude-host-setup.sh
 ```
 
-The agent boots in its sandbox with CA trust and proxy configuration handled automatically. The host script (`contrib/claude-host-setup.sh`) stages your existing `~/.claude/` state and writes a first-run install-and-exec entrypoint — you get a nag-free, authenticated Claude Code session inside the sandbox.
+The agent boots in its sandbox with CA trust and proxy configuration handled automatically. The host script (`contrib/claude-host-setup.sh`) stages your existing `~/.claude/` state and writes a first-run install-and-exec foreground command — you get a nag-free, authenticated Claude Code session inside the sandbox.
 
 ## How It Works
 

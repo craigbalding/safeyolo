@@ -4,9 +4,16 @@ Builds the three artifacts SafeYolo needs to run agent microVMs:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)
 - `out/initramfs.cpio.gz` — minimal initramfs (macOS only)
-- `out/rootfs-base.ext4` — Debian trixie rootfs with mise + node@22
+- `out/rootfs-base.ext4` — Debian trixie rootfs with mise plus a small agent-oriented Unix toolkit
 
 No Docker. Uses `mmdebstrap` for the rootfs and native cross-compile for the kernel/initramfs.
+
+The default Debian rootfs intentionally keeps language ecosystems out of the
+base image. Agents pull those in via `mise`. What is baked in are the things
+agents need immediately on first boot and cannot sensibly replace with `mise`:
+PTY/shared-memory correctness, SSH/socat plumbing, and a compact baseline of
+search/debug/archive tools such as `ripgrep`, `fd-find`, `file`, `unzip`,
+`zip`, `tmux`, `lsof`, `strace`, and Python venv support.
 
 ## Quick start
 

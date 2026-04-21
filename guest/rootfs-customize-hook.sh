@@ -76,7 +76,24 @@ eval "$(mise activate bash)" 2>/dev/null || true
 MISE_PROFILE
 chmod +x "$ROOTFS/etc/profile.d/mise.sh"
 cp "$ROOTFS/etc/profile.d/mise.sh" "$ROOTFS/etc/mise-activate.sh"
-echo "BASH_ENV=/etc/mise-activate.sh" >> "$ROOTFS/etc/environment"
+cat > "$ROOTFS/etc/profile.d/00-path.sh" <<'PATH_PROFILE'
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+PATH_PROFILE
+chmod +x "$ROOTFS/etc/profile.d/00-path.sh"
+if [ -f "$ROOTFS/etc/environment" ]; then
+    if grep -q '^PATH=' "$ROOTFS/etc/environment"; then
+        sed -i 's|^PATH=.*|PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin|' \
+            "$ROOTFS/etc/environment"
+    else
+        echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> \
+            "$ROOTFS/etc/environment"
+    fi
+else
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > \
+        "$ROOTFS/etc/environment"
+fi
+grep -q '^BASH_ENV=' "$ROOTFS/etc/environment" 2>/dev/null || \
+    echo "BASH_ENV=/etc/mise-activate.sh" >> "$ROOTFS/etc/environment"
 
 # ---------------------------------------------------------------------------
 # gh CLI
@@ -115,6 +132,15 @@ chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"
 echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
+
+# Expose a few useful BusyBox applets without adding extra packages.
+for busybox_path in /bin/busybox /usr/bin/busybox; do
+    if [ -x "$ROOTFS$busybox_path" ]; then
+        ln -sf "$busybox_path" "$ROOTFS/usr/local/bin/hexdump"
+        ln -sf "$busybox_path" "$ROOTFS/usr/local/bin/nc"
+        break
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # Apt cleanup + sweep any residual docs that escaped the essential-hook's

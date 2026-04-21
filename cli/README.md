@@ -123,7 +123,7 @@ safeyolo agent run myproject
 # Or run with a different folder
 safeyolo agent run myproject -f ~/other-project
 
-# Override the default command (the host script's .safeyolo-entrypoint)
+# Override the default command (the host script's .safeyolo-command)
 safeyolo agent run myproject -- bash -l
 
 # Yolo mode is on by default (auto-accepts permission prompts where supported)
@@ -134,7 +134,7 @@ safeyolo agent run myproject --no-yolo
 ```
 
 **Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
-- `contrib/claude-host-setup.sh` — Claude Code (stages host auth/extensions, install-on-first-run entrypoint)
+- `contrib/claude-host-setup.sh` — Claude Code (stages host auth/extensions, install-on-first-run foreground command)
 - `contrib/codex-host-setup.sh` — OpenAI Codex CLI
 - `contrib/mise-shell-host-setup.sh` — BYOA interactive shell with mise
 - See `contrib/HOST_SCRIPT_GUIDE.md` to write your own.

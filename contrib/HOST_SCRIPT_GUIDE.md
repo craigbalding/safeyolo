@@ -48,8 +48,8 @@ Typical tasks:
 
 1. **Stage auth, settings, user extensions** into `$SAFEYOLO_AGENT_HOME`
    so the agent finds them on first boot.
-2. **Write `$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint`** -- an executable
-   that is exec'd by `safeyolo agent run` as the default command. Use
+2. **Write `$SAFEYOLO_AGENT_HOME/.safeyolo-command`** -- an executable
+   foreground command file that is exec'd by `safeyolo agent run`. Use
    it to install the agent binary on first run (idempotently) and then
    exec it with the flags you want.
 
@@ -66,8 +66,8 @@ mkdir -p "$SAFEYOLO_AGENT_HOME/.myagent"
 [ -f "$HOME/.myagent/credentials.json" ] && \
     cp "$HOME/.myagent/credentials.json" "$SAFEYOLO_AGENT_HOME/.myagent/"
 
-# Entrypoint -- installs on first run, then execs the agent
-cat > "$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint" <<'EOF'
+# Foreground command -- installs on first run, then execs the agent
+cat > "$SAFEYOLO_AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 set -e
 if ! command -v myagent >/dev/null 2>&1; then
@@ -76,7 +76,7 @@ if ! command -v myagent >/dev/null 2>&1; then
 fi
 exec myagent --auto "$@"
 EOF
-chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-entrypoint"
+chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-command"
 ```
 
 ## Idempotency

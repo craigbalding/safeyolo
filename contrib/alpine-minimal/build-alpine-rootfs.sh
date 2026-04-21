@@ -70,12 +70,14 @@ echo "=== Installing Alpine packages ==="
 #   shadow   -- useradd + usermod used by install_safeyolo_guest_common
 #   openssh-server -- `safeyolo agent shell` SSH target
 #   ca-certificates -- HTTPS trust store (SafeYolo CA appended at boot)
-# Plus a baseline developer toolkit (curl, git, jq). Users extend this.
-# Add python3 too if you want `safeyolo agent shell <name> -- python3
-# /safeyolo/guest-diag` (optional, not on the boot path).
+# Plus the small, universal developer toolkit we expect coding agents to use:
+# curl, git, jq, ripgrep, fd, file, unzip/zip, tmux, lsof, strace, Python venv,
+# and pkgconf for native build discovery. Language runtimes still come from mise.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq
+    bash socat ca-certificates shadow openssh-server curl git jq \
+    python3 py3-pip py3-virtualenv \
+    ripgrep fd file unzip zip tmux lsof strace pkgconf
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"

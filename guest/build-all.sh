@@ -5,7 +5,7 @@
 # Output (in ./out/):
 #   Image              - Linux kernel (macOS microVMs only, not needed for gVisor)
 #   initramfs.cpio.gz  - Minimal initramfs (macOS microVMs only)
-#   rootfs-base.ext4   - Debian trixie rootfs with mise + node@22
+#   rootfs-base.ext4   - Debian trixie rootfs with mise + compact agent tooling
 #
 # Platform handling:
 #   Linux  - runs the three build-*.sh scripts natively
