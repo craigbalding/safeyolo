@@ -63,7 +63,7 @@ rm -f /dev/fuse 2>/dev/null || true
 # --------------------------------------------------------------------------
 # 1. Networking (static IP from config share)
 # --------------------------------------------------------------------------
-ip link set lo up 2>/dev/null || true
+ip link set lo up
 
 # Source network.env unconditionally -- GUEST_IP is needed later for the
 # /safeyolo/vm-ip readiness signal even on runtimes where `ip link show
@@ -79,7 +79,7 @@ fi
 # operator a consistent per-agent identity inside and outside the
 # sandbox.
 if [ -n "${AGENT_IP:-}" ]; then
-    ip addr add "${AGENT_IP}/32" dev lo 2>/dev/null || true
+    ip addr add "${AGENT_IP}/32" dev lo
 fi
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns

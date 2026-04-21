@@ -73,9 +73,13 @@ ensure_lima_vm() {
             "$SCRIPT_DIR/lima.yaml"
     fi
 
-    # Start the VM if it's stopped
+    # Start the VM if it's stopped. Parse name+status from one listing
+    # rather than relying on --filter, whose syntax varies between Lima
+    # versions (2.x returns exit 1 on unknown filter; masked failures
+    # were falling through to a redundant `limactl start`).
     local status
-    status="$(limactl list --format '{{.Status}}' --filter "name=$LIMA_VM_NAME" 2>/dev/null || true)"
+    status="$(limactl list --format '{{.Name}}\t{{.Status}}' \
+        | awk -F'\t' -v n="$LIMA_VM_NAME" '$1==n {print $2}')"
     if [ "$status" != "Running" ]; then
         echo "=== Starting Lima VM '$LIMA_VM_NAME' ==="
         limactl start "$LIMA_VM_NAME"
