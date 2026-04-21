@@ -23,7 +23,16 @@ import time
 import pytest
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="gVisor sandbox is Linux-only")
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason=(
+        "Proxy restart under a live macOS VZ sandbox is deliberately skipped: "
+        "the VZ helper + snapshot/restore dance is sensitive to proxy-side "
+        "state changes mid-flight. Linux gVisor can cycle the proxy cleanly "
+        "while the sandbox stays up; macOS coverage for the token-copy path "
+        "is exercised by the sandbox-boot flow itself."
+    ),
+)
 class TestAgentTokenLifecycle:
     """Agent token survives proxy restart without breaking a running sandbox.
 

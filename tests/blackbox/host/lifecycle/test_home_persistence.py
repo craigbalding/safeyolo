@@ -13,13 +13,11 @@ read the marker back.
 import os
 import secrets
 import subprocess
-import sys
 import time
 
 import pytest
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="gVisor sandbox is Linux-only")
 class TestAgentHomePersistence:
     """Writes to /home/agent persist across `agent stop` and `agent run`.
 
@@ -79,7 +77,10 @@ class TestAgentHomePersistence:
         """
         agent_name = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
 
-        # Baseline: sandbox must be running before we start.
+        # Baseline: sandbox must be running before we start. run-tests.sh
+        # boots a fresh sandbox before calling pytest, so if this fails
+        # it means the sandbox didn't come up (skip rather than fail to
+        # avoid masking upstream boot issues).
         if not self._wait_for_shell(agent_name, timeout=10):
             pytest.skip(f"Agent '{agent_name}' not reachable; sandbox not running")
 
