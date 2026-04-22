@@ -37,12 +37,19 @@ else ifeq ($(UNAME),Darwin)
 		echo "Error: Lima not found. Install with: brew install lima"; \
 		echo "See guest/README.md for details."; \
 		exit 1; }
-	@limactl list --format '{{.Name}}' 2>/dev/null | grep -qx $(LIMA_VM) || \
-		limactl start --name=$(LIMA_VM) --tty=false $(GUEST_DIR)/lima.yaml
-	limactl shell $(LIMA_VM) -- \
+	@set -e; \
+	status=$$(limactl list --format '{{.Name}}\t{{.Status}}' | awk -F'\t' -v n=$(LIMA_VM) '$$1==n {print $$2}'); \
+	if [ -z "$$status" ]; then \
+		limactl start --name=$(LIMA_VM) --tty=false $(GUEST_DIR)/lima.yaml; \
+	elif [ "$$status" != "Running" ]; then \
+		limactl start --tty=false $(LIMA_VM); \
+	fi
+	@limactl shell $(LIMA_VM) -- \
 		aarch64-linux-gnu-gcc -static -O2 \
 		-o /build/vm/.build/release/vsock-term \
-		/build/guest/vsock-term.c -lutil
+		/build/guest/vsock-term.c -lutil; ret=$$?; \
+	limactl stop $(LIMA_VM); \
+	exit $$ret
 else
 	$(error Unsupported platform for guest-tools: $(UNAME))
 endif

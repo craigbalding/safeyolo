@@ -437,11 +437,12 @@ def _run_agent(
         if snapshot_mode == "restore":
             console.print("  Restoring snapshot...", end="")
             restore_src = snapshot_path(name)
-            # No helper_pid binding here: restore doesn't need SIGUSR1
-            # (that's capture-mode only). Liveness is checked via
-            # plat.is_sandbox_running(name), which reads the pid file.
+            # Capture helper_pid so the post-session os.waitpid() call
+            # on macOS can block on the actual child instead of polling.
+            # Restore doesn't need SIGUSR1 (that's capture-mode only),
+            # but liveness still needs the pid.
             _t("start_sandbox (restore: spawn helper + VZ.restore)")
-            plat.start_sandbox(
+            helper_pid = plat.start_sandbox(
                 name=name,
                 workspace_path=str(workspace_path),
                 config_share=config_share,
@@ -593,12 +594,20 @@ def _run_agent(
                 plat.stop_sandbox(name)
             else:
                 # macOS: safeyolo-vm + vsock-term handle the interactive
-                # session. Wait for the VM to exit.
-                while plat.is_sandbox_running(name):
-                    try:
-                        _time.sleep(0.5)
-                    except KeyboardInterrupt:
-                        break
+                # session. Block on the helper process itself -- one
+                # syscall that returns the instant the child exits and
+                # reaps the zombie in the same step. Previously a 500ms
+                # is_sandbox_running poll + `ps` zombie check loop, which
+                # added up to ~500ms of dead time at every agent exit.
+                try:
+                    os.waitpid(helper_pid, 0)
+                except ChildProcessError:
+                    # Already reaped (e.g., GC'd Popen.__del__) -- the
+                    # VM is gone, proceed to cleanup.
+                    pass
+                except KeyboardInterrupt:
+                    # User interrupted the wait; cleanup below still runs.
+                    pass
 
     except Exception as err:
         console.print(" [red]error[/red]")

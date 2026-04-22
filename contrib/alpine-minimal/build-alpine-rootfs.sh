@@ -75,13 +75,25 @@ echo "=== Installing Alpine packages ==="
 # and pkgconf for native build discovery. Language runtimes still come from mise.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_guest_common "$TREE"
+
+# --- Runtime apk support: passwordless sudo, env-propagated proxy. ---
+# apk honours the http_proxy / https_proxy env vars natively, so unlike
+# apt we don't need an apk-specific config file -- we just need sudo to
+# keep those vars across the privilege boundary. env_keep covers the
+# SafeYolo CA paths too for curl/pip/etc. when invoked via sudo.
+mkdir -p "$TREE/etc/sudoers.d"
+cat > "$TREE/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
+agent ALL=(ALL) NOPASSWD:ALL
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
+SUDOERS
+chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
 
 # --- Pack into the format SafeYolo asked for. ---
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
