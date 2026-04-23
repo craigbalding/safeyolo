@@ -1158,8 +1158,10 @@ class TestAdminCheck:
 
 
 class TestGuestImageChecks:
-    """check_guest_images is platform-aware: macOS needs kernel+initramfs+rootfs,
-    Linux needs only rootfs (gVisor ships its own kernel)."""
+    """check_guest_images is platform-aware:
+      - macOS: kernel + initramfs + ext4 rootfs.
+      - Linux: unpacked rootfs tree (OCI root.path). gVisor ships its
+        own kernel and consumes the tree directly -- no image file."""
 
     def test_all_images_present(self, config_dir):
         """Every artifact present => True under either platform dispatch."""
@@ -1169,7 +1171,7 @@ class TestGuestImageChecks:
         (share / "Image").touch()
         (share / "initramfs.cpio.gz").touch()
         (share / "rootfs-base.ext4").touch()
-        (share / "rootfs-base.erofs").touch()
+        (share / "rootfs-tree" / "etc").mkdir(parents=True)
 
         with patch("safeyolo.vm.platform.system", return_value="Darwin"):
             assert check_guest_images() is True
@@ -1198,8 +1200,8 @@ class TestGuestImageChecks:
         with patch("safeyolo.vm.platform.system", return_value="Darwin"):
             assert check_guest_images() is False
 
-    def test_missing_rootfs(self, config_dir):
-        """check_guest_images returns False on both platforms when rootfs is missing."""
+    def test_missing_rootfs_on_darwin(self, config_dir):
+        """Darwin returns False when ext4 rootfs is missing."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
@@ -1208,27 +1210,33 @@ class TestGuestImageChecks:
 
         with patch("safeyolo.vm.platform.system", return_value="Darwin"):
             assert check_guest_images() is False
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
-            assert check_guest_images() is False
 
-    def test_linux_only_needs_erofs(self, config_dir):
-        """On Linux, EROFS alone is what gVisor mounts — ext4 is not required."""
+    def test_missing_rootfs_tree_on_linux(self, config_dir):
+        """Linux returns False when the unpacked rootfs tree is missing,
+        even if the ext4 image is present."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
-        (share / "rootfs-base.erofs").touch()
+        (share / "rootfs-base.ext4").touch()
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is False
+
+    def test_linux_only_needs_rootfs_tree(self, config_dir):
+        """On Linux, the unpacked tree alone is what gVisor uses — kernel,
+        initramfs, and ext4 are not required."""
+        from safeyolo.vm import check_guest_images
+
+        share = config_dir / "share"
+        (share / "rootfs-tree" / "etc").mkdir(parents=True)
         # No Image, no initramfs.cpio.gz, no ext4
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is True
 
     def test_linux_ext4_alone_is_not_enough(self, config_dir):
-        """On Linux, having only the ext4 rootfs should NOT pass — gVisor needs EROFS.
-
-        This is the precise case that caused the "build succeeded, agent add
-        fails later" footgun: erofs-utils was missing, so build-rootfs.sh
-        produced only ext4, and every downstream check waved it through.
-        """
+        """On Linux, having only the ext4 rootfs should NOT pass —
+        gVisor needs the unpacked tree."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
@@ -1238,12 +1246,13 @@ class TestGuestImageChecks:
             assert check_guest_images() is False
 
     def test_guest_image_status_returns_per_artifact(self, config_dir):
-        """guest_image_status returns a dict keyed by artifact filename (no platform dispatch)."""
+        """guest_image_status returns a dict keyed by artifact name
+        (no platform dispatch)."""
         from safeyolo.vm import guest_image_status
 
         share = config_dir / "share"
         (share / "Image").touch()
-        (share / "rootfs-base.erofs").touch()
+        (share / "rootfs-tree" / "etc").mkdir(parents=True)
         # initramfs and ext4 missing
 
         status = guest_image_status()
@@ -1251,7 +1260,7 @@ class TestGuestImageChecks:
             "kernel": True,
             "initramfs": False,
             "rootfs-ext4": False,
-            "rootfs-erofs": True,
+            "rootfs-tree": True,
         }
 
 
@@ -1300,6 +1309,9 @@ class TestIsVmRunning:
 
 
 class TestCreateAgentRootfs:
+    """Phase A: no per-agent rootfs clone. All agents share the read-only
+    ext4 base; create_agent_rootfs only ensures the per-agent dir exists
+    and returns the shared base path."""
 
     def test_base_rootfs_missing_raises_vmerror(self, config_dir):
         """Raises VMError when base rootfs doesn't exist."""
@@ -1308,37 +1320,22 @@ class TestCreateAgentRootfs:
         with pytest.raises(VMError, match="Base rootfs not found"):
             create_agent_rootfs("test")
 
-    def test_existing_rootfs_returns_without_copy(self, config_dir):
-        """If agent rootfs already exists, returns it without copying."""
+    def test_returns_shared_base_and_creates_agent_dir(self, config_dir):
+        """Returns the shared base path and ensures the per-agent dir
+        exists (so later code can write overlay.img, config-share, etc.
+        into it). Does NOT copy the base."""
         from safeyolo.vm import create_agent_rootfs
 
-        # Create base rootfs
         share = config_dir / "share"
-        (share / "rootfs-base.ext4").write_bytes(b"base")
-
-        # Create agent rootfs
-        agent_dir = config_dir / "agents" / "test"
-        agent_dir.mkdir()
-        existing = agent_dir / "rootfs.ext4"
-        existing.write_bytes(b"existing")
+        base = share / "rootfs-base.ext4"
+        base.write_bytes(b"shared-base-content")
 
         result = create_agent_rootfs("test")
-        assert result == existing
-        assert existing.read_bytes() == b"existing"  # Not overwritten
 
-    def test_clones_base_rootfs(self, config_dir):
-        """Clones base rootfs to agent dir on first create."""
-        from safeyolo.vm import create_agent_rootfs
-
-        share = config_dir / "share"
-        (share / "rootfs-base.ext4").write_bytes(b"base-rootfs-content")
-
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1)):
-            # cp -c fails (not APFS), falls back to shutil.copy2
-            result = create_agent_rootfs("test")
-
-        assert result.exists()
-        assert result.read_bytes() == b"base-rootfs-content"
+        assert result == base
+        assert (config_dir / "agents" / "test").is_dir()
+        # No per-agent rootfs file was materialised.
+        assert not (config_dir / "agents" / "test" / "rootfs.ext4").exists()
 
 
 # ---------------------------------------------------------------------------

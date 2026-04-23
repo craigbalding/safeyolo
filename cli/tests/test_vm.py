@@ -45,8 +45,14 @@ class TestPathHelpers:
     def test_base_rootfs_path(self, tmp_config_dir):
         assert get_base_rootfs_path() == tmp_config_dir / "share" / "rootfs-base.ext4"
 
-    def test_agent_rootfs_path(self, tmp_config_dir):
-        assert get_agent_rootfs_path("myagent") == tmp_config_dir / "agents" / "myagent" / "rootfs.ext4"
+    def test_agent_rootfs_path_returns_shared_base(self, tmp_config_dir):
+        # After exp/erofs-vz-phase-a, there is no per-agent rootfs clone.
+        # The shared ext4 base is read-only-booted by every macOS VZ agent;
+        # per-agent writes land in the overlay (/dev/vdb) and /home/agent.
+        # get_agent_rootfs_path therefore aliases the shared base so
+        # callers that expect a Path to boot from get the right file.
+        assert get_agent_rootfs_path("myagent") == tmp_config_dir / "share" / "rootfs-base.ext4"
+        assert get_agent_rootfs_path("other") == tmp_config_dir / "share" / "rootfs-base.ext4"
 
     def test_agent_pid_path(self, tmp_config_dir):
         assert get_agent_pid_path("myagent") == tmp_config_dir / "agents" / "myagent" / "vm.pid"
@@ -148,7 +154,15 @@ class TestFindVmHelper:
 
 
 class TestCreateAgentRootfs:
-    """Base rootfs cloning for new agents."""
+    """Per-agent dir setup (no rootfs clone).
+
+    Phase A dropped the per-agent rootfs copy: every agent boots from
+    the shared read-only ext4 base, with writes captured in the overlay
+    upper (/dev/vdb persistent, or tmpfs ephemeral) and /home/agent.
+    create_agent_rootfs now only (a) verifies the base exists and (b)
+    ensures the per-agent directory exists (for overlay.img, config
+    share, status, ssh keys). It does not copy any bytes.
+    """
 
     def test_raises_when_base_rootfs_missing(self, tmp_config_dir):
         """Raises VMError if base rootfs doesn't exist."""
@@ -160,98 +174,51 @@ class TestCreateAgentRootfs:
         with pytest.raises(VMError, match="build-all.sh"):
             create_agent_rootfs("myagent")
 
-    def test_creates_agent_dir(self, tmp_config_dir, monkeypatch):
-        """Creates the agents/{name}/ directory."""
+    def test_creates_agent_dir(self, tmp_config_dir):
+        """Creates the agents/{name}/ directory so later code (overlay,
+        config-share, status) can write into it."""
         share_dir = tmp_config_dir / "share"
         share_dir.mkdir(exist_ok=True)
         (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
 
-        monkeypatch.setattr(
-            "subprocess.run",
-            lambda *a, **kw: subprocess.CompletedProcess(args=[], returncode=0),
-        )
-
         create_agent_rootfs("newagent")
         assert (tmp_config_dir / "agents" / "newagent").is_dir()
 
-    def test_skips_clone_if_dest_exists(self, tmp_config_dir, monkeypatch):
-        """Returns immediately when rootfs already exists (idempotent)."""
+    def test_returns_shared_base_path(self, tmp_config_dir):
+        """Return value is the shared base, not a per-agent file."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        base = share_dir / "rootfs-base.ext4"
+        base.write_bytes(b"rootfs-data")
+
+        result = create_agent_rootfs("agent1")
+        assert result == base
+
+    def test_does_not_copy_base_to_agent_dir(self, tmp_config_dir):
+        """No per-agent rootfs.ext4 file is created. The agent dir exists
+        but must not contain a rootfs clone."""
+        share_dir = tmp_config_dir / "share"
+        share_dir.mkdir(exist_ok=True)
+        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
+
+        create_agent_rootfs("agent1")
+        assert not (tmp_config_dir / "agents" / "agent1" / "rootfs.ext4").exists()
+
+    def test_idempotent_when_agent_dir_already_exists(self, tmp_config_dir):
+        """Calling twice does not raise -- the per-agent dir mkdir is
+        idempotent (parents=True, exist_ok=True)."""
         share_dir = tmp_config_dir / "share"
         share_dir.mkdir(exist_ok=True)
         (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
 
         agent_dir = tmp_config_dir / "agents" / "myagent"
         agent_dir.mkdir(parents=True)
-        existing = agent_dir / "rootfs.ext4"
-        existing.write_bytes(b"existing-rootfs")
-
-        run_called = False
-
-        def mock_run(*args, **kwargs):
-            nonlocal run_called
-            run_called = True
-            return subprocess.CompletedProcess(args=[], returncode=0)
-
-        monkeypatch.setattr("subprocess.run", mock_run)
+        (agent_dir / "overlay.img").write_bytes(b"preexisting overlay")
 
         result = create_agent_rootfs("myagent")
-        assert result == existing
-        assert not run_called
-
-    def test_uses_cp_c_for_apfs_clone(self, tmp_config_dir, monkeypatch):
-        """First attempts cp -c for APFS CoW copy."""
-        share_dir = tmp_config_dir / "share"
-        share_dir.mkdir(exist_ok=True)
-        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
-
-        captured_cmd = []
-
-        def mock_run(cmd, **kwargs):
-            captured_cmd.extend(cmd)
-            return subprocess.CompletedProcess(args=cmd, returncode=0)
-
-        monkeypatch.setattr("subprocess.run", mock_run)
-
-        create_agent_rootfs("myagent")
-        assert captured_cmd[0] == "cp"
-        assert captured_cmd[1] == "-c"
-
-    def test_falls_back_to_shutil_copy_on_non_apfs(self, tmp_config_dir, monkeypatch):
-        """Falls back to shutil.copy2 when cp -c fails (non-APFS)."""
-        share_dir = tmp_config_dir / "share"
-        share_dir.mkdir(exist_ok=True)
-        base = share_dir / "rootfs-base.ext4"
-        base.write_bytes(b"rootfs-data")
-
-        def mock_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(args=cmd, returncode=1)
-
-        copy2_calls = []
-
-        def mock_copy2(src, dst):
-            copy2_calls.append((src, dst))
-
-        monkeypatch.setattr("subprocess.run", mock_run)
-        monkeypatch.setattr("shutil.copy2", mock_copy2)
-
-        result = create_agent_rootfs("myagent")
-        assert len(copy2_calls) == 1
-        assert copy2_calls[0][0] == str(base)
-        assert result == tmp_config_dir / "agents" / "myagent" / "rootfs.ext4"
-
-    def test_returns_dest_path(self, tmp_config_dir, monkeypatch):
-        """Returns the path to the cloned rootfs."""
-        share_dir = tmp_config_dir / "share"
-        share_dir.mkdir(exist_ok=True)
-        (share_dir / "rootfs-base.ext4").write_bytes(b"rootfs-data")
-
-        monkeypatch.setattr(
-            "subprocess.run",
-            lambda *a, **kw: subprocess.CompletedProcess(args=[], returncode=0),
-        )
-
-        result = create_agent_rootfs("agent1")
-        assert result == tmp_config_dir / "agents" / "agent1" / "rootfs.ext4"
+        assert result == share_dir / "rootfs-base.ext4"
+        # Unrelated per-agent files must not be disturbed.
+        assert (agent_dir / "overlay.img").read_bytes() == b"preexisting overlay"
 
 
 # ---------------------------------------------------------------------------
@@ -552,19 +519,25 @@ class TestStartVm:
 
     @pytest.fixture(autouse=True)
     def setup_vm_deps(self, tmp_config_dir, monkeypatch):
-        """Create required files for start_vm."""
+        """Create required files for start_vm.
+
+        Phase A: rootfs is the shared ext4 base under share/, not a
+        per-agent file. Overlay.img is per-agent under agents/<name>/.
+        """
         self.config_dir = tmp_config_dir
 
-        # Create share dir with kernel, initrd, rootfs
+        # Shared kernel / initrd / ext4 base. get_agent_rootfs_path now
+        # returns the shared base directly.
         share_dir = tmp_config_dir / "share"
         share_dir.mkdir(exist_ok=True)
         (share_dir / "Image").write_bytes(b"kernel")
         (share_dir / "initramfs.cpio.gz").write_bytes(b"initrd")
+        (share_dir / "rootfs-base.ext4").write_bytes(b"shared-rootfs-base")
 
-        # Create agent rootfs
+        # Per-agent dir holds the overlay.img (created lazily by
+        # ensure_agent_overlay) and the config-share.
         agent_dir = tmp_config_dir / "agents" / "agent1"
         agent_dir.mkdir(parents=True)
-        (agent_dir / "rootfs.ext4").write_bytes(b"rootfs")
         (agent_dir / "config-share").mkdir()
 
         # Create vm helper
@@ -574,8 +547,10 @@ class TestStartVm:
         helper.write_text("#!/bin/sh\n")
         helper.chmod(0o755)
 
-    def test_raises_when_rootfs_missing(self, tmp_config_dir, monkeypatch):
-        (tmp_config_dir / "agents" / "agent1" / "rootfs.ext4").unlink()
+    def test_raises_when_base_rootfs_missing(self, tmp_config_dir, monkeypatch):
+        # get_agent_rootfs_path aliases the shared base; removing the
+        # base reproduces the "guest images not built" situation.
+        (tmp_config_dir / "share" / "rootfs-base.ext4").unlink()
 
         with pytest.raises(VMError, match="Agent rootfs not found"):
             start_vm("agent1", "/workspace")
@@ -782,12 +757,17 @@ class TestStartVm:
         idx = captured_cmd.index("--snapshot-on-signal")
         assert captured_cmd[idx + 1] == str(snap_path)
 
-    def test_restore_clones_rootfs_to_per_run_working_copy(self, tmp_config_dir, monkeypatch):
-        """Restore must not pass the pristine clone directly as --rootfs:
-        the live restored VM writes to its disk, and VZ requires the
-        rootfs to match its save-time state. Instead, start_vm clones
-        snapshot.bin.rootfs to a disposable per-run .run copy and uses
-        that. The pristine clone stays untouched for the next restore."""
+    def test_restore_clones_overlay_to_per_run_working_copy(self, tmp_config_dir, monkeypatch):
+        """Restore must not attach the pristine overlay clone directly: the
+        live restored VM writes to its /dev/vdb overlay, and VZ requires
+        every attached disk to match its save-time state byte-for-byte.
+        start_vm clones snapshot.bin.overlay to snapshot.bin.overlay.run
+        and attaches that as --overlay. The pristine clone stays untouched
+        for the next restore.
+
+        The rootfs (shared read-only ext4 base) does NOT change between
+        save and restore, so --rootfs keeps pointing at the shared base
+        with no pairing."""
         captured_cmd = []
 
         def mock_popen(cmd, **kw):
@@ -810,27 +790,32 @@ class TestStartVm:
         monkeypatch.setattr("subprocess.Popen", mock_popen)
         monkeypatch.setattr("subprocess.run", mock_cp_run)
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
-        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
-        pristine.write_bytes(b"pristine-clone")
+        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.overlay"
+        pristine.write_bytes(b"pristine-overlay")
 
         start_vm("agent1", "/workspace", restore_from_path=snap_path)
 
-        # --rootfs must point at the per-run working copy, NOT the pristine clone.
+        # --overlay must point at the per-run working copy, NOT the pristine.
+        overlay_idx = captured_cmd.index("--overlay")
+        working_copy = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.overlay.run"
+        assert captured_cmd[overlay_idx + 1] == str(working_copy)
+        # --rootfs still points at the shared base -- unchanged between save/restore.
         rootfs_idx = captured_cmd.index("--rootfs")
-        working_copy = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.run"
-        assert captured_cmd[rootfs_idx + 1] == str(working_copy)
+        assert captured_cmd[rootfs_idx + 1] == str(
+            tmp_config_dir / "share" / "rootfs-base.ext4"
+        )
         # Working copy must exist and match pristine at invocation time.
         assert working_copy.exists()
-        assert working_copy.read_bytes() == b"pristine-clone"
+        assert working_copy.read_bytes() == b"pristine-overlay"
         # Pristine clone must not have been touched (still the same bytes).
-        assert pristine.read_bytes() == b"pristine-clone"
+        assert pristine.read_bytes() == b"pristine-overlay"
         # cp -c must have been attempted (APFS clonefile fast path).
         assert any("cp" in c and "-c" in c for c in cp_calls)
 
     def test_restore_working_copy_overwrites_stale_one(self, tmp_config_dir, monkeypatch):
-        """A .run file left behind by a previous restore session must be
-        replaced, not appended to -- otherwise subsequent restores reuse
-        a rootfs that drifted from save-time state."""
+        """A .overlay.run file left behind by a previous restore session
+        must be replaced, not appended to -- otherwise subsequent restores
+        attach an overlay that drifted from save-time state."""
         def mock_popen(cmd, **kw):
             return MagicMock(pid=1)
 
@@ -844,9 +829,9 @@ class TestStartVm:
         monkeypatch.setattr("subprocess.Popen", mock_popen)
         monkeypatch.setattr("subprocess.run", mock_cp_run)
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
-        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+        pristine = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.overlay"
         pristine.write_bytes(b"pristine")
-        stale_run = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.run"
+        stale_run = tmp_config_dir / "agents" / "agent1" / "snapshot.bin.overlay.run"
         stale_run.write_bytes(b"STALE-FROM-PRIOR-RESTORE")
 
         start_vm("agent1", "/workspace", restore_from_path=snap_path)
@@ -854,15 +839,36 @@ class TestStartVm:
         assert stale_run.exists()
         assert stale_run.read_bytes() == b"pristine"
 
-    def test_restore_without_clone_raises(self, tmp_config_dir, monkeypatch):
-        """If the paired clone is missing, restore can't possibly succeed --
-        refuse early rather than hand VZ a mismatched rootfs."""
+    def test_restore_without_overlay_clone_raises(self, tmp_config_dir, monkeypatch):
+        """If the paired overlay clone is missing, restore can't possibly
+        succeed -- refuse early rather than hand VZ a mismatched overlay."""
         monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
         snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
-        # No clone file.
+        # No overlay clone file.
 
-        with pytest.raises(VMError, match="clone missing"):
+        with pytest.raises(VMError, match="overlay clone missing"):
             start_vm("agent1", "/workspace", restore_from_path=snap_path)
+
+    def test_ephemeral_restore_skips_overlay_pairing(self, tmp_config_dir, monkeypatch):
+        """Ephemeral agents have no overlay disk attached at save time,
+        so no .overlay clone is produced and none is required on restore.
+        start_vm must not fail with "overlay clone missing" in this mode,
+        and must not emit --overlay."""
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            return MagicMock(pid=1)
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+        snap_path = tmp_config_dir / "agents" / "agent1" / "snapshot.bin"
+        # Intentionally no .overlay file.
+
+        start_vm(
+            "agent1", "/workspace",
+            restore_from_path=snap_path, ephemeral=True,
+        )
+        assert "--overlay" not in captured_cmd
 
     def test_snapshot_and_restore_mutually_exclusive(self, tmp_config_dir, monkeypatch):
         """The helper's own arg parser would reject both flags together,
@@ -1167,9 +1173,15 @@ class TestUpdateAgentMap:
 class TestGuestImageChecks:
     """Guest image artifact existence checks.
 
-    check_guest_images() is platform-aware: macOS needs kernel+initramfs+rootfs
-    (Virtualization.framework); Linux needs only rootfs (gVisor provides its
-    own kernel).
+    check_guest_images() is platform-aware:
+      - macOS (Virtualization.framework): kernel + initramfs + ext4 rootfs.
+      - Linux (gVisor): unpacked rootfs tree (OCI root.path). gVisor ships
+        its own kernel, and the tree is consumed directly -- no image
+        file is produced.
+
+    A "valid" Linux tree is a directory that at least contains /etc --
+    a bare directory with nothing inside would indicate a half-unpacked
+    or rm-rf'd rootfs.
     """
 
     def test_check_guest_images_all_present_darwin(self, tmp_config_dir):
@@ -1200,8 +1212,8 @@ class TestGuestImageChecks:
         with patch("safeyolo.vm.platform.system", return_value="Darwin"):
             assert check_guest_images() is False
 
-    def test_check_guest_images_missing_rootfs(self, tmp_config_dir):
-        """Rootfs is required on all platforms."""
+    def test_check_guest_images_missing_rootfs_on_darwin(self, tmp_config_dir):
+        """ext4 rootfs is required on Darwin."""
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
         (share / "Image").write_bytes(b"k")
@@ -1209,37 +1221,45 @@ class TestGuestImageChecks:
 
         with patch("safeyolo.vm.platform.system", return_value="Darwin"):
             assert check_guest_images() is False
-        with patch("safeyolo.vm.platform.system", return_value="Linux"):
-            assert check_guest_images() is False
 
     def test_check_guest_images_none_present(self, tmp_config_dir):
         assert check_guest_images() is False
 
-    def test_check_guest_images_linux_needs_erofs(self, tmp_config_dir):
-        """On Linux, the EROFS rootfs (not ext4) is what gVisor mounts."""
-        share = tmp_config_dir / "share"
-        share.mkdir(exist_ok=True)
-        (share / "rootfs-base.erofs").write_bytes(b"r")
+    def test_check_guest_images_linux_needs_rootfs_tree(self, tmp_config_dir):
+        """On Linux, the unpacked rootfs tree (directory with /etc) is
+        what gVisor consumes as OCI root.path."""
+        tree = tmp_config_dir / "share" / "rootfs-tree"
+        (tree / "etc").mkdir(parents=True)
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is True
 
     def test_check_guest_images_linux_ignores_missing_kernel(self, tmp_config_dir):
-        """On Linux, missing kernel/initramfs is fine as long as the EROFS rootfs is present."""
-        share = tmp_config_dir / "share"
-        share.mkdir(exist_ok=True)
-        (share / "rootfs-base.erofs").write_bytes(b"r")
+        """On Linux, missing kernel/initramfs/ext4 is fine as long as the
+        rootfs tree is present. gVisor ships its own kernel and doesn't
+        use the ext4 image at all."""
+        tree = tmp_config_dir / "share" / "rootfs-tree"
+        (tree / "etc").mkdir(parents=True)
         # No Image, no initramfs.cpio.gz, no ext4
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is True
 
     def test_check_guest_images_linux_rejects_ext4_only(self, tmp_config_dir):
-        """On Linux, having only the ext4 rootfs must NOT pass — this is the
-        exact state left by a build host missing erofs-utils."""
+        """On Linux, having only the ext4 rootfs must NOT pass — gVisor
+        needs the unpacked tree."""
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
         (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is False
+
+    def test_check_guest_images_linux_rejects_empty_tree(self, tmp_config_dir):
+        """An empty directory at share/rootfs-tree/ must NOT pass —
+        it catches the "someone rm-rf'd the contents" footgun that a
+        plain is_dir() would miss."""
+        (tmp_config_dir / "share" / "rootfs-tree").mkdir(parents=True)
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is False
@@ -1250,13 +1270,13 @@ class TestGuestImageChecks:
         (share / "Image").write_bytes(b"k")
         (share / "initramfs.cpio.gz").write_bytes(b"i")
         (share / "rootfs-base.ext4").write_bytes(b"r")
-        (share / "rootfs-base.erofs").write_bytes(b"r")
+        (share / "rootfs-tree" / "etc").mkdir(parents=True)
 
         assert guest_image_status() == {
             "kernel": True,
             "initramfs": True,
             "rootfs-ext4": True,
-            "rootfs-erofs": True,
+            "rootfs-tree": True,
         }
 
     def test_guest_image_status_partial(self, tmp_config_dir):
@@ -1268,7 +1288,7 @@ class TestGuestImageChecks:
             "kernel": True,
             "initramfs": False,
             "rootfs-ext4": False,
-            "rootfs-erofs": False,
+            "rootfs-tree": False,
         }
 
     def test_guest_image_status_none_present(self, tmp_config_dir):
@@ -1276,8 +1296,16 @@ class TestGuestImageChecks:
             "kernel": False,
             "initramfs": False,
             "rootfs-ext4": False,
-            "rootfs-erofs": False,
+            "rootfs-tree": False,
         }
+
+    def test_guest_image_status_tree_without_etc_reports_false(self, tmp_config_dir):
+        """An empty rootfs-tree directory reports False, consistent with
+        check_guest_images rejecting it. A bare share/rootfs-tree/ with
+        no /etc is half-unpacked, not restorable."""
+        (tmp_config_dir / "share" / "rootfs-tree").mkdir(parents=True)
+        status = guest_image_status()
+        assert status["rootfs-tree"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1288,9 +1316,12 @@ class TestGuestImageChecks:
 class TestBuildCustomRootfs:
     """Contract verification for the custom-rootfs builder.
 
-    On Linux the script runs natively; on macOS it runs inside Lima. These
-    tests exercise the Linux path end-to-end with a tiny script, and the
-    Lima path via subprocess mocking.
+    On Linux the script runs natively and produces an unpacked directory
+    tree at agents/<name>/rootfs/ (consumed by gVisor as OCI root.path).
+    On macOS it runs inside Lima and produces an ext4 image at
+    agents/<name>/rootfs.ext4 (consumed by Virtualization.framework).
+    Both paths pass SAFEYOLO_ROOTFS_OUT_CACHE_PATHS to let the script
+    declare bind-mount target paths for persistent per-agent caches.
     """
 
     def _write_script(self, tmp_path: Path, body: str) -> Path:
@@ -1299,11 +1330,12 @@ class TestBuildCustomRootfs:
         script.chmod(0o755)
         return script
 
-    def test_linux_writes_erofs_and_validates_output(
+    def test_linux_writes_tree_and_validates_output(
         self, tmp_config_dir, tmp_path, monkeypatch
     ):
-        """On Linux, script writes erofs to the requested path; builder
-        validates it exists and is non-empty."""
+        """On Linux, script writes an unpacked tree at
+        $SAFEYOLO_ROOTFS_OUT_TREE; builder validates the tree exists
+        with at least /etc."""
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(
@@ -1311,32 +1343,36 @@ class TestBuildCustomRootfs:
             '#!/bin/sh\n'
             'set -e\n'
             ': "${SAFEYOLO_AGENT_NAME:?}"\n'
-            ': "${SAFEYOLO_ROOTFS_OUT_EROFS:?}"\n'
+            ': "${SAFEYOLO_ROOTFS_OUT_TREE:?}"\n'
+            ': "${SAFEYOLO_ROOTFS_OUT_CACHE_PATHS:?}"\n'
             ': "${SAFEYOLO_ROOTFS_WORK_DIR:?}"\n'
             ': "${SAFEYOLO_GUEST_SRC_DIR:?}"\n'
             ': "${SAFEYOLO_TARGET_ARCH:?}"\n'
             '[ -d "$SAFEYOLO_ROOTFS_WORK_DIR" ]\n'
-            'echo -n stub > "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+            'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
+            'echo -n stub > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             out = build_custom_rootfs("myagent", script)
 
-        assert out == tmp_config_dir / "agents" / "myagent" / "rootfs.erofs"
-        assert out.read_bytes() == b"stub"
+        assert out == tmp_config_dir / "agents" / "myagent" / "rootfs"
+        assert out.is_dir()
+        assert (out / "etc" / "hostname").read_bytes() == b"stub"
 
-    def test_linux_empty_output_raises(
+    def test_linux_tree_without_etc_raises(
         self, tmp_config_dir, tmp_path
     ):
-        """Script that produces a zero-byte output file fails validation."""
+        """Script that creates the output dir but fails to populate /etc
+        fails validation -- a tree without /etc is not a valid rootfs."""
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(
             tmp_path,
-            '#!/bin/sh\ntouch "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+            '#!/bin/sh\nmkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE"\n',
         )
         with patch("safeyolo.vm.platform.system", return_value="Linux"), \
-             pytest.raises(VMError, match="empty file"):
+             pytest.raises(VMError, match="not a valid rootfs tree"):
             build_custom_rootfs("agent0", script)
 
     def test_linux_missing_output_raises(
@@ -1372,7 +1408,7 @@ class TestBuildCustomRootfs:
             tmp_path,
             '#!/bin/sh\n'
             'echo "$SAFEYOLO_ROOTFS_WORK_DIR" > /tmp/_safeyolo_test_workdir\n'
-            'echo -n x > "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+            'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n',
         )
         try:
             with patch("safeyolo.vm.platform.system", return_value="Linux"):
@@ -1410,24 +1446,29 @@ class TestBuildCustomRootfs:
     def test_linux_stale_output_is_cleared(
         self, tmp_config_dir, tmp_path
     ):
-        """A previous rebuild's output is removed before the script runs,
-        so a script that fails mid-way doesn't leave a stale image the VM
-        would happily boot."""
+        """A previous rebuild's tree is removed before the script runs,
+        so the script sees a clean slot and never picks up junk from a
+        prior failed build."""
         from safeyolo.vm import build_custom_rootfs
 
-        stale = tmp_config_dir / "agents" / "agent0" / "rootfs.erofs"
-        stale.parent.mkdir(parents=True, exist_ok=True)
-        stale.write_bytes(b"stale content from a prior build")
+        stale = tmp_config_dir / "agents" / "agent0" / "rootfs"
+        (stale / "etc").mkdir(parents=True)
+        (stale / "stale-marker").write_bytes(b"from prior build")
 
         script = self._write_script(
             tmp_path,
-            '#!/bin/sh\n[ ! -e "$SAFEYOLO_ROOTFS_OUT_EROFS" ] || exit 5\n'
-            'echo -n fresh > "$SAFEYOLO_ROOTFS_OUT_EROFS"\n',
+            '#!/bin/sh\n'
+            'set -e\n'
+            # The builder must have cleared the tree before calling us.
+            '[ ! -e "$SAFEYOLO_ROOTFS_OUT_TREE" ] || exit 5\n'
+            'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
+            'echo -n fresh > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             out = build_custom_rootfs("agent0", script)
 
-        assert out.read_bytes() == b"fresh"
+        assert (out / "etc" / "hostname").read_bytes() == b"fresh"
+        assert not (out / "stale-marker").exists()
 
     def test_macos_requires_limactl(
         self, tmp_config_dir, tmp_path
