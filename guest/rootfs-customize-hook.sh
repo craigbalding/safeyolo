@@ -160,9 +160,10 @@ mkdir -p \
     "$ROOTFS/safeyolo-status" \
     "$ROOTFS/home/agent"
 : > "$ROOTFS/usr/local/share/ca-certificates/safeyolo.crt"
-# The proxy UDS is bind-mounted into /safeyolo/ — not a concern (the
-# parent dir is pre-created above; gVisor creates the socket entry
-# as part of the bind).
+# /safeyolo/proxy.sock — the per-agent proxy UDS is file-bind-mounted
+# here by the platform layer. Pre-create as an empty regular file so
+# gVisor can bind over it without needing to create-on-readonly-root.
+: > "$ROOTFS/safeyolo/proxy.sock"
 
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"

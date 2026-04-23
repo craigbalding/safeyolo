@@ -994,16 +994,30 @@ class LinuxPlatform(AgentPlatform):
 
         return {
             "ociVersion": "1.0.0",
-            # Shared tree across agents — writes hit the overlay upper
-            # per --overlay2=root:dir=. readonly=false because gVisor's
-            # gofer needs to create missing bind-mount targets
-            # (e.g. /usr/local/share/ca-certificates/safeyolo.crt,
-            # /safeyolo/proxy.sock) when the tree doesn't already have
-            # them. The overlay redirects those creates to the upper,
-            # so the shared tree itself stays pristine; readonly=true
-            # was paranoid overkill that blocked legitimate overlay
-            # operations.
-            "root": {"path": str(rootfs_path), "readonly": False},
+            # readonly=true: belt-and-braces against cross-agent
+            # corruption of the shared tree. Even with multiple layers
+            # of defense already in place (host file perms: tree files
+            # are real-root-owned, unreachable by the gofer's
+            # subordinate uid; overlay: all writes target the upper),
+            # setting readonly=true is the cheapest third line and
+            # catches any gVisor overlay bug that would otherwise let
+            # a write slip through to root.path.
+            #
+            # Requires every OCI bind-mount target to exist in the tree
+            # (gVisor won't create-on-readonly-root). Pre-creation lives
+            # in guest/rootfs-customize-hook.sh — currently covers
+            # /workspace, /safeyolo, /safeyolo-status, /home/agent,
+            # /safeyolo/proxy.sock,
+            # /usr/local/share/ca-certificates/safeyolo.crt.
+            #
+            # User-supplied extra_shares (host-config mounts) are a
+            # known gap: their targets aren't in the base tree. If an
+            # extra_share destination doesn't exist, gofer's mkdir in
+            # the overlay upper should succeed (the upper is writable);
+            # if that fails in practice, the fix is to create the
+            # target in the overlay dir at start_sandbox time rather
+            # than flipping readonly back to false.
+            "root": {"path": str(rootfs_path), "readonly": True},
             "hostname": f"safeyolo-{name}",
             "annotations": annotations,
             "process": {
