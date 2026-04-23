@@ -109,32 +109,53 @@ def get_agent_overlay_path(name: str) -> Path:
     here across agent stop/run — /home/agent remains a separate
     virtiofs bind for bulk user data.
 
-    The file is a sparse 2 GiB truncate; the guest's initramfs detects
-    the absent filesystem on first boot and runs mkfs.ext4 -F in-place.
+    The file is created as a sparse 256 GiB `truncate`. The guest's
+    initramfs detects the absent filesystem on first boot and runs
+    `mkfs.ext4 -F -E lazy_itable_init=1` in-place; eager mkfs work is
+    a few MiB of metadata (superblock, block-group descriptors, bitmaps)
+    regardless of logical size.
     """
     return get_agents_dir() / name / "overlay.img"
 
 
-# Default size for the per-agent overlay upper. Sparse on APFS: only
-# actually-written blocks consume disk. 2 GiB is the headroom for
-# runtime installs (apt, pip, language toolchains under /usr) — users
-# normally install to /home/agent via mise where the sizing doesn't
-# compete with this budget.
-_OVERLAY_IMAGE_SIZE_BYTES = 2 * 1024 * 1024 * 1024
+# Default logical size for the per-agent overlay image.
+#
+# Chosen to be "plausibly unlimited" rather than a tight cap users can
+# hit by accident. 256 GiB covers any realistic in-VM install pattern
+# (multi-TB language toolchains, cached container images, debug dumps)
+# while staying well under ext4's ~16 TiB limit at the default 4 KiB
+# block size.
+#
+# Sparse-file semantics on APFS (macOS) and ext4 with extents (Linux):
+# the file reports 256 GiB via `ls -l` and `df -h` inside the VM, but
+# only written blocks consume physical disk. The real ceiling is host
+# disk capacity — when the host fills, the in-VM write fails with
+# ENOSPC (confusing-looking: "df says 200 GiB free" — but the error
+# is genuine).
+#
+# mkfs.ext4 cost: `-E lazy_itable_init=1` keeps inode-table zeroing
+# in a background kthread, so first-boot mkfs on a 256 GiB overlay
+# writes only ~5 MiB of eager metadata (superblock copies, block-group
+# descriptors, group bitmaps, journal header). Measured: well under
+# a second.
+_OVERLAY_IMAGE_SIZE_BYTES = 256 * 1024 * 1024 * 1024
 
 
 def ensure_agent_overlay(name: str) -> Path:
     """Create the per-agent overlay image if missing. Returns its path.
 
-    Idempotent; no-op if the file already exists at the expected size
-    (or any nonzero size — resize2fs is the growth path, not recreate).
+    Idempotent; no-op if the file already exists at any nonzero size.
+    Deliberately does NOT grow an existing smaller image to match the
+    current default — bumping the sparse size would need a resize2fs
+    on the guest side, which needs the VM stopped. Users who want the
+    new size on an existing agent can `safeyolo agent remove && add`.
     """
     path = get_agent_overlay_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.stat().st_size > 0:
         return path
-    # Sparse allocation: macOS APFS honors seek-past-EOF so the file
-    # reports 2 GiB logically but consumes ~0 physically until writes.
+    # Sparse allocation: the file reports _OVERLAY_IMAGE_SIZE_BYTES
+    # logically but consumes ~0 physically until writes land.
     with open(path, "wb") as fh:
         fh.truncate(_OVERLAY_IMAGE_SIZE_BYTES)
     path.chmod(0o600)
