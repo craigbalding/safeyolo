@@ -462,15 +462,16 @@ class LinuxPlatform(AgentPlatform):
     ) -> int:
         """Start a gVisor sandbox in an unprivileged user namespace.
 
-        ephemeral=True selects gVisor's in-memory overlay ("memory"
-        annotation): writes to / discarded on stop, matching the
-        Phase B Darwin semantics for the same flag.
-
-        ephemeral=False (default) selects a per-agent file-backed
-        overlay via the "dir=/absolute/path" annotation: writes to /
-        persist in a host-side directory across agent stop/run. Needs
-        `--allow-flag-override` on runsc (annotations restrict dir=
-        by default; see gVisor runsc/config/flags.go).
+        `ephemeral` is accepted for cross-platform parity with the
+        macOS `start_sandbox` signature, but on Linux it is currently
+        a no-op. gVisor's memory overlay is already ephemeral by
+        design, and the attempts to wire a disk-backed overlay (for
+        the non-ephemeral case) against an EROFS-sourced rootfs
+        panicked or hit "read-only file system" at bind-mount setup
+        on runsc release-20260413.0. See the TODO block in
+        `_generate_oci_config` for the exact failure modes. Revisit
+        when a newer gVisor release fixes the combination or when we
+        change the rootfs away from EROFS-source.
         """
         runsc = _find_runsc()
         platform = _detect_runsc_platform()
@@ -558,28 +559,16 @@ class LinuxPlatform(AgentPlatform):
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
-        # Overlay2: the real knob. `root:<medium>` applies to both
-        # rootfs and gofer-backed bind-mounts coherently.
-        #   ephemeral=True  -> root:memory  (tmpfs, writes discarded on stop)
-        #   ephemeral=False -> root:dir=<absolute>  (disk-backed, persists)
-        # gVisor creates its filestore file inside the supplied dir
-        # (filestore-<random>) so we supply a directory, not a file.
-        if ephemeral:
-            overlay2_flag = "--overlay2=root:memory "
-        else:
-            overlay_dir = get_agents_dir() / name / "overlay"
-            overlay_dir.mkdir(parents=True, exist_ok=True)
-            # "all:dir=" scope applies to the rootfs AND each
-            # gofer-backed bind mount uniformly. "root:dir=" only
-            # covered the rootfs, which left gofer-mount upper
-            # creation on the read-only EROFS surface and exploded
-            # with "failed to create directory mountpoint: read-only
-            # file system" on the first bind-mount target creation.
-            overlay2_flag = f"--overlay2=all:dir={overlay_dir} "
+        # Overlay remains memory-backed (see the TODO in the annotations
+        # block above). `ephemeral` is accepted on the start_sandbox
+        # signature for cross-platform parity with Darwin but is a
+        # no-op here until the dir= overlay combination can be made
+        # to work on EROFS-sourced rootfs.
+        _ = ephemeral  # suppress unused-arg linter
 
         inner = (
             f"{setup} && "
-            f"{runsc} --root {root} {overlay2_flag}--host-uds=open --ignore-cgroups "
+            f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "
@@ -928,23 +917,39 @@ class LinuxPlatform(AgentPlatform):
             else get_share_dir() / "rootfs-base.erofs"
         )
 
-        # Overlay mode is actually controlled via runsc's --overlay2
-        # flag (set in the inner command below), not via the
-        # dev.gvisor.spec.rootfs.overlay annotation alone. The
-        # annotation only controls the ROOTFS overlay; gofer-backed
-        # bind mounts (workspace, config-share, status, home) have a
-        # SEPARATE overlay configuration that --overlay2 drives for
-        # both at once. Setting annotation to dir= while gofer defaults
-        # to "self" panics runsc on EROFS-rooted sandboxes
-        # (HostFileDir sees "self" with no dir= prefix — experimentally
-        # reproduced on release-20260413.0).
+        # TODO(linux-disk-backed-overlay): disk-backed persistence on
+        # Linux doesn't work with this gVisor release + EROFS-sourced
+        # rootfs. Tried on runsc release-20260413.0 / Ubuntu Noble:
         #
-        # Leave this annotation unset and let --overlay2=root:<medium>
-        # cover both layers coherently. Keep source+type annotations
-        # which drive EROFS mount semantics.
+        #   (1) dev.gvisor.spec.rootfs.overlay=dir=<path> annotation
+        #       + --allow-flag-override  → panic in createGoferFilestore:
+        #       "anonymous overlay medium = 'self' does not have dir=
+        #       prefix" (gofer filestore inherits default `self` from
+        #       --overlay2; clash with rootfs dir=).
+        #
+        #   (2) --overlay2=root:dir=<path>  → "failed to create directory
+        #       mountpoint '/safeyolo': read-only file system" on the
+        #       first bind-mount target. The dir= filestore isn't
+        #       actually providing a writable upper for gofer mount
+        #       point creation against an EROFS root.
+        #
+        #   (3) --overlay2=all:dir=<path>  → same read-only-FS error.
+        #
+        # Baseline (this code path's current default, "memory") works
+        # because the in-sentry tmpfs upper satisfies mount-point
+        # writes without needing a host-side filestore. Same pattern
+        # Phase A initially shipped on macOS — ephemeral at the
+        # expense of write persistence.
+        #
+        # Writes to /etc, /usr, /var are therefore still discarded
+        # on Linux agent stop. /home/agent (OCI bind, persistent)
+        # remains the escape hatch for per-agent state. Revisit when
+        # a gVisor release documents an EROFS+dir= combination that
+        # works, or when we switch off EROFS-source for the rootfs.
         annotations = {
             "dev.gvisor.spec.rootfs.source": erofs_path,
             "dev.gvisor.spec.rootfs.type": "erofs",
+            "dev.gvisor.spec.rootfs.overlay": "memory",
         }
 
         # /safeyolo-status is a host bind-mount (see mounts list above) —
