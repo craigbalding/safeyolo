@@ -559,31 +559,16 @@ class LinuxPlatform(AgentPlatform):
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
-        # Overlay medium selection.
-        #
-        # Tier-1 retry of the disk-backed overlay: the previous revert
-        # (383892c) lost on "read-only file system" when gVisor tried
-        # to mkdir bind-mount targets in the EROFS root before the
-        # overlay upper was active. guest/rootfs-customize-hook.sh
-        # now pre-creates those targets (/workspace, /safeyolo,
-        # /safeyolo-status, /home/agent), so gVisor should have
-        # nothing to mkdir. Retrying --overlay2=root:dir=<path>.
-        #
-        # If this still fails on EROFS-sourced rootfs (gVisor's
-        # createGoferFilestore path explicitly skips filestore
-        # creation for EROFS per PR #12337), the revert block is
-        # trivial: change `overlay2_flag` to the unconditional
-        # memory string and drop the `overlay_dir.mkdir` line.
-        if ephemeral:
-            overlay2_flag = "--overlay2=root:memory"
-        else:
-            overlay_dir = get_agents_dir() / name / "overlay"
-            overlay_dir.mkdir(parents=True, exist_ok=True)
-            overlay2_flag = f"--overlay2=root:dir={overlay_dir}"
+        # Overlay remains memory-backed (see the TODO in the annotations
+        # block above). `ephemeral` is accepted on the start_sandbox
+        # signature for cross-platform parity with Darwin but is a
+        # no-op here until the dir= overlay combination can be made
+        # to work on EROFS-sourced rootfs.
+        _ = ephemeral  # suppress unused-arg linter
 
         inner = (
             f"{setup} && "
-            f"{runsc} --root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
+            f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "
