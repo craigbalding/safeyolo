@@ -38,6 +38,7 @@ command -v lddtree >/dev/null || MISSING+=("pax-utils (lddtree)")
 command -v cpio >/dev/null || MISSING+=("cpio")
 [ -x /sbin/e2fsck ] || [ -x /usr/sbin/e2fsck ] || MISSING+=("e2fsprogs (e2fsck)")
 [ -x /sbin/resize2fs ] || [ -x /usr/sbin/resize2fs ] || MISSING+=("e2fsprogs (resize2fs)")
+[ -x /sbin/mkfs.ext4 ] || [ -x /usr/sbin/mkfs.ext4 ] || MISSING+=("e2fsprogs (mkfs.ext4)")
 if [ "${#MISSING[@]}" -gt 0 ]; then
     echo "Error: missing build dependencies: ${MISSING[*]}" >&2
     echo "  Debian/Ubuntu: sudo apt-get install busybox-static e2fsprogs pax-utils cpio" >&2
@@ -49,6 +50,8 @@ E2FSCK_BIN="$(command -v e2fsck || echo /sbin/e2fsck)"
 [ -x "$E2FSCK_BIN" ] || E2FSCK_BIN=/usr/sbin/e2fsck
 RESIZE2FS_BIN="$(command -v resize2fs || echo /sbin/resize2fs)"
 [ -x "$RESIZE2FS_BIN" ] || RESIZE2FS_BIN=/usr/sbin/resize2fs
+MKFS_EXT4_BIN="$(command -v mkfs.ext4 || echo /sbin/mkfs.ext4)"
+[ -x "$MKFS_EXT4_BIN" ] || MKFS_EXT4_BIN=/usr/sbin/mkfs.ext4
 
 [ -r "$SCRIPT_DIR/initramfs/init" ] || {
     echo "Error: missing initramfs init script at $SCRIPT_DIR/initramfs/init" >&2
@@ -78,11 +81,16 @@ for cmd in sh mount umount cp chmod echo cat mkdir rm \
     ln -sf busybox "$WORK/bin/$cmd"
 done
 
-# e2fsck and resize2fs (with lib deps via lddtree)
+# e2fsck, resize2fs and mkfs.ext4 (with lib deps via lddtree).
+# mkfs.ext4 is needed by initramfs/init to lazy-format /dev/vdb on an
+# agent's first boot (the host ships a zeroed sparse file; the guest
+# formats it the first time it sees one). Subsequent boots mount the
+# already-formatted image directly.
 cp "$E2FSCK_BIN" "$WORK/sbin/e2fsck"
 cp "$RESIZE2FS_BIN" "$WORK/usr/sbin/resize2fs"
+cp "$MKFS_EXT4_BIN" "$WORK/sbin/mkfs.ext4"
 
-lddtree -l "$E2FSCK_BIN" "$RESIZE2FS_BIN" 2>/dev/null | sort -u | while read -r lib; do
+lddtree -l "$E2FSCK_BIN" "$RESIZE2FS_BIN" "$MKFS_EXT4_BIN" 2>/dev/null | sort -u | while read -r lib; do
     [ -f "$lib" ] || continue
     dst_dir="$WORK$(dirname "$lib")"
     mkdir -p "$dst_dir"

@@ -100,6 +100,47 @@ def get_agent_pid_path(name: str) -> Path:
     return get_agents_dir() / name / "vm.pid"
 
 
+def get_agent_overlay_path(name: str) -> Path:
+    """Per-agent writable overlay image (attached as /dev/vdb inside the VM).
+
+    EXPERIMENT (exp/erofs-vz-phase-a, Phase B): a per-agent ext4 image
+    layered on top of the shared read-only erofs rootfs via overlayfs
+    inside the guest. Runtime writes to /etc, /usr, /var, etc. persist
+    here across agent stop/run — /home/agent remains a separate
+    virtiofs bind for bulk user data.
+
+    The file is a sparse 2 GiB truncate; the guest's initramfs detects
+    the absent filesystem on first boot and runs mkfs.ext4 -F in-place.
+    """
+    return get_agents_dir() / name / "overlay.img"
+
+
+# Default size for the per-agent overlay upper. Sparse on APFS: only
+# actually-written blocks consume disk. 2 GiB is the headroom for
+# runtime installs (apt, pip, language toolchains under /usr) — users
+# normally install to /home/agent via mise where the sizing doesn't
+# compete with this budget.
+_OVERLAY_IMAGE_SIZE_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def ensure_agent_overlay(name: str) -> Path:
+    """Create the per-agent overlay image if missing. Returns its path.
+
+    Idempotent; no-op if the file already exists at the expected size
+    (or any nonzero size — resize2fs is the growth path, not recreate).
+    """
+    path = get_agent_overlay_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > 0:
+        return path
+    # Sparse allocation: macOS APFS honors seek-past-EOF so the file
+    # reports 2 GiB logically but consumes ~0 physically until writes.
+    with open(path, "wb") as fh:
+        fh.truncate(_OVERLAY_IMAGE_SIZE_BYTES)
+    path.chmod(0o600)
+    return path
+
+
 def get_agent_config_share_dir(name: str) -> Path:
     return get_agents_dir() / name / "config-share"
 
@@ -716,12 +757,17 @@ def start_vm(
     # the rootfs to a pristine clone) and Linux overlay discard.
     ensure_agent_persistent_dirs(name)
     agent_home = get_agent_home_dir(name)
+    # Per-agent writable overlay (Phase B). Attached as /dev/vdb; the
+    # guest's initramfs layers overlayfs over the read-only erofs base
+    # with this as the upper. Lazy-formatted on first boot.
+    overlay_img = ensure_agent_overlay(name)
 
     cmd = [
         str(helper), "run",
         "--kernel", str(kernel),
         "--initrd", str(initrd),
         "--rootfs", str(rootfs),
+        "--overlay", str(overlay_img),
         "--cpus", str(cpus),
         "--memory", str(memory_mb),
         "--share", f"{workspace_path}:workspace:rw",

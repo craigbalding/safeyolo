@@ -8,6 +8,7 @@ struct RunConfig {
     var kernelPath: String = ""
     var initrdPath: String = ""
     var rootfsPath: String = ""
+    var overlayPath: String = ""     // optional per-agent writable upper disk (ext4 img). When set, attached as /dev/vdb and the guest's initramfs layers overlayfs(upper=/dev/vdb) over the read-only rootfs.
     var cpus: Int = 2
     var memoryMB: Int = 2048
     var cmdline: String = "console=hvc0 root=/dev/vda rw quiet"
@@ -29,7 +30,12 @@ func printUsage() {
     Options:
       --kernel PATH       Path to kernel Image (required)
       --initrd PATH       Path to initramfs (required)
-      --rootfs PATH       Path to root disk ext4 image (required)
+      --rootfs PATH       Path to root disk image (ext4 or erofs) (required)
+      --overlay PATH      Optional writable ext4 image attached as /dev/vdb.
+                          When set, the guest layers overlayfs(upper=ext4-on-
+                          vdb) over the (typically read-only) rootfs, so
+                          runtime writes to / persist across agent stops.
+                          Omit for tmpfs upper (ephemeral writes).
       --cpus N            Number of CPUs (default: 2)
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
@@ -93,6 +99,9 @@ func parseArguments() -> RunConfig? {
         case "--rootfs":
             i += 1; guard i < args.count else { fputs("Error: --rootfs requires a value\n", stderr); return nil }
             config.rootfsPath = args[i]
+        case "--overlay":
+            i += 1; guard i < args.count else { fputs("Error: --overlay requires a value\n", stderr); return nil }
+            config.overlayPath = args[i]
         case "--cpus":
             i += 1; guard i < args.count, let n = Int(args[i]), n > 0 else { fputs("Error: --cpus requires a positive integer\n", stderr); return nil }
             config.cpus = n

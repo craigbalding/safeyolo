@@ -1,18 +1,23 @@
 #!/bin/sh
 #
-# SafeYolo initramfs init — erofs base + tmpfs upper overlayfs.
+# SafeYolo initramfs init — erofs base + per-agent ext4 overlay upper.
 #
-# The rootfs on /dev/vda is a read-only EROFS image, shared across all
-# agents on this host (no per-agent clone). Runtime writes to / land in
-# a tmpfs upper layer and are discarded when the VM exits. Persistent
-# per-agent state lives under /home/agent (virtiofs-bound by the host).
+# /dev/vda is the shared read-only EROFS base image. /dev/vdb, when
+# present, is a per-agent ext4-backed writable disk that holds the
+# overlayfs upper+work layers; runtime writes to / persist across
+# agent stop/run in this file. When /dev/vdb is absent, we fall back
+# to a tmpfs upper (ephemeral, same as the historical behavior).
 #
 # Layout:
 #   /mnt/lower        = read-only erofs (/dev/vda)
-#   /mnt/overlay      = tmpfs holding upper + work
+#   /mnt/overlay      = ext4 on /dev/vdb (persistent) OR tmpfs (fallback)
 #     /upper          = overlayfs upper (writable)
 #     /work           = overlayfs work dir (same FS as upper, required)
 #   /mnt/root         = overlayfs mount (the new /)
+#
+# First-boot handling: a freshly-created /dev/vdb image is unformatted
+# raw bytes. The `mount` attempt fails; we mkfs.ext4 and retry. On
+# subsequent boots the filesystem is there and mount succeeds first try.
 #
 set -e
 
@@ -28,13 +33,26 @@ mkdir -p /mnt/lower /mnt/overlay
 # Read-only EROFS base
 mount -t erofs -o ro /dev/vda /mnt/lower
 
-# Writable upper layer. tmpfs is sized to the VM's available memory;
-# the kernel only allocates pages that are actually written, so the
-# cost at rest is ~0. Raise size= if the agent workload needs more
-# scratch in /tmp, /var, /etc — but /home/agent (the persistent data
-# path) is a separate virtiofs mount the orchestrator sets up later,
-# so it doesn't draw from this budget.
-mount -t tmpfs tmpfs /mnt/overlay
+# Writable upper layer on /dev/vdb (persistent ext4, per-agent).
+# /dev/vdb MUST be attached — the host's safeyolo-vm helper is
+# responsible for creating and attaching a per-agent overlay image.
+# No tmpfs fallback: silent-demotion to ephemeral would make a
+# misconfigured host look like normal operation while losing every
+# write the agent makes to /etc, /usr, /var. Panic with a clear
+# message instead so the failure is visible.
+if [ ! -b /dev/vdb ]; then
+    echo "initramfs FATAL: /dev/vdb not attached — the host must pass --overlay PATH to safeyolo-vm so per-agent writes persist. Refusing to boot with an ephemeral upper layer (that silently loses changes)." >&2
+    exec sleep infinity
+fi
+
+# First-boot: mount attempt fails on a freshly-truncated sparse file
+# (no superblock). mkfs.ext4 in place and retry. On subsequent boots
+# the filesystem is already there and the first mount succeeds.
+if ! mount -t ext4 /dev/vdb /mnt/overlay 2>/dev/null; then
+    echo "initramfs: /dev/vdb has no filesystem, formatting ext4 (first boot)"
+    /sbin/mkfs.ext4 -F -q -E lazy_itable_init=1 /dev/vdb
+    mount -t ext4 /dev/vdb /mnt/overlay
+fi
 mkdir -p /mnt/overlay/upper /mnt/overlay/work
 
 mount -t overlay overlay \

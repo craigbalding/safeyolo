@@ -31,11 +31,15 @@ struct VMConfiguration {
         machineIdentifier: VZGenericMachineIdentifier? = nil
     ) throws -> VZVirtualMachineConfiguration {
         // Validate file paths exist
-        for (path, label) in [
+        var requiredPaths: [(String, String)] = [
             (config.kernelPath, "kernel"),
             (config.initrdPath, "initrd"),
             (config.rootfsPath, "rootfs"),
-        ] {
+        ]
+        if !config.overlayPath.isEmpty {
+            requiredPaths.append((config.overlayPath, "overlay"))
+        }
+        for (path, label) in requiredPaths {
             let expanded = NSString(string: path).expandingTildeInPath
             guard FileManager.default.fileExists(atPath: expanded) else {
                 throw VMConfigurationError.fileNotFound("\(label): \(expanded)")
@@ -76,8 +80,18 @@ struct VMConfiguration {
             .appendingPathComponent("console.log")
         vmConfig.serialPorts = [createSerialPort(toFileAt: consoleLogURL)]
 
-        // Root disk
-        vmConfig.storageDevices = [try createRootDisk(path: config.rootfsPath)]
+        // Root disk (/dev/vda) and optional overlay upper (/dev/vdb).
+        // Order matters: vda first, vdb second — the guest's initramfs
+        // hard-codes /dev/vdb as the overlay upper when present.
+        var storageDevices: [VZStorageDeviceConfiguration] = [
+            try createBlockDisk(path: config.rootfsPath, readOnly: false)
+        ]
+        if !config.overlayPath.isEmpty {
+            storageDevices.append(
+                try createBlockDisk(path: config.overlayPath, readOnly: false)
+            )
+        }
+        vmConfig.storageDevices = storageDevices
 
         // No virtio-net: the sandbox has no external network interface.
         // All egress goes through vsock → host UDS → proxy_bridge. This
@@ -146,13 +160,16 @@ struct VMConfiguration {
 
     // MARK: - Root disk
 
-    private static func createRootDisk(path: String) throws -> VZVirtioBlockDeviceConfiguration {
+    private static func createBlockDisk(
+        path: String,
+        readOnly: Bool
+    ) throws -> VZVirtioBlockDeviceConfiguration {
         let expanded = NSString(string: path).expandingTildeInPath
         let diskURL = URL(fileURLWithPath: expanded)
 
         let attachment = try VZDiskImageStorageDeviceAttachment(
             url: diskURL,
-            readOnly: false
+            readOnly: readOnly
         )
 
         return VZVirtioBlockDeviceConfiguration(attachment: attachment)
