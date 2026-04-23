@@ -806,7 +806,20 @@ class LinuxPlatform(AgentPlatform):
             _kill_userns(name)
 
     def remove_agent_dir(self, name: str) -> None:
-        """Delete the agent's on-disk directory."""
+        """Delete the agent's on-disk directory.
+
+        Known limitation: package-cache dirs (cache/*/partial and similar)
+        may be owned by the mapped root uid (100000) from inside the
+        sandbox. After stop the userns holder is dead, so the caller
+        (uid 1000) can't rmtree those. Manifests as `agent remove` raising
+        PermissionError on the first root-owned subpath. Workaround:
+        run `sudo rm -rf ~/.safeyolo/agents/<name>` before remove, or
+        re-add the agent and exec `chown -R agent:agent /var/cache/apt
+        /var/lib/apt/lists` inside the sandbox, then stop + remove.
+        Proper fix: spawn a throwaway userns-holder with the same subuid
+        mapping and rmtree from inside it so root-owned files collapse to
+        subordinate-uid-owned on the host side.
+        """
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
