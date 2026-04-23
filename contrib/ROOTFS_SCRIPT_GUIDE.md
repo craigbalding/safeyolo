@@ -117,11 +117,11 @@ more packages.
 
 ## Building on macOS (Lima)
 
-macOS can't natively build Linux rootfs images — `mmdebstrap`,
-`umoci unpack`, `mkfs.erofs`, and `mkfs.ext4` are all Linux-only syscalls
-or binaries. SafeYolo handles this transparently by invoking your script
-inside a Lima VM (the same `safeyolo-builder` VM that `guest/build-all.sh`
-uses for the default base).
+macOS can't natively build Linux rootfs trees — `umoci unpack`, chroot
+apt/apk, and `mkfs.ext4` are all Linux-only syscalls or binaries.
+SafeYolo handles this transparently by invoking your script inside a
+Lima VM (the same `safeyolo-builder` VM that `guest/build-all.sh` uses
+for the default base).
 
 One-time setup:
 
@@ -131,10 +131,9 @@ brew install lima
 
 The Lima VM is created on first `agent add --rootfs-script` run (or first
 `guest/build-all.sh`) and pre-provisioned with `skopeo`, `umoci`,
-`mmdebstrap`, `e2fsprogs`, `erofs-utils`, plus the kernel-build toolchain.
-Your script runs inside that VM with the script directory and the target
-agent directory mounted in. Output images land on the macOS host via the
-bind mount.
+`e2fsprogs`, plus the kernel-build toolchain. Your script runs inside
+that VM with the script directory and the target agent directory mounted
+in. Output images land on the macOS host via the bind mount.
 
 Linux hosts skip Lima entirely and run the script natively.
 
@@ -142,15 +141,17 @@ Linux hosts skip Lima entirely and run the script natively.
 
 | You want… | Tools | Example |
 |---|---|---|
-| Any distro with an OCI image | `skopeo` + `umoci` | Alpine, Kali examples in `contrib/` |
-| Debian / Ubuntu / Kali from scratch | `mmdebstrap` | `guest/build-rootfs.sh` |
+| Any distro with an OCI image | `skopeo` + `umoci` | Alpine, Kali, default Debian examples |
+| Debian / Ubuntu / Kali from scratch | `mmdebstrap` | User-supplied (default base switched to skopeo) |
 | Arch Linux | `pacstrap` | User-supplied |
 | Fedora / RHEL / Rocky | `dnf --installroot` | User-supplied |
 | Alpine from upstream tarball | `curl` + `tar` | alt. to skopeo path |
 | Anything truly custom | your shell, your rules | |
 
 All produce a rootfs tree; the packaging tail (`install_safeyolo_guest_common`
-+ `mkfs.ext4` / `mkfs.erofs`) is identical regardless of origin.
+then either `cp -a` into `$SAFEYOLO_ROOTFS_OUT_TREE` on Linux or
+`mkfs.ext4 -d` into `$SAFEYOLO_ROOTFS_OUT_EXT4` on macOS) is identical
+regardless of origin.
 
 ## Known kernel limitations
 
@@ -184,7 +185,8 @@ SafeYolo agent. Share this guide and the existing examples
 
 > Write a rootfs script for Arch Linux that pulls the official bootstrap
 > tarball, uses `pacstrap` to install base + curl + git, sources
-> `install-guest-common.sh`, and packs to ext4/erofs.
+> `install-guest-common.sh`, and emits either ext4 (`$SAFEYOLO_ROOTFS_OUT_EXT4`)
+> or an unpacked tree (`$SAFEYOLO_ROOTFS_OUT_TREE`) depending on which is set.
 
 Review the script, save it in `contrib/<distro>/`, and wire it in via
 `--rootfs-script`.
