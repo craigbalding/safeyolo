@@ -1,8 +1,11 @@
 #!/bin/sh
 #
-# SafeYolo initramfs init — erofs base + overlayfs writable upper.
+# SafeYolo initramfs init — ext4 base + overlayfs writable upper.
 #
-# /dev/vda is the shared read-only EROFS base image.
+# /dev/vda is the shared read-only ext4 base image. (Previously an
+# EROFS image; switched in the exp/erofs-vz-phase-a unification so
+# the kernel can drop CONFIG_EROFS_FS=y and the build pipeline
+# outputs a single format across platforms.)
 #
 # The writable upper layer has two legitimate shapes:
 #
@@ -25,7 +28,7 @@
 # refuse to boot.
 #
 # Layout:
-#   /mnt/lower        = read-only erofs (/dev/vda)
+#   /mnt/lower        = read-only ext4 (/dev/vda)
 #   /mnt/overlay      = ext4 on /dev/vdb  OR  tmpfs (ephemeral opt-in)
 #     /upper          = overlayfs upper (writable)
 #     /work           = overlayfs work dir (same FS as upper, required)
@@ -46,8 +49,12 @@ mount -t devtmpfs dev /dev
 # agnostic to the init's mount topology.
 mkdir -p /mnt/lower /mnt/overlay
 
-# Read-only EROFS base
-mount -t erofs -o ro /dev/vda /mnt/lower
+# Read-only ext4 base.
+# `-o ro,noload` disables journal replay. mkfs.ext4 -d writes a clean
+# filesystem with zeroed journal, so there's nothing to replay —
+# and more importantly, journal replay under a writable intent is
+# exactly what would corrupt a shared-across-VMs base image.
+mount -t ext4 -o ro,noload /dev/vda /mnt/lower
 
 # Decide the upper layer. Persistent (ext4 on /dev/vdb) is the
 # default; ephemeral (tmpfs) is explicit opt-in via
@@ -101,10 +108,11 @@ fi
 
 umount /mnt/config 2>/dev/null || true
 
-# Clean up initramfs-root mounts before switch_root. /mnt/lower (erofs)
-# and /mnt/overlay (tmpfs upper/work) are held by overlayfs; they stay.
-# The rootfs-baked safeyolo-guest-init stub re-mounts /proc /sys /dev
-# on the new root as its first act (see guest/rootfs/safeyolo-guest-init).
+# Clean up initramfs-root mounts before switch_root. /mnt/lower (ext4)
+# and /mnt/overlay (tmpfs or ext4 upper/work) are held by overlayfs;
+# they stay. The rootfs-baked safeyolo-guest-init stub re-mounts
+# /proc /sys /dev on the new root as its first act
+# (see guest/rootfs/safeyolo-guest-init).
 umount /proc /sys /dev
 
 exec switch_root /mnt/root /usr/local/bin/safeyolo-guest-init

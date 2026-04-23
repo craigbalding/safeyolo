@@ -78,22 +78,21 @@ def get_initrd_path() -> Path:
 
 
 def get_base_rootfs_path() -> Path:
-    # Legacy ext4 base path. Still referenced by guest_image_status for
-    # build-artifact reporting (build-rootfs.sh produces both formats).
-    # The macOS VZ runtime no longer boots from this — see
-    # get_agent_rootfs_path below.
+    # Shared read-only ext4 base image. macOS VZ boots from this
+    # directly (initramfs mounts it `-o ro,noload`). All agents share
+    # the single file; per-agent state lives in the overlay upper
+    # (/dev/vdb) and /home/agent (virtiofs-bound).
     return get_share_dir() / "rootfs-base.ext4"
 
 
 def get_agent_rootfs_path(name: str) -> Path:
-    # EXPERIMENT (exp/erofs-vz-phase-a): macOS VZ boots from the shared
-    # read-only erofs base. No per-agent rootfs file; per-agent writes
-    # land in the in-VM tmpfs overlay (ephemeral) and /home/agent
-    # (virtiofs-bound, persistent). Callers that dereference this as a
-    # read target get the right image; callers that wrote to it
-    # (clones, snapshots) need to stop — this branch makes the no-op
-    # explicit in create_agent_rootfs().
-    return get_base_rootfs_erofs_path()
+    # No per-agent rootfs file. All agents share get_base_rootfs_path();
+    # per-agent runtime state lives in the in-VM overlay upper
+    # (persistent when /dev/vdb is attached, ephemeral via tmpfs when
+    # safeyolo.ephemeral_upper=1) and the /home/agent virtiofs bind.
+    # Kept as a function because callers expect a Path; points at the
+    # shared base so any code that treats it as a read target works.
+    return get_base_rootfs_path()
 
 
 def get_agent_pid_path(name: str) -> Path:
@@ -210,14 +209,15 @@ def ensure_agent_persistent_dirs(name: str) -> None:
 def create_agent_rootfs(name: str) -> Path:
     """Return the rootfs path this agent should boot from.
 
-    EXPERIMENT (exp/erofs-vz-phase-a): there is no per-agent rootfs copy
-    any more. The base erofs image is shared read-only across all
-    agents; writes land in the VM's tmpfs overlay (ephemeral) or the
-    virtiofs-bound /home/agent (persistent). Ensure the per-agent
-    directory exists because other code writes config-share/status
-    into it.
+    There is no per-agent rootfs copy. The shared ext4 base is
+    mounted read-only by every agent's VM (initramfs uses `-o ro,noload`);
+    writes land in the overlay upper (ext4 on /dev/vdb persistent, or
+    tmpfs ephemeral) and in /home/agent (virtiofs-bound, persistent).
+
+    Ensures the per-agent directory exists because other code
+    (config-share, status, overlay.img, ssh host keys) writes into it.
     """
-    base = get_base_rootfs_erofs_path()
+    base = get_base_rootfs_path()
     if not base.exists():
         raise VMError(
             f"Base rootfs not found at {base}\n"
@@ -1018,18 +1018,16 @@ def check_guest_images() -> bool:
     the check now matches what the platform layer will demand at runtime.
     """
     if platform.system() == "Darwin":
-        # EXPERIMENT (exp/erofs-vz-phase-a): macOS now requires erofs too,
-        # not ext4. Old ext4 output from build-rootfs.sh can still be
-        # present on disk; we just don't require it.
+        # macOS VZ boots from the shared ext4 base + kernel + initramfs.
         return (
-            get_base_rootfs_erofs_path().exists()
+            get_base_rootfs_path().exists()
             and get_kernel_path().exists()
             and get_initrd_path().exists()
         )
     if platform.system() == "Linux":
         return get_base_rootfs_erofs_path().exists()
     # Unsupported platform — treat the rootfs as the minimum needed.
-    return get_base_rootfs_erofs_path().exists()
+    return get_base_rootfs_path().exists()
 
 
 def guest_image_status() -> dict[str, bool]:
@@ -1052,9 +1050,10 @@ def guest_image_status() -> dict[str, bool]:
 # users with kernel/initramfs (not required) or macOS users with erofs (not
 # required).
 _PLATFORM_REQUIRED_ARTIFACTS = {
-    # EXPERIMENT (exp/erofs-vz-phase-a): macOS runtime switched from ext4
-    # to the shared erofs base. Mark erofs required, not ext4.
-    "Darwin": ("kernel", "initramfs", "rootfs-erofs"),
+    # macOS VZ boots from the shared ext4 base (unified rootfs format
+    # in exp/erofs-vz-phase-a). Linux still needs erofs until the
+    # follow-up tree-root.path commit lands.
+    "Darwin": ("kernel", "initramfs", "rootfs-ext4"),
     "Linux": ("rootfs-erofs",),
 }
 
