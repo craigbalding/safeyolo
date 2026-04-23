@@ -222,10 +222,18 @@ fi
 # creates new ones as the current user -- fix unconditionally.
 # The glob may not match on runtimes where keygen failed (gVisor
 # without /dev/random early in boot) -- check before chown/chmod.
+#
+# `chown root:root` on a file already owned by root fails with EPERM
+# in a userns that lacks CAP_CHOWN over the file's original inode —
+# set -e kills guest-init before per-run. Skip the chown when it
+# would be a no-op; only invoke when the current owner differs.
 for keyfile in /etc/ssh/ssh_host_*_key; do
     [ -f "$keyfile" ] || continue
-    chown root:root "$keyfile"
-    chmod 600 "$keyfile"
+    owner=$(stat -c '%u:%g' "$keyfile" 2>/dev/null || echo "")
+    if [ "$owner" != "0:0" ]; then
+        chown root:root "$keyfile" 2>/dev/null || true
+    fi
+    chmod 600 "$keyfile" 2>/dev/null || true
 done
 
 mkdir -p /run/sshd
