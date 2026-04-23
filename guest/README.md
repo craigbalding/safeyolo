@@ -28,19 +28,30 @@ cd guest
 
 On Linux this runs natively. On macOS it auto-shells into a Lima VM (see below).
 
-Artifacts land in `guest/out/`. To use them:
+Artifacts land in `guest/out/`. To use them, from the same `guest/` directory you ran `./build-all.sh` in:
 
 ```bash
 mkdir -p ~/.safeyolo/share
-sudo cp -a guest/out/* ~/.safeyolo/share/
+sudo cp -a out/* ~/.safeyolo/share/
 ```
+
+(If you're back at the repo root, adjust to `sudo cp -a guest/out/* ~/.safeyolo/share/`.)
 
 `sudo cp -a` is required so the tree's uid 100000 ownership is preserved (rootless gVisor maps container root to host uid 100000; a plain `cp` would change ownership to the invoking user and `safeyolo agent add` would reject the tree with a chown instruction).
 
 ## macOS setup
 
+Lima is a Linux VM manager for macOS. Install it with whichever package manager you use:
+
 ```bash
+# Homebrew (most common on macOS):
 brew install lima
+
+# Or MacPorts:
+sudo port install lima
+
+# Or mise (if you already manage runtimes with it):
+mise use -g lima
 ```
 
 That's it. The first `./build-all.sh` run creates a Lima VM named `safeyolo-builder` from `guest/lima.yaml` and provisions it with the required build tools (~2-3 min). Subsequent runs reuse the VM.
@@ -101,6 +112,14 @@ sudo apt-get install \
     cpio \
     xz-utils
 ```
+
+What each is for (expect a fair number of transitive deps on a fresh Debian install — the `-cross` packages in the suggested-installs list are the arm64 cross-toolchain pulled in by `gcc-aarch64-linux-gnu`, totalling ~170 MB):
+
+- `build-essential`, `gcc-aarch64-linux-gnu` — host gcc + the arm64 cross-compiler for the kernel.
+- `bc`, `bison`, `flex` — the Linux kernel's own build tooling requires them (`Kbuild`, DTS/DTB compilation, parser generation).
+- `libelf-dev`, `libssl-dev` — kernel modules and signing.
+- `busybox-static`, `pax-utils` — initramfs construction (BusyBox provides the userland; `lddtree` from pax-utils walks dynamic deps).
+- `cpio`, `xz-utils` — initramfs packaging format.
 
 `build-rootfs.sh` doesn't need a Debian keyring — skopeo fetches the OCI image, not `.deb` packages, so the host's apt trust chain is irrelevant. Extras beyond the minbase image (ssh, socat, python3, the dev toolkit) are apt-installed **inside the unpacked rootfs tree** via chroot; those use the rootfs's own apt sources (debian:trixie's baked-in `deb.debian.org` mirror).
 
