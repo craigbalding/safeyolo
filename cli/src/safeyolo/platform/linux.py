@@ -506,11 +506,15 @@ class LinuxPlatform(AgentPlatform):
         root = _runsc_root()
 
         agent_dir = get_agents_dir() / name
-        rootfs = agent_dir / "rootfs"
         cid = _container_id(name)
         agent_ip = fw_alloc.get("attribution_ip", "")
 
-        self.prepare_rootfs(name)
+        # prepare_rootfs returns the actual directory gVisor should use
+        # as OCI root.path — shared base tree, or a per-agent tree from
+        # --rootfs-script. The older hardcoded `agent_dir / "rootfs"`
+        # placeholder (empty dir) was only correct when gVisor got its
+        # rootfs from the EROFS annotation, not from root.path.
+        rootfs = self.prepare_rootfs(name)
 
         # Backfill the per-agent host-side /home/agent source for
         # agents created before the persistent-home feature. `agent
@@ -981,7 +985,10 @@ class LinuxPlatform(AgentPlatform):
 
         return {
             "ociVersion": "1.0.0",
-            "root": {"path": str(rootfs_path), "readonly": False},
+            # Shared tree across agents — never written to directly.
+            # readonly=true is belt-and-braces; all writes hit the
+            # overlay upper regardless of this flag.
+            "root": {"path": str(rootfs_path), "readonly": True},
             "hostname": f"safeyolo-{name}",
             "annotations": annotations,
             "process": {
