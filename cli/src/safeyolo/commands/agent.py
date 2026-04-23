@@ -48,7 +48,7 @@ console = Console()
 
 agent_app = typer.Typer(
     name="agent",
-    help="Manage AI agent containers for Sandbox Mode.",
+    help="Manage AI agent sandboxes.",
     no_args_is_help=True,
 )
 
@@ -560,7 +560,25 @@ def _run_agent(
 
             if not plat.is_sandbox_running(name):
                 console.print(" [red]failed[/red]")
-                console.print(f"  Check logs: ~/.safeyolo/agents/{name}/serial.log")
+                # Point the user at the log that actually exists on their
+                # platform. On macOS the Swift VM helper writes the guest
+                # serial console to serial.log. On Linux there is no serial
+                # console; guest-init redirects its stdout/stderr to
+                # status/boot.log (a host bind-mount, so it survives a
+                # sandbox exit). See cli/src/safeyolo/platform/linux.py
+                # _generate_oci_config for the redirection.
+                if _sys.platform == "linux":
+                    console.print(
+                        f"  Check logs: ~/.safeyolo/agents/{name}/status/boot.log"
+                    )
+                    console.print(
+                        "  [dim](empty file = sandbox didn't start; check "
+                        "`journalctl --user` and `safeyolo doctor`)[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"  Check logs: ~/.safeyolo/agents/{name}/serial.log"
+                    )
                 exit_code = 1
             else:
                 console.print(f" {guest_ip}")
@@ -820,14 +838,6 @@ def add(
     if not config_dir:
         console.print("[red]No SafeYolo configuration found.[/red]\nRun [bold]safeyolo init[/bold] first.")
         raise typer.Exit(1)
-
-    config = load_config()
-    if not config.get("sandbox"):
-        console.print(
-            "[yellow]Warning: SafeYolo is not in Sandbox Mode.[/yellow]\n"
-            "Agent containers may be able to bypass the proxy.\n"
-            "Run [bold]safeyolo init[/bold] to enable network isolation (sandbox is the default).\n"
-        )
 
     # Validate folder early
     folder_path = Path(folder).expanduser().resolve()

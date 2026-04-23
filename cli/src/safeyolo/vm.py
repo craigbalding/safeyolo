@@ -905,24 +905,65 @@ def _update_agent_map(
 # Guest image checks
 # ---------------------------------------------------------------------------
 
+def get_base_rootfs_erofs_path() -> Path:
+    """Return the path gVisor expects for the Linux base rootfs image."""
+    return get_share_dir() / "rootfs-base.erofs"
+
+
 def check_guest_images() -> bool:
     """Check if required guest image artifacts exist.
 
-    On macOS (Virtualization.framework) all three are required: kernel,
-    initramfs, and rootfs. On Linux (gVisor) only the rootfs is needed --
-    gVisor provides its own kernel.
+    Platform-specific — each platform checks the rootfs format its
+    runtime actually consumes:
+
+      - macOS (Virtualization.framework): ext4 rootfs + kernel + initramfs.
+      - Linux (gVisor):                    EROFS rootfs.
+
+    Returning True here without the EROFS image on Linux was exactly how
+    the "build succeeded but agent add fails later" footgun happened —
+    the check now matches what the platform layer will demand at runtime.
     """
-    if not get_base_rootfs_path().exists():
-        return False
     if platform.system() == "Darwin":
-        return get_kernel_path().exists() and get_initrd_path().exists()
-    return True
+        return (
+            get_base_rootfs_path().exists()
+            and get_kernel_path().exists()
+            and get_initrd_path().exists()
+        )
+    if platform.system() == "Linux":
+        return get_base_rootfs_erofs_path().exists()
+    # Unsupported platform — treat the rootfs as the minimum needed.
+    return get_base_rootfs_path().exists()
 
 
 def guest_image_status() -> dict[str, bool]:
-    """Return existence status of each guest image artifact."""
+    """Return existence status of each guest image artifact.
+
+    Includes both rootfs formats so callers can report accurately regardless
+    of platform. The status keys deliberately reflect what's on disk, not
+    what each platform needs — the caller decides which to flag missing.
+    """
     return {
         "kernel": get_kernel_path().exists(),
         "initramfs": get_initrd_path().exists(),
-        "rootfs": get_base_rootfs_path().exists(),
+        "rootfs-ext4": get_base_rootfs_path().exists(),
+        "rootfs-erofs": get_base_rootfs_erofs_path().exists(),
     }
+
+
+# Which keys from guest_image_status() each platform actually needs. Used by
+# callers that want to render a "missing: X, Y" list without confusing Linux
+# users with kernel/initramfs (not required) or macOS users with erofs (not
+# required).
+_PLATFORM_REQUIRED_ARTIFACTS = {
+    "Darwin": ("kernel", "initramfs", "rootfs-ext4"),
+    "Linux": ("rootfs-erofs",),
+}
+
+
+def missing_guest_images() -> list[str]:
+    """Return the artifacts this platform needs that aren't on disk yet."""
+    status = guest_image_status()
+    required = _PLATFORM_REQUIRED_ARTIFACTS.get(
+        platform.system(), ("rootfs-ext4",)
+    )
+    return [k for k in required if not status.get(k, False)]

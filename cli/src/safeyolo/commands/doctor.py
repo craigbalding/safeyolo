@@ -681,32 +681,37 @@ def _check_userns() -> DiagResult:
 
 
 def _check_guest_images() -> DiagResult:
-    """Check guest image availability."""
+    """Check guest image availability (platform-aware)."""
     import platform as _plat
 
-    from ..vm import check_guest_images, guest_image_status
+    from ..vm import check_guest_images, missing_guest_images
 
     if not check_guest_images():
-        status = guest_image_status()
-        missing = [k for k, v in status.items() if not v]
+        missing = missing_guest_images()
+        remediation = "cd guest && ./build-all.sh"
+        if "rootfs-erofs" in missing:
+            # Spell out the most common root cause so doctor users don't
+            # rediscover it at agent-add time.
+            remediation += (
+                " (install erofs-utils first: "
+                "sudo apt-get install erofs-utils)"
+            )
         return DiagResult(
             name="Guest images",
             status="fail",
             message=f"Missing: {', '.join(missing)}",
-            remediation="cd guest && ./build-all.sh",
+            remediation=remediation,
         )
 
-    system = _plat.system()
-    if system == "Linux":
+    if _plat.system() == "Linux":
         from ..config import get_share_dir
         erofs = get_share_dir() / "rootfs-base.erofs"
-        if erofs.exists():
-            size_mb = erofs.stat().st_size / 1_000_000
-            return DiagResult(
-                name="Guest images",
-                status="pass",
-                message=f"EROFS rootfs ({size_mb:.0f} MB)",
-            )
+        size_mb = erofs.stat().st_size / 1_000_000
+        return DiagResult(
+            name="Guest images",
+            status="pass",
+            message=f"EROFS rootfs ({size_mb:.0f} MB)",
+        )
 
     return DiagResult(
         name="Guest images",

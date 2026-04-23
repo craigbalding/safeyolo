@@ -162,32 +162,65 @@ class TestFindPdpDir:
 # ---------------------------------------------------------------------------
 
 class TestEnsureCerts:
-    """Tests for _ensure_certs() — CA certificate generation."""
+    """Tests for _ensure_certs() — CA certificate generation via mitmdump.
+
+    The implementation launches mitmdump as a background Popen and polls
+    the filesystem for ``mitmproxy-ca-cert.pem``. The tests mock
+    ``subprocess.Popen`` with a lightweight fake that lets us control the
+    perceived state of the child process.
+    """
+
+    def _fake_popen_factory(self, on_start=None, exit_after=None,
+                            exit_code=0):
+        """Build a Popen-compatible stub.
+
+        - ``on_start``: callable invoked on construction (typically used to
+          simulate mitmdump writing the cert).
+        - ``exit_after``: how many ``poll()`` calls return None before
+          surfacing ``exit_code`` (None = never exit).
+        """
+        class _FakePopen:
+            def __init__(self, *args, **kwargs):
+                self._polls = 0
+                if on_start is not None:
+                    on_start()
+
+            def poll(self):
+                if exit_after is not None and self._polls >= exit_after:
+                    self.returncode = exit_code
+                    return exit_code
+                self._polls += 1
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):  # noqa: ARG002
+                self.returncode = exit_code
+                return exit_code
+
+            def kill(self):
+                pass
+
+        return _FakePopen
 
     def test_generates_cert_when_missing(self, tmp_path):
-        """When cert doesn't exist, runs mitmdump and returns cert path."""
+        """When cert doesn't exist, Popen is spawned and returns cert path."""
         from safeyolo.proxy import _ensure_certs
 
         cert_dir = tmp_path / "certs"
         ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
 
-        def create_cert(*args, **kwargs):
-            """Simulate mitmdump creating the cert."""
+        def create_cert():
             cert_dir.mkdir(parents=True, exist_ok=True)
             ca_cert.write_text("FAKE CERT")
-            return MagicMock(returncode=0)
 
-        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert) as mock_run:
+        fake_popen = self._fake_popen_factory(on_start=create_cert)
+
+        with patch("safeyolo.proxy.subprocess.Popen", fake_popen) as _:
             result = _ensure_certs(cert_dir)
 
         assert result == ca_cert
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args
-        cmd = call_args[0][0]
-        assert cmd[0] == "mitmdump"
-        assert f"confdir={cert_dir}" in " ".join(cmd)
-        assert "-p" in cmd
-        assert "0" in cmd
 
     def test_skips_generation_when_cert_exists(self, tmp_path):
         """When cert already exists, no subprocess call is made."""
@@ -198,40 +231,24 @@ class TestEnsureCerts:
         ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
         ca_cert.write_text("EXISTING CERT")
 
-        with patch("safeyolo.proxy.subprocess.run") as mock_run:
+        with patch("safeyolo.proxy.subprocess.Popen") as mock_popen:
             result = _ensure_certs(cert_dir)
 
         assert result == ca_cert
-        mock_run.assert_not_called()
+        mock_popen.assert_not_called()
 
-    def test_raises_when_generation_fails(self, tmp_path):
-        """When mitmdump runs but cert still missing, RuntimeError is raised."""
+    def test_raises_when_mitmdump_exits_before_cert(self, tmp_path):
+        """mitmdump crashing before writing the cert surfaces as RuntimeError."""
         from safeyolo.proxy import _ensure_certs
 
         cert_dir = tmp_path / "certs"
 
-        with patch("safeyolo.proxy.subprocess.run", return_value=MagicMock()):
-            with pytest.raises(RuntimeError, match="Failed to generate CA certificate"):
+        # No on_start, immediate exit with non-zero rc — cert never written.
+        fake_popen = self._fake_popen_factory(exit_after=0, exit_code=3)
+
+        with patch("safeyolo.proxy.subprocess.Popen", fake_popen):
+            with pytest.raises(RuntimeError, match="mitmdump exited"):
                 _ensure_certs(cert_dir)
-
-    def test_timeout_expired_is_swallowed(self, tmp_path):
-        """TimeoutExpired from mitmdump is expected and swallowed."""
-        import subprocess as sp
-
-        from safeyolo.proxy import _ensure_certs
-
-        cert_dir = tmp_path / "certs"
-        ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
-
-        def timeout_then_cert(*args, **kwargs):
-            cert_dir.mkdir(parents=True, exist_ok=True)
-            ca_cert.write_text("CERT FROM TIMEOUT")
-            raise sp.TimeoutExpired(cmd="mitmdump", timeout=5)
-
-        with patch("safeyolo.proxy.subprocess.run", side_effect=timeout_then_cert):
-            result = _ensure_certs(cert_dir)
-
-        assert result == ca_cert
 
     def test_sets_permissions_on_generated_pem_files(self, tmp_path):
         """Generated .pem and .p12 files get 0o600 permissions."""
@@ -239,15 +256,16 @@ class TestEnsureCerts:
 
         cert_dir = tmp_path / "certs"
 
-        def create_cert_files(*args, **kwargs):
+        def create_cert_files():
             cert_dir.mkdir(parents=True, exist_ok=True)
             (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
             (cert_dir / "mitmproxy-ca.pem").write_text("ca")
             (cert_dir / "mitmproxy-ca.p12").write_bytes(b"p12")
             (cert_dir / "readme.txt").write_text("not a cert")
-            return MagicMock(returncode=0)
 
-        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert_files):
+        fake_popen = self._fake_popen_factory(on_start=create_cert_files)
+
+        with patch("safeyolo.proxy.subprocess.Popen", fake_popen):
             _ensure_certs(cert_dir)
 
         assert (cert_dir / "mitmproxy-ca-cert.pem").stat().st_mode & 0o777 == 0o600
@@ -263,11 +281,12 @@ class TestEnsureCerts:
         cert_dir = tmp_path / "deep" / "nested" / "certs"
         ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
 
-        def create_cert(*args, **kwargs):
+        def create_cert():
             ca_cert.write_text("CERT")
-            return MagicMock(returncode=0)
 
-        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert):
+        fake_popen = self._fake_popen_factory(on_start=create_cert)
+
+        with patch("safeyolo.proxy.subprocess.Popen", fake_popen):
             _ensure_certs(cert_dir)
 
         assert cert_dir.is_dir()
@@ -1370,13 +1389,30 @@ class TestCertDirPermissions:
 
         cert_dir = tmp_path / "certs"
 
-        def create_cert_files(*args, **kwargs):
-            cert_dir.mkdir(parents=True, exist_ok=True)
-            (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
-            (cert_dir / "mitmproxy-ca.pem").write_text("ca-key")
-            return MagicMock(returncode=0)
+        # _ensure_certs launches mitmdump as a Popen and polls for the cert
+        # file. We stub Popen so the test doesn't actually need mitmdump on
+        # PATH — CI's cli-only environment doesn't install mitmproxy.
+        class _FakePopen:
+            def __init__(self, *args, **kwargs):
+                cert_dir.mkdir(parents=True, exist_ok=True)
+                (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
+                (cert_dir / "mitmproxy-ca.pem").write_text("ca-key")
 
-        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert_files):
+            def poll(self):
+                self.returncode = 0
+                return 0
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):  # noqa: ARG002
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                pass
+
+        with patch("safeyolo.proxy.subprocess.Popen", _FakePopen):
             _ensure_certs(cert_dir)
 
         assert cert_dir.stat().st_mode & 0o777 == 0o700

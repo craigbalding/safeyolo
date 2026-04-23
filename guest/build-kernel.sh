@@ -55,9 +55,25 @@ echo "=== Building Linux $KERNEL_VERSION (ARM64, native cross-compile) ==="
 WORK_DIR="$(mktemp -d -t safeyolo-kernel.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo "--- Downloading kernel source ---"
-curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz" \
-    | tar xJ -C "$WORK_DIR"
+# Persistent download cache shared with build-rootfs.sh. Re-running after
+# `rm -f guest/out/Image` on an otherwise-warm tree doesn't re-download the
+# kernel tarball; only `rm -rf guest/out/` flushes the cache.
+DOWNLOAD_CACHE="$OUTPUT_DIR/.download-cache"
+mkdir -p "$DOWNLOAD_CACHE"
+KERNEL_TARBALL="$DOWNLOAD_CACHE/linux-${KERNEL_VERSION}.tar.xz"
+
+if [ ! -f "$KERNEL_TARBALL" ]; then
+    echo "--- Downloading kernel source ---"
+    curl -fsSL \
+        "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz" \
+        -o "$KERNEL_TARBALL.tmp"
+    mv "$KERNEL_TARBALL.tmp" "$KERNEL_TARBALL"
+else
+    echo "--- Using cached kernel source ($KERNEL_TARBALL) ---"
+fi
+
+echo "--- Extracting kernel source ---"
+tar xJ -C "$WORK_DIR" -f "$KERNEL_TARBALL"
 KERNEL_SRC="$WORK_DIR/linux-${KERNEL_VERSION}"
 
 echo "--- Configuring kernel ---"

@@ -38,7 +38,7 @@ Complete documentation for SafeYolo's mitmproxy addons.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-In **Sandbox Mode**, agent containers have no direct internet access. All traffic routes through SafeYolo where addons inspect, control, and log requests.
+Agent sandboxes have no direct internet access — structurally. All traffic routes through SafeYolo, where addons inspect, control, and log requests.
 
 ## Overview
 

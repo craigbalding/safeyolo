@@ -1215,24 +1215,34 @@ class TestGuestImageChecks:
     def test_check_guest_images_none_present(self, tmp_config_dir):
         assert check_guest_images() is False
 
-    def test_check_guest_images_linux_only_rootfs_needed(self, tmp_config_dir):
-        """On Linux, rootfs alone is sufficient (gVisor has its own kernel)."""
+    def test_check_guest_images_linux_needs_erofs(self, tmp_config_dir):
+        """On Linux, the EROFS rootfs (not ext4) is what gVisor mounts."""
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
-        (share / "rootfs-base.ext4").write_bytes(b"r")
+        (share / "rootfs-base.erofs").write_bytes(b"r")
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is True
 
     def test_check_guest_images_linux_ignores_missing_kernel(self, tmp_config_dir):
-        """On Linux, missing kernel/initramfs is fine as long as rootfs is present."""
+        """On Linux, missing kernel/initramfs is fine as long as the EROFS rootfs is present."""
         share = tmp_config_dir / "share"
         share.mkdir(exist_ok=True)
-        (share / "rootfs-base.ext4").write_bytes(b"r")
-        # No Image, no initramfs.cpio.gz
+        (share / "rootfs-base.erofs").write_bytes(b"r")
+        # No Image, no initramfs.cpio.gz, no ext4
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is True
+
+    def test_check_guest_images_linux_rejects_ext4_only(self, tmp_config_dir):
+        """On Linux, having only the ext4 rootfs must NOT pass — this is the
+        exact state left by a build host missing erofs-utils."""
+        share = tmp_config_dir / "share"
+        share.mkdir(exist_ok=True)
+        (share / "rootfs-base.ext4").write_bytes(b"r")
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is False
 
     def test_guest_image_status_all_present(self, tmp_config_dir):
         share = tmp_config_dir / "share"
@@ -1240,11 +1250,13 @@ class TestGuestImageChecks:
         (share / "Image").write_bytes(b"k")
         (share / "initramfs.cpio.gz").write_bytes(b"i")
         (share / "rootfs-base.ext4").write_bytes(b"r")
+        (share / "rootfs-base.erofs").write_bytes(b"r")
 
         assert guest_image_status() == {
             "kernel": True,
             "initramfs": True,
-            "rootfs": True,
+            "rootfs-ext4": True,
+            "rootfs-erofs": True,
         }
 
     def test_guest_image_status_partial(self, tmp_config_dir):
@@ -1255,14 +1267,16 @@ class TestGuestImageChecks:
         assert guest_image_status() == {
             "kernel": True,
             "initramfs": False,
-            "rootfs": False,
+            "rootfs-ext4": False,
+            "rootfs-erofs": False,
         }
 
     def test_guest_image_status_none_present(self, tmp_config_dir):
         assert guest_image_status() == {
             "kernel": False,
             "initramfs": False,
-            "rootfs": False,
+            "rootfs-ext4": False,
+            "rootfs-erofs": False,
         }
 
 

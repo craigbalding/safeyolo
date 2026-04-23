@@ -1,10 +1,13 @@
 # SafeYolo Guest Image Builds
 
-Builds the three artifacts SafeYolo needs to run agent microVMs:
+Builds the artifacts SafeYolo needs to run agent sandboxes:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)
 - `out/initramfs.cpio.gz` — minimal initramfs (macOS only)
-- `out/rootfs-base.ext4` — Debian trixie rootfs with mise plus a small agent-oriented Unix toolkit
+- `out/rootfs-base.ext4` — Debian trixie rootfs (macOS VZ mounts this)
+- `out/rootfs-base.erofs` — Debian trixie rootfs (Linux gVisor mounts this)
+
+Every `build-rootfs.sh` run produces **both** rootfs images on Linux (natively or inside the Lima VM on macOS). The EROFS image is what gVisor loads on Linux hosts; without it, `safeyolo agent add` fails with "EROFS rootfs image not found".
 
 No Docker. Uses `mmdebstrap` for the rootfs and native cross-compile for the kernel/initramfs.
 
@@ -62,12 +65,19 @@ If the VM gets into a bad state, `limactl delete safeyolo-builder && ./build-all
 
 ## Linux setup
 
-Install the build dependencies:
+Install the build dependencies. `erofs-utils` is **mandatory** on Linux — it's what builds the rootfs format gVisor mounts. If you only want to run `build-rootfs.sh` (the common path on a Linux host, since the kernel + initramfs are only needed for macOS VZ), the first three packages are enough:
+
+```bash
+sudo apt-get install mmdebstrap e2fsprogs erofs-utils
+```
+
+For a full kernel + initramfs build (`BUILD_KERNEL=1`, or when producing artifacts for macOS consumers):
 
 ```bash
 sudo apt-get install \
     mmdebstrap \
     e2fsprogs \
+    erofs-utils \
     build-essential \
     bc \
     flex \
@@ -100,12 +110,33 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 ## Individual scripts
 
-- `build-rootfs.sh` — Debian trixie rootfs via `mmdebstrap`
+- `build-rootfs.sh` — Debian trixie rootfs via `mmdebstrap`; writes **both** `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-base.erofs` (for Linux gVisor).
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
-- `build-all.sh` — platform-aware driver; calls the above three
+- `build-all.sh` — platform-aware driver; calls the above three. Must be executed (`./build-all.sh`), not sourced.
 
 All three scripts run on Linux only. On macOS, invoke them through `build-all.sh` which handles the Lima shell-in.
+
+### Generate just the EROFS (Linux gVisor) rootfs
+
+```bash
+# From the repo root (or `cd guest`):
+./guest/build-rootfs.sh
+```
+
+This produces both `out/rootfs-base.ext4` and `out/rootfs-base.erofs` in one pass — `build-rootfs.sh` does not split the two output formats. Re-run after deleting either output to rebuild both.
+
+## Download cache
+
+The build scripts keep a persistent cache of upstream downloads under `out/.download-cache/` so rebuilds don't re-fetch:
+
+- `out/.download-cache/.keyring-cache/` — pinned `debian-archive-keyring_*.deb`
+- `out/.download-cache/linux-<ver>.tar.xz` — kernel source tarball
+- `out/.download-cache/mise-v<ver>-linux-<arch>.tar.gz` — pinned mise release
+- `out/.download-cache/gh_<ver>_linux_<arch>.tar.gz` — pinned gh CLI release
+- `out/.download-cache/apt-archives/` — mmdebstrap reuses these `.deb`s instead of re-fetching ~200 MB of Debian packages from `deb.debian.org` on each rebuild.
+
+To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush artifacts but keep the cache: `rm guest/out/rootfs-base.{ext4,erofs} guest/out/Image guest/out/initramfs.cpio.gz`.
 
 ## Why sudo?
 

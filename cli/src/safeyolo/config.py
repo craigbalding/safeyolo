@@ -22,7 +22,6 @@ def _get_config_dir_path() -> Path:
 # Default config values
 DEFAULT_CONFIG = {
     "version": 1,
-    "sandbox": True,  # Sandbox mode with network isolation (secure default)
     "proxy": {
         "port": 8080,
         "admin_port": 9090,

@@ -281,6 +281,5 @@ hop to see one specific connection's accept + done pair.
 ## See also
 
 - `docs/microvm-architecture.md` — how the VM boots, snapshots, mounts
-- `docs/SANDBOX_MODE.md` — the agent sandbox from a user's perspective
 - `docs/SERVICE_DISCOVERY.md` — how the `service_discovery` addon maps IP→agent
 - Source: `cli/src/safeyolo/proxy_bridge.py`, `addons/proxy_protocol.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`

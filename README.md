@@ -32,14 +32,16 @@ cd safeyolo
 # Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min.
 # On macOS this auto-shells into a Lima VM; on Linux it runs natively via
 # mmdebstrap. See guest/README.md for platform-specific setup notes.
+#   Linux build prerequisite: sudo apt-get install mmdebstrap e2fsprogs erofs-utils
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
 
-# Install CLI and dependencies
-uv sync --all-packages
-# Put the `safeyolo` CLI on your shell's PATH (or prefix every command with `uv run`)
-source .venv/bin/activate
+# Install the `safeyolo` CLI onto your PATH (survives shell restarts).
+# Requires `uv` (https://docs.astral.sh/uv/).
+uv tool install ./cli
 ```
+
+`uv tool install` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later: `uv tool install --reinstall ./cli`.
 
 **Then, one platform-specific step:**
 
@@ -253,7 +255,6 @@ SafeYolo is **pre-v1**. The current sandbox design — hardware-backed microVMs 
 
 - [MicroVM Architecture](docs/microvm-architecture.md)
 - [Agent Networking (vsock/UDS)](docs/networking-vsock-uds.md)
-- [Sandbox Mode](docs/SANDBOX_MODE.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Architecture & Addons](docs/ADDONS.md)
 - [Security & Threat Model](SECURITY.md)
