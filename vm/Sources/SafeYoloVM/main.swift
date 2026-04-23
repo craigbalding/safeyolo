@@ -251,15 +251,28 @@ do {
 
     if !config.snapshotOnSignal.isEmpty {
         let url = URL(fileURLWithPath: NSString(string: config.snapshotOnSignal).expandingTildeInPath)
-        let rootfsURL = URL(fileURLWithPath: NSString(string: config.rootfsPath).expandingTildeInPath)
-        // Auto-derive clone path: <snapshot>.rootfs. Restore must use this
-        // clone (via --rootfs <X>.rootfs --restore-from <X>) to satisfy
-        // VZ's requirement that the disk match its save-time state.
-        let cloneURL = url.appendingPathExtension("rootfs")
+        // Writable-disk pairing: clone the overlay image if one is
+        // attached (persistent mode). In ephemeral mode config.overlayPath
+        // is empty — nothing to clone; the tmpfs upper is captured in
+        // the memory image alongside VM state.
+        //
+        // Rootfs (shared read-only erofs) is never paired — it doesn't
+        // change, nothing to snapshot.
+        //
+        // Clone naming: <snapshot>.overlay. Restore uses this clone via
+        // --overlay <X>.overlay.run (cloned again to keep the pristine
+        // copy reusable across restores) and --restore-from <X>. See
+        // cli/src/safeyolo/vm.py.
+        var overlayURL: URL? = nil
+        var overlayCloneURL: URL? = nil
+        if !config.overlayPath.isEmpty {
+            overlayURL = URL(fileURLWithPath: NSString(string: config.overlayPath).expandingTildeInPath)
+            overlayCloneURL = url.appendingPathExtension("overlay")
+        }
         runner.configureSnapshotOnSignal(
             url: url,
-            rootfsURL: rootfsURL,
-            rootfsCloneURL: cloneURL,
+            writableDiskURL: overlayURL,
+            writableDiskCloneURL: overlayCloneURL,
             fingerprint: fingerprint
         )
     }

@@ -720,26 +720,35 @@ def start_vm(
         if not path.exists():
             raise VMError(f"{label} not found at {path}\nBuild guest images first.")
 
-    # On restore, VZ requires the disk image to match byte-for-byte the
-    # state it had at save time. snapshot.bin.rootfs is that pristine
-    # clone -- but during a restore session the guest writes to its
-    # rootfs, and those writes would corrupt the pristine clone if we
-    # passed it directly as --rootfs. Next restore would then hit EXT4
-    # journal replay / inode bitmap inconsistencies against the memory
-    # image's expected state.
+    # Restore-time disk pairing. VZ requires every attached disk at
+    # restore to match byte-for-byte the state it had at save time.
     #
-    # Solution: clone the pristine clone to a per-run working copy and
-    # use that as --rootfs. APFS clonefile makes this ~instant (tens of
-    # ms regardless of logical size). The working copy is disposable --
-    # next restore starts from the pristine clone again.
-    if restore_from_path is not None:
-        pristine = Path(f"{restore_from_path}.rootfs")
+    # Rootfs: shared read-only erofs. It doesn't change between save and
+    # restore, so no pairing needed — we pass the same --rootfs as
+    # cold-boot.
+    #
+    # Overlay (writable, per-agent /dev/vdb): the guest DOES write to
+    # this between save and restore, so safeyolo-vm at save time clones
+    # it to {snapshot}.overlay. On restore we clone that pristine copy
+    # to a per-run working file ({snapshot}.overlay.run) and pass it as
+    # --overlay, so live writes during the restore session land in the
+    # working copy and the pristine is reusable for the next restore.
+    # APFS clonefile makes this ~instant regardless of logical size.
+    #
+    # Ephemeral mode: no overlay was attached at save time, so no
+    # pairing file was produced. start_vm below also omits --overlay
+    # on restore; the tmpfs upper is carried inside the memory image.
+    overlay_restore_working: Path | None = None
+    if restore_from_path is not None and not ephemeral:
+        pristine = Path(f"{restore_from_path}.overlay")
         if not pristine.exists():
             raise VMError(
-                f"Snapshot rootfs clone missing: {pristine}\n"
-                f"Restore cannot proceed without the paired clone."
+                f"Snapshot overlay clone missing: {pristine}\n"
+                f"Restore cannot proceed without the paired overlay clone.\n"
+                f"(Snapshots captured with pre-schema-4 safeyolo-vm versions\n"
+                f" pair to .rootfs, not .overlay — recapture the snapshot.)"
             )
-        working = Path(f"{restore_from_path}.run")
+        working = Path(f"{restore_from_path}.overlay.run")
         # Discard any residue from a previous restore session.
         working.unlink(missing_ok=True)
         # APFS clone (cp -c). Falls back to a deep copy on non-APFS.
@@ -754,7 +763,7 @@ def start_vm(
                 raise VMError(
                     f"Failed to prepare restore working copy at {working}: {err}"
                 ) from err
-        rootfs = working
+        overlay_restore_working = working
 
     config_share = get_agent_config_share_dir(name)
 
@@ -789,9 +798,11 @@ def start_vm(
     # disk as /dev/vdb. The guest's initramfs layers overlayfs over the
     # read-only erofs base with this as the upper. Lazy-formatted on
     # first boot. In ephemeral mode we deliberately don't attach it;
-    # the initramfs uses tmpfs instead.
+    # the initramfs uses tmpfs instead. On restore, use the per-run
+    # working copy of the paired pristine clone (see the restore block
+    # above) so live writes don't corrupt the pristine.
     if not ephemeral:
-        overlay_img = ensure_agent_overlay(name)
+        overlay_img = overlay_restore_working or ensure_agent_overlay(name)
         cmd.extend(["--overlay", str(overlay_img)])
 
     if snapshot_capture_path is not None:

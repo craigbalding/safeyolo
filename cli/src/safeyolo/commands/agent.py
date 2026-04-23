@@ -161,7 +161,8 @@ def _capture_snapshot_blocking(
         return _give_up("timeout waiting for static-init-done")
 
     # Phase 2: tell the helper to snapshot. The Swift side pauses the VM,
-    # writes memory to snapshot.bin, clones the rootfs, and resumes.
+    # writes memory to snapshot.bin, clones the per-agent overlay (if
+    # attached — ephemeral-mode agents have no disk to clone), and resumes.
     try:
         os.kill(helper_pid, signal.SIGUSR1)
     except ProcessLookupError:
