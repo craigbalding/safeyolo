@@ -683,6 +683,7 @@ def start_vm(
     restore_from_path: Path | None = None,
     proxy_socket_path: str | None = None,
     shell_socket_path: str | None = None,
+    ephemeral: bool = False,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
@@ -698,6 +699,12 @@ def start_vm(
         override --rootfs to point at the paired APFS clone. The helper
         restores VM memory from this path instead of cold-booting.
         Mutually exclusive with snapshot_capture_path.
+
+    ephemeral: if True, don't attach a per-agent overlay disk. The
+        kernel cmdline gets `safeyolo.ephemeral_upper=1` which tells the
+        guest's initramfs to use tmpfs as the overlayfs upper. Writes
+        to / are discarded on stop. /home/agent (virtiofs) still
+        persists regardless.
     """
     if snapshot_capture_path and restore_from_path:
         raise VMError("snapshot_capture_path and restore_from_path are mutually exclusive")
@@ -757,25 +764,35 @@ def start_vm(
     # the rootfs to a pristine clone) and Linux overlay discard.
     ensure_agent_persistent_dirs(name)
     agent_home = get_agent_home_dir(name)
-    # Per-agent writable overlay (Phase B). Attached as /dev/vdb; the
-    # guest's initramfs layers overlayfs over the read-only erofs base
-    # with this as the upper. Lazy-formatted on first boot.
-    overlay_img = ensure_agent_overlay(name)
+
+    # Default kernel cmdline. Ephemeral mode appends the flag the
+    # initramfs consumes to pick tmpfs-for-upper over /dev/vdb.
+    cmdline = "console=hvc0 root=/dev/vda rw quiet"
+    if ephemeral:
+        cmdline += " safeyolo.ephemeral_upper=1"
 
     cmd = [
         str(helper), "run",
         "--kernel", str(kernel),
         "--initrd", str(initrd),
         "--rootfs", str(rootfs),
-        "--overlay", str(overlay_img),
         "--cpus", str(cpus),
         "--memory", str(memory_mb),
         "--share", f"{workspace_path}:workspace:rw",
         "--share", f"{config_share}:config:ro",
         "--share", f"{get_agent_status_dir(name)}:status:rw",
         "--share", f"{agent_home}:home:rw",
-        "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
+        "--cmdline", cmdline,
     ]
+
+    # Persistent mode (default): attach the per-agent writable overlay
+    # disk as /dev/vdb. The guest's initramfs layers overlayfs over the
+    # read-only erofs base with this as the upper. Lazy-formatted on
+    # first boot. In ephemeral mode we deliberately don't attach it;
+    # the initramfs uses tmpfs instead.
+    if not ephemeral:
+        overlay_img = ensure_agent_overlay(name)
+        cmd.extend(["--overlay", str(overlay_img)])
 
     if snapshot_capture_path is not None:
         cmd.extend(["--snapshot-on-signal", str(snapshot_capture_path)])

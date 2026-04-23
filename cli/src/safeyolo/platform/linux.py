@@ -458,8 +458,17 @@ class LinuxPlatform(AgentPlatform):
         background: bool,
         snapshot_capture_path: Path | None = None,  # noqa: ARG002
         restore_from_path: Path | None = None,      # noqa: ARG002
+        ephemeral: bool = False,                    # noqa: ARG002
     ) -> int:
-        """Start a gVisor sandbox in an unprivileged user namespace."""
+        """Start a gVisor sandbox in an unprivileged user namespace.
+
+        `ephemeral` is accepted for interface parity with the macOS
+        platform but currently a no-op on Linux: gVisor's memory-backed
+        overlay at platform/linux.py:901 is already ephemeral by default.
+        When the disk-backed-overlay task lands, this flag will select
+        between file-backed (persistent, default) and memory-backed
+        (ephemeral) overlays.
+        """
         runsc = _find_runsc()
         platform = _detect_runsc_platform()
         root = _runsc_root()

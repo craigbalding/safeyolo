@@ -452,6 +452,7 @@ def _run_agent(
                 extra_shares=None,
                 background=run_background,
                 restore_from_path=restore_src,
+                ephemeral=metadata.get("ephemeral", False),
             )
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
@@ -529,6 +530,7 @@ def _run_agent(
                 extra_shares=None,
                 background=run_background,
                 snapshot_capture_path=capture_path,
+                ephemeral=metadata.get("ephemeral", False),
             )
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
@@ -773,6 +775,17 @@ def add(
         "--rootfs-script",
         help="Path to a rootfs builder script. Produces a custom per-agent rootfs image instead of cloning the default base. See contrib/ROOTFS_SCRIPT_GUIDE.md.",
     ),
+    ephemeral: bool = typer.Option(
+        False,
+        "--ephemeral",
+        help=(
+            "Boot with a tmpfs overlay upper instead of a per-agent writable "
+            "disk. Writes to /etc, /usr, /var etc. are discarded when the agent "
+            "stops. /home/agent remains persistent (virtiofs-bound). Useful for "
+            "one-shot sandboxes and security experiments that want a pristine "
+            "rootfs every run."
+        ),
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -981,6 +994,8 @@ def add(
         metadata["host_script"] = str(host_script_path)
     if rootfs_script_path is not None:
         metadata["rootfs_script"] = str(rootfs_script_path)
+    if ephemeral:
+        metadata["ephemeral"] = True
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
@@ -995,6 +1010,10 @@ def add(
         f"Folder: {folder_str}",
         f"Rootfs: {rootfs}",
     ]
+    if ephemeral:
+        panel_lines.append(
+            "[yellow]Mode: ephemeral[/yellow] — writes to / will NOT persist across stop"
+        )
     if host_script_path is not None:
         panel_lines.append(f"Host script: {host_script_path}")
     if rootfs_script_path is not None:
