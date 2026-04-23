@@ -228,6 +228,15 @@ mkdir -p "$ROOTFS/etc/apt/apt.conf.d"
 cat > "$ROOTFS/etc/apt/apt.conf.d/99safeyolo-proxy" <<'APTCONF'
 Acquire::http::Proxy "http://127.0.0.1:8080";
 Acquire::https::Proxy "http://127.0.0.1:8080";
+
+// Keep the .deb files in /var/cache/apt/archives after install.
+// /var/cache/apt is bind-mounted to a per-agent persistent host dir
+// (see cli/src/safeyolo/platform/linux.py), so keeping the downloaded
+// packages there means a subsequent `apt-get install X` on the same
+// agent reuses the cached .debs instead of re-fetching. Without this,
+// apt's default post-install cleanup strips the archives and the cache
+// bind holds only the lock dirs.
+APT::Keep-Downloaded-Packages "true";
 APTCONF
 
 # Agent user (uid 1000) is non-root, but things like `apt-get install`
