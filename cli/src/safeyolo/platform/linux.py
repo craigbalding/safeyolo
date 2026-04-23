@@ -912,6 +912,26 @@ class LinuxPlatform(AgentPlatform):
                 "options": ["bind", "ro"],
             })
 
+        # Package cache bind mounts (Linux bridge). gVisor's dir=
+        # overlay is silently ignored for tree root.path, so writes to
+        # /var/cache/apt etc. land in the memory overlay and vanish on
+        # stop. Each path in <agent_dir>/cache-paths.txt (seeded from
+        # the rootfs-script's SAFEYOLO_ROOTFS_OUT_CACHE_PATHS output or
+        # the default-base's share/cache-paths.txt) is bound to a
+        # per-agent host dir so `apt install` hits a warm cache after
+        # restart. Per-agent (not shared) for isolation — a prompt-
+        # injected agent can't corrupt another's cache.
+        from ..vm import read_agent_cache_paths, get_agent_cache_dir  # noqa: PLC0415
+        for in_rootfs_path in read_agent_cache_paths(name):
+            host_cache_dir = get_agent_cache_dir(name, in_rootfs_path)
+            host_cache_dir.mkdir(parents=True, exist_ok=True)
+            mounts.append({
+                "destination": in_rootfs_path,
+                "type": "bind",
+                "source": str(host_cache_dir),
+                "options": ["rbind", "rw"],
+            })
+
         # Extra shares (host config dirs)
         if extra_shares:
             agent_home = get_agent_home_dir(name)

@@ -290,4 +290,17 @@ sudo mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$ROOTFS" "$OUTPUT_EXT4"
 sudo chown "$(id -u):$(id -g)" "$OUTPUT_EXT4"
 echo "ext4:  $OUTPUT_EXT4 ($(du -sh "$OUTPUT_EXT4" | cut -f1))"
 
+# --- Emit: package cache paths (Linux bridge) ----------------------------
+# On Linux gVisor the root overlay is memory-backed (dir= is silently
+# ignored, see cli/src/safeyolo/platform/linux.py), so runtime writes to
+# /var/cache/apt etc. vanish on agent stop. SafeYolo bind-mounts a
+# per-agent host dir onto each listed path so `apt install` hits a warm
+# cache after restart. Macro contract: one absolute in-rootfs path per
+# line; see contrib/ROOTFS_SCRIPT_GUIDE.md.
+cat > "$OUTPUT_DIR/cache-paths.txt" <<'CACHE_PATHS'
+/var/cache/apt
+/var/lib/apt/lists
+CACHE_PATHS
+echo "cache-paths: $OUTPUT_DIR/cache-paths.txt"
+
 echo "=== Rootfs build complete ==="

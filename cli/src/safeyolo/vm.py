@@ -205,6 +205,60 @@ def ensure_agent_persistent_dirs(name: str) -> None:
     d.mkdir(parents=True, exist_ok=True)
     d.chmod(0o700)
 
+    # Seed cache-paths.txt from the default-base share if the agent
+    # doesn't already have one. Skipped when a rootfs-script wrote the
+    # file directly (build_custom_rootfs clears+lets-the-script-write,
+    # so a pre-existing file at this point is authoritative). The Linux
+    # OCI spec reads this file at start_sandbox time and bind-mounts
+    # each listed path to a persistent per-agent cache dir.
+    agent_cache_paths = get_agents_dir() / name / "cache-paths.txt"
+    share_cache_paths = get_share_dir() / "cache-paths.txt"
+    if not agent_cache_paths.exists() and share_cache_paths.exists():
+        shutil.copy2(share_cache_paths, agent_cache_paths)
+
+
+def get_agent_cache_paths_file(name: str) -> Path:
+    """Return the path to this agent's cache-paths.txt (may not exist)."""
+    return get_agents_dir() / name / "cache-paths.txt"
+
+
+def read_agent_cache_paths(name: str) -> list[str]:
+    """Return the list of in-rootfs paths this agent wants cache-bound.
+
+    Source of truth is <agent_dir>/cache-paths.txt — seeded from either
+    (a) a rootfs-script's SAFEYOLO_ROOTFS_OUT_CACHE_PATHS output, or
+    (b) the default base's <share>/cache-paths.txt (copied by
+    ensure_agent_persistent_dirs). Each line is an absolute path inside
+    the rootfs. Empty lines and `#` comments are ignored so future
+    shares can document themselves without breaking parsers.
+    """
+    f = get_agent_cache_paths_file(name)
+    if not f.exists():
+        return []
+    paths: list[str] = []
+    for raw in f.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith("/"):
+            log.warning("cache-paths.txt: ignoring non-absolute path %r", line)
+            continue
+        paths.append(line)
+    return paths
+
+
+def get_agent_cache_dir(name: str, in_rootfs_path: str) -> Path:
+    """Return the host-side per-agent cache dir for a given rootfs path.
+
+    Slug = path with leading slash stripped and remaining slashes
+    replaced by `_`, so `/var/cache/apt` → `var_cache_apt`. Readable in
+    `ls`, stable under repeated runs, no collision as long as the
+    rootfs paths themselves don't collide post-slug (caller's
+    responsibility to keep paths distinct).
+    """
+    slug = in_rootfs_path.lstrip("/").replace("/", "_")
+    return get_agents_dir() / name / "cache" / slug
+
 
 # ---------------------------------------------------------------------------
 # Rootfs management
@@ -273,8 +327,13 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
 
     Env contract (see contrib/ROOTFS_SCRIPT_GUIDE.md):
       SAFEYOLO_AGENT_NAME
-      SAFEYOLO_ROOTFS_OUT_EXT4    (set when target is Darwin — ext4 image)
-      SAFEYOLO_ROOTFS_OUT_TREE    (set when target is Linux — directory tree)
+      SAFEYOLO_ROOTFS_OUT_EXT4          (set when target is Darwin — ext4 image)
+      SAFEYOLO_ROOTFS_OUT_TREE          (set when target is Linux — directory tree)
+      SAFEYOLO_ROOTFS_OUT_CACHE_PATHS   (file path — script writes one
+                                         absolute in-rootfs cache path
+                                         per line; SafeYolo bind-mounts
+                                         persistent per-agent dirs onto
+                                         these paths at sandbox start)
       SAFEYOLO_ROOTFS_WORK_DIR
       SAFEYOLO_GUEST_SRC_DIR
       SAFEYOLO_TARGET_ARCH
@@ -305,10 +364,23 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
         else:
             out_path.unlink()
 
+    # Cache-paths output: the script may write a list of absolute
+    # in-rootfs paths (one per line) that SafeYolo bind-mounts to
+    # persistent per-agent dirs at sandbox start. Pre-create an empty
+    # file so the script's `[ -n "$VAR" ]` guard sees the variable and
+    # writes unconditionally if it wants to; a missing file afterwards
+    # means the script chose not to declare any caches.
+    cache_paths_file = agent_dir / "cache-paths.txt"
+    cache_paths_file.unlink(missing_ok=True)
+
     if system == "Linux":
-        _run_rootfs_script_native(name, script_path, out_key, out_path)
+        _run_rootfs_script_native(
+            name, script_path, out_key, out_path, cache_paths_file,
+        )
     else:
-        _run_rootfs_script_lima(name, script_path, out_key, out_path)
+        _run_rootfs_script_lima(
+            name, script_path, out_key, out_path, cache_paths_file,
+        )
 
     if not out_path.exists():
         raise VMError(
@@ -339,6 +411,7 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
 
 def _run_rootfs_script_native(
     name: str, script_path: Path, out_key: str, out_path: Path,
+    cache_paths_file: Path,
 ) -> None:
     """Run the rootfs-script directly on the Linux host."""
     guest_src = _guest_src_dir()
@@ -354,6 +427,7 @@ def _run_rootfs_script_native(
             **os.environ,
             "SAFEYOLO_AGENT_NAME": name,
             out_key: str(out_path),
+            "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(cache_paths_file),
             "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
             "SAFEYOLO_GUEST_SRC_DIR": str(guest_src),
             "SAFEYOLO_TARGET_ARCH": _host_target_arch(),
@@ -371,6 +445,7 @@ def _run_rootfs_script_native(
 
 def _run_rootfs_script_lima(
     name: str, script_path: Path, out_key: str, out_path: Path,
+    cache_paths_file: Path,
 ) -> None:
     """Run the rootfs-script inside the shared safeyolo-builder Lima VM.
 
@@ -424,11 +499,13 @@ def _run_rootfs_script_lima(
         out_name = out_path.name  # rootfs.ext4 (Darwin) or rootfs (Linux tree)
         vm_script_path = f"{vm_scratch}/rootfs-script"
         vm_out_path = f"{vm_scratch}/{out_name}"
+        vm_cache_paths = f"{vm_scratch}/cache-paths.txt"
         vm_guest_dir = LIMA_GUEST_MOUNT
 
         env_args = [
             f"SAFEYOLO_AGENT_NAME={name}",
             f"{out_key}={vm_out_path}",
+            f"SAFEYOLO_ROOTFS_OUT_CACHE_PATHS={vm_cache_paths}",
             f"SAFEYOLO_ROOTFS_WORK_DIR={vm_work_dir}",
             f"SAFEYOLO_GUEST_SRC_DIR={vm_guest_dir}",
             f"SAFEYOLO_TARGET_ARCH={_host_target_arch()}",
@@ -464,6 +541,13 @@ def _run_rootfs_script_lima(
                 f"${out_key} ({produced})."
             )
         shutil.move(str(produced), str(out_path))
+
+        # Optional: the script may have emitted a cache-paths list.
+        # Move it to the agent dir if present; harmless if not (macOS VZ
+        # ignores it anyway — the disk-backed overlay persists writes).
+        produced_cache = host_scratch / "cache-paths.txt"
+        if produced_cache.exists():
+            shutil.move(str(produced_cache), str(cache_paths_file))
     finally:
         # Host-side: staging dir cleanup is unconditional. VM-local work dir
         # is cleaned up by the bash trap above; if that didn't run (e.g.
