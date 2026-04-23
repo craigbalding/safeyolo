@@ -5,18 +5,26 @@
 # Pulls docker://debian:trixie via skopeo, unpacks with umoci, apt-installs
 # our baseline toolkit inside a chroot, runs rootfs-customize-hook.sh to
 # stamp SafeYolo-specific bits (mise, gh, init stub, sshd config, agent
-# user, package-manager intercepts), then packs the tree into both ext4
-# (macOS VZ) and EROFS (Linux gVisor) images.
+# user, package-manager intercepts), then writes two artifacts:
 #
-# Output: out/rootfs-base.ext4, out/rootfs-base.erofs
+#   out/rootfs-base.ext4    — for macOS VZ (mounts this as /dev/vda read-only)
+#   out/rootfs-tree/        — for Linux gVisor (used as OCI root.path;
+#                             gVisor mounts the directory tree directly,
+#                             overlayfs upper handles writes)
 #
 # Runs on Linux only (natively or inside Lima on macOS — see build-all.sh).
 # No mmdebstrap / debootstrap dependency; skopeo + umoci do the heavy
 # lifting and work on any Linux distro (Fedora, Arch, Alpine, Debian,
-# Ubuntu). Part of the exp/erofs-vz-phase-a "delete mmdebstrap" pivot.
+# Ubuntu). Part of the exp/erofs-vz-phase-a unification.
+#
+# EROFS output was dropped in the unification — gVisor's EROFS-sourced
+# rootfs silently ignores dir= overlay (PR #12337: "EROFS mounts skip
+# gofer-specific processing"), which blocked disk-backed write
+# persistence on Linux. A directory-tree root.path doesn't have that
+# constraint, so Linux now gets the same persistence model as macOS.
 #
 # Dependencies (install via the host's package manager):
-#   skopeo umoci e2fsprogs erofs-utils curl
+#   skopeo umoci e2fsprogs curl
 #
 set -euo pipefail
 
@@ -102,33 +110,28 @@ command_x mkfs.ext4 || {
     echo "Error: mkfs.ext4 not installed (apt-get install e2fsprogs)." >&2
     exit 1
 }
-command_x mkfs.erofs || {
-    echo "Error: mkfs.erofs not installed." >&2
-    echo "  Debian/Ubuntu: sudo apt-get install erofs-utils" >&2
-    echo "  Required — gVisor mounts the rootfs via EROFS; without it" >&2
-    echo "  'safeyolo agent add' will fail later with 'EROFS rootfs image" >&2
-    echo "  not found'." >&2
-    exit 1
-}
+# mkfs.erofs no longer required — Linux runtime uses the directory
+# tree output; macOS runtime uses ext4. Users who still have
+# erofs-utils installed from earlier builds will find it unused.
 
 # --- Outputs ----------------------------------------------------------------
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_EXT4="$OUTPUT_DIR/rootfs-base.ext4"
-OUTPUT_EROFS="$OUTPUT_DIR/rootfs-base.erofs"
+OUTPUT_TREE="$OUTPUT_DIR/rootfs-tree"
 
 # Short-circuit only if BOTH artifacts are already present. A partial
-# build (one succeeded, other skipped) can never self-heal otherwise.
-if [ -f "$OUTPUT_EXT4" ] && [ -f "$OUTPUT_EROFS" ]; then
+# build can never self-heal otherwise.
+if [ -f "$OUTPUT_EXT4" ] && [ -d "$OUTPUT_TREE" ]; then
     echo "Rootfs already present:"
     echo "  $OUTPUT_EXT4"
-    echo "  $OUTPUT_EROFS"
+    echo "  $OUTPUT_TREE/"
     echo "Delete them to rebuild."
     exit 0
 fi
-if [ -f "$OUTPUT_EXT4" ] || [ -f "$OUTPUT_EROFS" ]; then
+if [ -f "$OUTPUT_EXT4" ] || [ -d "$OUTPUT_TREE" ]; then
     echo "Partial build detected. Rebuilding both."
-    sudo rm -f "$OUTPUT_EXT4" "$OUTPUT_EROFS" 2>/dev/null \
-        || rm -f "$OUTPUT_EXT4" "$OUTPUT_EROFS" 2>/dev/null \
+    sudo rm -rf "$OUTPUT_EXT4" "$OUTPUT_TREE" 2>/dev/null \
+        || rm -rf "$OUTPUT_EXT4" "$OUTPUT_TREE" 2>/dev/null \
         || true
 fi
 
@@ -266,20 +269,21 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,MISE_
 # writes a default at boot; the rootfs should ship it empty/absent.
 sudo rm -f "$ROOTFS/etc/resolv.conf"
 
-# --- Package: EROFS for Linux gVisor -------------------------------------
-# -E noinline_data: gVisor's EROFS implementation on some releases
-# can't read inline file data layouts. ~5% size penalty; drop when
-# the target release supports inline data reliably.
-echo "=== Creating EROFS image ==="
-sudo mkfs.erofs -E noinline_data "$OUTPUT_EROFS" "$ROOTFS"
-sudo chown "$(id -u):$(id -g)" "$OUTPUT_EROFS"
-# mkfs.erofs writes 644 by default; the explicit chmod is defensive
-# for rootless userns. On Lima virtiofs on macOS this fails with
-# EPERM (virtiofs rejects chmod); swallow — the mode is already right.
-chmod 644 "$OUTPUT_EROFS" 2>/dev/null || true
-echo "EROFS: $OUTPUT_EROFS ($(du -sh "$OUTPUT_EROFS" | cut -f1))"
+# --- Emit: directory tree for Linux gVisor ------------------------------
+# gVisor's OCI root.path wants a real filesystem directory, and
+# dir= overlay needs a tree-based root (not rootfs.source=erofs).
+# We tar-stream the populated rootfs over to $OUTPUT_TREE so file
+# metadata (uid/gid/mode/xattrs) is preserved end-to-end; `cp -a`
+# under sudo gets flustered by overlayfs-style special files in
+# certain rootfs contents, the tar pipe is more reliable.
+echo "=== Emitting directory tree ==="
+sudo rm -rf "$OUTPUT_TREE"
+sudo mkdir -p "$OUTPUT_TREE"
+sudo tar --xattrs --xattrs-include='*' --acls -C "$ROOTFS" -cf - . \
+    | sudo tar --xattrs --xattrs-include='*' --acls -C "$OUTPUT_TREE" -xf -
+echo "tree:  $OUTPUT_TREE/ ($(sudo du -sh "$OUTPUT_TREE" | cut -f1))"
 
-# --- Package: ext4 for macOS VZ ------------------------------------------
+# --- Emit: ext4 for macOS VZ ---------------------------------------------
 echo "=== Creating ${ROOTFS_SIZE_MB} MiB sparse ext4 image ==="
 truncate -s "${ROOTFS_SIZE_MB}M" "$OUTPUT_EXT4"
 sudo mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$ROOTFS" "$OUTPUT_EXT4"

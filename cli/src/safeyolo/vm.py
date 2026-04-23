@@ -999,9 +999,17 @@ def _update_agent_map(
 # Guest image checks
 # ---------------------------------------------------------------------------
 
-def get_base_rootfs_erofs_path() -> Path:
-    """Return the path gVisor expects for the Linux base rootfs image."""
-    return get_share_dir() / "rootfs-base.erofs"
+def get_base_rootfs_tree_path() -> Path:
+    """Directory tree used as OCI root.path on Linux gVisor.
+
+    gVisor reads the tree directly — shared across all agents on the
+    host (read-only from the container's perspective; the per-agent
+    dir= overlay above it captures writes).
+
+    Produced by guest/build-rootfs.sh as out/rootfs-tree/ alongside
+    the ext4 output; installed to ~/.safeyolo/share/rootfs-tree/.
+    """
+    return get_share_dir() / "rootfs-tree"
 
 
 def check_guest_images() -> bool:
@@ -1011,21 +1019,20 @@ def check_guest_images() -> bool:
     runtime actually consumes:
 
       - macOS (Virtualization.framework): ext4 rootfs + kernel + initramfs.
-      - Linux (gVisor):                    EROFS rootfs.
-
-    Returning True here without the EROFS image on Linux was exactly how
-    the "build succeeded but agent add fails later" footgun happened —
-    the check now matches what the platform layer will demand at runtime.
+      - Linux (gVisor):                    unpacked tree (OCI root.path).
     """
     if platform.system() == "Darwin":
-        # macOS VZ boots from the shared ext4 base + kernel + initramfs.
         return (
             get_base_rootfs_path().exists()
             and get_kernel_path().exists()
             and get_initrd_path().exists()
         )
     if platform.system() == "Linux":
-        return get_base_rootfs_erofs_path().exists()
+        tree = get_base_rootfs_tree_path()
+        # A valid tree is a non-empty directory with at least the
+        # /etc hierarchy. Catches the "someone rm-rf'd its contents"
+        # case that a plain is_dir() misses.
+        return tree.is_dir() and (tree / "etc").is_dir()
     # Unsupported platform — treat the rootfs as the minimum needed.
     return get_base_rootfs_path().exists()
 
@@ -1033,28 +1040,23 @@ def check_guest_images() -> bool:
 def guest_image_status() -> dict[str, bool]:
     """Return existence status of each guest image artifact.
 
-    Includes both rootfs formats so callers can report accurately regardless
-    of platform. The status keys deliberately reflect what's on disk, not
-    what each platform needs — the caller decides which to flag missing.
+    Status keys reflect what's on disk. Callers (doctor, setup) decide
+    which to flag as missing per platform.
     """
+    tree = get_base_rootfs_tree_path()
     return {
         "kernel": get_kernel_path().exists(),
         "initramfs": get_initrd_path().exists(),
         "rootfs-ext4": get_base_rootfs_path().exists(),
-        "rootfs-erofs": get_base_rootfs_erofs_path().exists(),
+        "rootfs-tree": tree.is_dir() and (tree / "etc").is_dir(),
     }
 
 
-# Which keys from guest_image_status() each platform actually needs. Used by
-# callers that want to render a "missing: X, Y" list without confusing Linux
-# users with kernel/initramfs (not required) or macOS users with erofs (not
-# required).
+# Which keys from guest_image_status() each platform actually needs.
+# Used by `missing_guest_images` for a "missing: X, Y" list.
 _PLATFORM_REQUIRED_ARTIFACTS = {
-    # macOS VZ boots from the shared ext4 base (unified rootfs format
-    # in exp/erofs-vz-phase-a). Linux still needs erofs until the
-    # follow-up tree-root.path commit lands.
     "Darwin": ("kernel", "initramfs", "rootfs-ext4"),
-    "Linux": ("rootfs-erofs",),
+    "Linux": ("rootfs-tree",),
 }
 
 
