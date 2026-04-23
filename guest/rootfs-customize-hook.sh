@@ -182,9 +182,6 @@ done
 # Apt cleanup + sweep any residual docs that escaped the essential-hook's
 # dpkg nodoc rules. Sources of residual docs: tarballs (mise, gh), pip
 # installs, package maintainer scripts that force-create doc dirs.
-#
-# Uses /usr/bin/apt-get explicitly because the intercepts below will shadow
-# /usr/bin/apt-get on $PATH.
 # ---------------------------------------------------------------------------
 chroot "$ROOTFS" /usr/bin/apt-get clean
 rm -rf "$ROOTFS/var/lib/apt/lists/"*
@@ -205,23 +202,44 @@ find "$ROOTFS/usr/share/locale" -maxdepth 1 ! -name "en*" -type d -exec rm -rf {
 find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# Package-manager intercepts -- agents inside the guest VM must install
-# tools via mise, not apt. Run LAST so earlier apt-get calls aren't shadowed.
+# Runtime apt support.
+#
+# Earlier revisions shadowed apt/apt-get/yum/dnf/apk with mise-pointing
+# error stubs on the premise that "agents install tools via mise, not
+# apt." That made sense when guest-to-proxy egress was unreliable, but
+# it no longer is: guest-proxy-forwarder + the per-agent proxy UDS
+# give apt a clear path, and the /var/cache/apt + /var/lib/apt/lists
+# bind mounts (see cli/src/safeyolo/platform/linux.py) let downloads
+# persist across agent restarts.
+#
+# So apt-get stays usable. Language runtimes still come from mise
+# (that's the fast path), but compilers and system libs can be pulled
+# on demand without the user having to uninstall a stub first. Matches
+# the pattern contrib/kali-pentest uses.
+#
+# apt itself ignores HTTP_PROXY / HTTPS_PROXY — it reads its own
+# Acquire::*::Proxy from /etc/apt/apt.conf.d/. Point it at the in-VM
+# socat relay (guest-proxy-forwarder listens on :8080) so `sudo
+# apt-get install` routes through SafeYolo's policy layer. TLS works
+# because guest-init-static.sh adds SafeYolo's CA to the trust bundle
+# before the agent's shell opens.
 # ---------------------------------------------------------------------------
-for cmd in apt apt-get yum dnf apk; do
-    cat > "$ROOTFS/usr/local/bin/$cmd" <<'INTERCEPT'
-#!/bin/bash
-echo "Error: Package manager not available in SafeYolo VM"
-echo ""
-echo "Use mise to install languages and tools:"
-echo "  mise install go@latest"
-echo "  mise install python@3.12"
-echo "  mise install rust@latest"
-echo ""
-echo "List available versions: mise ls-remote go"
-exit 1
-INTERCEPT
-    chmod +x "$ROOTFS/usr/local/bin/$cmd"
-done
+mkdir -p "$ROOTFS/etc/apt/apt.conf.d"
+cat > "$ROOTFS/etc/apt/apt.conf.d/99safeyolo-proxy" <<'APTCONF'
+Acquire::http::Proxy "http://127.0.0.1:8080";
+Acquire::https::Proxy "http://127.0.0.1:8080";
+APTCONF
+
+# Agent user (uid 1000) is non-root, but things like `apt-get install`
+# and `chown` / `setcap` on user-built binaries need escalation. Grant
+# NOPASSWD sudo with env_keep for the proxy + CA vars so tools other
+# than apt (curl, pip, npm, etc.) keep routing through 127.0.0.1:8080
+# when invoked via sudo.
+mkdir -p "$ROOTFS/etc/sudoers.d"
+cat > "$ROOTFS/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
+agent ALL=(ALL) NOPASSWD:ALL
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
+SUDOERS
+chmod 0440 "$ROOTFS/etc/sudoers.d/safeyolo-agent"
 
 echo "=== Customize hook completed successfully ==="

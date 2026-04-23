@@ -241,14 +241,24 @@ echo "=== apt-get update (inside chroot) ==="
 sudo chroot "$ROOTFS" /usr/bin/apt-get update
 
 echo "=== Installing base packages ==="
+# No build-essential: it's ~400 MB (gcc/g++/libc-dev/headers), and most
+# agent workflows don't need a C toolchain. Language runtimes (Python,
+# Node, Go, Rust) come from mise as pre-built binaries, and
+# manylinux/musllinux wheels cover most scientific-Python deps without
+# compilation. Agents that DO need a compiler (npm native deps,
+# building C/Rust/Go projects from source) can
+# `sudo apt-get install -y build-essential` at runtime — the per-agent
+# /var/cache/apt and /var/lib/apt/lists bind mounts persist the
+# download so subsequent agent starts are warm-cache.
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends \
-    ca-certificates curl git jq build-essential gnupg \
+    ca-certificates curl git jq gnupg \
     openssh-server iproute2 iputils-ping procps less xz-utils \
     libgomp1 libatomic1 \
     python3 python3-pip python3-venv \
     busybox-static socat file pkg-config \
-    ripgrep fd-find unzip zip lsof strace tmux
+    ripgrep fd-find unzip zip lsof strace tmux \
+    sudo
 
 # --- SafeYolo customize-hook (unchanged from mmdebstrap era) --------------
 CUSTOMIZE_HOOK_SCRIPT="$SCRIPT_DIR/rootfs-customize-hook.sh"
