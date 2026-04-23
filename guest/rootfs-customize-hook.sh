@@ -143,6 +143,26 @@ chroot "$ROOTFS" ssh-keygen -A >/dev/null 2>&1
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
+# Pre-create OCI bind-mount targets. On Linux/gVisor, the rootfs is
+# mounted read-only (EROFS) and gVisor tries to mkdir any bind-mount
+# destination it doesn't find. With a memory overlay the mkdir lands
+# in tmpfs and succeeds; with a file-backed ("dir=") overlay the
+# mount-point creation hits "read-only file system" before the
+# overlay upper is active. Pre-creating the dirs in the EROFS image
+# sidesteps that mkdir entirely — the bind mount lands on an empty
+# existing directory regardless of overlay medium.
+#
+# Kept as explicit mkdirs rather than placed under install-guest-common
+# because this is specifically an EROFS-on-gVisor robustness fix,
+# not a general guest-bits requirement. macOS VZ doesn't care (these
+# targets are re-created at mount time if missing). /home/agent
+# already exists from useradd -m above; listed here for documentation.
+mkdir -p \
+    "$ROOTFS/workspace" \
+    "$ROOTFS/safeyolo" \
+    "$ROOTFS/safeyolo-status" \
+    "$ROOTFS/home/agent"
+
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"
 echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
