@@ -291,6 +291,20 @@ sudo rm -rf "$OUTPUT_TREE"
 sudo mkdir -p "$OUTPUT_TREE"
 sudo tar --xattrs --xattrs-include='*' --acls -C "$ROOTFS" -cf - . \
     | sudo tar --xattrs --xattrs-include='*' --acls -C "$OUTPUT_TREE" -xf -
+
+# Rootless gVisor userns semantics: container uid 0 is mapped to host
+# uid 100000 (see linux.py::_start_userns), and CAP_DAC_OVERRIDE inside
+# the sandbox only covers files owned by uids in the subordinate range
+# (100000–101000). If we ship the tree owned by host uid 0, those files
+# show as `nobody` inside the sandbox and sandbox-root can't modify
+# them — apt-get install dies on dpkg lock EACCES. Shipping the tree
+# pre-owned by 100000 makes it writable by sandbox-root out of the box.
+# No-op / harmless for macOS VZ (ext4 image is rebuilt from the tree
+# below; file ownership in the image is preserved by mkfs.ext4 -d, but
+# VZ runs a full Linux VM with its own real root, so ownership doesn't
+# matter there).
+echo "=== Chowning tree to 100000:100000 (rootless subuid-root) ==="
+sudo chown -R 100000:100000 "$OUTPUT_TREE"
 echo "tree:  $OUTPUT_TREE/ ($(sudo du -sh "$OUTPUT_TREE" | cut -f1))"
 
 # --- Emit: ext4 for macOS VZ ---------------------------------------------

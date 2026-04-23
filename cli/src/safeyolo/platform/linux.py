@@ -466,7 +466,27 @@ class LinuxPlatform(AgentPlatform):
             raise RuntimeError(
                 f"Rootfs tree not found at {path}\n"
                 f"Build guest images first: cd guest && ./build-all.sh\n"
-                f"Then install: cp -r guest/out/rootfs-tree ~/.safeyolo/share/"
+                f"Then install: sudo cp -a guest/out/rootfs-tree ~/.safeyolo/share/"
+            )
+
+        # Rootless gVisor maps container uid 0 → host uid 100000
+        # (hardcoded in _start_userns). Inside the sandbox, files
+        # owned by host uid 0 appear as `nobody` and sandbox-root
+        # cannot modify them — apt-get install dies on dpkg lock
+        # EACCES. Check and error early with a concrete fix command
+        # rather than letting the agent hit an obscure runtime
+        # failure. build-rootfs.sh already chowns its output to
+        # 100000; this catches the case where the tree was installed
+        # before that change landed.
+        tree_uid = path.stat().st_uid
+        if tree_uid != 100000:
+            raise RuntimeError(
+                f"Rootfs tree {path} is owned by uid {tree_uid}, "
+                f"expected 100000 (SafeYolo's sandbox-root in the "
+                f"rootless uid map).\n"
+                f"Runtime writes from inside the sandbox (apt-get "
+                f"install etc.) would fail on permission denied.\n"
+                f"Fix: sudo chown -R 100000:100000 {path}"
             )
         return path
 
