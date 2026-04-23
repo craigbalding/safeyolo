@@ -569,7 +569,13 @@ class LinuxPlatform(AgentPlatform):
         else:
             overlay_dir = get_agents_dir() / name / "overlay"
             overlay_dir.mkdir(parents=True, exist_ok=True)
-            overlay2_flag = f"--overlay2=root:dir={overlay_dir} "
+            # "all:dir=" scope applies to the rootfs AND each
+            # gofer-backed bind mount uniformly. "root:dir=" only
+            # covered the rootfs, which left gofer-mount upper
+            # creation on the read-only EROFS surface and exploded
+            # with "failed to create directory mountpoint: read-only
+            # file system" on the first bind-mount target creation.
+            overlay2_flag = f"--overlay2=all:dir={overlay_dir} "
 
         inner = (
             f"{setup} && "
