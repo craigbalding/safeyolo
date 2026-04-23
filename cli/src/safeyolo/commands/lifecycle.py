@@ -23,7 +23,7 @@ from ..proxy import (
     stop_proxy,
     wait_for_healthy,
 )
-from ..vm import check_guest_images, guest_image_status
+from ..vm import check_guest_images, missing_guest_images
 
 console = Console()
 
@@ -102,13 +102,14 @@ def start(
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
         raise typer.Exit(0)
 
-    # Check guest images
+    # Check guest images (platform-aware).
     if not check_guest_images():
-        status = guest_image_status()
-        missing = [k for k, v in status.items() if not v]
+        missing = missing_guest_images()
         console.print(f"[yellow]Guest images missing: {', '.join(missing)}[/yellow]")
         console.print("Build them first: [bold]cd guest && ./build-all.sh[/bold]")
         console.print("Then install: [bold]mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/[/bold]")
+        if "rootfs-erofs" in missing:
+            console.print("  [dim]erofs-utils is required on the build host: sudo apt-get install erofs-utils[/dim]")
 
     config = load_config()
     proxy_port = config["proxy"]["port"]
@@ -422,7 +423,15 @@ def build() -> None:
     share_dir.mkdir(parents=True, exist_ok=True)
     out_dir = build_script.parent / "out"
 
-    for artifact in ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]:
+    # rootfs-base.erofs is what gVisor mounts on Linux; the list here has to
+    # include it or `safeyolo build` silently leaves a Linux host in the
+    # broken-at-agent-add state the README warns about.
+    for artifact in [
+        "Image",
+        "initramfs.cpio.gz",
+        "rootfs-base.ext4",
+        "rootfs-base.erofs",
+    ]:
         src = out_dir / artifact
         if src.exists():
             shutil.copy2(str(src), str(share_dir / artifact))

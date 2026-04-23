@@ -93,8 +93,8 @@ class TestLifecycleStart:
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=False),
             patch(
-                "safeyolo.commands.lifecycle.guest_image_status",
-                return_value={"kernel": True, "initramfs": False, "rootfs": False},
+                "safeyolo.commands.lifecycle.missing_guest_images",
+                return_value=["rootfs-erofs"],
             ),
             patch("safeyolo.commands.lifecycle.start_proxy"),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True),
@@ -846,9 +846,9 @@ class TestInit:
         assert (cfg / "share").exists()
         assert (cfg / "bin").exists()
 
-    def test_sandbox_is_default_mode(self, runner, tmp_path, monkeypatch):
-        """Sandbox mode is the default (not Try mode)."""
-        cfg = tmp_path / "init-mode"
+    def test_init_points_user_at_setup_next(self, runner, tmp_path, monkeypatch):
+        """Init's next-steps panel includes `safeyolo setup` before `start`."""
+        cfg = tmp_path / "init-next"
         logs = tmp_path / "init-logs"
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(cfg))
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
@@ -862,7 +862,11 @@ class TestInit:
             result = runner.invoke(app, ["init", "--no-interactive"])
 
         assert result.exit_code == 0
-        assert "sandbox mode" in result.output.lower()
+        assert "safeyolo setup" in result.output.lower()
+        # setup must be advertised before start; otherwise the next-steps
+        # ordering still contradicts README.md's Quick Start.
+        out = result.output.lower()
+        assert out.index("safeyolo setup") < out.index("safeyolo start")
 
 
 # ---------------------------------------------------------------------------
@@ -890,13 +894,14 @@ class TestSetup:
         assert "guest images" in result.output.lower()
 
     def test_guest_images_missing_shows_missing(self, runner, config_dir):
-        """Reports MISSING when guest images are absent."""
+        """Reports MISSING when guest images are absent, listing the platform-
+        appropriate artifacts (e.g. initramfs on Darwin, EROFS on Linux)."""
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=False),
             patch(
-                "safeyolo.commands.setup.guest_image_status",
-                return_value={"kernel": True, "initramfs": False, "rootfs": False},
+                "safeyolo.commands.setup.missing_guest_images",
+                return_value=["initramfs", "rootfs-ext4"],
             ),
             patch("safeyolo.vm.find_vm_helper", return_value=Path("/usr/local/bin/safeyolo-vm")),
         ):
@@ -1090,8 +1095,8 @@ class TestCertShow:
         assert result.exit_code == 0
         assert "not generated" in result.output.lower()
 
-    def test_sandbox_mode_mentions_virtiofs(self, runner, config_dir):
-        """Sandbox mode mentions VirtioFS config share."""
+    def test_cert_show_mentions_virtiofs(self, runner, config_dir):
+        """`cert show` mentions the VirtioFS config share that carries the CA."""
         cert_file = config_dir / "certs" / "mitmproxy-ca-cert.pem"
         cert_file.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
 
@@ -1157,15 +1162,19 @@ class TestGuestImageChecks:
     Linux needs only rootfs (gVisor ships its own kernel)."""
 
     def test_all_images_present(self, config_dir):
-        """check_guest_images returns True when all three artifacts exist (either platform)."""
+        """Every artifact present => True under either platform dispatch."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
         (share / "Image").touch()
         (share / "initramfs.cpio.gz").touch()
         (share / "rootfs-base.ext4").touch()
+        (share / "rootfs-base.erofs").touch()
 
-        assert check_guest_images() is True
+        with patch("safeyolo.vm.platform.system", return_value="Darwin"):
+            assert check_guest_images() is True
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is True
 
     def test_missing_kernel_on_darwin(self, config_dir):
         """check_guest_images returns False on macOS when kernel is missing."""
@@ -1202,27 +1211,48 @@ class TestGuestImageChecks:
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is False
 
-    def test_linux_only_needs_rootfs(self, config_dir):
-        """On Linux, rootfs alone is sufficient -- gVisor provides its own kernel."""
+    def test_linux_only_needs_erofs(self, config_dir):
+        """On Linux, EROFS alone is what gVisor mounts — ext4 is not required."""
         from safeyolo.vm import check_guest_images
 
         share = config_dir / "share"
-        (share / "rootfs-base.ext4").touch()
-        # No Image, no initramfs.cpio.gz
+        (share / "rootfs-base.erofs").touch()
+        # No Image, no initramfs.cpio.gz, no ext4
 
         with patch("safeyolo.vm.platform.system", return_value="Linux"):
             assert check_guest_images() is True
 
+    def test_linux_ext4_alone_is_not_enough(self, config_dir):
+        """On Linux, having only the ext4 rootfs should NOT pass — gVisor needs EROFS.
+
+        This is the precise case that caused the "build succeeded, agent add
+        fails later" footgun: erofs-utils was missing, so build-rootfs.sh
+        produced only ext4, and every downstream check waved it through.
+        """
+        from safeyolo.vm import check_guest_images
+
+        share = config_dir / "share"
+        (share / "rootfs-base.ext4").touch()
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            assert check_guest_images() is False
+
     def test_guest_image_status_returns_per_artifact(self, config_dir):
-        """guest_image_status returns dict with per-artifact booleans (no platform dispatch)."""
+        """guest_image_status returns a dict keyed by artifact filename (no platform dispatch)."""
         from safeyolo.vm import guest_image_status
 
         share = config_dir / "share"
         (share / "Image").touch()
-        # initramfs and rootfs missing
+        (share / "rootfs-base.erofs").touch()
+        # initramfs and ext4 missing
 
         status = guest_image_status()
-        assert status == {"kernel": True, "initramfs": False, "rootfs": False}
+        assert status == {
+            "kernel": True,
+            "initramfs": False,
+            "rootfs-ext4": False,
+            "rootfs-erofs": True,
+        }
 
 
 # ---------------------------------------------------------------------------

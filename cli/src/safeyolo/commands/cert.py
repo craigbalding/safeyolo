@@ -55,15 +55,11 @@ def env() -> None:
 
     config = load_config()
     proxy_port = config.get("proxy", {}).get("port", 8080)
-    sandbox = config.get("sandbox", False)
 
-    # Output exports for eval
-    if sandbox:
-        print("# SafeYolo Sandbox Mode")
-        print("# Agents should run in containers with the safeyolo-ca volume mounted.")
-        print("# These env vars are for diagnostic use outside the sandbox.")
-    else:
-        print("# SafeYolo CA trust (per-process, not system-wide)")
+    # Output exports for eval. Agents inside sandboxes already receive the CA
+    # via the VirtioFS config share; these env vars are for diagnostic use
+    # on the host (e.g. curl through the proxy to verify policy).
+    print("# SafeYolo CA trust (per-process, not system-wide)")
     print(f"export NODE_EXTRA_CA_CERTS={ca_cert}")
     print(f"export REQUESTS_CA_BUNDLE={ca_cert}")
     print(f"export SSL_CERT_FILE={ca_cert}")
@@ -87,22 +83,16 @@ def show() -> None:
 
     ca_cert = get_ca_cert_path()
 
-    # If cert not on host, try to copy from running container
-    # Cert is generated on host by proxy.start_proxy(), no copy needed
-
-    config = load_config()
-    sandbox = config.get("sandbox", False)
+    # Cert is generated on host by proxy.start_proxy(); no copy needed.
 
     console.print("[bold]CA Certificate Status[/bold]\n")
     console.print(f"  Config directory: {config_dir}")
     console.print(f"  Certs directory:  {get_certs_dir()}")
-    console.print(f"  Mode:             {'Sandbox' if sandbox else 'Try'}")
 
     if ca_cert:
         console.print(f"  CA certificate:   [green]{ca_cert}[/green]")
         console.print(f"\n  File size: {ca_cert.stat().st_size} bytes")
 
-        # Show fingerprint
         try:
             import hashlib
 
@@ -112,10 +102,8 @@ def show() -> None:
         except Exception:
             pass  # Skip fingerprint display on any error
 
-        if sandbox:
-            console.print("\n[dim]Sandbox Mode: Agents access the CA via VirtioFS config share.[/dim]")
-
-        console.print("\nTo use: [bold]eval $(safeyolo cert env)[/bold]")
+        console.print("\n[dim]Agents receive the CA via the VirtioFS config share.[/dim]")
+        console.print("\nTo use on the host: [bold]eval $(safeyolo cert env)[/bold]")
     else:
         console.print("  CA certificate:   [yellow]Not generated yet[/yellow]")
         console.print("\nThe certificate is created when SafeYolo first starts.")

@@ -62,9 +62,9 @@ These environment variables configure:
 3. **Reversible** - Close the terminal and trust is gone
 4. **Safe** - Can't accidentally leave CA installed
 
-## MicroVM Agents (Sandbox Mode)
+## Agent sandboxes
 
-For Sandbox Mode, SafeYolo automatically injects the CA certificate into agent VMs via the VirtioFS config share and sets the environment variables. The guest init script handles this:
+SafeYolo automatically injects the CA certificate into agent sandboxes via the VirtioFS config share and sets the environment variables. The guest init script handles this:
 
 - CA cert copied from `~/.safeyolo/certs/` to the config share
 - Guest init installs it to `/usr/local/share/ca-certificates/` and runs `update-ca-certificates`
@@ -117,7 +117,7 @@ The SafeYolo CA is:
 ### Best practices
 
 1. **Keep the private key secure** - Don't commit it, don't share it
-2. **Use Sandbox Mode for autonomous agents** - Prevents bypass attempts
+2. **Run autonomous agents inside SafeYolo sandboxes** - Structural isolation prevents bypass attempts
 3. **Use per-process trust** - Avoid system-wide CA installation
 
 ## Troubleshooting

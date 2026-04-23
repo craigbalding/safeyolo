@@ -94,9 +94,9 @@ Watch handles both credential routing approvals and risky route grant approvals.
 | `safeyolo mode <addon>` | Show mode for specific addon |
 | `safeyolo mode <addon> <warn\|block>` | Set addon mode |
 
-### Agent Management (Sandbox Mode)
+### Agent Management
 
-Sandbox Mode runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gVisor on Linux) with all traffic routed through SafeYolo.
+Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gVisor on Linux) with all traffic routed through SafeYolo.
 
 | Command | Description |
 |---------|-------------|
@@ -111,7 +111,7 @@ Sandbox Mode runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, r
 **Quick start:**
 
 ```bash
-# Initialize (sandbox mode is the default)
+# Initialize
 safeyolo init
 
 # Add and run a Claude Code agent using the bundled host script

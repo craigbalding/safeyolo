@@ -108,29 +108,76 @@ def _find_pdp_dir() -> Path | None:
 
 
 def _ensure_certs(cert_dir: Path) -> Path:
-    """Generate mitmproxy CA cert if not present. Returns path to public cert."""
+    """Generate mitmproxy CA cert if not present. Returns path to public cert.
+
+    mitmdump generates its CA lazily on first startup. We boot it just long
+    enough for the ``mitmproxy-ca-cert.pem`` file to land in ``confdir`` —
+    then kill it. Rather than guessing how long that takes (cold cache vs
+    warm cache differ by an order of magnitude on modest hardware), poll
+    for the file and give up only after a generous wall-clock deadline.
+    """
     cert_dir.mkdir(parents=True, exist_ok=True)
     ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
 
-    if not ca_cert.exists():
-        log.info("Generating mitmproxy CA certificate...")
-        try:
-            subprocess.run(
-                ["mitmdump", "--set", f"confdir={cert_dir}", "-p", "0"],
-                timeout=5,
-                capture_output=True,
+    if ca_cert.exists():
+        return ca_cert
+
+    log.info("Generating mitmproxy CA certificate...")
+    # Prefer the mitmdump sibling of the current interpreter (same reason
+    # as _build_command below: avoids Homebrew's sealed-env mitmdump when
+    # PATH ordering would otherwise pick it).
+    python_dir = Path(sys.executable).parent
+    candidate = python_dir / "mitmdump"
+    mitmdump = str(candidate) if candidate.exists() else (shutil.which("mitmdump") or "mitmdump")
+
+    # Start mitmdump detached; poll for the cert file. 60s deadline is
+    # generous for a cold-cache first run (Python + mitmproxy imports +
+    # RSA keypair gen) while still terminating in reasonable time on
+    # pathological hosts.
+    proc = subprocess.Popen(
+        [mitmdump, "--set", f"confdir={cert_dir}", "-p", "0"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if ca_cert.exists():
+                break
+            if proc.poll() is not None:
+                # mitmdump exited before writing the cert — unusual, but
+                # if the file landed in the meantime we still win.
+                if ca_cert.exists():
+                    break
+                raise RuntimeError(
+                    f"mitmdump exited (rc={proc.returncode}) before writing "
+                    f"{ca_cert}. Check that mitmproxy is installed and "
+                    f"importable in the current environment."
+                )
+            time.sleep(0.1)
+        else:
+            raise RuntimeError(
+                f"Timed out waiting 60s for mitmproxy to generate {ca_cert}. "
+                f"Re-run after confirming mitmdump starts on this host."
             )
-        except subprocess.TimeoutExpired:
-            pass  # Expected — mitmdump exits after generating certs
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
 
-        if not ca_cert.exists():
-            raise RuntimeError(f"Failed to generate CA certificate in {cert_dir}")
+    if not ca_cert.exists():
+        raise RuntimeError(f"Failed to generate CA certificate in {cert_dir}")
 
-        # Tighten permissions on private key material
-        for f in cert_dir.iterdir():
-            if f.suffix in (".pem", ".p12"):
-                f.chmod(0o600)
-        cert_dir.chmod(0o700)
+    # Tighten permissions on private key material
+    for f in cert_dir.iterdir():
+        if f.suffix in (".pem", ".p12"):
+            f.chmod(0o600)
+    cert_dir.chmod(0o700)
 
     return ca_cert
 

@@ -31,8 +31,6 @@ proxy:
   image: safeyolo:latest
   container_name: safeyolo
 
-sandbox: true          # Sandbox Mode enabled (default)
-
 modes:
   credential_guard: block
   network_guard: block

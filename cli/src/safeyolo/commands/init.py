@@ -48,28 +48,19 @@ def init(
         "-i",
         help="Run interactive setup wizard",
     ),
-    try_mode: bool = typer.Option(
-        False,
-        "--try",
-        help="Use Try Mode (bypassable) instead of Sandbox Mode",
-    ),
 ) -> None:
     """Initialize SafeYolo configuration.
 
-    Creates configuration files for the SafeYolo security proxy. By default,
-    uses Sandbox Mode with network isolation where bypass attempts fail.
-
-    Use --try for evaluation without network isolation (agents can bypass).
+    Creates configuration files for the SafeYolo security proxy. Agents run
+    in isolated Linux sandboxes with structural egress control: the only path
+    out is through SafeYolo's mitmproxy.
 
     Examples:
 
-        safeyolo init                    # Sandbox Mode (secure default)
-        safeyolo init --try              # Try Mode for evaluation
+        safeyolo init
         safeyolo init --no-interactive   # Use defaults
+        safeyolo init --force            # Overwrite existing configuration
     """
-    # Sandbox is default, --try disables it
-    sandbox = not try_mode
-
     # Fixed paths
     config_dir = get_config_dir()
     logs_dir = get_logs_dir()
@@ -108,7 +99,6 @@ def init(
 
     # Write config.yaml
     config = DEFAULT_CONFIG.copy()
-    config["sandbox"] = sandbox
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 
@@ -138,28 +128,21 @@ def init(
     (config_dir / "bin").mkdir(exist_ok=True)
     console.print(f"  [green]Created[/green] {config_dir}/share/ and bin/")
 
-    # Summary
-    mode_label = "[bold green]Sandbox Mode[/bold green]" if sandbox else "Try Mode"
-
-    if sandbox:
-        next_steps = (
-            "Next steps:\n"
-            "  1. Run: [bold]safeyolo start[/bold]\n"
-            "  2. Run: [bold]safeyolo agent add <name> <folder> --host-script contrib/claude-host-setup.sh[/bold]\n"
-            "  3. See [bold]contrib/HOST_SCRIPT_GUIDE.md[/bold] to adapt for other agents"
-        )
-    else:
-        next_steps = (
-            "Next steps:\n"
-            "  1. Run: [bold]safeyolo start[/bold]\n"
-            "  2. Configure your agent to use proxy at localhost:8080\n"
-            "  3. Run: [bold]safeyolo watch[/bold] to handle approvals"
-        )
+    # Summary — `safeyolo setup` between init and start is what applies the
+    # one-time host prerequisites (Linux: AppArmor profile, /dev/kvm udev rule)
+    # and is idempotent on macOS. Skipping it leaves the agent-run path liable
+    # to fail later with a kernel-level "operation not permitted".
+    next_steps = (
+        "Next steps:\n"
+        "  1. Run: [bold]safeyolo setup[/bold]  [dim](one-time host prerequisites)[/dim]\n"
+        "  2. Run: [bold]safeyolo start[/bold]\n"
+        "  3. Run: [bold]safeyolo agent add <name> <folder> --host-script contrib/claude-host-setup.sh[/bold]\n"
+        "  4. See [bold]contrib/HOST_SCRIPT_GUIDE.md[/bold] to adapt for other agents"
+    )
 
     console.print(
         Panel(
             f"[green]SafeYolo initialized![/green]\n\n"
-            f"Mode: {mode_label}\n"
             f"Configuration: {config_dir}\n"
             f"Policy: {policy_path}\n"
             f"Logs: {logs_dir}\n\n"

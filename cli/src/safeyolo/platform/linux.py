@@ -910,8 +910,19 @@ class LinuxPlatform(AgentPlatform):
                 "terminal": False,
                 "user": {"uid": 0, "gid": 0},
                 "args": [
+                    # /safeyolo-status is a host bind-mount (see mounts
+                    # list above) — writing the boot log there means it
+                    # survives sandbox exit and lives at
+                    # ~/.safeyolo/agents/<name>/status/boot.log on the
+                    # host. Without this, the log lands in gVisor's
+                    # memory overlay and vanishes the moment guest-init
+                    # fails, which was exactly how pre-boot failures
+                    # became invisible.
                     "/bin/bash", "-c",
-                    "mkdir -p /var/log && exec /safeyolo/guest-init >> /var/log/safeyolo-boot.log 2>&1",
+                    "mkdir -p /var/log /safeyolo-status && "
+                    ": > /safeyolo-status/boot.log && "
+                    "ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log && "
+                    "exec /safeyolo/guest-init >> /safeyolo-status/boot.log 2>&1",
                 ],
                 "env": env,
                 "cwd": "/",

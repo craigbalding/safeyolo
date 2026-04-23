@@ -26,7 +26,7 @@ Agents need to be controlled to prevent accidents and limit the blast radius of 
 
 - **Host** is the trust root. You run the CLI, own config, and control the Docker runtime.
 - **SafeYolo** enforces your policy — no Docker socket, no host filesystem access beyond mounts, runs non-root.
-- **Agent containers** have no direct internet access in Sandbox Mode. Their only route to the outside world is through SafeYolo's policy enforcement.
+- **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
 - **External services** are reachable only if policy explicitly permits the destination.
 
 ## Core Security Properties
@@ -60,7 +60,7 @@ Agents call APIs on your behalf, but not every operation carries the same risk. 
 Agents shouldn't hold the keys to your accounts. SafeYolo lets agents access your services without ever seeing your credentials — it injects credentials at the proxy layer based on policy, so agents make requests and SafeYolo handles authentication. Your keys never enter the agent's environment.
 
 **Network and transport controls.**
-Agents have no direct internet access in Sandbox Mode. The sandbox has no external network interface at all — the only path out is a per-agent host-owned socket that routes through SafeYolo. This is *structural* isolation: there are no firewall rules in the enforcement path, so there is no configuration that can weaken it. Identity is stamped by the host-side bridge (each agent's upstream TCP source is bound to a distinct synthetic loopback address) so a compromised agent cannot forge another agent's identity. Non-canonical requests (path tricks, duplicate headers, encoding exploits) are rejected before policy evaluation. Homoglyph detection catches mixed-script domain spoofing. GCRA rate limiting prevents runaway loops.
+Agents have no direct internet access. The sandbox has no external network interface at all — the only path out is a per-agent host-owned socket that routes through SafeYolo. This is *structural* isolation: there are no firewall rules in the enforcement path, so there is no configuration that can weaken it. Identity is stamped by the host-side bridge (each agent's upstream TCP source is bound to a distinct synthetic loopback address) so a compromised agent cannot forge another agent's identity. Non-canonical requests (path tricks, duplicate headers, encoding exploits) are rejected before policy evaluation. Homoglyph detection catches mixed-script domain spoofing. GCRA rate limiting prevents runaway loops.
 
 **Audit trail.**
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
@@ -72,9 +72,8 @@ As a safety net, SafeYolo also detects credentials in transit via pattern matchi
 
 | Limitation | Notes |
 |------------|-------|
-| **Try Mode bypass** | By design — agents can unset proxy vars. Use Sandbox Mode for autonomous agents. |
 | **Prompt injection** | SafeYolo reduces prompt injection risk — through agent reflection prompts and limiting risky routes to prevent account takeover and credential theft — but doesn't eliminate it. |
-| **Non-HTTP exfiltration** | In Sandbox Mode, DNS is resolved by SafeYolo (no direct DNS) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
+| **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
 | **Credentials in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned. |
 | **Credentials in query/body** | Off by default. Enable with `--set credguard_scan_urls=true` / `credguard_scan_bodies=true`. |

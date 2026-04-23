@@ -10,13 +10,16 @@
 #   DEB_ARCH         (arm64 | amd64)
 #   MISE_VERSION
 #   MISE_SHA256
+#   MISE_TARBALL     (optional) path to pre-fetched mise tarball
 #   GH_VERSION
 #   GH_SHA256
+#   GH_TARBALL       (optional) path to pre-fetched gh tarball
 #   GUEST_SRC_DIR    absolute path to the repo's guest/ directory
 #                    (where rootfs/safeyolo-guest-init lives)
 #
 # Running this script directly (for debugging) is supported -- just set the
-# vars above and pass the rootfs path as $1.
+# vars above and pass the rootfs path as $1. MISE_TARBALL/GH_TARBALL are
+# optional; if unset, the hook falls back to a direct download.
 #
 set -euo pipefail
 
@@ -50,8 +53,15 @@ case "$DEB_ARCH" in
     arm64) MISE_ARCH=arm64 ;;
     *) echo "Unsupported DEB_ARCH for mise URL: $DEB_ARCH" >&2; exit 1 ;;
 esac
-MISE_URL="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
-curl -fsSL "$MISE_URL" -o "$ROOTFS/tmp/mise.tar.gz"
+# Prefer the tarball that build-rootfs.sh pre-fetched + SHA256-verified
+# into $OUTPUT_DIR/.download-cache/ (MISE_TARBALL). Fall back to a direct
+# download so the hook still works when invoked standalone for debugging.
+if [ -n "${MISE_TARBALL:-}" ] && [ -f "$MISE_TARBALL" ]; then
+    cp "$MISE_TARBALL" "$ROOTFS/tmp/mise.tar.gz"
+else
+    MISE_URL="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz"
+    curl -fsSL "$MISE_URL" -o "$ROOTFS/tmp/mise.tar.gz"
+fi
 if [ -n "${MISE_SHA256:-}" ]; then
     echo "${MISE_SHA256}  $ROOTFS/tmp/mise.tar.gz" | sha256sum -c -
 else
@@ -99,8 +109,12 @@ grep -q '^BASH_ENV=' "$ROOTFS/etc/environment" 2>/dev/null || \
 # gh CLI
 # ---------------------------------------------------------------------------
 echo "--- Installing gh CLI ${GH_VERSION} ---"
-GH_URL="https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${DEB_ARCH}.tar.gz"
-curl -fsSL "$GH_URL" -o "$ROOTFS/tmp/gh.tar.gz"
+if [ -n "${GH_TARBALL:-}" ] && [ -f "$GH_TARBALL" ]; then
+    cp "$GH_TARBALL" "$ROOTFS/tmp/gh.tar.gz"
+else
+    GH_URL="https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${DEB_ARCH}.tar.gz"
+    curl -fsSL "$GH_URL" -o "$ROOTFS/tmp/gh.tar.gz"
+fi
 if [ -n "${GH_SHA256:-}" ]; then
     echo "${GH_SHA256}  $ROOTFS/tmp/gh.tar.gz" | sha256sum -c -
 else

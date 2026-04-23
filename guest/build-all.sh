@@ -5,7 +5,8 @@
 # Output (in ./out/):
 #   Image              - Linux kernel (macOS microVMs only, not needed for gVisor)
 #   initramfs.cpio.gz  - Minimal initramfs (macOS microVMs only)
-#   rootfs-base.ext4   - Debian trixie rootfs with mise + compact agent tooling
+#   rootfs-base.ext4   - Debian trixie rootfs (macOS VZ mounts this)
+#   rootfs-base.erofs  - Debian trixie rootfs (Linux gVisor mounts this)
 #
 # Platform handling:
 #   Linux  - runs the three build-*.sh scripts natively
@@ -14,6 +15,22 @@
 # No Docker required. On macOS, `brew install lima` is a one-time setup.
 #
 set -euo pipefail
+
+# Refuse to be sourced. Sourcing from an interactive login shell makes $0
+# expand to "-bash" (or similar), which then feeds `-b` into `dirname` and
+# produces `dirname: invalid option -- 'b'` before set -e can catch it.
+# Detect both bash and zsh sourcing idioms and bail with a clear message.
+if [ -n "${BASH_SOURCE:-}" ]; then
+    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+        echo "Error: build-all.sh must be executed, not sourced." >&2
+        echo "  Run: ./build-all.sh   (or: bash build-all.sh)" >&2
+        return 1 2>/dev/null || exit 1
+    fi
+elif [ -n "${ZSH_EVAL_CONTEXT:-}" ] && [[ "$ZSH_EVAL_CONTEXT" == *:file* ]]; then
+    echo "Error: build-all.sh must be executed, not sourced." >&2
+    echo "  Run: ./build-all.sh   (or: bash build-all.sh)" >&2
+    return 1 2>/dev/null || exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/out}"

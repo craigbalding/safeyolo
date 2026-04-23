@@ -9,25 +9,148 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from ..vm import check_guest_images, guest_image_status
+from ..vm import check_guest_images, missing_guest_images
 
 console = Console()
 
 _VALID_USERNAME = _re.compile(r"^[a-z_][a-z0-9_-]*$")
 
+# AppArmor profile paths. The template ships with the installed CLI package;
+# `safeyolo setup apparmor` copies it to /etc/apparmor.d/ and asks the
+# kernel to load it via apparmor_parser -r. Ubuntu 24.04+ ships with
+# kernel.apparmor_restrict_unprivileged_userns=1, which blocks the
+# unprivileged user namespace runsc needs unless this profile is present.
+_APPARMOR_TEMPLATE = Path(__file__).parent.parent / "templates" / "apparmor-safeyolo-runsc"
+_APPARMOR_DEST = Path("/etc/apparmor.d/safeyolo-runsc")
+
 setup_app = typer.Typer(
     name="setup",
-    help="Check system prerequisites for SafeYolo microVM agents.",
+    help="Apply system prerequisites for SafeYolo agent sandboxes.",
     no_args_is_help=False,
     invoke_without_command=True,
 )
 
 
+def _install_apparmor_profile() -> bool:
+    """Stage the AppArmor profile and load it via apparmor_parser -r.
+
+    Returns True on success (profile loaded, functional probe passes),
+    False on any failure. Idempotent: re-running when the profile is
+    already loaded still succeeds (apparmor_parser -r replaces in place).
+
+    Writes /etc/apparmor.d/safeyolo-runsc via `sudo tee`. Callers SHOULD
+    surface intent (the file path + the reason sudo is needed) before
+    calling this so the sudo prompt isn't surprising.
+    """
+    if not _APPARMOR_TEMPLATE.exists():
+        console.print(f"  [red]FAIL[/red]  AppArmor template missing: {_APPARMOR_TEMPLATE}")
+        return False
+
+    content = _APPARMOR_TEMPLATE.read_text()
+    try:
+        subprocess.run(
+            ["sudo", "tee", str(_APPARMOR_DEST)],
+            input=content.encode(),
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["sudo", "chmod", "0644", str(_APPARMOR_DEST)],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["sudo", "apparmor_parser", "-r", str(_APPARMOR_DEST)],
+            check=True, capture_output=True,
+        )
+    except FileNotFoundError as err:
+        console.print(f"  [red]FAIL[/red]  Required tool missing: {err}")
+        console.print("    Debian/Ubuntu: [bold]sudo apt-get install sudo apparmor apparmor-utils[/bold]")
+        return False
+    except subprocess.CalledProcessError as err:
+        stderr = (err.stderr.decode(errors="replace").strip()
+                  if err.stderr else "")
+        console.print(f"  [red]FAIL[/red]  AppArmor install failed: {stderr or err}")
+        return False
+
+    # Probe: profile actually loaded and usable?
+    from ..platform.linux import has_apparmor_profile
+    if not has_apparmor_profile():
+        console.print("  [red]FAIL[/red]  Profile installed but aa-exec probe failed.")
+        return False
+    return True
+
+
+def _apply_kvm_udev_rule(udev_path: Path, udev_rule: str) -> bool:
+    """Install the /dev/kvm udev rule and apply the ACL immediately.
+
+    Idempotent: re-running when the rule file already exists re-applies
+    the setfacl so the ACL takes effect without requiring a reboot.
+    """
+    try:
+        subprocess.run(
+            ["sudo", "tee", str(udev_path)],
+            input=udev_rule.encode(),
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["sudo", "setfacl", "-m", "u:100000:rw", "/dev/kvm"],
+            capture_output=True, check=True,
+        )
+        return True
+    except FileNotFoundError as err:
+        console.print(f"  [red]FAIL[/red]  Required tool missing: {err}")
+        return False
+    except subprocess.CalledProcessError as err:
+        stderr = (err.stderr.decode(errors="replace").strip()
+                  if err.stderr else "")
+        console.print(f"  [red]FAIL[/red]  KVM udev install failed: {stderr or err}")
+        return False
+
+
+def _announce_linux_sudo_changes(need_apparmor: bool, need_kvm: bool,
+                                 udev_path: Path) -> None:
+    """Tell the user exactly what `sudo` will touch on Linux, before we ask
+    them for their password. Only items actually required are listed."""
+    if not (need_apparmor or need_kvm):
+        return
+
+    console.print("\n[bold]`safeyolo setup` needs sudo to apply the following:[/bold]")
+    if need_apparmor:
+        console.print(
+            f"  • [bold]AppArmor profile[/bold]\n"
+            f"      write   {_APPARMOR_DEST}\n"
+            f"      reload  apparmor_parser -r {_APPARMOR_DEST}\n"
+            f"      Why: Ubuntu 24.04+ blocks unprivileged user namespaces by\n"
+            f"      default, which breaks rootless gVisor; this profile allows them\n"
+            f"      only for /usr/local/bin/runsc."
+        )
+    if need_kvm:
+        console.print(
+            f"  • [bold]KVM access[/bold]\n"
+            f"      write   {udev_path}\n"
+            f"      apply   setfacl -m u:100000:rw /dev/kvm\n"
+            f"      Why: gVisor's sandbox uid 100000 needs /dev/kvm to use the KVM\n"
+            f"      platform (hardware isolation). Falls back to systrap without it."
+        )
+    console.print()
+
+
 @setup_app.callback(invoke_without_command=True)
 def setup() -> None:
-    """Check system prerequisites for SafeYolo microVM agents.
+    """Apply system prerequisites for SafeYolo agent sandboxes.
 
-    Verifies guest images, BPF access, and other requirements.
+    Checks what's needed, announces which sudo-privileged changes are
+    about to be made and why, then applies them idempotently. Safe to
+    re-run.
+
+    Linux installs (only when missing):
+
+      - AppArmor profile at /etc/apparmor.d/safeyolo-runsc, loaded via
+        `apparmor_parser -r`.
+      - udev rule at /etc/udev/rules.d/99-safeyolo-kvm.rules + immediate
+        setfacl on /dev/kvm (for KVM hardware isolation).
+
+    macOS verifies the Swift VM helper only; no sudo-level changes.
 
     Examples:
 
@@ -37,15 +160,16 @@ def setup() -> None:
 
     all_ok = True
 
-    # Guest images
+    # Guest images (platform-aware: Linux needs EROFS, macOS needs ext4+kernel+initramfs).
     if check_guest_images():
         console.print("  [green]OK[/green]  Guest images available")
     else:
-        status = guest_image_status()
-        missing = [k for k, v in status.items() if not v]
+        missing = missing_guest_images()
         console.print(f"  [red]MISSING[/red]  Guest images: {', '.join(missing)}")
         console.print("    Build with: cd guest && ./build-all.sh")
         console.print("    Install:    cp guest/out/* ~/.safeyolo/share/")
+        if "rootfs-erofs" in missing:
+            console.print("    [dim](erofs-utils is required on the build host: sudo apt-get install erofs-utils)[/dim]")
         all_ok = False
 
     # Platform-specific checks. macOS uses a Swift VM helper (vsock-based
@@ -78,22 +202,40 @@ def setup() -> None:
             console.print("    Install gVisor — see README 'Linux' section for apt commands.")
             all_ok = False
 
-        # User namespace prerequisites
+        # User namespace prerequisites (purely diagnostic)
         userns = check_userns_prerequisites()
         if not userns["setfacl"]:
             console.print("  [red]MISSING[/red]  setfacl (required for rootless rootfs ACL)")
             console.print("    Debian/Ubuntu: [bold]sudo apt-get install acl[/bold]")
             all_ok = False
+
+        # --- Decide what needs applying before touching sudo ---
+        kvm = detect_runsc_platform()
+        kvm_udev_rule = 'KERNEL=="kvm", RUN+="/usr/bin/setfacl -m u:100000:rw /dev/kvm"'
+        kvm_udev_path = Path("/etc/udev/rules.d/99-safeyolo-kvm.rules")
+
+        need_apparmor = (
+            userns["apparmor_restricts"]
+            and not userns["apparmor_profile_loaded"]
+        )
+        # Install the KVM rule if /dev/kvm is usable by the operator but not
+        # yet by the sandbox subordinate uid.
+        need_kvm = (
+            kvm["kvm_exists"]
+            and kvm["kvm_operator_access"]
+            and not kvm["kvm_subordinate_access"]
+        )
+
+        # AppArmor: report current state before/after
         if userns["apparmor_restricts"]:
             if userns["apparmor_profile_loaded"]:
                 console.print("  [green]OK[/green]  AppArmor profile (safeyolo-runsc)")
             else:
-                console.print("  [yellow]SETUP[/yellow]  AppArmor profile needed (user namespace creation)")
-                console.print("    [bold]sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc[/bold]")
-                all_ok = False
+                console.print("  [yellow]SETUP[/yellow]  AppArmor profile needs installation")
+        else:
+            console.print("  [dim]INFO[/dim]  AppArmor does not restrict userns here — profile not required")
 
-        # KVM platform detection
-        kvm = detect_runsc_platform()
+        # KVM: report current state before/after
         if kvm["platform"] == "kvm":
             console.print("  [green]OK[/green]  KVM platform (hardware isolation)")
         elif not kvm["kvm_exists"]:
@@ -101,35 +243,27 @@ def setup() -> None:
             console.print("    Coding agent performance is equivalent. Hardware isolation")
             console.print("    (KVM) is available on hosts with virtualization enabled.")
         elif kvm["kvm_operator_access"] and not kvm["kvm_subordinate_access"]:
-            udev_rule = 'KERNEL=="kvm", RUN+="/usr/bin/setfacl -m u:100000:rw /dev/kvm"'
-            udev_path = Path("/etc/udev/rules.d/99-safeyolo-kvm.rules")
-            if udev_path.exists():
-                # Rule file exists but ACL not applied (pre-reboot or udev not triggered)
-                console.print("  [yellow]SETUP[/yellow]  KVM udev rule installed but ACL not yet active")
-                console.print("    Apply now:  [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
-                console.print("    (will persist across reboots via udev rule)")
-            else:
-                console.print("  [yellow]SETUP[/yellow]  KVM available — enable hardware isolation")
-                console.print("    Installing udev rule for persistent /dev/kvm access...")
-                try:
-                    subprocess.run(
-                        ["sudo", "tee", str(udev_path)],
-                        input=udev_rule.encode(),
-                        capture_output=True, check=True,
-                    )
-                    subprocess.run(
-                        ["sudo", "setfacl", "-m", "u:100000:rw", "/dev/kvm"],
-                        capture_output=True, check=True,
-                    )
-                    console.print("  [green]OK[/green]  KVM udev rule installed and ACL applied")
-                except subprocess.CalledProcessError as e:
-                    console.print(f"  [red]FAIL[/red]  Could not install udev rule: {e}")
-                    console.print("    Manual fix:")
-                    console.print(f'    [bold]echo \'{udev_rule}\' | sudo tee {udev_path}[/bold]')
-                    console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
-                    all_ok = False
+            console.print("  [yellow]SETUP[/yellow]  KVM available — installing udev rule for sandbox access")
         else:
             console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
+
+        # --- Announce + apply ---
+        _announce_linux_sudo_changes(need_apparmor, need_kvm, kvm_udev_path)
+
+        if need_apparmor:
+            if _install_apparmor_profile():
+                console.print("  [green]OK[/green]  AppArmor profile (safeyolo-runsc) installed and loaded")
+            else:
+                all_ok = False
+
+        if need_kvm:
+            if _apply_kvm_udev_rule(kvm_udev_path, kvm_udev_rule):
+                console.print("  [green]OK[/green]  KVM udev rule installed and ACL applied")
+            else:
+                console.print("    Manual fix:")
+                console.print(f'    [bold]echo \'{kvm_udev_rule}\' | sudo tee {kvm_udev_path}[/bold]')
+                console.print("    [bold]sudo setfacl -m u:100000:rw /dev/kvm[/bold]")
+                all_ok = False
     else:
         console.print(f"  [yellow]WARN[/yellow]  unsupported platform {system!r}: skipping runtime checks")
 
@@ -137,6 +271,34 @@ def setup() -> None:
         console.print("\n[green]All prerequisites met.[/green]")
     else:
         console.print("\n[yellow]Some prerequisites missing — see above.[/yellow]")
+
+
+@setup_app.command()
+def apparmor() -> None:
+    """Install the SafeYolo AppArmor profile for runsc.
+
+    Copies the bundled profile to /etc/apparmor.d/safeyolo-runsc and asks
+    the kernel to load it via `apparmor_parser -r`. Idempotent. Announces
+    the exact changes + reason for sudo before prompting.
+
+    This runs as part of `safeyolo setup`; run this subcommand directly if
+    you only want to (re)apply the AppArmor piece.
+    """
+    if _platform.system() != "Linux":
+        console.print("[yellow]AppArmor setup is Linux-only. Skipping.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(
+        "\n[bold]Installing SafeYolo AppArmor profile (requires sudo).[/bold]\n"
+        f"  write   {_APPARMOR_DEST}\n"
+        f"  reload  apparmor_parser -r {_APPARMOR_DEST}\n"
+        "  Why: Ubuntu 24.04+ blocks unprivileged user namespaces by default,\n"
+        "  which breaks rootless gVisor; this profile allows them only for\n"
+        "  /usr/local/bin/runsc.\n"
+    )
+    if not _install_apparmor_profile():
+        raise typer.Exit(1)
+    console.print("[green]AppArmor profile (safeyolo-runsc) installed and loaded.[/green]")
 
 
 def _sudoers_template_and_summary() -> tuple[Path, str, str]:
