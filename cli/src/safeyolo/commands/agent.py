@@ -453,7 +453,7 @@ def _run_agent(
                 extra_shares=None,
                 background=run_background,
                 restore_from_path=restore_src,
-                ephemeral=metadata.get("ephemeral", False),
+                ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
@@ -531,7 +531,7 @@ def _run_agent(
                 extra_shares=None,
                 background=run_background,
                 snapshot_capture_path=capture_path,
-                ephemeral=metadata.get("ephemeral", False),
+                ephemeral=(metadata.get("rootfs_overlay") == "memory"),
             )
             # agent_map was populated pre-start_sandbox (attribution_ip +
             # optional bridge socket). Nothing to re-register here.
@@ -996,7 +996,11 @@ def add(
     if rootfs_script_path is not None:
         metadata["rootfs_script"] = str(rootfs_script_path)
     if ephemeral:
-        metadata["ephemeral"] = True
+        # Stored as a typed string rather than a bool so the schema can
+        # grow: future overlay backings (e.g. "disk-persistent-ro",
+        # "copy-on-write-clone") slot in without another toml-level
+        # migration. "memory" = gVisor tmpfs / VZ safeyolo.ephemeral_upper=1.
+        metadata["rootfs_overlay"] = "memory"
     parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
@@ -1013,7 +1017,8 @@ def add(
     ]
     if ephemeral:
         panel_lines.append(
-            "[yellow]Mode: ephemeral[/yellow] — writes to / will NOT persist across stop"
+            "[yellow]Rootfs overlay: memory (tmpfs)[/yellow] — "
+            "writes to / will NOT persist across stop"
         )
     if host_script_path is not None:
         panel_lines.append(f"Host script: {host_script_path}")
