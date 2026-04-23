@@ -78,15 +78,91 @@ def get_initrd_path() -> Path:
 
 
 def get_base_rootfs_path() -> Path:
+    # Shared read-only ext4 base image. macOS VZ boots from this
+    # directly (initramfs mounts it `-o ro,noload`). All agents share
+    # the single file; per-agent state lives in the overlay upper
+    # (/dev/vdb) and /home/agent (virtiofs-bound).
     return get_share_dir() / "rootfs-base.ext4"
 
 
 def get_agent_rootfs_path(name: str) -> Path:
-    return get_agents_dir() / name / "rootfs.ext4"
+    # No per-agent rootfs file. All agents share get_base_rootfs_path();
+    # per-agent runtime state lives in the in-VM overlay upper
+    # (persistent when /dev/vdb is attached, ephemeral via tmpfs when
+    # safeyolo.ephemeral_upper=1) and the /home/agent virtiofs bind.
+    # Kept as a function because callers expect a Path; points at the
+    # shared base so any code that treats it as a read target works.
+    return get_base_rootfs_path()
 
 
 def get_agent_pid_path(name: str) -> Path:
     return get_agents_dir() / name / "vm.pid"
+
+
+def get_agent_overlay_path(name: str) -> Path:
+    """Per-agent writable overlay image (attached as /dev/vdb on macOS VZ).
+
+    Linux gVisor doesn't use this — gVisor's own `--overlay2=root:dir=`
+    manages its overlay in a per-agent directory (see the Linux
+    platform module). This function is macOS-VZ-only.
+
+    macOS VZ: a per-agent ext4 image layered on top of the shared
+    read-only ext4 rootfs via overlayfs inside the guest. Runtime
+    writes to /etc, /usr, /var, etc. persist here across agent
+    stop/run — /home/agent remains a separate virtiofs bind for
+    bulk user data.
+
+    The file is created as a sparse 256 GiB `truncate`. The guest's
+    initramfs detects the absent filesystem on first boot and runs
+    `mkfs.ext4 -F -E lazy_itable_init=1` in-place; eager mkfs work
+    is a few MiB of metadata (superblock, block-group descriptors,
+    bitmaps) regardless of logical size.
+    """
+    return get_agents_dir() / name / "overlay.img"
+
+
+# Default logical size for the per-agent overlay image.
+#
+# Chosen to be "plausibly unlimited" rather than a tight cap users can
+# hit by accident. 256 GiB covers any realistic in-VM install pattern
+# (multi-TB language toolchains, cached container images, debug dumps)
+# while staying well under ext4's ~16 TiB limit at the default 4 KiB
+# block size.
+#
+# Sparse-file semantics on APFS (macOS) and ext4 with extents (Linux):
+# the file reports 256 GiB via `ls -l` and `df -h` inside the VM, but
+# only written blocks consume physical disk. The real ceiling is host
+# disk capacity — when the host fills, the in-VM write fails with
+# ENOSPC (confusing-looking: "df says 200 GiB free" — but the error
+# is genuine).
+#
+# mkfs.ext4 cost: `-E lazy_itable_init=1` keeps inode-table zeroing
+# in a background kthread, so first-boot mkfs on a 256 GiB overlay
+# writes only ~5 MiB of eager metadata (superblock copies, block-group
+# descriptors, group bitmaps, journal header). Measured: well under
+# a second.
+_OVERLAY_IMAGE_SIZE_BYTES = 256 * 1024 * 1024 * 1024
+
+
+def ensure_agent_overlay(name: str) -> Path:
+    """Create the per-agent overlay image if missing. Returns its path.
+
+    Idempotent; no-op if the file already exists at any nonzero size.
+    Deliberately does NOT grow an existing smaller image to match the
+    current default — bumping the sparse size would need a resize2fs
+    on the guest side, which needs the VM stopped. Users who want the
+    new size on an existing agent can `safeyolo agent remove && add`.
+    """
+    path = get_agent_overlay_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > 0:
+        return path
+    # Sparse allocation: the file reports _OVERLAY_IMAGE_SIZE_BYTES
+    # logically but consumes ~0 physically until writes land.
+    with open(path, "wb") as fh:
+        fh.truncate(_OVERLAY_IMAGE_SIZE_BYTES)
+    path.chmod(0o600)
+    return path
 
 
 def get_agent_config_share_dir(name: str) -> Path:
@@ -129,15 +205,75 @@ def ensure_agent_persistent_dirs(name: str) -> None:
     d.mkdir(parents=True, exist_ok=True)
     d.chmod(0o700)
 
+    # Seed cache-paths.txt from the default-base share if the agent
+    # doesn't already have one. Skipped when a rootfs-script wrote the
+    # file directly (build_custom_rootfs clears+lets-the-script-write,
+    # so a pre-existing file at this point is authoritative). The Linux
+    # OCI spec reads this file at start_sandbox time and bind-mounts
+    # each listed path to a persistent per-agent cache dir.
+    agent_cache_paths = get_agents_dir() / name / "cache-paths.txt"
+    share_cache_paths = get_share_dir() / "cache-paths.txt"
+    if not agent_cache_paths.exists() and share_cache_paths.exists():
+        shutil.copy2(share_cache_paths, agent_cache_paths)
+
+
+def get_agent_cache_paths_file(name: str) -> Path:
+    """Return the path to this agent's cache-paths.txt (may not exist)."""
+    return get_agents_dir() / name / "cache-paths.txt"
+
+
+def read_agent_cache_paths(name: str) -> list[str]:
+    """Return the list of in-rootfs paths this agent wants cache-bound.
+
+    Source of truth is <agent_dir>/cache-paths.txt — seeded from either
+    (a) a rootfs-script's SAFEYOLO_ROOTFS_OUT_CACHE_PATHS output, or
+    (b) the default base's <share>/cache-paths.txt (copied by
+    ensure_agent_persistent_dirs). Each line is an absolute path inside
+    the rootfs. Empty lines and `#` comments are ignored so future
+    shares can document themselves without breaking parsers.
+    """
+    f = get_agent_cache_paths_file(name)
+    if not f.exists():
+        return []
+    paths: list[str] = []
+    for raw in f.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith("/"):
+            log.warning("cache-paths.txt: ignoring non-absolute path %r", line)
+            continue
+        paths.append(line)
+    return paths
+
+
+def get_agent_cache_dir(name: str, in_rootfs_path: str) -> Path:
+    """Return the host-side per-agent cache dir for a given rootfs path.
+
+    Slug = path with leading slash stripped and remaining slashes
+    replaced by `_`, so `/var/cache/apt` → `var_cache_apt`. Readable in
+    `ls`, stable under repeated runs, no collision as long as the
+    rootfs paths themselves don't collide post-slug (caller's
+    responsibility to keep paths distinct).
+    """
+    slug = in_rootfs_path.lstrip("/").replace("/", "_")
+    return get_agents_dir() / name / "cache" / slug
+
 
 # ---------------------------------------------------------------------------
 # Rootfs management
 # ---------------------------------------------------------------------------
 
 def create_agent_rootfs(name: str) -> Path:
-    """Clone the base rootfs for a new agent.
+    """Return the rootfs path this agent should boot from.
 
-    Uses cp (APFS reflink on macOS for fast CoW copies).
+    There is no per-agent rootfs copy. The shared ext4 base is
+    mounted read-only by every agent's VM (initramfs uses `-o ro,noload`);
+    writes land in the overlay upper (ext4 on /dev/vdb persistent, or
+    tmpfs ephemeral) and in /home/agent (virtiofs-bound, persistent).
+
+    Ensures the per-agent directory exists because other code
+    (config-share, status, overlay.img, ssh host keys) writes into it.
     """
     base = get_base_rootfs_path()
     if not base.exists():
@@ -145,25 +281,8 @@ def create_agent_rootfs(name: str) -> Path:
             f"Base rootfs not found at {base}\n"
             f"Build guest images first: cd guest && ./build-all.sh"
         )
-
-    agent_dir = get_agents_dir() / name
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    dest = agent_dir / "rootfs.ext4"
-
-    if dest.exists():
-        return dest  # Already created
-
-    log.info("Cloning base rootfs for agent '%s'...", name)
-    # Use cp -c for APFS clone (instant, CoW) with fallback to regular copy
-    result = subprocess.run(
-        ["cp", "-c", str(base), str(dest)],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        # Fallback: regular copy (non-APFS filesystems)
-        shutil.copy2(str(base), str(dest))
-
-    return dest
+    (get_agents_dir() / name).mkdir(parents=True, exist_ok=True)
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -202,14 +321,19 @@ def _guest_src_dir() -> Path:
 
 
 def build_custom_rootfs(name: str, script_path: Path) -> Path:
-    """Invoke a user rootfs-script to produce a per-agent rootfs image.
+    """Invoke a user rootfs-script to produce a per-agent rootfs.
 
-    Returns the output image path. Raises VMError on failure.
+    Returns the output path. Raises VMError on failure.
 
     Env contract (see contrib/ROOTFS_SCRIPT_GUIDE.md):
       SAFEYOLO_AGENT_NAME
-      SAFEYOLO_ROOTFS_OUT_EXT4    (set when target is Darwin)
-      SAFEYOLO_ROOTFS_OUT_EROFS   (set when target is Linux)
+      SAFEYOLO_ROOTFS_OUT_EXT4          (set when target is Darwin — ext4 image)
+      SAFEYOLO_ROOTFS_OUT_TREE          (set when target is Linux — directory tree)
+      SAFEYOLO_ROOTFS_OUT_CACHE_PATHS   (file path — script writes one
+                                         absolute in-rootfs cache path
+                                         per line; SafeYolo bind-mounts
+                                         persistent per-agent dirs onto
+                                         these paths at sandbox start)
       SAFEYOLO_ROOTFS_WORK_DIR
       SAFEYOLO_GUEST_SRC_DIR
       SAFEYOLO_TARGET_ARCH
@@ -221,38 +345,73 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
     if system == "Darwin":
         out_path = agent_dir / "rootfs.ext4"
         out_key = "SAFEYOLO_ROOTFS_OUT_EXT4"
+        out_is_dir = False
     elif system == "Linux":
-        out_path = agent_dir / "rootfs.erofs"
-        out_key = "SAFEYOLO_ROOTFS_OUT_EROFS"
+        # Linux runtime consumes a directory tree as OCI root.path.
+        # Custom rootfs-scripts write the unpacked tree here; umoci
+        # unpack does this natively, no extra conversion needed.
+        out_path = agent_dir / "rootfs"
+        out_key = "SAFEYOLO_ROOTFS_OUT_TREE"
+        out_is_dir = True
     else:
         raise VMError(f"Unsupported platform for --rootfs-script: {system}")
 
-    # Start with a clean output slot so a failed rebuild doesn't leave a
-    # stale image around that a later agent-run picks up.
+    # Start with a clean output slot so a failed rebuild doesn't leave
+    # a stale image around that a later agent-run picks up.
     if out_path.exists():
-        out_path.unlink()
+        if out_path.is_dir():
+            shutil.rmtree(out_path, ignore_errors=True)
+        else:
+            out_path.unlink()
+
+    # Cache-paths output: the script may write a list of absolute
+    # in-rootfs paths (one per line) that SafeYolo bind-mounts to
+    # persistent per-agent dirs at sandbox start. Pre-create an empty
+    # file so the script's `[ -n "$VAR" ]` guard sees the variable and
+    # writes unconditionally if it wants to; a missing file afterwards
+    # means the script chose not to declare any caches.
+    cache_paths_file = agent_dir / "cache-paths.txt"
+    cache_paths_file.unlink(missing_ok=True)
 
     if system == "Linux":
-        _run_rootfs_script_native(name, script_path, out_key, out_path)
+        _run_rootfs_script_native(
+            name, script_path, out_key, out_path, cache_paths_file,
+        )
     else:
-        _run_rootfs_script_lima(name, script_path, out_key, out_path)
+        _run_rootfs_script_lima(
+            name, script_path, out_key, out_path, cache_paths_file,
+        )
 
     if not out_path.exists():
         raise VMError(
             f"Rootfs script {script_path} did not produce {out_path}.\n"
             f"Scripts must write their output to ${out_key}."
         )
-    if out_path.stat().st_size == 0:
-        raise VMError(
-            f"Rootfs script {script_path} produced an empty file at {out_path}."
+    if out_is_dir:
+        # Tree must be non-empty with at least /etc.
+        if not (out_path.is_dir() and (out_path / "etc").is_dir()):
+            raise VMError(
+                f"Rootfs script {script_path} produced {out_path} but it's not"
+                f" a valid rootfs tree (missing /etc)."
+            )
+        size = sum(
+            f.stat().st_size for f in out_path.rglob("*") if f.is_file()
         )
-    log.info("Custom rootfs built for '%s': %s (%d bytes)",
-             name, out_path, out_path.stat().st_size)
+        log.info("Custom rootfs tree built for '%s': %s (%d bytes)",
+                 name, out_path, size)
+    else:
+        if out_path.stat().st_size == 0:
+            raise VMError(
+                f"Rootfs script {script_path} produced an empty file at {out_path}."
+            )
+        log.info("Custom rootfs image built for '%s': %s (%d bytes)",
+                 name, out_path, out_path.stat().st_size)
     return out_path
 
 
 def _run_rootfs_script_native(
     name: str, script_path: Path, out_key: str, out_path: Path,
+    cache_paths_file: Path,
 ) -> None:
     """Run the rootfs-script directly on the Linux host."""
     guest_src = _guest_src_dir()
@@ -268,6 +427,7 @@ def _run_rootfs_script_native(
             **os.environ,
             "SAFEYOLO_AGENT_NAME": name,
             out_key: str(out_path),
+            "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(cache_paths_file),
             "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
             "SAFEYOLO_GUEST_SRC_DIR": str(guest_src),
             "SAFEYOLO_TARGET_ARCH": _host_target_arch(),
@@ -285,6 +445,7 @@ def _run_rootfs_script_native(
 
 def _run_rootfs_script_lima(
     name: str, script_path: Path, out_key: str, out_path: Path,
+    cache_paths_file: Path,
 ) -> None:
     """Run the rootfs-script inside the shared safeyolo-builder Lima VM.
 
@@ -335,14 +496,16 @@ def _run_rootfs_script_lima(
         shutil.copy2(str(script_path), str(staged_script))
         staged_script.chmod(0o755)
 
-        out_name = out_path.name  # rootfs.ext4 or rootfs.erofs
+        out_name = out_path.name  # rootfs.ext4 (Darwin) or rootfs (Linux tree)
         vm_script_path = f"{vm_scratch}/rootfs-script"
         vm_out_path = f"{vm_scratch}/{out_name}"
+        vm_cache_paths = f"{vm_scratch}/cache-paths.txt"
         vm_guest_dir = LIMA_GUEST_MOUNT
 
         env_args = [
             f"SAFEYOLO_AGENT_NAME={name}",
             f"{out_key}={vm_out_path}",
+            f"SAFEYOLO_ROOTFS_OUT_CACHE_PATHS={vm_cache_paths}",
             f"SAFEYOLO_ROOTFS_WORK_DIR={vm_work_dir}",
             f"SAFEYOLO_GUEST_SRC_DIR={vm_guest_dir}",
             f"SAFEYOLO_TARGET_ARCH={_host_target_arch()}",
@@ -378,6 +541,13 @@ def _run_rootfs_script_lima(
                 f"${out_key} ({produced})."
             )
         shutil.move(str(produced), str(out_path))
+
+        # Optional: the script may have emitted a cache-paths list.
+        # Move it to the agent dir if present; harmless if not (macOS VZ
+        # ignores it anyway — the disk-backed overlay persists writes).
+        produced_cache = host_scratch / "cache-paths.txt"
+        if produced_cache.exists():
+            shutil.move(str(produced_cache), str(cache_paths_file))
     finally:
         # Host-side: staging dir cleanup is unconditional. VM-local work dir
         # is cleaned up by the bash trap above; if that didn't run (e.g.
@@ -643,6 +813,7 @@ def start_vm(
     restore_from_path: Path | None = None,
     proxy_socket_path: str | None = None,
     shell_socket_path: str | None = None,
+    ephemeral: bool = False,
 ) -> subprocess.Popen:
     """Start a VM and return the Popen handle.
 
@@ -658,6 +829,12 @@ def start_vm(
         override --rootfs to point at the paired APFS clone. The helper
         restores VM memory from this path instead of cold-booting.
         Mutually exclusive with snapshot_capture_path.
+
+    ephemeral: if True, don't attach a per-agent overlay disk. The
+        kernel cmdline gets `safeyolo.ephemeral_upper=1` which tells the
+        guest's initramfs to use tmpfs as the overlayfs upper. Writes
+        to / are discarded on stop. /home/agent (virtiofs) still
+        persists regardless.
     """
     if snapshot_capture_path and restore_from_path:
         raise VMError("snapshot_capture_path and restore_from_path are mutually exclusive")
@@ -673,26 +850,35 @@ def start_vm(
         if not path.exists():
             raise VMError(f"{label} not found at {path}\nBuild guest images first.")
 
-    # On restore, VZ requires the disk image to match byte-for-byte the
-    # state it had at save time. snapshot.bin.rootfs is that pristine
-    # clone -- but during a restore session the guest writes to its
-    # rootfs, and those writes would corrupt the pristine clone if we
-    # passed it directly as --rootfs. Next restore would then hit EXT4
-    # journal replay / inode bitmap inconsistencies against the memory
-    # image's expected state.
+    # Restore-time disk pairing. VZ requires every attached disk at
+    # restore to match byte-for-byte the state it had at save time.
     #
-    # Solution: clone the pristine clone to a per-run working copy and
-    # use that as --rootfs. APFS clonefile makes this ~instant (tens of
-    # ms regardless of logical size). The working copy is disposable --
-    # next restore starts from the pristine clone again.
-    if restore_from_path is not None:
-        pristine = Path(f"{restore_from_path}.rootfs")
+    # Rootfs: shared read-only ext4. It doesn't change between save and
+    # restore, so no pairing needed — we pass the same --rootfs as
+    # cold-boot.
+    #
+    # Overlay (writable, per-agent /dev/vdb): the guest DOES write to
+    # this between save and restore, so safeyolo-vm at save time clones
+    # it to {snapshot}.overlay. On restore we clone that pristine copy
+    # to a per-run working file ({snapshot}.overlay.run) and pass it as
+    # --overlay, so live writes during the restore session land in the
+    # working copy and the pristine is reusable for the next restore.
+    # APFS clonefile makes this ~instant regardless of logical size.
+    #
+    # Ephemeral mode: no overlay was attached at save time, so no
+    # pairing file was produced. start_vm below also omits --overlay
+    # on restore; the tmpfs upper is carried inside the memory image.
+    overlay_restore_working: Path | None = None
+    if restore_from_path is not None and not ephemeral:
+        pristine = Path(f"{restore_from_path}.overlay")
         if not pristine.exists():
             raise VMError(
-                f"Snapshot rootfs clone missing: {pristine}\n"
-                f"Restore cannot proceed without the paired clone."
+                f"Snapshot overlay clone missing: {pristine}\n"
+                f"Restore cannot proceed without the paired overlay clone.\n"
+                f"(Snapshots captured with pre-schema-4 safeyolo-vm versions\n"
+                f" pair to .rootfs, not .overlay — recapture the snapshot.)"
             )
-        working = Path(f"{restore_from_path}.run")
+        working = Path(f"{restore_from_path}.overlay.run")
         # Discard any residue from a previous restore session.
         working.unlink(missing_ok=True)
         # APFS clone (cp -c). Falls back to a deep copy on non-APFS.
@@ -707,7 +893,7 @@ def start_vm(
                 raise VMError(
                     f"Failed to prepare restore working copy at {working}: {err}"
                 ) from err
-        rootfs = working
+        overlay_restore_working = working
 
     config_share = get_agent_config_share_dir(name)
 
@@ -717,6 +903,12 @@ def start_vm(
     # the rootfs to a pristine clone) and Linux overlay discard.
     ensure_agent_persistent_dirs(name)
     agent_home = get_agent_home_dir(name)
+
+    # Default kernel cmdline. Ephemeral mode appends the flag the
+    # initramfs consumes to pick tmpfs-for-upper over /dev/vdb.
+    cmdline = "console=hvc0 root=/dev/vda rw quiet"
+    if ephemeral:
+        cmdline += " safeyolo.ephemeral_upper=1"
 
     cmd = [
         str(helper), "run",
@@ -729,8 +921,19 @@ def start_vm(
         "--share", f"{config_share}:config:ro",
         "--share", f"{get_agent_status_dir(name)}:status:rw",
         "--share", f"{agent_home}:home:rw",
-        "--cmdline", "console=hvc0 root=/dev/vda rw quiet",
+        "--cmdline", cmdline,
     ]
+
+    # Persistent mode (default): attach the per-agent writable overlay
+    # disk as /dev/vdb. The guest's initramfs layers overlayfs over the
+    # read-only ext4 base with this as the upper. Lazy-formatted on
+    # first boot. In ephemeral mode we deliberately don't attach it;
+    # the initramfs uses tmpfs instead. On restore, use the per-run
+    # working copy of the paired pristine clone (see the restore block
+    # above) so live writes don't corrupt the pristine.
+    if not ephemeral:
+        overlay_img = overlay_restore_working or ensure_agent_overlay(name)
+        cmd.extend(["--overlay", str(overlay_img)])
 
     if snapshot_capture_path is not None:
         cmd.extend(["--snapshot-on-signal", str(snapshot_capture_path)])
@@ -905,9 +1108,17 @@ def _update_agent_map(
 # Guest image checks
 # ---------------------------------------------------------------------------
 
-def get_base_rootfs_erofs_path() -> Path:
-    """Return the path gVisor expects for the Linux base rootfs image."""
-    return get_share_dir() / "rootfs-base.erofs"
+def get_base_rootfs_tree_path() -> Path:
+    """Directory tree used as OCI root.path on Linux gVisor.
+
+    gVisor reads the tree directly — shared across all agents on the
+    host (read-only from the container's perspective; the per-agent
+    dir= overlay above it captures writes).
+
+    Produced by guest/build-rootfs.sh as out/rootfs-tree/ alongside
+    the ext4 output; installed to ~/.safeyolo/share/rootfs-tree/.
+    """
+    return get_share_dir() / "rootfs-tree"
 
 
 def check_guest_images() -> bool:
@@ -917,11 +1128,7 @@ def check_guest_images() -> bool:
     runtime actually consumes:
 
       - macOS (Virtualization.framework): ext4 rootfs + kernel + initramfs.
-      - Linux (gVisor):                    EROFS rootfs.
-
-    Returning True here without the EROFS image on Linux was exactly how
-    the "build succeeded but agent add fails later" footgun happened —
-    the check now matches what the platform layer will demand at runtime.
+      - Linux (gVisor):                    unpacked tree (OCI root.path).
     """
     if platform.system() == "Darwin":
         return (
@@ -930,7 +1137,11 @@ def check_guest_images() -> bool:
             and get_initrd_path().exists()
         )
     if platform.system() == "Linux":
-        return get_base_rootfs_erofs_path().exists()
+        tree = get_base_rootfs_tree_path()
+        # A valid tree is a non-empty directory with at least the
+        # /etc hierarchy. Catches the "someone rm-rf'd its contents"
+        # case that a plain is_dir() misses.
+        return tree.is_dir() and (tree / "etc").is_dir()
     # Unsupported platform — treat the rootfs as the minimum needed.
     return get_base_rootfs_path().exists()
 
@@ -938,25 +1149,23 @@ def check_guest_images() -> bool:
 def guest_image_status() -> dict[str, bool]:
     """Return existence status of each guest image artifact.
 
-    Includes both rootfs formats so callers can report accurately regardless
-    of platform. The status keys deliberately reflect what's on disk, not
-    what each platform needs — the caller decides which to flag missing.
+    Status keys reflect what's on disk. Callers (doctor, setup) decide
+    which to flag as missing per platform.
     """
+    tree = get_base_rootfs_tree_path()
     return {
         "kernel": get_kernel_path().exists(),
         "initramfs": get_initrd_path().exists(),
         "rootfs-ext4": get_base_rootfs_path().exists(),
-        "rootfs-erofs": get_base_rootfs_erofs_path().exists(),
+        "rootfs-tree": tree.is_dir() and (tree / "etc").is_dir(),
     }
 
 
-# Which keys from guest_image_status() each platform actually needs. Used by
-# callers that want to render a "missing: X, Y" list without confusing Linux
-# users with kernel/initramfs (not required) or macOS users with erofs (not
-# required).
+# Which keys from guest_image_status() each platform actually needs.
+# Used by `missing_guest_images` for a "missing: X, Y" list.
 _PLATFORM_REQUIRED_ARTIFACTS = {
     "Darwin": ("kernel", "initramfs", "rootfs-ext4"),
-    "Linux": ("rootfs-erofs",),
+    "Linux": ("rootfs-tree",),
 }
 
 

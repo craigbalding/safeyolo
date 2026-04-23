@@ -47,11 +47,12 @@ enum VMSnapshot {
     /// it had at save time, so we serialize it here and the restoring
     /// process reads it back BEFORE building the VM config.
     struct Fingerprint: Codable, Equatable {
-        // Schema bumped to 3 when the feth-era networkMAC field was
-        // removed. vsock-only VMs have no virtio-net device, so there
-        // is no MAC to pin. Old sidecars (schema<3) will mismatch here
-        // and force a clean re-capture.
-        var schema: Int = 3
+        // Schema bumped to 4 when the paired-disk clone switched from
+        // the rootfs (now shared read-only erofs) to the per-agent
+        // overlay. Old sidecars (schema<4) will mismatch here and
+        // force a clean re-capture — old snapshots referenced a
+        // .rootfs companion that the new code no longer produces.
+        var schema: Int = 4
         var memoryMB: Int
         var cpus: Int
         var kernelSHA256: String
@@ -62,13 +63,20 @@ enum VMSnapshot {
 
     // MARK: - Save (pause → write → clone-disk → resume)
 
-    /// Take a snapshot of the running VM and write it to `url`. Optionally
-    /// clones the rootfs disk image to `rootfsCloneURL` while the VM is
-    /// still paused — VZ requires the rootfs at restore time to be
-    /// byte-identical to its state at save time, so a clone snapshotted
-    /// at the same moment as the memory state is the only safe way to
-    /// ensure restorability after the VM continues running and modifies
-    /// the live disk.
+    /// Take a snapshot of the running VM and write it to `url`. If
+    /// `writableDiskURL` is set, clones the paired writable disk image
+    /// (today: the per-agent overlay attached as /dev/vdb) to
+    /// `writableDiskCloneURL` while the VM is still paused. VZ requires
+    /// every attached disk to be byte-identical at restore time to its
+    /// state at save time, so the clone captures the exact moment paired
+    /// with the memory state.
+    ///
+    /// When the agent boots in ephemeral mode (no writable overlay
+    /// attached) both URLs are nil — the tmpfs upper lives in the
+    /// captured memory image, nothing on disk to pair.
+    ///
+    /// The rootfs itself (shared read-only erofs) is never cloned — it
+    /// doesn't change, so there's nothing to pair.
     ///
     /// Resumes the VM unconditionally on the way out — even on save failure
     /// — so we never leave the VM stuck in `.paused`.
@@ -79,8 +87,8 @@ enum VMSnapshot {
         vm: VZVirtualMachine,
         queue: DispatchQueue,
         toURL url: URL,
-        rootfsURL: URL,
-        rootfsCloneURL: URL?,
+        writableDiskURL: URL?,
+        writableDiskCloneURL: URL?,
         fingerprint: Fingerprint
     ) throws {
         // 1. Pause
@@ -106,18 +114,23 @@ enum VMSnapshot {
             saveError = error
         }
 
-        // 3. Clone the rootfs while the VM is still paused (and only if
-        // save succeeded — pointless otherwise). Uses APFS's clonefile()
-        // syscall via FileManager — instant, copy-on-write. The clone
-        // captures the exact disk state that pairs with the saved memory
-        // state. Restore must use this clone, not the live rootfs.
+        // 3. Clone the writable disk (overlay) while the VM is still
+        // paused (and only if save succeeded — pointless otherwise).
+        // Uses APFS's clonefile() syscall via FileManager — instant,
+        // copy-on-write. The clone captures the exact disk state that
+        // pairs with the saved memory state. Restore must use this clone,
+        // not the live disk. In ephemeral mode both URLs are nil and
+        // we skip the clone entirely — the tmpfs upper is in the memory
+        // image, no disk pairing needed.
         var cloneError: Swift.Error?
-        if saveError == nil, let cloneURL = rootfsCloneURL {
+        if saveError == nil,
+           let srcURL = writableDiskURL,
+           let cloneURL = writableDiskCloneURL {
             do {
                 if FileManager.default.fileExists(atPath: cloneURL.path) {
                     try FileManager.default.removeItem(at: cloneURL)
                 }
-                try FileManager.default.copyItem(at: rootfsURL, to: cloneURL)
+                try FileManager.default.copyItem(at: srcURL, to: cloneURL)
             } catch {
                 cloneError = Error.saveFailed(error)
             }

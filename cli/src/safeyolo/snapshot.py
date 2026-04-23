@@ -1,22 +1,28 @@
 """Snapshot metadata + validity for agent warm-boot.
 
-Three files per snapshottable agent live under ~/.safeyolo/agents/<name>/:
+Four files per snapshottable agent live under ~/.safeyolo/agents/<name>/:
 
     snapshot.bin             -- VM memory image, written by safeyolo-vm
                                on SIGUSR1 (see vm/Sources/SafeYoloVM).
     snapshot.bin.meta.json   -- hardware fingerprint, also written by
                                safeyolo-vm. Matches what the helper
                                reads back at restore time.
-    snapshot.bin.rootfs      -- APFS clone of the live rootfs captured at
-                               the same paused moment as snapshot.bin.
-                               VZ requires the restore-time disk to be
-                               byte-identical to its state at save time.
+    snapshot.bin.overlay     -- APFS clone of the per-agent writable
+                               overlay (/dev/vdb) captured at the same
+                               paused moment as snapshot.bin. VZ requires
+                               every restore-time disk to be byte-identical
+                               to its state at save time. The shared
+                               read-only erofs rootfs is NOT cloned — it
+                               doesn't change between save and restore.
     snapshot.version.json    -- CLI-owned fingerprint of the inputs that
                                determine whether the snapshot is still
                                restorable. Written by this module; read
                                by the mode-decision in commands/agent.py.
 
-PR 3 writes the version file; PR 4 adds the restore path that reads it.
+Schema 2 (exp/erofs-vz-phase-a): paired clone moved from `.bin.rootfs`
+to `.bin.overlay` when the rootfs became a shared read-only erofs.
+Pre-schema-2 snapshots are invalidated by the schema bump.
+
 PR 5 extends this to Linux via runsc checkpoint images.
 """
 
@@ -39,7 +45,10 @@ from .vm import (
 # Bumped when the snapshot layout itself changes in a backwards-incompatible
 # way (e.g., adding a new sidecar, renaming files). Version.json mismatch
 # invalidates the snapshot regardless of the input hashes.
-SNAPSHOT_SCHEMA = 1
+#
+# 2 (exp/erofs-vz-phase-a): paired disk clone moved from snapshot.bin.rootfs
+# to snapshot.bin.overlay. Pre-2 snapshots are structurally incompatible.
+SNAPSHOT_SCHEMA = 2
 
 # A snapshot.bin smaller than this is almost certainly a partial write or
 # early-failure stub, not a real memory image. Default memory is 4 GiB so
@@ -56,9 +65,12 @@ def snapshot_sidecar_path(name: str) -> Path:
     return get_agents_dir() / name / "snapshot.bin.meta.json"
 
 
-def snapshot_rootfs_clone_path(name: str) -> Path:
-    # Auto-derived by safeyolo-vm from the snapshot path.
-    return get_agents_dir() / name / "snapshot.bin.rootfs"
+def snapshot_overlay_clone_path(name: str) -> Path:
+    # Auto-derived by safeyolo-vm from the snapshot path at capture time
+    # (see vm/Sources/SafeYoloVM/main.swift). Paired APFS clone of the
+    # live overlay.img captured at the paused moment so VZ can restore
+    # with a byte-identical disk image.
+    return get_agents_dir() / name / "snapshot.bin.overlay"
 
 
 def snapshot_version_path(name: str) -> Path:
@@ -258,10 +270,10 @@ def is_snapshot_valid(name: str, expected: dict) -> bool:
     """
     snap = snapshot_path(name)
     sidecar = snapshot_sidecar_path(name)
-    rootfs_clone = snapshot_rootfs_clone_path(name)
+    overlay_clone = snapshot_overlay_clone_path(name)
     version = snapshot_version_path(name)
 
-    for p in (snap, sidecar, rootfs_clone, version):
+    for p in (snap, sidecar, overlay_clone, version):
         if not p.exists():
             return False
     try:
@@ -278,18 +290,25 @@ def is_snapshot_valid(name: str, expected: dict) -> bool:
 
 def invalidate_snapshot(name: str) -> None:
     """Best-effort delete of every snapshot artefact for an agent.
-    Leaves the agent's other state (rootfs, config-share) alone.
+    Leaves the agent's other state (rootfs, overlay, config-share) alone.
 
-    The `.run` working copy -- a per-restore clone of the pristine rootfs
-    that start_vm creates so the restored VM doesn't corrupt the
-    pristine clone -- is also removed here. It's recreated on the next
-    restore and has no meaning after a snapshot is invalidated."""
+    The `.overlay.run` working copy — a per-restore clone of the
+    pristine overlay that start_vm creates so the restored VM doesn't
+    corrupt the pristine — is also removed here. It's recreated on the
+    next restore and has no meaning after a snapshot is invalidated.
+
+    Also sweeps pre-schema-2 leftovers (`.rootfs`, `.bin.run`) so hosts
+    upgrading across the rename don't keep dead files around.
+    """
     agent_dir = get_agents_dir() / name
     for path in (
         snapshot_path(name),
         snapshot_sidecar_path(name),
-        snapshot_rootfs_clone_path(name),
+        snapshot_overlay_clone_path(name),
         snapshot_version_path(name),
+        agent_dir / "snapshot.bin.overlay.run",
+        # Pre-schema-2 leftovers (snapshot layout change).
+        agent_dir / "snapshot.bin.rootfs",
         agent_dir / "snapshot.bin.run",
     ):
         # missing_ok covers the common "already gone" case; any other

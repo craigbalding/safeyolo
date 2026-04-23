@@ -1,8 +1,42 @@
 #!/bin/sh
 #
-# SafeYolo initramfs init script.
-# Runs before the real rootfs is available.
-# Tasks: fsck, resize, mount root, set up static network, switch_root.
+# SafeYolo initramfs init — ext4 base + overlayfs writable upper.
+#
+# /dev/vda is the shared read-only ext4 base image. (Previously an
+# EROFS image; switched in the exp/erofs-vz-phase-a unification so
+# the kernel can drop CONFIG_EROFS_FS=y and the build pipeline
+# outputs a single format across platforms.)
+#
+# The writable upper layer has two legitimate shapes:
+#
+#   (persistent, default)
+#     /dev/vdb is attached (the host passed --overlay PATH to
+#     safeyolo-vm). The guest mounts ext4 on /dev/vdb as
+#     /mnt/overlay; runtime writes to /etc, /usr, /var persist
+#     across agent stop/run in that file.
+#
+#   (ephemeral, opt-in only)
+#     safeyolo.ephemeral_upper=1 on the kernel cmdline signals the
+#     host deliberately didn't attach /dev/vdb. The guest mounts
+#     tmpfs at /mnt/overlay; runtime writes are discarded on stop.
+#     Useful for one-shot sandboxes / experiments that *want*
+#     every run to start from a pristine rootfs.
+#
+# /dev/vdb absent WITHOUT the ephemeral flag is a misconfiguration
+# (silent demotion to ephemeral was a footgun — the agent would
+# appear to work while every write to / silently evaporated). We
+# refuse to boot.
+#
+# Layout:
+#   /mnt/lower        = read-only ext4 (/dev/vda)
+#   /mnt/overlay      = ext4 on /dev/vdb  OR  tmpfs (ephemeral opt-in)
+#     /upper          = overlayfs upper (writable)
+#     /work           = overlayfs work dir (same FS as upper, required)
+#   /mnt/root         = overlayfs mount (the new /)
+#
+# First-boot handling: a freshly-created /dev/vdb image is unformatted
+# raw bytes. The `mount` attempt fails; we mkfs.ext4 and retry. On
+# subsequent boots the filesystem is there and mount succeeds first try.
 #
 set -e
 
@@ -10,24 +44,61 @@ mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 
-# Ensure root disk is clean
-echo "Checking root filesystem..."
-/sbin/e2fsck -fp /dev/vda >/dev/null 2>&1 || true
+# Mountpoints for the overlay stack. build-initramfs.sh pre-creates
+# /mnt/root; creating the other two here keeps the build script
+# agnostic to the init's mount topology.
+mkdir -p /mnt/lower /mnt/overlay
 
-# Grow filesystem to fill disk (handles first boot and disk resize)
-/usr/sbin/resize2fs /dev/vda >/dev/null 2>&1 || true
+# Read-only ext4 base.
+# `-o ro,noload` disables journal replay. mkfs.ext4 -d writes a clean
+# filesystem with zeroed journal, so there's nothing to replay —
+# and more importantly, journal replay under a writable intent is
+# exactly what would corrupt a shared-across-VMs base image.
+mount -t ext4 -o ro,noload /dev/vda /mnt/lower
 
-# Mount root filesystem
-mount -t ext4 /dev/vda /mnt/root
+# Decide the upper layer. Persistent (ext4 on /dev/vdb) is the
+# default; ephemeral (tmpfs) is explicit opt-in via
+# `safeyolo.ephemeral_upper=1` on the kernel cmdline.
+#
+# grep -q on /proc/cmdline: busybox sh + busybox grep is enough; we
+# don't need a real tokenizer for this flag.
+if grep -qE '(^| )safeyolo\.ephemeral_upper=1( |$)' /proc/cmdline; then
+    echo "initramfs: ephemeral upper (tmpfs) — writes will NOT persist across stop"
+    mount -t tmpfs tmpfs /mnt/overlay
+elif [ -b /dev/vdb ]; then
+    # Persistent upper on /dev/vdb. First-boot mount fails because a
+    # freshly-truncated sparse file has no superblock — mkfs.ext4 in
+    # place and retry. Subsequent boots mount the already-formatted
+    # image first try.
+    if ! mount -t ext4 /dev/vdb /mnt/overlay 2>/dev/null; then
+        echo "initramfs: /dev/vdb has no filesystem, formatting ext4 (first boot)"
+        /sbin/mkfs.ext4 -F -q -E lazy_itable_init=1 /dev/vdb
+        mount -t ext4 /dev/vdb /mnt/overlay
+    fi
+else
+    echo "initramfs FATAL: no writable upper layer available." >&2
+    echo "  Either attach an overlay disk (host passes --overlay PATH to" >&2
+    echo "  safeyolo-vm) or explicitly opt into tmpfs via kernel cmdline:" >&2
+    echo "      safeyolo.ephemeral_upper=1" >&2
+    echo "  Refusing to boot with no upper — writes to / would have no" >&2
+    echo "  backing store." >&2
+    exec sleep infinity
+fi
+mkdir -p /mnt/overlay/upper /mnt/overlay/work
 
-# Mount config share to read network config
+mount -t overlay overlay \
+    -o lowerdir=/mnt/lower,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work \
+    /mnt/root
+
+# Read network config from the host-supplied config share.
+# virtiofs on a second tag — mounted transiently here so the init can
+# read network.env; the main orchestrator remounts it (and the other
+# tags) after switch_root.
 mkdir -p /mnt/config
 mount -t virtiofs config /mnt/config 2>/dev/null || true
 
-# Set up static networking from config share
 if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up
-
     if [ -f /mnt/config/network.env ]; then
         . /mnt/config/network.env
         ip addr add ${GUEST_IP}/${NETMASK:-255.255.255.0} dev eth0
@@ -37,8 +108,11 @@ fi
 
 umount /mnt/config 2>/dev/null || true
 
-# Clean up before switch_root
-umount /proc /sys
+# Clean up initramfs-root mounts before switch_root. /mnt/lower (ext4)
+# and /mnt/overlay (tmpfs or ext4 upper/work) are held by overlayfs;
+# they stay. The rootfs-baked safeyolo-guest-init stub re-mounts
+# /proc /sys /dev on the new root as its first act
+# (see guest/rootfs/safeyolo-guest-init).
+umount /proc /sys /dev
 
-# Switch to real root and exec guest init
 exec switch_root /mnt/root /usr/local/bin/safeyolo-guest-init

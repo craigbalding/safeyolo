@@ -22,10 +22,12 @@
 #   * hostname = safeyolo
 #
 # What it deliberately does NOT install:
-#   * Package-manager intercepts (apt/yum/dnf/apk). Custom rootfs authors
-#     own their package-manager policy; this library doesn't force mise.
-#     The Debian base rootfs's own customize-hook installs the intercept
-#     there because that image is opinionated.
+#   * Package-manager policy (apt sources, proxy config).
+#     Custom rootfs authors own that; the default Debian base's
+#     customize-hook writes /etc/apt/apt.conf.d/99safeyolo-proxy so
+#     `apt-get install` (run via `safeyolo agent shell --root`)
+#     routes through SafeYolo's proxy, but this library doesn't force
+#     the policy.
 #
 # Idempotent -- safe to re-run on the same rootfs.
 
@@ -113,9 +115,10 @@ MISE_PROFILE
     fi
 
     # BusyBox applet shims (`hexdump`, `nc`) -- convenience only, installed
-    # when the rootfs ships busybox. Package-manager policy (whether to
-    # shadow apt/yum/apk with mise-pointing stubs) is deliberately left to
-    # the custom rootfs author; see the module header.
+    # when the rootfs ships busybox. apt/yum/apk remain usable at runtime
+    # (per-agent cache binds + in-VM socat relay routes downloads through
+    # SafeYolo's proxy); custom rootfs authors wanting different policy
+    # can still override.
     install -d -m 0755 "$rootfs/usr/local/bin"
     for busybox_path in /bin/busybox /usr/bin/busybox; do
         if [ -x "$rootfs$busybox_path" ]; then

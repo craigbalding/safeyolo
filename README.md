@@ -31,17 +31,25 @@ cd safeyolo
 
 # Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min.
 # On macOS this auto-shells into a Lima VM; on Linux it runs natively via
-# mmdebstrap. See guest/README.md for platform-specific setup notes.
-#   Linux build prerequisite: sudo apt-get install mmdebstrap e2fsprogs erofs-utils
+# skopeo+umoci pulling the debian:trixie OCI image. See guest/README.md
+# for platform-specific setup notes.
+#   Linux build prerequisite: sudo apt-get install skopeo umoci e2fsprogs curl
 cd guest && ./build-all.sh && cd ..
-mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
+mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
 
 # Install the `safeyolo` CLI onto your PATH (survives shell restarts).
 # Requires `uv` (https://docs.astral.sh/uv/).
-uv tool install ./cli
+#
+# --editable is required: the CLI looks up the sibling addons/ and pdp/
+# directories at runtime via repo-layout paths. A non-editable install
+# copies the package into an isolated venv under
+# ~/.local/share/uv/tools/safeyolo/... where those siblings don't exist,
+# and the proxy refuses to start. If you need a non-editable install,
+# point SAFEYOLO_ADDONS_DIR and SAFEYOLO_PDP_DIR at your checkout.
+uv tool install --editable ./cli
 ```
 
-`uv tool install` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later: `uv tool install --reinstall ./cli`.
+`uv tool install` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later: `uv tool install --reinstall --editable ./cli`.
 
 **Then, one platform-specific step:**
 
@@ -225,7 +233,7 @@ Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.
 Linux specifics:
 
 - **Rootless**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`). Agents operate with zero sudo; container uid 0 maps to a subordinate uid (100000), container uid 1000 maps to the operator.
-- **Rootfs**: a single shared EROFS image mounted read-only by gVisor's sentry, with a memory-backed writable overlay inside the sandbox. No per-agent on-disk overlays.
+- **Rootfs**: a single shared directory tree at `~/.safeyolo/share/rootfs-tree/` used directly as gVisor's OCI `root.path` (no image packaging step). Writes go to a memory-backed overlay upper per sandbox; per-agent persistent bind mounts cover apt caches so reinstalls stay cheap.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by `safeyolo setup` and surfaced in `safeyolo doctor`.
 - **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by `safeyolo setup`.
 

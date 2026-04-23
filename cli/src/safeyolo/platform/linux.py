@@ -25,7 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from ..config import get_agents_dir, get_share_dir
+from ..config import get_agents_dir
 from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 from . import AgentPlatform
 
@@ -413,36 +413,82 @@ class LinuxPlatform(AgentPlatform):
     # --- Rootfs ---
 
     def agent_rootfs_path(self, name: str) -> Path:
-        """Return the overlayfs merged-dir path for this agent's rootfs."""
-        return get_agents_dir() / name / "rootfs"
+        """Return the directory gVisor uses as OCI root.path for this agent.
+
+        Points at the shared tree in ~/.safeyolo/share/rootfs-tree
+        (produced by guest/build-rootfs.sh). Overridden by a per-agent
+        rootfs directory at ~/.safeyolo/agents/<name>/rootfs/ when a
+        custom --rootfs-script has populated one.
+        """
+        from ..vm import get_base_rootfs_tree_path  # noqa: PLC0415
+        per_agent_dir = get_agents_dir() / name / "rootfs"
+        per_agent_erofs = get_agents_dir() / name / "rootfs.erofs"
+        if per_agent_erofs.exists():
+            raise RuntimeError(
+                f"Per-agent rootfs image at {per_agent_erofs} is EROFS-format.\n"
+                f"The Linux runtime switched from rootfs.source=erofs annotation\n"
+                f"to OCI root.path = directory tree, so --rootfs-script now\n"
+                f"needs to emit an unpacked tree at ~/.safeyolo/agents/{name}/\n"
+                f"rootfs/ (not .erofs). Update your rootfs script (skopeo+umoci\n"
+                f"output the tree natively; contrib/alpine-minimal is the\n"
+                f"canonical template) or remove the per-agent .erofs to fall\n"
+                f"back to the shared base."
+            )
+        if per_agent_dir.is_dir() and (per_agent_dir / "etc").is_dir():
+            return per_agent_dir
+        return get_base_rootfs_tree_path()
 
     def prepare_rootfs(self, name: str) -> Path:
-        """Verify an EROFS rootfs image exists for this agent.
+        """Verify the Linux rootfs tree exists for this agent.
 
-        With EROFS, gVisor mounts the image directly in its sentry and
-        handles the writable overlay internally (memory-backed). No
-        fuse-overlayfs, no per-agent copies, no uid remapping needed.
-        A per-agent rootfs.erofs (from --rootfs-script) overrides the
-        shared base when present.
+        gVisor consumes the tree directly as OCI root.path — no
+        per-agent copy, no EROFS image, no placeholder directory.
+        All agents share the single tree at
+        ~/.safeyolo/share/rootfs-tree (produced by build-rootfs.sh);
+        writes go to the per-agent overlay upper (dir= medium on
+        --overlay2).
+
+        A per-agent rootfs/ directory under ~/.safeyolo/agents/<name>/
+        overrides the shared base when present — that's the
+        --rootfs-script path (custom distro).
         """
-        agent_dir = get_agents_dir() / name
-        per_agent = agent_dir / "rootfs.erofs"
-        if not per_agent.exists():
-            share_dir = get_share_dir()
-            erofs = share_dir / "rootfs-base.erofs"
-            if not erofs.exists():
-                raise RuntimeError(
-                    f"EROFS rootfs image not found at {erofs}\n"
-                    f"Build guest images first: cd guest && ./build-all.sh\n"
-                    f"Requires: sudo apt install erofs-utils"
-                )
+        # agent_rootfs_path centralizes the .erofs-detection error and
+        # the shared/per-agent selection. Reusing it keeps the two
+        # paths in lockstep.
+        path = self.agent_rootfs_path(name)
+        # agent_rootfs_path returned the shared tree — check it's actually
+        # populated, so "build guest images first" fires here (at agent
+        # add time) rather than later on start_sandbox failure.
+        from ..vm import get_base_rootfs_tree_path  # noqa: PLC0415
+        if path == get_base_rootfs_tree_path() and not (
+            path.is_dir() and (path / "etc").is_dir()
+        ):
+            raise RuntimeError(
+                f"Rootfs tree not found at {path}\n"
+                f"Build guest images first: cd guest && ./build-all.sh\n"
+                f"Then install: sudo cp -a guest/out/rootfs-tree ~/.safeyolo/share/"
+            )
 
-        # The OCI spec's root.path must point to a directory (OCI
-        # requirement), even though EROFS replaces it via annotations.
-        # Create an empty placeholder.
-        rootfs_dir = agent_dir / "rootfs"
-        rootfs_dir.mkdir(parents=True, exist_ok=True)
-        return rootfs_dir
+        # Rootless gVisor maps container uid 0 → host uid 100000
+        # (hardcoded in _start_userns). Inside the sandbox, files
+        # owned by host uid 0 appear as `nobody` and sandbox-root
+        # cannot modify them — apt-get install dies on dpkg lock
+        # EACCES. Check and error early with a concrete fix command
+        # rather than letting the agent hit an obscure runtime
+        # failure. build-rootfs.sh already chowns its output to
+        # 100000; this catches the case where the tree was installed
+        # before that change landed.
+        tree_uid = path.stat().st_uid
+        if tree_uid != 100000:
+            raise RuntimeError(
+                f"Rootfs tree {path} is owned by uid {tree_uid}, "
+                f"expected 100000 (SafeYolo's sandbox-root in the "
+                f"rootless uid map).\n"
+                f"Runtime writes from inside the sandbox (apt-get "
+                f"install etc.) would fail on permission denied.\n"
+                f"Fix: sudo chown -R 100000:100000 {path}"
+            )
+        return path
 
     # --- Sandbox lifecycle ---
 
@@ -458,18 +504,37 @@ class LinuxPlatform(AgentPlatform):
         background: bool,
         snapshot_capture_path: Path | None = None,  # noqa: ARG002
         restore_from_path: Path | None = None,      # noqa: ARG002
+        ephemeral: bool = False,
     ) -> int:
-        """Start a gVisor sandbox in an unprivileged user namespace."""
+        """Start a gVisor sandbox in an unprivileged user namespace.
+
+        ephemeral=True selects gVisor's tmpfs-backed overlay
+        (--overlay2=root:memory): writes to / discarded on stop.
+
+        ephemeral=False (default) selects a per-agent file-backed
+        overlay (--overlay2=root:dir=<path>): writes to / persist
+        in a host-side directory across agent stop/run. Matches the
+        macOS VZ semantics.
+
+        The switch from EROFS-sourced rootfs to OCI root.path =
+        unpacked-tree unblocked the dir= overlay medium (PR #12337
+        skipped filestore creation for EROFS-sourced rootfs; tree-
+        sourced has no such restriction).
+        """
         runsc = _find_runsc()
         platform = _detect_runsc_platform()
         root = _runsc_root()
 
         agent_dir = get_agents_dir() / name
-        rootfs = agent_dir / "rootfs"
         cid = _container_id(name)
         agent_ip = fw_alloc.get("attribution_ip", "")
 
-        self.prepare_rootfs(name)
+        # prepare_rootfs returns the actual directory gVisor should use
+        # as OCI root.path — shared base tree, or a per-agent tree from
+        # --rootfs-script. The older hardcoded `agent_dir / "rootfs"`
+        # placeholder (empty dir) was only correct when gVisor got its
+        # rootfs from the EROFS annotation, not from root.path.
+        rootfs = self.prepare_rootfs(name)
 
         # Backfill the per-agent host-side /home/agent source for
         # agents created before the persistent-home feature. `agent
@@ -532,6 +597,7 @@ class LinuxPlatform(AgentPlatform):
             memory_mb=memory_mb,
             extra_shares=extra_shares,
             userns_pid=upid,
+            ephemeral=ephemeral,
         )
 
         config_path = agent_dir / "config.json"
@@ -545,9 +611,37 @@ class LinuxPlatform(AgentPlatform):
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
+        # Overlay medium. `--overlay2=root:<medium>` applies to both
+        # rootfs and gofer-backed mounts uniformly — no medium clash
+        # between them (which was the EROFS-era failure mode).
+        #
+        #   ephemeral=False (default) -> root:dir=<per-agent>
+        #     Disk-backed overlay stored as a filestore file inside
+        #     the supplied directory. Writes to /etc, /usr, /var
+        #     persist across agent stop/run.
+        #
+        #   ephemeral=True -> root:memory
+        #     Tmpfs-backed overlay; writes discarded on stop. For
+        #     one-shot sandboxes.
+        if ephemeral:
+            overlay2_flag = "--overlay2=root:memory"
+        else:
+            overlay_dir = get_agents_dir() / name / "overlay"
+            overlay_dir.mkdir(parents=True, exist_ok=True)
+            overlay2_flag = f"--overlay2=root:dir={overlay_dir}"
+
+        # Opt-in runsc debug logging: SAFEYOLO_RUNSC_DEBUG=1 in the
+        # environment adds --debug --debug-log=/tmp/runsc-<cid>.log
+        # to the create invocation. Off by default — the logs are
+        # chatty and only matter when diagnosing a sandbox crash.
+        if os.environ.get("SAFEYOLO_RUNSC_DEBUG") == "1":
+            debug_flags = f"--debug --debug-log=/tmp/runsc-{cid}.log "
+        else:
+            debug_flags = ""
+
         inner = (
             f"{setup} && "
-            f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
+            f"{runsc} {debug_flags}--root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "
@@ -732,7 +826,20 @@ class LinuxPlatform(AgentPlatform):
             _kill_userns(name)
 
     def remove_agent_dir(self, name: str) -> None:
-        """Delete the agent's on-disk directory."""
+        """Delete the agent's on-disk directory.
+
+        Known limitation: package-cache dirs (cache/*/partial and similar)
+        may be owned by the mapped root uid (100000) from inside the
+        sandbox. After stop the userns holder is dead, so the caller
+        (uid 1000) can't rmtree those. Manifests as `agent remove` raising
+        PermissionError on the first root-owned subpath. Workaround:
+        run `sudo rm -rf ~/.safeyolo/agents/<name>` before remove, or
+        re-add the agent and exec `chown -R agent:agent /var/cache/apt
+        /var/lib/apt/lists` inside the sandbox, then stop + remove.
+        Proper fix: spawn a throwaway userns-holder with the same subuid
+        mapping and rmtree from inside it so root-owned files collapse to
+        subordinate-uid-owned on the host side.
+        """
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
@@ -751,6 +858,7 @@ class LinuxPlatform(AgentPlatform):
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
         userns_pid: int | None = None,
+        ephemeral: bool = False,
     ) -> dict:
         """Generate an OCI runtime spec for rootless runsc."""
         guest_proxy_port = 8080
@@ -837,6 +945,26 @@ class LinuxPlatform(AgentPlatform):
                 "options": ["bind", "ro"],
             })
 
+        # Package cache bind mounts (Linux bridge). gVisor's dir=
+        # overlay is silently ignored for tree root.path, so writes to
+        # /var/cache/apt etc. land in the memory overlay and vanish on
+        # stop. Each path in <agent_dir>/cache-paths.txt (seeded from
+        # the rootfs-script's SAFEYOLO_ROOTFS_OUT_CACHE_PATHS output or
+        # the default-base's share/cache-paths.txt) is bound to a
+        # per-agent host dir so `apt install` hits a warm cache after
+        # restart. Per-agent (not shared) for isolation — a prompt-
+        # injected agent can't corrupt another's cache.
+        from ..vm import get_agent_cache_dir, read_agent_cache_paths  # noqa: PLC0415
+        for in_rootfs_path in read_agent_cache_paths(name):
+            host_cache_dir = get_agent_cache_dir(name, in_rootfs_path)
+            host_cache_dir.mkdir(parents=True, exist_ok=True)
+            mounts.append({
+                "destination": in_rootfs_path,
+                "type": "bind",
+                "source": str(host_cache_dir),
+                "options": ["rbind", "rw"],
+            })
+
         # Extra shares (host config dirs)
         if extra_shares:
             agent_home = get_agent_home_dir(name)
@@ -885,21 +1013,19 @@ class LinuxPlatform(AgentPlatform):
             "CAP_NET_ADMIN",
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
-        # EROFS annotations -- gVisor mounts the image directly in its
-        # sentry with an in-memory writable overlay. The OCI root.path
-        # is a placeholder directory; the actual rootfs comes from the
-        # EROFS image. Prefer a per-agent rootfs.erofs (from
-        # --rootfs-script) over the shared base.
-        per_agent_erofs = get_agents_dir() / name / "rootfs.erofs"
-        erofs_path = str(
-            per_agent_erofs if per_agent_erofs.exists()
-            else get_share_dir() / "rootfs-base.erofs"
-        )
-        annotations = {
-            "dev.gvisor.spec.rootfs.source": erofs_path,
-            "dev.gvisor.spec.rootfs.type": "erofs",
-            "dev.gvisor.spec.rootfs.overlay": "memory",
-        }
+        # Rootfs is the directory tree at OCI root.path — gVisor reads
+        # the tree directly. No dev.gvisor.spec.rootfs.source /
+        # rootfs.type annotations needed (those only apply when the
+        # rootfs comes from an image file like EROFS).
+        #
+        # Overlay medium is selected by the --overlay2 flag on the
+        # runsc command line below — `root:dir=<path>` or `root:memory`
+        # depending on the ephemeral flag. Annotation is intentionally
+        # unset: with tree-based rootfs + --overlay2 flag, gVisor's
+        # createGoferFilestore path has what it needs (host directory
+        # available for the filestore file), so the PR #12337
+        # "skip filestore for EROFS" restriction no longer applies.
+        annotations: dict[str, str] = {}
 
         # /safeyolo-status is a host bind-mount (see mounts list above) —
         # writing the boot log there means it survives sandbox exit and
@@ -921,6 +1047,23 @@ class LinuxPlatform(AgentPlatform):
 
         return {
             "ociVersion": "1.0.0",
+            # readonly=false, not true. Under gVisor, readonly=true on a
+            # tree root.path silently disables overlay writes to the
+            # tree's own paths — boot_cmd's
+            # `ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log`
+            # fails with EROFS because /var/log is in the tree and the
+            # runsc --overlay2 flag is ignored for write routing when
+            # the root is marked readonly. Behaviour confirmed on devstack
+            # (linux-amd64, gVisor release-20260413.0) with runsc
+            # --debug logs: task 3 (ln -sf) exits non-zero, task 1
+            # (bash) exits, boot.log stays 0 bytes. Flipping to false
+            # restores the overlay write path; guest-init proceeds
+            # normally.
+            #
+            # Cross-agent contamination is still blocked: (1) tree files
+            # are real-root-owned and the gofer runs as a subordinate
+            # uid (can't write the lower); (2) each agent has its own
+            # overlay upper so writes never escape to the shared tree.
             "root": {"path": str(rootfs_path), "readonly": False},
             "hostname": f"safeyolo-{name}",
             "annotations": annotations,

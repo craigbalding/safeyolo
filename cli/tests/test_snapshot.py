@@ -21,8 +21,8 @@ from safeyolo.snapshot import (
     invalidate_snapshot,
     is_snapshot_valid,
     platform_supports_snapshot,
+    snapshot_overlay_clone_path,
     snapshot_path,
-    snapshot_rootfs_clone_path,
     snapshot_sidecar_path,
     snapshot_version_path,
     write_snapshot_version,
@@ -67,8 +67,13 @@ class TestSnapshotPaths:
     def test_sidecar_is_sibling_of_bin(self, tmp_config_dir):
         assert snapshot_sidecar_path("agent1") == tmp_config_dir / "agents" / "agent1" / "snapshot.bin.meta.json"
 
-    def test_rootfs_clone_is_sibling_of_bin(self, tmp_config_dir):
-        assert snapshot_rootfs_clone_path("agent1") == tmp_config_dir / "agents" / "agent1" / "snapshot.bin.rootfs"
+    def test_overlay_clone_is_sibling_of_bin(self, tmp_config_dir):
+        # Schema 2 renamed the paired disk clone from .rootfs to .overlay.
+        # Phase A moved the persistent writable surface from the per-agent
+        # rootfs.ext4 (cloned) into the per-agent overlay.img (/dev/vdb);
+        # the snapshot's paired clone tracks whatever changes between
+        # save and restore, which is now the overlay, not the rootfs.
+        assert snapshot_overlay_clone_path("agent1") == tmp_config_dir / "agents" / "agent1" / "snapshot.bin.overlay"
 
     def test_version_is_sibling_of_bin(self, tmp_config_dir):
         assert snapshot_version_path("agent1") == tmp_config_dir / "agents" / "agent1" / "snapshot.version.json"
@@ -237,7 +242,7 @@ class TestIsSnapshotValid:
         """All four artefacts present + version.json matches."""
         (agent_dir / "snapshot.bin").write_bytes(b"x" * size)
         (agent_dir / "snapshot.bin.meta.json").write_text("{}")
-        (agent_dir / "snapshot.bin.rootfs").write_bytes(b"rootfs-clone")
+        (agent_dir / "snapshot.bin.overlay").write_bytes(b"overlay-clone")
         (agent_dir / "snapshot.version.json").write_text(json.dumps(version))
 
     def test_all_present_and_matching_is_valid(self, agent_dir, snapshot_inputs):
@@ -251,10 +256,10 @@ class TestIsSnapshotValid:
         (agent_dir / "snapshot.bin").unlink()
         assert is_snapshot_valid("agent1", version) is False
 
-    def test_missing_rootfs_clone_is_invalid(self, agent_dir, snapshot_inputs):
+    def test_missing_overlay_clone_is_invalid(self, agent_dir, snapshot_inputs):
         version = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="x", guest_ip="y")
         self._write_full_snapshot(agent_dir, "agent1", version, MIN_SNAPSHOT_BYTES + 1)
-        (agent_dir / "snapshot.bin.rootfs").unlink()
+        (agent_dir / "snapshot.bin.overlay").unlink()
         assert is_snapshot_valid("agent1", version) is False
 
     def test_missing_sidecar_is_invalid(self, agent_dir, snapshot_inputs):
@@ -295,11 +300,11 @@ class TestIsSnapshotValid:
 class TestInvalidateSnapshot:
     def test_removes_all_four_artefacts(self, agent_dir):
         for name in ("snapshot.bin", "snapshot.bin.meta.json",
-                     "snapshot.bin.rootfs", "snapshot.version.json"):
+                     "snapshot.bin.overlay", "snapshot.version.json"):
             (agent_dir / name).write_text("x")
         invalidate_snapshot("agent1")
         for name in ("snapshot.bin", "snapshot.bin.meta.json",
-                     "snapshot.bin.rootfs", "snapshot.version.json"):
+                     "snapshot.bin.overlay", "snapshot.version.json"):
             assert not (agent_dir / name).exists()
 
     def test_is_no_op_when_nothing_exists(self, agent_dir):
@@ -308,13 +313,36 @@ class TestInvalidateSnapshot:
         preparation."""
         invalidate_snapshot("agent1")  # no artefacts yet
 
+    def test_removes_working_copy_from_previous_restore(self, agent_dir):
+        """The per-restore .overlay.run working copy (a clone of the
+        pristine overlay that start_vm creates on each restore so live
+        writes don't corrupt the pristine) must be swept along with the
+        rest -- it has no meaning once the snapshot is invalidated."""
+        (agent_dir / "snapshot.bin").write_text("x")
+        (agent_dir / "snapshot.bin.overlay").write_text("y")
+        (agent_dir / "snapshot.bin.overlay.run").write_text("z")
+        invalidate_snapshot("agent1")
+        assert not (agent_dir / "snapshot.bin.overlay.run").exists()
+
+    def test_sweeps_pre_schema_2_leftovers(self, agent_dir):
+        """Schema 2 renamed the paired clone (.rootfs → .overlay). Hosts
+        upgrading across the rename must not keep the old file around --
+        it's dead bytes and confuses a reader inspecting the agent dir."""
+        (agent_dir / "snapshot.bin.rootfs").write_text("pre-schema-2 clone")
+        (agent_dir / "snapshot.bin.run").write_text("pre-schema-2 working copy")
+        invalidate_snapshot("agent1")
+        assert not (agent_dir / "snapshot.bin.rootfs").exists()
+        assert not (agent_dir / "snapshot.bin.run").exists()
+
     def test_leaves_unrelated_files_alone(self, agent_dir):
-        """Invalidate must not touch rootfs.ext4, config-share, etc."""
-        (agent_dir / "rootfs.ext4").write_text("live-rootfs")
+        """Invalidate must not touch overlay.img, config-share, etc.
+        Phase A: the persistent agent state lives in overlay.img (not
+        in a per-agent rootfs), so that's what we verify is untouched."""
+        (agent_dir / "overlay.img").write_text("live-overlay")
         (agent_dir / "vm.pid").write_text("12345")
         (agent_dir / "snapshot.bin").write_text("x")
         invalidate_snapshot("agent1")
-        assert (agent_dir / "rootfs.ext4").exists()
+        assert (agent_dir / "overlay.img").exists()
         assert (agent_dir / "vm.pid").exists()
 
 

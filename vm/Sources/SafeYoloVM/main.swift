@@ -8,6 +8,7 @@ struct RunConfig {
     var kernelPath: String = ""
     var initrdPath: String = ""
     var rootfsPath: String = ""
+    var overlayPath: String = ""     // optional per-agent writable upper disk (ext4 img). When set, attached as /dev/vdb and the guest's initramfs layers overlayfs(upper=/dev/vdb) over the read-only rootfs.
     var cpus: Int = 2
     var memoryMB: Int = 2048
     var cmdline: String = "console=hvc0 root=/dev/vda rw quiet"
@@ -29,7 +30,12 @@ func printUsage() {
     Options:
       --kernel PATH       Path to kernel Image (required)
       --initrd PATH       Path to initramfs (required)
-      --rootfs PATH       Path to root disk ext4 image (required)
+      --rootfs PATH       Path to root disk image (ext4 or erofs) (required)
+      --overlay PATH      Optional writable ext4 image attached as /dev/vdb.
+                          When set, the guest layers overlayfs(upper=ext4-on-
+                          vdb) over the (typically read-only) rootfs, so
+                          runtime writes to / persist across agent stops.
+                          Omit for tmpfs upper (ephemeral writes).
       --cpus N            Number of CPUs (default: 2)
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
@@ -93,6 +99,9 @@ func parseArguments() -> RunConfig? {
         case "--rootfs":
             i += 1; guard i < args.count else { fputs("Error: --rootfs requires a value\n", stderr); return nil }
             config.rootfsPath = args[i]
+        case "--overlay":
+            i += 1; guard i < args.count else { fputs("Error: --overlay requires a value\n", stderr); return nil }
+            config.overlayPath = args[i]
         case "--cpus":
             i += 1; guard i < args.count, let n = Int(args[i]), n > 0 else { fputs("Error: --cpus requires a positive integer\n", stderr); return nil }
             config.cpus = n
@@ -242,15 +251,28 @@ do {
 
     if !config.snapshotOnSignal.isEmpty {
         let url = URL(fileURLWithPath: NSString(string: config.snapshotOnSignal).expandingTildeInPath)
-        let rootfsURL = URL(fileURLWithPath: NSString(string: config.rootfsPath).expandingTildeInPath)
-        // Auto-derive clone path: <snapshot>.rootfs. Restore must use this
-        // clone (via --rootfs <X>.rootfs --restore-from <X>) to satisfy
-        // VZ's requirement that the disk match its save-time state.
-        let cloneURL = url.appendingPathExtension("rootfs")
+        // Writable-disk pairing: clone the overlay image if one is
+        // attached (persistent mode). In ephemeral mode config.overlayPath
+        // is empty — nothing to clone; the tmpfs upper is captured in
+        // the memory image alongside VM state.
+        //
+        // Rootfs (shared read-only erofs) is never paired — it doesn't
+        // change, nothing to snapshot.
+        //
+        // Clone naming: <snapshot>.overlay. Restore uses this clone via
+        // --overlay <X>.overlay.run (cloned again to keep the pristine
+        // copy reusable across restores) and --restore-from <X>. See
+        // cli/src/safeyolo/vm.py.
+        var overlayURL: URL? = nil
+        var overlayCloneURL: URL? = nil
+        if !config.overlayPath.isEmpty {
+            overlayURL = URL(fileURLWithPath: NSString(string: config.overlayPath).expandingTildeInPath)
+            overlayCloneURL = url.appendingPathExtension("overlay")
+        }
         runner.configureSnapshotOnSignal(
             url: url,
-            rootfsURL: rootfsURL,
-            rootfsCloneURL: cloneURL,
+            writableDiskURL: overlayURL,
+            writableDiskCloneURL: overlayCloneURL,
             fingerprint: fingerprint
         )
     }

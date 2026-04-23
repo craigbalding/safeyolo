@@ -143,6 +143,28 @@ chroot "$ROOTFS" ssh-keygen -A >/dev/null 2>&1
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
+# Pre-create OCI bind-mount targets. gVisor's gofer tries to create any
+# missing bind-mount destinations; with overlay-dir= mode the overlay
+# upper takes the creates, but some places (rootfs paths blocked by
+# readonly + host-uid ownership) can still trip the gofer. Pre-creating
+# the exact target paths in the image sidesteps it entirely — the bind
+# mount lands on an existing directory/file regardless of overlay state.
+#
+# /home/agent already exists from useradd -m above; listed here for doc.
+# safeyolo.crt is a zero-byte file because it's a FILE bind-mount
+# target (vs the directory bind-mounts above); bind-mounting onto
+# a file requires the target to be a regular file.
+mkdir -p \
+    "$ROOTFS/workspace" \
+    "$ROOTFS/safeyolo" \
+    "$ROOTFS/safeyolo-status" \
+    "$ROOTFS/home/agent"
+: > "$ROOTFS/usr/local/share/ca-certificates/safeyolo.crt"
+# /safeyolo/proxy.sock — the per-agent proxy UDS is file-bind-mounted
+# here by the platform layer. Pre-create as an empty regular file so
+# gVisor can bind over it without needing to create-on-readonly-root.
+: > "$ROOTFS/safeyolo/proxy.sock"
+
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"
 echo "nameserver 8.8.8.8" > "$ROOTFS/etc/resolv.conf"
@@ -160,9 +182,6 @@ done
 # Apt cleanup + sweep any residual docs that escaped the essential-hook's
 # dpkg nodoc rules. Sources of residual docs: tarballs (mise, gh), pip
 # installs, package maintainer scripts that force-create doc dirs.
-#
-# Uses /usr/bin/apt-get explicitly because the intercepts below will shadow
-# /usr/bin/apt-get on $PATH.
 # ---------------------------------------------------------------------------
 chroot "$ROOTFS" /usr/bin/apt-get clean
 rm -rf "$ROOTFS/var/lib/apt/lists/"*
@@ -183,23 +202,61 @@ find "$ROOTFS/usr/share/locale" -maxdepth 1 ! -name "en*" -type d -exec rm -rf {
 find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# Package-manager intercepts -- agents inside the guest VM must install
-# tools via mise, not apt. Run LAST so earlier apt-get calls aren't shadowed.
+# Runtime apt support.
+#
+# Earlier revisions shadowed apt/apt-get/yum/dnf/apk with mise-pointing
+# error stubs on the premise that "agents install tools via mise, not
+# apt." That was over-restrictive: guest-proxy-forwarder + the
+# per-agent proxy UDS give apt a clear path, and the /var/cache/apt
+# + /var/lib/apt/lists bind mounts (cli/src/safeyolo/platform/linux.py)
+# let downloads persist across agent restarts. So apt stays usable —
+# compilers and system libs can be pulled on demand instead of living
+# in the shipped base.
+#
+# Operator model under rootless gVisor: on-demand package installs
+# are a HOST-OPERATOR action, not an in-sandbox agent action.
+#
+#   Works:
+#     safeyolo agent shell NAME --root -c "apt-get install -y PKG"
+#
+#   Doesn't work:
+#     (agent user inside the sandbox) sudo apt-get install -y PKG
+#
+# Why: rootless user namespaces ignore the setuid bit, so `sudo`
+# running as the agent user (uid 1000) can't escalate to root. No
+# sudoers config fixes that — it's a kernel/userns property. Package
+# installs therefore happen via `safeyolo agent shell --root`, which
+# invokes `runsc exec --user 0:0` directly and lands the caller as
+# sandbox-root with no setuid dance.
+#
+# Important caveat: the install itself persists only for the life of
+# the sandbox. The Linux overlay is memory-backed (gVisor silently
+# ignores dir=), so unpacked package files in /usr vanish on agent
+# stop. The per-agent /var/cache/apt bind means the re-download is
+# free on restart, but the dpkg unpack cost recurs. Heavy toolkits
+# (build-essential, pentest tools, etc.) belong in the base image;
+# lightweight one-offs are fine to install ad-hoc.
+#
+# apt itself ignores HTTP_PROXY / HTTPS_PROXY — it reads its own
+# Acquire::*::Proxy from /etc/apt/apt.conf.d/. Point it at the in-VM
+# socat relay (guest-proxy-forwarder listens on :8080) so apt-get
+# routes through SafeYolo's policy layer. TLS works because
+# guest-init-static.sh adds SafeYolo's CA to the trust bundle before
+# the agent's shell opens.
 # ---------------------------------------------------------------------------
-for cmd in apt apt-get yum dnf apk; do
-    cat > "$ROOTFS/usr/local/bin/$cmd" <<'INTERCEPT'
-#!/bin/bash
-echo "Error: Package manager not available in SafeYolo VM"
-echo ""
-echo "Use mise to install languages and tools:"
-echo "  mise install go@latest"
-echo "  mise install python@3.12"
-echo "  mise install rust@latest"
-echo ""
-echo "List available versions: mise ls-remote go"
-exit 1
-INTERCEPT
-    chmod +x "$ROOTFS/usr/local/bin/$cmd"
-done
+mkdir -p "$ROOTFS/etc/apt/apt.conf.d"
+cat > "$ROOTFS/etc/apt/apt.conf.d/99safeyolo-proxy" <<'APTCONF'
+Acquire::http::Proxy "http://127.0.0.1:8080";
+Acquire::https::Proxy "http://127.0.0.1:8080";
+
+// Keep the .deb files in /var/cache/apt/archives after install.
+// /var/cache/apt is bind-mounted to a per-agent persistent host dir
+// (see cli/src/safeyolo/platform/linux.py), so keeping the downloaded
+// packages there means a subsequent `apt-get install X` on the same
+// agent reuses the cached .debs instead of re-fetching. Without this,
+// apt's default post-install cleanup strips the archives and the cache
+// bind holds only the lock dirs.
+APT::Keep-Downloaded-Packages "true";
+APTCONF
 
 echo "=== Customize hook completed successfully ==="

@@ -85,6 +85,7 @@ class DarwinPlatform(AgentPlatform):
         background: bool,
         snapshot_capture_path: Path | None = None,
         restore_from_path: Path | None = None,
+        ephemeral: bool = False,
     ) -> int:
         # Thread the per-agent bridge socket through to safeyolo-vm so
         # VSockProxyRelay can connect() to it on each guest-initiated
@@ -111,6 +112,7 @@ class DarwinPlatform(AgentPlatform):
             restore_from_path=restore_from_path,
             proxy_socket_path=proxy_socket,
             shell_socket_path=shell_socket,
+            ephemeral=ephemeral,
         )
         return proc.pid
 

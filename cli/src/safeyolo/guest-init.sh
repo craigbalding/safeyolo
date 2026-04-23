@@ -13,8 +13,11 @@
 #                                       that it's safe to proceed (passthrough
 #                                       / restore). Written by the CLI.
 #   3. /safeyolo/guest-init-per-run  — hwclock resync, agent.env sourcing,
-#                                       agent_token refresh, mise install,
-#                                       remount ro, launch agent.
+#                                       agent_token refresh, instructions
+#                                       injection, remount ro, launch
+#                                       agent. (The agent binary and mise
+#                                       are baked into the rootfs at build
+#                                       time, not installed per-run.)
 #
 # The CLI chooses the mode:
 #   - passthrough: writes per-run-go into the config share before the VM

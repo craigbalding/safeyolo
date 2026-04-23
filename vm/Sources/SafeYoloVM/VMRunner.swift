@@ -35,11 +35,16 @@ class VMRunner: NSObject {
 
     // Snapshot-on-signal config — set by main.swift after parsing
     // `--snapshot-on-signal PATH`. SIGUSR1 calls `VMSnapshot.save` with
-    // these values. nil means SIGUSR1 is a no-op.
+    // these values. nil snapshotURL means SIGUSR1 is a no-op.
+    //
+    // writableDisk{URL,CloneURL} pair the memory snapshot with a disk
+    // clone (today: the per-agent overlay, /dev/vdb). Both nil =
+    // ephemeral-mode snapshot (tmpfs upper is in the memory image;
+    // nothing on disk to pair).
     private var snapshotURL: URL?
     private var snapshotFingerprint: VMSnapshot.Fingerprint?
-    private var snapshotRootfsURL: URL?
-    private var snapshotRootfsCloneURL: URL?
+    private var snapshotWritableDiskURL: URL?
+    private var snapshotWritableDiskCloneURL: URL?
     private let snapshotLock = NSLock()
     private var snapshotInProgress = false
 
@@ -50,20 +55,21 @@ class VMRunner: NSObject {
         observeState()
     }
 
-    /// Configure SIGUSR1 to capture a snapshot to `url`, with the rootfs
-    /// disk image cloned to `rootfsCloneURL` at the same paused moment
-    /// (required for restorability — see VMSnapshot.save). Must be
-    /// called before `installSignalHandlers()`. Pass `nil` for url to
-    /// disable.
+    /// Configure SIGUSR1 to capture a snapshot to `url`, with an optional
+    /// writable-disk clone (today: the per-agent overlay disk) paired at
+    /// the same paused moment — required for restorability when the VM
+    /// has a writable disk attached, see VMSnapshot.save. For ephemeral-
+    /// mode VMs pass both disk args as nil. Must be called before
+    /// `installSignalHandlers()`. Pass `nil` for url to disable snapshots.
     func configureSnapshotOnSignal(
         url: URL?,
-        rootfsURL: URL?,
-        rootfsCloneURL: URL?,
+        writableDiskURL: URL?,
+        writableDiskCloneURL: URL?,
         fingerprint: VMSnapshot.Fingerprint?
     ) {
         snapshotURL = url
-        snapshotRootfsURL = rootfsURL
-        snapshotRootfsCloneURL = rootfsCloneURL
+        snapshotWritableDiskURL = writableDiskURL
+        snapshotWritableDiskCloneURL = writableDiskCloneURL
         snapshotFingerprint = fingerprint
     }
 
@@ -303,16 +309,19 @@ class VMRunner: NSObject {
         snapshotInProgress = true
         snapshotLock.unlock()
 
+        // snapshotURL + fingerprint are required; the disk-clone pair
+        // is optional (nil for ephemeral-mode VMs, where tmpfs upper is
+        // already captured in the memory image).
         guard let url = snapshotURL,
-              let fingerprint = snapshotFingerprint,
-              let rootfsURL = snapshotRootfsURL else {
+              let fingerprint = snapshotFingerprint else {
             fputs("SIGUSR1 received but --snapshot-on-signal was not configured\n", stderr)
             snapshotLock.lock()
             snapshotInProgress = false
             snapshotLock.unlock()
             return
         }
-        let cloneURL = snapshotRootfsCloneURL
+        let diskURL = snapshotWritableDiskURL
+        let cloneURL = snapshotWritableDiskCloneURL
 
         // Run save off the main queue so the signal source isn't blocked.
         // VMSnapshot.save handles pause → save → clone-disk → resume.
@@ -326,15 +335,15 @@ class VMRunner: NSObject {
                         vm: self.vm,
                         queue: self.queue,
                         toURL: url,
-                        rootfsURL: rootfsURL,
-                        rootfsCloneURL: cloneURL,
+                        writableDiskURL: diskURL,
+                        writableDiskCloneURL: cloneURL,
                         fingerprint: fingerprint
                     )
                 }
                 if let cloneURL = cloneURL {
-                    fputs("Snapshot written to \(url.path) (rootfs cloned to \(cloneURL.path))\n", stderr)
+                    fputs("Snapshot written to \(url.path) (overlay cloned to \(cloneURL.path))\n", stderr)
                 } else {
-                    fputs("Snapshot written to \(url.path) (no rootfs clone)\n", stderr)
+                    fputs("Snapshot written to \(url.path) (ephemeral: no disk clone)\n", stderr)
                 }
             } catch {
                 fputs("Snapshot failed: \(error.localizedDescription)\n", stderr)

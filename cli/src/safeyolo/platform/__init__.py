@@ -68,12 +68,20 @@ class AgentPlatform(ABC):
         background: bool,
         snapshot_capture_path: Path | None = None,
         restore_from_path: Path | None = None,
+        ephemeral: bool = False,
     ) -> int:
         """Start an agent sandbox. Returns PID.
 
         snapshot_capture_path / restore_from_path are macOS-only (VZ
         save/restore). Linux ignores them until PR 5 adds gVisor
         checkpoint support.
+
+        ephemeral=True: boot with a tmpfs overlay upper (writes to /
+        are discarded on stop). macOS VZ honors this via kernel
+        cmdline + omitting --overlay; Linux honors this once the
+        disk-backed-overlay task lands (currently the Linux memory
+        overlay is ephemeral-by-default so this flag is structurally
+        a no-op there).
         """
 
     @abstractmethod

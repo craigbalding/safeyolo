@@ -5,8 +5,8 @@
 # Runs the setup that is identical across every run of this agent and
 # therefore snapshottable: network bring-up, VirtioFS mounts, CA trust,
 # sshd, ipv6 disable, VM-IP discovery. Does NOT touch per-run state
-# (agent.env, instructions, agent_token, mise install, remount ro,
-# agent launch) -- those live in guest-init-per-run.
+# (agent.env, instructions, agent_token, remount ro, agent launch) --
+# those live in guest-init-per-run.
 #
 # Invoked by /safeyolo/guest-init (orchestrator) before the per-run-go
 # gate. On restore, this script has already executed into snapshotted
@@ -79,7 +79,16 @@ fi
 # appears in mitmproxy flows, logs, and the agent map -- giving the
 # operator a consistent per-agent identity inside and outside the
 # sandbox.
-if [ -n "${AGENT_IP:-}" ]; then
+#
+# On gVisor the sandbox's netstack imports the enclosing netns's
+# loopback, so by the time this script runs the agent IP is already
+# present (setup_networking in platform/linux.py adds it host-side
+# before runsc create). Re-adding yields "RTNETLINK: File exists"
+# and, under set -e, kills guest-init before it can reach per-run —
+# observed as an empty sandbox with a one-line boot.log. Guard
+# against the re-add the same way the eth0 block does below.
+if [ -n "${AGENT_IP:-}" ] \
+   && ! ip -4 addr show lo 2>/dev/null | grep -qE "inet ${AGENT_IP}/"; then
     ip addr add "${AGENT_IP}/32" dev lo
 fi
 
@@ -213,10 +222,18 @@ fi
 # creates new ones as the current user -- fix unconditionally.
 # The glob may not match on runtimes where keygen failed (gVisor
 # without /dev/random early in boot) -- check before chown/chmod.
+#
+# `chown root:root` on a file already owned by root fails with EPERM
+# in a userns that lacks CAP_CHOWN over the file's original inode —
+# set -e kills guest-init before per-run. Skip the chown when it
+# would be a no-op; only invoke when the current owner differs.
 for keyfile in /etc/ssh/ssh_host_*_key; do
     [ -f "$keyfile" ] || continue
-    chown root:root "$keyfile"
-    chmod 600 "$keyfile"
+    owner=$(stat -c '%u:%g' "$keyfile" 2>/dev/null || echo "")
+    if [ "$owner" != "0:0" ]; then
+        chown root:root "$keyfile" 2>/dev/null || true
+    fi
+    chmod 600 "$keyfile" 2>/dev/null || true
 done
 
 mkdir -p /run/sshd
