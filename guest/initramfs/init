@@ -1,8 +1,18 @@
 #!/bin/sh
 #
-# SafeYolo initramfs init script.
-# Runs before the real rootfs is available.
-# Tasks: fsck, resize, mount root, set up static network, switch_root.
+# SafeYolo initramfs init — erofs base + tmpfs upper overlayfs.
+#
+# The rootfs on /dev/vda is a read-only EROFS image, shared across all
+# agents on this host (no per-agent clone). Runtime writes to / land in
+# a tmpfs upper layer and are discarded when the VM exits. Persistent
+# per-agent state lives under /home/agent (virtiofs-bound by the host).
+#
+# Layout:
+#   /mnt/lower        = read-only erofs (/dev/vda)
+#   /mnt/overlay      = tmpfs holding upper + work
+#     /upper          = overlayfs upper (writable)
+#     /work           = overlayfs work dir (same FS as upper, required)
+#   /mnt/root         = overlayfs mount (the new /)
 #
 set -e
 
@@ -10,24 +20,36 @@ mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 
-# Ensure root disk is clean
-echo "Checking root filesystem..."
-/sbin/e2fsck -fp /dev/vda >/dev/null 2>&1 || true
+# Mountpoints for the overlay stack. build-initramfs.sh pre-creates
+# /mnt/root; creating the other two here keeps the build script
+# agnostic to the init's mount topology.
+mkdir -p /mnt/lower /mnt/overlay
 
-# Grow filesystem to fill disk (handles first boot and disk resize)
-/usr/sbin/resize2fs /dev/vda >/dev/null 2>&1 || true
+# Read-only EROFS base
+mount -t erofs -o ro /dev/vda /mnt/lower
 
-# Mount root filesystem
-mount -t ext4 /dev/vda /mnt/root
+# Writable upper layer. tmpfs is sized to the VM's available memory;
+# the kernel only allocates pages that are actually written, so the
+# cost at rest is ~0. Raise size= if the agent workload needs more
+# scratch in /tmp, /var, /etc — but /home/agent (the persistent data
+# path) is a separate virtiofs mount the orchestrator sets up later,
+# so it doesn't draw from this budget.
+mount -t tmpfs tmpfs /mnt/overlay
+mkdir -p /mnt/overlay/upper /mnt/overlay/work
 
-# Mount config share to read network config
+mount -t overlay overlay \
+    -o lowerdir=/mnt/lower,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work \
+    /mnt/root
+
+# Read network config from the host-supplied config share.
+# virtiofs on a second tag — mounted transiently here so the init can
+# read network.env; the main orchestrator remounts it (and the other
+# tags) after switch_root.
 mkdir -p /mnt/config
 mount -t virtiofs config /mnt/config 2>/dev/null || true
 
-# Set up static networking from config share
 if ip link show eth0 >/dev/null 2>&1; then
     ip link set eth0 up
-
     if [ -f /mnt/config/network.env ]; then
         . /mnt/config/network.env
         ip addr add ${GUEST_IP}/${NETMASK:-255.255.255.0} dev eth0
@@ -37,8 +59,10 @@ fi
 
 umount /mnt/config 2>/dev/null || true
 
-# Clean up before switch_root
-umount /proc /sys
+# Clean up initramfs-root mounts before switch_root. /mnt/lower (erofs)
+# and /mnt/overlay (tmpfs upper/work) are held by overlayfs; they stay.
+# The rootfs-baked safeyolo-guest-init stub re-mounts /proc /sys /dev
+# on the new root as its first act (see guest/rootfs/safeyolo-guest-init).
+umount /proc /sys /dev
 
-# Switch to real root and exec guest init
 exec switch_root /mnt/root /usr/local/bin/safeyolo-guest-init

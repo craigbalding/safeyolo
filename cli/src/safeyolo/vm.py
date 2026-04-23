@@ -78,11 +78,22 @@ def get_initrd_path() -> Path:
 
 
 def get_base_rootfs_path() -> Path:
+    # Legacy ext4 base path. Still referenced by guest_image_status for
+    # build-artifact reporting (build-rootfs.sh produces both formats).
+    # The macOS VZ runtime no longer boots from this — see
+    # get_agent_rootfs_path below.
     return get_share_dir() / "rootfs-base.ext4"
 
 
 def get_agent_rootfs_path(name: str) -> Path:
-    return get_agents_dir() / name / "rootfs.ext4"
+    # EXPERIMENT (exp/erofs-vz-phase-a): macOS VZ boots from the shared
+    # read-only erofs base. No per-agent rootfs file; per-agent writes
+    # land in the in-VM tmpfs overlay (ephemeral) and /home/agent
+    # (virtiofs-bound, persistent). Callers that dereference this as a
+    # read target get the right image; callers that wrote to it
+    # (clones, snapshots) need to stop — this branch makes the no-op
+    # explicit in create_agent_rootfs().
+    return get_base_rootfs_erofs_path()
 
 
 def get_agent_pid_path(name: str) -> Path:
@@ -135,35 +146,23 @@ def ensure_agent_persistent_dirs(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def create_agent_rootfs(name: str) -> Path:
-    """Clone the base rootfs for a new agent.
+    """Return the rootfs path this agent should boot from.
 
-    Uses cp (APFS reflink on macOS for fast CoW copies).
+    EXPERIMENT (exp/erofs-vz-phase-a): there is no per-agent rootfs copy
+    any more. The base erofs image is shared read-only across all
+    agents; writes land in the VM's tmpfs overlay (ephemeral) or the
+    virtiofs-bound /home/agent (persistent). Ensure the per-agent
+    directory exists because other code writes config-share/status
+    into it.
     """
-    base = get_base_rootfs_path()
+    base = get_base_rootfs_erofs_path()
     if not base.exists():
         raise VMError(
             f"Base rootfs not found at {base}\n"
             f"Build guest images first: cd guest && ./build-all.sh"
         )
-
-    agent_dir = get_agents_dir() / name
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    dest = agent_dir / "rootfs.ext4"
-
-    if dest.exists():
-        return dest  # Already created
-
-    log.info("Cloning base rootfs for agent '%s'...", name)
-    # Use cp -c for APFS clone (instant, CoW) with fallback to regular copy
-    result = subprocess.run(
-        ["cp", "-c", str(base), str(dest)],
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        # Fallback: regular copy (non-APFS filesystems)
-        shutil.copy2(str(base), str(dest))
-
-    return dest
+    (get_agents_dir() / name).mkdir(parents=True, exist_ok=True)
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -924,15 +923,18 @@ def check_guest_images() -> bool:
     the check now matches what the platform layer will demand at runtime.
     """
     if platform.system() == "Darwin":
+        # EXPERIMENT (exp/erofs-vz-phase-a): macOS now requires erofs too,
+        # not ext4. Old ext4 output from build-rootfs.sh can still be
+        # present on disk; we just don't require it.
         return (
-            get_base_rootfs_path().exists()
+            get_base_rootfs_erofs_path().exists()
             and get_kernel_path().exists()
             and get_initrd_path().exists()
         )
     if platform.system() == "Linux":
         return get_base_rootfs_erofs_path().exists()
     # Unsupported platform — treat the rootfs as the minimum needed.
-    return get_base_rootfs_path().exists()
+    return get_base_rootfs_erofs_path().exists()
 
 
 def guest_image_status() -> dict[str, bool]:
@@ -955,7 +957,9 @@ def guest_image_status() -> dict[str, bool]:
 # users with kernel/initramfs (not required) or macOS users with erofs (not
 # required).
 _PLATFORM_REQUIRED_ARTIFACTS = {
-    "Darwin": ("kernel", "initramfs", "rootfs-ext4"),
+    # EXPERIMENT (exp/erofs-vz-phase-a): macOS runtime switched from ext4
+    # to the shared erofs base. Mark erofs required, not ext4.
+    "Darwin": ("kernel", "initramfs", "rootfs-erofs"),
     "Linux": ("rootfs-erofs",),
 }
 
