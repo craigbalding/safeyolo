@@ -206,23 +206,43 @@ find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 #
 # Earlier revisions shadowed apt/apt-get/yum/dnf/apk with mise-pointing
 # error stubs on the premise that "agents install tools via mise, not
-# apt." That made sense when guest-to-proxy egress was unreliable, but
-# it no longer is: guest-proxy-forwarder + the per-agent proxy UDS
-# give apt a clear path, and the /var/cache/apt + /var/lib/apt/lists
-# bind mounts (see cli/src/safeyolo/platform/linux.py) let downloads
-# persist across agent restarts.
+# apt." That was over-restrictive: guest-proxy-forwarder + the
+# per-agent proxy UDS give apt a clear path, and the /var/cache/apt
+# + /var/lib/apt/lists bind mounts (cli/src/safeyolo/platform/linux.py)
+# let downloads persist across agent restarts. So apt stays usable —
+# compilers and system libs can be pulled on demand instead of living
+# in the shipped base.
 #
-# So apt-get stays usable. Language runtimes still come from mise
-# (that's the fast path), but compilers and system libs can be pulled
-# on demand without the user having to uninstall a stub first. Matches
-# the pattern contrib/kali-pentest uses.
+# Operator model under rootless gVisor: on-demand package installs
+# are a HOST-OPERATOR action, not an in-sandbox agent action.
+#
+#   Works:
+#     safeyolo agent shell NAME --root -c "apt-get install -y PKG"
+#
+#   Doesn't work:
+#     (agent user inside the sandbox) sudo apt-get install -y PKG
+#
+# Why: rootless user namespaces ignore the setuid bit, so `sudo`
+# running as the agent user (uid 1000) can't escalate to root. No
+# sudoers config fixes that — it's a kernel/userns property. Package
+# installs therefore happen via `safeyolo agent shell --root`, which
+# invokes `runsc exec --user 0:0` directly and lands the caller as
+# sandbox-root with no setuid dance.
+#
+# Important caveat: the install itself persists only for the life of
+# the sandbox. The Linux overlay is memory-backed (gVisor silently
+# ignores dir=), so unpacked package files in /usr vanish on agent
+# stop. The per-agent /var/cache/apt bind means the re-download is
+# free on restart, but the dpkg unpack cost recurs. Heavy toolkits
+# (build-essential, pentest tools, etc.) belong in the base image;
+# lightweight one-offs are fine to install ad-hoc.
 #
 # apt itself ignores HTTP_PROXY / HTTPS_PROXY — it reads its own
 # Acquire::*::Proxy from /etc/apt/apt.conf.d/. Point it at the in-VM
-# socat relay (guest-proxy-forwarder listens on :8080) so `sudo
-# apt-get install` routes through SafeYolo's policy layer. TLS works
-# because guest-init-static.sh adds SafeYolo's CA to the trust bundle
-# before the agent's shell opens.
+# socat relay (guest-proxy-forwarder listens on :8080) so apt-get
+# routes through SafeYolo's policy layer. TLS works because
+# guest-init-static.sh adds SafeYolo's CA to the trust bundle before
+# the agent's shell opens.
 # ---------------------------------------------------------------------------
 mkdir -p "$ROOTFS/etc/apt/apt.conf.d"
 cat > "$ROOTFS/etc/apt/apt.conf.d/99safeyolo-proxy" <<'APTCONF'
@@ -238,17 +258,5 @@ Acquire::https::Proxy "http://127.0.0.1:8080";
 // bind holds only the lock dirs.
 APT::Keep-Downloaded-Packages "true";
 APTCONF
-
-# Agent user (uid 1000) is non-root, but things like `apt-get install`
-# and `chown` / `setcap` on user-built binaries need escalation. Grant
-# NOPASSWD sudo with env_keep for the proxy + CA vars so tools other
-# than apt (curl, pip, npm, etc.) keep routing through 127.0.0.1:8080
-# when invoked via sudo.
-mkdir -p "$ROOTFS/etc/sudoers.d"
-cat > "$ROOTFS/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
-agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
-SUDOERS
-chmod 0440 "$ROOTFS/etc/sudoers.d/safeyolo-agent"
 
 echo "=== Customize hook completed successfully ==="

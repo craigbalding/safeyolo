@@ -22,11 +22,12 @@
 #   * hostname = safeyolo
 #
 # What it deliberately does NOT install:
-#   * Package-manager policy (apt sources, proxy config, sudoers).
+#   * Package-manager policy (apt sources, proxy config).
 #     Custom rootfs authors own that; the default Debian base's
-#     customize-hook writes /etc/apt/apt.conf.d/99safeyolo-proxy and
-#     /etc/sudoers.d/safeyolo-agent so `sudo apt-get install` works
-#     out of the box, but this library doesn't force either.
+#     customize-hook writes /etc/apt/apt.conf.d/99safeyolo-proxy so
+#     `apt-get install` (run via `safeyolo agent shell --root`)
+#     routes through SafeYolo's proxy, but this library doesn't force
+#     the policy.
 #
 # Idempotent -- safe to re-run on the same rootfs.
 
