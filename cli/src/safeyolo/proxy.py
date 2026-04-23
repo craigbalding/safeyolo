@@ -83,7 +83,27 @@ def _read_log_tail(path: Path, lines: int = 15) -> str:
 
 
 def _find_addons_dir() -> Path | None:
-    """Find the addons directory. Check repo layout first, then installed package."""
+    """Find the addons directory.
+
+    Lookup order: explicit env override, then repo-layout paths
+    relative to this file.
+
+    Repo layout works for `uv tool install --editable ./cli` (the
+    package points at cli/src/safeyolo inside the repo, so ../../../
+    hits repo root and ../../../addons is the real dir). Non-editable
+    installs copy the package into an isolated venv under
+    ~/.local/share/uv/tools/safeyolo/..., where the parents lookup
+    resolves to the venv's site-packages and no sibling addons/ dir
+    exists — that case returns None and the caller raises with a fix
+    hint. Setting SAFEYOLO_ADDONS_DIR bypasses the lookup entirely.
+    """
+    env_override = os.environ.get("SAFEYOLO_ADDONS_DIR")
+    if env_override:
+        p = Path(env_override)
+        if p.is_dir() and (p / "request_id.py").exists():
+            return p
+        return None
+
     # Repo layout: safeyolo/addons/
     candidates = [
         Path(__file__).resolve().parents[3] / "addons",  # cli/src/safeyolo -> repo root
@@ -96,7 +116,18 @@ def _find_addons_dir() -> Path | None:
 
 
 def _find_pdp_dir() -> Path | None:
-    """Find the pdp directory for PYTHONPATH."""
+    """Find the pdp directory for PYTHONPATH.
+
+    Same caveats as _find_addons_dir: repo layout works for editable
+    installs; non-editable needs SAFEYOLO_PDP_DIR set.
+    """
+    env_override = os.environ.get("SAFEYOLO_PDP_DIR")
+    if env_override:
+        p = Path(env_override)
+        if p.is_dir() and (p / "__init__.py").exists():
+            return p
+        return None
+
     candidates = [
         Path(__file__).resolve().parents[3] / "pdp",
         Path(__file__).resolve().parents[4] / "pdp",
@@ -543,8 +574,19 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     addons_dir = _find_addons_dir()
     if not addons_dir:
         raise RuntimeError(
-            "Cannot find addons directory. "
-            "Run from the SafeYolo repo or ensure addons are installed."
+            "Cannot find the SafeYolo addons directory.\n"
+            "\n"
+            "Looked in the repo layout relative to this package and at "
+            "$SAFEYOLO_ADDONS_DIR (unset or invalid).\n"
+            "\n"
+            "Fixes:\n"
+            "  1. Install editable from the repo:\n"
+            "       uv tool install --editable ./cli\n"
+            "     (non-editable installs copy the package into an isolated\n"
+            "     venv and lose the sibling addons/ directory.)\n"
+            "  2. Or point SafeYolo at an existing checkout:\n"
+            "       export SAFEYOLO_ADDONS_DIR=/path/to/safeyolo/addons\n"
+            "       export SAFEYOLO_PDP_DIR=/path/to/safeyolo/pdp\n"
         )
 
     pdp_dir = _find_pdp_dir()

@@ -4,10 +4,11 @@ Builds the artifacts SafeYolo needs to run agent sandboxes:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)
 - `out/initramfs.cpio.gz` — minimal initramfs (macOS only)
-- `out/rootfs-base.ext4` — Debian trixie rootfs (macOS VZ mounts this)
-- `out/rootfs-base.erofs` — Debian trixie rootfs (Linux gVisor mounts this)
+- `out/rootfs-base.ext4` — Debian trixie rootfs image (macOS VZ mounts this as /dev/vda)
+- `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; files are owned by uid 100000, the subuid-root for rootless userns)
+- `out/cache-paths.txt` — absolute in-rootfs paths SafeYolo bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
 
-Every `build-rootfs.sh` run produces **both** rootfs images on Linux (natively or inside the Lima VM on macOS). The EROFS image is what gVisor loads on Linux hosts; without it, `safeyolo agent add` fails with "EROFS rootfs image not found".
+Every `build-rootfs.sh` run produces **both** the ext4 image and the tree on Linux (natively or inside the Lima VM on macOS). The tree is what gVisor uses on Linux hosts; without it, `safeyolo agent add` fails with a "Rootfs tree not found" error.
 
 No Docker. Uses `skopeo` + `umoci` to pull + unpack the official `debian:trixie` OCI image for the rootfs, and native cross-compile for the kernel/initramfs. Works on any Linux distro (Fedora, Arch, Alpine, Debian, Ubuntu) — no mmdebstrap/debootstrap on the build host.
 
@@ -31,8 +32,10 @@ Artifacts land in `guest/out/`. To use them:
 
 ```bash
 mkdir -p ~/.safeyolo/share
-cp guest/out/* ~/.safeyolo/share/
+sudo cp -a guest/out/* ~/.safeyolo/share/
 ```
+
+`sudo cp -a` is required so the tree's uid 100000 ownership is preserved (rootless gVisor maps container root to host uid 100000; a plain `cp` would change ownership to the invoking user and `safeyolo agent add` would reject the tree with a chown instruction).
 
 ## macOS setup
 
@@ -42,11 +45,11 @@ brew install lima
 
 That's it. The first `./build-all.sh` run creates a Lima VM named `safeyolo-builder` from `guest/lima.yaml` and provisions it with the required build tools (~2-3 min). Subsequent runs reuse the VM.
 
-The same VM is reused by `safeyolo agent add --rootfs-script` on macOS when you build a custom per-agent rootfs. Its provisioning includes `skopeo` + `umoci` + `e2fsprogs` + `erofs-utils` (for the default base and for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`) plus the kernel toolchain.
+The same VM is reused by `safeyolo agent add --rootfs-script` on macOS when you build a custom per-agent rootfs. Its provisioning includes `skopeo` + `umoci` + `e2fsprogs` (for the default base and for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`) plus the kernel toolchain.
 
 ### Why Lima
 
-`chroot`, `mkfs.ext4`, and `mkfs.erofs` are Linux-specific. Docker Desktop worked because it's a hidden Linux VM — Lima makes the VM explicit and user-controlled. See `lima.yaml` for the config.
+`chroot` and `mkfs.ext4` are Linux-specific. Docker Desktop worked because it's a hidden Linux VM — Lima makes the VM explicit and user-controlled. See `lima.yaml` for the config.
 
 ### Narrow mount scope
 
@@ -65,27 +68,27 @@ If the VM gets into a bad state, `limactl delete safeyolo-builder && ./build-all
 
 ## Linux setup
 
-Install the build dependencies. `skopeo` + `umoci` pull and unpack the Debian OCI image; `erofs-utils` builds the format gVisor mounts. If you only want to run `build-rootfs.sh` (the common path on a Linux host, since the kernel + initramfs are only needed for macOS VZ):
+Install the build dependencies. `skopeo` + `umoci` pull and unpack the Debian OCI image; `e2fsprogs` packs the ext4 image for macOS consumers. If you only want to run `build-rootfs.sh` (the common path on a Linux host, since the kernel + initramfs are only needed for macOS VZ):
 
 ```bash
 # Debian/Ubuntu:
-sudo apt-get install skopeo umoci e2fsprogs erofs-utils curl
+sudo apt-get install skopeo umoci e2fsprogs curl
 
 # Fedora/RHEL:
-sudo dnf install skopeo umoci e2fsprogs erofs-utils curl
+sudo dnf install skopeo umoci e2fsprogs curl
 
 # Arch (umoci via AUR):
-sudo pacman -S skopeo e2fsprogs erofs-utils curl && yay -S umoci
+sudo pacman -S skopeo e2fsprogs curl && yay -S umoci
 
 # Alpine:
-apk add skopeo umoci e2fsprogs erofs-utils curl
+apk add skopeo umoci e2fsprogs curl
 ```
 
 For a full kernel + initramfs build (`BUILD_KERNEL=1`, or when producing artifacts for macOS consumers), add the kernel toolchain. On Debian/Ubuntu:
 
 ```bash
 sudo apt-get install \
-    skopeo umoci e2fsprogs erofs-utils curl \
+    skopeo umoci e2fsprogs curl \
     build-essential \
     bc \
     flex \
@@ -117,21 +120,21 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 ## Individual scripts
 
-- `build-rootfs.sh` — Debian trixie rootfs via `skopeo` (pulls `docker://debian:trixie` OCI image) + `umoci` (unpacks to tree) + chroot apt-get (extras) + `rootfs-customize-hook.sh` (SafeYolo-specific bits); writes **both** `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-base.erofs` (for Linux gVisor).
+- `build-rootfs.sh` — Debian trixie rootfs via `skopeo` (pulls `docker://debian:trixie` OCI image) + `umoci` (unpacks to tree) + chroot apt-get (extras) + `rootfs-customize-hook.sh` (SafeYolo-specific bits); writes `out/rootfs-base.ext4` (for macOS VZ), `out/rootfs-tree/` (the unpacked directory for Linux gVisor, chowned to uid 100000), and `out/cache-paths.txt`.
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
 - `build-all.sh` — platform-aware driver; calls the above three. Must be executed (`./build-all.sh`), not sourced.
 
 All three scripts run on Linux only. On macOS, invoke them through `build-all.sh` which handles the Lima shell-in.
 
-### Generate just the EROFS (Linux gVisor) rootfs
+### Generate just the rootfs
 
 ```bash
 # From the repo root (or `cd guest`):
 ./guest/build-rootfs.sh
 ```
 
-This produces both `out/rootfs-base.ext4` and `out/rootfs-base.erofs` in one pass — `build-rootfs.sh` does not split the two output formats. Re-run after deleting either output to rebuild both.
+This produces `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-tree/` (for Linux gVisor) in one pass — `build-rootfs.sh` does not split the two outputs. Re-run after deleting either output to rebuild both.
 
 ## Download cache
 
@@ -144,18 +147,19 @@ The build scripts keep a persistent cache of upstream downloads under `out/.down
 
 The chroot-apt-install step (~80 MiB of extras: ripgrep, build-essential, python3-pip, tmux, etc.) currently re-fetches on each rebuild — apt's own archive cache isn't preserved across builds in this pipeline. Previous mmdebstrap pipeline kept an `apt-archives/` cache; skopeo+chroot doesn't yet. Follow-up optimization.
 
-To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush artifacts but keep the cache: `rm guest/out/rootfs-base.{ext4,erofs} guest/out/Image guest/out/initramfs.cpio.gz`.
+To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush artifacts but keep the download cache: `sudo rm -rf guest/out/rootfs-base.ext4 guest/out/rootfs-tree guest/out/Image guest/out/initramfs.cpio.gz` (sudo because the tree is owned by uid 100000).
 
 ## Why sudo?
 
-`build-rootfs.sh` uses `sudo` for four operations, all operating on a scratch directory under `/tmp/safeyolo-rootfs.*`:
+`build-rootfs.sh` uses `sudo` for five operations, all operating on a scratch directory under `/tmp/safeyolo-rootfs.*`:
 
 1. `umoci unpack` — preserves real uid/gid ownership in the unpacked tree, which `mkfs.ext4 -d` needs to read back cleanly at packaging time.
 2. `chroot ... apt-get install` — installs extras (socat, openssh-server, python3-pip, ripgrep, etc.) inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
-3. `mkfs.erofs` and `mkfs.ext4 -d` on the packaged outputs — reads the root-owned tree.
-4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt intercepts) — also needs root-in-chroot for the same reasons as (2).
+3. `mkfs.ext4 -d` on the packaged output — reads the root-owned tree.
+4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt-proxy config) — also needs root-in-chroot for the same reasons as (2).
+5. `chown -R 100000:100000` on the emitted `out/rootfs-tree/` — the tree ships pre-owned by the subuid-root so SafeYolo's rootless gVisor sandbox-root can write to tree paths via the overlay.
 
-No persistent host state is modified. Once `out/rootfs-base.{ext4,erofs}` are built and `chown`'d back to you, the `/tmp` tree is cleaned up.
+No persistent host state is modified. Once `out/rootfs-base.ext4` is built (and `chown`'d back to you), the tree is `chown`'d to 100000, and the `/tmp` scratch dir is cleaned up.
 
 Eliminating sudo entirely would require either a user-namespace chroot (rootless unshare, blocked on Ubuntu 24.04 by `kernel.apparmor_restrict_unprivileged_userns=1`) or `umoci --rootless` + xattr-aware packaging — the former needs a sysctl flip or an AppArmor profile, the latter isn't yet proven against our packaging step. We may add a rootless mode as a flag if there's demand.
 

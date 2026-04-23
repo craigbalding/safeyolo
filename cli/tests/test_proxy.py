@@ -1596,7 +1596,7 @@ class TestStartProxy:
 
         with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
              patch("safeyolo.proxy._find_addons_dir", return_value=None):
-            with pytest.raises(RuntimeError, match="Cannot find addons directory"):
+            with pytest.raises(RuntimeError, match="Cannot find the SafeYolo addons directory"):
                 start_proxy()
 
     def test_success_when_pid_file_appears(self, tmp_path, monkeypatch):

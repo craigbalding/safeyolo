@@ -1,5 +1,17 @@
 # Linux Port: gVisor Agent Runtime
 
+> **Status** (exp/erofs-vz-phase-a): the rootfs format has changed.
+> What this doc calls "EROFS" now is an **unpacked directory tree**
+> at `~/.safeyolo/share/rootfs-tree/`, used as gVisor's OCI
+> `root.path` directly (no packaging step). Rationale: gVisor's
+> `--overlay2=root:dir=<path>` flag is silently ignored for tree
+> root.path, so the overlay is memory-backed; disk-backed overlay
+> was the EROFS-era design goal. The ext4 image for macOS VZ and
+> the tree for Linux gVisor are built in one pass by
+> `guest/build-rootfs.sh`. See `guest/README.md` for the current
+> artifact layout. The rest of this file still describes the
+> EROFS-era design verbatim for historical context.
+
 ## Context
 
 SafeYolo runs on macOS using Apple's Virtualization.framework for agent

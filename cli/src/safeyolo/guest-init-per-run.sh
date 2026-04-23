@@ -9,10 +9,10 @@
 #   - hwclock resync (after restore the system clock has jumped)
 #   - VirtioFS readdir (host-side per-run files may be invisible to a
 #     resumed guest until the directory is re-read)
-#   - agent.env / proxy.env sourcing (agent_token, mise package, argv
-#     overrides -- all per-run)
+#   - agent.env / proxy.env sourcing (agent_token, argv overrides,
+#     auth env -- all per-run; the agent binary and mise itself are
+#     baked into the rootfs at build time)
 #   - instructions injection
-#   - mise install of the agent binary if missing
 #   - remount /safeyolo read-only and launch the agent
 #
 set -e

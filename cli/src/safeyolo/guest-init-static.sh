@@ -5,8 +5,8 @@
 # Runs the setup that is identical across every run of this agent and
 # therefore snapshottable: network bring-up, VirtioFS mounts, CA trust,
 # sshd, ipv6 disable, VM-IP discovery. Does NOT touch per-run state
-# (agent.env, instructions, agent_token, mise install, remount ro,
-# agent launch) -- those live in guest-init-per-run.
+# (agent.env, instructions, agent_token, remount ro, agent launch) --
+# those live in guest-init-per-run.
 #
 # Invoked by /safeyolo/guest-init (orchestrator) before the per-run-go
 # gate. On restore, this script has already executed into snapshotted
