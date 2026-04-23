@@ -143,25 +143,26 @@ chroot "$ROOTFS" ssh-keygen -A >/dev/null 2>&1
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
-# Pre-create OCI bind-mount targets. On Linux/gVisor, the rootfs is
-# mounted read-only (EROFS) and gVisor tries to mkdir any bind-mount
-# destination it doesn't find. With a memory overlay the mkdir lands
-# in tmpfs and succeeds; with a file-backed ("dir=") overlay the
-# mount-point creation hits "read-only file system" before the
-# overlay upper is active. Pre-creating the dirs in the EROFS image
-# sidesteps that mkdir entirely — the bind mount lands on an empty
-# existing directory regardless of overlay medium.
+# Pre-create OCI bind-mount targets. gVisor's gofer tries to create any
+# missing bind-mount destinations; with overlay-dir= mode the overlay
+# upper takes the creates, but some places (rootfs paths blocked by
+# readonly + host-uid ownership) can still trip the gofer. Pre-creating
+# the exact target paths in the image sidesteps it entirely — the bind
+# mount lands on an existing directory/file regardless of overlay state.
 #
-# Kept as explicit mkdirs rather than placed under install-guest-common
-# because this is specifically an EROFS-on-gVisor robustness fix,
-# not a general guest-bits requirement. macOS VZ doesn't care (these
-# targets are re-created at mount time if missing). /home/agent
-# already exists from useradd -m above; listed here for documentation.
+# /home/agent already exists from useradd -m above; listed here for doc.
+# safeyolo.crt is a zero-byte file because it's a FILE bind-mount
+# target (vs the directory bind-mounts above); bind-mounting onto
+# a file requires the target to be a regular file.
 mkdir -p \
     "$ROOTFS/workspace" \
     "$ROOTFS/safeyolo" \
     "$ROOTFS/safeyolo-status" \
     "$ROOTFS/home/agent"
+: > "$ROOTFS/usr/local/share/ca-certificates/safeyolo.crt"
+# The proxy UDS is bind-mounted into /safeyolo/ — not a concern (the
+# parent dir is pre-created above; gVisor creates the socket entry
+# as part of the bind).
 
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"

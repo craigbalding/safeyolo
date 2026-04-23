@@ -990,10 +990,16 @@ class LinuxPlatform(AgentPlatform):
 
         return {
             "ociVersion": "1.0.0",
-            # Shared tree across agents — never written to directly.
-            # readonly=true is belt-and-braces; all writes hit the
-            # overlay upper regardless of this flag.
-            "root": {"path": str(rootfs_path), "readonly": True},
+            # Shared tree across agents — writes hit the overlay upper
+            # per --overlay2=root:dir=. readonly=false because gVisor's
+            # gofer needs to create missing bind-mount targets
+            # (e.g. /usr/local/share/ca-certificates/safeyolo.crt,
+            # /safeyolo/proxy.sock) when the tree doesn't already have
+            # them. The overlay redirects those creates to the upper,
+            # so the shared tree itself stays pristine; readonly=true
+            # was paranoid overkill that blocked legitimate overlay
+            # operations.
+            "root": {"path": str(rootfs_path), "readonly": False},
             "hostname": f"safeyolo-{name}",
             "annotations": annotations,
             "process": {
