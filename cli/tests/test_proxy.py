@@ -1389,13 +1389,30 @@ class TestCertDirPermissions:
 
         cert_dir = tmp_path / "certs"
 
-        def create_cert_files(*args, **kwargs):
-            cert_dir.mkdir(parents=True, exist_ok=True)
-            (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
-            (cert_dir / "mitmproxy-ca.pem").write_text("ca-key")
-            return MagicMock(returncode=0)
+        # _ensure_certs launches mitmdump as a Popen and polls for the cert
+        # file. We stub Popen so the test doesn't actually need mitmdump on
+        # PATH — CI's cli-only environment doesn't install mitmproxy.
+        class _FakePopen:
+            def __init__(self, *args, **kwargs):
+                cert_dir.mkdir(parents=True, exist_ok=True)
+                (cert_dir / "mitmproxy-ca-cert.pem").write_text("cert")
+                (cert_dir / "mitmproxy-ca.pem").write_text("ca-key")
 
-        with patch("safeyolo.proxy.subprocess.run", side_effect=create_cert_files):
+            def poll(self):
+                self.returncode = 0
+                return 0
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):  # noqa: ARG002
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                pass
+
+        with patch("safeyolo.proxy.subprocess.Popen", _FakePopen):
             _ensure_certs(cert_dir)
 
         assert cert_dir.stat().st_mode & 0o777 == 0o700
