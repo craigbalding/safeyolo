@@ -9,7 +9,7 @@ Builds the artifacts SafeYolo needs to run agent sandboxes:
 
 Every `build-rootfs.sh` run produces **both** rootfs images on Linux (natively or inside the Lima VM on macOS). The EROFS image is what gVisor loads on Linux hosts; without it, `safeyolo agent add` fails with "EROFS rootfs image not found".
 
-No Docker. Uses `mmdebstrap` for the rootfs and native cross-compile for the kernel/initramfs.
+No Docker. Uses `skopeo` + `umoci` to pull + unpack the official `debian:trixie` OCI image for the rootfs, and native cross-compile for the kernel/initramfs. Works on any Linux distro (Fedora, Arch, Alpine, Debian, Ubuntu) — no mmdebstrap/debootstrap on the build host.
 
 The default Debian rootfs intentionally keeps language ecosystems out of the
 base image. Agents pull those in via `mise`. What is baked in are the things
@@ -42,11 +42,11 @@ brew install lima
 
 That's it. The first `./build-all.sh` run creates a Lima VM named `safeyolo-builder` from `guest/lima.yaml` and provisions it with the required build tools (~2-3 min). Subsequent runs reuse the VM.
 
-The same VM is reused by `safeyolo agent add --rootfs-script` on macOS when you build a custom per-agent rootfs. Its provisioning includes `mmdebstrap` + the kernel toolchain (for the default base) *and* `skopeo` + `umoci` + `erofs-utils` (for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`).
+The same VM is reused by `safeyolo agent add --rootfs-script` on macOS when you build a custom per-agent rootfs. Its provisioning includes `skopeo` + `umoci` + `e2fsprogs` + `erofs-utils` (for the default base and for custom rootfs scripts — see `contrib/ROOTFS_SCRIPT_GUIDE.md`) plus the kernel toolchain.
 
 ### Why Lima
 
-`mmdebstrap` and `debootstrap` use Linux-specific syscalls and can't run natively on macOS. Docker Desktop worked because it's a hidden Linux VM — Lima makes the VM explicit and user-controlled. See `lima.yaml` for the config.
+`chroot`, `mkfs.ext4`, and `mkfs.erofs` are Linux-specific. Docker Desktop worked because it's a hidden Linux VM — Lima makes the VM explicit and user-controlled. See `lima.yaml` for the config.
 
 ### Narrow mount scope
 
@@ -65,19 +65,27 @@ If the VM gets into a bad state, `limactl delete safeyolo-builder && ./build-all
 
 ## Linux setup
 
-Install the build dependencies. `erofs-utils` is **mandatory** on Linux — it's what builds the rootfs format gVisor mounts. If you only want to run `build-rootfs.sh` (the common path on a Linux host, since the kernel + initramfs are only needed for macOS VZ), the first three packages are enough:
+Install the build dependencies. `skopeo` + `umoci` pull and unpack the Debian OCI image; `erofs-utils` builds the format gVisor mounts. If you only want to run `build-rootfs.sh` (the common path on a Linux host, since the kernel + initramfs are only needed for macOS VZ):
 
 ```bash
-sudo apt-get install mmdebstrap e2fsprogs erofs-utils
+# Debian/Ubuntu:
+sudo apt-get install skopeo umoci e2fsprogs erofs-utils curl
+
+# Fedora/RHEL:
+sudo dnf install skopeo umoci e2fsprogs erofs-utils curl
+
+# Arch (umoci via AUR):
+sudo pacman -S skopeo e2fsprogs erofs-utils curl && yay -S umoci
+
+# Alpine:
+apk add skopeo umoci e2fsprogs erofs-utils curl
 ```
 
-For a full kernel + initramfs build (`BUILD_KERNEL=1`, or when producing artifacts for macOS consumers):
+For a full kernel + initramfs build (`BUILD_KERNEL=1`, or when producing artifacts for macOS consumers), add the kernel toolchain. On Debian/Ubuntu:
 
 ```bash
 sudo apt-get install \
-    mmdebstrap \
-    e2fsprogs \
-    erofs-utils \
+    skopeo umoci e2fsprogs erofs-utils curl \
     build-essential \
     bc \
     flex \
@@ -88,11 +96,10 @@ sudo apt-get install \
     busybox-static \
     pax-utils \
     cpio \
-    curl \
     xz-utils
 ```
 
-`build-rootfs.sh` fetches a pinned + SHA256-verified `debian-archive-keyring` into `guest/out/.keyring-cache/` and passes it to `mmdebstrap --keyring=`, so the host's own keyring doesn't need to cover Debian trixie. (Ubuntu LTS ships a 2023-era keyring that predates trixie's signing keys — this way the build works regardless.)
+`build-rootfs.sh` doesn't need a Debian keyring — skopeo fetches the OCI image, not `.deb` packages, so the host's apt trust chain is irrelevant. Extras beyond the minbase image (ssh, socat, python3, the dev toolkit) are apt-installed **inside the unpacked rootfs tree** via chroot; those use the rootfs's own apt sources (debian:trixie's baked-in `deb.debian.org` mirror).
 
 On Linux, `./build-all.sh` skips kernel + initramfs by default (gVisor doesn't need them). Set `BUILD_KERNEL=1` to build all three (required when producing artifacts for macOS consumers).
 
@@ -110,7 +117,7 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 ## Individual scripts
 
-- `build-rootfs.sh` — Debian trixie rootfs via `mmdebstrap`; writes **both** `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-base.erofs` (for Linux gVisor).
+- `build-rootfs.sh` — Debian trixie rootfs via `skopeo` (pulls `docker://debian:trixie` OCI image) + `umoci` (unpacks to tree) + chroot apt-get (extras) + `rootfs-customize-hook.sh` (SafeYolo-specific bits); writes **both** `out/rootfs-base.ext4` (for macOS VZ) and `out/rootfs-base.erofs` (for Linux gVisor).
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
 - `build-all.sh` — platform-aware driver; calls the above three. Must be executed (`./build-all.sh`), not sourced.
@@ -130,27 +137,27 @@ This produces both `out/rootfs-base.ext4` and `out/rootfs-base.erofs` in one pas
 
 The build scripts keep a persistent cache of upstream downloads under `out/.download-cache/` so rebuilds don't re-fetch:
 
-- `out/.download-cache/.keyring-cache/` — pinned `debian-archive-keyring_*.deb`
+- `out/.download-cache/oci/` — skopeo OCI image layout for `docker://debian:trixie`. Re-using this on subsequent builds avoids the ~60-70 MiB re-pull.
 - `out/.download-cache/linux-<ver>.tar.xz` — kernel source tarball
 - `out/.download-cache/mise-v<ver>-linux-<arch>.tar.gz` — pinned mise release
 - `out/.download-cache/gh_<ver>_linux_<arch>.tar.gz` — pinned gh CLI release
-- `out/.download-cache/apt-archives/` — mmdebstrap reuses these `.deb`s instead of re-fetching ~200 MB of Debian packages from `deb.debian.org` on each rebuild.
+
+The chroot-apt-install step (~80 MiB of extras: ripgrep, build-essential, python3-pip, tmux, etc.) currently re-fetches on each rebuild — apt's own archive cache isn't preserved across builds in this pipeline. Previous mmdebstrap pipeline kept an `apt-archives/` cache; skopeo+chroot doesn't yet. Follow-up optimization.
 
 To flush the cache (forces full re-download): `rm -rf guest/out/`. To flush artifacts but keep the cache: `rm guest/out/rootfs-base.{ext4,erofs} guest/out/Image guest/out/initramfs.cpio.gz`.
 
 ## Why sudo?
 
-`build-rootfs.sh` invokes `mmdebstrap --mode=root` under `sudo`. Root is needed *inside* the bootstrap process for three things the kernel tightly gates:
+`build-rootfs.sh` uses `sudo` for four operations, all operating on a scratch directory under `/tmp/safeyolo-rootfs.*`:
 
-1. `mknod` to create `/dev/` entries in the target rootfs
-2. `chroot` into the rootfs and run Debian package maintainer scripts
-3. Setting root-owned file ownership across the target `/` tree
+1. `umoci unpack` — preserves real uid/gid ownership in the unpacked tree, which `mkfs.ext4 -d` needs to read back cleanly at packaging time.
+2. `chroot ... apt-get install` — installs extras (socat, openssh-server, python3-pip, ripgrep, etc.) inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
+3. `mkfs.erofs` and `mkfs.ext4 -d` on the packaged outputs — reads the root-owned tree.
+4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt intercepts) — also needs root-in-chroot for the same reasons as (2).
 
-mmdebstrap also supports `--mode=unshare`, which uses Linux user namespaces to fake root with zero real privilege — the preferred modern path. But Ubuntu 24.04 ships with `kernel.apparmor_restrict_unprivileged_userns=1` by default, which kills unprivileged user namespaces unless you flip that sysctl (a host-wide security posture change) or install an AppArmor profile for mmdebstrap. Neither is better UX than `sudo` for a quickstart, so we default to `--mode=root`.
+No persistent host state is modified. Once `out/rootfs-base.{ext4,erofs}` are built and `chown`'d back to you, the `/tmp` tree is cleaned up.
 
-Everything root touches is confined to a scratch directory under `/tmp/safeyolo-rootfs.*`. No persistent host state is modified — once `out/rootfs-base.ext4` is built and `chown`'d back to you, the `/tmp` tree is cleaned up.
-
-If you want unshare mode on Noble: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (make persistent in `/etc/sysctl.d/` if you want), then patch `build-rootfs.sh` to drop `sudo` and change `--mode=root` to `--mode=unshare`. We may add this as a flag if there's demand.
+Eliminating sudo entirely would require either a user-namespace chroot (rootless unshare, blocked on Ubuntu 24.04 by `kernel.apparmor_restrict_unprivileged_userns=1`) or `umoci --rootless` + xattr-aware packaging — the former needs a sysctl flip or an AppArmor profile, the latter isn't yet proven against our packaging step. We may add a rootless mode as a flag if there's demand.
 
 ## Troubleshooting
 

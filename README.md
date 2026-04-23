@@ -31,8 +31,9 @@ cd safeyolo
 
 # Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min.
 # On macOS this auto-shells into a Lima VM; on Linux it runs natively via
-# mmdebstrap. See guest/README.md for platform-specific setup notes.
-#   Linux build prerequisite: sudo apt-get install mmdebstrap e2fsprogs erofs-utils
+# skopeo+umoci pulling the debian:trixie OCI image. See guest/README.md
+# for platform-specific setup notes.
+#   Linux build prerequisite: sudo apt-get install skopeo umoci e2fsprogs erofs-utils curl
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
 
