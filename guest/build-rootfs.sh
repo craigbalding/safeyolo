@@ -67,6 +67,22 @@ GH_SHA256_AMD64="${GH_SHA256_AMD64:-d0422caade520530e76c1c558da47daebaa8e1203d6b
 DAK_VERSION="${DAK_VERSION:-2025.1}"
 DAK_SHA256="${DAK_SHA256:-9ea7778e443144ca490668737a8ab22dd3e748bb99e805e22ec055abeb3c7fac}"
 
+# Reliable check for commands that may live in /usr/sbin or /sbin
+command_x() {
+    local cmd="$1"
+    # Try normal PATH first
+    if command -v "$cmd" >/dev/null 2>&1; then
+        return 0
+    fi
+    # Explicitly check common system/Debian/Ubuntu locations
+    for dir in /usr/local/sbin /usr/sbin /sbin; do
+        if [ -x "$dir/$cmd" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 mkdir -p "$OUTPUT_DIR"
 
 OUTPUT_EXT4="$OUTPUT_DIR/rootfs-base.ext4"
@@ -76,12 +92,12 @@ if [ -f "$OUTPUT_EXT4" ]; then
     exit 0
 fi
 
-command -v mmdebstrap >/dev/null || {
+command_x mmdebstrap >/dev/null || {
     echo "Error: mmdebstrap not installed." >&2
     echo "  Debian/Ubuntu: sudo apt-get install mmdebstrap e2fsprogs" >&2
     exit 1
 }
-command -v mkfs.ext4 >/dev/null || {
+command_x mkfs.ext4 >/dev/null || {
     echo "Error: mkfs.ext4 not installed (apt-get install e2fsprogs)." >&2
     exit 1
 }
@@ -89,7 +105,7 @@ command -v mkfs.ext4 >/dev/null || {
 # Fetch + SHA256-verify debian-archive-keyring, cache under out/, and pass it
 # to mmdebstrap via --keyring= below. See DAK_VERSION comment above for why.
 # dpkg-deb is always present alongside mmdebstrap on Debian/Ubuntu hosts.
-command -v dpkg-deb >/dev/null || {
+command_x dpkg-deb >/dev/null || {
     echo "Error: dpkg-deb not found (needed to unpack the pinned keyring)." >&2
     exit 1
 }
@@ -200,7 +216,7 @@ sudo --preserve-env=DEB_ARCH,MISE_VERSION,MISE_SHA256,GH_VERSION,GH_SHA256,GUEST
 # ~5% larger images. Drop it when the target gVisor version supports
 # inline data reliably.
 OUTPUT_EROFS="$OUTPUT_DIR/rootfs-base.erofs"
-if command -v mkfs.erofs >/dev/null 2>&1; then
+if command_x mkfs.erofs >/dev/null 2>&1; then
     echo "--- Creating EROFS image ---"
     sudo mkfs.erofs -E noinline_data "$OUTPUT_EROFS" "$WORK_DIR"
     sudo chown "$(id -u):$(id -g)" "$OUTPUT_EROFS"

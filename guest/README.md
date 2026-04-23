@@ -28,13 +28,17 @@ Artifacts land in `guest/out/`. To use them:
 
 ```bash
 mkdir -p ~/.safeyolo/share
-cp guest/out/* ~/.safeyolo/share/
+cp out/* ~/.safeyolo/share/
 ```
 
 ## macOS setup
 
 ```bash
+mise install lima
+# or
 brew install lima
+# or 
+sudo port install lima
 ```
 
 That's it. The first `./build-all.sh` run creates a Lima VM named `safeyolo-builder` from `guest/lima.yaml` and provisions it with the required build tools (~2-3 min). Subsequent runs reuse the VM.
