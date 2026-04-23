@@ -12,9 +12,9 @@
 #     safeyolo agent add <name> <folder> \
 #         --rootfs-script contrib/alpine-minimal/build-alpine-rootfs.sh
 #
-# Host deps (Linux): skopeo, umoci, apk-tools (apk-tools-static is fine),
-# e2fsprogs, erofs-utils. macOS: brew install lima (the Lima VM
-# preinstalls everything).
+# Host deps (Linux): skopeo, umoci, apk-tools (apk-tools-static is fine).
+# e2fsprogs needed only when SafeYolo requests the ext4 output (macOS).
+# macOS: brew install lima (the Lima VM preinstalls everything).
 set -euo pipefail
 
 : "${SAFEYOLO_AGENT_NAME:?must be invoked via safeyolo agent add --rootfs-script}"
@@ -38,9 +38,8 @@ done
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     command -v mkfs.ext4 >/dev/null || { echo "Missing mkfs.ext4. Install e2fsprogs." >&2; exit 1; }
 fi
-if [ -n "${SAFEYOLO_ROOTFS_OUT_EROFS:-}" ]; then
-    command -v mkfs.erofs >/dev/null || { echo "Missing mkfs.erofs. Install erofs-utils." >&2; exit 1; }
-fi
+# SAFEYOLO_ROOTFS_OUT_TREE (Linux gVisor) needs no extra tools — we just
+# leave the unpacked tree in place for gVisor to mount as OCI root.path.
 
 TREE="$SAFEYOLO_ROOTFS_WORK_DIR/tree"
 OCI_DIR="$SAFEYOLO_ROOTFS_WORK_DIR/oci"
@@ -96,6 +95,7 @@ SUDOERS
 chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
 
 # --- Pack into the format SafeYolo asked for. ---
+# Exactly one of OUT_EXT4 / OUT_TREE is set per invocation.
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     echo "=== Packing ext4 → $SAFEYOLO_ROOTFS_OUT_EXT4 ==="
     # 2 GiB sparse; the base is ~100 MB, rest left as headroom for mise +
@@ -103,9 +103,22 @@ if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     truncate -s 2G "$SAFEYOLO_ROOTFS_OUT_EXT4"
     mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$TREE" "$SAFEYOLO_ROOTFS_OUT_EXT4"
 fi
-if [ -n "${SAFEYOLO_ROOTFS_OUT_EROFS:-}" ]; then
-    echo "=== Packing erofs → $SAFEYOLO_ROOTFS_OUT_EROFS ==="
-    mkfs.erofs -E noinline_data "$SAFEYOLO_ROOTFS_OUT_EROFS" "$TREE"
+if [ -n "${SAFEYOLO_ROOTFS_OUT_TREE:-}" ]; then
+    echo "=== Staging tree → $SAFEYOLO_ROOTFS_OUT_TREE ==="
+    # gVisor mounts the directory directly; no packing needed. cp -a
+    # preserves ownership/perms/xattrs which matter for suid binaries,
+    # sshd host keys, and /etc/shadow perms.
+    mkdir -p "$(dirname "$SAFEYOLO_ROOTFS_OUT_TREE")"
+    cp -a "$TREE/." "$SAFEYOLO_ROOTFS_OUT_TREE/"
+fi
+
+# Per-distro package caches worth persisting across agent restarts.
+# Alpine uses /var/cache/apk — SafeYolo bind-mounts a per-agent host
+# dir onto that path at boot so runtime `apk add` hits a warm cache.
+if [ -n "${SAFEYOLO_ROOTFS_OUT_CACHE_PATHS:-}" ]; then
+    cat > "$SAFEYOLO_ROOTFS_OUT_CACHE_PATHS" <<'CACHE_PATHS'
+/var/cache/apk
+CACHE_PATHS
 fi
 
 echo "=== Alpine rootfs built successfully ==="
