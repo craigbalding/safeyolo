@@ -994,30 +994,24 @@ class LinuxPlatform(AgentPlatform):
 
         return {
             "ociVersion": "1.0.0",
-            # readonly=true: belt-and-braces against cross-agent
-            # corruption of the shared tree. Even with multiple layers
-            # of defense already in place (host file perms: tree files
-            # are real-root-owned, unreachable by the gofer's
-            # subordinate uid; overlay: all writes target the upper),
-            # setting readonly=true is the cheapest third line and
-            # catches any gVisor overlay bug that would otherwise let
-            # a write slip through to root.path.
+            # readonly=false, not true. Under gVisor, readonly=true on a
+            # tree root.path silently disables overlay writes to the
+            # tree's own paths — boot_cmd's
+            # `ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log`
+            # fails with EROFS because /var/log is in the tree and the
+            # runsc --overlay2 flag is ignored for write routing when
+            # the root is marked readonly. Behaviour confirmed on devstack
+            # (linux-amd64, gVisor release-20260413.0) with runsc
+            # --debug logs: task 3 (ln -sf) exits non-zero, task 1
+            # (bash) exits, boot.log stays 0 bytes. Flipping to false
+            # restores the overlay write path; guest-init proceeds
+            # normally.
             #
-            # Requires every OCI bind-mount target to exist in the tree
-            # (gVisor won't create-on-readonly-root). Pre-creation lives
-            # in guest/rootfs-customize-hook.sh — currently covers
-            # /workspace, /safeyolo, /safeyolo-status, /home/agent,
-            # /safeyolo/proxy.sock,
-            # /usr/local/share/ca-certificates/safeyolo.crt.
-            #
-            # User-supplied extra_shares (host-config mounts) are a
-            # known gap: their targets aren't in the base tree. If an
-            # extra_share destination doesn't exist, gofer's mkdir in
-            # the overlay upper should succeed (the upper is writable);
-            # if that fails in practice, the fix is to create the
-            # target in the overlay dir at start_sandbox time rather
-            # than flipping readonly back to false.
-            "root": {"path": str(rootfs_path), "readonly": True},
+            # Cross-agent contamination is still blocked: (1) tree files
+            # are real-root-owned and the gofer runs as a subordinate
+            # uid (can't write the lower); (2) each agent has its own
+            # overlay upper so writes never escape to the shared tree.
+            "root": {"path": str(rootfs_path), "readonly": False},
             "hostname": f"safeyolo-{name}",
             "annotations": annotations,
             "process": {
