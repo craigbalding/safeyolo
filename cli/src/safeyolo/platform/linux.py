@@ -458,16 +458,19 @@ class LinuxPlatform(AgentPlatform):
         background: bool,
         snapshot_capture_path: Path | None = None,  # noqa: ARG002
         restore_from_path: Path | None = None,      # noqa: ARG002
-        ephemeral: bool = False,                    # noqa: ARG002
+        ephemeral: bool = False,
     ) -> int:
         """Start a gVisor sandbox in an unprivileged user namespace.
 
-        `ephemeral` is accepted for interface parity with the macOS
-        platform but currently a no-op on Linux: gVisor's memory-backed
-        overlay at platform/linux.py:901 is already ephemeral by default.
-        When the disk-backed-overlay task lands, this flag will select
-        between file-backed (persistent, default) and memory-backed
-        (ephemeral) overlays.
+        ephemeral=True selects gVisor's in-memory overlay ("memory"
+        annotation): writes to / discarded on stop, matching the
+        Phase B Darwin semantics for the same flag.
+
+        ephemeral=False (default) selects a per-agent file-backed
+        overlay via the "dir=/absolute/path" annotation: writes to /
+        persist in a host-side directory across agent stop/run. Needs
+        `--allow-flag-override` on runsc (annotations restrict dir=
+        by default; see gVisor runsc/config/flags.go).
         """
         runsc = _find_runsc()
         platform = _detect_runsc_platform()
@@ -541,6 +544,7 @@ class LinuxPlatform(AgentPlatform):
             memory_mb=memory_mb,
             extra_shares=extra_shares,
             userns_pid=upid,
+            ephemeral=ephemeral,
         )
 
         config_path = agent_dir / "config.json"
@@ -554,9 +558,18 @@ class LinuxPlatform(AgentPlatform):
         if agent_ip:
             setup += f" && ip addr add {agent_ip}/32 dev lo"
 
+        # --allow-flag-override: gVisor restricts the
+        # dev.gvisor.spec.rootfs.overlay annotation to "memory" or
+        # "self" by default. "dir=<path>" (persistent overlay) is
+        # gated on this flag. Security-safe: overrides apply only
+        # to annotations supplied at container-creation time by the
+        # trusted host-side spec, not anything the sandbox can reach.
+        # See runsc/config/flags.go.
+        flag_override = "" if ephemeral else "--allow-flag-override "
+
         inner = (
             f"{setup} && "
-            f"{runsc} --root {root} --host-uds=open --ignore-cgroups "
+            f"{runsc} --root {root} {flag_override}--host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "
@@ -760,6 +773,7 @@ class LinuxPlatform(AgentPlatform):
         memory_mb: int,
         extra_shares: list[tuple[str, str, bool]] | None,
         userns_pid: int | None = None,
+        ephemeral: bool = False,
     ) -> dict:
         """Generate an OCI runtime spec for rootless runsc."""
         guest_proxy_port = 8080
@@ -895,19 +909,37 @@ class LinuxPlatform(AgentPlatform):
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
         ]
         # EROFS annotations -- gVisor mounts the image directly in its
-        # sentry with an in-memory writable overlay. The OCI root.path
-        # is a placeholder directory; the actual rootfs comes from the
-        # EROFS image. Prefer a per-agent rootfs.erofs (from
-        # --rootfs-script) over the shared base.
+        # sentry. The OCI root.path is a placeholder directory; the
+        # actual rootfs comes from the EROFS image. Prefer a per-agent
+        # rootfs.erofs (from --rootfs-script) over the shared base.
         per_agent_erofs = get_agents_dir() / name / "rootfs.erofs"
         erofs_path = str(
             per_agent_erofs if per_agent_erofs.exists()
             else get_share_dir() / "rootfs-base.erofs"
         )
+
+        # Overlay mode:
+        #   ephemeral=True  -> "memory": tmpfs-backed, writes discarded
+        #                      on stop. gVisor-internal; no host-side
+        #                      file.
+        #   ephemeral=False -> "dir=<absolute>": file-backed overlay
+        #                      stored in a per-agent host directory.
+        #                      gVisor creates its own filestore file
+        #                      inside (filestore-<random>), so we
+        #                      supply a directory, not a file path.
+        #                      Needs --allow-flag-override on runsc
+        #                      (see overlay_runsc_flags below).
+        if ephemeral:
+            overlay_annotation = "memory"
+        else:
+            overlay_dir = get_agents_dir() / name / "overlay"
+            overlay_dir.mkdir(parents=True, exist_ok=True)
+            overlay_annotation = f"dir={overlay_dir}"
+
         annotations = {
             "dev.gvisor.spec.rootfs.source": erofs_path,
             "dev.gvisor.spec.rootfs.type": "erofs",
-            "dev.gvisor.spec.rootfs.overlay": "memory",
+            "dev.gvisor.spec.rootfs.overlay": overlay_annotation,
         }
 
         # /safeyolo-status is a host bind-mount (see mounts list above) —
