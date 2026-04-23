@@ -79,7 +79,16 @@ fi
 # appears in mitmproxy flows, logs, and the agent map -- giving the
 # operator a consistent per-agent identity inside and outside the
 # sandbox.
-if [ -n "${AGENT_IP:-}" ]; then
+#
+# On gVisor the sandbox's netstack imports the enclosing netns's
+# loopback, so by the time this script runs the agent IP is already
+# present (setup_networking in platform/linux.py adds it host-side
+# before runsc create). Re-adding yields "RTNETLINK: File exists"
+# and, under set -e, kills guest-init before it can reach per-run —
+# observed as an empty sandbox with a one-line boot.log. Guard
+# against the re-add the same way the eth0 block does below.
+if [ -n "${AGENT_IP:-}" ] \
+   && ! ip -4 addr show lo 2>/dev/null | grep -qE "inet ${AGENT_IP}/"; then
     ip addr add "${AGENT_IP}/32" dev lo
 fi
 
