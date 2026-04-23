@@ -30,13 +30,15 @@ Your script is called with these env vars set:
 |---|---|
 | `SAFEYOLO_AGENT_NAME` | Instance name passed to `agent add`. |
 | `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image (set when the host running SafeYolo is macOS). Not set on Linux. |
-| `SAFEYOLO_ROOTFS_OUT_EROFS` | Absolute path where the script must write the **erofs** image (set when the host is Linux). Not set on macOS. |
+| `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** as a directory (set when the host is Linux). gVisor reads it as OCI root.path. Not set on macOS. |
 | `SAFEYOLO_ROOTFS_WORK_DIR` | Guaranteed-empty scratch directory. Write intermediates here; SafeYolo cleans it up. |
 | `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to the repo's `guest/` directory. Contains `safeyolo-guest-init` and `install-guest-common.sh`. |
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
+| `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
-Exactly one of `_OUT_EXT4` / `_OUT_EROFS` is set per invocation. Write
-your script to handle whichever is set (see the examples).
+Exactly one of `_OUT_EXT4` / `_OUT_TREE` is set per invocation — the
+others of the two match what the target runtime needs. Write your
+script to handle whichever is set (see the examples).
 
 Exit `0` → SafeYolo validates the expected output file exists, is non-empty,
 and uses it for the agent. Non-zero → SafeYolo aborts `agent add`, prints

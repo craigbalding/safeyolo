@@ -610,14 +610,18 @@ class LinuxPlatform(AgentPlatform):
             overlay_dir.mkdir(parents=True, exist_ok=True)
             overlay2_flag = f"--overlay2=root:dir={overlay_dir}"
 
-        # TEMPORARY: --debug + --debug-log so a sandbox crash surfaces
-        # with a stack trace instead of the generic "cannot read client
-        # sync file: EOF" message. Remove once the step-B boot path is
-        # proven; gate behind SAFEYOLO_RUNSC_DEBUG env var in follow-up.
-        debug_flags = f"--debug --debug-log=/tmp/runsc-{cid}.log"
+        # Opt-in runsc debug logging: SAFEYOLO_RUNSC_DEBUG=1 in the
+        # environment adds --debug --debug-log=/tmp/runsc-<cid>.log
+        # to the create invocation. Off by default — the logs are
+        # chatty and only matter when diagnosing a sandbox crash.
+        if os.environ.get("SAFEYOLO_RUNSC_DEBUG") == "1":
+            debug_flags = f"--debug --debug-log=/tmp/runsc-{cid}.log "
+        else:
+            debug_flags = ""
+
         inner = (
             f"{setup} && "
-            f"{runsc} {debug_flags} --root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
+            f"{runsc} {debug_flags}--root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "

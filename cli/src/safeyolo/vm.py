@@ -100,19 +100,23 @@ def get_agent_pid_path(name: str) -> Path:
 
 
 def get_agent_overlay_path(name: str) -> Path:
-    """Per-agent writable overlay image (attached as /dev/vdb inside the VM).
+    """Per-agent writable overlay image (attached as /dev/vdb on macOS VZ).
 
-    EXPERIMENT (exp/erofs-vz-phase-a, Phase B): a per-agent ext4 image
-    layered on top of the shared read-only erofs rootfs via overlayfs
-    inside the guest. Runtime writes to /etc, /usr, /var, etc. persist
-    here across agent stop/run — /home/agent remains a separate
-    virtiofs bind for bulk user data.
+    Linux gVisor doesn't use this — gVisor's own `--overlay2=root:dir=`
+    manages its overlay in a per-agent directory (see the Linux
+    platform module). This function is macOS-VZ-only.
+
+    macOS VZ: a per-agent ext4 image layered on top of the shared
+    read-only ext4 rootfs via overlayfs inside the guest. Runtime
+    writes to /etc, /usr, /var, etc. persist here across agent
+    stop/run — /home/agent remains a separate virtiofs bind for
+    bulk user data.
 
     The file is created as a sparse 256 GiB `truncate`. The guest's
     initramfs detects the absent filesystem on first boot and runs
-    `mkfs.ext4 -F -E lazy_itable_init=1` in-place; eager mkfs work is
-    a few MiB of metadata (superblock, block-group descriptors, bitmaps)
-    regardless of logical size.
+    `mkfs.ext4 -F -E lazy_itable_init=1` in-place; eager mkfs work
+    is a few MiB of metadata (superblock, block-group descriptors,
+    bitmaps) regardless of logical size.
     """
     return get_agents_dir() / name / "overlay.img"
 
@@ -263,14 +267,14 @@ def _guest_src_dir() -> Path:
 
 
 def build_custom_rootfs(name: str, script_path: Path) -> Path:
-    """Invoke a user rootfs-script to produce a per-agent rootfs image.
+    """Invoke a user rootfs-script to produce a per-agent rootfs.
 
-    Returns the output image path. Raises VMError on failure.
+    Returns the output path. Raises VMError on failure.
 
     Env contract (see contrib/ROOTFS_SCRIPT_GUIDE.md):
       SAFEYOLO_AGENT_NAME
-      SAFEYOLO_ROOTFS_OUT_EXT4    (set when target is Darwin)
-      SAFEYOLO_ROOTFS_OUT_EROFS   (set when target is Linux)
+      SAFEYOLO_ROOTFS_OUT_EXT4    (set when target is Darwin — ext4 image)
+      SAFEYOLO_ROOTFS_OUT_TREE    (set when target is Linux — directory tree)
       SAFEYOLO_ROOTFS_WORK_DIR
       SAFEYOLO_GUEST_SRC_DIR
       SAFEYOLO_TARGET_ARCH
@@ -282,16 +286,24 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
     if system == "Darwin":
         out_path = agent_dir / "rootfs.ext4"
         out_key = "SAFEYOLO_ROOTFS_OUT_EXT4"
+        out_is_dir = False
     elif system == "Linux":
-        out_path = agent_dir / "rootfs.erofs"
-        out_key = "SAFEYOLO_ROOTFS_OUT_EROFS"
+        # Linux runtime consumes a directory tree as OCI root.path.
+        # Custom rootfs-scripts write the unpacked tree here; umoci
+        # unpack does this natively, no extra conversion needed.
+        out_path = agent_dir / "rootfs"
+        out_key = "SAFEYOLO_ROOTFS_OUT_TREE"
+        out_is_dir = True
     else:
         raise VMError(f"Unsupported platform for --rootfs-script: {system}")
 
-    # Start with a clean output slot so a failed rebuild doesn't leave a
-    # stale image around that a later agent-run picks up.
+    # Start with a clean output slot so a failed rebuild doesn't leave
+    # a stale image around that a later agent-run picks up.
     if out_path.exists():
-        out_path.unlink()
+        if out_path.is_dir():
+            shutil.rmtree(out_path, ignore_errors=True)
+        else:
+            out_path.unlink()
 
     if system == "Linux":
         _run_rootfs_script_native(name, script_path, out_key, out_path)
@@ -303,12 +315,25 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
             f"Rootfs script {script_path} did not produce {out_path}.\n"
             f"Scripts must write their output to ${out_key}."
         )
-    if out_path.stat().st_size == 0:
-        raise VMError(
-            f"Rootfs script {script_path} produced an empty file at {out_path}."
+    if out_is_dir:
+        # Tree must be non-empty with at least /etc.
+        if not (out_path.is_dir() and (out_path / "etc").is_dir()):
+            raise VMError(
+                f"Rootfs script {script_path} produced {out_path} but it's not"
+                f" a valid rootfs tree (missing /etc)."
+            )
+        size = sum(
+            f.stat().st_size for f in out_path.rglob("*") if f.is_file()
         )
-    log.info("Custom rootfs built for '%s': %s (%d bytes)",
-             name, out_path, out_path.stat().st_size)
+        log.info("Custom rootfs tree built for '%s': %s (%d bytes)",
+                 name, out_path, size)
+    else:
+        if out_path.stat().st_size == 0:
+            raise VMError(
+                f"Rootfs script {script_path} produced an empty file at {out_path}."
+            )
+        log.info("Custom rootfs image built for '%s': %s (%d bytes)",
+                 name, out_path, out_path.stat().st_size)
     return out_path
 
 
@@ -396,7 +421,7 @@ def _run_rootfs_script_lima(
         shutil.copy2(str(script_path), str(staged_script))
         staged_script.chmod(0o755)
 
-        out_name = out_path.name  # rootfs.ext4 or rootfs.erofs
+        out_name = out_path.name  # rootfs.ext4 (Darwin) or rootfs (Linux tree)
         vm_script_path = f"{vm_scratch}/rootfs-script"
         vm_out_path = f"{vm_scratch}/{out_name}"
         vm_guest_dir = LIMA_GUEST_MOUNT
@@ -744,7 +769,7 @@ def start_vm(
     # Restore-time disk pairing. VZ requires every attached disk at
     # restore to match byte-for-byte the state it had at save time.
     #
-    # Rootfs: shared read-only erofs. It doesn't change between save and
+    # Rootfs: shared read-only ext4. It doesn't change between save and
     # restore, so no pairing needed — we pass the same --rootfs as
     # cold-boot.
     #
@@ -817,7 +842,7 @@ def start_vm(
 
     # Persistent mode (default): attach the per-agent writable overlay
     # disk as /dev/vdb. The guest's initramfs layers overlayfs over the
-    # read-only erofs base with this as the upper. Lazy-formatted on
+    # read-only ext4 base with this as the upper. Lazy-formatted on
     # first boot. In ephemeral mode we deliberately don't attach it;
     # the initramfs uses tmpfs instead. On restore, use the per-run
     # working copy of the paired pristine clone (see the restore block
