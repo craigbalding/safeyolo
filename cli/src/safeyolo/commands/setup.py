@@ -219,11 +219,16 @@ def setup() -> None:
             and not userns["apparmor_profile_loaded"]
         )
         # Install the KVM rule if /dev/kvm is usable by the operator but not
-        # yet by the sandbox subordinate uid.
+        # yet by the sandbox subordinate uid. Requires setfacl — both the
+        # udev rule (KERNEL=="kvm", RUN+="/usr/bin/setfacl ...") and the
+        # immediate-apply fallback (sudo setfacl on /dev/kvm) call it.
+        # Without the binary both paths fail with a misleading sudo-level
+        # error, so gate the whole KVM-rule step on setfacl presence.
         need_kvm = (
             kvm["kvm_exists"]
             and kvm["kvm_operator_access"]
             and not kvm["kvm_subordinate_access"]
+            and userns["setfacl"]
         )
 
         # AppArmor: report current state before/after
@@ -243,7 +248,10 @@ def setup() -> None:
             console.print("    Coding agent performance is equivalent. Hardware isolation")
             console.print("    (KVM) is available on hosts with virtualization enabled.")
         elif kvm["kvm_operator_access"] and not kvm["kvm_subordinate_access"]:
-            console.print("  [yellow]SETUP[/yellow]  KVM available — installing udev rule for sandbox access")
+            if userns["setfacl"]:
+                console.print("  [yellow]SETUP[/yellow]  KVM available — installing udev rule for sandbox access")
+            else:
+                console.print("  [yellow]DEFER[/yellow]  KVM available but setfacl is missing — install `acl` (above), then re-run `safeyolo setup`")
         else:
             console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
 

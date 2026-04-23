@@ -19,9 +19,10 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 ### Prerequisites
 
 - macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
-- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
-- macOS only: [Lima](https://lima-vm.io/) for the guest image build — `brew install lima`
-- Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime — install command below
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses for the CLI's editable install. Grab it with your distro's package manager, or follow the upstream install instructions; either works.
+- macOS only: [Lima](https://lima-vm.io/) for the guest image build. Any of `brew install lima`, `sudo port install lima`, or `mise use -g lima` is fine.
+- Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime. gVisor is a Google-maintained project (gvisor.dev is operated by Google); install command below.
 
 ### Build
 
@@ -67,11 +68,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gviso
 sudo apt-get update && sudo apt-get install -y runsc
 ```
 
-If `uv sync --all-packages` did not install `mitmproxy` into the workspace venv (Python 3.12 resolution can drop it), fall back to pipx with the addon dependencies injected:
+If the `uv tool install` above didn't end up with `mitmproxy` available on your `PATH` (Python 3.12 resolution can occasionally drop it, especially on distros where system Python pinning collides with uv's resolver), fall back to pipx with the addon dependencies injected:
 
 ```bash
 ./scripts/install-mitmproxy-pipx.sh
 ```
+
+This script pipx-installs `mitmproxy` and injects the exact set of addon deps SafeYolo needs into that environment; no workspace-wide sync required.
 
 ### Run
 
@@ -250,7 +253,7 @@ See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, an
 
 - macOS Apple Silicon (M1+) **or** Linux (x86_64/arm64)
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
-- macOS only: Lima (build-time, for the guest image) — `brew install lima`
+- macOS only: Lima (build-time, for the guest image) — install via `brew install lima`, `sudo port install lima`, or `mise use -g lima`
 - Linux only: gVisor `runsc` (VM runtime) — see the Build section above for the install command; plus `newuidmap`/`newgidmap` (from `uidmap` on Debian/Ubuntu) and a subuid/subgid range for the operator. `safeyolo setup` verifies all of this.
 
 Run `safeyolo setup` to check and apply one-time prerequisites, then `safeyolo doctor` any time to see the current state of runtime, isolation platform, user namespaces, guest images, and running agents.
