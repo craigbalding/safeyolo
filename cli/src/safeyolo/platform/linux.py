@@ -25,7 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from ..config import get_agents_dir, get_share_dir
+from ..config import get_agents_dir
 from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 from . import AgentPlatform
 
@@ -954,7 +954,7 @@ class LinuxPlatform(AgentPlatform):
         # per-agent host dir so `apt install` hits a warm cache after
         # restart. Per-agent (not shared) for isolation — a prompt-
         # injected agent can't corrupt another's cache.
-        from ..vm import read_agent_cache_paths, get_agent_cache_dir  # noqa: PLC0415
+        from ..vm import get_agent_cache_dir, read_agent_cache_paths  # noqa: PLC0415
         for in_rootfs_path in read_agent_cache_paths(name):
             host_cache_dir = get_agent_cache_dir(name, in_rootfs_path)
             host_cache_dir.mkdir(parents=True, exist_ok=True)
