@@ -100,22 +100,28 @@ def build_http_event_from_flow(
                 credential_confidence.lower(), CredentialConfidence.MEDIUM
             )
 
-    # Extract headers present (lowercase names only, not values)
-    headers_present = [h.lower() for h in flow.request.headers.keys()]
+    # Per-flow cached derivations. These are the three reads that
+    # previously cost every caller an iteration / split — the helpers
+    # memoize on flow.metadata so the Nth call on the same flow is a
+    # dict lookup. Raw request fields (method/host/scheme) are left
+    # as direct reads; mitmproxy already caches them.
+    from flow_cache import headers_present_lower
+    from flow_cache import path_no_query as _path_no_query
+    headers_present = headers_present_lower(flow)
+    path_no_query = _path_no_query(flow)
 
     # Determine port
     port = flow.request.port
     if port is None:
         port = 443 if flow.request.scheme == "https" else 80
 
-    # Split path from query string
-    path_parts = flow.request.path.split("?", 1)
-    path_no_query = path_parts[0]
-
-    # Get query string
+    # Query string: prefer the suffix we just split from path_no_query
+    # (covers the case where mitmproxy's path includes `?…`); fall
+    # back to request.query.urlencode() otherwise.
+    full_path = flow.request.path
     query_string = None
-    if len(path_parts) > 1:
-        query_string = path_parts[1]
+    if "?" in full_path:
+        query_string = full_path.split("?", 1)[1]
     elif flow.request.query:
         query_string = flow.request.query.urlencode()
 

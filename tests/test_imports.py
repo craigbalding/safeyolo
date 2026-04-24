@@ -22,6 +22,7 @@ ADDON_MODULES = [
     "config_cache",
     "credential_guard",
     "file_logging",
+    "flow_cache",
     "flow_pruner",
     "flow_recorder",
     "flow_store",

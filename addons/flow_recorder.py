@@ -118,7 +118,8 @@ class FlowRecorder:
         host = flow.request.pretty_host
         port = flow.request.port
         method = flow.request.method
-        path = flow.request.path.split("?")[0]
+        from flow_cache import path_no_query
+        path = path_no_query(flow)
         query_string = dict(flow.request.query) if flow.request.query else None
         query_str = json.dumps(query_string) if query_string else None
 
