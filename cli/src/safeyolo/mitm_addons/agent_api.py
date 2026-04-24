@@ -292,7 +292,7 @@ class AgentAPI:
 
         # Build available services list from registry
         available = []
-        from service_loader import get_service_registry
+        from safeyolo.core.service_loader import get_service_registry
 
         registry = get_service_registry()
         if registry:
@@ -356,7 +356,7 @@ class AgentAPI:
             return
 
         # Validate service and capability exist
-        from service_loader import get_service_registry
+        from safeyolo.core.service_loader import get_service_registry
 
         registry = get_service_registry()
         if not registry:
@@ -509,7 +509,7 @@ class AgentAPI:
             return
 
         # Validate service/capability/contract
-        from service_loader import get_service_registry
+        from safeyolo.core.service_loader import get_service_registry
 
         registry = get_service_registry()
         if not registry:

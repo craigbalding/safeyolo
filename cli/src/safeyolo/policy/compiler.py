@@ -558,7 +558,7 @@ def compile_gateway(
 
 def _get_service_registry():
     """Get the ServiceRegistry for compilation. Returns None if not initialized."""
-    from service_loader import get_service_registry
+    from safeyolo.core.service_loader import get_service_registry
 
     return get_service_registry()
 

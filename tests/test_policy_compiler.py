@@ -1690,8 +1690,8 @@ class TestCompileCapabilityRoutes:
         svc_dir.mkdir(exist_ok=True)
         (svc_dir / "minifuse.yaml").write_text(service_yaml)
         # Init registry so compiler can look up services
-        import service_loader
-        from service_loader import ServiceRegistry
+        import safeyolo.core.service_loader as service_loader
+        from safeyolo.core.service_loader import ServiceRegistry
 
         registry = ServiceRegistry(svc_dir)
         registry.load()

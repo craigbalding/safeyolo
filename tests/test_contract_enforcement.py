@@ -11,7 +11,8 @@ from service_gateway import (
     _extract_path_params,
     _reject_duplicate_json_keys,
 )
-from service_loader import (
+
+from safeyolo.core.service_loader import (
     BodyConstraint,
     Capability,
     CapabilityRoute,
@@ -21,7 +22,6 @@ from service_loader import (
     QueryConstraint,
     TransportConstraint,
 )
-
 from safeyolo.detection.matching import reject_path_tricks
 
 # --- Helpers ---
