@@ -83,12 +83,10 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Check Python syntax
-        run: |
-          uv run python -m py_compile addons/*.py
-          find cli/src -name "*.py" -exec uv run python -m py_compile {} \;
+        run: find cli/src -name "*.py" -exec uv run python -m py_compile {} \;
 
       - name: Lint with ruff
-        run: uv run ruff check addons/ cli/src/ tests/ --exclude tests/blackbox/
+        run: uv run ruff check cli/src/ tests/ --exclude tests/blackbox/
 
       # Blackbox docstring schema — every test class and function must
       # declare Title/What/Why. Uses AST validation (no pytest collection),

@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       # Only trigger on actual fuzz targets (detection subpackage), not all addons
-      - 'addons/detection/**'
+      - 'cli/src/safeyolo/detection/**'
       - 'fuzz/**'
       - '.clusterfuzzlite/**'
 
