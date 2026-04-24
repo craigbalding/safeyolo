@@ -67,7 +67,8 @@ class AgentAPI:
             return
 
         # This is an agent API request - handle it entirely here
-        path = flow.request.path.split("?")[0].rstrip("/") or "/"
+        from flow_cache import path_no_query
+        path = path_no_query(flow).rstrip("/") or "/"
         method = flow.request.method
 
         # Method validation: GET for most routes, POST/DELETE allowed for /api/flows/ prefix

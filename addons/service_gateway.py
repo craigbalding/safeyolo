@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from detection.matching import normalize_path, reject_path_tricks
+from flow_cache import path_no_query
 from mitmproxy import ctx, http
 from service_loader import get_service_registry
 from utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
@@ -478,7 +479,7 @@ class ServiceGateway:
             self.stats.denied_token += 1
             return
 
-        path = flow.request.path.split("?")[0]  # Strip query string
+        path = path_no_query(flow)  # Strip query string
         method = flow.request.method
 
         # 1. Capability route check — delegate to PDP (compiled permissions)
@@ -1160,7 +1161,7 @@ class ServiceGateway:
                     scheme="https",
                     host=flow.request.host,
                     port=443,
-                    path=flow.request.path.split("?")[0],
+                    path=path_no_query(flow),
                     headers_present=list(flow.request.headers.keys()),
                 ),
                 credential=CredentialBlock(detected=False),
@@ -1216,7 +1217,7 @@ class ServiceGateway:
             flow.metadata["blocked_by"] = self.name
 
             method = flow.request.method
-            path = flow.request.path.split("?")[0]
+            path = path_no_query(flow)
             signals = ", ".join(risky.tactics) if risky.tactics else "no tactics"
             if risky.irreversible:
                 signals += ", irreversible"
@@ -1318,7 +1319,7 @@ class ServiceGateway:
             return False
 
         # ── Phase 1: Raw rejection ──────────────────────────────────────
-        raw_path = flow.request.path.split("?", 1)[0]
+        raw_path = path_no_query(flow)
 
         # Path tricks (dot segments, encoded separators, double encoding, etc.)
         trick = reject_path_tricks(raw_path)
@@ -1700,7 +1701,7 @@ class ServiceGateway:
         flow.metadata["blocked_by"] = self.name
 
         method = flow.request.method
-        path = flow.request.path.split("?")[0]
+        path = path_no_query(flow)
         service = flow.metadata.get("gateway_service") or self._host_map.get(
             flow.request.host.lower(), flow.request.host
         )
