@@ -33,8 +33,8 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Aspect | Implementation | Where |
 |--------|----------------|-------|
 | No external interface | Sandbox netns has only loopback (Linux); VM has no virtio-net (macOS) | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py), [cli/src/safeyolo/platform/darwin.py](../cli/src/safeyolo/platform/darwin.py) |
-| Only egress = proxy UDS | Per-agent Unix socket bind-mounted at `/safeyolo/proxy.sock` inside the sandbox | [cli/src/safeyolo/proxy_bridge.py](../cli/src/safeyolo/proxy_bridge.py) |
-| Identity on every flow | PROXY protocol v2 header stamped by the bridge; parsed by `next_layer` addon | [addons/proxy_protocol.py](../addons/proxy_protocol.py) |
+| Only egress = proxy UDS | Per-agent Unix socket bind-mounted at `/safeyolo/proxy.sock` inside the sandbox | [cli/src/safeyolo/sockets.py](../cli/src/safeyolo/sockets.py) |
+| Identity on every flow | Mitmproxy's per-agent `UnixInstance` parses `<ip>_<agent>.sock` and stamps `client.peername = (ip, 0)` | [addons/unix_listener.py](../addons/unix_listener.py) |
 | Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Agent user | Runs as uid 1000 inside the sandbox; host operator uid maps to 1000 via userns | [guest/rootfs-customize-hook.sh](../guest/rootfs-customize-hook.sh) |
 | Minimal capabilities | CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_NET_ADMIN for init only — no CAP_NET_RAW, no CAP_SYS_ADMIN | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |

@@ -12,6 +12,7 @@ Usage:
     mitmdump -s addons/admin_api.py --set admin_port=9090
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -1079,6 +1080,60 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         self._send_json({"status": "updated", "mode": mode, "results": results})
 
+    def _handle_put_proxy_mode(self) -> None:
+        """PUT /admin/proxy/mode - Replace `options.mode` (proxy listener list).
+
+        Used by the CLI on `agent add`/`remove` to add or drop a per-agent
+        `unix:/...` listener without restarting mitmproxy. Mitmproxy's
+        Proxyserver addon hot-reloads on option change, starting/stopping
+        ServerInstances to match.
+        """
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+
+        modes = data.get("modes")
+        if not isinstance(modes, list) or not all(isinstance(m, str) for m in modes):
+            self._send_json({"error": "'modes' must be a list of strings"}, 400)
+            return
+
+        # The admin API runs on a dedicated HTTP server thread; setting
+        # `ctx.options.mode` here fires mitmproxy's options-changed signal
+        # which schedules `Servers.update()` as a coroutine on the event
+        # loop. If we don't schedule the update *on* the loop, that
+        # coroutine is created but never awaited — options.mode updates
+        # but no listener actually starts/stops. Use
+        # run_coroutine_threadsafe and wait for the reconcile to complete
+        # so the PUT response reflects the real listener state.
+        async def _apply() -> None:
+            ctx.options.update(mode=modes)
+            # Let Servers.update run to completion before we return.
+            # Empirically ~300 ms per listener create on local UDS;
+            # 2 s is generous for the handful of agents we expect.
+            await asyncio.sleep(0.5)
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_apply(), ctx.master.event_loop)
+            fut.result(timeout=2.0)
+        except TimeoutError:
+            self._send_json({"error": "timeout waiting for mode reconcile"}, 504)
+            return
+        except Exception as e:  # invalid spec, unknown mode type, etc.
+            self._send_json({"error": f"{type(e).__name__}: {e}"}, 400)
+            return
+
+        client_ip = self._get_client_ip()
+        write_event(
+            "admin.proxy_mode_update",
+            kind=EventKind.ADMIN,
+            severity=Severity.MEDIUM,
+            summary=f"Proxy mode list replaced ({len(modes)} entries)",
+            addon="admin-api",
+            details={"client_ip": client_ip, "modes": modes},
+        )
+        self._send_json({"status": "updated", "modes": modes})
+
     def _handle_put_plugin_mode(self, addon_name: str) -> None:
         """PUT /plugins/{name}/mode - Set mode for a specific addon."""
         data = self._read_json()
@@ -1218,6 +1273,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         static_handlers = {
             "/modes": self._handle_put_modes,
             "/admin/policy/baseline": self._handle_put_policy_baseline,
+            "/admin/proxy/mode": self._handle_put_proxy_mode,
         }
 
         if path in static_handlers:
@@ -1351,7 +1407,7 @@ class AdminAPI:
         # Start HTTP server in background thread with error handling
         # allow_reuse_address must be set before bind() — use class attribute
         HTTPServer.allow_reuse_address = True
-        self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
+        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)
         self._server_port = port
 
         def serve_with_recovery():
@@ -1374,7 +1430,7 @@ class AdminAPI:
                     # Attempt restart after brief delay
                     time.sleep(1)
                     try:
-                        self.server = HTTPServer(("0.0.0.0", port), AdminRequestHandler)
+                        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)
                         print("[admin_api] Restarting after crash", file=sys.stderr, flush=True)
                     except Exception as restart_err:
                         print(

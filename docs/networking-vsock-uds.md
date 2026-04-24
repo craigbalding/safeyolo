@@ -13,21 +13,18 @@ agent comms, team proxy, fleet PDP).
 ## TL;DR
 
 The sandbox has **no external network interface**. All agent-initiated
-traffic is routed through a per-agent socket pair to a host-side
-`proxy_bridge` daemon, which stamps agent identity by prepending a
-**PROXY protocol v2 header** (RFC) on every upstream TCP connection
-to mitmproxy. The header carries the agent's attribution IP
-(`10.200.X.Y`) and a SafeYolo-specific TLV (type `0xE0`) carrying the
-agent name. A `proxy-protocol` mitmproxy addon parses the header in
-the `next_layer` hook, rewrites `peername` with the attribution IP,
-and strips the header bytes before the HTTP parser sees them.
-`service_discovery` and all downstream addons see per-agent identity
-for audit, policy, and rate limiting.
+traffic is routed to a per-agent Unix domain socket on the host, bound
+directly by a per-agent `UnixInstance` inside mitmproxy. Identity is
+encoded in the socket filename (`<ip>_<agent>.sock`) — parsed once at
+bind and stamped on every accepted connection via
+`client.peername = (ip, 0)`. `service_discovery` and all downstream
+addons see per-agent identity for audit, policy, and rate limiting.
 
 On macOS, a Swift `VSockProxyRelay` in the `safeyolo-vm` helper bridges
-the guest's vsock endpoint to a host UDS; on Linux, the guest's socket
-IS a bind-mounted host UDS (via gVisor `--host-uds=open`). Everything
-downstream of the platform-specific bridge is identical.
+the guest's vsock endpoint to the per-agent host UDS; on Linux, the
+guest's socket IS the bind-mounted host UDS (via gVisor
+`--host-uds=open`). Everything downstream is identical — mitmproxy's
+`UnixInstance` accepts directly on the UDS in both cases.
 
 Shell access uses the same shape in reverse: a `VSockShellBridge` (on
 macOS) or `runsc exec` (on Linux) reaches the guest's `sshd` for
@@ -61,19 +58,13 @@ macOS) or `runsc exec` (on Linux) reaches the guest's `sshd` for
 │         (vsock → per-agent UDS)  │
 │       │                          │
 │       ▼                          │
-│  proxy_bridge (cross-platform)   │
-│    └── listen: sockets/<N>.sock  │
-│        bind: 127.0.0.1:<30000+N> │
-│        connect: 127.0.0.1:<port> │
-│       │                          │
-│       ▼                          │
 │  mitmproxy                       │
-│    └── port-identity addon maps  │
-│        port 3000N → agent name,  │
-│        rewrites peername →       │
-│        127.0.0.<N>               │
+│    └── UnixInstance per agent,   │
+│        binds <ip>_<agent>.sock   │
+│    └── peername = (ip, 0)        │
+│        (parsed from filename)    │
 │    └── service_discovery maps    │
-│        127.0.0.<N> → agent name  │
+│        10.200.X.Y → agent name   │
 └──────────────────────────────────┘
 ```
 
@@ -112,52 +103,41 @@ Each agent is assigned a **deterministic attribution IP** at
 
 The IP is `10.200.{(N+1) / 256}.{(N+1) % 256}` from the `10.200.0.0/16`
 range — `/16` supports ~65k agents. It's configured on the guest's
-loopback (for in-sandbox visibility) and carried on every upstream
-TCP connection via a PROXY protocol v2 header the bridge prepends.
+loopback (for in-sandbox visibility) and encoded into the per-agent
+UDS filename on the host.
 
 Identity mechanism:
 
-1. Bridge accepts an agent's UDS connection, reads the agent name
-   from `agent_map.json` (keyed on socket path).
-2. Bridge opens a fresh TCP connection to mitmproxy on an ephemeral
-   local port.
-3. Bridge writes a PROXY-v2 header (binary, RFC-compliant) containing
-   the attribution IP + a custom TLV (type `0xE0`) carrying the agent
-   name.
-4. Bridge pumps bytes between the two sockets.
-5. mitmproxy's `proxy_protocol` addon (loaded as the first layer via
-   `next_layer`) parses the header on each flow, rewrites
-   `flow.client_conn.peername` to the attribution IP, and strips the
-   header bytes from the buffered events so the HTTP parser sees
-   clean data.
-6. `service_discovery` sees the attribution IP as the client address
-   and resolves it to the agent name via `agent_map.json`.
-
-Attribution IP + agent name are written to `agent_map.json` by the
-CLI at `agent run` time so the bridge and mitmproxy agree on the
-mapping. No sudo, no lo0 aliases, no per-agent listen ports — one
-bridge daemon, ephemeral upstream ports, PROXY-v2 identity on each
-flow.
+1. CLI computes `sockets.path_for(agent, ip)` → `<data_dir>/sockets/<ip>_<agent>.sock`
+   and writes the agent entry to `agent_map.json`.
+2. CLI calls admin API `PUT /admin/proxy/mode` with the current
+   `unix:<path>` list. Mitmproxy's `Proxyserver.configure()`
+   hot-reloads and spawns a `UnixInstance` for the new spec.
+3. `UnixInstance._start()` does `asyncio.start_unix_server(path=...)`
+   and parses `(ip, agent)` from the filename once, caching both.
+4. On each accepted connection, `handle_stream()` sets
+   `context.client.peername = (ip, 0)` before the protocol layer runs.
+5. `service_discovery` sees the attribution IP on `client.peername[0]`
+   and resolves it to the agent name via `agent_map.json` (unchanged).
 
 This means:
 
-- **Identity is enforced by the host bridge**, never trusted from the
-  guest. A compromised agent cannot forge another agent's port because
-  the bridge binds the outbound socket itself.
-- **Structural isolation**: agent A's bridge socket (`sockets/A.sock`)
+- **Identity is enforced by the filesystem**, never claimed by the
+  guest. The socket filename is authoritative and parent-directory
+  permissions prevent agents from renaming each other's sockets.
+- **Structural isolation**: agent A's UDS (`sockets/10.200.0.1_A.sock`)
   is only bind-mounted into agent A's sandbox. Agent A literally cannot
   address agent B's socket.
-- **Userspace-only**. The bridge binds to `127.0.0.1` on a userspace
-  port — no elevated privileges or kernel interface configuration
-  required on any platform.
+- **No TCP listener**. Mitmproxy binds Unix domain sockets only; the
+  0.0.0.0 TCP listener used by earlier builds is gone.
 
 ---
 
 ## Per-agent sockets
 
 ```
-~/.safeyolo/data/sockets/<agent>.sock      # proxy bridge listener (one per agent)
-~/.safeyolo/data/shell-sockets/<agent>.sock # shell bridge listener (macOS only)
+~/.safeyolo/data/sockets/<ip>_<agent>.sock    # mitmproxy UnixInstance per agent
+~/.safeyolo/data/shell-sockets/<agent>.sock   # shell bridge listener (macOS only)
 ```
 
 The proxy socket is bind-mounted into the guest at `/safeyolo/proxy.sock`
@@ -165,9 +145,10 @@ The proxy socket is bind-mounted into the guest at `/safeyolo/proxy.sock`
 via `VSockProxyRelay`). In both cases the agent's in-guest forwarder
 sends bytes to "its" socket, and there's no cross-agent socket visibility.
 
-The bridge watches `~/.safeyolo/data/agent_map.json` and dynamically
-adds/removes listeners as agents start/stop. No restart required when
-adding an agent.
+`safeyolo agent add`/`remove` pushes the updated mode list to mitmproxy
+via admin API `PUT /admin/proxy/mode`; `Proxyserver.configure()`
+hot-reloads, starting/stopping `UnixInstance`s to match. No mitmproxy
+restart required when adding an agent.
 
 ---
 
@@ -188,7 +169,6 @@ shape:
 | guest-shell-bridge     | VM console / `serial.log` on host                  |
 | VSockProxyRelay (mac)  | `~/.safeyolo/agents/<name>/serial.log`             |
 | VSockShellBridge (mac) | `~/.safeyolo/agents/<name>/serial.log`             |
-| proxy_bridge           | `~/.safeyolo/logs/proxy-bridge.log`                |
 | mitmproxy + addons     | `~/.local/state/safeyolo/safeyolo.jsonl`           |
 
 **Cross-hop correlation.** All hops tag each flow with the agent name;
@@ -230,11 +210,10 @@ Exit code 0 on all-pass, 1 on any fail.
 
 | Symptom                                   | Most likely cause                                        | Check / fix                                                   |
 |-------------------------------------------|----------------------------------------------------------|---------------------------------------------------------------|
-| `curl: (56) Recv failure: Connection reset by peer` inside agent | `proxy_bridge` not running | `safeyolo agent diag`                                         |
-| Agent traffic shows in mitmproxy as `unknown` | Bridge didn't pick up agent's entry in `agent_map.json`, or port-identity addon not loaded | `cat ~/.safeyolo/data/agent_map.json` — entry with `port` present? Check mitmproxy log for `port-identity` |
+| `curl: (7) Failed to connect` inside agent after a few retries | mitmproxy not running, or `UnixInstance` not bound for this agent | `safeyolo status`; `safeyolo agent diag`                     |
+| Agent traffic shows in mitmproxy as `unknown` | Attribution IP on `peername` doesn't match an `agent_map.json` entry | `cat ~/.safeyolo/data/agent_map.json`; check socket filename is `<ip>_<agent>.sock` |
 | `safeyolo agent shell` hangs              | Shell-bridge relay not firing, or `sshd` not in guest   | `ls ~/.safeyolo/data/shell-sockets/<name>.sock`; serial.log for `listen agent=…` |
 | `VM running (detached)` but dies seconds later | Helper process `proc_exit`ed silently (historically SIGPIPE, RunLoop exit) | `sudo log show --last 60s --predicate 'processID == <pid>'` — shows exit reason |
-| "bind(127.0.0.1, 3000X) failed: EADDRINUSE" | Port conflict — another process is using that port | `lsof -i :3000X` to find the conflict |
 
 ### Reading logs
 
@@ -243,7 +222,6 @@ For a failing flow, start at the agent-map side and walk outward:
 ```
 # All events for syone across every hop, in chronological order:
 ( cat ~/.safeyolo/agents/syone/serial.log \
-  ~/.safeyolo/logs/proxy-bridge.log \
   ~/.local/state/safeyolo/safeyolo.jsonl
 ) | grep 'agent=syone\|"agent":"syone"' | sort
 ```
@@ -259,9 +237,9 @@ hop to see one specific connection's accept + done pair.
 |------------------------|--------------------------------|-------------------------------------------|
 | Isolation runtime      | gVisor (`runsc`) in rootless userns | Virtualization.framework             |
 | Guest sees sandbox as  | loopback-only netns            | no network interface (vsock only)         |
-| Agent → bridge path    | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
+| Agent → proxy path     | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
 | Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
-| Attribution mechanism  | PROXY protocol v2 header      | PROXY protocol v2 header                  |
+| Attribution mechanism  | `<ip>_<agent>.sock` filename  | `<ip>_<agent>.sock` filename              |
 | Host firewall          | none (structural)             | none (structural)                         |
 | Sudo at runtime        | none                          | none                                      |
 
@@ -282,4 +260,4 @@ hop to see one specific connection's accept + done pair.
 
 - `docs/microvm-architecture.md` — how the VM boots, snapshots, mounts
 - `docs/SERVICE_DISCOVERY.md` — how the `service_discovery` addon maps IP→agent
-- Source: `cli/src/safeyolo/proxy_bridge.py`, `addons/proxy_protocol.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`
+- Source: `cli/src/safeyolo/sockets.py`, `addons/unix_listener.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`

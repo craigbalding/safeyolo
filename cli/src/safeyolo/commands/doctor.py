@@ -85,9 +85,9 @@ def _check_firewall() -> DiagResult:
 
     On both platforms, agent sandboxes have no external network interface
     — the only path out is a per-agent UDS that terminates at mitmproxy
-    via the proxy_bridge. There's no host firewall in the critical path,
-    so the readiness signal is "bridge daemon alive + per-agent sockets
-    present when agents are running."
+    (one `UnixInstance` per agent). There's no host firewall in the
+    critical path, so the readiness signal is "mitmproxy running +
+    per-agent sockets present when agents are running."
     """
     import platform as _platform
     system = _platform.system()
@@ -98,28 +98,32 @@ def _check_firewall() -> DiagResult:
             message=f"Unsupported platform: {system}",
         )
 
-    from ..proxy_bridge import is_bridge_running, sockets_dir
+    from ..proxy import is_proxy_running
+    from ..sockets import sockets_dir
 
     socks = sockets_dir()
-    if is_bridge_running():
+    if is_proxy_running():
         active = [p.name for p in socks.glob("*.sock")] if socks.exists() else []
         if active:
             return DiagResult(
                 name="Egress enforcement",
                 status="pass",
-                message=f"proxy UDS bridge active ({len(active)} agent socket(s) in {socks})",
+                message=(
+                    f"per-agent UDS listeners active ({len(active)} socket(s) "
+                    f"in {socks})"
+                ),
             )
         return DiagResult(
             name="Egress enforcement",
             status="pass",
-            message=f"proxy UDS bridge active (no agents running, sockets dir {socks})",
+            message=f"mitmproxy running (no agents, sockets dir {socks})",
         )
     return DiagResult(
         name="Firewall enforcement",
         status="warn",
         message=(
-            f"proxy UDS bridge not running ({socks} not being served). "
-            f"The bridge starts automatically when the proxy starts."
+            f"mitmproxy not running ({socks} has no listeners). "
+            "Per-agent UDS listeners are bound by mitmproxy at startup."
         ),
         remediation="safeyolo start",
     )

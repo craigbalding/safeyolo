@@ -1063,20 +1063,17 @@ def _update_agent_map(
     name: str,
     ip: str | None = None,
     socket: str | None = None,
-    port: int | None = None,
     remove: bool = False,
 ) -> None:
     """Update the agent-IP map file.
 
-    Read by three consumers:
+    Read by two consumers:
       - addons/service_discovery.py (in mitmproxy) -- uses `ip` to map
         request source IPs back to agent names for audit/policy/rate-limit.
-      - addons/proxy_protocol.py (in mitmproxy) -- uses `port` to map
-        the bridge's deterministic source port back to agent identity
-        at connection time (client_connected hook).
-      - safeyolo.proxy_bridge -- uses `socket` to create a per-agent
-        listener, and `port` as the deterministic source port to bind
-        when connecting to mitmproxy.
+      - cli/src/safeyolo/proxy.py (_initial_mode_specs) -- enumerates
+        agents at proxy startup to build the initial `options.mode` list.
+    `socket` is retained for diagnostics/legacy compatibility; the
+    authoritative path is derived via `sockets.path_for(name, ip)`.
     """
     map_path = get_agent_map_path()
     map_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1097,8 +1094,6 @@ def _update_agent_map(
         }
         if socket:
             entry["socket"] = socket
-        if port is not None:
-            entry["port"] = port
         agent_map[name] = entry
 
     map_path.write_text(json.dumps(agent_map, indent=2) + "\n")

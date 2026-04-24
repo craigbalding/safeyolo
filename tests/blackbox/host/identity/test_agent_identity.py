@@ -71,14 +71,15 @@ class TestAgentMap:
         )
 
     def test_agent_map_has_socket(self):
-        """Bridge socket referenced in the entry exists on disk.
+        """Per-agent proxy socket referenced in the entry exists on disk.
 
         What: Reads the 'socket' field and asserts the path is a
         live Unix domain socket (Path.is_socket()).
-        Why: The bridge socket is the only egress path for the agent.
-        A missing or stale socket means every agent request fails with
-        ENOENT — effectively a denial of service, not a security
-        issue, but a strong signal that the identity chain is broken.
+        Why: The per-agent UDS (bound by mitmproxy's
+        UnixInstance) is the only egress path for the agent. A missing or
+        stale socket means every agent request fails with ENOENT —
+        effectively a denial of service, not a security issue, but a strong
+        signal that the identity chain is broken.
         """
         map_path = _CONFIG_DIR / "data" / "agent_map.json"
         if not map_path.exists():

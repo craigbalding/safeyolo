@@ -21,9 +21,15 @@ log = logging.getLogger("safeyolo.proxy")
 
 # Addon load order — mirrors scripts/start-safeyolo.sh exactly
 ADDON_CHAIN = [
-    # Layer -1: Connection identity (must be first — monkeypatches
-    # handle_stream before any connections arrive)
-    "proxy_protocol.py",
+    # Layer -1: UDS ingress — must be first. Defines UnixMode /
+    # UnixInstance which auto-register via __init_subclass__. The
+    # bootstrap addon below then populates options.mode from
+    # agent_map.json in `running()` (by which time UnixMode is live).
+    "unix_listener.py",
+    "bootstrap_mode.py", # replaces the transient default listener with
+                         # per-agent unix: listeners; must run before
+                         # pid_writer so the CLI's "ready" signal only
+                         # fires once UDS listeners are bound.
     # Layer 0: Infrastructure
     "pid_writer.py",     # writes SAFEYOLO_PROXY_PID_FILE on `running`
     "file_logging.py",
@@ -323,6 +329,81 @@ def _parse_ignore_cidrs_env() -> list[str]:
     return regexes
 
 
+def _initial_mode_specs(data_dir: Path) -> list[str]:
+    """Build the startup `mode` list from agent_map.json.
+
+    Each known agent becomes a `unix:<path>` entry. The CLI mutates this
+    list at runtime via admin API `PUT /admin/proxy/mode` as agents are
+    added/removed. Empty list is valid — mitmproxy starts with no
+    listeners until the first agent is added.
+    """
+    import json
+
+    from .sockets import path_for
+
+    map_path = data_dir / "agent_map.json"
+    if not map_path.exists():
+        return []
+    try:
+        data = json.loads(map_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    specs: list[str] = []
+    for name, entry in data.items():
+        ip = entry.get("ip")
+        if not ip:
+            continue
+        try:
+            p = path_for(name, ip)
+        except ValueError as exc:
+            log.warning("skipping agent %r: %s", name, exc)
+            continue
+        specs.append(f"unix:{p}")
+    return specs
+
+
+def sync_proxy_modes(admin_port: int = 9090, timeout: float = 5.0) -> bool:
+    """Push the current agent_map-derived mode list to a running mitmproxy.
+
+    Called by `safeyolo agent add`/`remove` so new UnixInstance listeners
+    appear (and old ones stop) without a mitmproxy restart. Mitmproxy's
+    `Proxyserver.configure()` hot-reloads on `options.mode` change.
+
+    Returns True on success, False if the admin API call failed (e.g.,
+    mitmproxy not running). Callers treat failure as best-effort — the
+    socket will be created on next start via `_initial_mode_specs`.
+    """
+    import httpx
+
+    data_dir = get_data_dir()
+    specs = _initial_mode_specs(data_dir)
+
+    token_path = data_dir / "admin_token"
+    if not token_path.exists():
+        log.warning("admin_token not found; skipping proxy mode sync")
+        return False
+    token = token_path.read_text().strip()
+
+    url = f"http://127.0.0.1:{admin_port}/admin/proxy/mode"
+    try:
+        resp = httpx.put(
+            url,
+            json={"modes": specs},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        log.warning("proxy mode sync failed: %s: %s", type(exc).__name__, exc)
+        return False
+
+    if resp.status_code != 200:
+        log.warning("proxy mode sync returned %d: %s", resp.status_code, resp.text[:200])
+        return False
+    log.info("proxy mode sync ok (%d listeners)", len(specs))
+    return True
+
+
 def _build_command(
     addons_dir: Path,
     cert_dir: Path,
@@ -350,14 +431,24 @@ def _build_command(
     else:
         mitmdump = shutil.which("mitmdump") or "mitmdump"
 
-    # Bind to all interfaces so VMs on the bridge can reach the proxy
-    cmd = [mitmdump, "--listen-host", "0.0.0.0", "-p", str(proxy_port)]
+    cmd = [mitmdump]
 
-    # Load addons
+    # Load addons before any `--set mode=...` so UnixMode is registered
+    # (via __init_subclass__) by the time Proxyserver parses the spec.
     for addon_file in ADDON_CHAIN:
         addon_path = addons_dir / addon_file
         if addon_path.exists():
             cmd.extend(["-s", str(addon_path)])
+
+    # Listener wiring is done by addons/bootstrap_mode.py in `running()`,
+    # after all addons load (so UnixMode is registered). Mitmproxy's CLI
+    # parses `--set mode=...` *before* addons, so `unix:` specs cannot
+    # go here. Force the transient default `regular` listener onto an
+    # ephemeral loopback port — bootstrap_mode immediately replaces it
+    # with the per-agent `unix:` set, so 127.0.0.1:<ephemeral> is held
+    # for <500 ms and never reachable off-host.
+    cmd.extend(["--set", "listen_host=127.0.0.1"])
+    cmd.extend(["--set", "listen_port=0"])
 
     # Core options
     cmd.extend(["--set", f"confdir={cert_dir}"])
@@ -694,32 +785,17 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
 
     log.info("Proxy started (PID %d) on port %d", proc.pid, proxy_port)
 
-    # Start the UDS -> TCP bridge for Linux agents that reach mitmproxy
-    # via a bind-mounted socket instead of IP networking. macOS agents
-    # use the vsock relay inside safeyolo-vm and ignore this socket.
-    # Best-effort: a failed bridge start shouldn't prevent the proxy
-    # from coming up.
-    try:
-        from .proxy_bridge import start_proxy_bridge
-        start_proxy_bridge(proxy_port=proxy_port)
-    except Exception as exc:
-        log.warning("proxy bridge failed to start: %s: %s",
-                    type(exc).__name__, exc)
-
 
 def stop_proxy() -> None:
     """Stop the host mitmproxy process.
 
-    Does NOT stop the proxy_bridge. The bridge owns /safeyolo/proxy.sock,
-    which gVisor's gofer binds once at container start; unlinking the
-    socket invalidates the container-side inode handle even after a
-    fresh bind at the same path. Keeping the bridge alive across
-    mitmproxy restarts preserves the UDS inode — clients inside running
-    agents just see transient "connection refused" to 127.0.0.1:8080
-    during the gap and recover automatically when mitmproxy is back.
-
-    `safeyolo stop --all` is the right command when the bridge should
-    also go (it tears down agents first, so no one is holding handles).
+    Per-agent UDS listeners are owned by mitmproxy directly (one
+    `UnixInstance` per agent). Stopping the process tears them down
+    along with their socket files. Guest-side socat retries connects
+    while mitmproxy is offline (see `guest-proxy-forwarder.sh`), so a
+    brief restart window is absorbed without the agent seeing an
+    HTTP-layer failure — provided mitmproxy recovers within the retry
+    window.
     """
     pid_file = _pid_file()
     if not pid_file.exists():

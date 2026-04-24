@@ -322,34 +322,44 @@ def _run_agent(
     guest_ip = fw_alloc["guest_ip"]
 
     # Identity attribution: `attribution_ip` is the source IP mitmproxy
-    # sees, which service_discovery maps back to the agent name. Both
-    # platforms populate it in setup_networking as a synthetic 127.0.0.X
-    # -- the proxy_bridge binds its upstream TCP source to this address
-    # and listens on a per-agent UDS (needs_bridge_socket=True).
-    # agent_map.json is written BEFORE start_sandbox so service_discovery
-    # is ready when the first request arrives, and the bridge polls it
-    # to create listeners.
+    # sees, which service_discovery maps back to the agent name.
+    # Per-agent UDS lives at `<sockets_dir>/<ip>_<agent>.sock` —
+    # mitmproxy's UnixInstance binds it and parses identity from the
+    # filename. agent_map.json is written before start_sandbox so
+    # service_discovery is ready when the first request arrives, and
+    # the admin-API call below triggers mitmproxy to bind the socket.
     attribution_ip = fw_alloc.get("attribution_ip", guest_ip)
-    bridge_sock = None
+    from ..sockets import path_for as _sock_path_for
+    try:
+        sock_path_p = _sock_path_for(name, attribution_ip)
+    except ValueError as exc:
+        console.print(f"[red]Invalid agent socket path:[/red] {exc}")
+        raise typer.Exit(1)
+    sock_path = str(sock_path_p)
+    _update_agent_map(name, ip=attribution_ip, socket=sock_path)
+
     if fw_alloc.get("needs_bridge_socket"):
-        from ..proxy_bridge import socket_path_for as _bridge_sock_for
-        bridge_sock = str(_bridge_sock_for(name))
-    _update_agent_map(name, ip=attribution_ip, socket=bridge_sock)
-    if bridge_sock:
-        # Wait up to 5s for the bridge to create the listener socket.
-        # Without this, the OCI bind-mount source path doesn't exist
-        # and gVisor's gofer caches a ghost inode (same gotcha as the
-        # earlier restart-cycle bug).
+        # Push the updated mode list to mitmproxy so it spawns the
+        # UnixInstance and creates the per-agent socket file. Best
+        # effort: if the admin call fails (mitmproxy not running),
+        # the socket will be bound on next proxy start via
+        # `_initial_mode_specs`.
+        from ..proxy import sync_proxy_modes
+        sync_proxy_modes(admin_port=admin_port)
+
+        # Wait up to 5s for mitmproxy's UnixInstance to bind the
+        # socket. Without this, the OCI bind-mount source path doesn't
+        # exist and gVisor's gofer caches a ghost inode (same gotcha
+        # as the earlier restart-cycle bug).
         import time as _time_wait
         _deadline = _time_wait.time() + 5.0
-        _sock_path = Path(bridge_sock)
         while _time_wait.time() < _deadline:
-            if _sock_path.is_socket():
+            if sock_path_p.is_socket():
                 break
             _time_wait.sleep(0.05)
         else:
             console.print(
-                f"[yellow]Warning:[/yellow] bridge socket {bridge_sock} "
+                f"[yellow]Warning:[/yellow] per-agent socket {sock_path} "
                 "did not appear; agent will see ENOENT on proxy connect. "
                 "Is `safeyolo start` running?"
             )
@@ -1144,6 +1154,11 @@ def remove(
     # plain shutil.rmtree can't clean up.
     plat.remove_agent_dir(name)
     _store_remove_agent(name)
+    # Drop the per-agent UnixInstance if mitmproxy is running.
+    config = load_config()
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    from ..proxy import sync_proxy_modes
+    sync_proxy_modes(admin_port=admin_port)
     write_event("agent.removed", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} removed", agent=name)
     console.print(f"[green]Removed agent: {name}[/green]")
 
@@ -1286,8 +1301,8 @@ def diag(
 
     Runs through the hops from the agent out to mitmproxy and back,
     checking each link:
-        agent map entry → bridge socket → attribution IP alias →
-        proxy_bridge process → VM process → end-to-end UDS probe
+        agent map entry → proxy socket → attribution IP →
+        mitmproxy process → VM process → end-to-end UDS probe
 
     Exits 0 if everything checks out, 1 if any link is broken. Output
     is one line per check, PASS/FAIL/WARN prefix, so piping to grep
@@ -1320,6 +1335,12 @@ def stop(
 
     console.print(f"Stopping {name}...")
     plat.stop_sandbox(name)
+    # Drop the per-agent UnixInstance. `stop_sandbox` already removed
+    # the agent from agent_map.json, so this push reflects its absence.
+    config = load_config()
+    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    from ..proxy import sync_proxy_modes
+    sync_proxy_modes(admin_port=admin_port)
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 

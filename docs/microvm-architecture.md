@@ -11,23 +11,18 @@ The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCS
 │ Host (macOS, Apple Silicon)                                      │
 │                                                                  │
 │  ┌────────────────────────────────────┐                          │
-│  │ mitmproxy (host process, 127.0.0.1)│                          │
+│  │ mitmproxy (host process, UDS-only) │                          │
 │  │   - mitmdump with ~15 addons       │                          │
-│  │   - admin API on :9090             │                          │
+│  │   - per-agent UnixInstance listens │                          │
+│  │     on <ip>_<agent>.sock (identity │                          │
+│  │     parsed from filename)          │                          │
+│  │   - admin API on 127.0.0.1:9090    │                          │
 │  └──────────────▲─────────────────────┘                          │
-│                 │  PROXY-v2 over 127.0.0.1 (attribution IP, agent)│
-│  ┌──────────────┴─────────────────────┐                          │
-│  │ proxy_bridge (Python daemon)       │                          │
-│  │   per-agent UDS listener →         │                          │
-│  │   TCP connect to mitmproxy,        │                          │
-│  │   upstream prefixed with PROXY-v2  │                          │
-│  │   header (attribution IP + agent)  │                          │
-│  └──────────────▲─────────────────────┘                          │
-│                 │  AF_UNIX                                        │
+│                 │  AF_UNIX (per-agent UDS)                       │
 │  ┌──────────────┴─────────────────────┐                          │
 │  │ safeyolo-vm                        │                          │
 │  │   VSockProxyRelay: vsock:1080  →   │                          │
-│  │     per-agent UDS                  │                          │
+│  │     per-agent UDS (dumb pump)      │                          │
 │  │   VSockShellBridge: per-agent UDS →│                          │
 │  │     vsock:2220 (guest sshd)        │                          │
 │  │   VSockTerminal: vsock:1024/1025 → │                          │
@@ -58,10 +53,10 @@ The sandbox has **no external network interface**. There is no virtio-net attach
 All agent-initiated HTTP traffic takes this path:
 
 1. Agent makes an HTTP request honouring `HTTP_PROXY=http://127.0.0.1:8080`
-2. `guest-proxy-forwarder.py` (listening on `127.0.0.1:8080` inside the guest) accepts the connection and relays bytes over vsock
+2. `guest-proxy-forwarder.sh` (socat, listening on `127.0.0.1:8080` inside the guest) accepts the connection and relays bytes over vsock
 3. `VSockProxyRelay` (in `safeyolo-vm`) accepts on vsock port 1080 and connects to the per-agent host UDS
-4. `proxy_bridge` (host daemon) accepts on the per-agent UDS and connects to mitmproxy, binding the upstream TCP source to a synthetic `127.0.0.<N+2>` loopback IP
-5. mitmproxy's `service_discovery` addon maps `127.0.0.<N+2>` back to the agent name for policy evaluation and audit
+4. mitmproxy's per-agent `UnixInstance` accepts on that UDS. Identity (attribution IP + agent name) is parsed from the socket filename (`<ip>_<agent>.sock`) once at bind time and stamped on every connection via `client.peername = (ip, 0)`
+5. mitmproxy's `service_discovery` addon maps the attribution IP back to the agent name for policy evaluation and audit
 
 An agent that unsets proxy env vars has nowhere to go — there is no other network path out of the sandbox.
 
@@ -108,8 +103,8 @@ The rootfs has a 30-line stub at `/usr/local/bin/safeyolo-guest-init` that mount
 
 ```
 TRUSTED: Host
-  mitmproxy + addons + PDP + policy
-  proxy_bridge (Python daemon, per-agent UDS listeners)
+  mitmproxy + addons + PDP + policy (owns per-agent UDS listeners
+    via UnixInstance; identity from socket filename)
   safeyolo-vm (Swift, manages VM lifecycle + vsock bridges)
   Python CLI (agent management)
   VirtioFS config share contents
@@ -143,10 +138,10 @@ One mutable ext4 disk per agent at `~/.safeyolo/agents/<name>/rootfs.ext4`. Clon
 The CLI writes `~/.safeyolo/data/agent_map.json` when VMs start/stop:
 
 ```json
-{"test": {"ip": "127.0.0.2", "socket": "/Users/me/.safeyolo/data/sockets/test.sock", "started": "2026-04-17T..."}}
+{"test": {"ip": "10.200.0.1", "socket": "/Users/me/.safeyolo/data/sockets/10.200.0.1_test.sock", "started": "2026-04-17T..."}}
 ```
 
-The `service_discovery` addon reads this file (mtime-cached) to resolve the bridge-stamped attribution IP (127.0.0.N) back to the agent name for per-agent policy evaluation. `proxy_bridge` reads the same file to know which per-agent UDS listeners to create.
+The `service_discovery` addon reads this file (mtime-cached) to resolve the attribution IP (10.200.N.N) back to the agent name for per-agent policy evaluation. `safeyolo agent add`/`remove` calls admin API `PUT /admin/proxy/mode` with a `unix:<path>` list derived from the map; mitmproxy's `Proxyserver` hot-reloads `options.mode` to spawn / tear down the matching `UnixInstance`s.
 
 ## Components
 
@@ -154,10 +149,11 @@ The `service_discovery` addon reads this file (mtime-cached) to resolve the brid
 |-----------|----------|---------|
 | `safeyolo-vm` | Swift | VM lifecycle (Apple Virtualization.framework) + vsock bridges |
 | `vsock-term` | C (static, ARM64) | Guest terminal daemon (vsock PTY bridge) |
-| `guest-proxy-forwarder.py` | Python (in guest) | `127.0.0.1:8080` → vsock:1080 |
+| `guest-proxy-forwarder.sh` | Shell + socat (in guest) | `127.0.0.1:8080` → vsock:1080 / UDS |
 | `guest-shell-bridge.py` | Python (in guest) | vsock:2220 → sshd on `127.0.0.1:22` |
 | `proxy.py` | Python | Host mitmproxy process management |
-| `proxy_bridge.py` | Python | Per-agent UDS listeners, attribution IP binding |
+| `unix_listener.py` (addon) | Python | `UnixMode`/`UnixInstance` — per-agent UDS ingress |
+| `sockets.py` | Python | Socket-path helpers; `<ip>_<agent>.sock` is identity |
 | `vm.py` | Python | VM lifecycle, config share, agent map |
 | `guest-init.sh` | Bash | Guest init (on config share, not rootfs) |
 

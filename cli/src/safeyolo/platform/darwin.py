@@ -1,7 +1,10 @@
 """macOS platform: Virtualization.framework microVM + vsock UDS bridge.
 
 Guest has no external network interface. Egress goes guest → vsock:1080 →
-safeyolo-vm's VSockProxyRelay → per-agent host UDS → proxy_bridge → mitmproxy.
+safeyolo-vm's VSockProxyRelay → per-agent host UDS → mitmproxy's
+per-agent UnixInstance. Identity comes from the socket filename
+(`<ip>_<agent>.sock`), parsed at UnixInstance bind.
+
 Shell access (`safeyolo agent shell`) goes via a second per-agent UDS →
 VSockShellBridge → vsock:2220 → guest-shell-bridge → sshd. No host firewall
 rules — the sandbox has no other path out.
@@ -23,9 +26,10 @@ from . import AgentPlatform
 
 
 def _shell_socket_path(name: str) -> Path:
-    """Per-agent UDS the host-side shell bridge listens on. Symmetric
-    with proxy_bridge's socket_path_for(), different subdir so the
-    bridge daemon doesn't accidentally pick it up as a proxy listener."""
+    """Per-agent UDS the host-side shell bridge listens on. Kept under
+    `shell-sockets/<name>.sock` — a separate subdir from the per-agent
+    proxy sockets (which use `sockets/<ip>_<agent>.sock`, owned by
+    mitmproxy's UnixInstance)."""
     return get_data_dir() / "shell-sockets" / f"{name}.sock"
 
 
@@ -87,12 +91,15 @@ class DarwinPlatform(AgentPlatform):
         restore_from_path: Path | None = None,
         ephemeral: bool = False,
     ) -> int:
-        # Thread the per-agent bridge socket through to safeyolo-vm so
+        # Thread the per-agent proxy socket through to safeyolo-vm so
         # VSockProxyRelay can connect() to it on each guest-initiated
-        # flow. Also allocate a shell-bridge UDS so `safeyolo agent shell`
+        # flow. The socket file is owned by mitmproxy's UnixInstance
+        # (one per agent); its filename is `<ip>_<agent>.sock`.
+        # Also allocate a shell-bridge UDS so `safeyolo agent shell`
         # can reach the VM's sshd over vsock.
-        from ..proxy_bridge import socket_path_for as _sock_for  # noqa: PLC0415
-        proxy_socket = str(_sock_for(name))
+        from ..sockets import path_for as _sock_for  # noqa: PLC0415
+        attribution_ip = fw_alloc.get("attribution_ip", "")
+        proxy_socket = str(_sock_for(name, attribution_ip))
         shell_path = _shell_socket_path(name)
         shell_path.parent.mkdir(parents=True, exist_ok=True)
         shell_path.parent.chmod(0o700)

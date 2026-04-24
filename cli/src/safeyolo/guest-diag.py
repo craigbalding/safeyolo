@@ -7,14 +7,12 @@ every hop from the agent's perspective out to mitmproxy on the host.
 Chain (macOS / VZ microVM):
   curl → 127.0.0.1:8080 (guest-proxy-forwarder)
        → vsock:1080 (safeyolo-vm VSockProxyRelay)
-       → host UDS (proxy_bridge)
-       → 127.0.0.1:8080 TCP (mitmproxy)
+       → host per-agent UDS (mitmproxy UnixInstance)
 
 Chain (Linux / gVisor):
   curl → 127.0.0.1:8080 (guest-proxy-forwarder)
        → /safeyolo/proxy.sock UDS (bind-mounted, gVisor --host-uds=open)
-       → host proxy_bridge
-       → 127.0.0.1:8080 TCP (mitmproxy)
+       → host per-agent UDS (mitmproxy UnixInstance)
 
 Usage:
     python3 /safeyolo/guest-diag
