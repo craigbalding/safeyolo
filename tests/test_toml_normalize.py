@@ -12,14 +12,14 @@ import pytest
 
 @pytest.fixture
 def normalize():
-    from toml_normalize import normalize
+    from safeyolo.policy.toml_normalize import normalize
 
     return normalize
 
 
 @pytest.fixture
 def denormalize():
-    from toml_normalize import denormalize
+    from safeyolo.policy.toml_normalize import denormalize
 
     return denormalize
 

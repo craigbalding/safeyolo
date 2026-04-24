@@ -35,14 +35,14 @@ class TestTOMLIncrementalSave:
 
     def test_incremental_save_adds_credential(self):
         """Incremental save adds credential to existing host."""
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
             path.write_text(SAMPLE_TOML)
 
             # Simulate what policy engine does
-            from toml_roundtrip import add_host_credential, save_roundtrip
+            from safeyolo.policy.toml_roundtrip import add_host_credential, save_roundtrip
 
             doc = load_roundtrip(path)
             add_host_credential(doc, "api.example.com", ["hmac:abc123"])
@@ -55,7 +55,7 @@ class TestTOMLIncrementalSave:
 
     def test_incremental_save_preserves_comments(self):
         """Incremental save preserves existing comments."""
-        from toml_roundtrip import add_host_credential, load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import add_host_credential, load_roundtrip, save_roundtrip
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -71,7 +71,7 @@ class TestTOMLIncrementalSave:
 
     def test_incremental_save_appends_to_existing(self):
         """Adding credential to host that already has credentials."""
-        from toml_roundtrip import add_host_credential, load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import add_host_credential, load_roundtrip, save_roundtrip
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -92,7 +92,7 @@ class TestTOMLDenormalize:
 
     def test_denormalize_produces_valid_toml(self):
         """Denormalized internal dict produces valid TOML."""
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         internal = {
             "metadata": {"version": "2.0"},
@@ -120,7 +120,7 @@ class TestTOMLPolicyFlow:
 
     def test_toml_loads_compiles_evaluates(self):
         """Full pipeline: TOML file loads, compiles, creates valid UnifiedPolicy."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"

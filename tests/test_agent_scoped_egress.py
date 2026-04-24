@@ -7,7 +7,7 @@ class TestAgentHostsCompilation:
     """Test that agents.<name>.hosts compiles to permissions with agent condition."""
 
     def _compile(self, agents, hosts=None):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": hosts or {"*": {"unknown_credentials": "prompt", "rate_limit": 600}},
@@ -75,7 +75,8 @@ class TestAgentScopedEvaluation:
         from pathlib import Path
 
         import yaml
-        from policy_loader import PolicyLoader
+
+        from safeyolo.policy.loader import PolicyLoader
 
         raw = {
             "hosts": hosts,
@@ -97,13 +98,13 @@ class TestAgentScopedEvaluation:
             hosts={"*": {"unknown_credentials": "prompt", "rate_limit": 600, "egress": "prompt"}},
             agents={"boris": {"hosts": {"api.stripe.com": {"rate_limit": 600}}}},
         )
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         engine = PolicyEngine.__new__(PolicyEngine)
         engine._loader = loader
         engine._evaluations = 0
         engine._lock = __import__("threading").RLock()
-        from budget_tracker import GCRABudgetTracker
+        from safeyolo.policy.budget_tracker import GCRABudgetTracker
         engine._budget_tracker = GCRABudgetTracker()
 
         decision = engine.evaluate_request("api.stripe.com", agent="boris")
@@ -115,13 +116,13 @@ class TestAgentScopedEvaluation:
             hosts={"*": {"unknown_credentials": "prompt", "rate_limit": 600, "egress": "prompt"}},
             agents={"boris": {"hosts": {"api.stripe.com": {"rate_limit": 600}}}},
         )
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         engine = PolicyEngine.__new__(PolicyEngine)
         engine._loader = loader
         engine._evaluations = 0
         engine._lock = __import__("threading").RLock()
-        from budget_tracker import GCRABudgetTracker
+        from safeyolo.policy.budget_tracker import GCRABudgetTracker
         engine._budget_tracker = GCRABudgetTracker()
 
         decision = engine.evaluate_request("api.stripe.com", agent="alice")
@@ -137,13 +138,13 @@ class TestAgentScopedEvaluation:
             },
             agents={"boris": {"hosts": {"api.stripe.com": {"egress": "deny"}}}},
         )
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         engine = PolicyEngine.__new__(PolicyEngine)
         engine._loader = loader
         engine._evaluations = 0
         engine._lock = __import__("threading").RLock()
-        from budget_tracker import GCRABudgetTracker
+        from safeyolo.policy.budget_tracker import GCRABudgetTracker
         engine._budget_tracker = GCRABudgetTracker()
 
         # Boris: agent deny wins
@@ -159,7 +160,7 @@ class TestTomlNormalizeAgentHosts:
     """Test that agents.<name>.hosts fields get normalized."""
 
     def test_normalize_agent_hosts(self):
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         doc = {
             "version": "2.0",
@@ -182,7 +183,7 @@ class TestTomlNormalizeAgentHosts:
         assert "rate_limit" in agent_host
 
     def test_denormalize_agent_hosts(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         doc = {
             "metadata": {"version": "2.0"},

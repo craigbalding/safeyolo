@@ -18,7 +18,8 @@ from unittest import mock
 from unittest.mock import Mock, patch
 
 import pytest
-import utils  # imported for AUDIT_LOG_PATH patching
+
+import safeyolo.core.utils as utils  # imported for AUDIT_LOG_PATH patching
 
 # =========================================================================
 # Helpers
@@ -60,7 +61,7 @@ def _read_events(log_path: Path) -> list[dict]:
     queue before reading so assertions see events the addon actually
     enqueued, not races with the writer thread.
     """
-    from audit_writer import get_writer
+    from safeyolo.core.audit_writer import get_writer
     assert get_writer().wait_for_drain(timeout_s=3.0), "audit writer failed to drain"
     if not log_path.exists():
         return []

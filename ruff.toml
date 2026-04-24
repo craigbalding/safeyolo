@@ -31,4 +31,4 @@ ignore = [
 "cli/tests/*" = ["B", "E501"]
 
 [lint.isort]
-known-first-party = ["addons", "safeyolo"]
+known-first-party = ["safeyolo"]

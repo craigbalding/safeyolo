@@ -72,13 +72,13 @@ class TestHostMatching:
     """Tests for host pattern matching (imported from utils)."""
 
     def test_exact_match(self):
-        from utils import matches_host_pattern
+        from safeyolo.core.utils import matches_host_pattern
 
         assert matches_host_pattern("api.openai.com", "api.openai.com")
         assert not matches_host_pattern("api.openai.com", "openai.com")
 
     def test_wildcard_match(self):
-        from utils import matches_host_pattern
+        from safeyolo.core.utils import matches_host_pattern
 
         assert matches_host_pattern("api.example.com", "*.example.com")
         assert matches_host_pattern("sub.api.example.com", "*.example.com")
@@ -86,7 +86,7 @@ class TestHostMatching:
         assert not matches_host_pattern("example.org", "*.example.com")
 
     def test_case_insensitive(self):
-        from utils import matches_host_pattern
+        from safeyolo.core.utils import matches_host_pattern
 
         assert matches_host_pattern("API.OpenAI.com", "api.openai.com")
         assert matches_host_pattern("api.openai.com", "API.OPENAI.COM")
@@ -96,34 +96,34 @@ class TestPathMatching:
     """Tests for path/resource pattern matching (imported from utils)."""
 
     def test_path_wildcard_suffix(self):
-        from utils import matches_resource_pattern
+        from safeyolo.core.utils import matches_resource_pattern
 
         assert matches_resource_pattern("/v1/chat", "/v1/*")
         assert matches_resource_pattern("/v1/chat/completions", "/v1/*")
         assert not matches_resource_pattern("/v2/chat", "/v1/*")
 
     def test_path_double_wildcard(self):
-        from utils import matches_resource_pattern
+        from safeyolo.core.utils import matches_resource_pattern
 
         assert matches_resource_pattern("/api/v1/anything", "/api/**")
         assert matches_resource_pattern("/api", "/api/**")
         assert not matches_resource_pattern("/other/path", "/api/**")
 
     def test_path_exact_match(self):
-        from utils import matches_resource_pattern
+        from safeyolo.core.utils import matches_resource_pattern
 
         assert matches_resource_pattern("/v1/models", "/v1/models")
         assert not matches_resource_pattern("/v1/models/extra", "/v1/models")
 
     def test_path_full_wildcard(self):
-        from utils import matches_resource_pattern
+        from safeyolo.core.utils import matches_resource_pattern
 
         assert matches_resource_pattern("/any/path", "/**")
         assert matches_resource_pattern("/", "/**")
         assert matches_resource_pattern("/any/path", "/*")
 
     def test_path_normalization(self):
-        from utils import matches_resource_pattern
+        from safeyolo.core.utils import matches_resource_pattern
 
         # Double slash normalized
         assert matches_resource_pattern("//v1//models", "/v1/models")
@@ -135,24 +135,24 @@ class TestShannonEntropy:
     """Tests for entropy calculation (imported from utils)."""
 
     def test_empty_string(self):
-        from utils import calculate_shannon_entropy
+        from safeyolo.core.utils import calculate_shannon_entropy
 
         assert calculate_shannon_entropy("") == 0.0
 
     def test_single_char(self):
-        from utils import calculate_shannon_entropy
+        from safeyolo.core.utils import calculate_shannon_entropy
 
         assert calculate_shannon_entropy("a") == 0.0
         assert calculate_shannon_entropy("aaaa") == 0.0
 
     def test_two_chars_equal(self):
-        from utils import calculate_shannon_entropy
+        from safeyolo.core.utils import calculate_shannon_entropy
 
         entropy = calculate_shannon_entropy("ab")
         assert abs(entropy - 1.0) < 0.01
 
     def test_high_entropy_string(self):
-        from utils import calculate_shannon_entropy
+        from safeyolo.core.utils import calculate_shannon_entropy
 
         # Random-looking string should have high entropy
         entropy = calculate_shannon_entropy("sk-proj-abc123XYZ789def456GHI")
@@ -163,20 +163,20 @@ class TestLooksLikeSecret:
     """Tests for entropy-based secret detection (imported from utils)."""
 
     def test_short_string_rejected(self):
-        from utils import looks_like_secret
+        from safeyolo.core.utils import looks_like_secret
 
         config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         assert not looks_like_secret("short", config)
 
     def test_low_diversity_rejected(self):
-        from utils import looks_like_secret
+        from safeyolo.core.utils import looks_like_secret
 
         config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         # Long but repetitive
         assert not looks_like_secret("aaaaaaaaaaaaaaaaaaaaaaaaa", config)
 
     def test_high_entropy_accepted(self):
-        from utils import looks_like_secret
+        from safeyolo.core.utils import looks_like_secret
 
         config = {"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5}
         # Random-looking API key
@@ -187,7 +187,7 @@ class TestHMACFingerprint:
     """Tests for HMAC fingerprinting (imported from utils)."""
 
     def test_deterministic(self):
-        from utils import hmac_fingerprint
+        from safeyolo.core.utils import hmac_fingerprint
 
         secret = b"test-secret"
         cred = "sk-abc123"
@@ -197,7 +197,7 @@ class TestHMACFingerprint:
         assert fp1 == fp2
 
     def test_different_credentials_different_fingerprints(self):
-        from utils import hmac_fingerprint
+        from safeyolo.core.utils import hmac_fingerprint
 
         secret = b"test-secret"
         fp1 = hmac_fingerprint("sk-abc123", secret)
@@ -205,7 +205,7 @@ class TestHMACFingerprint:
         assert fp1 != fp2
 
     def test_different_secrets_different_fingerprints(self):
-        from utils import hmac_fingerprint
+        from safeyolo.core.utils import hmac_fingerprint
 
         cred = "sk-abc123"
         fp1 = hmac_fingerprint(cred, b"secret1")
@@ -213,7 +213,7 @@ class TestHMACFingerprint:
         assert fp1 != fp2
 
     def test_fingerprint_length(self):
-        from utils import hmac_fingerprint
+        from safeyolo.core.utils import hmac_fingerprint
 
         fp = hmac_fingerprint("test", b"secret")
         assert len(fp) == 16  # First 16 chars of hex digest
@@ -224,7 +224,8 @@ class TestAnalyzeHeaders:
 
     def test_detects_known_pattern_in_auth_header(self):
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         headers = {"Authorization": "Bearer sk-proj-" + "a" * 80}
         detections = analyze_headers(
@@ -317,7 +318,8 @@ class TestDetectionLevels:
     def test_paranoid_catches_unknown_entropy_in_any_header(self):
         """Paranoid: Catches unknown high-entropy values in ANY non-safe header."""
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -337,7 +339,8 @@ class TestDetectionLevels:
     def test_standard_ignores_unknown_entropy_in_nonsuspicious_header(self):
         """Standard: Does NOT catch unknown high-entropy in non-suspicious named headers."""
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -355,7 +358,8 @@ class TestDetectionLevels:
     def test_standard_catches_known_pattern_in_auth_header(self):
         """Standard: Catches known patterns in standard auth headers."""
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         # Key must be long enough to match the pattern (20+ chars after prefix)
         headers = {"Authorization": f"Bearer sk-proj-{'a' * 80}"}
@@ -376,7 +380,8 @@ class TestDetectionLevels:
     def test_standard_ignores_pattern_in_non_auth_header(self):
         """Standard: Does NOT scan non-auth headers (only paranoid does)."""
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         headers = {"X-Random-Header": "sk-proj-abc123xyz456def789ghijk"}
         detections = analyze_headers(
@@ -394,7 +399,8 @@ class TestDetectionLevels:
     def test_paranoid_catches_pattern_in_any_header(self):
         """Paranoid: Catches high-entropy in ANY header (not just auth)."""
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         headers = {"X-Random-Header": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -413,7 +419,8 @@ class TestDetectionLevels:
     def test_patterns_only_ignores_unknown_entropy(self):
         """Patterns-only: Does NOT catch unknown high-entropy values."""
         from credential_guard import analyze_headers
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         headers = {"X-Custom-Token": "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7"}
         detections = analyze_headers(
@@ -434,7 +441,7 @@ class TestSafeHeaders:
 
     def test_pattern_match(self):
         """Pattern-based header matches are detected."""
-        from detection import is_safe_header
+        from safeyolo.detection import is_safe_header
 
         config = {"safe_patterns": ["request-id", "trace", "correlation"]}
         assert is_safe_header("x-request-id", config) is True
@@ -444,7 +451,7 @@ class TestSafeHeaders:
 
     def test_case_insensitive(self):
         """Header matching is case-insensitive."""
-        from detection import is_safe_header
+        from safeyolo.detection import is_safe_header
 
         config = {"safe_patterns": ["request-id"]}
         assert is_safe_header("X-REQUEST-ID", config) is True
@@ -456,21 +463,21 @@ class TestExtractToken:
 
     def test_bearer_scheme(self):
         """Extract token from 'Bearer <token>' format."""
-        from detection import extract_bearer_token
+        from safeyolo.detection import extract_bearer_token
 
         token = extract_bearer_token("Bearer sk-proj-abc123")
         assert token == "sk-proj-abc123"
 
     def test_no_scheme(self):
         """Token without scheme is returned as-is."""
-        from detection import extract_bearer_token
+        from safeyolo.detection import extract_bearer_token
 
         token = extract_bearer_token("sk-proj-abc123")
         assert token == "sk-proj-abc123"
 
     def test_empty_value(self):
         """Empty value returns empty string."""
-        from detection import extract_bearer_token
+        from safeyolo.detection import extract_bearer_token
 
         assert extract_bearer_token("") == ""
 
@@ -592,9 +599,9 @@ class TestEvaluateCredentialWithPDP:
     def test_deny_decision_populates_expected_hosts(self, make_flow):
         """DENY decisions include expected_hosts from matching rule."""
         from credential_guard import evaluate_credential_with_pdp
-        from detection import CredentialRule
 
         from pdp import Effect
+        from safeyolo.detection import CredentialRule
 
         flow = make_flow(
             method="POST",
@@ -1393,7 +1400,8 @@ class TestBlockingMode:
     def test_warn_mode_logs_but_does_not_block(self, make_flow, policy_engine_initialized):
         """Test that warn mode (block=False) logs violation but doesn't block."""
         from credential_guard import CredentialGuard
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)
@@ -1420,7 +1428,8 @@ class TestBlockingMode:
     def test_blocking_mode_blocks(self, make_flow, policy_engine_initialized):
         """Test that blocking mode (block=True) actually blocks."""
         from credential_guard import CredentialGuard
-        from detection import DEFAULT_RULES
+
+        from safeyolo.detection import DEFAULT_RULES
 
         guard = CredentialGuard()
         guard.rules = list(DEFAULT_RULES)

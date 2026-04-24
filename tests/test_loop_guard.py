@@ -114,7 +114,7 @@ class TestLoopDetectionAudit:
         """Loop detection writes a security.loop_guard audit event with DENY decision."""
         from unittest.mock import patch
 
-        from audit_schema import Decision, EventKind, Severity
+        from safeyolo.core.audit_schema import Decision, EventKind, Severity
 
         addon = self._addon()
         flow = tflow.tflow()

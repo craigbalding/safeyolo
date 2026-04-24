@@ -10,62 +10,47 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Post-#200-phase-5 layout: only the actual mitmproxy addon files live
+# in `cli/src/safeyolo/mitm_addons/`. Shared libraries moved to
+# `safeyolo.core`, `safeyolo.policy`, `safeyolo.storage` and are not
+# loaded via `-s`, so they're not expected to import standalone the
+# same way.
 ADDON_MODULES = [
     "admin_api",
     "admin_shield",
     "agent_api",
-    "audit_writer",
-    "base",
     "bootstrap_mode",
-    "budget_tracker",
     "circuit_breaker",
-    "config_cache",
     "credential_guard",
     "file_logging",
-    "flow_cache",
     "flow_pruner",
     "flow_recorder",
-    "flow_store",
-    "flow_writer",
-    "list_loader",
     "loop_guard",
     "memory_monitor",
     "metrics",
     "network_guard",
     "pattern_scanner",
     "pid_writer",
-    "test_context",
-    "unix_listener",
-    "toml_normalize",
-    "toml_roundtrip",
-    "policy_compiler",
     "policy_engine",
-    "policy_loader",
     "request_id",
     "request_logger",
-    "sensor_utils",
     "service_discovery",
     "service_gateway",
     "service_loader",
     "sse_streaming",
-    "utils",
-    "vault",
+    "test_context",
+    "unix_listener",
 ]
 
-# Names that must be importable in each module (used at runtime)
-# Format: module_name -> [required_names]
+# Names that must be importable after the addon loads standalone.
+# Scoped to mitm_addons/ entries post-phase-5.
 REQUIRED_NAMES = {
     "circuit_breaker": ["SecurityAddon", "atomic_write_json", "BackgroundWorker", "make_block_response"],
     "pattern_scanner": ["SecurityAddon", "make_block_response"],
     "credential_guard": ["SecurityAddon", "get_policy_client", "hmac_fingerprint"],
     "network_guard": ["SecurityAddon", "get_client_ip", "get_policy_client"],
-    "base": ["make_block_response", "write_event", "get_option_safe", "get_policy_client"],
-    "policy_engine": ["write_event", "GCRABudgetTracker", "PolicyLoader"],
-    "budget_tracker": ["atomic_write_json", "BackgroundWorker"],
-    "request_logger": ["get_policy_client"],  # Now loads config from PDP
+    "request_logger": ["get_policy_client"],
     "admin_api": ["write_event", "get_policy_client"],
-    "policy_loader": ["write_event"],
-    "sensor_utils": ["build_http_event_from_flow"],
 }
 
 
@@ -81,9 +66,9 @@ class TestStandaloneImports:
             try:
                 from .utils import X
             except ImportError:
-                from utils import X  # <-- This fallback must exist
+                from safeyolo.core.utils import X  # <-- This fallback must exist
         """
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         assert addons_dir.exists(), f"Addons dir not found: {addons_dir}"
 
         failures = []
@@ -119,9 +104,9 @@ class TestStandaloneImports:
             try:
                 from .utils import X, Y, Z
             except ImportError:
-                from utils import X, Y  # Z is missing!
+                from safeyolo.core.utils import X, Y  # Z is missing!
         """
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         failures = []
 
         for module, required_names in REQUIRED_NAMES.items():
@@ -158,7 +143,7 @@ if missing:
 
     def test_addon_module_list_complete(self):
         """Ensure ADDON_MODULES covers all .py files in addons/."""
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         actual_modules = {
             p.stem for p in addons_dir.glob("*.py") if not p.name.startswith("_")
         }
@@ -176,7 +161,7 @@ if missing:
         After PDP migration, PolicyEngine is created only by PDPCore (via
         LocalPolicyClient). The global singleton get_policy_engine() is dead code.
         """
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         source = (addons_dir / "policy_engine.py").read_text()
 
         # Should not define get_policy_engine function
@@ -199,7 +184,7 @@ if missing:
 
     def test_no_addon_imports_get_policy_engine(self):
         """Ensure no addon references the legacy get_policy_engine function."""
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         violations = []
 
         for module in ADDON_MODULES:
@@ -218,7 +203,7 @@ if missing:
         Addons should use PolicyClient.
         Only client implementations import pdp.core.
         """
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         violations = []
 
         for module in ADDON_MODULES:
@@ -241,7 +226,7 @@ class TestAddonContracts:
         flow.metadata["policy_engine"] shim. This test ensures the shim
         was fully removed.
         """
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         violations = []
 
         for module in ADDON_MODULES:
@@ -265,7 +250,7 @@ class TestAddonContracts:
         """
         import re
 
-        addons_dir = Path(__file__).parent.parent / "addons"
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
         violations = []
 
         # Patterns that indicate internal access (excluding definitions/docstrings)

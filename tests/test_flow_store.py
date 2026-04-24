@@ -4,7 +4,8 @@ import json
 import sqlite3
 
 import pytest
-from flow_store import (
+
+from safeyolo.storage.flow_store import (
     FlowStore,
     compress_body,
     decompress_body,

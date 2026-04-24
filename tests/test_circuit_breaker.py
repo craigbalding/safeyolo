@@ -762,7 +762,7 @@ class TestPolicyLoading:
             # The shared config cache holds the last-fetched dict between
             # calls; in production the PolicyClient fires a reload
             # callback that invalidates it. Here we simulate that.
-            import config_cache
+            import safeyolo.core.config_cache as config_cache
             config_cache.invalidate()
             circuit_breaker._maybe_reload_config()
             assert circuit_breaker.failure_threshold == 20

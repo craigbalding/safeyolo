@@ -11,7 +11,7 @@ class TestAgentEgressCompilation:
     """Test that agents.<name>.egress compiles to catch-all permission."""
 
     def _compile(self, agents, hosts=None):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": hosts or {"*": {"unknown_credentials": "prompt", "rate_limit": 600}},
@@ -77,9 +77,9 @@ class TestAgentEgressEvaluation:
     """Test evaluation with agent-level egress posture."""
 
     def _make_engine(self, hosts, agents):
-        from budget_tracker import GCRABudgetTracker
-        from policy_engine import PolicyEngine
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.budget_tracker import GCRABudgetTracker
+        from safeyolo.policy.engine import PolicyEngine
+        from safeyolo.policy.loader import PolicyLoader
 
         raw = {
             "hosts": hosts,

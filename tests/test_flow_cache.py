@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
 
-from flow_cache import headers_present_lower, path_no_query  # noqa: E402
+from safeyolo.core.flow_cache import headers_present_lower, path_no_query  # noqa: E402
 
 
 def _flow(path: str = "/api", headers: dict | None = None):

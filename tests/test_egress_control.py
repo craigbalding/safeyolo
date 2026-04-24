@@ -14,7 +14,7 @@ class TestEgressCompilation:
     """Test that the egress field compiles to correct permissions."""
 
     def _compile(self, egress_value=None, **extra):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         wildcard = {"unknown_credentials": "prompt", "rate_limit": 600}
         if egress_value is not None:
@@ -90,7 +90,7 @@ class TestEgressCompilation:
 
     def test_per_host_egress_deny_compiles(self):
         """A specific host with egress=deny produces a deny permission for that host."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -118,7 +118,7 @@ class TestEgressCompilation:
         Pins the Batch 3 fix: per-host egress prompt was only supported for wildcard
         initially; this verifies named hosts also compile correctly.
         """
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -168,7 +168,7 @@ class TestNetworkGuardEgressApproval:
 
         with (
             patch("network_guard.get_policy_client") as mock_client,
-            patch("base.write_event"),
+            patch("safeyolo.core.base.write_event"),
         ):
             mock_client.return_value.evaluate.return_value = mock_decision
             network_guard.request(flow)
@@ -190,7 +190,7 @@ class TestNetworkGuardEgressApproval:
 
         with (
             patch("network_guard.get_policy_client") as mock_client,
-            patch("base.write_event") as mock_write,
+            patch("safeyolo.core.base.write_event") as mock_write,
         ):
             mock_client.return_value.evaluate.return_value = mock_decision
             network_guard.request(flow)
@@ -213,7 +213,7 @@ class TestExpiresPruning:
     """Test that expired host entries get pruned on policy reload."""
 
     def test_expired_host_removed_from_raw(self, tmp_path):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
@@ -243,7 +243,7 @@ scan_patterns: []
         assert "future-host.com/*" in deny_resources
 
     def test_host_without_expires_unaffected(self, tmp_path):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""

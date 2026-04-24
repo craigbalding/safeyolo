@@ -30,11 +30,10 @@ from pathlib import Path
 # Import existing policy engine components
 # Note: When running as standalone service, these need to be on PYTHONPATH
 sys.path.insert(0, str(Path(__file__).parent.parent / "addons"))
-from policy_engine import PolicyDecision as LegacyDecision
-from policy_engine import PolicyEngine, UnifiedPolicy
-
 # Canonical sanitize_for_log lives in audit_schema.
-from audit_schema import sanitize_for_log as _sanitize_for_log
+from safeyolo.core.audit_schema import sanitize_for_log as _sanitize_for_log
+from safeyolo.policy.engine import PolicyDecision as LegacyDecision
+from safeyolo.policy.engine import PolicyEngine, UnifiedPolicy
 
 from .schemas import (
     BudgetBlock,

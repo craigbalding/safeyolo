@@ -85,7 +85,7 @@ class TestDenyDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.status_code == 403
@@ -101,7 +101,7 @@ class TestDenyDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -122,7 +122,7 @@ class TestDenyDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.metadata["blocked_by"] == "network-guard"
@@ -138,7 +138,7 @@ class TestDenyDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.stats.blocked == 1
@@ -156,7 +156,7 @@ class TestDenyDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -174,7 +174,7 @@ class TestDenyDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.headers["X-Blocked-By"] == "network-guard"
@@ -198,7 +198,7 @@ class TestRateLimitDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.status_code == 429
@@ -214,7 +214,7 @@ class TestRateLimitDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -234,7 +234,7 @@ class TestRateLimitDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.headers["Retry-After"] == "60"
@@ -250,7 +250,7 @@ class TestRateLimitDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.headers["X-RateLimit-Remaining"] == "0"
@@ -266,7 +266,7 @@ class TestRateLimitDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.rate_limited == 1
@@ -291,8 +291,8 @@ class TestEgressApprovalDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True), \
-             patch("base.write_event"):
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("safeyolo.core.base.write_event"):
             addon.request(flow)
 
         assert flow.response.status_code == 428
@@ -308,8 +308,8 @@ class TestEgressApprovalDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True), \
-             patch("base.write_event"):
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("safeyolo.core.base.write_event"):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -329,8 +329,8 @@ class TestEgressApprovalDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True), \
-             patch("base.write_event"):
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("safeyolo.core.base.write_event"):
             addon.request(flow)
 
         assert flow.metadata["blocked_by"] == "network-guard"
@@ -354,7 +354,7 @@ class TestAllowDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response is None
@@ -370,7 +370,7 @@ class TestAllowDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.stats.allowed == 1
@@ -387,7 +387,7 @@ class TestAllowDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.metadata["ratelimit_remaining"] == 2999
@@ -403,7 +403,7 @@ class TestAllowDecision:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert "ratelimit_remaining" not in flow.metadata
@@ -427,7 +427,7 @@ class TestPDPErrorFailClosed:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.status_code == 403
@@ -444,7 +444,7 @@ class TestPDPErrorFailClosed:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -465,7 +465,7 @@ class TestRuntimeErrorFailClosed:
         flow = make_flow("any.com", "/")
 
         with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.status_code == 403
@@ -476,7 +476,7 @@ class TestRuntimeErrorFailClosed:
         flow = make_flow("any.com", "/")
 
         with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.metadata["blocked_by"] == "network-guard"
@@ -487,7 +487,7 @@ class TestRuntimeErrorFailClosed:
         flow = make_flow("any.com", "/")
 
         with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.stats.blocked == 1
@@ -498,7 +498,7 @@ class TestRuntimeErrorFailClosed:
         flow = make_flow("any.com", "/")
 
         with patch("network_guard.get_policy_client", side_effect=RuntimeError("not configured")), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -532,7 +532,7 @@ class TestHomoglyphDetection:
         addon = NetworkGuard()
         flow = make_flow("\u0430pi.openai.com", "/v1/chat")
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response.status_code == 403
@@ -547,7 +547,7 @@ class TestHomoglyphDetection:
         addon = NetworkGuard()
         flow = make_flow("\u0430pi.openai.com", "/v1/chat")
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.metadata["blocked_by"] == "network-guard"
@@ -595,7 +595,7 @@ class TestWarnMode:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", side_effect=self._option_warn):
+             patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn):
             addon.request(flow)
 
         assert flow.response is None
@@ -614,7 +614,7 @@ class TestWarnMode:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", side_effect=self._option_warn):
+             patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn):
             addon.request(flow)
 
         assert flow.response is None
@@ -632,8 +632,8 @@ class TestWarnMode:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", side_effect=self._option_warn), \
-             patch("base.write_event"):
+             patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn), \
+             patch("safeyolo.core.base.write_event"):
             addon.request(flow)
 
         assert flow.response is None
@@ -645,7 +645,7 @@ class TestWarnMode:
         addon = NetworkGuard()
         flow = make_flow("\u0430pi.openai.com", "/v1/chat")
 
-        with patch("base.get_option_safe", side_effect=self._option_warn):
+        with patch("safeyolo.core.base.get_option_safe", side_effect=self._option_warn):
             addon.request(flow)
 
         assert flow.response is None
@@ -668,8 +668,8 @@ class TestBypassBehaviour:
         mock_client = MagicMock()
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_policy_client", return_value=mock_client), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         # Evaluation should NOT have been called
@@ -697,7 +697,7 @@ class TestBypassBehaviour:
 
         with patch.object(addon, "is_bypassed", side_effect=tracking_is_bypassed), \
              patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert call_order == ["is_bypassed"]
@@ -717,7 +717,7 @@ class TestDisabledAddon:
         mock_client = MagicMock()
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=False):
+             patch("safeyolo.core.base.get_option_safe", return_value=False):
             addon.request(flow)
 
         mock_client.evaluate.assert_not_called()
@@ -742,7 +742,7 @@ class TestSingleEvaluation:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert mock_client.evaluate.call_count == 1
@@ -778,7 +778,7 @@ class TestStats:
             Effect.DENY, reason="denied"
         )
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow1)
 
         # Second request: allow
@@ -787,7 +787,7 @@ class TestStats:
             Effect.ALLOW, reason="allowed"
         )
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow2)
 
         stats = addon.get_stats()
@@ -806,7 +806,7 @@ class TestStats:
             Effect.BUDGET_EXCEEDED, reason="exceeded"
         )
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         stats = addon.get_stats()
@@ -823,8 +823,8 @@ class TestStats:
         mock_client = MagicMock()
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True):
+             patch("safeyolo.core.base.get_policy_client", return_value=mock_client), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.stats.checks == 0
@@ -849,8 +849,8 @@ class TestAuditEvents:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True), \
-             patch("base.write_event") as mock_write:
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("safeyolo.core.base.write_event") as mock_write:
             addon.request(flow)
 
         calls = [c for c in mock_write.call_args_list if c[0][0] == "security.network_guard"]
@@ -870,8 +870,8 @@ class TestAuditEvents:
         )
 
         with patch("network_guard.get_policy_client", return_value=mock_client), \
-             patch("base.get_option_safe", return_value=True), \
-             patch("base.write_event") as mock_write:
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("safeyolo.core.base.write_event") as mock_write:
             addon.request(flow)
 
         calls = [c for c in mock_write.call_args_list if c[0][0] == "security.network_guard"]

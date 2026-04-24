@@ -61,7 +61,7 @@ class TestDenormalize:
     """Test field name conversion from internal to TOML format."""
 
     def test_metadata_to_top_level(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -71,7 +71,7 @@ class TestDenormalize:
         assert "metadata" not in result
 
     def test_hosts_field_renaming(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -82,7 +82,7 @@ class TestDenormalize:
         assert "rate_limit" not in result["hosts"]["api.openai.com"]
 
     def test_wildcard_host(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -91,7 +91,7 @@ class TestDenormalize:
         assert result["hosts"]["*"]["rate"] == 600
 
     def test_credentials_to_credential(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -101,7 +101,7 @@ class TestDenormalize:
         assert result["credential"]["openai"]["match"] == ['sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}']
 
     def test_global_budget_to_budget(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -110,7 +110,7 @@ class TestDenormalize:
         assert "global_budget" not in result
 
     def test_risk_appetite_to_risk(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -120,7 +120,7 @@ class TestDenormalize:
         assert result["risk"][0]["decision"] == "allow"
 
     def test_bypass_passes_through(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         result = denormalize(raw)
@@ -132,7 +132,7 @@ class TestBuildTomlDocument:
     """Test building structured TOML documents."""
 
     def test_produces_valid_toml(self):
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         toml_data = denormalize(raw)
@@ -145,7 +145,7 @@ class TestBuildTomlDocument:
 
     def test_full_round_trip(self):
         """YAML -> denormalize -> TOML -> normalize should match original."""
-        from toml_normalize import denormalize, normalize
+        from safeyolo.policy.toml_normalize import denormalize, normalize
 
         raw = yaml.safe_load(SAMPLE_YAML)
         toml_data = denormalize(raw)
@@ -170,7 +170,7 @@ class TestNormalize:
 
     def test_normalize_budget_to_global_budget(self):
         """Top-level 'budget' becomes 'global_budget'."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         result = normalize({"budget": 12000})
         assert result["global_budget"] == 12000
@@ -178,7 +178,7 @@ class TestNormalize:
 
     def test_normalize_credential_to_credentials_with_patterns(self):
         """Singular 'credential' becomes plural 'credentials', .match -> .patterns."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         result = normalize({
             "credential": {
@@ -192,7 +192,7 @@ class TestNormalize:
 
     def test_normalize_host_rate_to_rate_limit(self):
         """Per-host 'rate' becomes 'rate_limit'."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         result = normalize({
             "hosts": {"api.openai.com": {"rate": 3000, "allow": ["openai:*"]}}
@@ -204,21 +204,21 @@ class TestNormalize:
 
     def test_normalize_collision_budget_and_global_budget_raises(self):
         """Raises ValueError when both 'budget' and 'global_budget' are present."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         with pytest.raises(ValueError, match="budget.*global_budget"):
             normalize({"budget": 100, "global_budget": 200})
 
     def test_normalize_non_dict_hosts_raises(self):
         """Raises ValueError when 'hosts' is not a dict."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         with pytest.raises(ValueError, match="Expected dict.*hosts"):
             normalize({"hosts": ["not", "a", "dict"]})
 
     def test_normalize_agents_hosts_renamed(self):
         """Agent-scoped hosts get the same field renames as top-level hosts."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         result = normalize({
             "agents": {
@@ -235,7 +235,7 @@ class TestNormalize:
 
     def test_normalize_does_not_mutate_input(self):
         """normalize() must not modify the caller's input dict."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         original = {
             "budget": 12000,
@@ -247,7 +247,7 @@ class TestNormalize:
 
     def test_normalize_empty_input(self):
         """normalize({}) returns an empty dict."""
-        from toml_normalize import normalize
+        from safeyolo.policy.toml_normalize import normalize
 
         result = normalize({})
         assert result == {}
