@@ -32,6 +32,32 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+@pytest.fixture(autouse=True)
+def _reset_config_cache():
+    """Reset the sensor_config cache between tests.
+
+    `config_cache` is a module-level singleton (same as in production).
+    Tests that mock PolicyClient behaviour need to start from a clean
+    state, otherwise a prior test's stubbed config bleeds into the
+    next. Invalidate before AND after so fresh mocks are picked up on
+    the next `get()` and the singleton doesn't leak into later
+    sessions either.
+    """
+    try:
+        import config_cache
+        config_cache._cache._config = None
+        config_cache._cache._callback_registered = False
+    except ImportError:  # pragma: no cover — addon path issue
+        pass
+    yield
+    try:
+        import config_cache
+        config_cache._cache._config = None
+        config_cache._cache._callback_registered = False
+    except ImportError:
+        pass
+
+
 @pytest.fixture
 def make_flow():
     """Factory for creating test flows."""

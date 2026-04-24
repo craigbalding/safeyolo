@@ -222,21 +222,20 @@ class CircuitBreaker(SecurityAddon):
 
     def _maybe_reload_config(self):
         """Reload settings from policy engine if policy hash changed."""
-        from pdp import get_policy_client
+        import config_cache
 
         try:
-            client = get_policy_client()
-            config = client.get_sensor_config()
-            policy_hash = config.get("policy_hash", "")
-
-            if policy_hash != self._last_policy_hash:
-                self._load_config_from_pdp(config)
-                self._last_policy_hash = policy_hash
+            config = config_cache.get_or_raise()
         except RuntimeError:
             # PolicyClient not configured yet - skip reload
-            pass
+            return
         except Exception as e:
             log.warning("Failed to reload circuit breaker config: %s: %s", type(e).__name__, e)
+            return
+        policy_hash = config.get("policy_hash", "")
+        if policy_hash != self._last_policy_hash:
+            self._load_config_from_pdp(config)
+            self._last_policy_hash = policy_hash
 
     def _reconcile_stale_circuits(self):
         """Reconcile stale circuit states after loading from disk.

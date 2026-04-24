@@ -27,7 +27,6 @@ from mitmproxy import http
 from utils import matches_host_pattern, sanitize_for_log, write_event
 
 from audit_schema import Decision, EventKind, Severity
-from pdp import get_policy_client
 
 log = logging.getLogger("safeyolo.test-context")
 
@@ -122,22 +121,23 @@ class TestContext(SecurityAddon):
 
     def _maybe_reload_config(self):
         """Reload target_hosts from PDP if policy changed."""
-        try:
-            client = get_policy_client()
-            sensor_config = client.get_sensor_config()
-            policy_hash = sensor_config.get("policy_hash", "")
+        import config_cache
 
-            if policy_hash != self._last_policy_hash:
-                pc_config = sensor_config.get("addons", {}).get("test_context", {})
-                self._target_hosts = pc_config.get("target_hosts", [])
-                self._last_policy_hash = policy_hash
-                if self._target_hosts:
-                    log.info(f"Loaded {len(self._target_hosts)} test target hosts")
+        try:
+            sensor_config = config_cache.get_or_raise()
         except RuntimeError:
             # PolicyClient not configured yet
-            pass
+            return
         except Exception as exc:
             log.warning(f"Failed to reload test context config: {type(exc).__name__}: {exc}")
+            return
+        policy_hash = sensor_config.get("policy_hash", "")
+        if policy_hash != self._last_policy_hash:
+            pc_config = sensor_config.get("addons", {}).get("test_context", {})
+            self._target_hosts = pc_config.get("target_hosts", [])
+            self._last_policy_hash = policy_hash
+            if self._target_hosts:
+                log.info(f"Loaded {len(self._target_hosts)} test target hosts")
 
     def _is_target_host(self, host: str) -> bool:
         """Check if host matches any configured target host pattern."""

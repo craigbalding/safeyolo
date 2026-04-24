@@ -717,10 +717,8 @@ class TestPolicyLoading:
         assert "localhost" in circuit_breaker._excluded_domains  # hardcoded still there
 
     def test_maybe_reload_config_skips_when_pdp_not_configured(self, circuit_breaker):
-        """_maybe_reload_config silently skips when PDP raises RuntimeError."""
-        mock_get = MagicMock(side_effect=RuntimeError("PolicyClient not configured"))
-
-        with patch("pdp.get_policy_client", mock_get):
+        """_maybe_reload_config silently skips when the PolicyClient is unconfigured."""
+        with patch("pdp.is_policy_client_configured", return_value=False):
             # Should not raise
             circuit_breaker._maybe_reload_config()
 
@@ -739,7 +737,8 @@ class TestPolicyLoading:
             }
         }
 
-        with patch("pdp.get_policy_client", return_value=mock_client):
+        with patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True):
             # First call - should reload
             circuit_breaker._maybe_reload_config()
             assert circuit_breaker.failure_threshold == 10
@@ -760,6 +759,11 @@ class TestPolicyLoading:
                     }
                 }
             }
+            # The shared config cache holds the last-fetched dict between
+            # calls; in production the PolicyClient fires a reload
+            # callback that invalidates it. Here we simulate that.
+            import config_cache
+            config_cache.invalidate()
             circuit_breaker._maybe_reload_config()
             assert circuit_breaker.failure_threshold == 20
 

@@ -844,7 +844,8 @@ class TestMaybeReloadRules:
             "addons": {},
         }
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
             guard._maybe_reload_rules()
 
         assert guard._last_policy_hash == "new-hash"
@@ -862,7 +863,8 @@ class TestMaybeReloadRules:
             "policy_hash": "same-hash",
         }
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
             guard._maybe_reload_rules()
 
         assert guard._last_policy_hash == "same-hash"
@@ -872,7 +874,7 @@ class TestMaybeReloadRules:
         """RuntimeError from get_policy_client() is swallowed (PDP not ready)."""
         guard = self._make_guard()
 
-        with mock.patch("credential_guard.get_policy_client", side_effect=RuntimeError("not configured")):
+        with mock.patch("pdp.is_policy_client_configured", return_value=False):
             # Should not raise
             guard._maybe_reload_rules()
 
@@ -888,7 +890,8 @@ class TestMaybeReloadRules:
         mock_client = mock.MagicMock()
         mock_client.get_sensor_config.side_effect = ValueError("corrupted config")
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
             with caplog.at_level(logging.ERROR, logger="safeyolo.credential-guard"):
                 guard._maybe_reload_rules()
 
@@ -905,7 +908,8 @@ class TestMaybeReloadRules:
         mock_client = mock.MagicMock()
         mock_client.get_sensor_config.side_effect = ValueError("corrupted config")
 
-        with mock.patch("credential_guard.get_policy_client", return_value=mock_client):
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
             with caplog.at_level(logging.WARNING, logger="safeyolo.credential-guard"):
                 guard._maybe_reload_rules()
 

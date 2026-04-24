@@ -400,7 +400,8 @@ class TestTestContextAddon:
             },
         }
 
-        with patch("test_context.get_policy_client", return_value=mock_client):
+        with patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True):
             addon._maybe_reload_config()
 
         assert addon._target_hosts == ["target1.example.com", "target2.example.com"]
@@ -421,7 +422,8 @@ class TestTestContextAddon:
             },
         }
 
-        with patch("test_context.get_policy_client", return_value=mock_client):
+        with patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True):
             addon._maybe_reload_config()
 
         # Should still have original targets
@@ -674,7 +676,7 @@ class TestTestContextConfigReload:
         addon = TestContext()
         addon._target_hosts = ["original.example.com"]
 
-        with patch("test_context.get_policy_client", side_effect=RuntimeError("not configured")):
+        with patch("pdp.is_policy_client_configured", return_value=False):
             addon._maybe_reload_config()
 
         # Target hosts unchanged
@@ -687,7 +689,10 @@ class TestTestContextConfigReload:
         addon = TestContext()
         addon._target_hosts = ["original.example.com"]
 
-        with patch("test_context.get_policy_client", side_effect=ConnectionError("timeout")), \
+        mock_client = MagicMock()
+        mock_client.get_sensor_config.side_effect = ConnectionError("timeout")
+        with patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True), \
              patch("test_context.log") as mock_log:
             addon._maybe_reload_config()
 
