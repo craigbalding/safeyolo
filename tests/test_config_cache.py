@@ -160,6 +160,88 @@ class TestAccessors:
             assert cache.addon_section("missing") == {}
 
 
+class TestTTLFallback:
+    """HTTP-client path: no reload signal, TTL-bound staleness."""
+
+    def test_no_ttl_for_local_client(self):
+        """LocalPolicyClient registers a callback — TTL stays None."""
+        client = _client_with_hash("abc")  # MagicMock has add_reload_callback
+        cache = _ConfigCache()
+
+        with mock.patch("pdp.get_policy_client", return_value=client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            cache.get()
+
+        assert cache._ttl_s is None
+
+    def test_ttl_set_for_http_client(self):
+        """HTTPClient shape (no add_reload_callback) → TTL fallback."""
+        client = MagicMock(spec=["get_sensor_config"])
+        client.get_sensor_config.return_value = {"policy_hash": "x"}
+        cache = _ConfigCache()
+
+        with mock.patch("pdp.get_policy_client", return_value=client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            cache.get()
+
+        assert cache._ttl_s is not None
+        assert cache._ttl_s > 0
+
+    def test_ttl_env_override(self, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_CACHE_TTL_S", "7")
+        client = MagicMock(spec=["get_sensor_config"])
+        client.get_sensor_config.return_value = {"policy_hash": "x"}
+        cache = _ConfigCache()
+
+        with mock.patch("pdp.get_policy_client", return_value=client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            cache.get()
+
+        assert cache._ttl_s == 7.0
+
+    def test_ttl_env_garbage_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_CONFIG_CACHE_TTL_S", "not-a-number")
+        client = MagicMock(spec=["get_sensor_config"])
+        client.get_sensor_config.return_value = {"policy_hash": "x"}
+        cache = _ConfigCache()
+
+        with mock.patch("pdp.get_policy_client", return_value=client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            cache.get()
+
+        assert cache._ttl_s == 30.0  # _DEFAULT_HTTP_TTL_S
+
+    def test_ttl_expiry_triggers_refetch(self):
+        client = MagicMock(spec=["get_sensor_config"])
+        client.get_sensor_config.return_value = {"policy_hash": "fresh"}
+        cache = _ConfigCache()
+
+        with mock.patch("pdp.get_policy_client", return_value=client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            cache.get()
+            assert client.get_sensor_config.call_count == 1
+
+            # Force expiry by rewinding _fetched_at past the TTL.
+            cache._fetched_at -= cache._ttl_s + 1.0
+            cache.get()
+
+        assert client.get_sensor_config.call_count == 2
+
+    def test_within_ttl_still_caches(self):
+        client = MagicMock(spec=["get_sensor_config"])
+        client.get_sensor_config.return_value = {"policy_hash": "fresh"}
+        cache = _ConfigCache()
+
+        with mock.patch("pdp.get_policy_client", return_value=client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            cache.get()
+            # Well within the 30 s TTL.
+            cache.get()
+            cache.get()
+
+        assert client.get_sensor_config.call_count == 1
+
+
 class TestConcurrency:
     def test_concurrent_gets_do_not_crash(self):
         """Multiple threads calling get() during initial fetch is safe."""
