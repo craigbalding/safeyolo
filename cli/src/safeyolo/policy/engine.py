@@ -41,7 +41,13 @@ from pydantic import BaseModel, Field, model_validator
 from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.utils import matches_host_pattern, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.policy.budget_tracker import GCRABudgetTracker
-from safeyolo.policy.loader import PolicyLoader
+
+# `PolicyLoader` is imported lazily inside `PolicyEngine.__init__` to
+# avoid a module-level cycle: `loader.py` type-hints `UnifiedPolicy`
+# (defined here) under `TYPE_CHECKING`, which CodeQL's
+# `py/unsafe-cyclic-import` flags as a cycle even though there's no
+# runtime edge. Keeping the runtime import at the call site eliminates
+# both the lint complaint and any lingering import-order risk.
 
 log = logging.getLogger("safeyolo.policy-engine")
 
@@ -384,7 +390,9 @@ class PolicyEngine:
         # Budget tracking
         self._budget_tracker = GCRABudgetTracker(budget_state_path)
 
-        # Policy loader handles file loading, watching, SIGHUP
+        # Policy loader handles file loading, watching, SIGHUP.
+        # Lazy import — see module-level comment about the cycle.
+        from safeyolo.policy.loader import PolicyLoader  # noqa: PLC0415
         self._loader = PolicyLoader(baseline_path, services_dir=services_dir)
         if baseline_path:
             self._loader.start_watcher()
