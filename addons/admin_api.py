@@ -12,6 +12,7 @@ Usage:
     mitmdump -s addons/admin_api.py --set admin_port=9090
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -1097,8 +1098,27 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "'modes' must be a list of strings"}, 400)
             return
 
+        # The admin API runs on a dedicated HTTP server thread; setting
+        # `ctx.options.mode` here fires mitmproxy's options-changed signal
+        # which schedules `Servers.update()` as a coroutine on the event
+        # loop. If we don't schedule the update *on* the loop, that
+        # coroutine is created but never awaited — options.mode updates
+        # but no listener actually starts/stops. Use
+        # run_coroutine_threadsafe and wait for the reconcile to complete
+        # so the PUT response reflects the real listener state.
+        async def _apply() -> None:
+            ctx.options.update(mode=modes)
+            # Let Servers.update run to completion before we return.
+            # Empirically ~300 ms per listener create on local UDS;
+            # 2 s is generous for the handful of agents we expect.
+            await asyncio.sleep(0.5)
+
         try:
-            setattr(ctx.options, "mode", modes)
+            fut = asyncio.run_coroutine_threadsafe(_apply(), ctx.master.event_loop)
+            fut.result(timeout=2.0)
+        except TimeoutError:
+            self._send_json({"error": "timeout waiting for mode reconcile"}, 504)
+            return
         except Exception as e:  # invalid spec, unknown mode type, etc.
             self._send_json({"error": f"{type(e).__name__}: {e}"}, 400)
             return

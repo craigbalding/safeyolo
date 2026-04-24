@@ -20,9 +20,9 @@ class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
     def test_addon_chain_has_expected_count(self):
-        """ADDON_CHAIN contains exactly 21 addons (unix_listener + pid_writer)."""
+        """ADDON_CHAIN contains 22 addons (unix_listener + bootstrap_mode + ...)."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 21
+        assert len(ADDON_CHAIN) == 22
 
     def test_addon_chain_starts_with_unix_listener(self):
         """First addon loaded is unix_listener.py.
@@ -643,12 +643,13 @@ class TestBuildCommand:
         }
 
     def test_basic_command_structure(self, cmd_env):
-        """Command starts with mitmdump and sets mode to the UDS list.
+        """Command starts with mitmdump; no `--set mode=...` on the CLI.
 
-        Post-refactor: mitmproxy no longer binds a TCP listener.
-        `--listen-host` / `-p` are gone; each per-agent `unix:<path>`
-        entry comes through as `--set mode=...`. With no agents
-        registered, the mode is empty (passed as `--set mode=`).
+        Post-refactor: per-agent `unix:<path>` listeners are populated
+        by `addons/bootstrap_mode.py` in `running()`, not on the CLI
+        (mitmproxy validates `--set mode=` before addons load, so
+        `UnixMode` isn't registered yet). The transient default listener
+        is forced onto `127.0.0.1:0` so it never conflicts or leaks.
         """
         from safeyolo.proxy import _build_command
 
@@ -661,9 +662,11 @@ class TestBuildCommand:
 
         assert cmd[0] == "mitmdump" or cmd[0].endswith("/mitmdump")
         assert "--listen-host" not in cmd
-        # No agents registered → mode is set to empty rather than the
-        # mitmproxy default "regular" (which would bind TCP 8080).
-        assert "mode=" in cmd
+        # No `--set mode=...` — bootstrap_mode does the wiring.
+        assert not any(a.startswith("mode=") for a in cmd)
+        # Transient default listener pinned to loopback:ephemeral.
+        assert "listen_host=127.0.0.1" in cmd
+        assert "listen_port=0" in cmd
 
     def test_addons_loaded_in_chain_order(self, cmd_env):
         """Addons appear as -s flags in ADDON_CHAIN order."""

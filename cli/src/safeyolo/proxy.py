@@ -22,9 +22,14 @@ log = logging.getLogger("safeyolo.proxy")
 # Addon load order — mirrors scripts/start-safeyolo.sh exactly
 ADDON_CHAIN = [
     # Layer -1: UDS ingress — must be first. Defines UnixMode /
-    # UnixInstance which auto-register via __init_subclass__; these
-    # classes must exist by the time Proxyserver parses options.mode.
+    # UnixInstance which auto-register via __init_subclass__. The
+    # bootstrap addon below then populates options.mode from
+    # agent_map.json in `running()` (by which time UnixMode is live).
     "unix_listener.py",
+    "bootstrap_mode.py", # replaces the transient default listener with
+                         # per-agent unix: listeners; must run before
+                         # pid_writer so the CLI's "ready" signal only
+                         # fires once UDS listeners are bound.
     # Layer 0: Infrastructure
     "pid_writer.py",     # writes SAFEYOLO_PROXY_PID_FILE on `running`
     "file_logging.py",
@@ -435,15 +440,15 @@ def _build_command(
         if addon_path.exists():
             cmd.extend(["-s", str(addon_path)])
 
-    # Build the per-agent UDS listener list from agent_map.json. Empty
-    # list is valid: mitmproxy starts with no listeners; agents added
-    # via `safeyolo agent add` push updates through admin API
-    # `PUT /admin/proxy/mode`.
-    mode_specs = _initial_mode_specs(data_dir)
-    for spec in mode_specs:
-        cmd.extend(["--set", f"mode={spec}"])
-    if not mode_specs:
-        cmd.extend(["--set", "mode="])
+    # Listener wiring is done by addons/bootstrap_mode.py in `running()`,
+    # after all addons load (so UnixMode is registered). Mitmproxy's CLI
+    # parses `--set mode=...` *before* addons, so `unix:` specs cannot
+    # go here. Force the transient default `regular` listener onto an
+    # ephemeral loopback port — bootstrap_mode immediately replaces it
+    # with the per-agent `unix:` set, so 127.0.0.1:<ephemeral> is held
+    # for <500 ms and never reachable off-host.
+    cmd.extend(["--set", "listen_host=127.0.0.1"])
+    cmd.extend(["--set", "listen_port=0"])
 
     # Core options
     cmd.extend(["--set", f"confdir={cert_dir}"])

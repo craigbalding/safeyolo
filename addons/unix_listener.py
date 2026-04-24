@@ -91,6 +91,32 @@ class UnixMode(mode_specs.ProxyMode):
         return _parse_sock_path(self.data)[1]
 
 
+class _PeeredStreamWriter:
+    """Thin shim around `asyncio.StreamWriter` that reports a synthetic
+    peername. `asyncio.start_unix_server` hands us a writer whose
+    `get_extra_info("peername")` is `""`; mitmproxy's
+    `LiveConnectionHandler.__init__` feeds that to
+    `human.format_address`, which indexes `address[0]` and crashes
+    (`IndexError: string index out of range`). Supplying the
+    `(ip, 0)` tuple derived from the listener's socket path lets the
+    base class build the `Client` normally and gives downstream addons
+    a consistent attribution IP.
+    """
+
+    def __init__(self, writer: asyncio.StreamWriter, peername: tuple[str, int]) -> None:
+        self._w = writer
+        self._peername = peername
+
+    def get_extra_info(self, name, default=None):
+        if name == "peername":
+            return self._peername
+        return self._w.get_extra_info(name, default)
+
+    def __getattr__(self, name):
+        # Delegate every other StreamWriter method/attr straight through.
+        return getattr(self._w, name)
+
+
 class UnixInstance(AsyncioServerInstance[UnixMode]):
     """Per-agent UDS listener. One instance per socket file."""
 
@@ -137,17 +163,11 @@ class UnixInstance(AsyncioServerInstance[UnixMode]):
         if writer is None:
             # UDS accepted connections always arrive with both halves.
             writer = reader  # pragma: no cover
+        peered = _PeeredStreamWriter(writer, (self.mode.ip, 0))
         handler = ProxyConnectionHandler(
-            ctx.master, reader, writer, ctx.options, self.mode
+            ctx.master, reader, peered, ctx.options, self.mode
         )
         handler.layer = self.make_top_layer(handler.layer.context)
-        # UDS accept() returns no meaningful peer address. Identity lives
-        # in the socket filename this listener is bound to — stamp it on
-        # the Client so downstream addons (service_discovery,
-        # flow_recorder, logging) see a consistent attribution IP.
-        # The listener knows the agent directly, but we express identity
-        # via peername[0] so existing addons continue to work unchanged.
-        handler.layer.context.client.peername = (self.mode.ip, 0)
         with self.manager.register_connection(
             handler.layer.context.client.id, handler
         ):
