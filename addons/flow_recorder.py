@@ -76,6 +76,12 @@ class FlowRecorder:
             compress_bodies=config.get("compress_bodies", True),
         )
         self.store.init_db()
+        # Wrap the store with the async writer so record_flow doesn't
+        # run on the mitmproxy hook thread. Producer-side is a single
+        # `put_nowait`; compression + SQLite INSERT happens on a
+        # dedicated daemon thread.
+        import flow_writer
+        flow_writer.install(self.store)
         log.info(f"Flow recorder active, db={db_path}")
 
     def _should_record(self, flow: http.HTTPFlow) -> bool:
@@ -205,11 +211,18 @@ class FlowRecorder:
 
         try:
             record = self._build_record(flow, flow_state)
-            self.store.record_flow(record)
-            self._stats["recorded"] += 1
         except Exception as exc:
+            # Build-record failures stay on the hook (cheap, bounded).
+            # Writer-thread errors are tracked via flow_writer stats.
             self._stats["errors"] += 1
-            log.warning(f"Failed to record flow: {type(exc).__name__}: {exc}")
+            log.warning(f"Failed to build flow record: {type(exc).__name__}: {exc}")
+            return
+
+        # Hand off to the background writer. put_record is a single
+        # queue.put_nowait; compression + SQLite INSERT happens off-hook.
+        import flow_writer
+        flow_writer.put_record(record)
+        self._stats["recorded"] += 1
 
     def error(self, flow: http.HTTPFlow):
         """Record transport errors (upstream unreachable, DNS failure, timeout)."""
@@ -219,18 +232,41 @@ class FlowRecorder:
 
         try:
             record = self._build_record(flow, "error")
-            self.store.record_flow(record)
-            self._stats["recorded"] += 1
         except Exception as exc:
             self._stats["errors"] += 1
-            log.warning(f"Failed to record error flow: {type(exc).__name__}: {exc}")
+            log.warning(f"Failed to build error flow record: {type(exc).__name__}: {exc}")
+            return
+
+        import flow_writer
+        flow_writer.put_record(record)
+        self._stats["recorded"] += 1
 
     def get_stats(self) -> dict:
-        """Return recording statistics."""
-        return dict(self._stats)
+        """Return recording statistics.
+
+        Includes writer-side counters (queue drops, on-error drops) so
+        operators see backpressure and persistent-write failures in
+        the same pane as the addon's own skip/record/error counts.
+        """
+        stats = dict(self._stats)
+        import flow_writer
+        writer = flow_writer.get_writer()
+        if writer is not None:
+            stats["queue_dropped"] = writer.dropped_queue_full
+            stats["write_errors"] = writer.dropped_on_error
+        return stats
 
     def done(self):
-        """Close store on shutdown."""
+        """Drain the writer, then close the store on shutdown.
+
+        The writer's atexit hook also flushes, but closing the store
+        before that runs would race the background thread. Explicit
+        order here: stop the writer first, close the DB after.
+        """
+        import flow_writer
+        writer = flow_writer.get_writer()
+        if writer is not None:
+            writer._shutdown()  # noqa: SLF001 — owns its thread
         if self.store:
             self.store.close()
 
