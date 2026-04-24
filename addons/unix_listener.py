@@ -67,6 +67,12 @@ class UnixMode(mode_specs.ProxyMode):
 
     description = "UDS ingress"
     transport_protocol: ClassVar[Literal["tcp", "udp", "both"]] = "tcp"
+    # UDS listeners don't bind a TCP port. `default_port=None` + the
+    # overrides below keep `Proxyserver.configure`'s duplicate-address
+    # dedup check from seeing N unix specs as N listeners on the same
+    # host:port (which would abort startup with "Cannot spawn multiple
+    # servers on the same address").
+    default_port: ClassVar[int | None] = None
 
     def __post_init__(self) -> None:
         if not self.data:
@@ -77,6 +83,17 @@ class UnixMode(mode_specs.ProxyMode):
         # re-parse on demand via the `ip`/`agent` properties so that
         # the socket path remains the single source of truth.
         _parse_sock_path(self.data)
+
+    def listen_host(self, default=None):
+        # No IP host for a UDS listener. The socket path is the address.
+        return ""
+
+    def listen_port(self, default=None):
+        # Return None so Proxyserver.configure skips this mode in its
+        # host:port dedup list (see mitmproxy/addons/proxyserver.py —
+        # `if port is None: continue`). `LocalMode` / `TunMode` use the
+        # same pattern.
+        return None
 
     @property
     def path(self) -> str:
