@@ -23,16 +23,19 @@ os.environ.setdefault(
 import pytest
 
 # Post-#200-phase-5: addons live under the installed `safeyolo` package,
-# not as top-level modules in `addons/`. Tests can import via
-# `from safeyolo.mitm_addons.foo import ...`. We also keep the
-# mitm_addons directory on sys.path so the older "bare" pattern
-# (`from pid_writer import ...`) still resolves — matching how
-# mitmproxy's `-s` loader exposes siblings at runtime.
-_MITM_ADDONS_DIR = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
+# not as top-level modules in `addons/`. CI's test-addons job runs
+# `uv sync --frozen --group dev` at the repo root — that installs
+# transitive deps but doesn't necessarily install workspace-member
+# packages as editable. So we add `cli/src` to sys.path for
+# `from safeyolo.X import ...` resolution and `mitm_addons/` for
+# the older "bare" pattern (`from pid_writer import ...`) that
+# mitmproxy's `-s` loader exposes at runtime.
+_CLI_SRC_DIR = Path(__file__).parent.parent / "cli" / "src"
+sys.path.insert(0, str(_CLI_SRC_DIR))
+_MITM_ADDONS_DIR = _CLI_SRC_DIR / "safeyolo" / "mitm_addons"
 sys.path.insert(0, str(_MITM_ADDONS_DIR))
 
-# Project root remains on sys.path for `from pdp import ...` and
-# `from audit_schema import ...` (both live at the repo root).
+# Project root remains on sys.path for `from pdp import ...`.
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
