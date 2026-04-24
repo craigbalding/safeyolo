@@ -26,6 +26,7 @@ ADDON_MODULES = [
     "flow_pruner",
     "flow_recorder",
     "flow_store",
+    "flow_writer",
     "list_loader",
     "loop_guard",
     "memory_monitor",

@@ -19,14 +19,48 @@ def recorder(tmp_path):
         tctx.options.flow_store_enabled = True
         tctx.options.flow_store_db_path = str(tmp_path / "test_flows.sqlite3")
 
-        # Initialize store directly (bypass PDP config loading)
+        # Initialize store directly (bypass PDP config loading) and
+        # wire up the async writer that `response`/`error` now enqueue
+        # through. Tests asserting on `store.search_flows` must first
+        # call `_drain_flow_writer()` to wait for background writes.
         store = FlowStore(db_path=tctx.options.flow_store_db_path)
         store.init_db()
         addon.store = store
+        import flow_writer
+        flow_writer._writer = None  # reset between tests
+        flow_writer.install(store)
+
+        # `FlowRecorder.response`/`.error` now enqueue to the async
+        # writer instead of calling `store.record_flow` synchronously.
+        # Tests read via `addon.store.search_flows` right after the
+        # hook call, so wrap it here to auto-drain the writer first.
+        # Keeps every test body unchanged.
+        _orig_search = store.search_flows
+        def search_flows_autodrain(*args, **kwargs):
+            w = flow_writer.get_writer()
+            if w is not None:
+                w.wait_for_drain(timeout_s=3.0)
+            return _orig_search(*args, **kwargs)
+        store.search_flows = search_flows_autodrain  # type: ignore[method-assign]
 
         yield addon
 
+        w = flow_writer.get_writer()
+        if w is not None:
+            w._shutdown()
         store.close()
+
+
+def _drain_flow_writer() -> None:
+    """Block until the async writer has applied all enqueued records.
+
+    `FlowRecorder.response`/`.error` enqueue onto a background thread;
+    tests that then assert on `addon.store.search_flows` must wait.
+    """
+    import flow_writer
+    w = flow_writer.get_writer()
+    assert w is not None, "flow_writer was not installed for this test"
+    assert w.wait_for_drain(timeout_s=3.0), "flow writer failed to drain"
 
 
 def _make_test_flow(
@@ -322,35 +356,52 @@ class TestErrorRecording:
         recorder.error(flow)
         assert recorder._stats["skipped"] == 1
 
-    def test_error_does_not_increment_recorded(self, recorder):
-        """A flow that fails to write increments errors, not recorded."""
+    def test_error_flow_with_broken_store_surfaces_as_write_error(self, recorder):
+        """A flow whose async write fails lands as `write_errors`, not
+        hook-side `errors`. (Post-async refactor: `recorded` counts
+        successful enqueues; persistent-write failures are tracked by
+        the background writer and surfaced via `get_stats()`.)"""
         flow = _make_test_flow(request_id="req-err-count1")
         flow.response = None
         flow.error = MagicMock()
         flow.error.msg = "timeout"
 
-        # Break the store to force a write failure
+        # Break the store so the writer thread's record_flow raises.
         recorder.store.close()
         recorder.store._conn = None
 
         recorder.error(flow)
-        assert recorder._stats["errors"] == 1
-        assert recorder._stats["recorded"] == 0
+        # Enqueue succeeded, so the hook counts the record.
+        assert recorder._stats["recorded"] == 1
+        assert recorder._stats["errors"] == 0
+
+        # Let the writer pick it up and fail; the error ends up on the
+        # writer's counter, visible via get_stats().
+        import flow_writer
+        flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
+        stats = recorder.get_stats()
+        assert stats["write_errors"] == 1
 
 
 class TestBestEffort:
     def test_db_write_failure_doesnt_raise(self, recorder):
-        """DB failures are caught and counted, not raised."""
+        """Writer-thread DB failures are caught + counted, not raised.
+
+        Post-async: the hook returns before the write runs, so errors
+        appear on the writer's `write_errors` counter (surfaced via
+        `get_stats()`), not the hook-side `errors` counter."""
         flow = _make_test_flow()
-        # Close the store to force a write failure
         recorder.store.close()
         recorder.store._conn = None
 
-        # Should not raise
+        # Should not raise from the hook.
         recorder.response(flow)
-        assert recorder._stats["errors"] == 1
+        import flow_writer
+        flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
+        assert recorder.get_stats()["write_errors"] == 1
 
     def test_error_hook_failure_doesnt_raise(self, recorder):
+        """Same guarantee for the error() hook path."""
         flow = _make_test_flow()
         flow.error = MagicMock()
         flow.error.msg = "timeout"
@@ -358,7 +409,9 @@ class TestBestEffort:
         recorder.store._conn = None
 
         recorder.error(flow)
-        assert recorder._stats["errors"] == 1
+        import flow_writer
+        flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
+        assert recorder.get_stats()["write_errors"] == 1
 
 
 class TestLifecycle:
