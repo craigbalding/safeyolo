@@ -54,7 +54,14 @@ def logger_with_log(tmp_path):
 
 
 def _read_events(log_path: Path) -> list[dict]:
-    """Read all JSONL entries from a log file."""
+    """Read all JSONL entries from a log file.
+
+    `write_event` is now async (background writer thread). Drain the
+    queue before reading so assertions see events the addon actually
+    enqueued, not races with the writer thread.
+    """
+    from audit_writer import get_writer
+    assert get_writer().wait_for_drain(timeout_s=3.0), "audit writer failed to drain"
     if not log_path.exists():
         return []
     return [json.loads(line) for line in log_path.read_text().splitlines() if line]

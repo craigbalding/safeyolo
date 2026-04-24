@@ -14,6 +14,7 @@ ADDON_MODULES = [
     "admin_api",
     "admin_shield",
     "agent_api",
+    "audit_writer",
     "base",
     "bootstrap_mode",
     "budget_tracker",

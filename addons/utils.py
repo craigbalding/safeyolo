@@ -41,7 +41,6 @@ import math
 import os
 import re
 import secrets
-import sys
 import threading
 import unicodedata
 from collections.abc import Callable
@@ -248,15 +247,13 @@ def write_event(
             "summary": summary,
         }
 
-    try:
-        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _rotate_jsonl_if_needed()
-        with open(AUDIT_LOG_PATH, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception as e:
-        # Fallback to stderr if log write fails
-        print(f"[safeyolo] Event log write failed: {type(e).__name__}: {e}", file=sys.stderr)
-        print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr)
+    # Hand off to the async writer. `put_event` is a single
+    # `queue.put_nowait` (non-blocking); the background thread handles
+    # rotation, open/append/close, and stderr fallback on flush failure.
+    # Keeping file I/O off the hook thread matters because `write_event`
+    # is called from request/response hooks on every flow.
+    from audit_writer import put_event as _put_event
+    _put_event(entry)
 
 
 def make_block_response(
