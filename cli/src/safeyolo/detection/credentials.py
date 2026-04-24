@@ -103,7 +103,11 @@ class CredentialRule:
     def __post_init__(self):
         if self.header_names is None:
             self.header_names = ["authorization", "x-api-key"]
-        from safeyolo.detection.patterns import compile_pattern
+        # Relative import so this module works whether it was loaded
+        # as `safeyolo.detection.credentials` (installed package) or as
+        # top-level `detection.credentials` (fuzz harness that puts
+        # cli/src/safeyolo on sys.path).
+        from .patterns import compile_pattern
 
         self._compiled = []
         for p in self.patterns:
