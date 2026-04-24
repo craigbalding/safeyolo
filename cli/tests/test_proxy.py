@@ -20,20 +20,19 @@ class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
     def test_addon_chain_has_expected_count(self):
-        """ADDON_CHAIN contains exactly 21 addons (proxy_protocol + pid_writer)."""
+        """ADDON_CHAIN contains exactly 21 addons (unix_listener + pid_writer)."""
         from safeyolo.proxy import ADDON_CHAIN
         assert len(ADDON_CHAIN) == 21
 
-    def test_addon_chain_starts_with_proxy_protocol(self):
-        """First addon loaded is proxy_protocol.py.
+    def test_addon_chain_starts_with_unix_listener(self):
+        """First addon loaded is unix_listener.py.
 
-        Parses the PROXY protocol v2 header from upstream TCP via
-        next_layer, which must run before any other layer inspects
-        the flow so the rewritten peername and stripped header are
-        available to every downstream addon.
+        Registers `UnixMode` and `UnixInstance` via `__init_subclass__`
+        so they are available by the time Proxyserver parses
+        `options.mode` at startup.
         """
         from safeyolo.proxy import ADDON_CHAIN
-        assert ADDON_CHAIN[0] == "proxy_protocol.py"
+        assert ADDON_CHAIN[0] == "unix_listener.py"
 
     def test_addon_chain_ends_with_admin_api(self):
         """Last addon loaded is admin_api.py (observability layer)."""
@@ -644,7 +643,13 @@ class TestBuildCommand:
         }
 
     def test_basic_command_structure(self, cmd_env):
-        """Command starts with mitmdump, listen-host 0.0.0.0, and port."""
+        """Command starts with mitmdump and sets mode to the UDS list.
+
+        Post-refactor: mitmproxy no longer binds a TCP listener.
+        `--listen-host` / `-p` are gone; each per-agent `unix:<path>`
+        entry comes through as `--set mode=...`. With no agents
+        registered, the mode is empty (passed as `--set mode=`).
+        """
         from safeyolo.proxy import _build_command
 
         cmd = _build_command(
@@ -655,12 +660,10 @@ class TestBuildCommand:
         )
 
         assert cmd[0] == "mitmdump" or cmd[0].endswith("/mitmdump")
-        assert "--listen-host" in cmd
-        idx = cmd.index("--listen-host")
-        assert cmd[idx + 1] == "0.0.0.0"
-        assert "-p" in cmd
-        idx = cmd.index("-p")
-        assert cmd[idx + 1] == "8080"
+        assert "--listen-host" not in cmd
+        # No agents registered → mode is set to empty rather than the
+        # mitmproxy default "regular" (which would bind TCP 8080).
+        assert "mode=" in cmd
 
     def test_addons_loaded_in_chain_order(self, cmd_env):
         """Addons appear as -s flags in ADDON_CHAIN order."""
@@ -832,8 +835,13 @@ class TestBuildCommand:
         assert f"circuit_state_file={expected_data}" in cmd_str
         assert f"flow_store_db_path={expected_logs}" in cmd_str
 
-    def test_custom_ports_in_command(self, cmd_env):
-        """Custom proxy and admin ports appear in the command."""
+    def test_custom_admin_port_in_command(self, cmd_env):
+        """Custom admin port appears in --set admin_port=…
+
+        Post-refactor: `proxy_port` is kept in the signature for
+        backwards compatibility but no longer binds a TCP listener —
+        mitmproxy ingress is UDS-only (one UnixInstance per agent).
+        """
         from safeyolo.proxy import _build_command
 
         cmd = _build_command(
@@ -843,10 +851,11 @@ class TestBuildCommand:
             **cmd_env,
         )
 
-        idx = cmd.index("-p")
-        assert cmd[idx + 1] == "9999"
         cmd_str = " ".join(cmd)
         assert "admin_port=7777" in cmd_str
+        # No TCP listener bind flags remain.
+        assert "-p" not in cmd
+        assert "--listen-host" not in cmd
 
     def test_mitmdump_found_via_shutil_which(self, cmd_env):
         """When shutil.which finds mitmdump, that path is used."""
@@ -1637,7 +1646,6 @@ class TestStartProxy:
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
              patch("safeyolo.proxy._build_command", return_value=["mitmdump"]), \
              patch("safeyolo.proxy.subprocess.Popen", side_effect=_popen_simulate_addon), \
-             patch("safeyolo.proxy_bridge.start_proxy_bridge"), \
              patch("builtins.open", MagicMock()):
             start_proxy()
 

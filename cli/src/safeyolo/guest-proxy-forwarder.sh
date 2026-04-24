@@ -23,10 +23,14 @@ UDS_PATH="${2:-/safeyolo/proxy.sock}"
 VSOCK_HOST_CID=2
 VSOCK_HOST_PORT=1080
 
+# retry=20,interval=0.25 absorbs brief mitmproxy restart windows
+# (~5s total): socat retries the upstream connect while mitmproxy is
+# rebinding its per-agent UnixInstance, so the agent's HTTP request
+# sees a delayed connect rather than ECONNREFUSED.
 if [ -S "$UDS_PATH" ]; then
-    upstream="UNIX-CONNECT:$UDS_PATH"
+    upstream="UNIX-CONNECT:$UDS_PATH,retry=20,interval=0.25"
 else
-    upstream="VSOCK-CONNECT:$VSOCK_HOST_CID:$VSOCK_HOST_PORT"
+    upstream="VSOCK-CONNECT:$VSOCK_HOST_CID:$VSOCK_HOST_PORT,retry=20,interval=0.25"
 fi
 
 echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream} (running as agent)" >&2

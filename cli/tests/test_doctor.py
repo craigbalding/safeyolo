@@ -487,29 +487,29 @@ class TestDoctorCLI:
 
 
 class TestCheckEgressStructural:
-    """Both platforms now use structural isolation — the proxy_bridge
-    is the readiness signal. The sandbox has no external interface and
-    no kernel firewall in the critical path."""
+    """Both platforms use structural isolation — mitmproxy itself owns
+    the per-agent UDS listeners. The sandbox has no external interface
+    and no kernel firewall in the critical path; 'mitmproxy running' is
+    the readiness signal."""
 
     @pytest.fixture(params=["Darwin", "Linux"], autouse=True)
     def _platform(self, request, monkeypatch):
         monkeypatch.setattr("platform.system", lambda: request.param)
 
-    def test_pass_when_bridge_running(self, monkeypatch):
+    def test_pass_when_proxy_running(self, monkeypatch):
         monkeypatch.setattr(
-            "safeyolo.proxy_bridge.is_bridge_running", lambda: True,
+            "safeyolo.proxy.is_proxy_running", lambda: True,
         )
         result = _check_firewall()
         assert result.status == "pass"
-        assert "proxy UDS bridge active" in result.message
 
-    def test_warn_when_bridge_not_running(self, monkeypatch):
+    def test_warn_when_proxy_not_running(self, monkeypatch):
         monkeypatch.setattr(
-            "safeyolo.proxy_bridge.is_bridge_running", lambda: False,
+            "safeyolo.proxy.is_proxy_running", lambda: False,
         )
         result = _check_firewall()
         assert result.status == "warn"
-        assert "bridge not running" in result.message
+        assert "mitmproxy not running" in result.message
         assert result.remediation == "safeyolo start"
 
 

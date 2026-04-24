@@ -13,7 +13,9 @@ No Docker, containerd, sudo, or other daemon required. Only needs:
 
 Network isolation is structural: each agent runs in its own user
 namespace with a loopback-only network namespace. The only egress
-path is a bind-mounted UDS routed through the proxy bridge.
+path is a bind-mounted UDS on which mitmproxy's per-agent
+`UnixInstance` is listening — no bridge process, identity comes
+from the socket filename.
 """
 
 import json
@@ -924,9 +926,11 @@ class LinuxPlatform(AgentPlatform):
              "options": ["rbind", "rw", "nosuid", "nodev"]},
         ]
 
-        # Per-agent proxy UDS
-        from ..proxy_bridge import socket_path_for as _proxy_sock_for  # noqa: PLC0415
-        proxy_sock = _proxy_sock_for(name)
+        # Per-agent proxy UDS — mitmproxy's UnixInstance binds this
+        # socket (one per agent) under `<ip>_<agent>.sock`; gVisor's
+        # --host-uds=open lets the sandboxed process connect through.
+        from ..sockets import path_for as _proxy_sock_for  # noqa: PLC0415
+        proxy_sock = _proxy_sock_for(name, fw_alloc.get("attribution_ip", ""))
         if proxy_sock.exists():
             mounts.append({
                 "destination": "/safeyolo/proxy.sock",

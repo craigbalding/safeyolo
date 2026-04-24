@@ -2,10 +2,12 @@
 
 Each platform implements the same interface:
   - macOS: Virtualization.framework microVM; egress via vsock → host UDS
-           → proxy_bridge (structural isolation, no kernel firewall)
+           → mitmproxy's per-agent UnixInstance (structural isolation,
+           no kernel firewall)
   - Linux: gVisor (runsc) container in a loopback-only netns; egress via
-           bind-mounted UDS → proxy_bridge; iptables rules block any
-           stray outbound traffic from the netns
+           bind-mounted UDS → mitmproxy's per-agent UnixInstance;
+           `--host-uds=open` + no external netif block any stray
+           outbound traffic
 
 The platform is auto-detected at runtime. All platform-specific code
 lives behind this interface — agent.py, lifecycle.py, and the rest of

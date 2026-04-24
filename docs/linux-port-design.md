@@ -67,7 +67,7 @@ Both share:
 | Kernel | Custom Linux kernel in VM | gVisor Sentry (userspace kernel) |
 | KVM | N/A (Hypervisor.framework) | Optional, auto-detected; systrap fallback |
 | Runtime privileges | none (sudo only if user opts into lo0 aliases, now unused) | none (rootless user namespace via `newuidmap`/`newgidmap`) |
-| Identity attribution | PROXY protocol v2 header on bridge's upstream TCP | PROXY protocol v2 header on bridge's upstream TCP (same mechanism) |
+| Identity attribution | `<ip>_<agent>.sock` filename parsed by mitmproxy's `UnixInstance` | `<ip>_<agent>.sock` filename parsed by mitmproxy's `UnixInstance` (same mechanism) |
 
 ## What Does NOT Change
 
@@ -210,20 +210,22 @@ setup_networking(agent_index):
     1. Allocate attribution IP 10.200.X.Y (within a /16 — agent index
        → deterministic IP; visible to both the operator and mitmproxy
        for log correlation)
-    2. Signal needs_bridge_socket=True so agent.py coordinates with
-       proxy_bridge to create the per-agent UDS before start_sandbox
+    2. Signal needs_bridge_socket=True so agent.py calls admin API
+       `PUT /admin/proxy/mode` with the updated `unix:<path>` list;
+       mitmproxy spawns a UnixInstance, creating the socket file.
 
 (the sandbox's netns is the userns holder's netns; loopback only —
  no veth, no external IP, no routing)
 ```
 
 The sandbox has no external network interface. The per-agent UDS at
-`~/.safeyolo/data/sockets/<name>.sock` is bind-mounted into the sandbox
-at `/safeyolo/proxy.sock` (via `runsc --host-uds=open`); the in-guest
-forwarder relays HTTP to it, and `proxy_bridge` stamps a PROXY
-protocol v2 header carrying the attribution IP on upstream TCP.
-mitmproxy's `next_layer` addon parses the header and rewrites
-`client_conn.peername` so every flow is attributed to the right agent.
+`~/.safeyolo/data/sockets/<ip>_<agent>.sock` is bind-mounted into the
+sandbox at `/safeyolo/proxy.sock` (via `runsc --host-uds=open`); the
+in-guest forwarder relays HTTP to it, and mitmproxy's `UnixInstance`
+accepts directly on the UDS. Identity is parsed from the socket
+filename at bind time and stamped on every accepted connection via
+`client.peername = (ip, 0)` — no header, no wire protocol adapter,
+no separate daemon.
 
 No iptables rules, no firewall, no netfilter state. The sandbox has
 nowhere to leak to; misconfiguration scenarios have been engineered
@@ -427,8 +429,10 @@ decisions that landed differently from the original plan:
 - **Same guest-init.sh on both platforms.** The plan to replace
   guest-init with OCI config lost out to keeping a single source
   of truth for CA trust, mise install, and agent launch.
-- **PROXY protocol v2 for identity.** Earlier designs used per-agent
-  bridge source ports bound to synthetic 127.0.0.X IPs (macOS lo0
-  aliases, Linux attribution IPs) with mitmproxy looking them up.
-  Final design uses a standard PROXY-v2 header parsed by an addon —
-  cross-platform, no sudo needed on macOS, no lo0 aliasing.
+- **Filename as identity envelope.** Earlier designs threaded identity
+  through a PROXY-v2 header or synthetic source ports. Current design:
+  mitmproxy binds a per-agent UDS whose filename (`<ip>_<agent>.sock`)
+  encodes both the attribution IP and the agent name. The
+  `UnixInstance` parses the filename once at bind and stamps every
+  accepted connection — no wire-protocol adapter, no host-side
+  bridging daemon, no sudo.

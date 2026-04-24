@@ -94,9 +94,9 @@ struct VMConfiguration {
         vmConfig.storageDevices = storageDevices
 
         // No virtio-net: the sandbox has no external network interface.
-        // All egress goes through vsock → host UDS → proxy_bridge. This
-        // is structural isolation — there's no other path out, no
-        // firewall rules to misconfigure.
+        // All egress goes through vsock → host UDS → mitmproxy's
+        // per-agent UnixInstance. This is structural isolation — there's
+        // no other path out, no firewall rules to misconfigure.
 
         // VirtioFS shares
         if !config.shares.isEmpty {

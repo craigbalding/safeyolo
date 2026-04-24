@@ -4,15 +4,14 @@ import Virtualization
 /// Listens on a vsock port for guest-initiated connections and relays
 /// each one bidirectionally to a Unix domain socket on the host.
 ///
-/// Architecture symmetry with Linux: the host-side proxy_bridge owns
-/// identity (binds upstream TCP source to the agent's attribution IP)
-/// and policy (routing to local mitmproxy, team proxy, or peer agents).
-/// This relay is a dumb vsock↔UDS pump — one process per VM, no TCP
-/// logic, no knowledge of mitmproxy.
+/// The upstream UDS is bound by mitmproxy's per-agent UnixInstance;
+/// identity comes from the socket filename (<ip>_<agent>.sock) which
+/// mitmproxy parses at bind. This relay is a dumb vsock↔UDS pump —
+/// one process per VM, no TCP logic, no knowledge of mitmproxy.
 ///
 ///   Guest: curl → guest-forwarder → vsock
-///   Host:  safeyolo-vm → UDS <sockets_dir>/<name>.sock
-///   Host:  proxy_bridge → TCP mitmproxy (Linux-and-macOS shared code)
+///   Host:  safeyolo-vm → UDS <sockets_dir>/<ip>_<agent>.sock
+///          (mitmproxy UnixInstance listens here)
 class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
 
     static let PROXY_PORT: UInt32 = 1080
@@ -35,9 +34,15 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         self.queue = queue
         self.socketPath = socketPath
         // Derive agent name from the per-agent socket path
-        // (<dir>/<name>.sock). Cheap and avoids a new CLI flag.
-        self.agent = ((socketPath as NSString).lastPathComponent
-                      as NSString).deletingPathExtension
+        // (<dir>/<ip>_<agent>.sock). Log-only; relay forwards bytes
+        // regardless of identity.
+        let stem = ((socketPath as NSString).lastPathComponent
+                    as NSString).deletingPathExtension
+        if let underscore = stem.firstIndex(of: "_") {
+            self.agent = String(stem[stem.index(after: underscore)...])
+        } else {
+            self.agent = stem
+        }
         super.init()
     }
 
@@ -79,11 +84,10 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         let started = Date()
         let vsockFD = vsockConnection.fileDescriptor
 
-        // Open a fresh UDS client connection for this flow. The bridge
-        // accepts on <socketPath>, binds the upstream TCP source to the
-        // agent's attribution IP, and connects to mitmproxy. Identity is
-        // stamped by which per-agent UDS the bridge accepted from —
-        // this relay never touches the attribution IP or the TCP port.
+        // Open a fresh UDS client connection for this flow. Mitmproxy's
+        // UnixInstance accepts on <socketPath> and parses the attribution
+        // IP / agent name from its own filename — this relay never
+        // touches identity.
         let udsFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard udsFD >= 0 else {
             Log.warn(Self.LABEL,

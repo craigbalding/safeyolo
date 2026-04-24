@@ -10,9 +10,9 @@ line-per-check with a PASS/FAIL/WARN prefix; exit code 0 on all-pass,
 
 Intentionally does NOT require the VM's guest side to be reachable.
 The probes all target the host-visible artifacts + a fast UDS-level
-roundtrip through the bridge. If the agent's VM is up we also check
-the platform sandbox presence; if not, that's reported and the rest
-continues.
+roundtrip through mitmproxy's per-agent listener. If the agent's VM
+is up we also check the platform sandbox presence; if not, that's
+reported and the rest continues.
 """
 from __future__ import annotations
 
@@ -24,8 +24,9 @@ from pathlib import Path
 
 from rich.console import Console
 
-from .config import get_agent_map_path, get_agents_dir, get_data_dir
-from .proxy_bridge import is_bridge_running, socket_path_for
+from .config import get_agent_map_path, get_agents_dir
+from .proxy import is_proxy_running
+from .sockets import path_for as socket_path_for
 
 console = Console()
 
@@ -77,44 +78,43 @@ def _check_attribution_ip(entry: dict) -> Check:
     ip = entry.get("ip")
     if not ip:
         return Check("Attribution IP", "FAIL", "no 'ip' field in agent map entry")
-    # Attribution IP is conveyed to mitmproxy via PROXY protocol v2 --
-    # no lo0 alias or kernel bind required. Just verify it's present
-    # in the agent map.
-    return Check("Attribution IP", "PASS", f"{ip} (PROXY protocol v2)")
+    # Attribution IP is encoded into the per-agent UDS filename
+    # (`<ip>_<agent>.sock`) and parsed by mitmproxy's UnixInstance at
+    # bind time. No lo0 alias or kernel bind required.
+    return Check("Attribution IP", "PASS", f"{ip} (UDS filename)")
 
 
-def _check_bridge_socket(name: str, entry: dict) -> Check:
+def _check_proxy_socket(name: str, entry: dict) -> Check:
     sock_path_str = entry.get("socket")
-    # The agent_map 'socket' value was written by the platform when
-    # the agent was registered; trust it. Fall back to computed default
-    # for backward compat.
-    sock_path = Path(sock_path_str) if sock_path_str else socket_path_for(name)
+    if sock_path_str:
+        sock_path = Path(sock_path_str)
+    else:
+        ip = entry.get("ip")
+        if not ip:
+            return Check("Proxy socket", "FAIL", "no 'ip' in agent map entry")
+        sock_path = socket_path_for(name, ip)
     if not sock_path.exists():
-        return Check("Bridge socket", "FAIL",
+        return Check("Proxy socket", "FAIL",
                      f"{sock_path} missing",
                      "safeyolo stop --all && safeyolo start && safeyolo agent run "
                      f"{name}")
     try:
         st = sock_path.stat()
     except OSError as exc:
-        return Check("Bridge socket", "FAIL",
+        return Check("Proxy socket", "FAIL",
                      f"stat failed: {type(exc).__name__}: {exc}")
     mode = st.st_mode & 0o777
-    return Check("Bridge socket", "PASS",
+    return Check("Proxy socket", "PASS",
                  f"{sock_path} mode={oct(mode)}")
 
 
-def _check_bridge_process() -> Check:
-    if not is_bridge_running():
-        return Check("Bridge process", "FAIL",
-                     "proxy_bridge daemon not running",
+def _check_proxy_process() -> Check:
+    if not is_proxy_running():
+        return Check("Proxy process", "FAIL",
+                     "mitmproxy not running",
                      "safeyolo start")
-    pid_file = get_data_dir() / "proxy-bridge.pid"
-    try:
-        pid = int(pid_file.read_text().strip())
-    except (ValueError, OSError):
-        return Check("Bridge process", "WARN", "running (pid unreadable)")
-    return Check("Bridge process", "PASS", f"pid={pid}")
+    return Check("Proxy process", "PASS",
+                 "mitmproxy running (owns per-agent UnixInstance listeners)")
 
 
 def _check_sandbox_running(name: str) -> Check:
@@ -128,15 +128,16 @@ def _check_sandbox_running(name: str) -> Check:
 
 
 def _check_end_to_end(name: str, entry: dict) -> Check:
-    """Send a minimal HTTP request through the bridge's per-agent UDS.
+    """Send a minimal HTTP request through the per-agent UDS.
 
     We don't need a 200 from upstream -- mitmproxy answering at all
     (even with 400 Bad Request for our empty Host header) proves the
-    full chain: UDS → bridge accept → TCP bind+connect from attribution
-    IP → mitmproxy parsed the request. That's every hop on the host
-    side exercised.
+    full chain: UDS accept → mitmproxy parsed the request. That's
+    every host-side hop exercised.
     """
-    sock_path_str = entry.get("socket") or str(socket_path_for(name))
+    sock_path_str = entry.get("socket") or str(
+        socket_path_for(name, entry.get("ip", ""))
+    )
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(5)
@@ -158,7 +159,7 @@ def _check_end_to_end(name: str, entry: dict) -> Check:
                      f"{type(exc).__name__}: {exc}")
     if not buf:
         return Check("End-to-end probe", "FAIL",
-                     "no response from bridge/mitmproxy -- chain broken")
+                     "no response from mitmproxy -- chain broken")
     first_line = buf.split(b"\n", 1)[0].decode(errors="replace").strip()
     if not first_line.startswith("HTTP/"):
         # Something responded but it's not HTTP -- something's wrong on
@@ -194,8 +195,8 @@ def run_agent_diag(name: str) -> int:
 
     for check_fn in (
         lambda: _check_attribution_ip(entry),
-        lambda: _check_bridge_socket(name, entry),
-        _check_bridge_process,
+        lambda: _check_proxy_socket(name, entry),
+        _check_proxy_process,
         lambda: _check_sandbox_running(name),
         lambda: _check_end_to_end(name, entry),
     ):

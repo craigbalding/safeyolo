@@ -30,13 +30,14 @@ starts with '10.200.'.
 parser and service_discovery both assume this prefix. An IP
 outside the range indicates network_guard isolation was
 misconfigured and traffic would be unattributable.
-- **`test_agent_map_has_socket`** — Bridge socket referenced in the entry exists on disk.
+- **`test_agent_map_has_socket`** — Per-agent proxy socket referenced in the entry exists on disk.
   - *Probe:* Reads the 'socket' field and asserts the path is a
 live Unix domain socket (Path.is_socket()).
-  - *Consequence if unasserted:* The bridge socket is the only egress path for the agent.
-A missing or stale socket means every agent request fails with
-ENOENT — effectively a denial of service, not a security
-issue, but a strong signal that the identity chain is broken.
+  - *Consequence if unasserted:* The per-agent UDS (bound by mitmproxy's
+UnixInstance) is the only egress path for the agent. A missing or
+stale socket means every agent request fails with ENOENT —
+effectively a denial of service, not a security issue, but a strong
+signal that the identity chain is broken.
 
 ### `tests/blackbox/host/lifecycle/test_home_persistence.py`
 
