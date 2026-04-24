@@ -34,23 +34,23 @@ class TestSpecificityScore:
     """Tests for _specificity_score: ordering heuristic for permission matching."""
 
     def test_wildcard_only_scores_zero(self):
-        from policy_loader import _specificity_score
+        from safeyolo.policy.loader import _specificity_score
 
         assert _specificity_score("*") == 0
 
     def test_exact_host_scores_by_length(self):
-        from policy_loader import _specificity_score
+        from safeyolo.policy.loader import _specificity_score
 
         # "api.example.com" = 15 chars * 10 = 150
         assert _specificity_score("api.example.com") == 150
 
     def test_longer_pattern_scores_higher_than_shorter(self):
-        from policy_loader import _specificity_score
+        from safeyolo.policy.loader import _specificity_score
 
         assert _specificity_score("api.example.com") > _specificity_score("api.com")
 
     def test_single_wildcard_reduces_score(self):
-        from policy_loader import _specificity_score
+        from safeyolo.policy.loader import _specificity_score
 
         # "*.example.com" has a wildcard, "api.example.com" does not
         exact = _specificity_score("api.example.com")
@@ -58,14 +58,14 @@ class TestSpecificityScore:
         assert exact > glob
 
     def test_more_wildcards_reduce_score_further(self):
-        from policy_loader import _specificity_score
+        from safeyolo.policy.loader import _specificity_score
 
         one_wild = _specificity_score("*.example.com")
         two_wild = _specificity_score("*.*")
         assert one_wild > two_wild
 
     def test_condition_adds_five_point_tiebreaker(self):
-        from policy_loader import _specificity_score
+        from safeyolo.policy.loader import _specificity_score
 
         without = _specificity_score("api.example.com", has_condition=False)
         with_cond = _specificity_score("api.example.com", has_condition=True)
@@ -80,42 +80,42 @@ class TestIsExactResource:
     """Tests for _is_exact_resource: identifies 'host/*' patterns for O(1) lookup."""
 
     def test_simple_host_slash_star(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("api.openai.com/*") is True
 
     def test_wildcard_host_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("*.googleapis.com/*") is False
 
     def test_bare_wildcard_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("*") is False
 
     def test_no_trailing_slash_star_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("api.openai.com") is False
 
     def test_service_colon_path_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("minifuse:/v1/feeds/*") is False
 
     def test_deep_path_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("api.example.com/v1/*") is False
 
     def test_question_mark_in_host_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("api?.example.com/*") is False
 
     def test_bracket_glob_in_host_is_not_exact(self):
-        from policy_loader import _is_exact_resource
+        from safeyolo.policy.loader import _is_exact_resource
 
         assert _is_exact_resource("[abc].example.com/*") is False
 
@@ -124,29 +124,29 @@ class TestIsSimplePermission:
     """Tests for _is_simple_permission: identifies permissions reducible to set entries."""
 
     def test_explicit_allow_no_condition(self):
-        from policy_engine import Permission
-        from policy_loader import _is_simple_permission
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _is_simple_permission
 
         perm = Permission(action="network:request", resource="api.example.com/*", effect="allow", tier="explicit")
         assert _is_simple_permission(perm) is True
 
     def test_explicit_deny_no_condition(self):
-        from policy_engine import Permission
-        from policy_loader import _is_simple_permission
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _is_simple_permission
 
         perm = Permission(action="network:request", resource="evil.com/*", effect="deny", tier="explicit")
         assert _is_simple_permission(perm) is True
 
     def test_budget_effect_is_not_simple(self):
-        from policy_engine import Permission
-        from policy_loader import _is_simple_permission
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _is_simple_permission
 
         perm = Permission(action="network:request", resource="api.example.com/*", effect="budget", budget=3000, tier="explicit")
         assert _is_simple_permission(perm) is False
 
     def test_with_condition_is_not_simple(self):
-        from policy_engine import Condition, Permission
-        from policy_loader import _is_simple_permission
+        from safeyolo.policy.engine import Condition, Permission
+        from safeyolo.policy.loader import _is_simple_permission
 
         perm = Permission(
             action="credential:use",
@@ -158,8 +158,8 @@ class TestIsSimplePermission:
         assert _is_simple_permission(perm) is False
 
     def test_inferred_tier_is_not_simple(self):
-        from policy_engine import Permission
-        from policy_loader import _is_simple_permission
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _is_simple_permission
 
         perm = Permission(action="network:request", resource="api.example.com/*", effect="allow", tier="inferred")
         assert _is_simple_permission(perm) is False
@@ -169,8 +169,8 @@ class TestBuildPermissionIndex:
     """Tests for _build_permission_index: partitions permissions into three tiers."""
 
     def test_simple_allow_goes_to_simple_sets(self):
-        from policy_engine import Permission
-        from policy_loader import _build_permission_index
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _build_permission_index
 
         perm = Permission(action="network:request", resource="api.example.com/*", effect="allow", tier="explicit")
         simple, exact, patterns = _build_permission_index([perm])
@@ -180,8 +180,8 @@ class TestBuildPermissionIndex:
         assert patterns == []
 
     def test_conditioned_exact_goes_to_exact_dict(self):
-        from policy_engine import Condition, Permission
-        from policy_loader import _build_permission_index
+        from safeyolo.policy.engine import Condition, Permission
+        from safeyolo.policy.loader import _build_permission_index
 
         perm = Permission(
             action="credential:use",
@@ -198,8 +198,8 @@ class TestBuildPermissionIndex:
         assert patterns == []
 
     def test_wildcard_resource_goes_to_patterns(self):
-        from policy_engine import Permission
-        from policy_loader import _build_permission_index
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _build_permission_index
 
         perm = Permission(action="network:request", resource="*.example.com/*", effect="allow", tier="explicit")
         simple, exact, patterns = _build_permission_index([perm])
@@ -210,8 +210,8 @@ class TestBuildPermissionIndex:
         assert patterns[0].resource == "*.example.com/*"
 
     def test_budget_exact_goes_to_exact_dict(self):
-        from policy_engine import Permission
-        from policy_loader import _build_permission_index
+        from safeyolo.policy.engine import Permission
+        from safeyolo.policy.loader import _build_permission_index
 
         perm = Permission(action="network:request", resource="api.openai.com/*", effect="budget", budget=3000, tier="explicit")
         simple, exact, patterns = _build_permission_index([perm])
@@ -221,8 +221,8 @@ class TestBuildPermissionIndex:
         assert patterns == []
 
     def test_mixed_permissions_are_partitioned_correctly(self):
-        from policy_engine import Condition, Permission
-        from policy_loader import _build_permission_index
+        from safeyolo.policy.engine import Condition, Permission
+        from safeyolo.policy.loader import _build_permission_index
 
         perms = [
             Permission(action="network:request", resource="evil.com/*", effect="deny", tier="explicit"),
@@ -245,25 +245,25 @@ class TestPolicyLoaderConstruction:
     """Tests for PolicyLoader construction and empty-state properties."""
 
     def test_no_path_creates_empty_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         assert len(loader.baseline.permissions) == 0
 
     def test_task_policy_initially_none(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         assert loader.task_policy is None
 
     def test_task_policy_path_initially_none(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         assert loader.task_policy_path is None
 
     def test_baseline_path_property_reflects_init(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -272,7 +272,7 @@ class TestPolicyLoaderConstruction:
             assert loader.baseline_path == path
 
     def test_baseline_path_none_when_no_path(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         assert loader.baseline_path is None
@@ -286,7 +286,7 @@ class TestYAMLLoading:
     """Tests for YAML file loading."""
 
     def test_loads_yaml_with_permissions(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -302,7 +302,7 @@ permissions:
             assert loader.baseline.permissions[0].effect == "allow"
 
     def test_loads_empty_yaml(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -311,7 +311,7 @@ permissions:
             assert len(loader.baseline.permissions) == 0
 
     def test_loads_yml_extension(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yml"
@@ -329,7 +329,7 @@ class TestJSONLoading:
     """Tests for JSON file loading."""
 
     def test_loads_json_policy(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "baseline.json"
@@ -353,7 +353,7 @@ class TestTOMLLoading:
         Hosts with allow= get credential:use with condition (exact_dict).
         Only egress=deny hosts land in simple_sets.
         """
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -380,7 +380,7 @@ version = "2.0"
 
     def test_toml_host_deny_entries_in_simple_sets(self):
         """Host deny entries (e.g. from blocklists) go into simple_sets for O(1) lookup."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -401,7 +401,7 @@ version = "2.0"
             assert "malware.net/*" in simple[deny_key]
 
     def test_toml_metadata_preserved(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -427,8 +427,8 @@ class TestSetBaselinePreservesSimplePermissions:
     def test_set_baseline_preserves_blocklist_denies(self):
         """After set_baseline with a modified policy, the bulk deny entries
         from the original TOML load must still be present."""
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -468,8 +468,8 @@ version = "2.0"
 
     def test_set_baseline_without_prior_load_works(self):
         """set_baseline on a fresh loader (no _pre_extracted_simple) must not error."""
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         policy = UnifiedPolicy(permissions=[
@@ -490,7 +490,7 @@ class TestExpiredHostPruning:
 
     def test_expired_host_is_removed(self):
         """An expired deny entry should be pruned and not appear in the index."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         yesterday = (datetime.now(UTC) - timedelta(days=1)).isoformat()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -513,7 +513,7 @@ version = "2.0"
 
     def test_non_expired_host_is_preserved(self):
         """A deny entry whose expires is in the future should remain."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).isoformat()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -533,7 +533,7 @@ version = "2.0"
 
     def test_unparseable_expires_string_warns_and_keeps_host(self, caplog):
         """B2 fix: malformed expires string logs warning naming the host."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -560,7 +560,7 @@ hosts:
 
     def test_non_datetime_expires_warns_and_keeps_host(self, caplog):
         """B4 fix: non-string non-datetime expires (e.g. integer) logs warning."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Use JSON since YAML/TOML would parse 20260405 as an integer.
@@ -584,7 +584,7 @@ hosts:
             assert any("int" in r.message for r in caplog.records)
 
     def test_host_without_expires_is_not_pruned(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -604,7 +604,8 @@ version = "2.0"
     def test_expired_host_removed_from_toml_on_disk(self):
         """Pruned hosts should also be removed from the TOML file."""
         import tomlkit
-        from policy_loader import PolicyLoader
+
+        from safeyolo.policy.loader import PolicyLoader
 
         yesterday = (datetime.now(UTC) - timedelta(days=1)).isoformat()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -634,7 +635,7 @@ class TestAddonsMerging:
     """Tests for _merge_addons: sibling addons.yaml merges as defaults."""
 
     def test_addons_yaml_provides_defaults(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_path = Path(tmpdir) / "policy.yaml"
@@ -657,7 +658,7 @@ required:
             assert "network_guard" in loader.baseline.required
 
     def test_policy_yaml_overrides_addons_yaml(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_path = Path(tmpdir) / "policy.yaml"
@@ -679,7 +680,7 @@ required:
     def test_addons_section_deep_merged(self):
         """The 'addons' key gets deep-merged: addons.yaml provides defaults,
         policy.yaml keys override."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_path = Path(tmpdir) / "policy.yaml"
@@ -705,7 +706,7 @@ addons:
             assert loader.baseline.addons["network_guard"].enabled is True
 
     def test_no_addons_yaml_is_fine(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_path = Path(tmpdir) / "policy.yaml"
@@ -724,7 +725,7 @@ class TestTaskPolicy:
     """Tests for task policy loading, clearing, and path tracking."""
 
     def test_loads_task_policy(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "policy.yaml"
@@ -745,7 +746,7 @@ permissions:
             assert loader.task_policy.permissions[0].action == "credential:use"
 
     def test_task_policy_path_tracked(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "policy.yaml"
@@ -760,7 +761,7 @@ permissions:
             assert loader.task_policy_path == task
 
     def test_clear_task_policy(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "policy.yaml"
@@ -777,7 +778,7 @@ permissions:
             assert loader.task_policy_path is None
 
     def test_task_policy_failure_returns_false(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "policy.yaml"
@@ -789,8 +790,8 @@ permissions:
             assert loader.task_policy is None
 
     def test_set_task_policy_directly(self):
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         policy = UnifiedPolicy(permissions=[
@@ -810,7 +811,7 @@ class TestPermissionSorting:
     """Tests that permissions are sorted most-specific first."""
 
     def test_most_specific_permission_first(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -842,8 +843,8 @@ class TestMergedIndex:
     """Tests for get_merged_index: merging task + baseline permission indexes."""
 
     def test_no_task_returns_baseline_directly(self):
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         loader.set_baseline(UnifiedPolicy(permissions=[
@@ -857,8 +858,8 @@ class TestMergedIndex:
 
     def test_simple_sets_are_unioned(self):
         """Both baseline and task deny entries must appear in merged simple_sets."""
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         loader.set_baseline(UnifiedPolicy(permissions=[
@@ -875,8 +876,8 @@ class TestMergedIndex:
 
     def test_exact_dict_task_overrides_baseline(self):
         """For exact dict entries, task takes priority over baseline."""
-        from policy_engine import Condition, Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Condition, Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         baseline_perm = Permission(
             action="credential:use",
@@ -904,8 +905,8 @@ class TestMergedIndex:
 
     def test_patterns_task_before_baseline(self):
         """Pattern list: task patterns come first (higher priority)."""
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         baseline_perm = Permission(action="network:request", resource="*.example.com/*", effect="allow")
         task_perm = Permission(action="network:request", resource="*.taskdomain.com/*", effect="deny")
@@ -927,7 +928,7 @@ class TestReload:
     """Tests for reload() and fail-closed semantics."""
 
     def test_reload_picks_up_file_changes(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -949,7 +950,7 @@ permissions:
 
     def test_reload_failure_preserves_previous_baseline(self):
         """Fail-closed: if reload fails, the old baseline stays active."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -972,7 +973,7 @@ permissions:
             assert loader.baseline.permissions[0].resource == "api.example.com/*"
 
     def test_reload_deleted_file_preserves_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -993,7 +994,7 @@ permissions:
             assert loader.baseline.permissions[0].resource == "keep-me.example.com/*"
 
     def test_reload_reloads_both_baseline_and_task(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "policy.yaml"
@@ -1030,7 +1031,7 @@ class TestReloadCallbacks:
     """Tests for on_reload and add_reload_callback."""
 
     def test_on_reload_called_on_initial_load(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         callback = Mock()
 
@@ -1042,7 +1043,7 @@ class TestReloadCallbacks:
         assert callback.call_count == 1
 
     def test_add_reload_callback_called_on_reload(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         callback = Mock()
 
@@ -1057,7 +1058,7 @@ class TestReloadCallbacks:
         assert callback.call_count == 1
 
     def test_callback_exception_does_not_break_load(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         def bad_callback():
             raise RuntimeError("callback exploded")
@@ -1080,7 +1081,7 @@ class TestFileWatcher:
     def test_start_creates_running_thread_stop_terminates_it(self):
         """Observable behaviour: after start, watcher detects changes.
         After stop, internal thread is cleaned up."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1097,7 +1098,7 @@ class TestFileWatcher:
             assert loader._watcher_thread is None
 
     def test_double_start_is_idempotent(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1114,7 +1115,7 @@ class TestFileWatcher:
             loader.stop_watcher()
 
     def test_watcher_detects_baseline_change(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1143,7 +1144,7 @@ permissions:
 
     def test_watcher_handles_disappearing_file(self):
         """Watcher should not crash if the file is deleted."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1168,13 +1169,13 @@ class TestErrorHandling:
     """Tests for graceful error handling on bad inputs."""
 
     def test_missing_file_creates_empty_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader(baseline_path=Path("/nonexistent/policy.yaml"))
         assert len(loader.baseline.permissions) == 0
 
     def test_invalid_yaml_creates_empty_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1183,7 +1184,7 @@ class TestErrorHandling:
             assert len(loader.baseline.permissions) == 0
 
     def test_invalid_policy_structure_creates_empty_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1197,7 +1198,7 @@ permissions:
     def test_permission_denied_creates_empty_baseline(self):
         import os
 
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         assert os.geteuid() != 0, "Container running as root - security risk"
 
@@ -1217,7 +1218,7 @@ permissions:
                 os.chmod(path, 0o644)
 
     def test_directory_as_policy_file_creates_empty_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_dir = Path(tmpdir) / "not_a_file"
@@ -1226,7 +1227,7 @@ permissions:
             assert len(loader.baseline.permissions) == 0
 
     def test_binary_file_creates_empty_baseline(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1237,7 +1238,7 @@ permissions:
     def test_symlink_loop_creates_empty_baseline(self):
         import os
 
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             link1 = Path(tmpdir) / "link1.yaml"
@@ -1257,13 +1258,13 @@ class TestAuditEvents:
     """Tests that audit events are emitted on policy load success and failure."""
 
     def test_successful_load_emits_policy_reload_event(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
             path.write_text("permissions: []")
 
-            with patch("policy_loader.write_event") as mock_write:
+            with patch("safeyolo.policy.loader.write_event") as mock_write:
                 PolicyLoader(baseline_path=path)
 
             # Should have emitted ops.policy_reload
@@ -1271,16 +1272,16 @@ class TestAuditEvents:
             assert "ops.policy_reload" in event_names
 
     def test_missing_file_emits_policy_error_event(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
-        with patch("policy_loader.write_event") as mock_write:
+        with patch("safeyolo.policy.loader.write_event") as mock_write:
             PolicyLoader(baseline_path=Path("/nonexistent/policy.yaml"))
 
         event_names = [call.args[0] for call in mock_write.call_args_list]
         assert "ops.policy_error" in event_names
 
     def test_validation_failure_emits_policy_error_event(self):
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1288,7 +1289,7 @@ class TestAuditEvents:
 permissions:
   - invalid_field: "should fail"
 """)
-            with patch("policy_loader.write_event") as mock_write:
+            with patch("safeyolo.policy.loader.write_event") as mock_write:
                 PolicyLoader(baseline_path=path)
 
         event_names = [call.args[0] for call in mock_write.call_args_list]
@@ -1303,8 +1304,8 @@ class TestDirectSet:
     """Tests for set_baseline and set_task_policy (API-driven updates)."""
 
     def test_set_baseline_sorts_permissions(self):
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         policy = UnifiedPolicy(permissions=[
@@ -1318,8 +1319,8 @@ class TestDirectSet:
         assert loader.baseline.permissions[1].resource == "*"
 
     def test_set_baseline_builds_permission_index(self):
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         policy = UnifiedPolicy(permissions=[
@@ -1332,8 +1333,8 @@ class TestDirectSet:
         assert "api.example.com/*" in simple[("network:request", "allow")]
 
     def test_set_task_policy_sorts_and_indexes(self):
-        from policy_engine import Permission, UnifiedPolicy
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.engine import Permission, UnifiedPolicy
+        from safeyolo.policy.loader import PolicyLoader
 
         loader = PolicyLoader()
         policy = UnifiedPolicy(permissions=[
@@ -1357,7 +1358,7 @@ class TestHostCentricCompilation:
         """Host-centric YAML with credentials + rate_limit compiles to
         credential:use (with condition, in exact_dict) and
         network:request budget (in exact_dict)."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1388,7 +1389,7 @@ hosts:
 
     def test_host_centric_toml_with_required_and_credential_rules(self):
         """Full TOML policy with required addons and credential rules."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -1424,7 +1425,7 @@ class TestExtractSimplePermissions:
     """Tests for _extract_simple_permissions: pre-Pydantic set extraction."""
 
     def test_simple_deny_extracted(self):
-        from policy_loader import _extract_simple_permissions
+        from safeyolo.policy.loader import _extract_simple_permissions
 
         perms = [
             {"action": "network:request", "resource": "evil.com/*", "effect": "deny", "tier": "explicit"},
@@ -1436,7 +1437,7 @@ class TestExtractSimplePermissions:
         assert simple == {("network:request", "deny"): {"evil.com/*", "malware.net/*"}}
 
     def test_budget_not_extracted(self):
-        from policy_loader import _extract_simple_permissions
+        from safeyolo.policy.loader import _extract_simple_permissions
 
         perms = [
             {"action": "network:request", "resource": "api.openai.com/*", "effect": "budget", "budget": 3000},
@@ -1447,7 +1448,7 @@ class TestExtractSimplePermissions:
         assert simple == {}
 
     def test_conditioned_not_extracted(self):
-        from policy_loader import _extract_simple_permissions
+        from safeyolo.policy.loader import _extract_simple_permissions
 
         perms = [
             {"action": "credential:use", "resource": "api.openai.com/*", "effect": "allow",
@@ -1459,7 +1460,7 @@ class TestExtractSimplePermissions:
         assert simple == {}
 
     def test_wildcard_resource_not_extracted(self):
-        from policy_loader import _extract_simple_permissions
+        from safeyolo.policy.loader import _extract_simple_permissions
 
         perms = [
             {"action": "network:request", "resource": "*.example.com/*", "effect": "allow"},
@@ -1471,7 +1472,7 @@ class TestExtractSimplePermissions:
 
     def test_default_effect_is_allow(self):
         """When effect is omitted, it defaults to 'allow'."""
-        from policy_loader import _extract_simple_permissions
+        from safeyolo.policy.loader import _extract_simple_permissions
 
         perms = [
             {"action": "network:request", "resource": "api.example.com/*"},
@@ -1483,7 +1484,7 @@ class TestExtractSimplePermissions:
         assert "api.example.com/*" in simple[("network:request", "allow")]
 
     def test_mixed_permissions_partitioned(self):
-        from policy_loader import _extract_simple_permissions
+        from safeyolo.policy.loader import _extract_simple_permissions
 
         perms = [
             {"action": "network:request", "resource": "evil.com/*", "effect": "deny", "tier": "explicit"},
@@ -1506,32 +1507,32 @@ class TestIsSimplePermissionDict:
     """Tests for _is_simple_permission_dict: raw dict version of _is_simple_permission."""
 
     def test_simple_deny_dict(self):
-        from policy_loader import _is_simple_permission_dict
+        from safeyolo.policy.loader import _is_simple_permission_dict
 
         p = {"action": "network:request", "resource": "evil.com/*", "effect": "deny", "tier": "explicit"}
         assert _is_simple_permission_dict(p) is True
 
     def test_budget_dict_not_simple(self):
-        from policy_loader import _is_simple_permission_dict
+        from safeyolo.policy.loader import _is_simple_permission_dict
 
         p = {"action": "network:request", "resource": "api.openai.com/*", "effect": "budget", "budget": 3000}
         assert _is_simple_permission_dict(p) is False
 
     def test_conditioned_dict_not_simple(self):
-        from policy_loader import _is_simple_permission_dict
+        from safeyolo.policy.loader import _is_simple_permission_dict
 
         p = {"action": "credential:use", "resource": "api.openai.com/*", "effect": "allow",
              "condition": {"credential": ["openai:*"]}}
         assert _is_simple_permission_dict(p) is False
 
     def test_wildcard_resource_not_simple(self):
-        from policy_loader import _is_simple_permission_dict
+        from safeyolo.policy.loader import _is_simple_permission_dict
 
         p = {"action": "network:request", "resource": "*.example.com/*", "effect": "allow"}
         assert _is_simple_permission_dict(p) is False
 
     def test_inferred_tier_not_simple(self):
-        from policy_loader import _is_simple_permission_dict
+        from safeyolo.policy.loader import _is_simple_permission_dict
 
         p = {"action": "network:request", "resource": "api.example.com/*", "effect": "allow", "tier": "inferred"}
         assert _is_simple_permission_dict(p) is False

@@ -17,7 +17,7 @@ class TestPatternRule:
 
     def test_matches_returns_match_object(self):
         """Test matches() returns Match object on match."""
-        from detection.patterns import PatternRule
+        from safeyolo.detection.patterns import PatternRule
 
         rule = PatternRule(
             name="test-pattern",
@@ -30,7 +30,7 @@ class TestPatternRule:
 
     def test_matches_returns_none_on_no_match(self):
         """Test matches() returns None when no match."""
-        from detection.patterns import PatternRule
+        from safeyolo.detection.patterns import PatternRule
 
         rule = PatternRule(
             name="test-pattern",
@@ -42,7 +42,7 @@ class TestPatternRule:
 
     def test_should_block_true_for_block_action(self):
         """Test should_block returns True when action is 'block'."""
-        from detection.patterns import PatternRule
+        from safeyolo.detection.patterns import PatternRule
 
         rule = PatternRule(
             name="test",
@@ -53,7 +53,7 @@ class TestPatternRule:
 
     def test_should_block_false_for_log_action(self):
         """Test should_block returns False when action is 'log'."""
-        from detection.patterns import PatternRule
+        from safeyolo.detection.patterns import PatternRule
 
         rule = PatternRule(
             name="test",
@@ -64,7 +64,7 @@ class TestPatternRule:
 
     def test_rule_id_generated_from_name(self):
         """Test rule_id is generated from name."""
-        from detection.patterns import PatternRule
+        from safeyolo.detection.patterns import PatternRule
 
         rule = PatternRule(
             name="my-custom-rule",
@@ -74,7 +74,7 @@ class TestPatternRule:
 
     def test_default_scope_is_body(self):
         """Test default scope is body only."""
-        from detection.patterns import PatternRule
+        from safeyolo.detection.patterns import PatternRule
 
         rule = PatternRule(
             name="test",
@@ -88,7 +88,7 @@ class TestCompilePattern:
 
     def test_compiles_valid_pattern(self):
         """Test valid pattern compiles successfully."""
-        from detection.patterns import compile_pattern
+        from safeyolo.detection.patterns import compile_pattern
 
         result = compile_pattern(r"PROJ-\d{5}")
 
@@ -97,7 +97,7 @@ class TestCompilePattern:
 
     def test_returns_none_for_invalid_pattern(self):
         """Test invalid pattern returns None."""
-        from detection.patterns import compile_pattern
+        from safeyolo.detection.patterns import compile_pattern
 
         result = compile_pattern(r"[invalid")  # Unclosed bracket
 
@@ -105,7 +105,7 @@ class TestCompilePattern:
 
     def test_rejects_redos_pattern(self):
         """Test dangerous ReDoS patterns are rejected."""
-        from detection.patterns import compile_pattern
+        from safeyolo.detection.patterns import compile_pattern
 
         result = compile_pattern(r"(.+)+x")  # Nested quantifiers
 
@@ -113,7 +113,7 @@ class TestCompilePattern:
 
     def test_case_insensitive_flag(self):
         """Test case_sensitive=False makes pattern case insensitive."""
-        from detection.patterns import compile_pattern
+        from safeyolo.detection.patterns import compile_pattern
 
         result = compile_pattern(r"CONFIDENTIAL", case_sensitive=False)
 
@@ -127,7 +127,7 @@ class TestScopeConfiguration:
 
     def test_parses_scope_list(self):
         """Test scope list is parsed correctly."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{
             "name": "test",
@@ -140,7 +140,7 @@ class TestScopeConfiguration:
 
     def test_parses_single_scope_string(self):
         """Test single scope string is parsed correctly."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"name": "test", "pattern": r"test", "scope": "url"}]
         rules = load_patterns_from_config(config)
@@ -149,7 +149,7 @@ class TestScopeConfiguration:
 
     def test_defaults_to_body_scope(self):
         """Test missing scope defaults to body."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"name": "test", "pattern": r"test"}]
         rules = load_patterns_from_config(config)
@@ -158,7 +158,7 @@ class TestScopeConfiguration:
 
     def test_ignores_invalid_scope(self):
         """Test invalid scope values are ignored."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{
             "name": "test",
@@ -171,7 +171,7 @@ class TestScopeConfiguration:
 
     def test_defaults_to_body_if_all_scopes_invalid(self):
         """Test defaults to body if all scope values are invalid."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"name": "test", "pattern": r"test", "scope": ["invalid"]}]
         rules = load_patterns_from_config(config)
@@ -184,7 +184,7 @@ class TestLoadPatternsFromConfig:
 
     def test_loads_valid_config(self):
         """Test valid config loads correctly."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{
             "name": "project-ids",
@@ -206,7 +206,7 @@ class TestLoadPatternsFromConfig:
 
     def test_skips_config_missing_name(self):
         """Test config without name is skipped."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"pattern": r"test"}]
         rules = load_patterns_from_config(config)
@@ -215,7 +215,7 @@ class TestLoadPatternsFromConfig:
 
     def test_skips_config_missing_pattern(self):
         """Test config without pattern is skipped."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"name": "test"}]
         rules = load_patterns_from_config(config)
@@ -224,7 +224,7 @@ class TestLoadPatternsFromConfig:
 
     def test_normalizes_input_target_to_request(self):
         """Test 'input' target is normalized to 'request'."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"name": "test", "pattern": r"test", "target": "input"}]
         rules = load_patterns_from_config(config)
@@ -233,7 +233,7 @@ class TestLoadPatternsFromConfig:
 
     def test_normalizes_output_target_to_response(self):
         """Test 'output' target is normalized to 'response'."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         config = [{"name": "test", "pattern": r"test", "target": "output"}]
         rules = load_patterns_from_config(config)
@@ -242,7 +242,7 @@ class TestLoadPatternsFromConfig:
 
     def test_empty_config_produces_zero_rules(self):
         """Test empty scan_patterns list produces zero rules."""
-        from detection.patterns import load_patterns_from_config
+        from safeyolo.detection.patterns import load_patterns_from_config
 
         rules = load_patterns_from_config([])
 
@@ -254,21 +254,21 @@ class TestBuiltinPatternSets:
 
     def test_secrets_set_exists(self):
         """Test secrets builtin set exists and has patterns."""
-        from detection.patterns import BUILTIN_PATTERN_SETS
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS
 
         assert "secrets" in BUILTIN_PATTERN_SETS
         assert len(BUILTIN_PATTERN_SETS["secrets"]) > 0
 
     def test_pii_set_exists(self):
         """Test pii builtin set exists and has patterns."""
-        from detection.patterns import BUILTIN_PATTERN_SETS
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS
 
         assert "pii" in BUILTIN_PATTERN_SETS
         assert len(BUILTIN_PATTERN_SETS["pii"]) > 0
 
     def test_load_builtin_set_returns_pattern_configs_with_required_fields(self):
         """Test load_builtin_set returns configs each having 'name' and 'pattern'."""
-        from detection.patterns import load_builtin_set
+        from safeyolo.detection.patterns import load_builtin_set
 
         patterns = load_builtin_set("secrets")
 
@@ -279,7 +279,7 @@ class TestBuiltinPatternSets:
 
     def test_load_builtin_set_unknown_returns_empty(self):
         """Test load_builtin_set returns empty for unknown set."""
-        from detection.patterns import load_builtin_set
+        from safeyolo.detection.patterns import load_builtin_set
 
         patterns = load_builtin_set("nonexistent")
 
@@ -287,7 +287,7 @@ class TestBuiltinPatternSets:
 
     def test_secrets_patterns_compile(self):
         """Test all secrets patterns compile successfully."""
-        from detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
 
         rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
 
@@ -295,7 +295,7 @@ class TestBuiltinPatternSets:
 
     def test_secrets_patterns_detect_openai_key(self):
         """Test secrets set detects an OpenAI API key by name."""
-        from detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
 
         rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
         openai_rules = [r for r in rules if r.name == "openai-api-key"]
@@ -306,7 +306,7 @@ class TestBuiltinPatternSets:
 
     def test_secrets_patterns_detect_github_pat(self):
         """Test secrets set detects a GitHub PAT by name."""
-        from detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
+        from safeyolo.detection.patterns import BUILTIN_PATTERN_SETS, load_patterns_from_config
 
         rules = load_patterns_from_config(BUILTIN_PATTERN_SETS["secrets"])
         github_rules = [r for r in rules if r.name == "github-pat"]

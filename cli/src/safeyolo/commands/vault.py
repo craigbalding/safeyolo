@@ -62,7 +62,7 @@ def _load_vault():
 
     addons_dir = Path(__file__).parent.parent.parent.parent.parent / "addons"
     sys.path.insert(0, str(addons_dir))
-    from vault import Vault, VaultCredential
+    from safeyolo.core.vault import Vault, VaultCredential
 
     key = _get_or_create_key()
     vault_path = _get_vault_path()

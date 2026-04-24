@@ -1,0 +1,679 @@
+"""
+utils.py - Shared utilities for SafeYolo addons
+
+Functional helpers to reduce duplication across addons.
+
+Event Taxonomy:
+    traffic.request      - Incoming request
+    traffic.response     - Response (normal or blocked)
+
+    security.credential  - Credential detection decision
+    security.injection   - Injection detection decision
+    security.yara        - YARA match decision
+    security.pattern     - Pattern match decision
+    security.ratelimit   - Rate limit decision
+    security.circuit     - Circuit breaker decision
+
+    ops.startup          - Addon startup
+    ops.config_reload    - Config file changed
+    ops.config_error     - Config load failed
+
+    admin.approve        - Credential approved
+    admin.deny           - Credential denied
+    admin.mode_change    - Mode toggled
+    admin.auth_failure   - Failed auth attempt
+
+    agent.added          - Agent instance created
+    agent.started        - Agent container started
+    agent.stopped        - Agent container stopped
+    agent.removed        - Agent instance removed
+    agent.config_changed - Agent configuration updated
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import hashlib
+import hmac
+import json
+import logging
+import math
+import os
+import re
+import secrets
+import threading
+import unicodedata
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mitmproxy import http
+
+    from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+
+import yaml
+
+# Default audit log path - can be overridden via environment
+# Environment variables:
+#   SAFEYOLO_LOG_PATH       - Log file path (default: /app/logs/safeyolo.jsonl)
+#   SAFEYOLO_LOG_MAX_MB     - Max file size in MB before rotation (default: 50)
+#   SAFEYOLO_LOG_BACKUPS    - Number of backup files to keep (default: 5)
+AUDIT_LOG_PATH = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
+SAFEYOLO_LOG_MAX_BYTES = int(os.environ.get("SAFEYOLO_LOG_MAX_MB", "50")) * 1_000_000
+SAFEYOLO_LOG_BACKUPS = int(os.environ.get("SAFEYOLO_LOG_BACKUPS", "5"))
+
+# =============================================================================
+# File Logging Configuration
+# =============================================================================
+# Configure Python logging to write to file in addition to mitmproxy's Events view.
+# This ensures logs survive crashes - critical for debugging.
+#
+# Environment variables:
+#   MITMPROXY_LOG_PATH      - Log file path (default: /app/logs/mitmproxy.log)
+#   MITMPROXY_LOG_LEVEL     - Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)
+#   MITMPROXY_LOG_MAX_MB    - Max file size in MB before rotation (default: 10)
+#   MITMPROXY_LOG_BACKUPS   - Number of backup files to keep (default: 3)
+
+MITMPROXY_LOG_PATH = Path(os.environ.get("MITMPROXY_LOG_PATH", "/app/logs/mitmproxy.log"))
+MITMPROXY_LOG_LEVEL = os.environ.get("MITMPROXY_LOG_LEVEL", "INFO").upper()
+MITMPROXY_LOG_MAX_BYTES = int(os.environ.get("MITMPROXY_LOG_MAX_MB", "10")) * 1_000_000
+MITMPROXY_LOG_BACKUPS = int(os.environ.get("MITMPROXY_LOG_BACKUPS", "3"))
+
+
+def configure_file_logging():
+    """Configure file logging for safeyolo loggers.
+
+    Called from FileLoggingAddon.running() - NOT at import time.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    logger = logging.getLogger("safeyolo")
+
+    # Skip if already configured (idempotent)
+    if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        return
+
+    try:
+        MITMPROXY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as err:
+        raise RuntimeError(
+            f"FATAL: Cannot create log directory {MITMPROXY_LOG_PATH.parent}: {err}. "
+            "Security proxy cannot run without logging."
+        ) from err
+
+    level = getattr(logging, MITMPROXY_LOG_LEVEL, logging.INFO)
+    handler = RotatingFileHandler(
+        MITMPROXY_LOG_PATH,
+        maxBytes=MITMPROXY_LOG_MAX_BYTES,
+        backupCount=MITMPROXY_LOG_BACKUPS,
+    )
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    ))
+    handler.setLevel(level)
+    logger.addHandler(handler)
+    logger.setLevel(level)
+
+
+class FileLoggingAddon:
+    """Addon to configure file logging at mitmproxy startup.
+
+    Also emits proxy lifecycle events (ops.proxy_start, ops.proxy_stop)
+    so operators see start/stop in watch output.
+    """
+
+    def running(self):
+        """Configure file logging when mitmproxy is fully started."""
+        configure_file_logging()
+        dev = os.environ.get("SAFEYOLO_DEV") == "1"
+        mode = "dev" if dev else "production"
+        write_event(
+            "ops.proxy_start",
+            kind="ops",
+            severity="medium",
+            summary=f"SafeYolo proxy started ({mode})",
+        )
+
+    def done(self):
+        """Log proxy shutdown."""
+        write_event(
+            "ops.proxy_stop",
+            kind="ops",
+            severity="medium",
+            summary="SafeYolo proxy stopped",
+        )
+
+# =============================================================================
+# Log Sanitization — canonical implementation lives in audit_schema.
+# Re-exported here so existing `from utils import sanitize_for_log` call sites
+# continue to work without a second implementation. Named in __all__ because
+# that's the only re-export pattern CodeQL's py/unused-import recognises
+# (the `import X as X` idiom is not).
+# =============================================================================
+
+from safeyolo.core.audit_schema import sanitize_for_log  # noqa: E402
+
+__all__ = ["sanitize_for_log"]
+
+# Module-level logger for write_event errors
+_log = logging.getLogger("safeyolo.utils")
+
+
+def _rotate_jsonl_if_needed() -> None:
+    """Rotate JSONL audit log if it exceeds max size."""
+    if not AUDIT_LOG_PATH.exists():
+        return
+    try:
+        if AUDIT_LOG_PATH.stat().st_size < SAFEYOLO_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+
+    # Rotate: .5 -> delete, .4 -> .5, ... .1 -> .2, current -> .1
+    for i in range(SAFEYOLO_LOG_BACKUPS, 0, -1):
+        old_backup = AUDIT_LOG_PATH.with_suffix(f".jsonl.{i}")
+        new_backup = AUDIT_LOG_PATH.with_suffix(f".jsonl.{i + 1}")
+        if i == SAFEYOLO_LOG_BACKUPS and old_backup.exists():
+            old_backup.unlink()
+        elif old_backup.exists():
+            old_backup.rename(new_backup)
+
+    if AUDIT_LOG_PATH.exists():
+        AUDIT_LOG_PATH.rename(AUDIT_LOG_PATH.with_suffix(".jsonl.1"))
+
+
+def write_event(
+    event: str,
+    *,
+    kind: EventKind,
+    severity: Severity,
+    summary: str,
+    decision: Decision | None = None,
+    host: str | None = None,
+    request_id: str | None = None,
+    agent: str | None = None,
+    addon: str | None = None,
+    approval: ApprovalRequest | None = None,
+    details: dict | None = None,
+) -> None:
+    """
+    Write a structured event to the central JSONL audit log.
+
+    Constructs an AuditEvent, validates, and writes to AUDIT_LOG_PATH.
+
+    Args:
+        event: Event type using taxonomy (e.g., "security.credential_guard")
+        kind: Top-level event category
+        severity: Event severity for rendering
+        summary: Human-readable one-liner
+        decision: Security/gateway decision outcome
+        host: Destination hostname
+        request_id: Correlation ID from flow.metadata
+        agent: Agent identity
+        addon: Name of the addon emitting the event
+        approval: Approval request metadata
+        details: Addon-specific fields not in the spine
+    """
+    from safeyolo.core.audit_schema import AuditEvent
+
+    # Taxonomy is validated at schema level — AuditEvent rejects events whose
+    # prefix does not match EventKind, so no separate prefix check is needed.
+
+    try:
+        audit_event = AuditEvent(
+            event=event,
+            kind=kind,
+            severity=severity,
+            summary=summary,
+            decision=decision,
+            host=host,
+            request_id=request_id,
+            agent=agent,
+            addon=addon,
+            approval=approval,
+            details=details or {},
+        )
+        entry = audit_event.to_jsonl()
+    except Exception as e:
+        _log.error(f"Event validation failed for '{event}': {type(e).__name__}: {e}")
+        # Fallback: write unvalidated entry so events are never silently lost
+        entry = {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": event,
+            "kind": kind.value if hasattr(kind, "value") else str(kind),
+            "severity": severity.value if hasattr(severity, "value") else str(severity),
+            "summary": summary,
+        }
+
+    # Hand off to the async writer. `put_event` is a single
+    # `queue.put_nowait` (non-blocking); the background thread handles
+    # rotation, open/append/close, and stderr fallback on flush failure.
+    # Keeping file I/O off the hook thread matters because `write_event`
+    # is called from request/response hooks on every flow.
+    from safeyolo.core.audit_writer import put_event as _put_event
+    _put_event(entry)
+
+
+def make_block_response(
+    status: int,
+    body: dict,
+    addon_name: str,
+    extra_headers: dict | None = None,
+) -> http.Response:
+    """
+    Create a standard JSON block response.
+
+    All block responses include X-Blocked-By header for chain coordination.
+
+    Args:
+        status: HTTP status code (403, 429, 503, etc.)
+        body: Response body as dict (will be JSON-encoded)
+        addon_name: Name of blocking addon (for X-Blocked-By header)
+        extra_headers: Additional headers to include
+
+    Returns:
+        mitmproxy http.Response
+    """
+    # Lazy import: CLI paths that only need `write_event` / helpers
+    # shouldn't have to pull in mitmproxy just to import this module.
+    from mitmproxy import http as mitm_http  # noqa: PLC0415
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Blocked-By": addon_name,
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    return mitm_http.Response.make(
+        status,
+        json.dumps(body).encode(),
+        headers,
+    )
+
+
+# =============================================================================
+# Config & File Utilities
+# =============================================================================
+
+def load_config_file(path: Path, default: dict | None = None) -> dict:
+    """Load YAML or JSON config file.
+
+    Returns default (or {}) if file missing or invalid.
+    Logs errors but doesn't raise.
+
+    Args:
+        path: Path to config file (.yaml, .yml, or .json)
+        default: Default value if file missing/invalid
+
+    Returns:
+        Parsed config dict, or default
+    """
+    if not path.exists():
+        return default if default is not None else {}
+    try:
+        content = path.read_text()
+        if path.suffix in (".yaml", ".yml"):
+            return yaml.safe_load(content) or {}
+        return json.loads(content)
+    except Exception as e:
+        _log.error(f"Failed to load {path}: {type(e).__name__}: {e}")
+        return default if default is not None else {}
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Atomically write JSON via temp file rename.
+
+    Args:
+        path: Target file path
+        data: JSON-serializable data
+    """
+    tmp = path.with_suffix('.tmp')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2)
+    tmp.rename(path)
+
+
+# =============================================================================
+# Flow & Context Utilities
+# =============================================================================
+
+def get_client_ip(flow: http.HTTPFlow) -> str:
+    """Get client IP from flow, or 'unknown'.
+
+    Args:
+        flow: mitmproxy HTTP flow
+
+    Returns:
+        Client IP address string, or 'unknown' if unavailable
+    """
+    if flow.client_conn and flow.client_conn.peername:
+        return flow.client_conn.peername[0]
+    return "unknown"
+
+
+def get_option_safe(name: str, default: Any = True) -> Any:
+    """Get mitmproxy option, return default if unavailable.
+
+    Safely handles cases where ctx.options is not available
+    (e.g., in tests or before mitmproxy initialization).
+
+    Args:
+        name: Option name (e.g., 'ratelimit_enabled')
+        default: Default value if option unavailable
+
+    Returns:
+        Option value, or default
+    """
+    try:
+        from mitmproxy import ctx
+        return getattr(ctx.options, name)
+    except AttributeError:
+        return default
+
+
+# =============================================================================
+# Background Task Utilities
+# =============================================================================
+
+class BackgroundWorker:
+    """Periodic background task runner.
+
+    Runs a function at regular intervals in a daemon thread.
+    Handles errors gracefully and supports clean shutdown.
+
+    Example:
+        def save_state():
+            with open("state.json", "w") as f:
+                json.dump(current_state, f)
+
+        worker = BackgroundWorker(save_state, interval_sec=10.0, name="state-saver")
+        worker.start()
+        # ... later ...
+        worker.stop()
+    """
+
+    def __init__(self, work_fn: Callable[[], None], interval_sec: float, name: str):
+        """Initialize background worker.
+
+        Args:
+            work_fn: Function to call periodically (no arguments)
+            interval_sec: Seconds between calls
+            name: Thread name for debugging
+        """
+        self._work_fn = work_fn
+        self._interval = interval_sec
+        self._name = name
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        """Start the background worker thread."""
+        if self._thread and self._thread.is_alive():
+            return
+
+        def loop():
+            while not self._stop.wait(timeout=self._interval):
+                try:
+                    self._work_fn()
+                except Exception as e:
+                    _log.error(f"{self._name} error: {type(e).__name__}: {e}")
+
+        self._stop.clear()
+        self._thread = threading.Thread(target=loop, daemon=True, name=self._name)
+        self._thread.start()
+        _log.debug(f"Started background worker: {self._name}")
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop the background worker thread.
+
+        Args:
+            timeout: Seconds to wait for thread to finish
+        """
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                _log.warning(f"{self._name} didn't stop within {timeout}s")
+            self._thread = None
+        _log.debug(f"Stopped background worker: {self._name}")
+
+
+# =============================================================================
+# Secret Detection Utilities
+# =============================================================================
+
+def calculate_shannon_entropy(s: str) -> float:
+    """Calculate Shannon entropy of a string.
+
+    Higher entropy suggests more randomness (potential secret).
+    Typical thresholds: <3.0 low, 3.0-4.0 medium, >4.0 high.
+
+    Args:
+        s: Input string
+
+    Returns:
+        Shannon entropy in bits per character
+    """
+    if not s:
+        return 0.0
+    freq: dict[str, int] = {}
+    for c in s:
+        freq[c] = freq.get(c, 0) + 1
+    length = len(s)
+    return -sum((count / length) * math.log2(count / length) for count in freq.values())
+
+
+def looks_like_secret(value: str, entropy_config: dict | None = None) -> bool:
+    """Check if value looks like a secret based on entropy heuristics.
+
+    Uses length, character diversity, and Shannon entropy to detect
+    potential secrets without pattern matching.
+
+    Args:
+        value: String to analyze
+        entropy_config: Optional config dict with keys:
+            - min_length: Minimum string length (default: 20)
+            - min_charset_diversity: Unique chars / length ratio (default: 0.5)
+            - min_shannon_entropy: Minimum entropy bits (default: 3.5)
+
+    Returns:
+        True if value appears to be a high-entropy secret
+    """
+    if entropy_config is None:
+        entropy_config = {}
+
+    min_length = entropy_config.get("min_length", 20)
+    min_diversity = entropy_config.get("min_charset_diversity", 0.5)
+    min_entropy = entropy_config.get("min_shannon_entropy", 3.5)
+
+    if len(value) < min_length:
+        return False
+
+    unique_chars = len(set(value))
+    diversity = unique_chars / len(value)
+    if diversity < min_diversity:
+        return False
+
+    entropy = calculate_shannon_entropy(value)
+    return entropy >= min_entropy
+
+
+# =============================================================================
+# HMAC Fingerprinting
+# =============================================================================
+
+def load_hmac_secret(secret_path: Path, env_var: str = "CREDGUARD_HMAC_SECRET") -> bytes:
+    """Load or generate HMAC secret for sensitive data fingerprinting.
+
+    Checks environment variable first, then file, then generates new secret.
+    Generated secrets are saved with 0600 permissions.
+
+    Args:
+        secret_path: Path to secret file
+        env_var: Environment variable name to check first
+
+    Returns:
+        HMAC secret as bytes
+    """
+    env_secret = os.environ.get(env_var)
+    if env_secret:
+        return env_secret.encode()
+
+    if secret_path.exists():
+        return secret_path.read_bytes().strip()
+
+    # Generate new secret with atomic write (permissions set before content)
+    secret = secrets.token_hex(32).encode()
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use O_CREAT|O_EXCL to fail if exists, O_WRONLY for write, mode 0o600
+    # This sets permissions atomically before any content is written
+    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, secret)
+    finally:
+        os.close(fd)
+
+    _log.info(f"Generated new HMAC secret at {secret_path}")
+    return secret
+
+
+def hmac_fingerprint(value: str, secret: bytes, prefix_len: int = 16) -> str:
+    """Generate HMAC fingerprint for sensitive data (never log raw values).
+
+    Creates a truncated HMAC-SHA256 hash for logging and policy matching
+    without exposing the actual sensitive value.
+
+    Args:
+        value: Sensitive string to fingerprint
+        secret: HMAC secret key
+        prefix_len: Length of hex digest to return (default: 16)
+
+    Returns:
+        Truncated hex digest (e.g., "a1b2c3d4e5f67890")
+    """
+    h = hmac.new(secret, value.encode(), hashlib.sha256)
+    return h.hexdigest()[:prefix_len]
+
+
+# =============================================================================
+# Pattern Matching (Normalize First, Then Match)
+# =============================================================================
+
+def normalize_path(path: str) -> str:
+    """Normalize URL path for consistent, secure matching.
+
+    Security properties:
+    - Unicode NFKC normalization (prevents homoglyph bypasses)
+    - URL parsing via yarl (handles encoding correctly)
+    - Collapses multiple slashes (prevents // bypass tricks)
+    - Strips trailing slashes (consistent matching)
+
+    Args:
+        path: URL path to normalize
+
+    Returns:
+        Normalized path (e.g., "//v1//chat/" -> "/v1/chat")
+    """
+    # Unicode normalization first
+    path = unicodedata.normalize("NFKC", path)
+    # Parse through URL library for proper handling. Lazy import
+    # keeps yarl off the CLI-only import graph (same reason as the
+    # mitmproxy lazy import in `make_block_response`).
+    from yarl import URL  # noqa: PLC0415
+    normalized = URL("http://x" + path).path
+    # Collapse multiple slashes
+    normalized = re.sub(r"/+", "/", normalized)
+    # Strip trailing slash (but keep root)
+    return normalized.rstrip("/") or "/"
+
+
+def matches_host_pattern(host: str, pattern: str) -> bool:
+    """Check if host matches pattern with secure wildcard handling.
+
+    Supports:
+    - Exact match: "api.openai.com"
+    - Subdomain wildcard: "*.openai.com" (matches api.openai.com, also openai.com)
+
+    Args:
+        host: Hostname to check
+        pattern: Pattern to match against
+
+    Returns:
+        True if host matches pattern
+    """
+    host = host.lower()
+    pattern = pattern.lower()
+
+    # Wildcard domain: *.example.com
+    if pattern.startswith("*."):
+        suffix = pattern[1:]  # .example.com
+        # Match subdomains (api.example.com) or apex (example.com)
+        return host.endswith(suffix) or host == pattern[2:]
+
+    return host == pattern
+
+
+def matches_resource_pattern(resource: str, pattern: str) -> bool:
+    """Check if resource matches pattern with normalized, strict matching.
+
+    Normalizes resource before matching for security. Supports fnmatch
+    glob patterns for user-friendly policy writing.
+
+    Supports:
+    - Exact: "/v1/chat/completions"
+    - Wildcard: "/v1/*" (single path segment)
+    - Recursive: "/v1/**" or "api.openai.com/*" (any depth)
+    - Glob patterns: "*.json", "/v[12]/*"
+
+    Security: Resource is normalized before matching, so policies written
+    for "/v1/chat" will correctly match requests to "//v1//chat" or
+    variants with Unicode confusables.
+
+    Args:
+        resource: Resource string (path or host/path) to check
+        pattern: Pattern to match against
+
+    Returns:
+        True if normalized resource matches pattern
+    """
+    # For host/path resources like "api.openai.com/v1/*"
+    # we normalize only the path portion
+    if "/" in resource and not resource.startswith("/"):
+        # Split host and path
+        parts = resource.split("/", 1)
+        host = parts[0].lower()
+        path = normalize_path("/" + parts[1]) if len(parts) > 1 else "/"
+        resource = host + path
+    elif resource.startswith("/"):
+        # Pure path
+        resource = normalize_path(resource)
+    else:
+        # Pure host
+        resource = resource.lower()
+
+    pattern = pattern.lower()
+
+    # Exact match (fast path)
+    if resource == pattern:
+        return True
+
+    # Handle ** as "match any depth" by converting to fnmatch
+    # "/v1/**" -> matches /v1/anything/at/any/depth AND /v1 itself
+    if "**" in pattern:
+        # Convert ** to * for fnmatch (fnmatch * already matches /)
+        fnmatch_pattern = pattern.replace("**", "*")
+        if fnmatch.fnmatch(resource, fnmatch_pattern):
+            return True
+        # Also check if resource matches the base (e.g., /api matches /api/**)
+        base_pattern = pattern.rstrip("*").rstrip("/")
+        if resource == base_pattern:
+            return True
+        return False
+
+    # Standard fnmatch for glob patterns
+    return fnmatch.fnmatch(resource, pattern)

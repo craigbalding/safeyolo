@@ -98,23 +98,25 @@ class TestFindAddonsDir:
         assert result is None
 
     def test_returns_path_when_marker_file_exists(self, tmp_path):
-        """When a candidate has request_id.py, returns that path."""
+        """When the sibling mitm_addons dir has request_id.py, returns it.
+
+        Post-#200-phase-5: addons ship inside the safeyolo package, so
+        `_find_addons_dir` looks next to `proxy.py` for a
+        `mitm_addons/` sibling — no more reaching up to a repo root.
+        """
         from safeyolo.proxy import _find_addons_dir
 
-        # Create repo-like layout: repo/cli/src/safeyolo/proxy.py and repo/addons/request_id.py
-        repo = tmp_path / "repo"
-        proxy_file = repo / "cli" / "src" / "safeyolo" / "proxy.py"
-        proxy_file.parent.mkdir(parents=True)
+        proxy_file = tmp_path / "proxy.py"
         proxy_file.touch()
 
-        addons = repo / "addons"
-        addons.mkdir()
-        (addons / "request_id.py").touch()
+        mitm_addons = tmp_path / "mitm_addons"
+        mitm_addons.mkdir()
+        (mitm_addons / "request_id.py").touch()
 
         with patch("safeyolo.proxy.__file__", str(proxy_file)):
             result = _find_addons_dir()
 
-        assert result == addons
+        assert result == mitm_addons
 
 
 # ---------------------------------------------------------------------------

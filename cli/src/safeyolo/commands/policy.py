@@ -59,7 +59,7 @@ def _load_policy_file(config_dir: Path) -> tuple[dict, Path]:
         prev_normalizer = sys.modules.pop("toml_normalize", None)
         sys.path.insert(0, str(addons_dir))
         try:
-            from toml_normalize import normalize
+            from safeyolo.policy.toml_normalize import normalize
 
             plain = raw.unwrap()
             internal = normalize(plain)
@@ -133,7 +133,7 @@ def _compile_locally(raw: dict, policy_path: Path) -> dict:
     sys.modules["utils"] = stub
     sys.path.insert(0, str(addons_dir))
     try:
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         return compile_policy(raw)
     finally:
@@ -242,7 +242,7 @@ def migrate(
     prev_normalizer = sys.modules.pop("toml_normalize", None)
     sys.path.insert(0, str(addons_dir))
     try:
-        from toml_normalize import denormalize
+        from safeyolo.policy.toml_normalize import denormalize
 
         toml_data = denormalize(raw)
     finally:

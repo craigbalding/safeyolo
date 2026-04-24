@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
 
-from flow_writer import _FlowWriter  # noqa: E402
+from safeyolo.core.flow_writer import _FlowWriter  # noqa: E402
 
 
 def _make_store() -> MagicMock:
@@ -150,14 +150,14 @@ class TestShutdown:
 
 class TestInstallHelpers:
     def test_install_sets_module_singleton(self):
-        import flow_writer as fw
+        import safeyolo.core.flow_writer as fw
         store = _make_store()
         writer = fw.install(store)
         assert fw.get_writer() is writer
         assert writer._store is store
 
     def test_put_record_without_install_warns_and_drops(self, caplog):
-        import flow_writer as fw
+        import safeyolo.core.flow_writer as fw
         # Reset module singleton so we can hit the uninstalled path.
         fw._writer = None
         fw.put_record({"request_id": "r"})

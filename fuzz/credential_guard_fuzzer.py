@@ -11,8 +11,8 @@ import atheris
 # Instrument before importing target modules
 with atheris.instrument_imports():
     import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons"))
-    from detection import (
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cli", "src"))
+    from safeyolo.detection import (
         DEFAULT_RULES,
         analyze_headers,
         extract_bearer_token,

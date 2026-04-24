@@ -188,7 +188,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(["target.example.com"])
         flow = _make_mock_flow(host="api.openai.com", path="/v1/chat")
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response is None
@@ -199,7 +199,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response is not None
@@ -218,7 +218,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response is not None
@@ -231,7 +231,7 @@ class TestTestContextAddon:
         # Missing 'agent' key
         flow = _make_mock_flow(headers={"X-Test-Context": "run=sec1;test=IDOR-003"})
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert flow.response is not None
@@ -244,7 +244,7 @@ class TestTestContextAddon:
             headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
 
-        with patch("base.get_option_safe", return_value=True), \
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
             addon.request(flow)
 
@@ -264,7 +264,7 @@ class TestTestContextAddon:
             headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
 
-        with patch("base.get_option_safe", return_value=True), \
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
             addon.request(flow)
 
@@ -278,7 +278,7 @@ class TestTestContextAddon:
         flow = _make_mock_flow()
 
         # should_block returns False in warn mode
-        with patch("base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
+        with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
             addon.request(flow)
 
         assert flow.response is None
@@ -302,7 +302,7 @@ class TestTestContextAddon:
         flow = _make_mock_flow()
         flow.response = MagicMock()  # Already has a response
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.stats.checks == 0
@@ -312,7 +312,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(["*.example.com"])
         flow = _make_mock_flow(host="target.example.com")
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         # Should be treated as target host (blocked for missing header)
@@ -327,7 +327,7 @@ class TestTestContextAddon:
         )
 
         # Simulate request phase
-        with patch("base.get_option_safe", return_value=True), \
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
             addon.request(flow)
 
@@ -369,7 +369,7 @@ class TestTestContextAddon:
             content=b'{"title": "test"}',
         )
 
-        with patch("base.get_option_safe", return_value=True), \
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event") as mock_write:
             addon.request(flow)
 
@@ -437,7 +437,7 @@ class TestTestContextAddon:
         addon.stats.blocked = 2
         addon.stats.warned = 1
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             stats = addon.get_stats()
 
         assert stats["target_hosts"] == 2
@@ -456,7 +456,7 @@ class TestTestContextAddon:
         flow1 = _make_mock_flow(host="other-target.example.com")
         flow2 = _make_mock_flow(host="not-a-target.example.com")
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow1)
             addon.request(flow2)
 
@@ -474,7 +474,7 @@ class TestTestContextAddon:
         )
 
         # Request phase sets timing
-        with patch("base.get_option_safe", return_value=True), \
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"), \
              patch("test_context.time") as mock_time:
             mock_time.time.return_value = 1000.0
@@ -601,7 +601,7 @@ class TestTestContextBlockBody:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-Test-Context": "not;valid;pairs"})
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -612,7 +612,7 @@ class TestTestContextBlockBody:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -623,7 +623,7 @@ class TestTestContextBlockBody:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         body = json.loads(flow.response.content)
@@ -642,7 +642,7 @@ class TestTestContextCounters:
 
         # Missing header -> blocked, but checks still counts
         flow1 = _make_mock_flow()
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow1)
         assert addon.stats.checks == 1
 
@@ -650,7 +650,7 @@ class TestTestContextCounters:
         flow2 = _make_mock_flow(
             headers={"X-Test-Context": "run=sec1;agent=idor"}
         )
-        with patch("base.get_option_safe", return_value=True), \
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
             addon.request(flow2)
         assert addon.stats.checks == 2
@@ -660,7 +660,7 @@ class TestTestContextCounters:
         addon = _make_addon_with_targets(["target.example.com"])
         flow = _make_mock_flow(host="other.example.com")
 
-        with patch("base.get_option_safe", return_value=True):
+        with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
 
         assert addon.stats.checks == 0
@@ -712,7 +712,7 @@ class TestTestContextWarnMode:
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
 
-        with patch("base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
+        with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
             addon.request(flow)
 
         assert flow.response is None

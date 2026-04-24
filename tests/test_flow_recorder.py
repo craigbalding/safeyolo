@@ -6,9 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 from flow_recorder import FlowRecorder
-from flow_store import FlowStore
 from mitmproxy import http
 from mitmproxy.test import taddons, tflow
+
+from safeyolo.storage.flow_store import FlowStore
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def recorder(tmp_path):
         store = FlowStore(db_path=tctx.options.flow_store_db_path)
         store.init_db()
         addon.store = store
-        import flow_writer
+        import safeyolo.core.flow_writer as flow_writer
         flow_writer._writer = None  # reset between tests
         flow_writer.install(store)
 
@@ -57,7 +58,7 @@ def _drain_flow_writer() -> None:
     `FlowRecorder.response`/`.error` enqueue onto a background thread;
     tests that then assert on `addon.store.search_flows` must wait.
     """
-    import flow_writer
+    import safeyolo.core.flow_writer as flow_writer
     w = flow_writer.get_writer()
     assert w is not None, "flow_writer was not installed for this test"
     assert w.wait_for_drain(timeout_s=3.0), "flow writer failed to drain"
@@ -377,7 +378,7 @@ class TestErrorRecording:
 
         # Let the writer pick it up and fail; the error ends up on the
         # writer's counter, visible via get_stats().
-        import flow_writer
+        import safeyolo.core.flow_writer as flow_writer
         flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
         stats = recorder.get_stats()
         assert stats["write_errors"] == 1
@@ -396,7 +397,7 @@ class TestBestEffort:
 
         # Should not raise from the hook.
         recorder.response(flow)
-        import flow_writer
+        import safeyolo.core.flow_writer as flow_writer
         flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
         assert recorder.get_stats()["write_errors"] == 1
 
@@ -409,7 +410,7 @@ class TestBestEffort:
         recorder.store._conn = None
 
         recorder.error(flow)
-        import flow_writer
+        import safeyolo.core.flow_writer as flow_writer
         flow_writer.get_writer().wait_for_drain(timeout_s=3.0)
         assert recorder.get_stats()["write_errors"] == 1
 

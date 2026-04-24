@@ -56,7 +56,7 @@ class TestUpdateHostRate:
 
     @pytest.fixture
     def engine_toml(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.toml"
         baseline.write_text(SAMPLE_TOML)
@@ -64,7 +64,7 @@ class TestUpdateHostRate:
 
     @pytest.fixture
     def engine_yaml(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text(SAMPLE_YAML)
@@ -88,7 +88,7 @@ class TestUpdateHostRate:
         engine_toml.update_host_rate("api.openai.com", 9000)
 
         # Reload and check
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
         doc = load_roundtrip(tmp_path / "policy.toml")
         assert doc["hosts"]["api.openai.com"]["rate"] == 9000
 
@@ -101,7 +101,7 @@ class TestUpdateHostRate:
             engine_toml.update_host_rate("api.openai.com", -1)
 
     def test_toml_comments_preserved(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         policy_text = """\
 # Main policy file
@@ -132,7 +132,7 @@ class TestAddHostAllowance:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.toml"
         baseline.write_text(SAMPLE_TOML)
@@ -153,7 +153,7 @@ class TestAddHostAllowance:
     def test_host_persists_to_toml(self, engine, tmp_path):
         engine.add_host_allowance("cdn.example.com", rate=800)
 
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
         doc = load_roundtrip(tmp_path / "policy.toml")
         assert "cdn.example.com" in doc["hosts"]
         assert doc["hosts"]["cdn.example.com"]["rate"] == 800
@@ -175,7 +175,7 @@ class TestAddHostAllowance:
         assert result["agent"] == "boris"
 
         # Find the permission that was created
-        from policy_engine import Condition
+        from safeyolo.policy.engine import Condition
 
         baseline = engine._loader._baseline
         matching = [
@@ -194,7 +194,7 @@ class TestAddHostBypass:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.toml"
         baseline.write_text(SAMPLE_TOML)
@@ -209,7 +209,7 @@ class TestAddHostBypass:
     def test_add_bypass_persists(self, engine, tmp_path):
         engine.add_host_bypass("api.openai.com", "pattern-scanner")
 
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
         doc = load_roundtrip(tmp_path / "policy.toml")
         assert doc["hosts"]["api.openai.com"]["bypass"] == ["pattern-scanner"]
 
@@ -220,7 +220,7 @@ class TestAddHostBypass:
         assert result["bypass"].count("pattern-scanner") == 1
 
     def test_append_to_existing_bypass(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         policy_text = """\
 [metadata]
@@ -243,7 +243,7 @@ rate = 600
         assert "pattern-scanner" in result["bypass"]
 
     def test_requires_toml(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text(SAMPLE_YAML)

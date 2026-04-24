@@ -3,7 +3,8 @@
 import threading
 
 import pytest
-from vault import Vault, VaultCredential
+
+from safeyolo.core.vault import Vault, VaultCredential
 
 
 @pytest.fixture
@@ -195,7 +196,7 @@ class TestVaultSingleton:
 
     def test_init_vault_and_get_vault_singleton(self, tmp_path):
         """init_vault creates and returns vault; get_vault returns same instance."""
-        import vault as vault_mod
+        import safeyolo.core.vault as vault_mod
 
         path = tmp_path / "singleton.yaml.enc"
         old_vault = vault_mod._vault
@@ -210,7 +211,7 @@ class TestVaultSingleton:
 
     def test_get_vault_before_init_returns_none(self):
         """get_vault returns None when init_vault has not been called."""
-        import vault as vault_mod
+        import safeyolo.core.vault as vault_mod
 
         old_vault = vault_mod._vault
         try:

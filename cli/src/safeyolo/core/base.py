@@ -1,0 +1,185 @@
+"""
+base.py - Base class for security-focused mitmproxy addons
+
+Provides common functionality for addons that make security decisions:
+- Stats tracking (checks, allowed, blocked, warned)
+- Option checking (enabled, block mode)
+- Decision logging
+- Block response generation
+
+Usage:
+    from safeyolo.core.base import SecurityAddon
+
+    class MyAddon(SecurityAddon):
+        name = "my-addon"
+
+        def request(self, flow):
+            if not self.is_enabled() or self.is_bypassed(flow):
+                return
+
+            self.stats.checks += 1
+            # ... evaluation logic ...
+
+            if should_block:
+                self.log_decision(flow, "block", reason="...")
+                self.block(flow, 403, {"error": "Blocked", ...})
+            else:
+                self.stats.allowed += 1
+"""
+
+from dataclasses import dataclass
+from typing import Any
+
+from mitmproxy import http
+from service_discovery import get_service_discovery
+
+from pdp import get_policy_client
+from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.utils import get_client_ip, get_option_safe, make_block_response, write_event
+
+
+@dataclass
+class AddonStats:
+    """Common stats for security addons."""
+    checks: int = 0
+    allowed: int = 0
+    blocked: int = 0
+    warned: int = 0
+
+
+class SecurityAddon:
+    """
+    Base class for security-decision addons.
+
+    Subclasses must define:
+        name: str  - addon identifier (e.g., "rate-limiter")
+
+    Convention for mitmproxy options (auto-derived from name):
+        {name}_enabled  - enable/disable addon
+        {name}_block    - block vs warn mode
+
+    Example:
+        name = "rate-limiter" -> ratelimit_enabled, ratelimit_block
+        name = "access-control" -> access_control_enabled, access_control_block
+    """
+
+    name: str  # Subclass must define
+
+    def __init__(self):
+        self.stats = AddonStats()
+
+    def _option_prefix(self) -> str:
+        """Convert addon name to option prefix (e.g., 'rate-limiter' -> 'ratelimit')."""
+        return self.name.replace("-", "_")
+
+    def is_enabled(self) -> bool:
+        """Check if addon is enabled via mitmproxy option."""
+        option = f"{self._option_prefix()}_enabled"
+        return get_option_safe(option, True)
+
+    def should_block(self) -> bool:
+        """Check if addon should block (vs warn)."""
+        option = f"{self._option_prefix()}_block"
+        return get_option_safe(option, True)
+
+    def is_bypassed(self, flow: http.HTTPFlow) -> bool:
+        """Check if addon is bypassed for this request.
+
+        Returns True if:
+        - Flow already has a response (another addon blocked it)
+        - Policy says addon is disabled for this domain/client
+        """
+        if flow.response:
+            return True
+
+        try:
+            client = get_policy_client()
+        except RuntimeError:
+            # PolicyClient not configured — default to not bypassed
+            return False
+
+        domain = flow.request.host
+
+        # Get client_id from ServiceDiscovery IP mapping
+        discovery = get_service_discovery()
+        if discovery:
+            client_ip = get_client_ip(flow)
+            client_id = discovery.get_client_for_ip(client_ip)
+            # "default" means no specific project, treat as None
+            if client_id == "default":
+                client_id = None
+        else:
+            client_id = None
+
+        return not client.is_addon_enabled(self.name, domain, client_id)
+
+    def log_decision(
+        self,
+        flow: http.HTTPFlow,
+        decision: Decision,
+        *,
+        severity: Severity,
+        summary: str,
+        host: str | None = None,
+        approval: ApprovalRequest | None = None,
+        **details: Any,
+    ) -> None:
+        """Log security decision to audit log.
+
+        Args:
+            flow: HTTP flow for request_id correlation
+            decision: Decision enum value
+            severity: Event severity
+            summary: Human-readable one-liner
+            host: Destination hostname
+            approval: Approval request metadata
+            **details: Additional addon-specific fields
+        """
+        event_type = f"security.{self._option_prefix()}"
+
+        write_event(
+            event_type,
+            kind=EventKind.SECURITY,
+            severity=severity,
+            summary=summary,
+            decision=decision,
+            host=host,
+            request_id=flow.metadata.get("request_id"),
+            agent=flow.metadata.get("agent"),
+            addon=self.name,
+            approval=approval,
+            details=details if details else None,
+        )
+
+    def block(
+        self,
+        flow: http.HTTPFlow,
+        status: int,
+        body: dict,
+        extra_headers: dict | None = None,
+    ) -> None:
+        """Block request with standard response.
+
+        Args:
+            flow: HTTP flow to block
+            status: HTTP status code (403, 429, 503, etc.)
+            body: Response body as dict
+            extra_headers: Additional headers (e.g., Retry-After)
+        """
+        self.stats.blocked += 1
+        flow.metadata["blocked_by"] = self.name
+        flow.response = make_block_response(status, body, self.name, extra_headers)
+
+    def warn(self, flow: http.HTTPFlow) -> None:
+        """Record a warning (would-block in warn mode)."""
+        self.stats.warned += 1
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return stats dict for admin API."""
+        return {
+            "enabled": self.is_enabled(),
+            "checks_total": self.stats.checks,
+            "allowed_total": self.stats.allowed,
+            "blocked_total": self.stats.blocked,
+            "warned_total": self.stats.warned,
+        }

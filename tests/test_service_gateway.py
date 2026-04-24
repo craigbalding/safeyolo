@@ -18,7 +18,8 @@ from service_loader import (
     RiskyRoute,
     init_service_registry,
 )
-from vault import Vault, VaultCredential
+
+from safeyolo.core.vault import Vault, VaultCredential
 
 # --- Fixtures ---
 

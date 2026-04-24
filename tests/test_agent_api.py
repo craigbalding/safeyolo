@@ -6,8 +6,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 from agent_api import AGENT_API_HOST, AgentAPI
-from flow_store import FlowStore
 from mitmproxy.test import taddons, tflow
+
+from safeyolo.storage.flow_store import FlowStore
 
 
 def _make_agent_token():

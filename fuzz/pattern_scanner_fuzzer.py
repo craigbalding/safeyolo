@@ -11,10 +11,10 @@ import atheris
 # Instrument before importing target modules
 with atheris.instrument_imports():
     import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cli", "src"))
     import re
 
-    from detection import PatternRule, load_builtin_set, load_patterns_from_config, scan_text
+    from safeyolo.detection import PatternRule, load_builtin_set, load_patterns_from_config, scan_text
 
 
 # Pre-compile rules once

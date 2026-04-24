@@ -39,7 +39,7 @@ class TestPatternMatching:
     @pytest.fixture
     def matches_pattern(self):
         """Get the pattern matching function."""
-        from policy_engine import _matches_pattern
+        from safeyolo.policy.engine import _matches_pattern
 
         return _matches_pattern
 
@@ -81,7 +81,7 @@ class TestConditionMatching:
     @pytest.fixture
     def make_condition(self):
         """Factory for creating Condition objects."""
-        from policy_engine import Condition
+        from safeyolo.policy.engine import Condition
 
         return Condition
 
@@ -150,7 +150,7 @@ class TestGatewayCondition:
 
     @pytest.fixture
     def make_condition(self):
-        from policy_engine import Condition
+        from safeyolo.policy.engine import Condition
 
         return Condition
 
@@ -214,7 +214,7 @@ class TestCapabilityCondition:
 
     @pytest.fixture
     def make_condition(self):
-        from policy_engine import Condition
+        from safeyolo.policy.engine import Condition
 
         return Condition
 
@@ -250,7 +250,7 @@ class TestPolicyEngine:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with test baseline policy."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         # Create test policy.yaml
         baseline = tmp_path / "policy.yaml"
@@ -374,7 +374,7 @@ class TestAddCredentialApproval:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with minimal baseline."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -467,7 +467,7 @@ class TestEvaluateRequest:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with network request permissions."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -547,7 +547,7 @@ class TestEvaluateRequestAgentScoped:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with agent-scoped and proxy-wide permissions."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -630,7 +630,7 @@ class TestBudgetTracking:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with budget config."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -691,7 +691,7 @@ class TestGlobalBudget:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with baseline global budget."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -738,7 +738,7 @@ addons: {}
 
     def test_task_budget_when_baseline_has_none(self, engine, tmp_path):
         """Task budget applies when baseline has no global budget for that action."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "no_budget.yaml"
         baseline.write_text("""
@@ -773,7 +773,7 @@ class TestRiskyRouteEvaluation:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -902,7 +902,7 @@ addons: {}
 
     def test_no_risk_appetite_rules_failsafe(self, tmp_path):
         """Engine with no gateway:risky_route permissions defaults to prompt."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "empty_policy.yaml"
         baseline.write_text("""
@@ -939,7 +939,7 @@ class TestGatewayRequestEvaluation:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1066,7 +1066,7 @@ permissions:
 
     def test_default_deny_no_permissions(self, tmp_path):
         """Engine with no gateway:request permissions denies everything."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "empty.yaml"
         baseline.write_text("""
@@ -1096,7 +1096,7 @@ class TestAddonConfiguration:
     @pytest.fixture
     def engine(self, tmp_path):
         """Create PolicyEngine with addon config."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1161,7 +1161,7 @@ class TestAddonClientBypass:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1202,7 +1202,7 @@ class TestAddonTaskPolicy:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1250,7 +1250,7 @@ class TestGetBaseline:
 
     def test_returns_none_when_no_baseline_path(self, tmp_path):
         """get_baseline returns None when no baseline_path was configured."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         engine = PolicyEngine(baseline_path=None)
         assert engine.get_baseline() is None
@@ -1261,7 +1261,7 @@ class TestGetBaseline:
         A policy with only credential_rules, scan_patterns, or gateway config
         but no permissions list is still meaningful.
         """
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1286,7 +1286,7 @@ credential_rules:
 
     def test_returns_policy_with_populated_permissions(self, tmp_path):
         """get_baseline returns the full policy object when permissions exist."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1315,7 +1315,7 @@ class TestPolicyMutation:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1449,7 +1449,7 @@ class TestPolicyLifecycle:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1550,7 +1550,7 @@ class TestConsumeBudget:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1604,7 +1604,7 @@ class TestResetBudgets:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1657,7 +1657,7 @@ class TestFailClosed:
     @pytest.fixture
     def empty_engine(self, tmp_path):
         """Engine with zero permissions -- pure default behaviour."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "empty.yaml"
         baseline.write_text("""
@@ -1716,19 +1716,19 @@ class TestSpecificityScore:
     """Tests for _specificity_score ordering helper."""
 
     def test_wildcard_scores_zero(self):
-        from policy_engine import _specificity_score
+        from safeyolo.policy.engine import _specificity_score
 
         assert _specificity_score("*") == 0
 
     def test_longer_patterns_score_higher(self):
-        from policy_engine import _specificity_score
+        from safeyolo.policy.engine import _specificity_score
 
         score_short = _specificity_score("api.a.com/*")
         score_long = _specificity_score("api.example.com/*")
         assert score_long > score_short
 
     def test_wildcards_reduce_score(self):
-        from policy_engine import _specificity_score
+        from safeyolo.policy.engine import _specificity_score
 
         score_exact = _specificity_score("api.openai.com/v1/chat")
         score_wild = _specificity_score("api.openai.com/*")
@@ -1746,7 +1746,7 @@ class TestPermissionValidation:
 
     def test_budget_effect_requires_budget_field(self):
         """Permission with effect=budget must have budget set."""
-        from policy_engine import Permission
+        from safeyolo.policy.engine import Permission
 
         with pytest.raises(ValueError, match="budget must be set"):
             Permission(
@@ -1758,7 +1758,7 @@ class TestPermissionValidation:
 
     def test_budget_effect_with_budget_field_succeeds(self):
         """Permission with effect=budget and budget field is valid."""
-        from policy_engine import Permission
+        from safeyolo.policy.engine import Permission
 
         p = Permission(
             action="network:request",
@@ -1771,7 +1771,7 @@ class TestPermissionValidation:
 
     def test_allow_effect_does_not_require_budget(self):
         """Permission with effect=allow does not require budget field."""
-        from policy_engine import Permission
+        from safeyolo.policy.engine import Permission
 
         p = Permission(
             action="network:request",
@@ -1791,7 +1791,7 @@ class TestStats:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1849,7 +1849,7 @@ class TestMergedRulesFromTask:
 
     @pytest.fixture
     def engine(self, tmp_path):
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""

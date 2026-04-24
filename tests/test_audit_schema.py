@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from audit_schema import (
+from safeyolo.core.audit_schema import (
     SCHEMA_VERSION,
     ApprovalRequest,
     ApprovalType,

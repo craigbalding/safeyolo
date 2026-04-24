@@ -89,19 +89,14 @@ def _read_log_tail(path: Path, lines: int = 15) -> str:
 
 
 def _find_addons_dir() -> Path | None:
-    """Find the addons directory.
+    """Find the mitmproxy addons directory.
 
-    Lookup order: explicit env override, then repo-layout paths
-    relative to this file.
-
-    Repo layout works for `uv tool install --editable ./cli` (the
-    package points at cli/src/safeyolo inside the repo, so ../../../
-    hits repo root and ../../../addons is the real dir). Non-editable
-    installs copy the package into an isolated venv under
-    ~/.local/share/uv/tools/safeyolo/..., where the parents lookup
-    resolves to the venv's site-packages and no sibling addons/ dir
-    exists — that case returns None and the caller raises with a fix
-    hint. Setting SAFEYOLO_ADDONS_DIR bypasses the lookup entirely.
+    Post-refactor (#200 phase 5), addons live next to this module in
+    the installed package: `safeyolo/mitm_addons/`. The sibling lookup
+    works for both editable (`uv tool install --editable ./cli`) and
+    non-editable installs, since the package layout itself is
+    consistent. `SAFEYOLO_ADDONS_DIR` still overrides for testing or
+    custom deployments.
     """
     env_override = os.environ.get("SAFEYOLO_ADDONS_DIR")
     if env_override:
@@ -110,14 +105,9 @@ def _find_addons_dir() -> Path | None:
             return p
         return None
 
-    # Repo layout: safeyolo/addons/
-    candidates = [
-        Path(__file__).resolve().parents[3] / "addons",  # cli/src/safeyolo -> repo root
-        Path(__file__).resolve().parents[4] / "addons",  # one more level up
-    ]
-    for p in candidates:
-        if p.is_dir() and (p / "request_id.py").exists():
-            return p
+    sibling = Path(__file__).resolve().parent / "mitm_addons"
+    if sibling.is_dir() and (sibling / "request_id.py").exists():
+        return sibling
     return None
 
 

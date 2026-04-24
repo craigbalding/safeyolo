@@ -12,7 +12,7 @@ for fuzzer in fuzz/*_fuzzer.py; do
 
     # Create standalone package (detection module is pure Python + yarl)
     pyinstaller --distpath $OUT --onefile --name $fuzzer_package \
-        --paths addons \
+        --paths cli/src \
         --hidden-import yaml \
         --hidden-import yarl \
         --hidden-import multidict \

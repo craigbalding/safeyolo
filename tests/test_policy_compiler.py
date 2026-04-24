@@ -29,22 +29,22 @@ class TestIsHostCentric:
     """Tests for format detection."""
 
     def test_detects_hosts_key(self):
-        from policy_compiler import is_host_centric
+        from safeyolo.policy.compiler import is_host_centric
 
         assert is_host_centric({"hosts": {}}) is True
 
     def test_detects_hosts_with_entries(self):
-        from policy_compiler import is_host_centric
+        from safeyolo.policy.compiler import is_host_centric
 
         assert is_host_centric({"hosts": {"api.openai.com": {}}}) is True
 
     def test_rejects_iam_format(self):
-        from policy_compiler import is_host_centric
+        from safeyolo.policy.compiler import is_host_centric
 
         assert is_host_centric({"permissions": []}) is False
 
     def test_rejects_empty_dict(self):
-        from policy_compiler import is_host_centric
+        from safeyolo.policy.compiler import is_host_centric
 
         assert is_host_centric({}) is False
 
@@ -53,7 +53,7 @@ class TestCompileCredentials:
     """Tests for credential routing compilation."""
 
     def test_single_credential(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -73,7 +73,7 @@ class TestCompileCredentials:
         ]
 
     def test_multiple_hosts(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -90,7 +90,7 @@ class TestCompileCredentials:
         assert resources == {"api.openai.com/*", "api.anthropic.com/*"}
 
     def test_string_credential_converted_to_list(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -106,7 +106,7 @@ class TestCompileRateLimits:
     """Tests for rate limit compilation."""
 
     def test_single_rate_limit(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -126,7 +126,7 @@ class TestCompileRateLimits:
         ]
 
     def test_host_with_both_creds_and_limit(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -144,7 +144,7 @@ class TestCompileEgress:
     """Tests for per-host egress control (B1 fix: prompt was silently ignored)."""
 
     def test_per_host_egress_prompt(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -163,7 +163,7 @@ class TestCompileEgress:
         ]
 
     def test_per_host_egress_deny(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -182,7 +182,7 @@ class TestCompileEgress:
         ]
 
     def test_per_host_egress_allow_generates_no_permission(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -194,7 +194,7 @@ class TestCompileEgress:
         assert result["permissions"] == []
 
     def test_per_host_egress_absent_generates_no_permission(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -206,7 +206,7 @@ class TestCompileEgress:
         assert result["permissions"] == []
 
     def test_per_host_egress_with_credentials_and_rate_limit(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -228,7 +228,7 @@ class TestCompileWildcard:
     """Tests for wildcard host handling."""
 
     def test_unknown_credentials_prompt(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -253,7 +253,7 @@ class TestCompileWildcard:
         }
 
     def test_unknown_credentials_deny(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -272,7 +272,7 @@ class TestCompileWildcard:
         ]
 
     def test_wildcard_egress_prompt(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -291,7 +291,7 @@ class TestCompileWildcard:
         ]
 
     def test_wildcard_egress_deny(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -310,7 +310,7 @@ class TestCompileWildcard:
         ]
 
     def test_wildcard_egress_allow_generates_no_permission(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -323,7 +323,7 @@ class TestCompileWildcard:
 
     def test_wildcard_credentials_fallback_for_unknown_credentials(self):
         """When unknown_credentials is absent, credentials key is used."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -342,7 +342,7 @@ class TestCompileWildcard:
         ]
 
     def test_wildcard_rate_limit(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -362,7 +362,7 @@ class TestCompileWildcard:
         ]
 
     def test_wildcard_raw_rules_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw_rule = {
             "action": "network:request",
@@ -383,7 +383,7 @@ class TestCompileBypass:
     """Tests for domain bypass compilation."""
 
     def test_bypass_generates_domains(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -399,7 +399,7 @@ class TestCompileRawRules:
     """Tests for IAM rule passthrough (escape hatch)."""
 
     def test_raw_rules_passed_through(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw_rule = {
             "action": "credential:use",
@@ -425,7 +425,7 @@ class TestCompileGlobalBudget:
     """Tests for global budget compilation."""
 
     def test_global_budget(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "global_budget": 12000}
         result = compile_policy(raw)
@@ -433,7 +433,7 @@ class TestCompileGlobalBudget:
         assert result["budgets"] == {"network:request": 12000}
 
     def test_budgets_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "budgets": {"network:request": 5000}}
         result = compile_policy(raw)
@@ -441,7 +441,7 @@ class TestCompileGlobalBudget:
         assert result["budgets"] == {"network:request": 5000}
 
     def test_global_budget_takes_precedence_over_budgets(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "global_budget": 12000, "budgets": {"network:request": 5000}}
         result = compile_policy(raw)
@@ -453,7 +453,7 @@ class TestCompileCredentialDetection:
     """Tests for credential detection rule compilation."""
 
     def test_explicit_allowed_hosts(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -477,7 +477,7 @@ class TestCompileCredentialDetection:
         ]
 
     def test_auto_derived_allowed_hosts(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -497,7 +497,7 @@ class TestCompileCredentialDetection:
 
     def test_multi_host_credential(self):
         """GitHub creds accepted at both github.com and api.github.com."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -515,7 +515,7 @@ class TestCompileCredentialDetection:
         assert set(rules[0]["allowed_hosts"]) == {"api.github.com", "github.com"}
 
     def test_suggested_url_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -531,7 +531,7 @@ class TestCompileCredentialDetection:
         assert result["credential_rules"][0]["suggested_url"] == "https://platform.openai.com/api-keys"
 
     def test_credential_rules_passthrough_when_no_credentials_section(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -546,7 +546,7 @@ class TestCompileCredentialDetection:
         ]
 
     def test_wildcard_host_excluded_from_auto_derived(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -566,14 +566,14 @@ class TestCompilePassthrough:
     """Tests for sections that pass through unchanged."""
 
     def test_required_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "required": ["credential_guard", "network_guard"]}
         result = compile_policy(raw)
         assert result["required"] == ["credential_guard", "network_guard"]
 
     def test_addons_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -585,14 +585,14 @@ class TestCompilePassthrough:
         assert result["addons"] == {"credential_guard": {"enabled": True}}
 
     def test_scan_patterns_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "scan_patterns": []}
         result = compile_policy(raw)
         assert result["scan_patterns"] == []
 
     def test_clients_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "clients": {"my-client": {"allowed": True}}}
         result = compile_policy(raw)
@@ -604,7 +604,7 @@ class TestCompileDomains:
 
     def test_compiled_domains_override_explicit_on_conflict(self):
         """Compiled bypass overrides explicit domains for same host."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -623,7 +623,7 @@ class TestCompileDomains:
         assert result["domains"]["*.external"]["bypass"] == ["network_guard"]
 
     def test_explicit_domains_passthrough_when_no_compiled_domains(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -638,7 +638,7 @@ class TestCompileDomains:
         assert result["domains"] == {"*.internal": {"bypass": ["pattern_scanner"]}}
 
     def test_per_host_addons_key_generates_domains(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -660,7 +660,7 @@ class TestCompileAgentHosts:
     """Tests for per-agent host entries with agent condition."""
 
     def test_agent_credential_routing(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -686,7 +686,7 @@ class TestCompileAgentHosts:
         }
 
     def test_agent_rate_limit(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -713,7 +713,7 @@ class TestCompileAgentHosts:
         }
 
     def test_agent_egress_deny(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -742,7 +742,7 @@ class TestCompileAgentHosts:
         }
 
     def test_agent_egress_prompt(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -772,7 +772,7 @@ class TestCompileAgentHosts:
 
     def test_agent_default_egress_deny(self):
         """Agent-level egress: deny generates wildcard deny with agent condition."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -800,7 +800,7 @@ class TestCompileAgentHosts:
 
     def test_agent_default_egress_prompt(self):
         """Agent-level egress: prompt generates wildcard prompt with agent condition."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -834,7 +834,7 @@ class TestCompileAgentHosts:
         result unless a top-level host also generated a domains entry. This test
         documents the current behaviour.
         """
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -857,7 +857,7 @@ class TestCompileAgentHosts:
         assert "*.internal" not in result.get("domains", {})
 
     def test_agent_none_config_treated_as_empty(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -883,7 +883,7 @@ class TestCompileAgentHosts:
 
     def test_agent_non_dict_config_skipped(self):
         """Non-dict agent config is silently skipped (B6: low severity)."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -896,7 +896,7 @@ class TestCompileAgentHosts:
         assert result["permissions"] == []
 
     def test_agent_string_credential_converted_to_list(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -920,7 +920,7 @@ class TestCompileRiskAppetite:
     """Tests for gateway.risk_appetite compilation."""
 
     def test_risk_appetite_compiles_to_permissions(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -959,7 +959,7 @@ class TestCompileRiskAppetite:
         }
 
     def test_risk_appetite_agent_and_service(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -979,7 +979,7 @@ class TestCompileRiskAppetite:
         }
 
     def test_risk_appetite_default_decision(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -994,7 +994,7 @@ class TestCompileRiskAppetite:
         assert gateway_perms[0]["effect"] == "prompt"
 
     def test_risk_appetite_enables_condition(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1010,7 +1010,7 @@ class TestCompileRiskAppetite:
 
     def test_risk_appetite_no_condition_fields(self):
         """Rule with only decision produces no condition key."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1032,7 +1032,7 @@ class TestCompileRiskAppetite:
 
     def test_risk_appetite_validates_in_engine(self, tmp_path):
         """Compiled risk appetite loads into PolicyEngine and evaluates."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1077,7 +1077,7 @@ scan_patterns: []
 
     def test_no_risk_appetite_section(self):
         """No gateway.risk_appetite produces no gateway permissions."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {"*": {"rate_limit": 600}}}
         result = compile_policy(raw)
@@ -1089,7 +1089,7 @@ class TestCompileGateway:
     """Tests for services/agents gateway compilation."""
 
     def test_compile_gateway_with_agents(self):
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1109,7 +1109,7 @@ class TestCompileGateway:
         assert "slack" in gateway["agent_env"]["research-agent"]
 
     def test_compile_gateway_token_format(self):
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1124,7 +1124,7 @@ class TestCompileGateway:
         assert len(token) == 4 + 64
 
     def test_compile_gateway_token_binding(self):
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1147,7 +1147,7 @@ class TestCompileGateway:
 
     def test_compile_gateway_role_compat(self):
         """Legacy role field is accepted as capability."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1162,7 +1162,7 @@ class TestCompileGateway:
         assert binding["account"] == "agent"  # default
 
     def test_compile_gateway_multiple_agents(self):
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1180,26 +1180,26 @@ class TestCompileGateway:
         assert set(gateway["agent_env"].keys()) == {"a1", "a2"}
 
     def test_compile_gateway_empty_agents(self):
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         gateway = compile_gateway({"agents": {}})
         assert gateway == {"token_map": {}, "agent_env": {}, "host_map": {}}
 
     def test_compile_gateway_no_agents(self):
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         gateway = compile_gateway({})
         assert gateway == {"token_map": {}, "agent_env": {}, "host_map": {}}
 
     def test_mint_gateway_token_uniqueness(self):
-        from policy_compiler import mint_gateway_token
+        from safeyolo.policy.compiler import mint_gateway_token
 
         tokens = {mint_gateway_token() for _ in range(100)}
         assert len(tokens) == 100
 
     def test_compile_policy_with_agents_section(self):
         """compile_policy stores gateway config in result['gateway']."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {"*": {"unknown_credentials": "prompt", "rate_limit": 600}},
@@ -1215,7 +1215,7 @@ class TestCompileGateway:
 
     def test_legacy_string_format(self):
         """Legacy format: minifuse: reader (no token) still compiles."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1229,7 +1229,7 @@ class TestCompileGateway:
 
     def test_host_map_extraction(self):
         """Policy hosts with service: key produce host_map in gateway result."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -1251,7 +1251,7 @@ class TestCompileGateway:
 
     def test_host_map_empty_without_service(self):
         """Hosts without service: key produce empty host_map."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -1269,7 +1269,7 @@ class TestCompileGateway:
 
     def test_host_map_passed_through_compile_gateway(self):
         """compile_gateway includes host_map when passed explicitly."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         host_map = {"api.minifuse.io": "minifuse"}
         raw = {
@@ -1284,7 +1284,7 @@ class TestCompileGateway:
 
     def test_host_map_without_agents(self):
         """host_map stored in gateway even when no agents section exists."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -1296,7 +1296,7 @@ class TestCompileGateway:
 
     def test_grant_ttl_seconds_passthrough(self):
         """gateway.grant_ttl_seconds is passed through to result."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1314,7 +1314,7 @@ class TestCompileGateway:
 
     def test_grant_ttl_seconds_without_agents(self):
         """gateway.grant_ttl_seconds works even without agents."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1330,26 +1330,26 @@ class TestDecompileApproval:
     """Tests for decompile_approval — creating host-centric entries for approvals."""
 
     def test_single_credential(self):
-        from policy_compiler import decompile_approval
+        from safeyolo.policy.compiler import decompile_approval
 
         result = decompile_approval("api.example.com", ["hmac:a1b2c3"])
         assert result == {"credentials": ["hmac:a1b2c3"]}
 
     def test_multiple_credentials(self):
-        from policy_compiler import decompile_approval
+        from safeyolo.policy.compiler import decompile_approval
 
         result = decompile_approval("api.example.com", ["hmac:a1b2c3", "openai:x9y8z7"])
         assert result == {"credentials": ["hmac:a1b2c3", "openai:x9y8z7"]}
 
     def test_empty_credentials(self):
-        from policy_compiler import decompile_approval
+        from safeyolo.policy.compiler import decompile_approval
 
         result = decompile_approval("api.example.com", [])
         assert result == {"credentials": []}
 
     def test_destination_not_included_in_result(self):
         """Destination is the key, not part of the value dict."""
-        from policy_compiler import decompile_approval
+        from safeyolo.policy.compiler import decompile_approval
 
         result = decompile_approval("api.example.com", ["hmac:abc"])
         assert "destination" not in result
@@ -1361,7 +1361,7 @@ class TestCompileErrors:
 
     def test_non_dict_host_config_raises_valueerror(self):
         """B3: Non-dict host config (e.g. bare int) raises ValueError."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -1372,7 +1372,7 @@ class TestCompileErrors:
             compile_policy(raw)
 
     def test_non_dict_host_config_string_raises_valueerror(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -1383,7 +1383,7 @@ class TestCompileErrors:
             compile_policy(raw)
 
     def test_non_dict_host_config_list_raises_valueerror(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {
@@ -1395,7 +1395,7 @@ class TestCompileErrors:
 
     def test_non_dict_credential_config_raises_valueerror(self):
         """B4: Non-dict credential config raises ValueError."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1407,7 +1407,7 @@ class TestCompileErrors:
             compile_policy(raw)
 
     def test_non_dict_credential_config_list_raises_valueerror(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1420,7 +1420,7 @@ class TestCompileErrors:
 
     def test_credential_without_patterns_raises_valueerror(self):
         """B2: Missing patterns field raises ValueError."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1436,7 +1436,7 @@ class TestCompileErrors:
 
     def test_unknown_risk_appetite_decision_raises_valueerror(self):
         """B5: Unknown decision value raises ValueError (was fallback to 'prompt')."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1450,7 +1450,7 @@ class TestCompileErrors:
             compile_policy(raw)
 
     def test_unknown_risk_appetite_decision_message_lists_valid_values(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "hosts": {},
@@ -1468,25 +1468,25 @@ class TestNoneAndEdgeCases:
     """Tests for edge cases and defensive handling."""
 
     def test_empty_hosts(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         result = compile_policy({"hosts": {}})
         assert result["permissions"] == []
 
     def test_host_with_none_config(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         result = compile_policy({"hosts": {"api.test.com": None}})
         assert result["permissions"] == []
 
     def test_host_with_empty_config(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         result = compile_policy({"hosts": {"api.test.com": {}}})
         assert result["permissions"] == []
 
     def test_metadata_passthrough(self):
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {"hosts": {}, "metadata": {"version": "2.0", "description": "Test"}}
         result = compile_policy(raw)
@@ -1498,7 +1498,7 @@ class TestFullPolicyCompilation:
 
     def test_realistic_policy(self):
         """Test compilation of a realistic baseline policy."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         raw = {
             "metadata": {"version": "2.0", "description": "Test"},
@@ -1543,8 +1543,8 @@ class TestFullPolicyCompilation:
 
     def test_compiled_policy_validates(self):
         """Compiled policy passes Pydantic UnifiedPolicy validation."""
-        from policy_compiler import compile_policy
-        from policy_engine import UnifiedPolicy
+        from safeyolo.policy.compiler import compile_policy
+        from safeyolo.policy.engine import UnifiedPolicy
 
         raw = {
             "metadata": {"version": "2.0"},
@@ -1570,7 +1570,7 @@ class TestFullPolicyCompilation:
 
     def test_loaded_via_policy_loader(self, tmp_path):
         """Host-centric YAML loads correctly through PolicyLoader."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1605,7 +1605,7 @@ scan_patterns: []
 
     def test_engine_evaluates_compiled_policy(self, tmp_path):
         """PolicyEngine correctly evaluates a compiled host-centric policy."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1656,7 +1656,7 @@ scan_patterns: []
 
     def test_bypass_works_via_compiled_policy(self, tmp_path):
         """Domain bypass compiles correctly and is evaluated."""
-        from policy_engine import PolicyEngine
+        from safeyolo.policy.engine import PolicyEngine
 
         baseline = tmp_path / "policy.yaml"
         baseline.write_text("""
@@ -1700,7 +1700,7 @@ class TestCompileCapabilityRoutes:
 
     def test_compile_raw_routes_no_contract(self, tmp_path):
         """Capability without contract emits raw routes as gateway:request."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         svc_dir = self._make_service_dir(
             tmp_path,
@@ -1740,7 +1740,7 @@ capabilities:
 
     def test_compile_resolved_operations_with_binding(self, tmp_path):
         """Capability with contract + binding resolves operations."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         svc_dir = self._make_service_dir(
             tmp_path,
@@ -1814,7 +1814,7 @@ capabilities:
 
     def test_skip_unbound_contracted_capability(self, tmp_path):
         """Capability with contract but no binding -> no permissions emitted."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         svc_dir = self._make_service_dir(
             tmp_path,
@@ -1865,7 +1865,7 @@ capabilities:
 
     def test_service_not_found_graceful(self, tmp_path):
         """Unknown service -> warning, no permissions, no crash."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         svc_dir = tmp_path / "services"
         svc_dir.mkdir()
@@ -1882,7 +1882,7 @@ capabilities:
 
     def test_no_services_dir_graceful(self):
         """No services_dir -> no-op, no crash."""
-        from policy_compiler import compile_gateway
+        from safeyolo.policy.compiler import compile_gateway
 
         raw = {
             "agents": {
@@ -1897,7 +1897,7 @@ capabilities:
 
     def test_compile_policy_includes_gateway_request_permissions(self, tmp_path):
         """Full compile_policy flow includes gateway:request permissions."""
-        from policy_compiler import compile_policy
+        from safeyolo.policy.compiler import compile_policy
 
         self._make_service_dir(
             tmp_path,

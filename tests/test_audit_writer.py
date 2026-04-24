@@ -13,7 +13,7 @@ import pytest
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
 
-from audit_writer import _AuditWriter  # noqa: E402
+from safeyolo.core.audit_writer import _AuditWriter  # noqa: E402
 
 
 @pytest.fixture

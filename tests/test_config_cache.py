@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
 
-from config_cache import _ConfigCache  # noqa: E402
+from safeyolo.core.config_cache import _ConfigCache  # noqa: E402
 
 
 def _client_with_hash(hash_value: str, rules=None, patterns=None):

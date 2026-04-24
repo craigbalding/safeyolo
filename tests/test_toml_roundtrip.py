@@ -45,7 +45,7 @@ headers = ["authorization", "x-api-key"]
 
 class TestLoadRoundtrip:
     def test_loads_toml_and_preserves_values(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -56,13 +56,13 @@ class TestLoadRoundtrip:
         assert doc["hosts"]["api.openai.com"]["rate"] == 3000
 
     def test_missing_file_raises_file_not_found_error(self, tmp_path):
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
 
         with pytest.raises(FileNotFoundError):
             load_roundtrip(tmp_path / "nonexistent.toml")
 
     def test_malformed_toml_raises_parse_error(self, tmp_path):
-        from toml_roundtrip import load_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip
 
         path = tmp_path / "bad.toml"
         path.write_text("this is = not valid [[[ toml")
@@ -79,7 +79,7 @@ class TestLoadRoundtrip:
 
 class TestSaveRoundtrip:
     def test_round_trip_modification_survives_reload(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -92,7 +92,7 @@ class TestSaveRoundtrip:
         assert reloaded["budget"] == 24000
 
     def test_creates_parent_directories(self, tmp_path):
-        from toml_roundtrip import save_roundtrip
+        from safeyolo.policy.toml_roundtrip import save_roundtrip
 
         path = tmp_path / "nested" / "sub" / "policy.toml"
         doc = tomlkit.document()
@@ -102,7 +102,7 @@ class TestSaveRoundtrip:
 
     def test_no_temp_file_leaked_after_success(self, sample_toml, tmp_path):
         """After a successful save, no .toml temp files should remain alongside."""
-        from toml_roundtrip import save_roundtrip
+        from safeyolo.policy.toml_roundtrip import save_roundtrip
 
         path = tmp_path / "policy.toml"
         doc = tomlkit.parse(sample_toml)
@@ -118,12 +118,12 @@ class TestSaveRoundtripAtomicity:
 
     def test_rename_failure_cleans_up_temp_file(self, sample_toml, tmp_path):
         """If shutil.move raises, save_roundtrip must unlink the temp file."""
-        from toml_roundtrip import save_roundtrip
+        from safeyolo.policy.toml_roundtrip import save_roundtrip
 
         path = tmp_path / "policy.toml"
         doc = tomlkit.parse(sample_toml)
 
-        with mock.patch("toml_roundtrip.shutil.move", side_effect=OSError("simulated")):
+        with mock.patch("safeyolo.policy.toml_roundtrip.shutil.move", side_effect=OSError("simulated")):
             with pytest.raises(OSError, match="simulated"):
                 save_roundtrip(path, doc)
 
@@ -133,7 +133,7 @@ class TestSaveRoundtripAtomicity:
 
     def test_rename_failure_preserves_original_file(self, sample_toml, tmp_path):
         """If the save fails, the original file must remain intact."""
-        from toml_roundtrip import load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -142,7 +142,7 @@ class TestSaveRoundtripAtomicity:
         doc = load_roundtrip(path)
         doc["budget"] = 99999
 
-        with mock.patch("toml_roundtrip.shutil.move", side_effect=OSError("fail")):
+        with mock.patch("safeyolo.policy.toml_roundtrip.shutil.move", side_effect=OSError("fail")):
             with pytest.raises(OSError):
                 save_roundtrip(path, doc)
 
@@ -151,13 +151,13 @@ class TestSaveRoundtripAtomicity:
 
     def test_fsync_is_called_on_tempfile(self, tmp_path):
         """save_roundtrip must fsync the tempfile before renaming (crash safety)."""
-        from toml_roundtrip import save_roundtrip
+        from safeyolo.policy.toml_roundtrip import save_roundtrip
 
         path = tmp_path / "policy.toml"
         doc = tomlkit.document()
         doc.add("version", "2.0")
 
-        with mock.patch("toml_roundtrip.os.fsync") as fsync_mock:
+        with mock.patch("safeyolo.policy.toml_roundtrip.os.fsync") as fsync_mock:
             save_roundtrip(path, doc)
 
         # fsync called at least once (tempfile, and optionally parent dir)
@@ -171,7 +171,7 @@ class TestSaveRoundtripAtomicity:
 
 class TestCommentPreservation:
     def test_comments_survive_budget_modification(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -187,7 +187,7 @@ class TestCommentPreservation:
         assert "# ── Defaults" in content
 
     def test_comments_survive_inline_table_modification(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -209,7 +209,7 @@ class TestCommentPreservation:
 
 class TestLoadAsInternal:
     def test_produces_normalized_internal_format(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_as_internal
+        from safeyolo.policy.toml_roundtrip import load_as_internal
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -226,7 +226,7 @@ class TestLoadAsInternal:
         assert result["required"] == ["credential_guard", "network_guard"]
 
     def test_file_not_found_error_propagates(self, tmp_path):
-        from toml_roundtrip import load_as_internal
+        from safeyolo.policy.toml_roundtrip import load_as_internal
 
         with pytest.raises(FileNotFoundError):
             load_as_internal(tmp_path / "missing.toml")
@@ -239,7 +239,7 @@ class TestLoadAsInternal:
 
 class TestAddHostCredential:
     def test_new_host_gets_allow_list(self, sample_toml, tmp_path):
-        from toml_roundtrip import add_host_credential, load_roundtrip
+        from safeyolo.policy.toml_roundtrip import add_host_credential, load_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -248,7 +248,7 @@ class TestAddHostCredential:
         assert list(doc["hosts"]["api.example.com"]["allow"]) == ["hmac:abc"]
 
     def test_appends_to_existing_allow_list(self, sample_toml, tmp_path):
-        from toml_roundtrip import add_host_credential, load_roundtrip
+        from safeyolo.policy.toml_roundtrip import add_host_credential, load_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -258,7 +258,7 @@ class TestAddHostCredential:
         assert allow == ["openai:*", "hmac:new"]
 
     def test_does_not_duplicate_existing_credential(self, sample_toml, tmp_path):
-        from toml_roundtrip import add_host_credential, load_roundtrip
+        from safeyolo.policy.toml_roundtrip import add_host_credential, load_roundtrip
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -268,7 +268,7 @@ class TestAddHostCredential:
         assert allow == ["openai:*"]
 
     def test_creates_hosts_table_if_missing(self):
-        from toml_roundtrip import add_host_credential
+        from safeyolo.policy.toml_roundtrip import add_host_credential
 
         doc = tomlkit.document()
         doc.add("version", "2.0")
@@ -277,14 +277,14 @@ class TestAddHostCredential:
         assert list(doc["hosts"]["api.example.com"]["allow"]) == ["hmac:abc"]
 
     def test_empty_cred_ids_raises(self):
-        from toml_roundtrip import add_host_credential
+        from safeyolo.policy.toml_roundtrip import add_host_credential
 
         doc = tomlkit.document()
         with pytest.raises(ValueError, match="non-empty"):
             add_host_credential(doc, "api.example.com", [])
 
     def test_non_string_cred_ids_raises(self):
-        from toml_roundtrip import add_host_credential
+        from safeyolo.policy.toml_roundtrip import add_host_credential
 
         doc = tomlkit.document()
         with pytest.raises(ValueError, match="list of strings"):
@@ -292,7 +292,7 @@ class TestAddHostCredential:
 
     def test_scalar_host_entry_raises(self):
         """Pre-existing scalar value for a host is an operator error — must raise."""
-        from toml_roundtrip import add_host_credential
+        from safeyolo.policy.toml_roundtrip import add_host_credential
 
         doc = tomlkit.parse('[hosts]\n"api.example.com" = 3000\n')
         with pytest.raises(ValueError, match="not a table"):
@@ -306,7 +306,7 @@ class TestAddHostCredential:
 
 class TestUpdateHostField:
     def test_updates_existing_field(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, update_host_field
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, update_host_field
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -315,7 +315,7 @@ class TestUpdateHostField:
         assert doc["hosts"]["api.openai.com"]["rate"] == 5000
 
     def test_creates_new_host_entry(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, update_host_field
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, update_host_field
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -324,7 +324,7 @@ class TestUpdateHostField:
         assert doc["hosts"]["new.example.com"]["rate"] == 100
 
     def test_creates_host_on_empty_hosts_table(self):
-        from toml_roundtrip import update_host_field
+        from safeyolo.policy.toml_roundtrip import update_host_field
 
         doc = tomlkit.document()
         doc.add("hosts", tomlkit.table())
@@ -332,14 +332,14 @@ class TestUpdateHostField:
         assert list(doc["hosts"]["new.host.com"]["bypass"]) == ["pattern-scanner"]
 
     def test_none_value_raises(self):
-        from toml_roundtrip import update_host_field
+        from safeyolo.policy.toml_roundtrip import update_host_field
 
         doc = tomlkit.document()
         with pytest.raises(ValueError, match="must not be None"):
             update_host_field(doc, "api.example.com", "rate", None)
 
     def test_scalar_host_entry_raises(self):
-        from toml_roundtrip import update_host_field
+        from safeyolo.policy.toml_roundtrip import update_host_field
 
         doc = tomlkit.parse('[hosts]\n"api.example.com" = 3000\n')
         with pytest.raises(ValueError, match="not a table"):
@@ -353,7 +353,7 @@ class TestUpdateHostField:
 
 class TestUpsertHost:
     def test_inserts_new_host(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, upsert_host
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, upsert_host
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -364,7 +364,7 @@ class TestUpsertHost:
 
     def test_replaces_existing_host_entirely(self, sample_toml, tmp_path):
         """upsert_host is a replace — existing fields not in the new config are dropped."""
-        from toml_roundtrip import load_roundtrip, upsert_host
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, upsert_host
 
         path = tmp_path / "policy.toml"
         path.write_text(sample_toml)
@@ -375,7 +375,7 @@ class TestUpsertHost:
         assert "allow" not in doc["hosts"]["api.openai.com"]
 
     def test_creates_hosts_table_if_missing(self):
-        from toml_roundtrip import upsert_host
+        from safeyolo.policy.toml_roundtrip import upsert_host
 
         doc = tomlkit.document()
         upsert_host(doc, "example.com", {"rate": 100})
@@ -390,14 +390,14 @@ class TestUpsertHost:
 
 class TestLoadAgents:
     def test_returns_empty_dict_when_no_agents_section(self):
-        from toml_roundtrip import load_agents
+        from safeyolo.policy.toml_roundtrip import load_agents
 
         doc = tomlkit.document()
         doc.add("version", "2.0")
         assert load_agents(doc) == {}
 
     def test_returns_plain_dict_of_agents(self):
-        from toml_roundtrip import load_agents
+        from safeyolo.policy.toml_roundtrip import load_agents
 
         doc = tomlkit.parse(
             '[agents.boris]\ntemplate = "claude-code"\nfolder = "/tmp/proj"\n'
@@ -407,7 +407,7 @@ class TestLoadAgents:
 
     def test_output_is_independent_of_document(self):
         """Mutating the returned dict must not affect the TOMLDocument."""
-        from toml_roundtrip import load_agents
+        from safeyolo.policy.toml_roundtrip import load_agents
 
         doc = tomlkit.parse('[agents.boris]\ntemplate = "claude-code"\n')
         result = load_agents(doc)
@@ -423,7 +423,7 @@ class TestLoadAgents:
 
 class TestUpsertAgent:
     def test_inserts_new_agent(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(doc, "boris", {"template": "claude-code", "folder": "/tmp/p"})
@@ -432,7 +432,7 @@ class TestUpsertAgent:
         }
 
     def test_replaces_existing_agent(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(doc, "boris", {"template": "claude-code"})
@@ -440,7 +440,7 @@ class TestUpsertAgent:
         assert load_agents(doc) == {"boris": {"template": "openai-codex"}}
 
     def test_services_become_nested_tables(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(
@@ -460,7 +460,7 @@ class TestUpsertAgent:
         }
 
     def test_services_legacy_string_format_converted(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(doc, "boris", {"services": {"gmail": "reader"}})
@@ -468,7 +468,7 @@ class TestUpsertAgent:
         assert result["boris"]["services"]["gmail"] == {"capability": "reader"}
 
     def test_grants_become_array_of_tables(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(
@@ -490,7 +490,7 @@ class TestUpsertAgent:
         ]
 
     def test_contract_bindings_with_nested_dict_values(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(
@@ -510,7 +510,7 @@ class TestUpsertAgent:
         assert result["boris"]["contract_bindings"][0]["bound_values"] == {"cat_id": 137}
 
     def test_upsert_preserves_other_agents(self):
-        from toml_roundtrip import load_agents, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(doc, "boris", {"template": "claude-code"})
@@ -530,20 +530,20 @@ class TestUpsertAgent:
 
 class TestRemoveAgent:
     def test_returns_false_when_no_agents_section(self):
-        from toml_roundtrip import remove_agent
+        from safeyolo.policy.toml_roundtrip import remove_agent
 
         doc = tomlkit.document()
         assert remove_agent(doc, "boris") is False
 
     def test_returns_false_when_agent_absent(self):
-        from toml_roundtrip import remove_agent, upsert_agent
+        from safeyolo.policy.toml_roundtrip import remove_agent, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(doc, "alice", {"template": "claude-code"})
         assert remove_agent(doc, "boris") is False
 
     def test_returns_true_and_removes_existing_agent(self):
-        from toml_roundtrip import load_agents, remove_agent, upsert_agent
+        from safeyolo.policy.toml_roundtrip import load_agents, remove_agent, upsert_agent
 
         doc = tomlkit.document()
         upsert_agent(doc, "boris", {"template": "claude-code"})
@@ -563,7 +563,7 @@ class TestLockedPolicyMutate:
         path.write_text(content)
 
     def test_applies_mutation_and_persists(self, sample_toml, tmp_path):
-        from toml_roundtrip import load_roundtrip, locked_policy_mutate
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, locked_policy_mutate
 
         path = tmp_path / "policy.toml"
         self._write_policy(path, sample_toml)
@@ -577,7 +577,7 @@ class TestLockedPolicyMutate:
         assert load_roundtrip(path)["budget"] == 99999
 
     def test_creates_lock_file(self, sample_toml, tmp_path):
-        from toml_roundtrip import locked_policy_mutate
+        from safeyolo.policy.toml_roundtrip import locked_policy_mutate
 
         path = tmp_path / "policy.toml"
         self._write_policy(path, sample_toml)
@@ -588,7 +588,7 @@ class TestLockedPolicyMutate:
         assert lock_file.exists()
 
     def test_mutate_fn_exception_propagates_and_releases_lock(self, sample_toml, tmp_path):
-        from toml_roundtrip import locked_policy_mutate
+        from safeyolo.policy.toml_roundtrip import locked_policy_mutate
 
         path = tmp_path / "policy.toml"
         self._write_policy(path, sample_toml)
@@ -604,7 +604,7 @@ class TestLockedPolicyMutate:
 
     def test_sequential_calls_both_succeed(self, sample_toml, tmp_path):
         """Sequential mutations work (smoke test for lock acquire/release)."""
-        from toml_roundtrip import load_roundtrip, locked_policy_mutate
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, locked_policy_mutate
 
         path = tmp_path / "policy.toml"
         self._write_policy(path, sample_toml)
@@ -623,7 +623,7 @@ class TestLockedPolicyMutate:
 
 class TestPolicyPathForLoader:
     def test_returns_path_when_file_exists(self, tmp_path):
-        from toml_roundtrip import policy_path_for_loader
+        from safeyolo.policy.toml_roundtrip import policy_path_for_loader
 
         policy_file = tmp_path / "policy.toml"
         policy_file.write_text("version = \"2.0\"\n")
@@ -634,7 +634,7 @@ class TestPolicyPathForLoader:
         assert policy_path_for_loader(FakeLoader()) == policy_file
 
     def test_raises_loader_not_configured_when_attribute_missing(self):
-        from toml_roundtrip import LoaderNotConfigured, policy_path_for_loader
+        from safeyolo.policy.toml_roundtrip import LoaderNotConfigured, policy_path_for_loader
 
         class FakeLoader:
             pass
@@ -643,7 +643,7 @@ class TestPolicyPathForLoader:
             policy_path_for_loader(FakeLoader())
 
     def test_raises_loader_not_configured_when_attribute_is_none(self):
-        from toml_roundtrip import LoaderNotConfigured, policy_path_for_loader
+        from safeyolo.policy.toml_roundtrip import LoaderNotConfigured, policy_path_for_loader
 
         class FakeLoader:
             _baseline_path = None
@@ -652,7 +652,7 @@ class TestPolicyPathForLoader:
             policy_path_for_loader(FakeLoader())
 
     def test_raises_loader_not_configured_when_attribute_is_not_path(self):
-        from toml_roundtrip import LoaderNotConfigured, policy_path_for_loader
+        from safeyolo.policy.toml_roundtrip import LoaderNotConfigured, policy_path_for_loader
 
         class FakeLoader:
             _baseline_path = "/some/string/not/a/path/object"
@@ -661,7 +661,7 @@ class TestPolicyPathForLoader:
             policy_path_for_loader(FakeLoader())
 
     def test_raises_baseline_missing_when_file_deleted(self, tmp_path):
-        from toml_roundtrip import LoaderBaselineMissing, policy_path_for_loader
+        from safeyolo.policy.toml_roundtrip import LoaderBaselineMissing, policy_path_for_loader
 
         missing_path = tmp_path / "nonexistent.toml"
 
@@ -679,7 +679,7 @@ class TestPolicyPathForLoader:
 
 class TestTemplateRoundTrip:
     def test_template_loads_and_normalizes_to_internal_format(self):
-        from toml_roundtrip import load_as_internal
+        from safeyolo.policy.toml_roundtrip import load_as_internal
 
         template_path = (
             Path(__file__).parent.parent
@@ -700,7 +700,7 @@ class TestTemplateRoundTrip:
         assert result["hosts"]["*"]["unknown_credentials"] == "prompt"
 
     def test_template_roundtrip_preserves_comments(self, tmp_path):
-        from toml_roundtrip import load_roundtrip, save_roundtrip
+        from safeyolo.policy.toml_roundtrip import load_roundtrip, save_roundtrip
 
         template_path = (
             Path(__file__).parent.parent

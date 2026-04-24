@@ -4,7 +4,6 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
-from detection.matching import reject_path_tricks
 from service_gateway import (
     ContractBindingState,
     ServiceGateway,
@@ -22,6 +21,8 @@ from service_loader import (
     QueryConstraint,
     TransportConstraint,
 )
+
+from safeyolo.detection.matching import reject_path_tricks
 
 # --- Helpers ---
 

@@ -46,11 +46,12 @@ class TestFullAddonChain:
     def test_request_flows_through_all_addons(self, make_flow, make_response, tmp_path):
         """Test a request is processed by all active addons."""
         from credential_guard import CredentialGuard
-        from detection import DEFAULT_RULES
         from metrics import MetricsCollector
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
         from request_id import RequestIdGenerator
+
+        from safeyolo.detection import DEFAULT_RULES
 
         policy_yaml = """
 metadata:
@@ -354,9 +355,10 @@ class TestRealisticScenarios:
     def test_openai_request_through_chain(self, circuit_breaker, make_flow, make_response, tmp_path):
         """Test a realistic OpenAI API request through the chain."""
         from credential_guard import CredentialGuard
-        from detection import DEFAULT_RULES
         from mitmproxy.test import taddons
         from network_guard import NetworkGuard
+
+        from safeyolo.detection import DEFAULT_RULES
 
         policy_yaml = """
 metadata:

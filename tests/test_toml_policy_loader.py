@@ -31,7 +31,7 @@ class TestTOMLLoading:
 
     def test_loads_toml_policy(self):
         """Test loading a .toml policy file produces exact permission actions."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -62,7 +62,7 @@ class TestTOMLLoading:
 
     def test_toml_host_centric_compiles(self):
         """TOML host-centric format compiles to correct IAM permissions."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -86,7 +86,7 @@ class TestTOMLLoading:
 
     def test_toml_global_budget(self):
         """TOML budget field maps to budgets."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -98,7 +98,7 @@ class TestTOMLLoading:
 
     def test_toml_required_addons(self):
         """TOML required field passes through."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -110,7 +110,7 @@ class TestTOMLLoading:
 
     def test_toml_credential_rules(self):
         """TOML credential section normalizes to credential_rules."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.toml"
@@ -126,7 +126,7 @@ class TestTOMLLoading:
 
     def test_toml_merges_with_addons_yaml(self):
         """TOML policy merges with sibling addons.yaml — addon config is present."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         with tempfile.TemporaryDirectory() as tmpdir:
             policy_path = Path(tmpdir) / "policy.toml"
@@ -145,7 +145,7 @@ class TestTOMLLoading:
 
     def test_toml_iam_format(self):
         """TOML file in IAM format (no hosts section) loads directly."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         iam_toml = '''\
 [[permissions]]
@@ -164,7 +164,7 @@ effect = "allow"
 
     def test_toml_without_hosts_loads_empty_permissions(self):
         """TOML with only metadata and no hosts section loads with zero permissions."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         metadata_only_toml = '''\
 version = "2.0"
@@ -186,7 +186,7 @@ class TestTOMLEquivalence:
 
     def test_yaml_toml_equivalence(self):
         """Same policy in YAML and TOML produces same compiled permissions."""
-        from policy_loader import PolicyLoader
+        from safeyolo.policy.loader import PolicyLoader
 
         yaml_content = """\
 metadata:

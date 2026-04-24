@@ -9,8 +9,8 @@ import logging
 import sys
 from datetime import UTC, datetime
 
-from .audit_schema import AuditEvent, EventKind, Severity  # noqa: F401 - re-exported
 from .config import get_logs_dir
+from .core.audit_schema import AuditEvent, EventKind, Severity  # noqa: F401 - re-exported
 
 log = logging.getLogger("safeyolo.events")
 

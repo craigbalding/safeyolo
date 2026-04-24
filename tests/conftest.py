@@ -22,12 +22,20 @@ os.environ.setdefault(
 
 import pytest
 
-# Add addons directory to path for standalone imports
-# This matches how mitmproxy loads addons via -s flag
-addons_dir = Path(__file__).parent.parent / "addons"
-sys.path.insert(0, str(addons_dir))
+# Post-#200-phase-5: addons live under the installed `safeyolo` package,
+# not as top-level modules in `addons/`. CI's test-addons job runs
+# `uv sync --frozen --group dev` at the repo root — that installs
+# transitive deps but doesn't necessarily install workspace-member
+# packages as editable. So we add `cli/src` to sys.path for
+# `from safeyolo.X import ...` resolution and `mitm_addons/` for
+# the older "bare" pattern (`from pid_writer import ...`) that
+# mitmproxy's `-s` loader exposes at runtime.
+_CLI_SRC_DIR = Path(__file__).parent.parent / "cli" / "src"
+sys.path.insert(0, str(_CLI_SRC_DIR))
+_MITM_ADDONS_DIR = _CLI_SRC_DIR / "safeyolo" / "mitm_addons"
+sys.path.insert(0, str(_MITM_ADDONS_DIR))
 
-# Also add project root for any remaining package imports during transition
+# Project root remains on sys.path for `from pdp import ...`.
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -44,14 +52,14 @@ def _reset_config_cache():
     sessions either.
     """
     try:
-        import config_cache
+        import safeyolo.core.config_cache as config_cache
         config_cache._cache._config = None
         config_cache._cache._callback_registered = False
     except ImportError:  # pragma: no cover — addon path issue
         pass
     yield
     try:
-        import config_cache
+        import safeyolo.core.config_cache as config_cache
         config_cache._cache._config = None
         config_cache._cache._callback_registered = False
     except ImportError:

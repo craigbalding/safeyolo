@@ -22,8 +22,8 @@ from rich.table import Table
 
 from .._tactics import TACTIC_LABELS
 from ..api import AdminAPI, APIError, get_api
-from ..audit_schema import InvalidAuditEvent, parse_audit_event
 from ..config import get_logs_dir
+from ..core.audit_schema import InvalidAuditEvent, parse_audit_event
 
 console = Console()
 

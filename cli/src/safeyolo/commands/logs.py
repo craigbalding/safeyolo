@@ -9,8 +9,8 @@ import typer
 from rich.console import Console
 from rich.text import Text
 
-from ..audit_schema import InvalidAuditEvent, parse_audit_event, sanitize_for_log
 from ..config import find_config_dir, get_logs_dir
+from ..core.audit_schema import InvalidAuditEvent, parse_audit_event, sanitize_for_log
 
 console = Console()
 
