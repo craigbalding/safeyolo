@@ -8,10 +8,16 @@ triggers 3-5 such calls.
 
 After: addons call `config_cache.get()`. A module-level singleton
 holds the last-fetched dict; the first access populates it, subsequent
-accesses are a lock-free read of the cached reference. A reload
-callback registered on the `PolicyClient` invalidates the cache
-whenever the policy file changes, so readers see fresh data without
-polling the PDP.
+accesses are a lock-free read of the cached reference.
+
+Invalidation:
+  - LocalPolicyClient: the cache registers `invalidate` as a reload
+    callback on the client; when the policy file changes, the next
+    `get()` re-fetches. No TTL — changes are caught instantly.
+  - HTTPClient: no reload signal exists (the client can't observe
+    remote policy changes). Falls back to a TTL that the next `get()`
+    after expiry treats as an implicit invalidation. Default 30 s;
+    override via `SAFEYOLO_CONFIG_CACHE_TTL_S`.
 
 Fall-through behaviour: when the PDP isn't configured yet (startup
 race) `get()` returns `{}` — same shape as the HTTP client's timeout
@@ -20,9 +26,18 @@ fallback, so callers need no extra handling.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 
 log = logging.getLogger("safeyolo.config-cache")
+
+# Default TTL in seconds, applied only when the active PolicyClient
+# has no reload-callback signal (today: HTTPClient). Kept short —
+# operators can restart the proxy for immediate cutover, and 30 s
+# bounds how long stale config can serve traffic after a remote
+# policy change.
+_DEFAULT_HTTP_TTL_S = 30.0
 
 
 class _ConfigCache:
@@ -30,20 +45,25 @@ class _ConfigCache:
         self._config: dict | None = None
         self._lock = threading.Lock()
         self._callback_registered = False
+        self._fetched_at: float | None = None
+        # None = no TTL (reload-driven invalidation only). Set to a
+        # positive float for HTTP-client fallback staleness bounding.
+        self._ttl_s: float | None = None
 
     def get(self) -> dict:
         """Return cached sensor_config, fetching on first call.
 
-        The cache is invalidated on policy reload, so the slow path
-        only fires after the first access per process and after each
-        policy change — not per flow.
+        The cache is invalidated on policy reload (LocalPolicyClient)
+        or on TTL expiry (HTTPClient fallback), so the slow path only
+        fires after the first access per process, after each policy
+        change, and — for HTTP deployments — at most once per TTL.
         """
         # Fast path: lock-free read of the cached reference. `dict`
         # assignment is atomic under the GIL, so a concurrent writer
         # either leaves the old reference or installs the new one —
         # never a torn value.
         cfg = self._config
-        if cfg is not None:
+        if cfg is not None and not self._expired():
             return cfg
         return self._fetch_and_cache()
 
@@ -69,9 +89,15 @@ class _ConfigCache:
             Exception: whatever `client.get_sensor_config()` raises
         """
         cfg = self._config
-        if cfg is not None:
+        if cfg is not None and not self._expired():
             return cfg
         return self._fetch_raising()
+
+    def _expired(self) -> bool:
+        """True if a TTL is set and the cached entry is past it."""
+        if self._ttl_s is None or self._fetched_at is None:
+            return False
+        return (time.monotonic() - self._fetched_at) > self._ttl_s
 
     def _fetch_raising(self) -> dict:
         from pdp import get_policy_client, is_policy_client_configured
@@ -81,21 +107,36 @@ class _ConfigCache:
         new_config = client.get_sensor_config()
         with self._lock:
             self._config = new_config
-            self._ensure_reload_callback(client)
+            self._fetched_at = time.monotonic()
+            self._ensure_reload_or_ttl(client)
         return new_config
 
-    def _ensure_reload_callback(self, client) -> None:
-        """Register `invalidate` on the client's reload signal, once.
+    def _ensure_reload_or_ttl(self, client) -> None:
+        """Register reload callback, or fall back to TTL, once.
 
-        LocalPolicyClient has `add_reload_callback`; HTTPClient does
-        not (no hot-reload signal over HTTP). The `hasattr` check
-        mirrors the pattern already used in service_gateway.py.
+        LocalPolicyClient has `add_reload_callback`, so cache
+        invalidation is signal-driven and the TTL stays `None`
+        (infinite). HTTPClient has no such signal — we set a
+        TTL so the cache eventually refreshes even without an
+        explicit invalidation. The `hasattr` check mirrors the
+        pattern already used in service_gateway.py.
         """
         if self._callback_registered:
             return
-        if not hasattr(client, "add_reload_callback"):
-            return
-        client.add_reload_callback(self.invalidate)
+        if hasattr(client, "add_reload_callback"):
+            client.add_reload_callback(self.invalidate)
+        else:
+            try:
+                self._ttl_s = float(
+                    os.environ.get("SAFEYOLO_CONFIG_CACHE_TTL_S",
+                                   str(_DEFAULT_HTTP_TTL_S))
+                )
+            except ValueError:
+                self._ttl_s = _DEFAULT_HTTP_TTL_S
+            log.info(
+                "config_cache: TTL fallback (%.1fs) — PolicyClient has no reload signal",
+                self._ttl_s,
+            )
         self._callback_registered = True
 
     def invalidate(self) -> None:
@@ -106,6 +147,7 @@ class _ConfigCache:
         """
         with self._lock:
             self._config = None
+            self._fetched_at = None
 
     # ---- Convenience accessors -------------------------------------------
     # Keep callers from chaining `.get("...", [])` against the result dict.
