@@ -12,6 +12,19 @@ import pytest
 from audit_schema import Decision, EventKind, Severity
 
 
+def _drain_audit():
+    """Block until the async audit writer has drained its queue.
+
+    `write_event` now enqueues onto a background-thread writer. Tests
+    that assert on the log file immediately after `write_event` need to
+    wait for the flush, otherwise they race the writer. Timeout well
+    above the writer's expected flush latency (~ms) so slow CI hosts
+    don't flake.
+    """
+    from audit_writer import get_writer
+    assert get_writer().wait_for_drain(timeout_s=3.0), "audit writer failed to drain"
+
+
 class TestWriteEvent:
     """Tests for write_event function."""
 
@@ -34,6 +47,7 @@ class TestWriteEvent:
                 summary="GET example.com/",
                 host="example.com",
             )
+            _drain_audit()
 
         lines = temp_log.read_text().strip().split("\n")
         assert len(lines) == 1
@@ -55,6 +69,7 @@ class TestWriteEvent:
                 severity=Severity.LOW,
                 summary="200 OK",
             )
+            _drain_audit()
 
         entry = json.loads(temp_log.read_text().strip())
         assert "ts" in entry
@@ -67,6 +82,7 @@ class TestWriteEvent:
         with patch("utils.AUDIT_LOG_PATH", temp_log):
             write_event("traffic.request", kind=EventKind.TRAFFIC, severity=Severity.LOW, summary="test")
             write_event("traffic.response", kind=EventKind.TRAFFIC, severity=Severity.LOW, summary="test")
+            _drain_audit()
 
         assert "doesn't match taxonomy" not in caplog.text
 
@@ -78,6 +94,7 @@ class TestWriteEvent:
             write_event("security.credential_guard", kind=EventKind.SECURITY, severity=Severity.HIGH, summary="test", decision=Decision.DENY)
             write_event("security.network_guard", kind=EventKind.SECURITY, severity=Severity.HIGH, summary="test", decision=Decision.DENY)
             write_event("security.pattern_scanner", kind=EventKind.SECURITY, severity=Severity.MEDIUM, summary="test", decision=Decision.LOG)
+            _drain_audit()
 
         assert "doesn't match taxonomy" not in caplog.text
 
@@ -88,6 +105,7 @@ class TestWriteEvent:
         with patch("utils.AUDIT_LOG_PATH", temp_log):
             write_event("ops.startup", kind=EventKind.OPS, severity=Severity.LOW, summary="started", addon="test")
             write_event("ops.config_reload", kind=EventKind.OPS, severity=Severity.MEDIUM, summary="reloaded")
+            _drain_audit()
 
         assert "doesn't match taxonomy" not in caplog.text
 
@@ -99,6 +117,7 @@ class TestWriteEvent:
             write_event("admin.approval_added", kind=EventKind.ADMIN, severity=Severity.MEDIUM, summary="approved")
             write_event("admin.denial", kind=EventKind.ADMIN, severity=Severity.MEDIUM, summary="denied")
             write_event("admin.mode_change", kind=EventKind.ADMIN, severity=Severity.MEDIUM, summary="changed")
+            _drain_audit()
 
         assert "doesn't match taxonomy" not in caplog.text
 
@@ -109,6 +128,7 @@ class TestWriteEvent:
         with patch("utils.AUDIT_LOG_PATH", temp_log):
             write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary="added", agent="myproject")
             write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary="started", agent="myproject")
+            _drain_audit()
 
         assert "doesn't match taxonomy" not in caplog.text
 
@@ -119,6 +139,7 @@ class TestWriteEvent:
         with patch("utils.AUDIT_LOG_PATH", temp_log):
             write_event("gateway.allow", kind=EventKind.GATEWAY, severity=Severity.LOW, summary="injected", decision=Decision.ALLOW)
             write_event("gateway.deny", kind=EventKind.GATEWAY, severity=Severity.HIGH, summary="denied", decision=Decision.DENY)
+            _drain_audit()
 
         assert "doesn't match taxonomy" not in caplog.text
 
@@ -134,6 +155,7 @@ class TestWriteEvent:
 
         with patch("utils.AUDIT_LOG_PATH", temp_log):
             write_event("invalid_event", kind=EventKind.OPS, severity=Severity.LOW, summary="test")
+            _drain_audit()
 
         # The validation error is logged so the operator sees it
         assert "Event validation failed" in caplog.text
@@ -162,6 +184,7 @@ class TestWriteEvent:
                     "reason": "destination_mismatch",
                 },
             )
+            _drain_audit()
 
         entry = json.loads(temp_log.read_text().strip())
         assert entry["request_id"] == "req-abc123"
@@ -179,6 +202,7 @@ class TestWriteEvent:
             write_event("traffic.request", kind=EventKind.TRAFFIC, severity=Severity.LOW, summary="1")
             write_event("security.credential_guard", kind=EventKind.SECURITY, severity=Severity.HIGH, summary="2")
             write_event("traffic.response", kind=EventKind.TRAFFIC, severity=Severity.LOW, summary="3")
+            _drain_audit()
 
         lines = temp_log.read_text().strip().split("\n")
         assert len(lines) == 3
@@ -192,6 +216,7 @@ class TestWriteEvent:
 
         with patch("utils.AUDIT_LOG_PATH", nested_path):
             write_event("traffic.request", kind=EventKind.TRAFFIC, severity=Severity.LOW, summary="test")
+            _drain_audit()
 
         assert nested_path.exists()
 
@@ -207,6 +232,7 @@ class TestWriteEvent:
                 summary="started",
                 addon="memory-monitor",
             )
+            _drain_audit()
 
         entry = json.loads(temp_log.read_text().strip())
         assert "request_id" not in entry
