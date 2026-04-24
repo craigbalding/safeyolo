@@ -19,6 +19,7 @@ ADDON_MODULES = [
     "bootstrap_mode",
     "budget_tracker",
     "circuit_breaker",
+    "config_cache",
     "credential_guard",
     "file_logging",
     "flow_pruner",

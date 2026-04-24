@@ -59,16 +59,11 @@ class FlowRecorder:
 
         db_path = ctx.options.flow_store_db_path
 
-        # Try to load config from PDP
-        config = {}
-        try:
-            from pdp import get_policy_client, is_policy_client_configured
-
-            if is_policy_client_configured():
-                sensor_config = get_policy_client().get_sensor_config()
-                config = sensor_config.get("addons", {}).get("flow_store", {})
-        except Exception as exc:
-            log.debug(f"Could not load flow_store config from PDP: {exc}")
+        # Pull flow_store settings from the shared config cache. Returns
+        # {} if the PDP isn't configured yet, which is fine — FlowStore
+        # below defaults every field.
+        import config_cache
+        config = config_cache.addon_section("flow_store")
 
         if config.get("db_path"):
             db_path = config["db_path"]

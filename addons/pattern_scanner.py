@@ -115,21 +115,20 @@ class PatternScanner(SecurityAddon):
 
     def _maybe_reload_patterns(self):
         """Reload patterns if policy changed."""
-        from pdp import get_policy_client
+        import config_cache
 
         try:
-            client = get_policy_client()
-            config = client.get_sensor_config()
-            policy_hash = config.get("policy_hash", "")
-
-            if policy_hash != self._last_policy_hash:
-                self._load_patterns_from_config(config)
-                self._last_policy_hash = policy_hash
+            config = config_cache.get_or_raise()
         except RuntimeError:
             # PolicyClient not configured yet - skip reload
-            pass
+            return
         except Exception as e:
             log.warning(f"Failed to reload patterns: {type(e).__name__}: {e}")
+            return
+        policy_hash = config.get("policy_hash", "")
+        if policy_hash != self._last_policy_hash:
+            self._load_patterns_from_config(config)
+            self._last_policy_hash = policy_hash
 
     def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
         """Block request/response with error."""

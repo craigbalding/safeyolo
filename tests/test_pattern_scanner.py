@@ -882,7 +882,8 @@ class TestMaybeReloadPatterns:
         scanner._last_policy_hash = "hash-v1"
         assert scanner.rules == []
 
-        with patch("pdp.get_policy_client", return_value=mock_client):
+        with patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True):
             scanner._maybe_reload_patterns()
 
         assert len(scanner.rules) == 1
@@ -906,7 +907,8 @@ class TestMaybeReloadPatterns:
             ],
         }
 
-        with patch("pdp.get_policy_client", return_value=mock_client):
+        with patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True):
             scanner._maybe_reload_patterns()
 
         # Rules should not have changed
@@ -914,14 +916,14 @@ class TestMaybeReloadPatterns:
         assert scanner.rules[0].name == "existing"
 
     def test_runtime_error_silently_caught(self, scanner):
-        """RuntimeError from get_policy_client (not configured) is silently caught."""
+        """PolicyClient not configured is silently caught."""
         scanner.load_policy_config({
             "scan_patterns": [
                 {"name": "kept", "pattern": r"KEEP-\d+", "target": "both"}
             ]
         })
 
-        with patch("pdp.get_policy_client", side_effect=RuntimeError("not configured")):
+        with patch("pdp.is_policy_client_configured", return_value=False):
             scanner._maybe_reload_patterns()
 
         # Rules unchanged, no exception raised

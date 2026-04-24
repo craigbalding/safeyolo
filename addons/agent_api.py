@@ -758,11 +758,14 @@ class AgentAPI:
 
     def _handle_config(self, flow: http.HTTPFlow):
         """GET /config - Credential rules, scan patterns."""
-        client = self._get_policy_client()
-        if not client:
+        # config_cache returns the same shape as get_sensor_config() and
+        # invalidates on policy reload, so this stays current without the
+        # per-request PDP roundtrip.
+        import config_cache
+        config = config_cache.get()
+        if not config:
             self._respond(flow, 503, {"error": "PDP not available"})
             return
-        config = client.get_sensor_config()
         self._respond(flow, 200, config)
 
     def _handle_explain(self, flow: http.HTTPFlow):

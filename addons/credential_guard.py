@@ -289,20 +289,15 @@ class CredentialGuard(SecurityAddon):
         ERROR level because the addon is running with zero rules. On
         subsequent reloads, the previous rules survive, so a WARNING suffices.
         """
-        try:
-            client = get_policy_client()
-            sensor_config = client.get_sensor_config()
-            policy_hash = sensor_config.get("policy_hash", "")
+        import config_cache
 
-            if policy_hash != self._last_policy_hash:
-                self._load_rules_from_policy(sensor_config)
-                self._load_config_from_pdp(sensor_config)
-                self._last_policy_hash = policy_hash
+        try:
+            sensor_config = config_cache.get_or_raise()
         except RuntimeError:
             # PolicyClient not configured yet — skip reload. If this is the
             # first attempt the addon has zero rules, which is the expected
             # startup state before the PDP finishes loading.
-            pass
+            return
         except Exception as e:
             if self._last_policy_hash == "":
                 log.error(
@@ -314,6 +309,12 @@ class CredentialGuard(SecurityAddon):
                     "Failed to reload credential rules (previous rules preserved): "
                     "%s: %s", type(e).__name__, e,
                 )
+            return
+        policy_hash = sensor_config.get("policy_hash", "")
+        if policy_hash != self._last_policy_hash:
+            self._load_rules_from_policy(sensor_config)
+            self._load_config_from_pdp(sensor_config)
+            self._last_policy_hash = policy_hash
 
     def should_block(self) -> bool:
         """Override base - uses credguard_block option."""

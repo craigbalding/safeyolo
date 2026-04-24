@@ -456,14 +456,15 @@ class TestPDPEndpoints:
             assert body == {"error": "PDP not available"}
 
     def test_config_returns_sensor_config(self, api, agent_token):
-        """/config proxies PDP sensor config."""
+        """/config proxies PDP sensor config (via the shared config cache)."""
         mock_client = Mock()
         mock_client.get_sensor_config.return_value = {
             "credential_rules": [{"name": "openai"}],
             "scan_patterns": [],
         }
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=mock_client):
+             patch("pdp.get_policy_client", return_value=mock_client), \
+             patch("pdp.is_policy_client_configured", return_value=True):
             flow = _make_api_flow("/config", token=agent_token)
             api.request(flow)
             assert flow.response.status_code == 200
@@ -475,7 +476,7 @@ class TestPDPEndpoints:
 
     def test_config_503_when_pdp_unavailable(self, api, agent_token):
         with _patch_active_token(agent_token), \
-             patch.object(api, "_get_policy_client", return_value=None):
+             patch("pdp.is_policy_client_configured", return_value=False):
             flow = _make_api_flow("/config", token=agent_token)
             api.request(flow)
             assert flow.response.status_code == 503
