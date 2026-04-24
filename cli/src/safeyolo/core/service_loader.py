@@ -9,7 +9,7 @@ methods, capabilities (named route sets), and risky routes (factual
 security signals for PDP evaluation).
 
 Usage:
-    from service_loader import init_service_registry, get_service_registry
+    from safeyolo.core.service_loader import init_service_registry, get_service_registry
 
     init_service_registry(Path("/safeyolo/services"))
     registry = get_service_registry()

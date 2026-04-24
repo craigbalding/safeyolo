@@ -4,7 +4,8 @@ import copy
 from unittest.mock import patch
 
 import pytest
-from service_loader import (
+
+from safeyolo.core.service_loader import (
     AuthConfig,
     Capability,
     CapabilityRoute,
@@ -1149,7 +1150,7 @@ class TestModuleSingleton:
     """Tests for init_service_registry / get_service_registry module singleton."""
 
     def test_init_creates_and_loads_registry(self, services_dir):
-        import service_loader
+        import safeyolo.core.service_loader as service_loader
         old_registry = service_loader._registry
 
         try:
@@ -1164,7 +1165,7 @@ class TestModuleSingleton:
             service_loader._registry = old_registry
 
     def test_get_returns_none_before_init(self):
-        import service_loader
+        import safeyolo.core.service_loader as service_loader
         old_registry = service_loader._registry
 
         try:
@@ -1174,7 +1175,7 @@ class TestModuleSingleton:
             service_loader._registry = old_registry
 
     def test_init_replaces_previous_registry(self, tmp_path):
-        import service_loader
+        import safeyolo.core.service_loader as service_loader
         old_registry = service_loader._registry
 
         try:

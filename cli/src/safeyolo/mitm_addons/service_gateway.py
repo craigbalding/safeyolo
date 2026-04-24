@@ -35,10 +35,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from mitmproxy import ctx, http
-from service_loader import get_service_registry
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.flow_cache import path_no_query
+from safeyolo.core.service_loader import get_service_registry
 from safeyolo.core.utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.core.vault import get_vault
 from safeyolo.detection.matching import normalize_path, reject_path_tricks
@@ -250,7 +250,7 @@ class ServiceGateway:
     def _init_services(self):
         """Initialize service registry from service definition files."""
         try:
-            from service_loader import init_service_registry
+            from safeyolo.core.service_loader import init_service_registry
 
             user_dir = Path(ctx.options.gateway_services_dir)
             registry = init_service_registry(user_dir)

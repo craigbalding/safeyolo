@@ -129,7 +129,7 @@ def _compile_locally(raw: dict, policy_path: Path) -> dict:
     stub.sanitize_for_log = lambda s: s  # type: ignore[attr-defined]
     prev_utils = sys.modules.get("utils")
     prev_compiler = sys.modules.pop("policy_compiler", None)
-    prev_service_loader = sys.modules.pop("service_loader", None)
+    prev_service_loader = sys.modules.pop("safeyolo.core.service_loader", None)
     sys.modules["utils"] = stub
     sys.path.insert(0, str(addons_dir))
     try:
@@ -145,9 +145,9 @@ def _compile_locally(raw: dict, policy_path: Path) -> dict:
         if prev_compiler is not None:
             sys.modules["policy_compiler"] = prev_compiler
         if prev_service_loader is not None:
-            sys.modules["service_loader"] = prev_service_loader
+            sys.modules["safeyolo.core.service_loader"] = prev_service_loader
         else:
-            sys.modules.pop("service_loader", None)
+            sys.modules.pop("safeyolo.core.service_loader", None)
 
 
 @policy_app.command()

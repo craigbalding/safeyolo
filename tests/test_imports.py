@@ -36,7 +36,6 @@ ADDON_MODULES = [
     "request_logger",
     "service_discovery",
     "service_gateway",
-    "service_loader",
     "sse_streaming",
     "test_context",
     "unix_listener",
@@ -158,6 +157,58 @@ if missing:
 
         extra = expected - actual_modules
         assert not extra, f"ADDON_MODULES has non-existent: {extra}"
+
+    def test_every_mitm_addon_defines_entrypoint(self):
+        """Every file in `mitm_addons/` must define an `addons` list.
+
+        Phase 6 guard from #200. mitm_addons/ is reserved for actual
+        mitmproxy entrypoints — the addon chain in
+        `safeyolo.proxy.ADDON_CHAIN` walks this directory and loads
+        each file with `-s`. A file here without an `addons = [...]`
+        assignment is either a stray library (belongs in `core/`,
+        `policy/`, etc.) or a half-written addon that will load
+        silently without doing anything.
+
+        Parse the source with `ast` rather than importing so the check
+        runs cheaply in CI without pulling in mitmproxy or any addon
+        dependency graph.
+        """
+        import ast
+
+        addons_dir = Path(__file__).parent.parent / "cli" / "src" / "safeyolo" / "mitm_addons"
+        missing: list[str] = []
+
+        for addon_file in sorted(addons_dir.glob("*.py")):
+            if addon_file.name.startswith("_"):
+                continue
+            tree = ast.parse(addon_file.read_text(), filename=str(addon_file))
+            # Look for a module-level `addons = ...` assignment.
+            has_entrypoint = any(
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "addons"
+                    for t in node.targets
+                )
+                for node in tree.body
+            ) or any(
+                # Also accept `addons: list = ...` (annotated assignment).
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "addons"
+                for node in tree.body
+            )
+            if not has_entrypoint:
+                missing.append(addon_file.name)
+
+        assert not missing, (
+            "Files in mitm_addons/ must define a module-level `addons` "
+            "list (the mitmproxy entrypoint). Offenders:\n"
+            + "\n".join(f"  - {name}" for name in missing)
+            + "\n\nEither add `addons = [YourAddon()]` (or `addons: list = []` "
+            "if the module is pure infrastructure loaded by path), or move "
+            "the file out of mitm_addons/ into the appropriate subpackage "
+            "(core/, policy/, storage/, detection/)."
+        )
 
     def test_get_policy_engine_deleted(self):
         """Verify legacy get_policy_engine() has been deleted.

@@ -12,13 +12,13 @@ from service_gateway import (
     _mint_grant_id,
     mint_gateway_token,
 )
-from service_loader import (
+
+from safeyolo.core.service_loader import (
     Capability,
     CapabilityRoute,
     RiskyRoute,
     init_service_registry,
 )
-
 from safeyolo.core.vault import Vault, VaultCredential
 
 # --- Fixtures ---
