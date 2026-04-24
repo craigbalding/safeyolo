@@ -31,12 +31,12 @@ Per operator direction:
 | 2. `safeyolo setup` review (A) | **done** |
 | 3. Linux sandbox: userns/OCI/caps/mounts (B) | **done** |
 | 4. Proxy bridge / identity attribution (B) | **done** |
-| 5. macOS VM helper + entitlements (B) | pending |
-| 6. Guest-init and config share (B) | partial (guest-init read) |
-| 7. Supply chain: builds, host scripts, rootfs hooks (D) | pending |
-| 8. Dependency pinning (D) | pending |
-| 9. Regression diff: #187, #190, #194, #195, #196 | pending |
-| 10. Findings summary | in progress |
+| 5. macOS VM helper + entitlements (B) | **done** |
+| 6. Guest-init and config share (B) | **done** |
+| 7. Supply chain: builds, host scripts, rootfs hooks (D) | **done** |
+| 8. Dependency pinning (D) | **done** |
+| 9. Regression diff: #187, #190, #194, #195, #196 | **done** |
+| 10. Findings summary | **done** |
 
 ## Privileged-op catalog (Section 1)
 
@@ -217,10 +217,130 @@ If runsc is installed to `/usr/bin/runsc` (the Debian package path), the AppArmo
 **Recommendation**
 - Let the profile match both paths (either two profiles, or a glob). Alternatively, verify at `setup` time that the installed runsc is at the profile's pinned path and refuse to proceed otherwise.
 
-## Preliminary assessment
+### M-02 — Kernel source tarball downloaded without signature/digest verification (Medium)
 
-- **No concrete sandbox-escape finding yet** under the malicious-agent-in-sandbox threat model. The isolation architecture (rootless userns + gVisor Sentry + UDS egress + PROXY-v2 attribution from a trusted host process) is coherent.
-- **One High** on the host-network exposure side: the proxy listens on `0.0.0.0` and the identity header is unauthenticated. Contradicts the documented hardening.
-- **One Medium** on admin_api listen address.
-- Three Informationals documenting gaps between the docs and the code (OCI caps, seccomp, sudoers docstring).
-- Remaining sections (macOS VZ, build-rootfs, host scripts, dependency pinning, recent-PR regression diff) still to review.
+**Files**
+- `guest/build-kernel.sh:65-70`
+
+```bash
+curl -fsSL \
+    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz" \
+    -o "$KERNEL_TARBALL.tmp"
+```
+
+No SHA256 check, no GPG verification against Linus's signing key, no accompanying `.sign` download. The kernel binary is baked into `~/.safeyolo/share/Image` and executes as the guest kernel on every macOS microVM boot.
+
+Compared to sibling scripts in the same directory:
+- `build-rootfs.sh` pins mise + gh tarballs by SHA256 (lines 66-71, `fetch_pinned`).
+- `rootfs-customize-hook.sh` verifies mise + gh after install (lines 65-69, 118-122).
+
+Kernel is the one download in the build pipeline that skips this. Under threat model (operator-run build, TLS transport), it requires a cdn.kernel.org compromise, a CA compromise, or build-host DNS interception — low likelihood but existentially bad if it happens (arbitrary kernel code in the VM guest).
+
+**Recommendation**
+- Fetch `linux-${KERNEL_VERSION}.tar.sign` alongside the tarball; verify with `gpg --verify` against Linus's pubkey (79BE3E4300411886). Alternatively pin the tarball by SHA256 in the same style as mise/gh.
+
+### I-06 — Debian base image pulled via floating tag (Informational)
+
+**Files**
+- `guest/build-rootfs.sh:74-78` — `DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://debian:trixie}"`; explicit TODO to replace with digest-pinned reference.
+
+Acknowledged in-source. Note that mmdebstrap would have had the same floating-snapshot issue, so this is not a regression — just a known gap. Worth lifting the TODO into an issue + assigning a digest pin before v1.
+
+### I-07 — `pip3 install` in rootfs-customize-hook has no pinning (Informational)
+
+**Files**
+- `guest/rootfs-customize-hook.sh:133-135`
+
+```bash
+chroot "$ROOTFS" pip3 install --break-system-packages --quiet \
+    pytest httpx pytest-timeout
+```
+
+Installs the latest `pytest`, `httpx`, `pytest-timeout` from pypi, no version constraint, no `--require-hashes`. These land in the shared rootfs tree on every rebuild. A typosquat or compromised pypi release would be picked up by the next clean build.
+
+These three packages are baked into the default base so the blackbox test suite inside the sandbox can run. Their blast radius: test code runs as agent uid 1000 inside the sandbox. Not host-escape; sandbox-internal integrity.
+
+**Recommendation**
+- Generate a hash-pinned `requirements-testdeps.txt` (e.g. via `uv pip compile --generate-hashes`), invoke `pip install --require-hashes -r requirements-testdeps.txt` from the hook.
+
+### I-08 — Fallback mitmproxy installer has no version pinning; silently defeats `uv.lock` (Informational)
+
+**Files**
+- `scripts/install-mitmproxy-pipx.sh:18-28`
+
+```bash
+pipx install mitmproxy || true
+pipx inject mitmproxy pyyaml yarl confusable-homoglyphs pydantic \
+    cryptography tomlkit httpx tenacity
+```
+
+The primary path (`uv tool install --editable ./cli`) consumes `uv.lock` with hashes, and `pyproject.toml`'s `[tool.uv].override-dependencies` explicitly bumps flask, pygments, cryptography, pyopenssl, tornado to CVE-patched versions. This fallback path installs the latest of every package with no constraint file, pypi-default index, no hash check.
+
+README steers users here if uv's Python-3.12 resolution drops mitmproxy from the workspace venv, which makes this path reachable on first install (not a niche case). The fallback silently disables the uv.lock hardening.
+
+**Recommendation**
+- Ship a `scripts/install-mitmproxy-pipx.txt` with pinned versions + hashes matching `uv.lock`'s mitmproxy + transitive set. Use `pipx install --pip-args "--require-hashes -r scripts/install-mitmproxy-pipx.txt"`.
+
+### I-09 — Comment in `rootfs-customize-hook.sh` overstates rootless setuid blocking (Informational)
+
+**Files**
+- `guest/rootfs-customize-hook.sh:223-230`
+
+> "Why: rootless user namespaces ignore the setuid bit, so `sudo` running as the agent user (uid 1000) can't escalate to root."
+
+Inaccurate as a blanket statement. In an unprivileged userns the kernel honours the setuid bit when the resulting uid is in the userns's uid map, *and* when `no_new_privs` is not set. SafeYolo's OCI spec has `process.noNewPrivileges: False` (`cli/src/safeyolo/platform/linux.py:1085`) and container uid 0 IS in the uid map (mapped to host uid 100000). So setuid-root binaries do work inside the sandbox.
+
+What actually prevents an agent from escalating via sudo on the default Debian base is different: the default base's `/etc/sudoers` has no entry for `agent`, so `sudo` prompts for a password and fails. That's policy, not kernel-structural.
+
+Kali and Alpine rootfs scripts (`contrib/kali-pentest/build-kali-rootfs.sh:186-199`, `contrib/alpine-minimal/build-alpine-rootfs.sh:85-105`) explicitly install NOPASSWD sudo for agent, so agent → sandbox-root IS reachable in those rootfses by design. The Sentry remains the outer boundary (agent + sandbox-root both see the same emulated kernel), so this is an intentional pre-v1 choice, not a vuln. But the comment should reflect reality so a future maintainer doesn't add "rely on this" logic atop a wrong premise.
+
+**Recommendation**
+- Reword the comment: "On the default base, agent has no sudoers entry, so `sudo` is gated by password and agent can't escalate. On custom rootfs (Kali, Alpine contrib scripts) that install NOPASSWD sudo, agent → sandbox-root is intentional; the Sentry is the boundary either way."
+
+### I-10 — Regression origin: `--listen-host 0.0.0.0` predates UDS-only architecture by 30+ commits (Informational)
+
+**Files**
+- `cli/src/safeyolo/proxy.py:354` — introduced by PR #132 ("perf: cut ~750ms-1.5s off agent boot")
+- UDS-only networking: PR #167
+- PROXY protocol v2 identity: PR #175 (`addons/proxy_protocol.py`)
+
+When the proxy bind was set to `0.0.0.0`, agents reached mitmproxy over a bridge network — the bind was load-bearing. That model is long gone: PR #167 moved Linux to structural UDS-only isolation, PR #175 replaced per-agent source-IP binding with a PROXY-v2 header stamped by `proxy_bridge`. Neither PR reverted the bind-address widening. The commit context for PR #175 (adding an addon that unconditionally trusts PROXY-v2 from any inbound TCP source) *assumed* loopback-only — the addon and the bind diverged across the two PRs.
+
+This is exactly the regression shape the audit was called for: the threat model tightened but a legacy knob didn't follow. Root of H-01.
+
+**Recommendation**
+- See H-01. Also: add a startup assertion that logs + aborts if `--listen-host` resolves to anything non-loopback without an explicit opt-in flag.
+
+## Summary of findings
+
+| ID | Severity | Title | File(s) |
+|----|----------|-------|---------|
+| H-01 | High | mitmproxy listens on `0.0.0.0`; PROXY-v2 agent identity auto-trusted from any TCP source | `cli/src/safeyolo/proxy.py:354`, `addons/proxy_protocol.py:105-151` |
+| M-01 | Medium | `admin_api` binds `0.0.0.0:9090`; SECURITY.md claims loopback-only | `addons/admin_api.py:1354, 1377` |
+| M-02 | Medium | Kernel source downloaded without signature/digest verification | `guest/build-kernel.sh:65-70` |
+| L-01 | Low | `vsock-term.c`: unchecked `setgid`/`setuid` return values (CWE-252) | `guest/vsock-term.c:211-216` |
+| I-01 | Info | OCI capability set materially wider than documented (14 caps vs ~4, all in `ambient`) | `cli/src/safeyolo/platform/linux.py:1006-1015` |
+| I-02 | Info | OCI seccomp `defaultAction: SCMP_ACT_ALLOW` (only `unshare` blocked) | `cli/src/safeyolo/platform/linux.py:1090-1100` |
+| I-03 | Info | `setup.py sudoers` docstring describes rules the template doesn't install | `cli/src/safeyolo/commands/setup.py:391-412` |
+| I-04 | Info | Path substitutions in sudoers template not path-validated | `cli/src/safeyolo/commands/setup.py:366-385` |
+| I-05 | Info | AppArmor profile path-pinned to `/usr/local/bin/runsc` only | `cli/src/safeyolo/templates/apparmor-safeyolo-runsc:19` |
+| I-06 | Info | Debian base pulled via floating `docker://debian:trixie` tag (explicit TODO) | `guest/build-rootfs.sh:74-78` |
+| I-07 | Info | `pip3 install` in rootfs-customize-hook has no version/hash pinning | `guest/rootfs-customize-hook.sh:133-135` |
+| I-08 | Info | `install-mitmproxy-pipx.sh` fallback has no pinning, silently defeats `uv.lock` | `scripts/install-mitmproxy-pipx.sh:18-28` |
+| I-09 | Info | Comment in `rootfs-customize-hook.sh` overstates rootless-userns setuid blocking | `guest/rootfs-customize-hook.sh:223-230` |
+| I-10 | Info | Regression origin: `--listen-host 0.0.0.0` predates UDS-only architecture | `cli/src/safeyolo/proxy.py:354` + PRs #132/#167/#175 |
+
+## Final assessment
+
+- **No concrete sandbox-escape finding** under the honest-operator + malicious-agent-in-sandbox threat model. The rootless userns + gVisor Sentry + UDS egress + PROXY-v2 attribution design is coherent and self-consistent once you accept the Sentry as the outer boundary.
+- **The two network-exposure findings (H-01, M-01)** are the material ones. They don't break the sandbox-isolation contract, but they break the stated "binds to localhost only" / "agent cannot forge another agent's identity" claims as soon as the host is on any untrusted network. Both trace back to a single legacy bind-address choice (introduced in PR #132) that survived the switch to UDS-only isolation + PROXY-v2 identity. A ten-line fix in `proxy.py` + a source-IP check in `proxy_protocol.py` retires H-01; `("127.0.0.1", port)` in `admin_api.py` retires M-01.
+- **M-02 (unverified kernel source)** is a supply-chain gap that's out-of-pattern with the rest of the build pipeline (mise, gh are pinned; the kernel isn't). Cheap to fix with the kernel.org `.sign` file.
+- **Capability / seccomp informationals (I-01, I-02)** are doc-vs-code divergences. The caps are contained by gVisor's Sentry in practice, but the docs should match the code. Auditing the list and either pruning or documenting each cap is low-risk cleanup.
+- **Supply-chain informationals (I-06, I-07, I-08)** each quietly erode the reproducibility + hash-pinning story. Independently modest risk; collectively they mean "what actually got installed" can drift between two clean builds even with identical source.
+- **I-10** is the "why did this happen" story behind H-01 — useful context when proposing the fix.
+
+### What I'd do next (not in scope, but flagged)
+
+- **Ask the maintainer** about the Dependabot #35 "1 high" alert surfaced at push time on master. I can't hit the GH API from this container; the alert ID should be checked directly.
+- **Extend audit to scope C** (proxy/PDP logic) after the network-exposure findings are addressed — the PROXY-v2 auto-trust interaction with `network_guard`, `credential_guard`, `service_gateway` is worth a fuller review once the identity path is authenticated, because several downstream addons build trust on top of the spoofable IP.
+- **Blackbox test** covering `--listen-host` defaulting to loopback (fails the start if `0.0.0.0`) + a PROXY-v2 spoofing attempt from an off-loopback source. Both catch regressions of the shape that caused H-01/I-10.
