@@ -82,7 +82,7 @@ class TestStandaloneImports:
                     # Put cli/src on sys.path first so absolute `safeyolo.*`
                     # imports resolve (subprocess inherits the runner venv
                     # which doesn't always have safeyolo installed editable).
-                    f"import sys; sys.path.insert(0, '{addons_dir.parent.parent.parent}'); sys.path.insert(0, '{addons_dir}'); import {module}",
+                    f"import sys; sys.path.insert(0, '{addons_dir.parent.parent}'); sys.path.insert(0, '{addons_dir}'); import {module}",
                 ],
                 capture_output=True,
                 text=True,
@@ -122,7 +122,7 @@ class TestStandaloneImports:
                     "-c",
                     f"""
 import sys
-sys.path.insert(0, '{addons_dir.parent.parent.parent}')
+sys.path.insert(0, '{addons_dir.parent.parent}')
 sys.path.insert(0, '{addons_dir}')
 import {module} as m
 missing = {missing_expr}
