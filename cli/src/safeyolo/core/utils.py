@@ -49,10 +49,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from mitmproxy import http
+
     from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 
 import yaml
-from mitmproxy import http
 from yarl import URL
 
 # Default audit log path - can be overridden via environment
@@ -276,6 +277,10 @@ def make_block_response(
     Returns:
         mitmproxy http.Response
     """
+    # Lazy import: CLI paths that only need `write_event` / helpers
+    # shouldn't have to pull in mitmproxy just to import this module.
+    from mitmproxy import http as mitm_http  # noqa: PLC0415
+
     headers = {
         "Content-Type": "application/json",
         "X-Blocked-By": addon_name,
@@ -283,7 +288,7 @@ def make_block_response(
     if extra_headers:
         headers.update(extra_headers)
 
-    return http.Response.make(
+    return mitm_http.Response.make(
         status,
         json.dumps(body).encode(),
         headers,
