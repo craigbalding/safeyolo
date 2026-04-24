@@ -1,8 +1,12 @@
 """Pytest fixtures for host-side blackbox tests.
 
 These tests run on the HOST, not inside the VM. The host has direct
-access to the sinkhole control API (localhost:19999), admin API
-(localhost:9090), and the proxy (localhost:8080). No firewall in the way.
+access to the sinkhole control API (localhost:19999) and the admin
+API (localhost:ADMIN_PORT). The proxy no longer listens on TCP — it
+binds per-agent Unix domain sockets under `$SAFEYOLO_CONFIG_DIR/data/
+sockets/<ip>_<agent>.sock`. `proxy_client` provisions a test listener
+at session start via `PUT /admin/proxy/mode` and speaks to mitmproxy
+through that UDS.
 
 proxy_client works from the host because credential_guard evaluates
 based on request content (headers, host), not source IP.
@@ -16,13 +20,14 @@ from pathlib import Path
 import httpx
 import pytest
 
-# host/ is this conftest's directory — sinkhole_client.py lives here.
-# When pytest is invoked against a subdirectory (e.g. `pytest proxy/`),
-# the subdir gets injected into sys.path but host/ does not, so the
-# bare `from sinkhole_client import ...` would fail. Inject host/
-# explicitly so the import works regardless of invocation cwd/args.
+# host/ is this conftest's directory — sinkhole_client.py and
+# uds_transport.py live here. When pytest is invoked against a
+# subdirectory (e.g. `pytest proxy/`), the subdir gets injected into
+# sys.path but host/ does not, so the bare imports below would fail.
+# Inject host/ explicitly so they work regardless of invocation cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sinkhole_client import SinkholeClient  # noqa: E402
+from uds_transport import UDSProxyTransport  # noqa: E402
 
 # Import the shared docstring linter from the parent blackbox dir.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -40,9 +45,15 @@ def pytest_collection_modifyitems(config, items):
 # ---------------------------------------------------------------------------
 # Host-side configuration — everything on localhost
 # ---------------------------------------------------------------------------
-PROXY_URL = os.environ.get("PROXY_URL", "http://127.0.0.1:8080")
 ADMIN_URL = os.environ.get("ADMIN_URL", "http://127.0.0.1:9090")
 SINKHOLE_API = os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999")
+
+# Session-scoped test agent: bbproxy on an IP outside the default
+# 10.200.0.0/16 range used by real agents. Keeps the blackbox-provisioned
+# UDS distinct from anything production might create while the test
+# instance is alive.
+_TEST_AGENT_NAME = os.environ.get("SAFEYOLO_BBTEST_PROXY_AGENT", "bbproxy")
+_TEST_AGENT_IP = os.environ.get("SAFEYOLO_BBTEST_PROXY_IP", "10.200.255.1")
 
 # Paths respect SAFEYOLO_CONFIG_DIR so tests work against an isolated instance
 _CONFIG_DIR = Path(os.environ.get("SAFEYOLO_CONFIG_DIR", str(Path.home() / ".safeyolo")))
@@ -103,21 +114,64 @@ def admin_client(admin_headers):
 
 
 @pytest.fixture(scope="session")
-def proxy_client():
-    """HTTP client that routes through SafeYolo proxy.
+def proxy_uds_path(admin_client, wait_for_safeyolo):
+    """Provision a per-session UDS listener via admin PUT.
 
-    Uses the mitmproxy CA cert for TLS verification when available.
-    Falls back to unverified if cert not found.
+    Side-steps `safeyolo agent add`, which would try to boot a VM.
+    The test instance's mitmproxy creates the socket file as soon as
+    `options.mode` gets an entry referring to it (bootstrap_mode /
+    admin PUT both take this path).
+
+    The listener is torn down in teardown so nothing lingers between
+    blackbox runs.
     """
-    if _CA_CERT.exists():
-        import ssl
-        ctx = ssl.create_default_context(cafile=str(_CA_CERT))
-        verify = ctx
+    sockets_dir = _CONFIG_DIR / "data" / "sockets"
+    sockets_dir.mkdir(parents=True, exist_ok=True)
+    uds_path = sockets_dir / f"{_TEST_AGENT_IP}_{_TEST_AGENT_NAME}.sock"
+    spec = f"unix:{uds_path}"
+
+    # The blackbox test instance starts with agent_map.json empty
+    # (run-tests.sh clears $CONFIG_DIR/agents/ before start), so the
+    # proxy's mode list is [] at this point. Replacing it outright is
+    # simpler — and safer — than trying to merge.
+    resp = admin_client.put("/admin/proxy/mode", json={"modes": [spec]})
+    assert resp.status_code == 200, f"PUT /admin/proxy/mode failed: {resp.text}"
+
+    # Wait for the Servers addon to actually bind the socket. The PUT
+    # handler already sleeps 0.5s to let reconcile finish; the poll
+    # here absorbs slow CI hosts without flaking.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if uds_path.is_socket():
+            break
+        time.sleep(0.1)
     else:
-        verify = False
+        raise RuntimeError(
+            f"Test UDS listener did not appear at {uds_path} within 10s"
+        )
+
+    yield uds_path
+
+    # Best-effort teardown — `run-tests.sh` also does `safeyolo stop`.
+    try:
+        admin_client.put("/admin/proxy/mode", json={"modes": []})
+    except httpx.RequestError:
+        pass
+
+
+@pytest.fixture(scope="session")
+def proxy_client(proxy_uds_path):
+    """HTTP client that routes through SafeYolo proxy via UDS.
+
+    Uses the mitmproxy CA cert for TLS verification when available —
+    blackbox tests assert ground-truth chain validation, never verify=False.
+    """
+    ca_cert = _CA_CERT if _CA_CERT.exists() else None
+    transport = UDSProxyTransport(proxy_uds_path, ca_cert=ca_cert)
+    verify_arg = str(_CA_CERT) if ca_cert else False
     client = httpx.Client(
-        proxy=PROXY_URL,
-        verify=verify,
+        transport=transport,
+        verify=verify_arg,
         timeout=30.0,
     )
     yield client
