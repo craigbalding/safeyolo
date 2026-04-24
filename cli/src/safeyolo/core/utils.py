@@ -54,7 +54,6 @@ if TYPE_CHECKING:
     from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 
 import yaml
-from yarl import URL
 
 # Default audit log path - can be overridden via environment
 # Environment variables:
@@ -582,7 +581,10 @@ def normalize_path(path: str) -> str:
     """
     # Unicode normalization first
     path = unicodedata.normalize("NFKC", path)
-    # Parse through URL library for proper handling
+    # Parse through URL library for proper handling. Lazy import
+    # keeps yarl off the CLI-only import graph (same reason as the
+    # mitmproxy lazy import in `make_block_response`).
+    from yarl import URL  # noqa: PLC0415
     normalized = URL("http://x" + path).path
     # Collapse multiple slashes
     normalized = re.sub(r"/+", "/", normalized)
