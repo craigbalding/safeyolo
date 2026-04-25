@@ -295,8 +295,7 @@ sudo rm -f "$ROOTFS/etc/resolv.conf"
 echo "=== Emitting directory tree ==="
 sudo rm -rf "$OUTPUT_TREE"
 sudo mkdir -p "$OUTPUT_TREE"
-sudo tar --xattrs --xattrs-include='*' --acls -C "$ROOTFS" -cf - . \
-    | sudo tar --xattrs --xattrs-include='*' --acls -C "$OUTPUT_TREE" -xf -
+sudo rsync -aHAX --numeric-ids "$ROOTFS/" "$OUTPUT_TREE/"
 
 # Rootless gVisor userns semantics: container uid 0 is mapped to host
 # uid 100000 (see linux.py::_start_userns), and CAP_DAC_OVERRIDE inside
