@@ -69,7 +69,7 @@ run_builds_native() {
     ls -lh "$OUTPUT_DIR/"
     echo ""
     echo "Install to ~/.safeyolo/share/ with:"
-    echo "  mkdir -p ~/.safeyolo/share && cp $OUTPUT_DIR/* ~/.safeyolo/share/"
+    echo "  mkdir -p ~/.safeyolo/share && rsync -a --delete $OUTPUT_DIR/ ~/.safeyolo/share/"
 }
 
 ensure_lima_vm() {
@@ -156,7 +156,7 @@ run_builds_via_lima() {
     ls -lh "$OUTPUT_DIR/"
     echo ""
     echo "Install to ~/.safeyolo/share/ with:"
-    echo "  mkdir -p ~/.safeyolo/share && cp $OUTPUT_DIR/* ~/.safeyolo/share/"
+    echo "  mkdir -p ~/.safeyolo/share && rsync -a --delete $OUTPUT_DIR/ ~/.safeyolo/share/"
 }
 
 # --- Dispatch ---
