@@ -74,10 +74,29 @@ def _check_docker() -> DiagResult:
         return DiagResult(
             name="Proxy running",
             status="fail",
-            message="mitmproxy is not running",
+            message="mitmdump is not running",
             remediation="Run: safeyolo start",
         )
-    return DiagResult(name="Proxy running", status="pass", message="mitmproxy is running")
+    pid: int | None = None
+    pid_path = get_data_dir() / "proxy.pid"
+    try:
+        pid = int(pid_path.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        # is_proxy_running() returned True so the file existed and parsed
+        # at that moment — a race here is harmless, fall back to the
+        # generic message.
+        pass
+    if pid is not None:
+        return DiagResult(
+            name="Proxy running",
+            status="pass",
+            message=f"mitmdump process alive (PID {pid})",
+        )
+    return DiagResult(
+        name="Proxy running",
+        status="pass",
+        message="mitmdump process alive",
+    )
 
 
 def _check_firewall() -> DiagResult:
@@ -116,14 +135,14 @@ def _check_firewall() -> DiagResult:
         return DiagResult(
             name="Egress enforcement",
             status="pass",
-            message=f"mitmproxy running (no agents, sockets dir {socks})",
+            message=f"mitmdump running (no agents, sockets dir {socks})",
         )
     return DiagResult(
         name="Firewall enforcement",
         status="warn",
         message=(
-            f"mitmproxy not running ({socks} has no listeners). "
-            "Per-agent UDS listeners are bound by mitmproxy at startup."
+            f"mitmdump not running ({socks} has no listeners). "
+            "Per-agent UDS listeners are bound by mitmdump at startup."
         ),
         remediation="safeyolo start",
     )
@@ -181,25 +200,127 @@ def _check_admin_api() -> DiagResult:
     )
 
 
-def _check_proxy_port() -> DiagResult:
-    """Check if proxy port is accepting connections."""
-    config = load_config()
-    proxy_port = config.get("proxy", {}).get("port", 8080)
+def _check_pipeline_probe() -> DiagResult:
+    """Self-probe the data path via a per-agent UDS.
+
+    Connects to one of the per-agent UDS listeners and sends a request
+    to the agent API virtual hostname (`_safeyolo.proxy.internal/health`).
+    A 200 response proves the full host chain works:
+      - UDS listener bound and accepting
+      - mitmproxy parsed the request
+      - agent_api addon recognized the virtual host and authenticated
+      - response synthesized and returned over the same socket
+
+    No upstream egress, no third party, no dependency on policy contents.
+    Skips when no agent sockets exist (nothing to probe through).
+    """
+    from ..sockets import sockets_dir
+
+    socks_dir = sockets_dir()
+    if not socks_dir.exists():
+        return DiagResult(
+            name="Pipeline probe",
+            status="skip",
+            message=f"No sockets directory ({socks_dir})",
+        )
+    socks = sorted(socks_dir.glob("*.sock"))
+    if not socks:
+        return DiagResult(
+            name="Pipeline probe",
+            status="skip",
+            message="No agent sockets present (no agents running)",
+        )
+
+    token_path = get_agent_token_path()
     try:
-        sock = socket.create_connection(("127.0.0.1", proxy_port), timeout=3)
-        sock.close()
+        token = token_path.read_text().strip()
+    except FileNotFoundError:
         return DiagResult(
-            name="Proxy port",
-            status="pass",
-            message=f"Port {proxy_port} accepting connections",
+            name="Pipeline probe",
+            status="warn",
+            message=f"Agent token missing at {token_path}",
+            remediation="safeyolo start (regenerates token)",
         )
-    except (TimeoutError, ConnectionRefusedError, OSError):
+    if not token:
         return DiagResult(
-            name="Proxy port",
+            name="Pipeline probe",
+            status="warn",
+            message="Agent token file is empty",
+            remediation="safeyolo stop && safeyolo start",
+        )
+
+    sock_path = socks[0]
+    request = (
+        b"GET /health HTTP/1.0\r\n"
+        b"Host: _safeyolo.proxy.internal\r\n"
+        b"Authorization: Bearer " + token.encode() + b"\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect(str(sock_path))
+        s.sendall(request)
+        chunks = []
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        s.close()
+        response = b"".join(chunks)
+    except OSError as exc:
+        return DiagResult(
+            name="Pipeline probe",
             status="fail",
-            message=f"Cannot connect to localhost:{proxy_port}",
-            remediation="Check: docker logs safeyolo",
+            message=f"UDS probe failed via {sock_path.name}: {type(exc).__name__}: {exc}",
+            remediation="safeyolo agent diag <name> for hop-by-hop detail",
         )
+
+    if not response:
+        return DiagResult(
+            name="Pipeline probe",
+            status="fail",
+            message=f"No response from {sock_path.name}",
+            remediation="safeyolo logs --tail 20",
+        )
+
+    status_line = response.split(b"\r\n", 1)[0].decode(errors="replace")
+    if "200" not in status_line:
+        return DiagResult(
+            name="Pipeline probe",
+            status="fail",
+            message=f"Agent API returned: {status_line.strip()}",
+            detail=response[:500].decode(errors="replace"),
+            remediation="safeyolo logs --security --tail 20",
+        )
+
+    body = response.split(b"\r\n\r\n", 1)[-1]
+    pdp_status = "unknown"
+    try:
+        parsed = json.loads(body)
+        pdp_status = parsed.get("pdp", "unknown")
+    except (ValueError, json.JSONDecodeError):
+        return DiagResult(
+            name="Pipeline probe",
+            status="warn",
+            message=f"200 OK via {sock_path.name} but body is not JSON",
+            detail=body[:200].decode(errors="replace"),
+        )
+
+    if pdp_status != "ok":
+        return DiagResult(
+            name="Pipeline probe",
+            status="warn",
+            message=f"Agent API responding via {sock_path.name}, but PDP is {pdp_status}",
+            remediation="safeyolo logs --tail 50",
+        )
+    return DiagResult(
+        name="Pipeline probe",
+        status="pass",
+        message=f"UDS → agent_api → PDP healthy ({sock_path.name})",
+    )
 
 
 def _check_ca_cert() -> DiagResult:
@@ -807,7 +928,7 @@ _DEPENDS_ON = {
     "User namespaces": ["Sandbox runtime"],
     "Admin API": ["Proxy running"],
     "Addon loading": ["Admin API"],
-    "Proxy port": ["Proxy running"],
+    "Pipeline probe": ["Proxy running"],
 }
 
 
@@ -822,7 +943,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
         ("Proxy running", _check_docker),
         ("Admin API", _check_admin_api),
         ("Addon loading", _check_addon_loading),
-        ("Proxy port", _check_proxy_port),
+        ("Pipeline probe", _check_pipeline_probe),
         ("CA certificate", _check_ca_cert),
         ("Baseline policy", _check_baseline),
         ("Egress enforcement", _check_firewall),
@@ -955,7 +1076,7 @@ def _attempt_fix(results: list[DiagResult]) -> list[str]:
             try:
                 from ..proxy import start_proxy
                 start_proxy()
-                actions.append("Started mitmproxy")
+                actions.append("Started mitmdump")
             except Exception as exc:
                 console.print(f"  [red]Failed:[/red] {exc}")
 
