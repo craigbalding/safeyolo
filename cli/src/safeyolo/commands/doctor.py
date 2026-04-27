@@ -297,7 +297,6 @@ def _check_pipeline_probe() -> DiagResult:
         )
 
     body = response.split(b"\r\n\r\n", 1)[-1]
-    pdp_status = "unknown"
     try:
         parsed = json.loads(body)
         pdp_status = parsed.get("pdp", "unknown")
