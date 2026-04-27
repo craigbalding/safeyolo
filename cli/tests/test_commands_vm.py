@@ -1008,7 +1008,7 @@ class TestDoctorProxyCheck:
 
         assert result.status == "pass"
         assert result.name == "Proxy running"
-        assert "running" in result.message.lower()
+        assert "mitmdump" in result.message.lower()
 
     def test_proxy_not_running_returns_fail_with_remediation(self, runner, config_dir):
         """_check_docker returns fail with remediation when proxy not running."""
@@ -1073,7 +1073,7 @@ class TestDoctorDependencyCascade:
         results_by_name = {r.name: r for r in results}
         assert results_by_name["Proxy running"].status == "fail"
         assert results_by_name["Admin API"].status == "skip"
-        assert results_by_name["Proxy port"].status == "skip"
+        assert results_by_name["Pipeline probe"].status == "skip"
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from safeyolo.commands.doctor import (
     _check_firewall,
     _check_flow_store,
     _check_log_health,
-    _check_proxy_port,
+    _check_pipeline_probe,
     _check_tokens,
     _check_vault,
     _run_checks,
@@ -50,11 +50,21 @@ class TestCheckProxyRunning:
     """_check_docker was repurposed (kept the old name) to check the
     host mitmproxy process — Docker is no longer part of the runtime."""
 
-    def test_proxy_running(self, monkeypatch):
+    def test_proxy_running(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
+        (tmp_config_dir / "data" / "proxy.pid").write_text("12345\n")
+        result = _check_docker()
+        assert result.status == "pass"
+        assert "PID 12345" in result.message
+
+    def test_proxy_running_missing_pidfile(self, tmp_config_dir, monkeypatch):
+        # Race: is_proxy_running() saw the pidfile but it's gone now.
+        # Falls back to a generic message rather than crashing.
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
         result = _check_docker()
         assert result.status == "pass"
-        assert "mitmproxy" in result.message.lower()
+        assert "mitmdump" in result.message.lower()
+        assert "PID" not in result.message
 
     def test_proxy_not_running(self, monkeypatch):
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
@@ -346,33 +356,156 @@ class TestCheckFlowStore:
         assert "Cannot read" in result.message
 
 
-class TestCheckProxyPort:
-    """Tests for _check_proxy_port()."""
+class _FakeSocket:
+    """Minimal stand-in for `socket.socket(AF_UNIX, ...)` used by the
+    pipeline probe. Captures the request and replays a canned response."""
 
-    def test_check_proxy_port_open(self, tmp_config_dir, monkeypatch):
-        """Returns pass when proxy port is accepting connections."""
+    def __init__(self, response: bytes, raise_on_connect: type[OSError] | None = None):
+        self._response = response
+        self._raise = raise_on_connect
+        self._sent = b""
+        self._read_pos = 0
+        self.connected_to: str | None = None
 
-        def mock_create_connection(address, timeout=None):
-            # Simulate successful connection by returning a mock socket
-            mock_sock = MagicMock()
-            return mock_sock
+    def settimeout(self, _timeout):
+        pass
 
-        monkeypatch.setattr("socket.create_connection", mock_create_connection)
-        result = _check_proxy_port()
-        assert result.status == "pass"
-        assert "8080" in result.message
+    def connect(self, addr):
+        if self._raise is not None:
+            raise self._raise("simulated")
+        self.connected_to = addr
 
-    def test_check_proxy_port_closed(self, tmp_config_dir, monkeypatch):
-        """Returns fail when proxy port is not accepting connections."""
+    def sendall(self, data):
+        self._sent += data
 
-        def mock_create_connection(address, timeout=None):
-            raise ConnectionRefusedError("Connection refused")
+    def recv(self, n):
+        chunk = self._response[self._read_pos : self._read_pos + n]
+        self._read_pos += len(chunk)
+        return chunk
 
-        monkeypatch.setattr("socket.create_connection", mock_create_connection)
-        result = _check_proxy_port()
+    def close(self):
+        pass
+
+
+def _install_fake_socket(monkeypatch, fake: _FakeSocket) -> None:
+    """Patch `socket.socket` in the doctor module to return `fake`."""
+    monkeypatch.setattr(
+        "safeyolo.commands.doctor.socket.socket",
+        lambda *a, **kw: fake,
+    )
+
+
+def _make_agent_socket(tmp_config_dir, name: str = "127.0.0.2_demo.sock"):
+    """Create a fake `<ip>_<agent>.sock` file the probe will pick up."""
+    socks_dir = tmp_config_dir / "data" / "sockets"
+    socks_dir.mkdir(parents=True, exist_ok=True)
+    sock = socks_dir / name
+    sock.touch()
+    return sock
+
+
+def _write_agent_token(tmp_config_dir, value: str = "tok-abc"):
+    (tmp_config_dir / "data" / "agent_token").write_text(value)
+
+
+class TestCheckPipelineProbe:
+    """Tests for _check_pipeline_probe()."""
+
+    def test_no_sockets_dir_skips(self, tmp_config_dir):
+        # tmp_config_dir creates data/ but not data/sockets/
+        result = _check_pipeline_probe()
+        assert result.status == "skip"
+        assert "sockets" in result.message.lower()
+
+    def test_no_sockets_present_skips(self, tmp_config_dir):
+        (tmp_config_dir / "data" / "sockets").mkdir()
+        result = _check_pipeline_probe()
+        assert result.status == "skip"
+        assert "no agents" in result.message.lower()
+
+    def test_missing_token_warns(self, tmp_config_dir):
+        _make_agent_socket(tmp_config_dir)
+        result = _check_pipeline_probe()
+        assert result.status == "warn"
+        assert "token" in result.message.lower()
+
+    def test_empty_token_warns(self, tmp_config_dir):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir, "   ")
+        result = _check_pipeline_probe()
+        assert result.status == "warn"
+        assert "empty" in result.message.lower()
+
+    def test_connect_failure_fails(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        _install_fake_socket(
+            monkeypatch, _FakeSocket(b"", raise_on_connect=ConnectionRefusedError)
+        )
+        result = _check_pipeline_probe()
         assert result.status == "fail"
-        assert "8080" in result.message
-        assert result.remediation != ""
+        assert "ConnectionRefusedError" in result.message
+
+    def test_empty_response_fails(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        _install_fake_socket(monkeypatch, _FakeSocket(b""))
+        result = _check_pipeline_probe()
+        assert result.status == "fail"
+        assert "no response" in result.message.lower()
+
+    def test_non_200_fails(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        body = b'{"error":"Invalid agent token"}'
+        response = (
+            b"HTTP/1.1 401 Unauthorized\r\n"
+            b"Content-Type: application/json\r\n\r\n" + body
+        )
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+        result = _check_pipeline_probe()
+        assert result.status == "fail"
+        assert "401" in result.message
+
+    def test_pdp_unavailable_warns(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        body = b'{"agent_api":"ok","pdp":"unavailable"}'
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n\r\n" + body
+        )
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+        result = _check_pipeline_probe()
+        assert result.status == "warn"
+        assert "pdp" in result.message.lower()
+
+    def test_pdp_healthy_passes(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir, name="127.0.0.2_demo.sock")
+        _write_agent_token(tmp_config_dir, "tok-abc")
+        body = b'{"agent_api":"ok","pdp":"ok"}'
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n\r\n" + body
+        )
+        fake = _FakeSocket(response)
+        _install_fake_socket(monkeypatch, fake)
+        result = _check_pipeline_probe()
+        assert result.status == "pass"
+        assert "127.0.0.2_demo.sock" in result.message
+        # The probe sent the request through the fake socket
+        assert b"GET /health HTTP/1.0" in fake._sent
+        assert b"Host: _safeyolo.proxy.internal" in fake._sent
+        assert b"Authorization: Bearer tok-abc" in fake._sent
+
+    def test_non_json_body_warns(self, tmp_config_dir, monkeypatch):
+        _make_agent_socket(tmp_config_dir)
+        _write_agent_token(tmp_config_dir)
+        response = b"HTTP/1.1 200 OK\r\n\r\nnot-json"
+        _install_fake_socket(monkeypatch, _FakeSocket(response))
+        result = _check_pipeline_probe()
+        assert result.status == "warn"
+        assert "not json" in result.message.lower()
 
 
 class TestCheckAdminApi:
@@ -425,14 +558,14 @@ class TestCheckAddonLoading:
 
 class TestRunChecks:
     def test_proxy_down_skips_dependents(self, tmp_config_dir, monkeypatch):
-        """When the proxy is down, dependent checks (Admin API, Addon loading, Proxy port) are skipped."""
+        """When the proxy is down, dependent checks (Admin API, Addon loading, Pipeline probe) are skipped."""
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
         results = _run_checks()
         names = {r.name: r.status for r in results}
         assert names["Proxy running"] == "fail"
         assert names["Admin API"] == "skip"
         assert names["Addon loading"] == "skip"
-        assert names["Proxy port"] == "skip"
+        assert names["Pipeline probe"] == "skip"
 
 
 class TestBuildBundle:
@@ -509,7 +642,7 @@ class TestCheckEgressStructural:
         )
         result = _check_firewall()
         assert result.status == "warn"
-        assert "mitmproxy not running" in result.message
+        assert "mitmdump not running" in result.message
         assert result.remediation == "safeyolo start"
 
 

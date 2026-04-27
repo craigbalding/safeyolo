@@ -185,7 +185,7 @@ def _ensure_certs(cert_dir: Path) -> Path:
             time.sleep(0.1)
         else:
             raise RuntimeError(
-                f"Timed out waiting 60s for mitmproxy to generate {ca_cert}. "
+                f"Timed out waiting 60s for mitmdump to generate {ca_cert}. "
                 f"Re-run after confirming mitmdump starts on this host."
             )
     finally:

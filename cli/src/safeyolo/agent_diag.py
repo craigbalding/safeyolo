@@ -111,10 +111,10 @@ def _check_proxy_socket(name: str, entry: dict) -> Check:
 def _check_proxy_process() -> Check:
     if not is_proxy_running():
         return Check("Proxy process", "FAIL",
-                     "mitmproxy not running",
+                     "mitmdump not running",
                      "safeyolo start")
     return Check("Proxy process", "PASS",
-                 "mitmproxy running (owns per-agent UnixInstance listeners)")
+                 "mitmdump running (owns per-agent UnixInstance listeners)")
 
 
 def _check_sandbox_running(name: str) -> Check:
@@ -159,7 +159,7 @@ def _check_end_to_end(name: str, entry: dict) -> Check:
                      f"{type(exc).__name__}: {exc}")
     if not buf:
         return Check("End-to-end probe", "FAIL",
-                     "no response from mitmproxy -- chain broken")
+                     "no response from mitmdump -- chain broken")
     first_line = buf.split(b"\n", 1)[0].decode(errors="replace").strip()
     if not first_line.startswith("HTTP/"):
         # Something responded but it's not HTTP -- something's wrong on
@@ -172,7 +172,7 @@ def _check_end_to_end(name: str, entry: dict) -> Check:
     # + reply back -- without touching any upstream or policy allowlist.
     # Operators: this is the expected outcome; PASS is PASS.
     return Check("End-to-end probe", "PASS",
-                 f"mitmproxy answered ({len(buf)}B, probe request rejected as expected)")
+                 f"mitmdump answered ({len(buf)}B, probe request rejected as expected)")
 
 
 def run_agent_diag(name: str) -> int:
