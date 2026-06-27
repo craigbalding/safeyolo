@@ -173,6 +173,41 @@ class DarwinPlatform(AgentPlatform):
         result = subprocess.run(cmd, stdin=stdin)
         return result.returncode
 
+    def popen_in_sandbox(
+        self,
+        name: str,
+        command: str,
+        user: str = "agent",
+    ) -> subprocess.Popen[str]:
+        """Start a non-interactive command via the shell bridge with pipes."""
+        key_path = get_ssh_key_path()
+        ssh_user = "root" if user == "root" else "agent"
+        shell_sock = _shell_socket_path(name)
+        if not shell_sock.exists():
+            raise RuntimeError(
+                f"Shell bridge socket {shell_sock} not found — "
+                f"is the VM running?"
+            )
+
+        cmd = [
+            "ssh",
+            "-i", str(key_path),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", f"ProxyCommand=nc -U {shell_sock}",
+            f"{ssh_user}@sandbox",
+            f". /etc/environment 2>/dev/null; {command}",
+        ]
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+
     def is_sandbox_running(self, name: str) -> bool:
         return is_vm_running(name)
 

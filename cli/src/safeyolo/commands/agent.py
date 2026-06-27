@@ -1293,6 +1293,65 @@ def shell(
 
 
 @agent_app.command()
+def preview(
+    name: str = typer.Argument(..., help="Agent instance name"),
+    guest_port: int = typer.Argument(..., help="Agent-local HTTP port to preview"),
+    host_port: int = typer.Option(
+        0,
+        "--host-port",
+        help="Host loopback port to bind (default: choose a free port)",
+    ),
+    open_browser: bool = typer.Option(
+        False,
+        "--open",
+        help="Open the preview URL in the default browser",
+    ),
+    ttl: str | None = typer.Option(
+        None,
+        "--ttl",
+        help="Close automatically after a duration like 30s, 10m, or 1h",
+    ),
+) -> None:
+    """Preview an agent-local HTTP service from the host browser.
+
+    Creates an explicit, token-gated localhost listener for one running
+    agent and one guest port. The browser URL never selects the agent; the
+    route is bound to this command's session.
+    """
+    _validate_instance_name(name)
+
+    from ..platform import get_platform
+    from ..preview import PreviewConfig, parse_ttl, serve_agent_preview, validate_guest_port
+
+    try:
+        validate_guest_port(guest_port)
+        ttl_seconds = parse_ttl(ttl)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1)
+
+    plat = get_platform()
+    if not plat.is_sandbox_running(name):
+        console.print(f"[red]Agent '{name}' is not running.[/red]")
+        console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
+        raise typer.Exit(1)
+
+    config = PreviewConfig(
+        agent=name,
+        guest_port=guest_port,
+        host_port=host_port,
+        ttl_seconds=ttl_seconds,
+        open_browser=open_browser,
+    )
+    try:
+        exit_code = serve_agent_preview(config, plat)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        console.print(f"[red]Preview failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(1)
+    raise typer.Exit(exit_code)
+
+
+@agent_app.command()
 def diag(
     name: str = typer.Argument(..., help="Agent instance name to diagnose"),
 ) -> None:

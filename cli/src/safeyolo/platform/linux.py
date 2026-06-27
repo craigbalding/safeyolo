@@ -791,6 +791,37 @@ class LinuxPlatform(AgentPlatform):
         result = subprocess.run(cmd)
         return result.returncode
 
+    def popen_in_sandbox(
+        self,
+        name: str,
+        command: str,
+        user: str = "agent",
+    ) -> subprocess.Popen[str]:
+        """Start a non-interactive command via runsc exec with pipes."""
+        cid = _container_id(name)
+        uid = "0:0" if user == "root" else "1000:1000"
+        root = _runsc_root()
+
+        upid = _get_userns_pid(name)
+        prefix = _nsenter_cmd(upid) if upid else []
+
+        wrapped = f". /etc/environment 2>/dev/null; {command}"
+        cmd = prefix + [
+            _find_runsc(), "--root", root, "exec",
+            "--user", uid,
+            "--cwd", "/workspace",
+            cid,
+            "/bin/bash", "-lc", wrapped,
+        ]
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+
     def is_sandbox_running(self, name: str) -> bool:
         """Check if a gVisor sandbox is running."""
         cid = _container_id(name)

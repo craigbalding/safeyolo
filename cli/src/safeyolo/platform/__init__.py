@@ -15,6 +15,7 @@ the CLI never import platform-specific modules directly.
 """
 
 import platform as _platform
+import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -95,6 +96,15 @@ class AgentPlatform(ABC):
                         user: str = "agent",
                         interactive: bool = True) -> int:
         """Execute a command in a running sandbox. Returns exit code."""
+
+    @abstractmethod
+    def popen_in_sandbox(
+        self,
+        name: str,
+        command: str,
+        user: str = "agent",
+    ) -> subprocess.Popen[str]:
+        """Start a non-interactive command in a running sandbox with pipes."""
 
     @abstractmethod
     def is_sandbox_running(self, name: str) -> bool:
