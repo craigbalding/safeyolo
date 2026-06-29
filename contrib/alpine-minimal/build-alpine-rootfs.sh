@@ -71,17 +71,16 @@ echo "=== Installing Alpine packages ==="
 #   ca-certificates -- HTTPS trust store (SafeYolo CA appended at boot)
 # Plus the small, universal developer toolkit we expect coding agents to use:
 # curl, git, jq, ripgrep, fd, file, unzip/zip, tmux, lsof, strace, Python venv,
-# and pkgconf for native build discovery. gcompat + libgcc let the glibc-linked
-# mise release binary run on Alpine/musl.
+# and pkgconf for native build discovery. Alpine's native mise package is
+# musl-linked; do not use the upstream glibc tarball on Alpine.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo gcompat libgcc \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo mise \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
-install_safeyolo_mise "$TREE" "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common "$TREE"
 
 # --- Runtime apk support: passwordless sudo, env-propagated proxy. ---

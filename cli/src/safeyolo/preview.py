@@ -11,9 +11,12 @@ from __future__ import annotations
 import http.server
 import json
 import logging
+import os
+import re
 import secrets
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -46,6 +49,7 @@ HOP_BY_HOP_HEADERS = {
 REQUEST_BODY_CHUNK_SIZE = 64 * 1024
 MAX_RESPONSE_HEADER_BYTES = 128 * 1024
 STREAM_CHUNK_SIZE = 64 * 1024
+DEFAULT_VNC_GEOMETRY = "1280x800"
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,7 @@ class PreviewConfig:
     host_port: int = 0
     ttl_seconds: int | None = None
     open_browser: bool = False
+    display_path: str = "/"
 
 
 class PreviewError(RuntimeError):
@@ -365,7 +370,7 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _set_session_cookie_and_redirect(self) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
-        self.send_header("Location", "/")
+        self.send_header("Location", normalize_display_path(self.server.config.display_path))
         self.send_header(
             "Set-Cookie",
             f"{TOKEN_COOKIE}={self.server.session_token}; Path=/; HttpOnly; SameSite=Strict",
@@ -444,6 +449,144 @@ def parse_ttl(value: str | None) -> int | None:
     if ttl <= 0:
         raise ValueError("ttl must be positive")
     return ttl
+
+
+def parse_vnc_geometry(value: str) -> tuple[int, int]:
+    raw = value.strip().lower()
+    match = re.fullmatch(r"([1-9][0-9]{2,4})x([1-9][0-9]{2,4})", raw)
+    if not match:
+        raise ValueError("vnc size must be auto or WIDTHxHEIGHT")
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width < 640 or height < 480:
+        raise ValueError("vnc size must be at least 640x480")
+    return width, height
+
+
+def _parse_geometry_from_text(text: str) -> tuple[int, int] | None:
+    match = re.search(r"([1-9][0-9]{2,4})\s*x\s*([1-9][0-9]{2,4})", text)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _darwin_coregraphics_display_size() -> tuple[int, int] | None:
+    try:
+        import ctypes
+    except ImportError:
+        return None
+
+    class CGPoint(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+    class CGSize(ctypes.Structure):
+        _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+    class CGRect(ctypes.Structure):
+        _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
+    try:
+        core_graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        core_graphics.CGMainDisplayID.restype = ctypes.c_uint32
+        core_graphics.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+        core_graphics.CGDisplayBounds.restype = CGRect
+        bounds = core_graphics.CGDisplayBounds(core_graphics.CGMainDisplayID())
+    except Exception:
+        return None
+
+    width = int(bounds.size.width)
+    height = int(bounds.size.height)
+    if width >= 640 and height >= 480:
+        return width, height
+    return None
+
+
+def detect_host_display_size() -> tuple[int, int] | None:
+    override = os.environ.get("SAFEYOLO_PREVIEW_SCREEN_SIZE")
+    if override:
+        return parse_vnc_geometry(override)
+
+    if sys.platform == "darwin":
+        display_size = _darwin_coregraphics_display_size()
+        if display_size:
+            return display_size
+
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType", "-json"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        sizes: list[tuple[int, int]] = []
+
+        def walk(value) -> None:
+            if isinstance(value, dict):
+                for child in value.values():
+                    walk(child)
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child)
+            elif isinstance(value, str):
+                parsed = _parse_geometry_from_text(value)
+                if parsed:
+                    sizes.append(parsed)
+
+        walk(payload)
+        return max(sizes, key=lambda size: size[0] * size[1], default=None)
+
+    if sys.platform.startswith("linux"):
+        commands = [
+            ["xdpyinfo"],
+            ["xrandr", "--current"],
+        ]
+        for command in commands:
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode != 0:
+                continue
+            parsed = _parse_geometry_from_text(result.stdout)
+            if parsed:
+                return parsed
+    return None
+
+
+def preferred_vnc_geometry(display_size: tuple[int, int] | None) -> tuple[int, int]:
+    if display_size is None:
+        return parse_vnc_geometry(DEFAULT_VNC_GEOMETRY)
+    width, height = display_size
+    return min(2560, max(640, width - 160)), min(1440, max(480, height - 180))
+
+
+def resolve_vnc_geometry(value: str) -> tuple[str, tuple[int, int] | None]:
+    raw = value.strip().lower()
+    if raw == "auto":
+        display_size = detect_host_display_size()
+        width, height = preferred_vnc_geometry(display_size)
+        return f"{width}x{height}", display_size
+    width, height = parse_vnc_geometry(raw)
+    return f"{width}x{height}", None
+
+
+def normalize_display_path(path: str) -> str:
+    if not path.startswith("/"):
+        return "/"
+    parsed = urllib.parse.urlsplit(path)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    out = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, parsed.fragment))
+    return out or "/"
 
 
 def preview_token_from_cookie(raw_cookie: str) -> str:
@@ -581,7 +724,8 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
     except Exception:
         raise
     host, port = server.server_address
-    url = f"http://{host}:{port}/"
+    display_path = normalize_display_path(config.display_path)
+    url = f"http://{host}:{port}{display_path}"
 
     write_event(
         "agent.preview_open",

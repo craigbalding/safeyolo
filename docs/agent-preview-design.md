@@ -68,7 +68,19 @@ Useful options:
 safeyolo agent preview codey 8000 --host-port 54321
 safeyolo agent preview codey 8000 --open
 safeyolo agent preview codey 8000 --ttl 30m
+safeyolo agent preview web 6080 --start-vnc
+safeyolo agent preview web 6080 -b https://example.com
+safeyolo agent preview web 6080 --start-vnc --vnc-size 1600x900
 ```
+
+`--start-vnc` is an explicit convenience for rootfs images that provide the
+contrib `startvnc` helper. With `--vnc-size auto`, the CLI detects the host
+display and starts the guest noVNC desktop at a size that fits the operator's
+browser better. `--browser` / `-b` is the higher-level browser path: it starts
+noVNC and launches Chromium inside the noVNC session at the requested URL.
+Managed noVNC previews print `/vnc.html#autoconnect=true&resize=remote`, so
+the noVNC web client connects when the page opens.
+Ordinary HTTP preview sessions do not start guest services.
 
 ## Transport model
 

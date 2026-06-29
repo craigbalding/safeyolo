@@ -18,8 +18,11 @@ from safeyolo.preview import (
     UNLOCK_PATH,
     PreviewConfig,
     build_guest_relay_command,
+    normalize_display_path,
     parse_ttl,
+    preferred_vnc_geometry,
     preview_token_from_cookie,
+    resolve_vnc_geometry,
     sanitize_request_headers,
     serve_agent_preview,
     start_preview_server,
@@ -55,9 +58,14 @@ class LocalRelayPlatform:
 class FakePlatform:
     def __init__(self, running=True):
         self.running = running
+        self.exec_calls = []
 
     def is_sandbox_running(self, name):
         return self.running
+
+    def exec_in_sandbox(self, name, command, user="agent", interactive=True):
+        self.exec_calls.append({"name": name, "command": command, "user": user, "interactive": interactive})
+        return 0
 
 
 class TinyHandler(BaseHTTPRequestHandler):
@@ -443,6 +451,60 @@ def test_preview_command_builds_single_agent_config():
     assert config.ttl_seconds == 30
 
 
+def test_preview_command_can_start_host_sized_vnc(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+        result = runner.invoke(agent_app, ["preview", "codey", "6080", "--start-vnc"])
+
+    assert result.exit_code == 0
+    assert fake_platform.exec_calls == [
+        {
+            "name": "codey",
+            "command": (
+                "port_open() { (exec 3<>/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }; "
+                "command -v startvnc >/dev/null 2>&1 || "
+                "{ echo 'startvnc not found; use an agent rootfs with the noVNC helper' >&2; exit 127; }; "
+                "if port_open 6080; then "
+                "echo 'noVNC already running in the agent on 127.0.0.1:6080'; "
+                "else "
+                "SAFEYOLO_PREVIEW_MANAGED=1 startvnc 1760x900; "
+                "fi"
+            ),
+            "user": "agent",
+            "interactive": False,
+        }
+    ]
+    config, platform = mock_serve.call_args.args
+    assert platform is fake_platform
+    assert config.guest_port == 6080
+    assert config.display_path == "/vnc.html#autoconnect=true&resize=remote"
+
+
+def test_preview_command_can_start_browser_url(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+        result = runner.invoke(
+            agent_app,
+            ["preview", "codey", "6080", "-b", "https://example.com/a b"],
+        )
+
+    assert result.exit_code == 0
+    assert "if port_open 9222; then" in fake_platform.exec_calls[0]["command"]
+    assert "http://127.0.0.1:9222/json/new?https%3A%2F%2Fexample.com%2Fa%20b" in fake_platform.exec_calls[0]["command"]
+    assert "setsid chrome 'https://example.com/a b'" in fake_platform.exec_calls[0]["command"]
+    config, platform = mock_serve.call_args.args
+    assert platform is fake_platform
+    assert config.display_path == "/vnc.html#autoconnect=true&resize=remote"
+
+
 def test_preview_command_requires_running_agent():
     runner = CliRunner()
 
@@ -476,3 +538,79 @@ def test_serve_agent_preview_prints_clean_url(monkeypatch, capsys):
     assert "http://127.0.0.1:54321/" in out
     assert "safeyolo_preview_token" not in out
     assert "1234-5678" in out
+
+
+def test_serve_agent_preview_prints_display_path(monkeypatch, capsys):
+    class FakeServePlatform:
+        pass
+
+    class FakeServer:
+        server_address = ("127.0.0.1", 54321)
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: "1234-5678")
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", lambda *args: FakeServer())
+
+    config = PreviewConfig(agent="web", guest_port=6080, display_path="/vnc.html#autoconnect=true&resize=remote")
+    assert serve_agent_preview(config, FakeServePlatform()) == 0
+
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:54321/vnc.html#autoconnect=true&resize=remote" in out
+
+
+def test_unlock_redirect_uses_display_path(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000, display_path="/vnc.html#autoconnect=true&resize=remote"),
+        NoRelayPlatform(),
+        "session",
+        "1234-5678",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection(*server.server_address)
+        conn.request(
+            "POST",
+            UNLOCK_PATH,
+            body="code=1234-5678",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Host": f"{server.server_address[0]}:{server.server_address[1]}",
+            },
+        )
+        response = conn.getresponse()
+        response.read()
+        assert response.status == 303
+        assert response.headers["Location"] == "/vnc.html#autoconnect=true&resize=remote"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_resolve_vnc_geometry_auto_uses_detected_display(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (2560, 1440))
+
+    assert resolve_vnc_geometry("auto") == ("2400x1260", (2560, 1440))
+
+
+def test_resolve_vnc_geometry_accepts_explicit_size():
+    assert resolve_vnc_geometry("1600x900") == ("1600x900", None)
+
+
+def test_preferred_vnc_geometry_falls_back_without_display():
+    assert preferred_vnc_geometry(None) == (1280, 800)
+
+
+def test_normalize_display_path_rejects_absolute_urls():
+    assert normalize_display_path("/vnc.html") == "/vnc.html"
+    assert normalize_display_path("/vnc.html#autoconnect=true") == "/vnc.html#autoconnect=true"
+    assert normalize_display_path("vnc.html") == "/"
+    assert normalize_display_path("http://example.test/vnc.html") == "/"

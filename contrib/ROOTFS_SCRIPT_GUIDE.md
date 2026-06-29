@@ -90,6 +90,13 @@ install_safeyolo_mise /path/to/unpacked/rootfs "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common /path/to/unpacked/rootfs
 ```
 
+Use `install_safeyolo_mise` only for glibc-compatible rootfs trees. Alpine
+should install its native musl-linked package instead:
+
+```sh
+apk add mise
+```
+
 This installs:
 
 - optional pinned `mise` binary via `install_safeyolo_mise`

@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 import typer
@@ -1311,6 +1312,22 @@ def preview(
         "--ttl",
         help="Close automatically after a duration like 30s, 10m, or 1h",
     ),
+    start_vnc: bool = typer.Option(
+        False,
+        "--start-vnc",
+        help="Start/restart the contrib noVNC helper inside the agent before previewing",
+    ),
+    vnc_size: str = typer.Option(
+        "auto",
+        "--vnc-size",
+        help="noVNC desktop size used with --start-vnc or --browser: auto or WIDTHxHEIGHT",
+    ),
+    browser_url: str | None = typer.Option(
+        None,
+        "--browser",
+        "-b",
+        help="Start noVNC and open this URL in Chromium inside the agent",
+    ),
 ) -> None:
     """Preview an agent-local HTTP service from the host browser.
 
@@ -1321,7 +1338,7 @@ def preview(
     _validate_instance_name(name)
 
     from ..platform import get_platform
-    from ..preview import PreviewConfig, parse_ttl, serve_agent_preview, validate_guest_port
+    from ..preview import PreviewConfig, parse_ttl, resolve_vnc_geometry, serve_agent_preview, validate_guest_port
 
     try:
         validate_guest_port(guest_port)
@@ -1336,12 +1353,70 @@ def preview(
         console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
         raise typer.Exit(1)
 
+    start_novnc = start_vnc or browser_url is not None
+    if start_novnc:
+        try:
+            vnc_geometry, detected_display_size = resolve_vnc_geometry(vnc_size)
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(1)
+        if detected_display_size:
+            action = "Starting noVNC"
+            if browser_url:
+                action += f" and Chromium for {browser_url}"
+            console.print(
+                f"{action} in '{name}' at {vnc_geometry} "
+                f"(host display {detected_display_size[0]}x{detected_display_size[1]})..."
+            )
+        else:
+            action = "Starting noVNC"
+            if browser_url:
+                action += f" and Chromium for {browser_url}"
+            console.print(f"{action} in '{name}' at {vnc_geometry}...")
+        if guest_port != 6080:
+            console.print(
+                f"[yellow]Warning:[/yellow] noVNC starts on guest port 6080; "
+                f"this preview is forwarding port {guest_port}."
+            )
+        command = (
+            "port_open() { (exec 3<>/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }; "
+            "command -v startvnc >/dev/null 2>&1 || "
+            "{ echo 'startvnc not found; use an agent rootfs with the noVNC helper' >&2; exit 127; }; "
+            "if port_open 6080; then "
+            "echo 'noVNC already running in the agent on 127.0.0.1:6080'; "
+            "else "
+            f"SAFEYOLO_PREVIEW_MANAGED=1 startvnc {shlex.quote(vnc_geometry)}; "
+            "fi"
+        )
+        if browser_url:
+            cdp_url = "http://127.0.0.1:9222/json/new?" + urllib.parse.quote(browser_url, safe="")
+            command += (
+                "; command -v chrome >/dev/null 2>&1 || "
+                "{ echo 'chrome not found; use an agent rootfs with the Chromium helper "
+                "or use --start-vnc for display-only preview' >&2; exit 127; }; "
+                "if port_open 9222; then "
+                "command -v curl >/dev/null 2>&1 || "
+                "{ echo 'curl not found; cannot ask existing Chromium to open a URL' >&2; exit 127; }; "
+                f"curl -fsS -X PUT --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
+                f"curl -fsS --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
+                "{ echo 'failed to open URL in existing Chromium (log: /tmp/chrome-cdp.log)' >&2; exit 1; }; "
+                "echo 'Opened URL in existing Chromium'; "
+                "else "
+                f"setsid chrome {shlex.quote(browser_url)} >/tmp/chrome.log 2>&1 < /dev/null & "
+                "echo 'Chromium started in noVNC display (logs: /tmp/chrome.log)'; "
+                "fi"
+            )
+        start_exit = plat.exec_in_sandbox(name, command, user="agent", interactive=False)
+        if start_exit != 0:
+            raise typer.Exit(start_exit)
+
     config = PreviewConfig(
         agent=name,
         guest_port=guest_port,
         host_port=host_port,
         ttl_seconds=ttl_seconds,
         open_browser=open_browser,
+        display_path="/vnc.html#autoconnect=true&resize=remote" if start_novnc else "/",
     )
     try:
         exit_code = serve_agent_preview(config, plat)
