@@ -12,7 +12,7 @@
 #     safeyolo agent add <name> <folder> \
 #         --rootfs-script contrib/alpine-minimal/build-alpine-rootfs.sh
 #
-# Host deps (Linux): skopeo, umoci, apk-tools (apk-tools-static is fine).
+# Host deps (Linux): skopeo, umoci, curl, tar, sha256sum.
 # e2fsprogs needed only when SafeYolo requests the ext4 output (macOS).
 # macOS: brew install lima (the Lima VM preinstalls everything).
 set -euo pipefail
@@ -32,8 +32,8 @@ case "$SAFEYOLO_TARGET_ARCH" in
 esac
 
 # --- Tools check (fail fast with clear messages). ---
-for tool in skopeo umoci; do
-    command -v "$tool" >/dev/null || { echo "Missing $tool. Install skopeo + umoci." >&2; exit 1; }
+for tool in skopeo umoci curl tar sha256sum; do
+    command -v "$tool" >/dev/null || { echo "Missing $tool. Install skopeo, umoci, curl, and coreutils." >&2; exit 1; }
 done
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     command -v mkfs.ext4 >/dev/null || { echo "Missing mkfs.ext4. Install e2fsprogs." >&2; exit 1; }
@@ -71,15 +71,17 @@ echo "=== Installing Alpine packages ==="
 #   ca-certificates -- HTTPS trust store (SafeYolo CA appended at boot)
 # Plus the small, universal developer toolkit we expect coding agents to use:
 # curl, git, jq, ripgrep, fd, file, unzip/zip, tmux, lsof, strace, Python venv,
-# and pkgconf for native build discovery. Language runtimes still come from mise.
+# and pkgconf for native build discovery. gcompat + libgcc let the glibc-linked
+# mise release binary run on Alpine/musl.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo gcompat libgcc \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
+install_safeyolo_mise "$TREE" "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common "$TREE"
 
 # --- Runtime apk support: passwordless sudo, env-propagated proxy. ---
@@ -90,7 +92,8 @@ install_safeyolo_guest_common "$TREE"
 mkdir -p "$TREE/etc/sudoers.d"
 cat > "$TREE/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
 agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy"
+Defaults env_keep += "NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
 SUDOERS
 chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
 
@@ -98,7 +101,7 @@ chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
 # Exactly one of OUT_EXT4 / OUT_TREE is set per invocation.
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     echo "=== Packing ext4 → $SAFEYOLO_ROOTFS_OUT_EXT4 ==="
-    # 2 GiB sparse; the base is ~100 MB, rest left as headroom for mise +
+    # 2 GiB sparse; the base is small, rest left as headroom for mise +
     # first-run installs.
     truncate -s 2G "$SAFEYOLO_ROOTFS_OUT_EXT4"
     mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$TREE" "$SAFEYOLO_ROOTFS_OUT_EXT4"

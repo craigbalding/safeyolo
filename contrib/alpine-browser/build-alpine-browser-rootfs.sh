@@ -20,7 +20,8 @@
 #     # open http://127.0.0.1:6080/vnc.html
 #
 # Runs on Linux (native) or inside the safeyolo-builder Lima VM on macOS.
-# Host deps (Linux): skopeo, umoci. e2fsprogs only for the ext4 output (macOS).
+# Host deps (Linux): skopeo, umoci, curl, tar, sha256sum.
+# e2fsprogs only for the ext4 output (macOS).
 set -euo pipefail
 
 : "${SAFEYOLO_AGENT_NAME:?must be invoked via safeyolo agent add --rootfs-script}"
@@ -38,8 +39,8 @@ case "$SAFEYOLO_TARGET_ARCH" in
 esac
 
 # --- Tools check (fail fast with clear messages). ---
-for tool in skopeo umoci; do
-    command -v "$tool" >/dev/null || { echo "Missing $tool. Install skopeo + umoci." >&2; exit 1; }
+for tool in skopeo umoci curl tar sha256sum; do
+    command -v "$tool" >/dev/null || { echo "Missing $tool. Install skopeo, umoci, curl, and coreutils." >&2; exit 1; }
 done
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     command -v mkfs.ext4 >/dev/null || { echo "Missing mkfs.ext4. Install e2fsprogs." >&2; exit 1; }
@@ -74,10 +75,11 @@ echo "=== Installing Alpine packages ==="
 #   font-noto      -- without fonts the browser renders blank/tofu text
 #   procps-ng      -- startvnc uses pkill/pgrep (Alpine busybox lacks them)
 #   util-linux-misc -- provides setsid, used by startvnc to detach x11vnc
+#   gcompat/libgcc -- let the glibc-linked mise release binary run on Alpine
 # The browser is NOT installed here -- `sudo apk add chromium` at runtime.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo gcompat libgcc \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
     xvfb x11vnc novnc websockify font-noto procps-ng util-linux-misc
@@ -165,6 +167,7 @@ chmod 0755 "$TREE/usr/local/bin/chrome"
 
 # --- SafeYolo guest bits. ---
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
+install_safeyolo_mise "$TREE" "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common "$TREE"
 
 # --- Runtime apk support: passwordless sudo, env-propagated proxy. ---
@@ -173,7 +176,8 @@ install_safeyolo_guest_common "$TREE"
 mkdir -p "$TREE/etc/sudoers.d"
 cat > "$TREE/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
 agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy"
+Defaults env_keep += "NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
 SUDOERS
 chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
 
@@ -182,7 +186,7 @@ chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
 if [ -n "${SAFEYOLO_ROOTFS_OUT_EXT4:-}" ]; then
     echo "=== Packing ext4 → $SAFEYOLO_ROOTFS_OUT_EXT4 ==="
     # 2 GiB sparse. This base is mounted read-only at runtime; all runtime
-    # writes (apk add chromium, mise, browser cache) land in the separate
+    # writes (apk add chromium, mise runtimes, browser cache) land in the separate
     # per-agent 256 GiB overlay (/dev/vdb), so the base only needs to hold
     # the build-time tree (Alpine base + X stack, a few hundred MB).
     truncate -s 2G "$SAFEYOLO_ROOTFS_OUT_EXT4"
