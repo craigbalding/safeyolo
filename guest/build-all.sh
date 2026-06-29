@@ -90,13 +90,15 @@ ensure_lima_vm() {
             "$SCRIPT_DIR/lima.yaml"
     fi
 
-    # Start the VM if it's stopped. Parse name+status from one listing
-    # rather than relying on --filter, whose syntax varies between Lima
-    # versions (2.x returns exit 1 on unknown filter; masked failures
-    # were falling through to a redundant `limactl start`).
+    # Start the VM if it's stopped. Query the status name-filtered as a
+    # single field: a `{{.Name}}\t{{.Status}}` listing split on tab is
+    # fragile because Lima 2.x renders the `\t` in --format literally
+    # (not a tab), so `awk -F'\t'` finds no separator and the status
+    # parses empty. An empty status here is benign (we just start), but
+    # the same pattern in vm/Makefile mistook empty for "doesn't exist"
+    # and tried to re-create the instance.
     local status
-    status="$(limactl list --format '{{.Name}}\t{{.Status}}' \
-        | awk -F'\t' -v n="$LIMA_VM_NAME" '$1==n {print $2}')"
+    status="$(limactl list "$LIMA_VM_NAME" --format '{{.Status}}' 2>/dev/null)"
     if [ "$status" != "Running" ]; then
         echo "=== Starting Lima VM '$LIMA_VM_NAME' ==="
         limactl start "$LIMA_VM_NAME"

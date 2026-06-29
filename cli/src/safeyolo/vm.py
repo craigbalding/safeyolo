@@ -86,12 +86,20 @@ def get_base_rootfs_path() -> Path:
 
 
 def get_agent_rootfs_path(name: str) -> Path:
-    # No per-agent rootfs file. All agents share get_base_rootfs_path();
-    # per-agent runtime state lives in the in-VM overlay upper
-    # (persistent when /dev/vdb is attached, ephemeral via tmpfs when
-    # safeyolo.ephemeral_upper=1) and the /home/agent virtiofs bind.
-    # Kept as a function because callers expect a Path; points at the
-    # shared base so any code that treats it as a read target works.
+    # macOS VZ boot rootfs selection. Default: the shared
+    # get_base_rootfs_path(); per-agent runtime state lives in the in-VM
+    # overlay upper (persistent when /dev/vdb is attached, ephemeral via
+    # tmpfs when safeyolo.ephemeral_upper=1) and the /home/agent virtiofs
+    # bind.
+    #
+    # Override: a custom --rootfs-script writes a per-agent ext4 to
+    # agents/<name>/rootfs.ext4 (see build_custom_rootfs). When present
+    # that image is this agent's rootfs and takes precedence over the
+    # shared base. Mirrors the Linux platform's agent_rootfs_path, which
+    # overrides the shared tree with agents/<name>/rootfs/ the same way.
+    per_agent = get_agents_dir() / name / "rootfs.ext4"
+    if per_agent.exists():
+        return per_agent
     return get_base_rootfs_path()
 
 
