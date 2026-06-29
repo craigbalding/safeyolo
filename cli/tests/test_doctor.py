@@ -19,10 +19,12 @@ from safeyolo.commands.doctor import (
     _check_docker,
     _check_firewall,
     _check_flow_store,
+    _check_guest_images,
     _check_log_health,
     _check_pipeline_probe,
     _check_tokens,
     _check_vault,
+    _check_vsock_term,
     _run_checks,
 )
 
@@ -72,6 +74,73 @@ class TestCheckProxyRunning:
         assert result.status == "fail"
 
 
+class TestCheckVsockTerm:
+    def test_skips_on_linux(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        result = _check_vsock_term()
+        assert result.status == "skip"
+
+    def test_fails_on_macos_when_missing(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        result = _check_vsock_term()
+        assert result.status == "fail"
+        assert "vsock-term" in result.message
+        assert result.remediation == "make -C vm install"
+
+    def test_fails_on_macos_when_not_executable(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir()
+        vsock_term = bin_dir / "vsock-term"
+        vsock_term.write_text("#!/bin/sh\n")
+        vsock_term.chmod(0o644)
+
+        result = _check_vsock_term()
+
+        assert result.status == "fail"
+        assert "not executable" in result.message
+        assert result.remediation == "make -C vm install"
+
+    def test_passes_on_macos_when_executable(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir()
+        vsock_term = bin_dir / "vsock-term"
+        vsock_term.write_text("#!/bin/sh\n")
+        vsock_term.chmod(0o755)
+
+        result = _check_vsock_term()
+
+        assert result.status == "pass"
+        assert str(vsock_term) in result.message
+
+
+class TestCheckGuestImages:
+    def test_macos_guest_images_show_share_dir(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        share = tmp_config_dir / "share"
+        share.mkdir()
+        (share / "Image").write_bytes(b"kernel")
+        (share / "initramfs.cpio.gz").write_bytes(b"initrd")
+        (share / "rootfs-base.ext4").write_bytes(b"rootfs")
+
+        result = _check_guest_images()
+
+        assert result.status == "pass"
+        assert str(share) in result.message
+        assert "rootfs-base.ext4" in result.message
+
+    def test_linux_guest_images_show_rootfs_tree(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        tree = tmp_config_dir / "share" / "rootfs-tree"
+        (tree / "etc").mkdir(parents=True)
+
+        result = _check_guest_images()
+
+        assert result.status == "pass"
+        assert str(tree) in result.message
+
+
 class TestCheckBaseline:
     @pytest.fixture(autouse=True)
     def _remove_default_toml(self, tmp_config_dir):
@@ -95,6 +164,7 @@ class TestCheckBaseline:
         result = _check_baseline()
         assert result.status == "pass"
         assert "1 permissions" in result.message
+        assert str(baseline) in result.message
 
     def test_missing_baseline(self, tmp_config_dir):
         result = _check_baseline()
@@ -157,6 +227,7 @@ class TestCheckLogHealth:
         monkeypatch.setattr("shutil.disk_usage", lambda path: DiskUsage(100e9, 50e9, 50e9))
         result = _check_log_health()
         assert result.status == "pass"
+        assert str(logs_dir) in result.message
 
     def test_no_logs_dir(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "nonexistent"))
@@ -188,6 +259,7 @@ class TestCheckTokens:
         result = _check_tokens()
         assert result.status == "pass"
         assert "present" in result.message
+        assert str(data_dir) in result.message
 
     def test_admin_token_missing(self, tmp_config_dir):
         result = _check_tokens()
@@ -328,6 +400,7 @@ class TestCheckFlowStore:
         result = _check_flow_store()
         assert result.status == "pass"
         assert "2 flows" in result.message
+        assert str(db_path) in result.message
 
     def test_large_database_warns(self, tmp_config_dir, monkeypatch):
         import sqlite3
@@ -530,6 +603,7 @@ class TestCheckAdminApi:
         result = _check_admin_api()
         assert result.status == "pass"
         assert "200 OK" in result.message
+        assert "http://127.0.0.1:9090/health" in result.message
 
 
 class TestCheckAddonLoading:
@@ -554,6 +628,7 @@ class TestCheckAddonLoading:
         result = _check_addon_loading()
         assert result.status == "pass"
         assert "2 addons" in result.message
+        assert "http://127.0.0.1:9090/stats" in result.message
 
 
 class TestRunChecks:
@@ -566,6 +641,31 @@ class TestRunChecks:
         assert names["Admin API"] == "skip"
         assert names["Addon loading"] == "skip"
         assert names["Pipeline probe"] == "skip"
+
+    def test_linux_run_checks_omits_vsock_term(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+
+        results = _run_checks()
+
+        assert "Interactive terminal" not in {r.name for r in results}
+
+    def test_macos_run_checks_omits_user_namespaces(self, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setattr("platform.machine", lambda: "arm64")
+        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        bin_dir = tmp_config_dir / "bin"
+        bin_dir.mkdir()
+        for name in ("safeyolo-vm", "vsock-term"):
+            path = bin_dir / name
+            path.write_text("#!/bin/sh\n")
+            path.chmod(0o755)
+
+        results = _run_checks()
+        names = {r.name for r in results}
+
+        assert "User namespaces" not in names
+        assert "Interactive terminal" in names
 
 
 class TestBuildBundle:

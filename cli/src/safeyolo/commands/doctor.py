@@ -1,6 +1,7 @@
 """Diagnostic command for SafeYolo - works when the proxy is broken."""
 
 import json
+import os
 import shutil
 import socket
 import sqlite3
@@ -90,12 +91,12 @@ def _check_docker() -> DiagResult:
         return DiagResult(
             name="Proxy running",
             status="pass",
-            message=f"mitmdump process alive (PID {pid})",
+            message=f"mitmdump process alive (PID {pid}, pidfile {pid_path})",
         )
     return DiagResult(
         name="Proxy running",
         status="pass",
-        message="mitmdump process alive",
+        message=f"mitmdump process alive (pidfile {pid_path})",
     )
 
 
@@ -152,6 +153,7 @@ def _check_admin_api() -> DiagResult:
     """Check if admin API is responding."""
     config = load_config()
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    health_url = f"http://127.0.0.1:{admin_port}/health"
     try:
         sock = socket.create_connection(("127.0.0.1", admin_port), timeout=3)
         sock.close()
@@ -179,12 +181,12 @@ def _check_admin_api() -> DiagResult:
                 return DiagResult(
                     name="Admin API",
                     status="pass",
-                    message="Responding (200 OK)",
+                    message=f"{health_url} responding (200 OK)",
                 )
             return DiagResult(
                 name="Admin API",
                 status="warn",
-                message=f"Responding but returned {resp.status_code}",
+                message=f"{health_url} returned {resp.status_code}",
             )
         except Exception as exc:
             return DiagResult(
@@ -195,7 +197,7 @@ def _check_admin_api() -> DiagResult:
     return DiagResult(
         name="Admin API",
         status="pass",
-        message=f"Port {admin_port} accepting connections",
+        message=f"127.0.0.1:{admin_port} accepting connections",
         detail="No admin token available to verify health endpoint",
     )
 
@@ -318,7 +320,7 @@ def _check_pipeline_probe() -> DiagResult:
     return DiagResult(
         name="Pipeline probe",
         status="pass",
-        message=f"UDS → agent_api → PDP healthy ({sock_path.name})",
+        message=f"UDS -> agent_api -> PDP healthy ({sock_path})",
     )
 
 
@@ -342,7 +344,7 @@ def _check_ca_cert() -> DiagResult:
         return DiagResult(
             name="CA certificate",
             status="pass",
-            message=f"Valid ({len(cert)} bytes DER)",
+            message=f"Valid at {ca_cert} ({len(cert)} bytes DER)",
         )
     except Exception as exc:
         return DiagResult(
@@ -397,7 +399,7 @@ def _check_baseline() -> DiagResult:
             return DiagResult(
                 name="Baseline policy",
                 status="pass",
-                message=f"Valid ({host_count} hosts) [{baseline_path.name}]",
+                message=f"Valid at {baseline_path} ({host_count} hosts)",
             )
         if "permissions" not in data:
             return DiagResult(
@@ -409,7 +411,7 @@ def _check_baseline() -> DiagResult:
         return DiagResult(
             name="Baseline policy",
             status="pass",
-            message=f"Valid ({perm_count} permissions) [{baseline_path.name}]",
+            message=f"Valid at {baseline_path} ({perm_count} permissions)",
         )
     except Exception as exc:
         return DiagResult(
@@ -441,7 +443,7 @@ def _check_tokens() -> DiagResult:
         return DiagResult(
             name="Tokens",
             status="pass",
-            message="Token files present with correct permissions",
+            message=f"Token files present with correct permissions in {admin_path.parent}",
         )
     # Distinguish between real problems and first-run state
     real_issues = [i for i in issues if "not yet generated" not in i]
@@ -449,7 +451,7 @@ def _check_tokens() -> DiagResult:
         return DiagResult(
             name="Tokens",
             status="pass",
-            message="Admin token OK; agent token pending first start",
+            message=f"Admin token OK at {admin_path}; agent token pending first start",
         )
     return DiagResult(
         name="Tokens",
@@ -470,7 +472,7 @@ def _check_vault() -> DiagResult:
         return DiagResult(
             name="Service gateway vault",
             status="pass",
-            message="Not configured (gateway disabled)",
+            message=f"Not configured (no {vault_path})",
         )
 
     if not key_path.exists():
@@ -485,7 +487,7 @@ def _check_vault() -> DiagResult:
         return DiagResult(
             name="Service gateway vault",
             status="pass",
-            message="Key present, no credentials stored yet",
+            message=f"Key present at {key_path}; no credentials stored at {vault_path}",
         )
 
     try:
@@ -496,7 +498,7 @@ def _check_vault() -> DiagResult:
         return DiagResult(
             name="Service gateway vault",
             status="pass",
-            message=f"Unlocked ({cred_count} credential{'s' if cred_count != 1 else ''})",
+            message=f"Unlocked {vault_path} ({cred_count} credential{'s' if cred_count != 1 else ''})",
         )
     except Exception as exc:
         return DiagResult(
@@ -515,7 +517,7 @@ def _check_crash_logs() -> DiagResult:
         return DiagResult(
             name="Crash detection",
             status="pass",
-            message="No mitmproxy.log file (first run?)",
+            message=f"No mitmproxy.log file at {log_file} (first run?)",
         )
     try:
         # Read last 200 lines
@@ -547,7 +549,7 @@ def _check_crash_logs() -> DiagResult:
         return DiagResult(
             name="Crash detection",
             status="pass",
-            message="No tracebacks in recent logs",
+            message=f"No tracebacks in recent logs ({log_file})",
         )
     except Exception as exc:
         return DiagResult(
@@ -564,7 +566,7 @@ def _check_log_health() -> DiagResult:
         return DiagResult(
             name="Log health",
             status="pass",
-            message="Logs directory doesn't exist yet",
+            message=f"Logs directory doesn't exist yet ({logs_dir})",
         )
     try:
         usage = shutil.disk_usage(logs_dir)
@@ -572,7 +574,7 @@ def _check_log_health() -> DiagResult:
         # Check JSONL size
         jsonl = logs_dir / "safeyolo.jsonl"
         jsonl_mb = jsonl.stat().st_size / 1_000_000 if jsonl.exists() else 0
-        msg = f"JSONL: {jsonl_mb:.1f}MB, disk: {free_gb:.1f}GB free"
+        msg = f"JSONL: {jsonl_mb:.1f}MB, disk: {free_gb:.1f}GB free, dir: {logs_dir}"
         # Use absolute threshold (1GB) - percentage is misleading on large disks
         if free_gb < 1:
             return DiagResult(
@@ -608,7 +610,7 @@ def _check_flow_store() -> DiagResult:
         return DiagResult(
             name="Flow store",
             status="pass",
-            message="Database not yet created (will appear on first flow)",
+            message=f"Database not yet created at {db_path} (will appear on first flow)",
         )
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -617,7 +619,7 @@ def _check_flow_store() -> DiagResult:
         count = cursor.fetchone()[0]
         conn.close()
         size_mb = db_path.stat().st_size / 1_000_000
-        msg = f"OK ({count} flows, {size_mb:.1f}MB)"
+        msg = f"OK ({count} flows, {size_mb:.1f}MB, db: {db_path})"
         if size_mb > _FLOW_STORE_WARN_MB:
             return DiagResult(
                 name="Flow store",
@@ -699,6 +701,41 @@ def _check_sandbox_runtime() -> DiagResult:
         name="Sandbox runtime",
         status="fail",
         message=f"Unsupported platform: {system}",
+    )
+
+
+def _check_vsock_term() -> DiagResult:
+    """Check macOS interactive terminal dependency."""
+    import platform as _plat
+
+    if _plat.system() != "Darwin":
+        return DiagResult(
+            name="Interactive terminal",
+            status="skip",
+            message="Not applicable (Linux uses runsc exec for terminal access)",
+        )
+
+    from ..vm import VSOCK_TERM_INSTALL_HINT, get_vsock_term_path
+
+    path = get_vsock_term_path()
+    if not path.exists():
+        return DiagResult(
+            name="Interactive terminal",
+            status="fail",
+            message=f"vsock-term missing at {path}",
+            remediation=VSOCK_TERM_INSTALL_HINT,
+        )
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return DiagResult(
+            name="Interactive terminal",
+            status="fail",
+            message=f"vsock-term is not executable at {path}",
+            remediation=VSOCK_TERM_INSTALL_HINT,
+        )
+    return DiagResult(
+        name="Interactive terminal",
+        status="pass",
+        message=f"vsock-term available at {path}",
     )
 
 
@@ -828,19 +865,21 @@ def _check_guest_images() -> DiagResult:
         )
 
     if _plat.system() == "Linux":
-        from ..config import get_share_dir
-        erofs = get_share_dir() / "rootfs-base.erofs"
-        size_mb = erofs.stat().st_size / 1_000_000
+        from ..vm import get_base_rootfs_tree_path
+
+        tree = get_base_rootfs_tree_path()
         return DiagResult(
             name="Guest images",
             status="pass",
-            message=f"EROFS rootfs ({size_mb:.0f} MB)",
+            message=f"rootfs tree at {tree}",
         )
+
+    from ..config import get_share_dir
 
     return DiagResult(
         name="Guest images",
         status="pass",
-        message="Available",
+        message=f"Available in {get_share_dir()} (Image, initramfs.cpio.gz, rootfs-base.ext4)",
     )
 
 
@@ -854,7 +893,7 @@ def _check_running_agents() -> DiagResult:
         return DiagResult(
             name="Running agents",
             status="pass",
-            message="No agents configured",
+            message=f"No agents configured ({agents_dir})",
         )
 
     plat = get_platform()
@@ -867,12 +906,12 @@ def _check_running_agents() -> DiagResult:
         return DiagResult(
             name="Running agents",
             status="pass",
-            message=f"{len(running)} running: {', '.join(running)}",
+            message=f"{len(running)} running in {agents_dir}: {', '.join(running)}",
         )
     return DiagResult(
         name="Running agents",
         status="pass",
-        message="None running",
+        message=f"None running ({agents_dir})",
     )
 
 
@@ -880,6 +919,7 @@ def _check_addon_loading() -> DiagResult:
     """Check if addons are loaded and reporting via /stats."""
     config = load_config()
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    stats_url = f"http://127.0.0.1:{admin_port}/stats"
 
     from ..config import get_admin_token
 
@@ -894,7 +934,7 @@ def _check_addon_loading() -> DiagResult:
         import httpx
 
         resp = httpx.get(
-            f"http://127.0.0.1:{admin_port}/stats",
+            stats_url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,
         )
@@ -909,7 +949,7 @@ def _check_addon_loading() -> DiagResult:
         return DiagResult(
             name="Addon loading",
             status="pass",
-            message=f"{len(addon_names)} addons reporting",
+            message=f"{len(addon_names)} addons reporting via {stats_url}",
             detail=", ".join(sorted(addon_names)),
         )
     except Exception as exc:
@@ -933,26 +973,39 @@ _DEPENDS_ON = {
 
 def _run_checks(verbose: bool = False) -> list[DiagResult]:
     """Run all diagnostic checks with cascade logic."""
+    import platform as _plat
+
     checks_funcs = [
         ("Config directory", _check_config_dir),
         ("Sandbox runtime", _check_sandbox_runtime),
-        ("Isolation platform", _check_isolation_platform),
-        ("User namespaces", _check_userns),
-        ("Guest images", _check_guest_images),
-        ("Proxy running", _check_docker),
-        ("Admin API", _check_admin_api),
-        ("Addon loading", _check_addon_loading),
-        ("Pipeline probe", _check_pipeline_probe),
-        ("CA certificate", _check_ca_cert),
-        ("Baseline policy", _check_baseline),
-        ("Egress enforcement", _check_firewall),
-        ("Tokens", _check_tokens),
-        ("Service gateway vault", _check_vault),
-        ("Crash detection", _check_crash_logs),
-        ("Log health", _check_log_health),
-        ("Flow store", _check_flow_store),
-        ("Running agents", _check_running_agents),
     ]
+    if _plat.system() == "Darwin":
+        checks_funcs.append(("Interactive terminal", _check_vsock_term))
+    checks_funcs.extend(
+        [
+            ("Isolation platform", _check_isolation_platform),
+        ]
+    )
+    if _plat.system() == "Linux":
+        checks_funcs.append(("User namespaces", _check_userns))
+    checks_funcs.extend(
+        [
+            ("Guest images", _check_guest_images),
+            ("Proxy running", _check_docker),
+            ("Admin API", _check_admin_api),
+            ("Addon loading", _check_addon_loading),
+            ("Pipeline probe", _check_pipeline_probe),
+            ("CA certificate", _check_ca_cert),
+            ("Baseline policy", _check_baseline),
+            ("Egress enforcement", _check_firewall),
+            ("Tokens", _check_tokens),
+            ("Service gateway vault", _check_vault),
+            ("Crash detection", _check_crash_logs),
+            ("Log health", _check_log_health),
+            ("Flow store", _check_flow_store),
+            ("Running agents", _check_running_agents),
+        ]
+    )
 
     results = []
     unavailable_checks = set()  # checks that failed or were skipped

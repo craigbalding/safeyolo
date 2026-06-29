@@ -26,6 +26,8 @@ from .config import (
 log = logging.getLogger("safeyolo.vm")
 
 VM_HELPER_NAME = "safeyolo-vm"
+VSOCK_TERM_NAME = "vsock-term"
+VSOCK_TERM_INSTALL_HINT = "make -C vm install"
 
 
 class VMError(Exception):
@@ -67,6 +69,27 @@ def find_vm_helper() -> Path:
         f"Cannot find {VM_HELPER_NAME}. Install with:\n"
         f"  cd vm && make install"
     )
+
+
+def get_vsock_term_path() -> Path:
+    """Return the installed host-side vsock-term path."""
+    return get_config_dir() / "bin" / VSOCK_TERM_NAME
+
+
+def require_vsock_term() -> Path:
+    """Return vsock-term or raise a clear error for macOS interactive runs."""
+    path = get_vsock_term_path()
+    if not path.exists():
+        raise VMError(
+            f"vsock-term not found at {path} - the interactive terminal cannot start. "
+            f"Build and install it with: {VSOCK_TERM_INSTALL_HINT}"
+        )
+    if not os.access(path, os.X_OK):
+        raise VMError(
+            f"vsock-term at {path} is not executable - the interactive terminal cannot start. "
+            f"Build and install it with: {VSOCK_TERM_INSTALL_HINT}"
+        )
+    return path
 
 
 def get_kernel_path() -> Path:
@@ -697,7 +720,7 @@ def prepare_config_share(
         debug_marker.unlink(missing_ok=True)
 
     # vsock-term binary -- cross-compiled, served from config share
-    vsock_term_src = config_dir / "bin" / "vsock-term"
+    vsock_term_src = get_vsock_term_path()
     if vsock_term_src.exists():
         shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
         (share_dir / "vsock-term").chmod(0o755)
@@ -851,6 +874,9 @@ def start_vm(
     rootfs = get_agent_rootfs_path(name)
     if not rootfs.exists():
         raise VMError(f"Agent rootfs not found: {rootfs}\nRun 'safeyolo agent add' first.")
+
+    if platform.system() == "Darwin" and not background:
+        require_vsock_term()
 
     kernel = get_kernel_path()
     initrd = get_initrd_path()
