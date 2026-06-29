@@ -8,7 +8,6 @@ guest helper process.
 
 from __future__ import annotations
 
-import base64
 import http.server
 import json
 import logging
@@ -28,9 +27,12 @@ from .events import write_event
 
 log = logging.getLogger("safeyolo.preview")
 
-TOKEN_QUERY_PARAM = "safeyolo_preview_token"
 TOKEN_HEADER = "X-SafeYolo-Preview-Token"
 TOKEN_COOKIE = "safeyolo_preview_token"
+CONTROL_PREFIX = "/_safeyolo_preview"
+UNLOCK_PATH = f"{CONTROL_PREFIX}/unlock"
+UNLOCK_CODE_TTL_SECONDS = 300
+MAX_UNLOCK_FAILURES = 5
 RESERVED_GUEST_PORTS = {8080, 9090}
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -39,10 +41,11 @@ HOP_BY_HOP_HEADERS = {
     "proxy-authorization",
     "te",
     "trailer",
-    "transfer-encoding",
     "upgrade",
 }
-STRIP_RESPONSE_HEADERS = HOP_BY_HOP_HEADERS | {"content-length"}
+REQUEST_BODY_CHUNK_SIZE = 64 * 1024
+MAX_RESPONSE_HEADER_BYTES = 128 * 1024
+STREAM_CHUNK_SIZE = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -59,60 +62,6 @@ class PreviewError(RuntimeError):
     """Preview session failed."""
 
 
-class PreviewBridge:
-    """Persistent JSON-line bridge to an agent-local HTTP helper."""
-
-    def __init__(self, proc: subprocess.Popen[str]):
-        if proc.stdin is None or proc.stdout is None:
-            raise PreviewError("preview helper did not expose stdin/stdout")
-        self.proc = proc
-        self._lock = threading.Lock()
-
-    def request(
-        self,
-        *,
-        method: str,
-        path: str,
-        headers: dict[str, str],
-        body: bytes,
-    ) -> dict:
-        payload = {
-            "method": method,
-            "path": path,
-            "headers": headers,
-            "body_b64": base64.b64encode(body).decode(),
-        }
-        with self._lock:
-            if self.proc.poll() is not None:
-                raise PreviewError(f"preview helper exited with rc={self.proc.returncode}")
-            assert self.proc.stdin is not None
-            assert self.proc.stdout is not None
-            try:
-                self.proc.stdin.write(json.dumps(payload) + "\n")
-                self.proc.stdin.flush()
-                line = self.proc.stdout.readline()
-            except (BrokenPipeError, OSError) as exc:
-                raise PreviewError(f"preview helper pipe failed: {type(exc).__name__}") from exc
-        if not line:
-            raise PreviewError("preview helper returned EOF")
-        try:
-            response = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise PreviewError("preview helper returned invalid JSON") from exc
-        if "error" in response:
-            raise PreviewError(str(response["error"]))
-        return response
-
-    def close(self) -> None:
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=2)
-
-
 class PreviewHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
@@ -122,13 +71,18 @@ class PreviewHTTPServer(http.server.ThreadingHTTPServer):
         handler_class: type[http.server.BaseHTTPRequestHandler],
         *,
         config: PreviewConfig,
-        token: str,
-        bridge: PreviewBridge,
+        platform,
+        session_token: str,
+        unlock_code: str,
     ):
         super().__init__(server_address, handler_class)
         self.config = config
-        self.token = token
-        self.bridge = bridge
+        self.platform = platform
+        self.session_token = session_token
+        self.unlock_code = unlock_code
+        self.unlock_expires_at = time.time() + UNLOCK_CODE_TTL_SECONDS
+        self.unlock_failures = 0
+        self.unlock_locked = False
         self.started_at = time.time()
 
 
@@ -161,52 +115,107 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle(self) -> None:
         started = time.time()
-        cleaned_path, query_token = strip_query_token(self.path)
-        provided = (
-            self.headers.get(TOKEN_HEADER)
-            or query_token
-            or preview_token_from_cookie(self.headers.get("Cookie", ""))
-        )
-        if not provided:
-            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "preview token required"})
-            self._log_event("traffic.preview_error", "preview token missing", status=401, started=started)
-            return
-        if not secrets.compare_digest(provided, self.server.token):
-            self._send_json(HTTPStatus.FORBIDDEN, {"error": "preview token invalid"})
-            self._log_event("traffic.preview_error", "preview token invalid", status=403, started=started)
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith(CONTROL_PREFIX):
+            self._handle_control_path(started, path)
             return
 
+        if not self._is_authorized():
+            self._send_unlock_page()
+            self._log_event("traffic.preview_error", "preview session missing", status=401, started=started)
+            return
         try:
-            body = self._read_body()
-            headers = sanitize_request_headers(self.headers, self.server.config.guest_port)
+            is_upgrade = is_websocket_upgrade(self.headers)
             self._log_event(
                 "traffic.preview_request",
-                f"preview {self.command} {cleaned_path}",
+                f"preview {self.command} {self.path}",
                 status=None,
                 started=started,
-                bytes_in=len(body),
-                path=cleaned_path,
+                bytes_in=0,
+                path=self.path,
             )
-            response = self.server.bridge.request(
-                method=self.command,
-                path=cleaned_path,
-                headers=headers,
-                body=body,
-            )
-            self._send_bridge_response(response, set_cookie=bool(query_token))
+            status, bytes_out = self._proxy_stream(is_upgrade=is_upgrade)
+            if not is_upgrade:
+                self.close_connection = True
             self._log_event(
                 "traffic.preview_response",
-                f"preview {self.command} {cleaned_path} -> {int(response['status'])}",
-                status=int(response["status"]),
+                f"preview {self.command} {self.path} -> {status}",
+                status=status,
                 started=started,
-                bytes_in=len(body),
-                bytes_out=len(base64.b64decode(response.get("body_b64", ""))),
-                path=cleaned_path,
+                bytes_in=0,
+                bytes_out=bytes_out,
+                path=self.path,
             )
         except Exception as exc:  # noqa: BLE001 - convert to HTTP boundary
             log.exception("preview request failed")
             self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "preview request failed", "detail": str(exc)})
-            self._log_event("traffic.preview_error", str(exc), status=502, started=started, path=cleaned_path)
+            self._log_event("traffic.preview_error", str(exc), status=502, started=started, path=self.path)
+
+    def _handle_control_path(self, started: float, path: str) -> None:
+        if path != UNLOCK_PATH:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "preview control path not found"})
+            return
+        if self.command == "GET":
+            self._send_unlock_page()
+            return
+        if self.command != "POST":
+            self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method not allowed"})
+            return
+
+        if not self._unlock_request_has_local_origin():
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "unlock request rejected"})
+            self._log_event("traffic.preview_error", "preview unlock origin rejected", status=403, started=started)
+            return
+        if self.server.unlock_locked or self.server.unlock_code is None:
+            self._send_json(HTTPStatus.LOCKED, {"error": "preview unlock is locked"})
+            self._log_event("traffic.preview_error", "preview unlock locked", status=423, started=started)
+            return
+        if time.time() > self.server.unlock_expires_at:
+            self.server.unlock_locked = True
+            self._send_json(HTTPStatus.GONE, {"error": "preview unlock code expired"})
+            self._log_event("traffic.preview_error", "preview unlock expired", status=410, started=started)
+            return
+
+        provided = self._read_unlock_code()
+        if not secrets.compare_digest(provided, self.server.unlock_code):
+            self.server.unlock_failures += 1
+            if self.server.unlock_failures >= MAX_UNLOCK_FAILURES:
+                self.server.unlock_locked = True
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "preview unlock code invalid"})
+            self._log_event("traffic.preview_error", "preview unlock failed", status=403, started=started)
+            return
+
+        self.server.unlock_code = None
+        self._set_session_cookie_and_redirect()
+        self._log_event("agent.preview_unlock", "preview unlocked", status=303, started=started)
+
+    def _is_authorized(self) -> bool:
+        provided = (
+            self.headers.get(TOKEN_HEADER)
+            or preview_token_from_cookie(self.headers.get("Cookie", ""))
+        )
+        return bool(provided) and secrets.compare_digest(provided, self.server.session_token)
+
+    def _unlock_request_has_local_origin(self) -> bool:
+        host = self.headers.get("Host", "")
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urllib.parse.urlsplit(origin)
+            if parsed.scheme != "http" or parsed.netloc != host:
+                return False
+        sec_fetch_site = self.headers.get("Sec-Fetch-Site")
+        return sec_fetch_site not in {"cross-site", "same-site"}
+
+    def _read_unlock_code(self) -> str:
+        content_type = self.headers.get("Content-Type", "")
+        if "application/x-www-form-urlencoded" not in content_type:
+            return ""
+        try:
+            body = self._read_body().decode()
+        except UnicodeDecodeError:
+            return ""
+        values = urllib.parse.parse_qs(body, keep_blank_values=True)
+        return values.get("code", [""])[0].strip()
 
     def _read_body(self) -> bytes:
         length = self.headers.get("Content-Length")
@@ -218,25 +227,152 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             return b""
         return self.rfile.read(max(n, 0))
 
-    def _send_bridge_response(self, response: dict, *, set_cookie: bool) -> None:
-        status = int(response["status"])
-        body = base64.b64decode(response.get("body_b64", ""))
-        self.send_response(status)
-        for key, value in response.get("headers", []):
-            if str(key).lower() in STRIP_RESPONSE_HEADERS:
-                continue
-            self.send_header(str(key), str(value))
-        if set_cookie:
-            self.send_header(
-                "Set-Cookie",
-                f"{TOKEN_COOKIE}={self.server.token}; Path=/; HttpOnly; SameSite=Strict",
+    def _proxy_stream(self, *, is_upgrade: bool) -> tuple[int, int]:
+        proc = self._open_guest_relay()
+        try:
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            request = build_upstream_request(
+                method=self.command,
+                path=self.path,
+                version=self.request_version,
+                headers=self.headers,
+                guest_port=self.server.config.guest_port,
+                is_upgrade=is_upgrade,
             )
-        self.send_header("X-SafeYolo-Agent", self.server.config.agent)
-        self.send_header("X-SafeYolo-Preview-Port", str(self.server.config.guest_port))
+            proc.stdin.write(request)
+            self._copy_request_body(proc.stdin, is_upgrade=is_upgrade)
+            proc.stdin.flush()
+            if not is_upgrade:
+                proc.stdin.close()
+
+            status, bytes_out = self._forward_response_head(proc.stdout)
+            if is_upgrade and status == HTTPStatus.SWITCHING_PROTOCOLS:
+                bytes_out += self._relay_upgraded_connection(proc)
+            else:
+                bytes_out += self._copy_response_body(proc.stdout)
+            return int(status), bytes_out
+        finally:
+            self._close_relay(proc)
+
+    def _open_guest_relay(self) -> subprocess.Popen[bytes]:
+        command = build_guest_relay_command(self.server.config.guest_port)
+        proc = self.server.platform.popen_binary_in_sandbox(self.server.config.agent, command, user="agent")
+        if proc.stdin is None or proc.stdout is None:
+            raise PreviewError("preview relay did not expose stdin/stdout")
+        return proc
+
+    def _copy_request_body(self, dst, *, is_upgrade: bool) -> None:
+        if is_upgrade:
+            return
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if transfer_encoding and transfer_encoding.lower() != "identity":
+            raise PreviewError("chunked request bodies are not supported by preview")
+        length = self.headers.get("Content-Length")
+        if not length:
+            return
+        try:
+            remaining = int(length)
+        except ValueError as exc:
+            raise PreviewError("invalid request Content-Length") from exc
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, REQUEST_BODY_CHUNK_SIZE))
+            if not chunk:
+                raise PreviewError("client closed before request body completed")
+            dst.write(chunk)
+            remaining -= len(chunk)
+
+    def _forward_response_head(self, src) -> tuple[int, int]:
+        head, rest = read_http_response_head(src)
+        status = parse_response_status(head)
+        self.connection.sendall(add_preview_response_headers(head, self.server.config))
+        bytes_out = 0
+        if rest:
+            self.connection.sendall(rest)
+            bytes_out += len(rest)
+        return status, bytes_out
+
+    def _copy_response_body(self, src) -> int:
+        bytes_out = 0
+        while True:
+            chunk = src.read(STREAM_CHUNK_SIZE)
+            if not chunk:
+                return bytes_out
+            self.connection.sendall(chunk)
+            bytes_out += len(chunk)
+
+    def _relay_upgraded_connection(self, proc: subprocess.Popen[bytes]) -> int:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        done = threading.Event()
+
+        def client_to_guest() -> None:
+            try:
+                while not done.is_set():
+                    data = self.connection.recv(STREAM_CHUNK_SIZE)
+                    if not data:
+                        break
+                    proc.stdin.write(data)
+                    proc.stdin.flush()
+            except OSError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=client_to_guest, daemon=True)
+        thread.start()
+        try:
+            return self._copy_response_body(proc.stdout)
+        finally:
+            done.set()
+            thread.join(timeout=1)
+
+    def _close_relay(self, proc: subprocess.Popen[bytes]) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            proc.wait(timeout=1)
+            return
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+    def _send_unlock_page(self) -> None:
+        body = (
+            b"<!doctype html><html><head><meta charset=\"utf-8\">"
+            b"<title>SafeYolo Preview Unlock</title>"
+            b"<style>body{font-family:system-ui,sans-serif;margin:3rem;max-width:32rem}"
+            b"input,button{font:inherit;padding:.6rem;margin-top:.5rem}</style>"
+            b"</head><body><h1>Unlock Preview</h1>"
+            b"<form method=\"post\" action=\"/_safeyolo_preview/unlock\">"
+            b"<label>Unlock code<br><input name=\"code\" autocomplete=\"one-time-code\" autofocus></label><br>"
+            b"<button type=\"submit\">Unlock</button></form></body></html>"
+        )
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _set_session_cookie_and_redirect(self) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", "/")
+        self.send_header(
+            "Set-Cookie",
+            f"{TOKEN_COOKIE}={self.server.session_token}; Path=/; HttpOnly; SameSite=Strict",
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_json(self, status: HTTPStatus, payload: dict) -> None:
         body = json.dumps(payload).encode()
@@ -272,7 +408,7 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             details["status"] = status
         write_event(
             event,
-            kind=EventKind.TRAFFIC,
+            kind=EventKind.AGENT if event.startswith("agent.") else EventKind.TRAFFIC,
             severity=Severity.LOW,
             summary=summary,
             agent=cfg.agent,
@@ -310,19 +446,6 @@ def parse_ttl(value: str | None) -> int | None:
     return ttl
 
 
-def strip_query_token(path: str) -> tuple[str, str]:
-    parsed = urllib.parse.urlsplit(path)
-    kept: list[tuple[str, str]] = []
-    token = ""
-    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
-        if key == TOKEN_QUERY_PARAM:
-            token = value
-        else:
-            kept.append((key, value))
-    query = urllib.parse.urlencode(kept, doseq=True)
-    return urllib.parse.urlunsplit(("", "", parsed.path, query, parsed.fragment)), token
-
-
 def preview_token_from_cookie(raw_cookie: str) -> str:
     if not raw_cookie:
         return ""
@@ -335,19 +458,29 @@ def preview_token_from_cookie(raw_cookie: str) -> str:
     return morsel.value if morsel else ""
 
 
-def sanitize_request_headers(headers, guest_port: int) -> dict[str, str]:
-    out: dict[str, str] = {}
+def is_websocket_upgrade(headers) -> bool:
+    upgrade = headers.get("Upgrade", "")
+    connection = headers.get("Connection", "")
+    return upgrade.lower() == "websocket" and "upgrade" in connection.lower()
+
+
+def sanitize_request_headers(headers, guest_port: int, *, is_upgrade: bool = False) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
     for key, value in headers.items():
         lk = key.lower()
-        if lk in HOP_BY_HOP_HEADERS or lk == "host" or lk == TOKEN_HEADER.lower():
+        if lk == "host" or lk == TOKEN_HEADER.lower():
+            continue
+        if lk in HOP_BY_HOP_HEADERS and not (is_upgrade and lk in {"connection", "upgrade"}):
             continue
         if lk == "cookie":
             value = strip_preview_cookie(value)
             if not value:
                 continue
-        out[key] = value
-    out["Host"] = f"127.0.0.1:{guest_port}"
-    out["X-SafeYolo-Preview"] = "1"
+        out.append((key, value))
+    out.insert(0, ("Host", f"127.0.0.1:{guest_port}"))
+    out.append(("X-SafeYolo-Preview", "1"))
+    if not is_upgrade:
+        out.append(("Connection", "close"))
     return out
 
 
@@ -362,71 +495,93 @@ def strip_preview_cookie(raw_cookie: str) -> str:
     return "; ".join(f"{key}={morsel.value}" for key, morsel in cookie.items())
 
 
-def build_guest_helper_command(guest_port: int) -> str:
-    script = r'''
-import base64
-import http.client
-import json
-import os
-import sys
+def generate_unlock_code() -> str:
+    value = secrets.randbelow(100_000_000)
+    raw = f"{value:08d}"
+    return f"{raw[:4]}-{raw[4:]}"
 
-port = int(os.environ["SAFEYOLO_PREVIEW_PORT"])
 
-for line in sys.stdin:
+def build_upstream_request(
+    *,
+    method: str,
+    path: str,
+    version: str,
+    headers,
+    guest_port: int,
+    is_upgrade: bool,
+) -> bytes:
+    lines = [f"{method} {path} {version}"]
+    for key, value in sanitize_request_headers(headers, guest_port, is_upgrade=is_upgrade):
+        lines.append(f"{key}: {value}")
+    lines.extend(["", ""])
+    return "\r\n".join(lines).encode("iso-8859-1")
+
+
+def read_http_response_head(src) -> tuple[bytes, bytes]:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = src.read(4096)
+        if not chunk:
+            raise PreviewError("preview relay closed before response headers")
+        data += chunk
+        if len(data) > MAX_RESPONSE_HEADER_BYTES:
+            raise PreviewError("preview response headers too large")
+    head, rest = data.split(b"\r\n\r\n", 1)
+    return head + b"\r\n\r\n", rest
+
+
+def parse_response_status(head: bytes) -> int:
+    first_line = head.split(b"\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+    parts = first_line.split(" ", 2)
+    if len(parts) < 2:
+        raise PreviewError("preview relay returned malformed HTTP response")
     try:
-        req = json.loads(line)
-        body = base64.b64decode(req.get("body_b64", ""))
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-        try:
-            conn.request(req["method"], req["path"], body=body, headers=req.get("headers", {}))
-            resp = conn.getresponse()
-            data = resp.read()
-            out = {
-                "status": resp.status,
-                "reason": resp.reason,
-                "headers": [[k, v] for k, v in resp.getheaders()],
-                "body_b64": base64.b64encode(data).decode(),
-            }
-        finally:
-            conn.close()
-    except Exception as exc:
-        out = {"error": f"{type(exc).__name__}: {exc}"}
-    sys.stdout.write(json.dumps(out) + "\n")
-    sys.stdout.flush()
-'''
-    script_b64 = base64.b64encode(script.encode()).decode()
-    bootstrap = 'import base64, os; exec(base64.b64decode(os.environ["SAFEYOLO_PREVIEW_HELPER_B64"]))'
-    return (
-        f"SAFEYOLO_PREVIEW_PORT={shlex.quote(str(guest_port))} "
-        f"SAFEYOLO_PREVIEW_HELPER_B64={shlex.quote(script_b64)} "
-        f"python3 -u -c {shlex.quote(bootstrap)}"
-    )
+        return int(parts[1])
+    except ValueError as exc:
+        raise PreviewError("preview relay returned malformed HTTP status") from exc
 
 
-def start_preview_server(config: PreviewConfig, bridge: PreviewBridge, token: str) -> PreviewHTTPServer:
+def add_preview_response_headers(head: bytes, config: PreviewConfig) -> bytes:
+    prefix = head[:-4]
+    preview_headers = (
+        f"\r\nX-SafeYolo-Agent: {config.agent}"
+        f"\r\nX-SafeYolo-Preview-Port: {config.guest_port}"
+        "\r\n\r\n"
+    ).encode("iso-8859-1")
+    return prefix + preview_headers
+
+
+def build_guest_relay_command(guest_port: int) -> str:
+    return f"exec socat - TCP:127.0.0.1:{shlex.quote(str(guest_port))}"
+
+
+def start_preview_server(
+    config: PreviewConfig,
+    platform,
+    session_token: str,
+    unlock_code: str,
+) -> PreviewHTTPServer:
     validate_guest_port(config.guest_port)
     return PreviewHTTPServer(
         (config.host, config.host_port),
         PreviewRequestHandler,
         config=config,
-        token=token,
-        bridge=bridge,
+        platform=platform,
+        session_token=session_token,
+        unlock_code=unlock_code,
     )
 
 
 def serve_agent_preview(config: PreviewConfig, platform) -> int:
     validate_guest_port(config.guest_port)
-    command = build_guest_helper_command(config.guest_port)
-    proc = platform.popen_in_sandbox(config.agent, command, user="agent")
-    bridge = PreviewBridge(proc)
     try:
-        token = secrets.token_urlsafe(32)
-        server = start_preview_server(config, bridge, token)
+        session_token = secrets.token_urlsafe(32)
+        unlock_code = generate_unlock_code()
+        server = start_preview_server(config, platform, session_token, unlock_code)
     except Exception:
-        bridge.close()
         raise
     host, port = server.server_address
-    url = f"http://{host}:{port}/?{TOKEN_QUERY_PARAM}={urllib.parse.quote(token)}"
+    url = f"http://{host}:{port}/"
 
     write_event(
         "agent.preview_open",
@@ -440,6 +595,8 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
 
     print("Preview open:")
     print(f"  {url}")
+    print("Unlock code:")
+    print(f"  {unlock_code}")
     print("Agent:")
     print(f"  {config.agent} -> 127.0.0.1:{config.guest_port}")
     print("Press Ctrl-C to close.")
@@ -458,7 +615,6 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
         return 0
     finally:
         server.server_close()
-        bridge.close()
         write_event(
             "agent.preview_close",
             kind=EventKind.AGENT,

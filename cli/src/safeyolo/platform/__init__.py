@@ -107,6 +107,15 @@ class AgentPlatform(ABC):
         """Start a non-interactive command in a running sandbox with pipes."""
 
     @abstractmethod
+    def popen_binary_in_sandbox(
+        self,
+        name: str,
+        command: str,
+        user: str = "agent",
+    ) -> subprocess.Popen[bytes]:
+        """Start a non-interactive command in a running sandbox with binary pipes."""
+
+    @abstractmethod
     def is_sandbox_running(self, name: str) -> bool:
         """Check if an agent sandbox is running."""
 

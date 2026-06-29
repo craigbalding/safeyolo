@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 import http.client
-import json
+import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -16,30 +15,41 @@ from safeyolo.commands.agent import agent_app
 from safeyolo.preview import (
     TOKEN_COOKIE,
     TOKEN_HEADER,
-    TOKEN_QUERY_PARAM,
+    UNLOCK_PATH,
     PreviewConfig,
-    build_guest_helper_command,
+    build_guest_relay_command,
     parse_ttl,
     preview_token_from_cookie,
     sanitize_request_headers,
+    serve_agent_preview,
     start_preview_server,
     strip_preview_cookie,
-    strip_query_token,
     validate_guest_port,
 )
 
 
-class FakeBridge:
+class NoRelayPlatform:
     def __init__(self):
         self.calls = []
 
-    def request(self, *, method, path, headers, body):
-        self.calls.append({"method": method, "path": path, "headers": headers, "body": body})
-        return {
-            "status": 200,
-            "headers": [["Content-Type", "text/plain"], ["Connection", "close"]],
-            "body_b64": base64.b64encode(b"hello from preview").decode(),
-        }
+    def popen_binary_in_sandbox(self, name, command, user="agent"):  # noqa: ARG002
+        self.calls.append({"name": name, "command": command, "user": user})
+        raise AssertionError("relay should not start")
+
+
+class LocalRelayPlatform:
+    def __init__(self):
+        self.calls = []
+
+    def popen_binary_in_sandbox(self, name, command, user="agent"):
+        self.calls.append({"name": name, "command": command, "user": user})
+        return subprocess.Popen(
+            ["bash", "-lc", command],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
 
 
 class FakePlatform:
@@ -51,7 +61,12 @@ class FakePlatform:
 
 
 class TinyHandler(BaseHTTPRequestHandler):
+    last_headers = None
+    last_path = ""
+
     def do_GET(self):
+        type(self).last_headers = self.headers
+        type(self).last_path = self.path
         body = b"helper-ok"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -63,21 +78,75 @@ class TinyHandler(BaseHTTPRequestHandler):
         pass
 
 
+class ChunkedHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        self.wfile.write(b"6\r\nhello \r\n5\r\nthere\r\n0\r\n\r\n")
+
+    def log_message(self, format, *args):
+        pass
+
+
 def _serve(server):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return thread
 
 
-def _request(server, path, headers=None):
+def _request(server, path, headers=None, method="GET", body=None):
     conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
     try:
-        conn.request("GET", path, headers=headers or {})
+        conn.request(method, path, body=body, headers=headers or {})
         resp = conn.getresponse()
-        body = resp.read()
-        return resp, body
+        response_body = resp.read()
+        return resp, response_body
     finally:
         conn.close()
+
+
+def _recv_until(sock, marker: bytes) -> bytes:
+    data = b""
+    while marker not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+class FakeWebSocketUpstream:
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.port = self.sock.getsockname()[1]
+        self.handshake = None
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def close(self):
+        self.sock.close()
+
+    def _run(self):
+        conn, _ = self.sock.accept()
+        with conn:
+            self.handshake = _recv_until(conn, b"\r\n\r\n")
+            conn.sendall(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"\r\n"
+            )
+            data = conn.recv(4)
+            if data == b"ping":
+                conn.sendall(b"pong")
 
 
 def test_parse_ttl():
@@ -98,46 +167,36 @@ def test_validate_guest_port_rejects_reserved():
             raise AssertionError("expected ValueError")
 
 
-def test_strip_query_token_preserves_other_params():
-    path, token = strip_query_token("/assets/app.css?x=1&safeyolo_preview_token=secret&y=2")
-    assert path == "/assets/app.css?x=1&y=2"
-    assert token == "secret"
-
-
 def test_cookie_helpers_strip_preview_token():
     cookie = f"session=abc; {TOKEN_COOKIE}=secret; theme=dark"
     assert preview_token_from_cookie(cookie) == "secret"
     assert strip_preview_cookie(cookie) == "session=abc; theme=dark"
 
 
-def test_guest_helper_command_keeps_stdin_for_request_frames():
+def test_guest_relay_command_streams_http_response():
     upstream = HTTPServer(("127.0.0.1", 0), TinyHandler)
     _serve(upstream)
     proc = subprocess.Popen(
-        ["bash", "-lc", build_guest_helper_command(upstream.server_address[1])],
+        ["bash", "-lc", build_guest_relay_command(upstream.server_address[1])],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        bufsize=0,
     )
     try:
         assert proc.stdin is not None
         assert proc.stdout is not None
-        req = {
-            "method": "GET",
-            "path": "/",
-            "headers": {"Host": f"127.0.0.1:{upstream.server_address[1]}"},
-            "body_b64": "",
-        }
-        proc.stdin.write(json.dumps(req) + "\n")
+        proc.stdin.write(
+            f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{upstream.server_address[1]}\r\nConnection: close\r\n\r\n".encode()
+        )
         proc.stdin.flush()
-        line = proc.stdout.readline()
-        resp = json.loads(line)
-        assert resp["status"] == 200
-        assert base64.b64decode(resp["body_b64"]) == b"helper-ok"
-        assert proc.poll() is None
+        proc.stdin.close()
+        response = proc.stdout.read()
+        assert b"200 OK" in response
+        assert b"helper-ok" in response
     finally:
-        proc.terminate()
+        if proc.poll() is None:
+            proc.terminate()
         proc.wait(timeout=5)
         upstream.shutdown()
         upstream.server_close()
@@ -151,53 +210,217 @@ def test_sanitize_request_headers_strips_preview_authority():
         "Connection": "close",
         "Accept": "text/html",
     }
-    out = sanitize_request_headers(headers, 8000)
+    out = dict(sanitize_request_headers(headers, 8000))
     assert out["Host"] == "127.0.0.1:8000"
     assert out["Cookie"] == "a=b"
     assert out["Accept"] == "text/html"
     assert TOKEN_HEADER not in out
-    assert "Connection" not in out
+    assert out["Connection"] == "close"
 
 
-def test_preview_server_requires_token(monkeypatch):
+def test_preview_server_requires_unlock(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
-    bridge = FakeBridge()
-    server = start_preview_server(PreviewConfig(agent="codey", guest_port=8000), bridge, "secret")
+    platform = NoRelayPlatform()
+    server = start_preview_server(PreviewConfig(agent="codey", guest_port=8000), platform, "session", "1234-5678")
     _serve(server)
     try:
         resp, body = _request(server, "/")
-        assert resp.status == 401
-        assert b"preview token required" in body
-        assert bridge.calls == []
+        assert resp.status == 200
+        assert b"Unlock Preview" in body
+        assert platform.calls == []
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_preview_server_forwards_only_bound_session(monkeypatch):
+def test_preview_server_unlocks_with_one_time_code(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
-    bridge = FakeBridge()
-    server = start_preview_server(PreviewConfig(agent="codey", guest_port=8000), bridge, "secret")
+    platform = NoRelayPlatform()
+    server = start_preview_server(PreviewConfig(agent="codey", guest_port=8000), platform, "session", "1234-5678")
     _serve(server)
     try:
-        resp, body = _request(server, f"/?{TOKEN_QUERY_PARAM}=secret")
-        assert resp.status == 200
-        assert body == b"hello from preview"
-        assert resp.getheader("X-SafeYolo-Agent") == "codey"
-        assert resp.getheader("X-SafeYolo-Preview-Port") == "8000"
+        resp, body = _request(
+            server,
+            UNLOCK_PATH,
+            method="POST",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Host": f"127.0.0.1:{server.server_address[1]}",
+                "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+            },
+            body="code=1234-5678",
+        )
+        assert resp.status == 303
+        assert body == b""
+        assert resp.getheader("Location") == "/"
         cookie = resp.getheader("Set-Cookie")
-        assert TOKEN_COOKIE in cookie
+        assert f"{TOKEN_COOKIE}=session" in cookie
+        assert "HttpOnly" in cookie
         assert "SameSite=Strict" in cookie
-        assert bridge.calls[0]["path"] == "/"
-        assert bridge.calls[0]["headers"]["Host"] == "127.0.0.1:8000"
+        assert platform.calls == []
 
-        resp2, body2 = _request(server, "/asset.css", headers={"Cookie": cookie.split(";", 1)[0]})
-        assert resp2.status == 200
-        assert body2 == b"hello from preview"
-        assert bridge.calls[1]["path"] == "/asset.css"
+        resp2, body2 = _request(
+            server,
+            UNLOCK_PATH,
+            method="POST",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Host": f"127.0.0.1:{server.server_address[1]}",
+                "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+            },
+            body="code=1234-5678",
+        )
+        assert resp2.status == 423
+        assert b"locked" in body2
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_preview_server_rejects_bad_unlock_and_locks(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    platform = NoRelayPlatform()
+    server = start_preview_server(PreviewConfig(agent="codey", guest_port=8000), platform, "session", "1234-5678")
+    _serve(server)
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Host": f"127.0.0.1:{server.server_address[1]}",
+        "Origin": f"http://127.0.0.1:{server.server_address[1]}",
+    }
+    try:
+        for _ in range(5):
+            resp, _ = _request(server, UNLOCK_PATH, method="POST", headers=headers, body="code=wrong")
+            assert resp.status == 403
+        resp, body = _request(server, UNLOCK_PATH, method="POST", headers=headers, body="code=1234-5678")
+        assert resp.status == 423
+        assert b"locked" in body
+        assert platform.calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_preview_server_streams_http_and_strips_preview_cookie(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    upstream = HTTPServer(("127.0.0.1", 0), TinyHandler)
+    _serve(upstream)
+    platform = LocalRelayPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=upstream.server_address[1]),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        resp, body = _request(
+            server,
+            "/",
+            headers={"Cookie": f"{TOKEN_COOKIE}=session; app=ok", TOKEN_HEADER: "session"},
+        )
+        assert resp.status == 200
+        assert body == b"helper-ok"
+        assert resp.getheader("X-SafeYolo-Agent") == "codey"
+        assert resp.getheader("X-SafeYolo-Preview-Port") == str(upstream.server_address[1])
+        assert len(platform.calls) == 1
+        assert TinyHandler.last_path == "/"
+        assert TinyHandler.last_headers["Host"] == f"127.0.0.1:{upstream.server_address[1]}"
+        assert TOKEN_COOKIE not in TinyHandler.last_headers["Cookie"]
+        assert TinyHandler.last_headers["Cookie"] == "app=ok"
+        assert TOKEN_HEADER not in TinyHandler.last_headers
+    finally:
+        server.shutdown()
+        server.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_preview_server_preserves_chunked_response(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    upstream = HTTPServer(("127.0.0.1", 0), ChunkedHandler)
+    _serve(upstream)
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=upstream.server_address[1]),
+        LocalRelayPlatform(),
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        resp, body = _request(server, "/", headers={"Cookie": f"{TOKEN_COOKIE}=session"})
+        assert resp.status == 200
+        assert resp.getheader("Transfer-Encoding") == "chunked"
+        assert body == b"hello there"
+    finally:
+        server.shutdown()
+        server.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_preview_control_paths_are_not_forwarded(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    platform = NoRelayPlatform()
+    server = start_preview_server(PreviewConfig(agent="codey", guest_port=8000), platform, "session", "1234-5678")
+    _serve(server)
+    try:
+        resp, body = _request(
+            server,
+            "/_safeyolo_preview/not-real",
+            headers={"Cookie": f"{TOKEN_COOKIE}=session"},
+        )
+        assert resp.status == 404
+        assert b"not found" in body
+        assert platform.calls == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_preview_server_tunnels_websocket_upgrade(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    upstream = FakeWebSocketUpstream()
+    upstream.start()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=upstream.port),
+        LocalRelayPlatform(),
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+    try:
+        sock.sendall(
+            (
+                "GET /ws HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{server.server_address[1]}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                f"Cookie: {TOKEN_COOKIE}=session; app=ok\r\n"
+                f"{TOKEN_HEADER}: session\r\n"
+                "\r\n"
+            ).encode()
+        )
+        response = _recv_until(sock, b"\r\n\r\n")
+        assert b"101 Switching Protocols" in response
+        assert b"X-SafeYolo-Agent: codey" in response
+        sock.sendall(b"ping")
+        assert sock.recv(4) == b"pong"
+    finally:
+        sock.close()
+        server.shutdown()
+        server.server_close()
+        upstream.close()
+
+    upstream.thread.join(timeout=5)
+    assert upstream.handshake is not None
+    assert b"GET /ws HTTP/1.1" in upstream.handshake
+    assert f"Host: 127.0.0.1:{upstream.port}".encode() in upstream.handshake
+    assert TOKEN_COOKIE.encode() not in upstream.handshake
+    assert TOKEN_HEADER.encode() not in upstream.handshake
+    assert b"Cookie: app=ok" in upstream.handshake
 
 
 def test_preview_command_builds_single_agent_config():
@@ -228,3 +451,28 @@ def test_preview_command_requires_running_agent():
 
     assert result.exit_code == 1
     assert "is not running" in result.output
+
+
+def test_serve_agent_preview_prints_clean_url(monkeypatch, capsys):
+    class FakeServePlatform:
+        pass
+
+    class FakeServer:
+        server_address = ("127.0.0.1", 54321)
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: "1234-5678")
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", lambda *args: FakeServer())
+
+    assert serve_agent_preview(PreviewConfig(agent="codey", guest_port=8000), FakeServePlatform()) == 0
+
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:54321/" in out
+    assert "safeyolo_preview_token" not in out
+    assert "1234-5678" in out
