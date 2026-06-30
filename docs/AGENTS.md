@@ -38,8 +38,7 @@ toolchain.
 
 ## 2. Installing tools
 
-Use mise for language runtimes and project-specific CLIs. `apt` / `apt-get` /
-`yum` are intercepted and redirect to mise:
+Use mise for language runtimes and project-specific CLIs:
 
 ```sh
 mise install go@latest
@@ -47,11 +46,23 @@ mise install python@3.12
 mise use -g npm:typescript
 ```
 
+On Alpine rootfs images, prefer Alpine's native musl-linked packages for
+Node instead of `mise use -g node@...`:
+
+```sh
+sudo apk add nodejs npm
+npm install --global --prefix ~/.local @openai/codex
+```
+
 Because `MISE_DATA_DIR` is `$HOME/.mise` (persistent), anything you install
 via `mise use -g` survives restart.
 
-What won't work: `apt-get`, `npm install -g`, `pip install --user`. These
-either fail outright (apt intercept) or put state in paths that don't persist.
+Use the OS package manager for native/system dependencies only: headers,
+libraries, daemons, fonts, browsers, and distro utilities. Prefer mise for
+language runtimes and CLIs so agents avoid stale distro packages and keep their
+tooling under the persistent home directory. System-prefix `npm install -g` and
+`pip install --user` are still poor defaults because they can put state outside
+SafeYolo's persistent tool paths.
 
 ## 3. Agent API
 

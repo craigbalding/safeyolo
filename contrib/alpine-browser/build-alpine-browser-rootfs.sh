@@ -73,11 +73,12 @@ echo "=== Installing Alpine packages ==="
 #   procps-ng      -- startvnc uses pkill/pgrep (Alpine busybox lacks them)
 #   util-linux-misc -- provides setsid, used by startvnc to detach x11vnc
 #   mise          -- Alpine's native musl-linked package
+#   nodejs/npm    -- native musl-linked Node toolchain for Codex/web tooling
 #   chromium      -- headful browser shown through noVNC
 #   nss-tools     -- certutil, used by the chrome wrapper to trust SafeYolo CA
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo mise \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo mise nodejs npm \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
     xvfb x11vnc novnc websockify font-noto procps-ng util-linux-misc \

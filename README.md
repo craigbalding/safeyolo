@@ -177,13 +177,13 @@ safeyolo agent run work       # Each agent gets its own isolated sandbox
 
 ## Host scripts
 
-`safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-command` file the guest execs as the default foreground command.
+`safeyolo agent add` takes an optional `--host-script PATH`. The script runs on the host, as you, before the sandbox boots. It populates the agent's persistent home (`~/.safeyolo/agents/<name>/home/`) with whatever the agent needs — credentials, settings, user extensions — and writes a `.safeyolo-command` file the guest execs as the default foreground command. For an existing agent, reapply or switch the setup with `safeyolo agent run <name> --host-script PATH`.
 
 The `contrib/` directory has ready-made host scripts:
 
 | Script | Purpose |
 |--------|---------|
-| `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, installs claude-code via mise on first boot, launches nag-free |
+| `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, installs claude-code on first boot, launches nag-free |
 | `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, installs codex via mise on first boot, launches with sandboxing disabled inside the guest (`-s danger-full-access -a never`) while SafeYolo remains the outer boundary |
 | `contrib/mise-shell-host-setup.sh` | BYOA — boots into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 

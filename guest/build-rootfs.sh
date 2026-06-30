@@ -5,7 +5,7 @@
 # Pulls docker://debian:trixie via skopeo, unpacks with umoci, apt-installs
 # our baseline toolkit inside a chroot, runs rootfs-customize-hook.sh to
 # stamp SafeYolo-specific bits (mise, gh, init stub, sshd config, agent
-# user, package-manager intercepts), then writes two artifacts:
+# user, package-manager proxy/cache support), then writes two artifacts:
 #
 #   out/rootfs-base.ext4    — for macOS VZ (mounts this as /dev/vda read-only)
 #   out/rootfs-tree/        — for Linux gVisor (used as OCI root.path;

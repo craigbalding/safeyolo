@@ -5,14 +5,14 @@
 # <name> <folder> --host-script contrib/claude-host-setup.sh` is
 # invoked. Stages host auth + user extensions into the agent's
 # persistent home, and writes the foreground command that installs claude-code
-# (via mise) on first boot and runs it nag-free thereafter.
+# on first boot and runs it nag-free thereafter.
 #
 # See contrib/HOST_SCRIPT_GUIDE.md for the contract.
 
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_NAME:?must be run via 'safeyolo agent add --host-script'}"
-: "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add --host-script'}"
+: "${SAFEYOLO_AGENT_NAME:?must be run via 'safeyolo agent add/run --host-script'}"
+: "${SAFEYOLO_AGENT_HOME:?must be run via 'safeyolo agent add/run --host-script'}"
 
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 mkdir -p "$AGENT_HOME/.claude"
@@ -141,21 +141,33 @@ if [ -f "$GUIDE_SRC" ]; then
 fi
 
 # --- 5. Write the foreground command -----------------------------------------
-# Installs claude-code via mise on first run (idempotent: command -v
-# short-circuits on subsequent runs, since MISE_DATA_DIR lives in the
-# persistent home). Appends the SafeYolo agent guide as system context so
-# Claude knows about the agent API, block responses, security boundaries,
-# etc. Any args after `safeyolo agent run <name> -- ...` come through as "$@".
+# Installs claude-code on first run (idempotent: command -v short-circuits on
+# subsequent runs). On Alpine, Node comes from apk because mise may build Node
+# from source against musl; elsewhere we use mise. Appends the SafeYolo agent
+# guide as system context so Claude knows about the agent API, block responses,
+# security boundaries, etc. Any args after `safeyolo agent run <name> -- ...`
+# come through as "$@".
 
 cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 set -e
 
-# First-boot install. mise stores installs under $HOME/.mise which is
-# persistent, so `command -v claude` succeeds from the second boot on.
+export PATH="/home/agent/.local/bin:${PATH}"
+: "${SAFEYOLO_CLAUDE_NODE_SPEC:=node@22}"
+: "${SAFEYOLO_CLAUDE_NPM_SPEC:=npm:@anthropic-ai/claude-code@latest}"
+: "${SAFEYOLO_CLAUDE_NPM_PACKAGE:=@anthropic-ai/claude-code@latest}"
+
+# First-boot install. Tool installs live under persistent /home/agent.
 if ! command -v claude >/dev/null 2>&1; then
-    mise use -g node@22 >&2
-    mise use -g npm:@anthropic-ai/claude-code@latest >&2
+    if [ -f /etc/alpine-release ]; then
+        if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+            sudo apk add nodejs npm >&2
+        fi
+        npm install --global --prefix /home/agent/.local "$SAFEYOLO_CLAUDE_NPM_PACKAGE" >&2
+    else
+        mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2
+        mise use -g "$SAFEYOLO_CLAUDE_NPM_SPEC" >&2
+    fi
 fi
 
 # Inject SafeYolo agent guide as system context (non-fatal if missing).

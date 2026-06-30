@@ -104,6 +104,47 @@ def _load_agent_metadata(name: str) -> dict:
     return _store_load_agent(name)
 
 
+def _resolve_host_script_path(host_script: str | None) -> Path | None:
+    if not host_script:
+        return None
+    host_script_path = Path(host_script).expanduser().resolve()
+    if not host_script_path.is_file():
+        console.print(f"[red]Host script not found: {host_script_path}[/red]")
+        raise typer.Exit(1)
+    if not os.access(host_script_path, os.X_OK):
+        console.print(f"[red]Host script is not executable: {host_script_path}[/red]")
+        console.print(f"  Fix: chmod +x {host_script_path}")
+        raise typer.Exit(1)
+    return host_script_path
+
+
+def _run_host_script_for_agent(
+    *,
+    name: str,
+    host_script_path: Path,
+    folder_str: str,
+) -> None:
+    from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+    ensure_agent_persistent_dirs(name)
+    agent_home = get_agent_home_dir(name)
+    env = {
+        **os.environ,
+        "SAFEYOLO_AGENT_NAME": name,
+        "SAFEYOLO_AGENT_HOME": str(agent_home),
+        "SAFEYOLO_AGENT_FOLDER": folder_str,
+    }
+    console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+    try:
+        result = subprocess.run([str(host_script_path)], env=env, check=False)
+    except OSError as err:
+        console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
+        raise typer.Exit(1)
+    if result.returncode != 0:
+        console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+        raise typer.Exit(result.returncode)
+
+
 def _capture_snapshot_blocking(
     *,
     name: str,
@@ -872,16 +913,7 @@ def add(
     _check_project_ownership(folder_path, dangerously_allow_unowned)
     folder_str = str(folder_path)
 
-    host_script_path: Path | None = None
-    if host_script:
-        host_script_path = Path(host_script).expanduser().resolve()
-        if not host_script_path.is_file():
-            console.print(f"[red]Host script not found: {host_script_path}[/red]")
-            raise typer.Exit(1)
-        if not os.access(host_script_path, os.X_OK):
-            console.print(f"[red]Host script is not executable: {host_script_path}[/red]")
-            console.print(f"  Fix: chmod +x {host_script_path}")
-            raise typer.Exit(1)
+    host_script_path = _resolve_host_script_path(host_script)
 
     rootfs_script_path: Path | None = None
     if rootfs_script:
@@ -969,30 +1001,18 @@ def add(
     # so existing agents get backfilled, but creating it on `add`
     # covers the --no-run path and is required before running the
     # host script (which writes into it).
-    from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+    from ..vm import ensure_agent_persistent_dirs
     ensure_agent_persistent_dirs(name)
 
     # Run the host script (if provided). Host-side, as the invoking
     # user. It sees SAFEYOLO_AGENT_NAME, SAFEYOLO_AGENT_HOME (the
     # persistent bind-mount source for /home/agent), SAFEYOLO_AGENT_FOLDER.
     if host_script_path is not None:
-        agent_home = get_agent_home_dir(name)
-        env = {
-            **os.environ,
-            "SAFEYOLO_AGENT_NAME": name,
-            "SAFEYOLO_AGENT_HOME": str(agent_home),
-            "SAFEYOLO_AGENT_FOLDER": folder_str,
-        }
-        console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
         try:
-            result = subprocess.run([str(host_script_path)], env=env, check=False)
-        except OSError as err:
-            console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
-            raise typer.Exit(1)
-        if result.returncode != 0:
-            console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+            _run_host_script_for_agent(name=name, host_script_path=host_script_path, folder_str=folder_str)
+        except typer.Exit as exc:
             console.print(f"  Agent '{name}' config persisted; re-run with --force after fixing the script.")
-            raise typer.Exit(result.returncode)
+            raise exc
 
     # Validate and normalize mount specs
     parsed_mounts = [_parse_mount(m) for m in mount]
@@ -1169,6 +1189,11 @@ def run(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
     folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
+    host_script: str = typer.Option(
+        None,
+        "--host-script",
+        help="Run/reapply a host setup script before booting this existing agent",
+    ),
     yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
     detach: bool = typer.Option(False, "--detach", "-d", help="Boot VM in background and return (use 'agent shell' to connect)"),
@@ -1218,6 +1243,9 @@ def run(
 
     Persistent mounts (from 'agent add --mount' or 'agent config --add-mount')
     are always included. Use --mount/-m here for additional one-off mounts.
+    Use --host-script to apply or refresh a host setup script on an existing
+    agent before boot; the script can update /home/agent and
+    .safeyolo-command.
 
     Examples:
 
@@ -1225,6 +1253,7 @@ def run(
         safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --no-yolo
         safeyolo agent run myproject --detach
+        safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
         safeyolo agent run myproject --mount ~/data:/data:ro
         safeyolo agent run myproject --port 6080:6080
         safeyolo agent run myproject -- --continue
@@ -1238,6 +1267,31 @@ def run(
 
     # Validate transient port specs
     parsed_ports = [_parse_port(p) for p in port]
+
+    host_script_path = _resolve_host_script_path(host_script)
+    if host_script_path is not None:
+        metadata = _load_agent_metadata(name)
+        if not metadata:
+            console.print(f"[red]Agent '{name}' is not configured.[/red]")
+            console.print("Create it first with: [bold]safeyolo agent add[/bold]")
+            raise typer.Exit(1)
+        folder_for_script = folder or metadata.get("folder")
+        if not folder_for_script:
+            console.print(f"[red]Agent '{name}' has no configured folder.[/red]")
+            raise typer.Exit(1)
+        folder_path = Path(folder_for_script).expanduser().resolve()
+        if not folder_path.is_dir():
+            console.print(f"[red]Folder not found: {folder_path}[/red]")
+            raise typer.Exit(1)
+        _check_project_ownership(folder_path, dangerously_allow_unowned)
+        _run_host_script_for_agent(
+            name=name,
+            host_script_path=host_script_path,
+            folder_str=str(folder_path),
+        )
+        updated_metadata = dict(metadata)
+        updated_metadata["host_script"] = str(host_script_path)
+        save_agent(name, updated_metadata)
 
     exit_code = _run_agent(
         name,

@@ -769,6 +769,45 @@ class TestRunAgent:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
+    def test_run_host_script_reapplies_existing_agent_setup(self, runner, config_dir, tmp_path):
+        """agent run --host-script runs setup against the persistent home before boot."""
+        project = tmp_path / "project"
+        project.mkdir()
+        script = tmp_path / "setup.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s\\n' \"$SAFEYOLO_AGENT_NAME\" > \"$SAFEYOLO_AGENT_HOME/name.txt\"\n"
+            "printf '%s\\n' \"$SAFEYOLO_AGENT_FOLDER\" > \"$SAFEYOLO_AGENT_HOME/folder.txt\"\n"
+            "printf '%s\\n' '#!/usr/bin/env bash' 'exec echo command-ok' > \"$SAFEYOLO_AGENT_HOME/.safeyolo-command\"\n"
+            "chmod +x \"$SAFEYOLO_AGENT_HOME/.safeyolo-command\"\n"
+        )
+        script.chmod(0o755)
+        (config_dir / "policy.toml").write_text(
+            'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n\n'
+            f'[agents.web]\nfolder = "{project}"\n'
+        )
+
+        with patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run:
+            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
+
+        assert result.exit_code == 0
+        home = config_dir / "agents" / "web" / "home"
+        assert (home / "name.txt").read_text().strip() == "web"
+        assert (home / "folder.txt").read_text().strip() == str(project.resolve())
+        assert (home / ".safeyolo-command").exists()
+        assert f'host_script = "{script.resolve()}"' in (config_dir / "policy.toml").read_text()
+        mock_run.assert_called_once()
+
+    def test_run_host_script_missing_exits_one(self, runner, config_dir, tmp_path):
+        """agent run --host-script validates the script before booting."""
+        with patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run:
+            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(tmp_path / "missing.sh")])
+
+        assert result.exit_code == 1
+        assert "host script not found" in result.output.lower()
+        mock_run.assert_not_called()
+
     def test_already_running_exits_one(self, runner, config_dir, tmp_path):
         """If sandbox is already running, exits 1 with helpful message."""
         agent_dir = config_dir / "agents" / "test-agent"
@@ -1450,7 +1489,7 @@ class TestParseMount:
 
     def test_host_path_not_found_exits(self, tmp_path):
         """Non-existent host path raises typer.Exit."""
-        from click.exceptions import Exit
+        from typer import Exit
 
         from safeyolo.commands.agent import _parse_mount
 
@@ -1459,7 +1498,7 @@ class TestParseMount:
 
     def test_container_path_must_be_absolute(self, tmp_path):
         """Container path must start with /."""
-        from click.exceptions import Exit
+        from typer import Exit
 
         from safeyolo.commands.agent import _parse_mount
 
@@ -1492,7 +1531,7 @@ class TestParsePort:
 
     def test_non_localhost_bind_rejected(self):
         """Non-localhost bind address is rejected."""
-        from click.exceptions import Exit
+        from typer import Exit
 
         from safeyolo.commands.agent import _parse_port
 
@@ -1501,7 +1540,7 @@ class TestParsePort:
 
     def test_reserved_container_port_rejected(self):
         """Container ports 8080 and 9090 (used by SafeYolo) are rejected."""
-        from click.exceptions import Exit
+        from typer import Exit
 
         from safeyolo.commands.agent import _parse_port
 
@@ -1512,7 +1551,7 @@ class TestParsePort:
 
     def test_invalid_port_number_rejected(self):
         """Non-integer or out-of-range ports are rejected."""
-        from click.exceptions import Exit
+        from typer import Exit
 
         from safeyolo.commands.agent import _parse_port
 
