@@ -7,7 +7,7 @@ Command-line interface for managing the SafeYolo security proxy.
 ```bash
 # From source (PyPI package coming soon)
 git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo/cli && uv tool install -e .
+cd safeyolo && uv tool install -e .
 ```
 
 ## Quick Start
@@ -393,7 +393,7 @@ When a credential is blocked:
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12 or 3.13
 - Docker
 
 ## Environment Variables

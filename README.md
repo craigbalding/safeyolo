@@ -19,8 +19,8 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 ### Prerequisites
 
 - macOS with Apple Silicon (M1+) **or** Linux (x86_64/arm64)
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses for the CLI's editable install. Grab it with your distro's package manager, or follow the upstream install instructions; either works.
+- Python 3.12 or 3.13
+- [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses for the editable install. Grab it with your distro's package manager, or follow the upstream install instructions; either works.
 - macOS only: [Lima](https://lima-vm.io/) for the guest image build. Any of `brew install lima`, `sudo port install lima`, or `mise use -g lima` is fine.
 - Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime. gVisor is a Google-maintained project (gvisor.dev is operated by Google); install command below.
 
@@ -38,19 +38,16 @@ cd safeyolo
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
 
-# Install the `safeyolo` CLI onto your PATH (survives shell restarts).
+# Install SafeYolo onto your PATH (survives shell restarts).
 # Requires `uv` (https://docs.astral.sh/uv/).
 #
-# --editable is required: the CLI looks up the sibling addons/ and pdp/
-# directories at runtime via repo-layout paths. A non-editable install
-# copies the package into an isolated venv under
-# ~/.local/share/uv/tools/safeyolo/... where those siblings don't exist,
-# and the proxy refuses to start. If you need a non-editable install,
-# point SAFEYOLO_ADDONS_DIR and SAFEYOLO_PDP_DIR at your checkout.
-uv tool install --editable ./cli
+# --editable keeps the checkout wired into the installed command while
+# installing the proxy runtime dependencies, including mitmproxy, into the
+# same tool environment.
+uv tool install --editable .
 ```
 
-`uv tool install` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later: `uv tool install --reinstall --editable ./cli`.
+`uv tool install` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later: `uv tool install --reinstall --editable .`.
 
 **Then, one platform-specific step:**
 
@@ -68,13 +65,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gviso
 sudo apt-get update && sudo apt-get install -y runsc
 ```
 
-If the `uv tool install` above didn't end up with `mitmproxy` available on your `PATH` (Python 3.12 resolution can occasionally drop it, especially on distros where system Python pinning collides with uv's resolver), fall back to pipx with the addon dependencies injected:
+If the `uv tool install` above didn't end up with `mitmdump` available in SafeYolo's tool environment, fall back to pipx with the addon dependencies injected:
 
 ```bash
 ./scripts/install-mitmproxy-pipx.sh
 ```
 
-This script pipx-installs `mitmproxy` and injects the exact set of addon deps SafeYolo needs into that environment; no workspace-wide sync required.
+This script pipx-installs `mitmproxy` and injects the exact set of addon deps SafeYolo needs into that environment.
 
 ### Run
 
@@ -252,7 +249,7 @@ See [SECURITY.md](SECURITY.md) for the full security model, trust boundaries, an
 ## Requirements
 
 - macOS Apple Silicon (M1+) **or** Linux (x86_64/arm64)
-- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- Python 3.12 or 3.13 with [uv](https://docs.astral.sh/uv/)
 - macOS only: Lima (build-time, for the guest image) — install via `brew install lima`, `sudo port install lima`, or `mise use -g lima`
 - Linux only: gVisor `runsc` (VM runtime) — see the Build section above for the install command; plus `newuidmap`/`newgidmap` (from `uidmap` on Debian/Ubuntu) and a subuid/subgid range for the operator. `safeyolo setup` verifies all of this.
 

@@ -118,7 +118,7 @@ install_safeyolo_guest_common() {
             "$rootfs/etc/ssh/sshd_config"
         sed -i "s/^#*PasswordAuthentication.*/PasswordAuthentication no/" \
             "$rootfs/etc/ssh/sshd_config"
-        chroot "$rootfs" ssh-keygen -A >/dev/null 2>&1 || true
+        rm -f "$rootfs"/etc/ssh/ssh_host_*_key "$rootfs"/etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
     fi
 
     # Keep sbin directories visible in both login and non-login shells so

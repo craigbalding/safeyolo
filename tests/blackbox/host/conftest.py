@@ -12,6 +12,7 @@ proxy_client works from the host because credential_guard evaluates
 based on request content (headers, host), not source IP.
 """
 
+import json
 import os
 import sys
 import time
@@ -66,6 +67,31 @@ if not ADMIN_TOKEN and _ADMIN_TOKEN_PATH.exists():
 
 # Mitmproxy CA cert for TLS verification (ground truth, not verify=False)
 _CA_CERT = _CONFIG_DIR / "certs" / "mitmproxy-ca-cert.pem"
+
+
+def _agent_map_mode_specs() -> list[str]:
+    """Return UDS mode specs for agents already registered in agent_map.json."""
+    map_path = _CONFIG_DIR / "data" / "agent_map.json"
+    if not map_path.exists():
+        return []
+    try:
+        data = json.loads(map_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    specs: list[str] = []
+    sockets_dir = _CONFIG_DIR / "data" / "sockets"
+    for name, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        sock = entry.get("socket")
+        if not sock:
+            ip = entry.get("ip")
+            if not ip:
+                continue
+            sock = str(sockets_dir / f"{ip}_{name}.sock")
+        specs.append(f"unix:{sock}")
+    return specs
 
 # ---------------------------------------------------------------------------
 # Test credentials — MUST match production detection patterns
@@ -130,11 +156,15 @@ def proxy_uds_path(admin_client, wait_for_safeyolo):
     uds_path = sockets_dir / f"{_TEST_AGENT_IP}_{_TEST_AGENT_NAME}.sock"
     spec = f"unix:{uds_path}"
 
-    # The blackbox test instance starts with agent_map.json empty
-    # (run-tests.sh clears $CONFIG_DIR/agents/ before start), so the
-    # proxy's mode list is [] at this point. Replacing it outright is
-    # simpler — and safer — than trying to merge.
-    resp = admin_client.put("/admin/proxy/mode", json={"modes": [spec]})
+    # When proxy/ and isolation/ run in the same blackbox invocation, the
+    # isolation VM is already booted here. Preserve its per-agent listener
+    # while adding the host-side test listener, otherwise teardown would drop
+    # the real agent socket and every in-VM proxy request would fail with
+    # curl status 000.
+    original_specs = _agent_map_mode_specs()
+    modes = list(dict.fromkeys([*original_specs, spec]))
+
+    resp = admin_client.put("/admin/proxy/mode", json={"modes": modes})
     assert resp.status_code == 200, f"PUT /admin/proxy/mode failed: {resp.text}"
 
     # Wait for the Servers addon to actually bind the socket. The PUT
@@ -154,7 +184,7 @@ def proxy_uds_path(admin_client, wait_for_safeyolo):
 
     # Best-effort teardown — `run-tests.sh` also does `safeyolo stop`.
     try:
-        admin_client.put("/admin/proxy/mode", json={"modes": []})
+        admin_client.put("/admin/proxy/mode", json={"modes": original_specs})
     except httpx.RequestError:
         pass
 

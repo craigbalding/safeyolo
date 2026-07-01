@@ -100,6 +100,7 @@ if [ -n "$_agent_name" ] \
    && ! grep -qE "^[[:space:]]*[^#]*[[:space:]]${_agent_name}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
     printf '%s %s\n' "${AGENT_IP:-127.0.1.1}" "$_agent_name" >> /etc/hosts
 fi
+
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns
     # (UP, IP assigned, default route) -- bringing it up here would just
@@ -214,8 +215,17 @@ if [ -f /safeyolo/authorized_keys ]; then
     chmod 600 /home/agent/.ssh/authorized_keys
 fi
 
-if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
-    ssh-keygen -A >/dev/null 2>&1
+if command -v ssh-keygen >/dev/null 2>&1 \
+   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
+    # Generate SSH host keys inside the guest overlay instead of baking
+    # reusable private keys into the base rootfs image or repo-visible
+    # rootfs-tree build output. The pre-delete repairs old base images that
+    # already contain generated host keys: overlayfs records the deletion and
+    # the regenerated keys are agent-local from then on.
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
+    if ssh-keygen -A >/dev/null 2>&1; then
+        touch /etc/ssh/.safeyolo-host-keys-generated 2>/dev/null || true
+    fi
 fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above

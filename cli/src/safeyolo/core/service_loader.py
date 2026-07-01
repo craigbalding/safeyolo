@@ -541,7 +541,7 @@ class ServiceRegistry:
         self._builtin_dir = builtin_dir or Path("/app/services")
         self._lock = threading.RLock()
         self._services: dict[str, ServiceDefinition] = {}
-        self._last_mtimes: dict[str, float] = {}
+        self._last_file_state: dict[str, tuple[int, int]] = {}
         self._watcher_thread: threading.Thread | None = None
         self._watcher_stop = threading.Event()
 
@@ -549,7 +549,7 @@ class ServiceRegistry:
         """Load all service definitions from user and builtin directories."""
         with self._lock:
             self._services.clear()
-            self._last_mtimes.clear()
+            self._last_file_state.clear()
 
             # Load builtin first, then user (user overrides builtin)
             for directory in [self._builtin_dir, self._user_dir]:
@@ -562,7 +562,8 @@ class ServiceRegistry:
                             continue
                         service = ServiceDefinition.from_dict(raw)
                         self._services[service.name] = service
-                        self._last_mtimes[str(yaml_file)] = yaml_file.stat().st_mtime
+                        stat = yaml_file.stat()
+                        self._last_file_state[str(yaml_file)] = (stat.st_mtime_ns, stat.st_size)
                         log.info("Loaded service: %s", sanitize_for_log(service.name))
                     except (OSError, yaml.YAMLError, KeyError, TypeError, ValueError) as e:
                         log.warning("Skipping %s: %s", yaml_file.name, sanitize_for_log(str(e)))
@@ -588,14 +589,15 @@ class ServiceRegistry:
 
     def _has_changes(self) -> bool:
         """Check if any service file has been added, removed, or modified."""
-        current_files: dict[str, float] = {}
+        current_files: dict[str, tuple[int, int]] = {}
         for directory in [self._builtin_dir, self._user_dir]:
             if not directory.exists():
                 continue
             for yaml_file in directory.glob("*.yaml"):
-                current_files[str(yaml_file)] = yaml_file.stat().st_mtime
+                stat = yaml_file.stat()
+                current_files[str(yaml_file)] = (stat.st_mtime_ns, stat.st_size)
 
-        return current_files != self._last_mtimes
+        return current_files != self._last_file_state
 
     def start_watcher(self) -> None:
         """Start background file watcher for service definitions."""

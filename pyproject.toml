@@ -6,23 +6,42 @@
 #   uv sync --group dev  - Install with dev deps
 #   uv run pytest        - Run tests
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "safeyolo-proxy"
+name = "safeyolo"
 version = "0.1.0"
-description = "Egress control proxy for AI coding agents"
+description = "Security proxy for AI coding agents"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 authors = [
     { name = "Craig Balding", email = "craig@threatspotting.com" }
 ]
+keywords = ["security", "proxy", "ai", "llm", "mitmproxy", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
 
-# Runtime dependencies (from requirements/base.in)
 dependencies = [
     "mitmproxy>=12.2.2",
     "httpx>=0.25.0",
     "tenacity>=8.2.0",
     "pyyaml>=6.0",
+    "typer>=0.9.0",
+    "rich>=13.0",
+    "jinja2>=3.0",
     "yarl>=1.9.0",
     "confusable-homoglyphs>=3.3.0",
     "pydantic>=2.10.0,<2.12",
@@ -30,8 +49,16 @@ dependencies = [
     "tomlkit>=0.12.0",
 ]
 
+[project.scripts]
+safeyolo = "safeyolo.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/craigbalding/safeyolo"
+Documentation = "https://github.com/craigbalding/safeyolo#readme"
+Repository = "https://github.com/craigbalding/safeyolo"
+Issues = "https://github.com/craigbalding/safeyolo/issues"
+
 [dependency-groups]
-# Development and testing (from requirements/dev.in)
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.21.0",
@@ -65,14 +92,36 @@ override-dependencies = [
 
 [tool.uv.workspace]
 members = [
-    "cli",
     # Note: .clusterfuzzlite is NOT a workspace member.
     # It has its own lockfile for OSS-Fuzz/ClusterFuzzLite compatibility.
     "tests/blackbox/sinkhole",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["cli/src/safeyolo"]
+
+[tool.hatch.build.targets.wheel.sources]
+"cli/src" = ""
+
+[tool.hatch.build]
+include = [
+    "cli/src/safeyolo/**/*.py",
+    "cli/src/safeyolo/*.sh",
+    "cli/src/safeyolo/templates/**/*.j2",
+    "cli/src/safeyolo/templates/**/*.md",
+    "cli/src/safeyolo/templates/**/*.yaml",
+    "cli/src/safeyolo/templates/**/*.toml",
+    "cli/src/safeyolo/templates/**/.env.example",
+    "cli/src/safeyolo/templates/*.sudoers",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# uds-networking/ holds standalone proof-of-concept runners (sys.exit at
+# module top, not pytest tests). They're invoked directly by the VPS
+# smoke-test scripts. Excluded from collection so pytest doesn't import
+# them and trigger their top-level exits.
+norecursedirs = ["uds-networking", "__pycache__"]
 
 # Ruff config is in ruff.toml
