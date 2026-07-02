@@ -214,7 +214,7 @@ class CredentialGuard(SecurityAddon):
     name = "credential-guard"
 
     def __init__(self):
-        # Custom stats - don't call super().__init__()
+        super().__init__()
         self.rules: list[CredentialRule] = []
         self.config: dict = {}
         self.safe_headers_config: dict = {}

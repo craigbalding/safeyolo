@@ -109,6 +109,7 @@ def _load_hash_cache() -> dict:
         if isinstance(data, dict):
             return data
     except (OSError, json.JSONDecodeError):
+        # Missing, unreadable, or corrupt cache files are safely regenerated.
         pass
     return {}
 

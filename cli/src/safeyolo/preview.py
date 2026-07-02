@@ -320,11 +320,13 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
                     proc.stdin.write(data)
                     proc.stdin.flush()
             except OSError:
+                # The client or relay process closed the upgraded stream.
                 pass
             finally:
                 try:
                     proc.stdin.close()
                 except OSError:
+                    # stdin may already be closed by the relay process.
                     pass
 
         thread = threading.Thread(target=client_to_guest, daemon=True)

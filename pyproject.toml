@@ -45,7 +45,7 @@ dependencies = [
     "yarl>=1.9.0",
     "confusable-homoglyphs>=3.3.0",
     "pydantic>=2.10.0,<2.12",
-    "cryptography>=46.0.7",
+    "cryptography>=48.0.1",
     "tomlkit>=0.12.0",
 ]
 
@@ -82,8 +82,10 @@ override-dependencies = [
     "flask>=3.1.3",
     # GHSA-x3rm-644c-6f6g / GHSA-w4q6-m4r4-cjx7: Pygments ReDoS in GUID matching
     "pygments>=2.20.0",
-    # GHSA-rw3j-38gj-7hm4: cryptography incomplete DNS name constraint enforcement
-    "cryptography>=46.0.6",
+    # GHSA-537c-gmf6-5ccf: cryptography wheels included vulnerable OpenSSL
+    "cryptography>=48.0.1",
+    # GHSA-6v7p-g79w-8964: msgpack Unpacker reuse can trigger out-of-bounds read/crash
+    "msgpack>=1.2.1",
     # GHSA-8gmr-7h4m-f8gg / GHSA-9qmg-5rj4-rhxp: pyOpenSSL DTLS + TLS bypass
     "pyopenssl>=26.0.0",
     # GHSA-7grc-rmrw-2v4j / GHSA-vf7j-cmrj-x63g: Tornado multipart DoS + cookie validation

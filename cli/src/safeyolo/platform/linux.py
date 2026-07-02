@@ -725,6 +725,7 @@ class LinuxPlatform(AgentPlatform):
             try:
                 is_running = json.loads(state_result.stdout).get("status") == "running"
             except json.JSONDecodeError:
+                # Treat malformed runtime state as not running and continue cleanup.
                 pass
 
         if is_running:

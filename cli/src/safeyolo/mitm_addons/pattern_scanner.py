@@ -53,6 +53,7 @@ class PatternScanner(SecurityAddon):
     name = "pattern-scanner"
 
     def __init__(self):
+        super().__init__()
         self.rules: list[PatternRule] = []
         self.scans_total = 0
         self.matches_total = 0

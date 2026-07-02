@@ -541,6 +541,7 @@ class PlumbService:
                 try:
                     await asyncio.wait_for(cond.wait(), timeout=wait)
                 except TimeoutError:
+                    # Long-poll timeout is a normal empty-read outcome.
                     pass
                 return await snapshot()   # 200 [] on timeout
             finally:
