@@ -15,13 +15,14 @@ struct RunConfig {
     var shares: [(hostPath: String, tag: String, readOnly: Bool)] = []
     var console: Bool = true
     var noTerminal: Bool = false     // detach mode: skip vsock terminal, keep VM alive
+    var serialLogPath: String = ""   // optional per-agent serial console log path
     var proxySocketPath: String = "" // host UDS the vsock proxy relay connects to (per-agent bridge socket)
     var shellSocketPath: String = "" // host UDS the shell bridge listens on; connects to guest vsock:2220
     var snapshotOnSignal: String = "" // path to write snapshot to on SIGUSR1
     var restoreFrom: String = ""      // path to snapshot file to restore from
 }
 
-let helperVersion = "0.3.0"
+let helperVersion = "0.3.1"
 
 func printUsage() {
     let usage = """
@@ -40,6 +41,7 @@ func printUsage() {
       --memory N          Memory in MB (default: 2048)
       --cmdline STRING    Kernel command line (default: console=hvc0 root=/dev/vda rw quiet)
       --share HOST:TAG:MODE  VirtioFS share (MODE = ro or rw, repeatable)
+      --serial-log PATH   Path for the VZ serial console log.
       --proxy-socket PATH Host UDS the in-VM proxy forwarder reaches via vsock.
                           Enables vsock→UDS relay; bridges each flow to
                           mitmproxy with agent-attributed upstream source.
@@ -119,6 +121,9 @@ func parseArguments() -> RunConfig? {
                 return nil
             }
             config.shares.append((hostPath: parts[0], tag: parts[1], readOnly: parts[2] == "ro"))
+        case "--serial-log":
+            i += 1; guard i < args.count else { fputs("Error: --serial-log requires a path\n", stderr); return nil }
+            config.serialLogPath = args[i]
         case "--proxy-socket":
             i += 1; guard i < args.count else { fputs("Error: --proxy-socket requires a path\n", stderr); return nil }
             config.proxySocketPath = args[i]

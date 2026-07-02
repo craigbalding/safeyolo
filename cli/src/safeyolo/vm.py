@@ -955,6 +955,7 @@ def start_vm(
         "--share", f"{config_share}:config:ro",
         "--share", f"{get_agent_status_dir(name)}:status:rw",
         "--share", f"{agent_home}:home:rw",
+        "--serial-log", str(get_agents_dir() / name / "console.log"),
         "--cmdline", cmdline,
     ]
 

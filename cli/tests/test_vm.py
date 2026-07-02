@@ -650,6 +650,24 @@ class TestStartVm:
         assert "--initrd" in captured_cmd
         assert "--rootfs" in captured_cmd
 
+    def test_command_includes_per_agent_serial_console_log(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace")
+
+        idx = captured_cmd.index("--serial-log")
+        assert captured_cmd[idx + 1] == str(
+            tmp_config_dir / "agents" / "agent1" / "console.log"
+        )
+
     def test_command_includes_cpus_and_memory(self, tmp_config_dir, monkeypatch):
         captured_cmd = []
 
