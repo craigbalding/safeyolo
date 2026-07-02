@@ -38,7 +38,7 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _BLOCKED_CODEPOINTS = frozenset(range(0x20)) | {0x7F, 0x2028, 0x2029}
 
 
-def sanitize_for_log(value, max_len: int = 200) -> str:
+def sanitize_for_log(value, max_len: int | None = 200) -> str:
     """Sanitize user-controlled values before logging to prevent log injection.
 
     Uses Unicode category whitelist plus explicit codepoint blocklist.
@@ -51,6 +51,7 @@ def sanitize_for_log(value, max_len: int = 200) -> str:
     - ANSI CSI escape sequences are replaced with '?'.
     - Consecutive replacement '?' are collapsed into a single '?'.
     - Strings longer than `max_len` are truncated and suffixed with "...".
+      Pass `max_len=None` to sanitize without truncating.
     """
     if value is None:
         return ""
@@ -61,7 +62,9 @@ def sanitize_for_log(value, max_len: int = 200) -> str:
         for c in text
     )
     sanitized = re.sub(r"\?+", "?", sanitized)
-    return sanitized[:max_len] + "..." if len(sanitized) > max_len else sanitized
+    if max_len is not None and len(sanitized) > max_len:
+        return sanitized[:max_len] + "..."
+    return sanitized
 
 
 # =============================================================================
@@ -77,6 +80,7 @@ class EventKind(StrEnum):
     OPS = "ops"
     ADMIN = "admin"
     AGENT = "agent"
+    PLUMB = "plumb"
 
 
 class Severity(StrEnum):
@@ -110,6 +114,7 @@ class ApprovalType(StrEnum):
     GATEWAY_ROUTE = "gateway_route"
     SERVICE = "service"
     CONTRACT_BINDING = "contract_binding"
+    PLUMB = "plumb"
 
 
 # =============================================================================

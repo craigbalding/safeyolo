@@ -58,8 +58,13 @@ class AgentAPI:
         else:
             log.info("Agent API disabled")
 
-    def request(self, flow: http.HTTPFlow):
-        """Intercept requests to the agent API virtual host."""
+    async def request(self, flow: http.HTTPFlow):
+        """Intercept requests to the agent API virtual host.
+
+        Async so the /plumb/* long-poll can `await` PlumbService.read_messages
+        without blocking the shared event loop. All existing handlers are
+        synchronous and called normally; only the plumb path awaits.
+        """
         if not ctx.options.agent_api_enabled:
             return
 
@@ -75,7 +80,9 @@ class AgentAPI:
         if method not in ("GET", "POST", "DELETE"):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET", "POST", "DELETE"]})
             return
-        if method in ("POST", "DELETE") and not (path.startswith("/api/flows") or path.startswith("/gateway/")):
+        if method in ("POST", "DELETE") and not (
+            path.startswith("/api/flows") or path.startswith("/gateway/") or path.startswith("/plumb")
+        ):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
             return
 
@@ -110,6 +117,12 @@ class AgentAPI:
                 details={"client_ip": client_ip, "path": sanitize_for_log(path)},
             )
             self._respond(flow, 401, {"error": "Invalid agent token"})
+            return
+
+        # Plumb: host-mediated agent-to-agent collaboration. Handled async
+        # (long-poll capable) before the sync handler table.
+        if path.startswith("/plumb"):
+            await self._handle_plumb(flow, path, method)
             return
 
         # Route to handler
@@ -260,6 +273,97 @@ class AgentAPI:
         if not agent_name or agent_name == "default":
             return None
         return agent_name
+
+    def _plumb_respond(self, flow: http.HTTPFlow, res: dict):
+        """Translate a PlumbService result dict into an HTTP response.
+
+        The service returns {"status": <int>, ...body}; we use `status` as the
+        HTTP code and return the remaining fields as the JSON body.
+        """
+        status = res.pop("status", 200)
+        self._respond(flow, status, res)
+
+    async def _handle_plumb(self, flow: http.HTTPFlow, path: str, method: str):
+        """Route /plumb/* to the process-level PlumbService.
+
+        Sender identity is resolved from service-discovery attribution, NEVER
+        from the request body. This handler only translates HTTP<->service;
+        all mailbox state lives in PlumbService (single owner).
+        """
+        agent = self._resolve_agent_id(flow)
+        if agent is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+
+        from safeyolo.core.plumb_service import get_plumb_service
+
+        svc = get_plumb_service()
+
+        def _body() -> dict:
+            try:
+                txt = flow.request.get_text() or ""
+                return json.loads(txt) if txt.strip() else {}
+            except (ValueError, UnicodeDecodeError):
+                return {}
+
+        # POST /plumb/request-chat
+        if method == "POST" and path == "/plumb/request-chat":
+            b = _body()
+            res = await svc.request_chat(
+                requester=agent,
+                participants=b.get("participants", []),
+                topic=b.get("topic", ""),
+                note=b.get("reason", b.get("note", "")),
+                ttl_seconds=b.get("ttl_seconds", 0),
+            )
+            self._plumb_respond(flow, res)
+            return
+
+        # GET /plumb/conversations
+        if method == "GET" and path == "/plumb/conversations":
+            self._respond(flow, 200, {"conversations": svc.list_conversations(agent)})
+            return
+
+        # /plumb/conversations/{id}/(messages|leave)
+        m = re.match(r"^/plumb/conversations/([^/]+)/(messages|leave)$", path)
+        if m:
+            conv_id, tail = m.group(1), m.group(2)
+            if method == "GET" and tail == "messages":
+                after = flow.request.query.get("after")
+                try:
+                    wait_i = int(flow.request.query.get("wait", "0"))
+                except (TypeError, ValueError):
+                    wait_i = 0
+                try:
+                    limit_i = int(flow.request.query.get("limit", "0"))
+                except (TypeError, ValueError):
+                    limit_i = 0
+                res = await svc.read_messages(agent, conv_id, after, wait_i, limit_i)
+                self._plumb_respond(flow, res)
+                return
+            if method == "POST" and tail == "messages":
+                b = _body()
+                refs = (b.get("metadata") or {}).get("references")
+                res = await svc.post_message(agent, conv_id, str(b.get("body", "")), refs)
+                self._plumb_respond(flow, res)
+                return
+            if method == "POST" and tail == "leave":
+                self._plumb_respond(flow, await svc.leave(agent, conv_id))
+                return
+
+        self._respond(
+            flow,
+            404,
+            {
+                "error": "Not Found",
+                "endpoints": [
+                    "/plumb/request-chat (POST)",
+                    "/plumb/conversations (GET)",
+                    "/plumb/conversations/{id}/messages (GET long-poll ?after=&wait=&limit=, POST)",
+                    "/plumb/conversations/{id}/leave (POST)",
+                ],
+            },
+        )
 
     def _handle_gateway_services(self, flow: http.HTTPFlow):
         """GET /gateway/services - Get this agent's authorized + available services.

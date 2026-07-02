@@ -23,7 +23,7 @@ from rich.table import Table
 from .._tactics import TACTIC_LABELS
 from ..api import AdminAPI, APIError, get_api
 from ..config import get_logs_dir
-from ..core.audit_schema import InvalidAuditEvent, parse_audit_event
+from ..core.audit_schema import InvalidAuditEvent, parse_audit_event, sanitize_for_log
 
 console = Console()
 
@@ -1377,6 +1377,16 @@ def _resolved_key_from_admin_event(event: dict) -> str | None:
             return f"{host}:{host}"
         return None
 
+    if event_type in ("plumb.approved", "plumb.denied"):
+        # Reconstruct the plumb dedup key: approval.key:approval.target ==
+        # request_id:",".join(members). Both events carry request_id +
+        # participants (the sorted member set) in details.
+        request_id = details.get("request_id", "")
+        participants = details.get("participants", [])
+        if request_id and participants:
+            return f"{request_id}:{','.join(participants)}"
+        return None
+
     return None
 
 
@@ -1561,6 +1571,70 @@ def format_risky_route_approval(event: dict) -> Panel:
     )
 
 
+def _plumb_approve(event: dict, api: AdminAPI) -> str | None:
+    """Approve a plumb agent-to-agent chat request -> creates a grant."""
+    approval = event.get("approval", {})
+    request_id = approval.get("key", "")
+    result = api.plumb_approve(request_id=request_id)
+    return result.get("conversation_id") or result.get("status", "ok")
+
+
+def _plumb_deny(event: dict, api: AdminAPI) -> None:
+    """Deny a plumb chat request."""
+    approval = event.get("approval", {})
+    api.plumb_deny(request_id=approval.get("key", ""))
+
+
+def _plumb_format_row(event: dict) -> tuple[str, str, str, str]:
+    approval = event.get("approval", {})
+    hint = approval.get("scope_hint", {})
+    agent = event.get("agent", hint.get("requester", "—"))
+    targets = [p for p in hint.get("participants", []) if p != agent]
+    action = f"chat → {', '.join(targets) or approval.get('target', '?')}"
+    return (agent, action, "agent-to-agent", event.get("summary", ""))
+
+
+def _plumb_format_detail(event: dict) -> Panel:
+    from rich.table import Table
+
+    approval = event.get("approval", {})
+    hint = approval.get("scope_hint", {})
+    requester = hint.get("requester", event.get("agent", "—"))
+    participants = hint.get("participants", [])
+    ttl = hint.get("ttl_seconds", "?")
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+    # Trusted, system-derived fields (attribution) — safe to render as structure.
+    table.add_row("Requester", f"[bold]{escape(str(requester))}[/bold]")
+    table.add_row("Participants", escape(", ".join(str(p) for p in participants)))
+    table.add_row("TTL", f"{ttl}s")
+    ts = event.get("ts", "")
+    if ts:
+        table.add_row("Time", str(ts))
+    # Agent-authored prose is untrusted. PlumbService stores it sanitized but
+    # untruncated; watch applies a display cap and escape() neutralizes rich
+    # markup so it can't spoof the operator prompt.
+    from safeyolo.core.plumb_service import UNTRUSTED_FIELD_DISPLAY_MAXLEN
+
+    topic = sanitize_for_log(hint.get("topic", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
+    note = sanitize_for_log(hint.get("note", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
+    if topic or note:
+        table.add_row("", "")
+        table.add_row("[yellow]agent-supplied (untrusted)[/yellow]", "")
+        if topic:
+            table.add_row("  topic", escape(str(topic)))
+        if note:
+            table.add_row("  note", escape(str(note)))
+
+    return Panel(
+        table,
+        title="[bold]Agent Chat Request (plumb)[/bold]",
+        border_style="magenta",
+    )
+
+
 # DISPATCH must be defined after format_approval_request and
 # format_risky_route_approval so the names resolve at module load time.
 DISPATCH: dict[str, ApprovalDispatch] = {
@@ -1593,6 +1667,12 @@ DISPATCH: dict[str, ApprovalDispatch] = {
         deny=_network_egress_deny,
         format_row=_network_egress_format_row,
         format_detail=_network_egress_format_detail,
+    ),
+    "plumb": ApprovalDispatch(
+        approve=_plumb_approve,
+        deny=_plumb_deny,
+        format_row=_plumb_format_row,
+        format_detail=_plumb_format_detail,
     ),
 }
 
