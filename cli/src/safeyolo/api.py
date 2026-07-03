@@ -398,6 +398,37 @@ class AdminAPI:
             json={"host": host},
         )
 
+    # ---- Plumb (agent-to-agent collaboration) --------------------------------
+    def plumb_pending(self) -> dict[str, Any]:
+        """List pending plumb chat requests awaiting operator approval."""
+        return self._request("GET", "/admin/plumb/pending")
+
+    def plumb_conversations(self) -> dict[str, Any]:
+        """List active plumb conversation grants."""
+        return self._request("GET", "/admin/plumb/conversations")
+
+    def plumb_approve(self, request_id: str, ttl_seconds: int | None = None) -> dict[str, Any]:
+        """Approve a plumb chat request, creating a conversation grant.
+
+        Args:
+            request_id: The pending request id from the approval event.
+            ttl_seconds: Optional operator override for the grant lifetime.
+        """
+        payload: dict[str, Any] = {"request_id": request_id}
+        if ttl_seconds is not None:
+            payload["ttl_seconds"] = ttl_seconds
+        return self._request("POST", "/admin/plumb/approve", json=payload)
+
+    def plumb_deny(self, request_id: str) -> dict[str, Any]:
+        """Deny a plumb chat request."""
+        return self._request("POST", "/admin/plumb/deny", json={"request_id": request_id})
+
+    def plumb_close(self, conversation_id: str) -> dict[str, Any]:
+        """Close an active plumb conversation."""
+        return self._request(
+            "POST", "/admin/plumb/close", json={"conversation_id": conversation_id}
+        )
+
     def add_host_bypass(self, host: str, addon: str) -> dict[str, Any]:
         """Add addon bypass for a host.
 

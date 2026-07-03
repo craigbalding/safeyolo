@@ -40,7 +40,7 @@ from safeyolo.core.audit_schema import (
 class TestEventKind:
     def test_value_set(self):
         assert {k.value for k in EventKind} == {
-            "security", "gateway", "traffic", "ops", "admin", "agent"
+            "security", "gateway", "traffic", "ops", "admin", "agent", "plumb"
         }
 
     def test_string_inheritance(self):
@@ -65,7 +65,8 @@ class TestDecision:
 class TestApprovalType:
     def test_value_set(self):
         assert {a.value for a in ApprovalType} == {
-            "credential", "network_egress", "gateway_route", "service", "contract_binding"
+            "credential", "network_egress", "gateway_route", "service",
+            "contract_binding", "plumb"
         }
 
 
@@ -87,6 +88,9 @@ class TestSanitizeForLog:
 
     def test_plain_ascii_preserved(self):
         assert sanitize_for_log("hello world") == "hello world"
+
+    def test_max_len_none_sanitizes_without_truncating(self):
+        assert sanitize_for_log("a\n" + ("b" * 300), max_len=None) == "a?" + ("b" * 300)
 
     def test_control_chars_blocked(self):
         """Newline, tab, CR, NUL, 0x1f, 0x7f are replaced with '?'."""

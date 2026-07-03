@@ -1,5 +1,6 @@
 """Tests for addons/agent_api.py - read-only agent API."""
 
+import asyncio
 import json
 import secrets
 from unittest.mock import Mock, patch
@@ -55,14 +56,14 @@ class TestAPIRouting:
         """Requests to other hosts pass through."""
         flow = tflow.tflow()
         flow.request.url = "https://api.openai.com/v1/chat"
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response is None
 
     def test_intercepts_api_host(self, api, agent_token):
         """Requests to _safeyolo.proxy.internal get handled."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response is not None
             assert flow.response.status_code == 200
 
@@ -72,14 +73,14 @@ class TestAPIRouting:
         with taddons.context(addon) as tctx:
             tctx.options.agent_api_enabled = False
             flow = _make_api_flow("/health", token=agent_token)
-            addon.request(flow)
+            asyncio.run(addon.request(flow))
             assert flow.response is None
 
 
 class TestAuth:
     def test_missing_auth_returns_401(self, api):
         flow = _make_api_flow("/health")
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 401
         body = json.loads(flow.response.content)
         assert body == {
@@ -90,7 +91,7 @@ class TestAuth:
     def test_invalid_token_returns_401(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token="invalid-token")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 401
             body = json.loads(flow.response.content)
             assert body == {"error": "Invalid agent token"}
@@ -98,14 +99,14 @@ class TestAuth:
     def test_valid_token_succeeds(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
 
     def test_missing_token_file_returns_503(self, api):
         """No token on disk returns 503 (not configured)."""
         with _patch_active_token(None):
             flow = _make_api_flow("/health", token="some-token")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "Agent token not configured"}
@@ -119,12 +120,12 @@ class TestAuth:
         with _patch_active_token(new_token):
             # Old token should be rejected
             flow = _make_api_flow("/health", token=old_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 401
 
             # New token should work
             flow = _make_api_flow("/health", token=new_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
 
     def test_invalid_token_emits_audit_event(self, api, agent_token):
@@ -132,7 +133,7 @@ class TestAuth:
         with _patch_active_token(agent_token), \
              patch("agent_api.write_event") as mock_write:
             flow = _make_api_flow("/health", token="wrong-token")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 401
 
             mock_write.assert_called_once()
@@ -147,7 +148,7 @@ class TestAuth:
         """Auth header without 'Bearer ' prefix is rejected as 401."""
         flow = _make_api_flow("/health")
         flow.request.headers["authorization"] = f"Token {agent_token}"
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 401
         body = json.loads(flow.response.content)
         assert body["hint"] == "Bearer <token>"
@@ -156,23 +157,23 @@ class TestAuth:
 class TestMethods:
     def test_post_returns_405(self, api, agent_token):
         flow = _make_api_flow("/health", method="POST", token=agent_token)
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 405
 
     def test_put_returns_405(self, api, agent_token):
         flow = _make_api_flow("/health", method="PUT", token=agent_token)
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 405
 
     def test_delete_returns_405(self, api, agent_token):
         flow = _make_api_flow("/health", method="DELETE", token=agent_token)
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 405
 
     def test_patch_returns_405(self, api, agent_token):
         """PATCH is not in the allowed methods set."""
         flow = _make_api_flow("/health", method="PATCH", token=agent_token)
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 405
 
 
@@ -180,7 +181,7 @@ class TestEndpoints:
     def test_health(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["agent_api"] == "ok"
@@ -195,7 +196,7 @@ class TestEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_find_addon", return_value=mock_sd):
             flow = _make_api_flow("/agents", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["count"] == 1
@@ -206,13 +207,13 @@ class TestEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_find_addon", return_value=None):
             flow = _make_api_flow("/agents", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
 
     def test_unknown_endpoint_returns_404(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/unknown", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
             body = json.loads(flow.response.content)
             assert "endpoints" in body
@@ -221,7 +222,7 @@ class TestEndpoints:
         """404 body includes the full list of available endpoints for discoverability."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/nonexistent", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
             body = json.loads(flow.response.content)
             endpoints = body["endpoints"]
@@ -242,7 +243,7 @@ class TestEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_handle_health", side_effect=RuntimeError("boom")):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 500
             body = json.loads(flow.response.content)
             assert body == {"error": "Internal error: RuntimeError"}
@@ -252,7 +253,7 @@ class TestExplain:
     def test_explain_missing_param(self, api, agent_token):
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
             body = json.loads(flow.response.content)
             assert body == {
@@ -265,7 +266,7 @@ class TestExplain:
         with _patch_active_token(agent_token):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["request_id"] == valid_id
@@ -275,21 +276,21 @@ class TestExplain:
         """Path traversal attempt is rejected."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=../../../etc/passwd")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_explain_rejects_short_request_id(self, api, agent_token):
         """Request ID that doesn't match req-<32hex> format is rejected."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-123")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_explain_rejects_old_12hex_format(self, api, agent_token):
         """Old 12-hex format is rejected (must be 32 hex)."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-0a1b2c3d4e5f")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_explain_finds_matching_events_in_jsonl(self, api, agent_token, tmp_path, monkeypatch):
@@ -307,7 +308,7 @@ class TestExplain:
 
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
-            api.request(flow)
+            asyncio.run(api.request(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
@@ -333,7 +334,7 @@ class TestExplain:
 
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
-            api.request(flow)
+            asyncio.run(api.request(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
@@ -353,7 +354,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {"agent_api": "ok", "pdp": "ok"}
@@ -363,7 +364,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=None):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {"agent_api": "ok", "pdp": "unavailable"}
@@ -375,7 +376,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {"agent_api": "ok", "pdp": "unavailable"}
@@ -391,7 +392,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/status", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {
@@ -405,7 +406,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=None):
             flow = _make_api_flow("/status", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "PDP not available"}
@@ -417,7 +418,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/policy", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {"policy": {"permissions": [], "budgets": {}}}
@@ -426,7 +427,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=None):
             flow = _make_api_flow("/policy", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "PDP not available"}
@@ -440,7 +441,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/budgets", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {
@@ -451,7 +452,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=None):
             flow = _make_api_flow("/budgets", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "PDP not available"}
@@ -467,7 +468,7 @@ class TestPDPEndpoints:
              patch("pdp.get_policy_client", return_value=mock_client), \
              patch("pdp.is_policy_client_configured", return_value=True):
             flow = _make_api_flow("/config", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {
@@ -479,7 +480,7 @@ class TestPDPEndpoints:
         with _patch_active_token(agent_token), \
              patch("pdp.is_policy_client_configured", return_value=False):
             flow = _make_api_flow("/config", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "PDP not available"}
@@ -498,7 +499,7 @@ class TestAddonEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_find_addon", return_value=mock_monitor):
             flow = _make_api_flow("/memory", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {"rss_mb": 128.5, "connections": 12}
@@ -507,7 +508,7 @@ class TestAddonEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_find_addon", return_value=None):
             flow = _make_api_flow("/memory", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "memory-monitor addon not loaded"}
@@ -521,7 +522,7 @@ class TestAddonEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_find_addon", return_value=mock_cb):
             flow = _make_api_flow("/circuits", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body == {
@@ -532,7 +533,7 @@ class TestAddonEndpoints:
         with _patch_active_token(agent_token), \
              patch.object(api, "_find_addon", return_value=None):
             flow = _make_api_flow("/circuits", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "circuit-breaker addon not loaded"}
@@ -545,7 +546,7 @@ class TestLookup:
         """Missing host parameter returns 400 with usage hint."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/lookup", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
             body = json.loads(flow.response.content)
             assert body == {
@@ -558,7 +559,7 @@ class TestLookup:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=None):
             flow = _make_api_flow("/lookup", token=agent_token, query="host=example.com")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "PDP not available"}
@@ -570,7 +571,7 @@ class TestLookup:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/lookup", token=agent_token, query="host=example.com")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
             body = json.loads(flow.response.content)
             assert body == {"error": "Policy engine not available"}
@@ -593,7 +594,7 @@ class TestLookup:
         with _patch_active_token(agent_token), \
              patch.object(api, "_get_policy_client", return_value=mock_client):
             flow = _make_api_flow("/lookup", token=agent_token, query="host=api.openai.com")
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["host"] == "api.openai.com"
@@ -608,27 +609,27 @@ class TestMetadata:
         """Agent API sets blocked_by so downstream addons skip."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.metadata.get("blocked_by") == "agent-api"
 
     def test_response_has_agent_api_header(self, api, agent_token):
         """Responses include X-SafeYolo-Agent-API header."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.headers.get("X-SafeYolo-Agent-API") == "true"
 
     def test_content_type_is_json(self, api, agent_token):
         """All responses have application/json content type."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.headers.get("Content-Type") == "application/json"
 
     def test_error_responses_set_blocked_by(self, api):
         """Even 401 errors set blocked_by metadata (downstream addons must skip)."""
         flow = _make_api_flow("/health")
-        api.request(flow)
+        asyncio.run(api.request(flow))
         assert flow.response.status_code == 401
         assert flow.metadata.get("blocked_by") == "agent-api"
 
@@ -636,7 +637,7 @@ class TestMetadata:
         """404 responses set blocked_by metadata."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/nonexistent", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
             assert flow.metadata.get("blocked_by") == "agent-api"
 
@@ -725,7 +726,7 @@ class TestFlowStoreAPI:
                 {"host": "app.example.com"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["count"] == 1
@@ -736,7 +737,7 @@ class TestFlowStoreAPI:
         api, store, token = api_with_store
         with _patch_active_token(token):
             flow = _make_api_flow("/api/flows/1", token=token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["id"] == 1
@@ -747,7 +748,7 @@ class TestFlowStoreAPI:
         api, store, token = api_with_store
         with _patch_active_token(token):
             flow = _make_api_flow("/api/flows/99999", token=token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
 
     def test_get_request_body(self, api_with_store):
@@ -755,7 +756,7 @@ class TestFlowStoreAPI:
         api, store, token = api_with_store
         with _patch_active_token(token):
             flow = _make_api_flow("/api/flows/1/request-body", token=token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert "body_base64" in body
@@ -768,7 +769,7 @@ class TestFlowStoreAPI:
         api, store, token = api_with_store
         with _patch_active_token(token):
             flow = _make_api_flow("/api/flows/1/response-body", token=token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert "body_base64" in body
@@ -783,7 +784,7 @@ class TestFlowStoreAPI:
                 {"engagement_id": "acme-portal"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["count"] == 1
@@ -797,7 +798,7 @@ class TestFlowStoreAPI:
                 {"engagement_id": "acme-portal", "query": "admin"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["count"] == 1
@@ -811,7 +812,7 @@ class TestFlowStoreAPI:
                 {"host": "example.com"},
                 agent_token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 503
 
     def test_body_search_requires_engagement_id(self, api_with_store):
@@ -823,7 +824,7 @@ class TestFlowStoreAPI:
                 {"query": "test"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_body_search_requires_query(self, api_with_store):
@@ -835,7 +836,7 @@ class TestFlowStoreAPI:
                 {"engagement_id": "acme-portal"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_post_flow_diff(self, api_with_store):
@@ -879,7 +880,7 @@ class TestFlowStoreAPI:
                 {"flow_id_a": 1, "flow_id_b": 2},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert "identical" in body
@@ -894,7 +895,7 @@ class TestFlowStoreAPI:
                 {"flow_id_a": 1},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_post_flow_diff_not_found(self, api_with_store):
@@ -906,7 +907,7 @@ class TestFlowStoreAPI:
                 {"flow_id_a": 1, "flow_id_b": 99999},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
 
     def test_post_flow_request_body_search(self, api_with_store):
@@ -918,7 +919,7 @@ class TestFlowStoreAPI:
                 {"engagement_id": "acme-portal", "query": "action"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["count"] == 1
@@ -932,7 +933,7 @@ class TestFlowStoreAPI:
                 {"query": "test"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_post_flow_tag_add(self, api_with_store):
@@ -944,7 +945,7 @@ class TestFlowStoreAPI:
                 {"tag": "confirmed", "value": "idor"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["tag"] == "confirmed"
@@ -959,7 +960,7 @@ class TestFlowStoreAPI:
                 {"value": "something"},
                 token,
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_delete_flow_tag(self, api_with_store):
@@ -969,7 +970,7 @@ class TestFlowStoreAPI:
         store.tag_flow(1, "confirmed", "idor")
         with _patch_active_token(token):
             flow = _make_api_flow("/api/flows/1/tag/confirmed", method="DELETE", token=token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["deleted"] is True
@@ -979,14 +980,14 @@ class TestFlowStoreAPI:
         api, store, token = api_with_store
         with _patch_active_token(token):
             flow = _make_api_flow("/api/flows/1/tag/nonexistent", method="DELETE", token=token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 404
 
     def test_delete_on_non_flow_route_returns_405(self, api, agent_token):
         """DELETE on non-flow route returns 405."""
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/health", method="DELETE", token=agent_token)
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 405
 
     def test_get_flow_search_with_query_params(self, api_with_store):
@@ -998,7 +999,7 @@ class TestFlowStoreAPI:
                 token=token,
                 query="host=app.example.com&limit=5",
             )
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 200
             body = json.loads(flow.response.content)
             assert body["count"] == 1
@@ -1011,7 +1012,7 @@ class TestFlowStoreAPI:
             flow = _make_api_flow("/api/flows/search", method="POST", token=token)
             flow.request.content = b"not json at all {{"
             flow.request.headers["content-type"] = "application/json"
-            api.request(flow)
+            asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
             body = json.loads(flow.response.content)
             assert body == {"error": "Invalid JSON body"}
@@ -1039,7 +1040,7 @@ class TestEnvVarPaths:
 
         with patch("pdp.tokens.read_active_token", side_effect=capture_read_active_token):
             flow = _make_api_flow("/health", token="test-token-value")
-            api.request(flow)
+            asyncio.run(api.request(flow))
 
         assert captured_path == Path("/custom/data/agent_token")
 
@@ -1057,7 +1058,7 @@ class TestEnvVarPaths:
 
         with patch("pdp.tokens.read_active_token", side_effect=capture_read_active_token):
             flow = _make_api_flow("/health", token="test-token-value")
-            api.request(flow)
+            asyncio.run(api.request(flow))
 
         assert captured_path == Path("/safeyolo/data/agent_token")
 
@@ -1072,7 +1073,7 @@ class TestEnvVarPaths:
 
         with _patch_active_token(agent_token):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
-            api.request(flow)
+            asyncio.run(api.request(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
@@ -1087,7 +1088,7 @@ class TestEnvVarPaths:
         with _patch_active_token(agent_token):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
-            api.request(flow)
+            asyncio.run(api.request(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
