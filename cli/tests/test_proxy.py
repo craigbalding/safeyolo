@@ -862,17 +862,23 @@ class TestBuildCommand:
         assert "-p" not in cmd
         assert "--listen-host" not in cmd
 
-    def test_mitmdump_found_via_shutil_which(self, cmd_env):
-        """When shutil.which finds mitmdump, that path is used."""
+    def test_mitmdump_sibling_preferred_over_shutil_which(self, cmd_env):
+        """The active environment's mitmdump wins over PATH lookup."""
         from safeyolo.proxy import _build_command
 
-        with patch("safeyolo.proxy.shutil.which", return_value="/usr/local/bin/mitmdump"):
+        fake_python_dir = cmd_env["config_dir"] / "bin"
+        fake_python_dir.mkdir(exist_ok=True)
+        fake_mitmdump = fake_python_dir / "mitmdump"
+        fake_mitmdump.touch()
+
+        with patch("safeyolo.proxy.shutil.which", return_value="/usr/local/bin/mitmdump"), \
+             patch("safeyolo.proxy.sys.executable", str(fake_python_dir / "python")):
             cmd = _build_command(
                 admin_token="tok",
                 **cmd_env,
             )
 
-        assert cmd[0] == "/usr/local/bin/mitmdump"
+        assert cmd[0] == str(fake_mitmdump)
 
     def test_mitmdump_fallback_to_sibling_of_python(self, cmd_env):
         """When shutil.which fails, checks sibling of sys.executable."""

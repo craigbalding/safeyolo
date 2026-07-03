@@ -86,11 +86,20 @@ unpacked rootfs tree. Source it from your script:
 
 ```sh
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
+install_safeyolo_mise /path/to/unpacked/rootfs "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common /path/to/unpacked/rootfs
+```
+
+Use `install_safeyolo_mise` only for glibc-compatible rootfs trees. Alpine
+should install its native musl-linked package instead:
+
+```sh
+apk add mise
 ```
 
 This installs:
 
+- optional pinned `mise` binary via `install_safeyolo_mise`
 - `agent` user (uid 1000, shell `/bin/bash`, home `/home/agent`)
 - `/usr/local/bin/safeyolo-guest-init`
 - sshd pubkey-only config + host keys (for `safeyolo agent shell`)
@@ -98,9 +107,6 @@ This installs:
   other `sbin` tools are visible in non-login shells
 - mise profile glue at `/etc/profile.d/mise.sh` (if `mise` is in the tree)
 - BusyBox-backed `hexdump` / `nc` shims (if BusyBox is in the tree)
-- `apt` / `apt-get` / `yum` / `dnf` / `apk` intercepts pointing to mise
-  (agents must not install packages at runtime; egress doesn't go through
-  the SafeYolo proxy)
 - hostname = `safeyolo`
 
 The helper is idempotent — safe to re-run.

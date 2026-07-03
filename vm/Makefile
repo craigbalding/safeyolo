@@ -38,11 +38,11 @@ else ifeq ($(UNAME),Darwin)
 		echo "See guest/README.md for details."; \
 		exit 1; }
 	@set -e; \
-	status=$$(limactl list --format '{{.Name}}\t{{.Status}}' | awk -F'\t' -v n=$(LIMA_VM) '$$1==n {print $$2}'); \
-	if [ -z "$$status" ]; then \
+	if ! limactl list --format '{{.Name}}' 2>/dev/null | grep -qx "$(LIMA_VM)"; then \
 		limactl start --name=$(LIMA_VM) --tty=false $(GUEST_DIR)/lima.yaml; \
-	elif [ "$$status" != "Running" ]; then \
-		limactl start --tty=false $(LIMA_VM); \
+	else \
+		status=$$(limactl list "$(LIMA_VM)" --format '{{.Status}}' 2>/dev/null); \
+		[ "$$status" = "Running" ] || limactl start --tty=false $(LIMA_VM); \
 	fi
 	@limactl shell $(LIMA_VM) -- \
 		aarch64-linux-gnu-gcc -static -O2 \

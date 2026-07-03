@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.venv_*/
+cli/.venv/
 data/
 logs/
 .claude/
@@ -14,6 +16,8 @@ CLAUDE.md
 # Host-specific config (each host has its own)
 docker-compose.override.yml
 .env
+.mise.local.toml
+mise.local.toml
 
 # Large ML model files (regenerate with scripts/export_piguard_onnx_v2.py)
 models/piguard-onnx/model.onnx

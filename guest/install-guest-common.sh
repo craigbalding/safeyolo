@@ -13,6 +13,8 @@
 #     install_safeyolo_guest_common /path/to/unpacked/rootfs
 #
 # What it installs:
+#   * install_safeyolo_mise helper for custom rootfs scripts that want the
+#     same pinned mise binary as the default rootfs
 #   * agent user (uid 1000, shell /bin/bash, home /home/agent)
 #   * /usr/local/bin/safeyolo-guest-init stub (exec'd as PID 1)
 #   * sshd: pubkey auth only, password off, host keys generated
@@ -30,6 +32,49 @@
 #     the policy.
 #
 # Idempotent -- safe to re-run on the same rootfs.
+
+install_safeyolo_mise() {
+    local rootfs="$1"
+    local target_arch="${2:-${SAFEYOLO_TARGET_ARCH:-}}"
+    local mise_version="${MISE_VERSION:-2026.4.19}"
+    local mise_sha_arm64="${MISE_SHA256_ARM64:-882d10aa67fcb4fd8008c1e31ac3c6d0dc80dac2c4cb3c0d794ca9e0e5aece3d}"
+    local mise_sha_amd64="${MISE_SHA256_AMD64:-17bf037c94dd5e790a9b56ab0a00f64a9ed910df1e0b67ad041d6336bafc44cb}"
+    local mise_arch mise_sha
+
+    [ -n "$rootfs" ] || { echo "install_safeyolo_mise: rootfs arg required" >&2; return 1; }
+    [ -d "$rootfs" ] || { echo "install_safeyolo_mise: rootfs not a dir: $rootfs" >&2; return 1; }
+
+    case "$target_arch" in
+        amd64) mise_arch=x64; mise_sha="$mise_sha_amd64" ;;
+        arm64) mise_arch=arm64; mise_sha="$mise_sha_arm64" ;;
+        *) echo "install_safeyolo_mise: unsupported arch: $target_arch" >&2; return 1 ;;
+    esac
+
+    if [ -x "$rootfs/usr/local/bin/mise" ] || [ -x "$rootfs/usr/bin/mise" ]; then
+        echo "=== mise already installed in $rootfs ==="
+        return 0
+    fi
+
+    command -v curl >/dev/null || { echo "install_safeyolo_mise: missing curl" >&2; return 1; }
+    command -v sha256sum >/dev/null || { echo "install_safeyolo_mise: missing sha256sum" >&2; return 1; }
+    command -v tar >/dev/null || { echo "install_safeyolo_mise: missing tar" >&2; return 1; }
+
+    local url
+    url="https://github.com/jdx/mise/releases/download"
+    url="${url}/v${mise_version}/mise-v${mise_version}-linux-${mise_arch}.tar.gz"
+    local tmp_dir="$rootfs/tmp/safeyolo-mise"
+    local tarball="$tmp_dir/mise.tar.gz"
+
+    echo "=== Installing mise ${mise_version} ==="
+    rm -rf "$tmp_dir"
+    mkdir -p "$tmp_dir" "$rootfs/usr/local/bin"
+    curl -fsSL "$url" -o "$tarball"
+    echo "${mise_sha}  $tarball" | sha256sum -c -
+    tar -xzf "$tarball" -C "$tmp_dir"
+    cp "$tmp_dir/mise/bin/mise" "$rootfs/usr/local/bin/mise"
+    chmod 0755 "$rootfs/usr/local/bin/mise"
+    rm -rf "$tmp_dir"
+}
 
 install_safeyolo_guest_common() {
     local rootfs="$1"
@@ -73,7 +118,7 @@ install_safeyolo_guest_common() {
             "$rootfs/etc/ssh/sshd_config"
         sed -i "s/^#*PasswordAuthentication.*/PasswordAuthentication no/" \
             "$rootfs/etc/ssh/sshd_config"
-        chroot "$rootfs" ssh-keygen -A >/dev/null 2>&1 || true
+        rm -f "$rootfs"/etc/ssh/ssh_host_*_key "$rootfs"/etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
     fi
 
     # Keep sbin directories visible in both login and non-login shells so

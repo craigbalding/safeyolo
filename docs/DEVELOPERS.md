@@ -351,11 +351,10 @@ Pre-commit runs the same checks as CI:
 
 ## CLI Development
 
-The CLI is a standard Python package using Typer.
+The CLI is part of the root SafeYolo package and uses Typer.
 
 **Setup:**
 ```bash
-cd cli
 uv sync --group dev
 ```
 
@@ -400,8 +399,7 @@ uv run pytest tests/ -v  # Unit tests pass; integration tests need running proxy
 
 **Run CLI tests:**
 ```bash
-cd cli
-pytest tests/ -v
+uv run pytest cli/tests/ -v
 ```
 
 **Test credential detection:**
@@ -434,7 +432,7 @@ All contributions must:
 
 - **Pass syntax checks** - CI runs `python -m py_compile` on all Python files
 - **Pass tests** - All existing tests must pass, new features need tests
-- **Support Python 3.12+** - Addons tested on 3.12, 3.13
+- **Support Python 3.12 and 3.13** - CI tests both versions
 - **Use type hints** - For function signatures (not enforced by CI yet, but preferred)
 - **Follow existing patterns** - Match the style of surrounding code
 
@@ -453,10 +451,10 @@ Before submitting a PR:
 pytest tests/ -v
 
 # Run CLI tests
-cd cli && pytest tests/ -v
+uv run pytest cli/tests/ -v
 
 # Check syntax (what CI does)
-python -m py_compile addons/*.py
+find cli/src -name "*.py" -exec uv run python -m py_compile {} \;
 ```
 
 ### Pull Request Guidelines

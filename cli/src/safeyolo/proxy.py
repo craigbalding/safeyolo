@@ -93,7 +93,7 @@ def _find_addons_dir() -> Path | None:
 
     Post-refactor (#200 phase 5), addons live next to this module in
     the installed package: `safeyolo/mitm_addons/`. The sibling lookup
-    works for both editable (`uv tool install --editable ./cli`) and
+    works for both editable (`uv tool install --editable .`) and
     non-editable installs, since the package layout itself is
     consistent. `SAFEYOLO_ADDONS_DIR` still overrides for testing or
     custom deployments.
@@ -114,8 +114,8 @@ def _find_addons_dir() -> Path | None:
 def _find_pdp_dir() -> Path | None:
     """Find the pdp directory for PYTHONPATH.
 
-    Same caveats as _find_addons_dir: repo layout works for editable
-    installs; non-editable needs SAFEYOLO_PDP_DIR set.
+    Repo layout works for editable installs. Non-editable installs need
+    SAFEYOLO_PDP_DIR set because pdp/ is still outside the Python package.
     """
     env_override = os.environ.get("SAFEYOLO_PDP_DIR")
     if env_override:
@@ -662,11 +662,9 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
             "\n"
             "Fixes:\n"
             "  1. Install editable from the repo:\n"
-            "       uv tool install --editable ./cli\n"
-            "     (non-editable installs copy the package into an isolated\n"
-            "     venv and lose the sibling addons/ directory.)\n"
+            "       uv tool install --editable .\n"
             "  2. Or point SafeYolo at an existing checkout:\n"
-            "       export SAFEYOLO_ADDONS_DIR=/path/to/safeyolo/addons\n"
+            "       export SAFEYOLO_ADDONS_DIR=/path/to/safeyolo/cli/src/safeyolo/mitm_addons\n"
             "       export SAFEYOLO_PDP_DIR=/path/to/safeyolo/pdp\n"
         )
 

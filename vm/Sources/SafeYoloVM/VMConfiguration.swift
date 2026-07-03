@@ -69,22 +69,27 @@ struct VMConfiguration {
         // Boot loader
         vmConfig.bootLoader = try createBootLoader(config: config)
 
-        // Serial console: route to a log file next to the rootfs so guest
-        // kernel printk + userspace /dev/console writes are observable from
-        // the host. This is our only probe channel that doesn't go through
-        // virtio-net or virtiofs (both of which we've seen go silent after
-        // a save/restore cycle under conditions we're still investigating).
-        let rootfsExpanded = NSString(string: config.rootfsPath).expandingTildeInPath
-        let consoleLogURL = URL(fileURLWithPath: rootfsExpanded)
-            .deletingLastPathComponent()
-            .appendingPathComponent("console.log")
+        // Serial console: route guest kernel printk + userspace /dev/console
+        // writes to a per-agent log. Falling back next to the rootfs is kept
+        // for direct helper invocations, but SafeYolo always passes
+        // --serial-log because the default rootfs is shared by all agents.
+        let consoleLogURL: URL
+        if !config.serialLogPath.isEmpty {
+            let serialExpanded = NSString(string: config.serialLogPath).expandingTildeInPath
+            consoleLogURL = URL(fileURLWithPath: serialExpanded)
+        } else {
+            let rootfsExpanded = NSString(string: config.rootfsPath).expandingTildeInPath
+            consoleLogURL = URL(fileURLWithPath: rootfsExpanded)
+                .deletingLastPathComponent()
+                .appendingPathComponent("console.log")
+        }
         vmConfig.serialPorts = [createSerialPort(toFileAt: consoleLogURL)]
 
         // Root disk (/dev/vda) and optional overlay upper (/dev/vdb).
         // Order matters: vda first, vdb second — the guest's initramfs
         // hard-codes /dev/vdb as the overlay upper when present.
         var storageDevices: [VZStorageDeviceConfiguration] = [
-            try createBlockDisk(path: config.rootfsPath, readOnly: false)
+            try createBlockDisk(path: config.rootfsPath, readOnly: true)
         ]
         if !config.overlayPath.isEmpty {
             storageDevices.append(

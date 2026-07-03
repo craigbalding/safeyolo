@@ -26,6 +26,8 @@ from .config import (
 log = logging.getLogger("safeyolo.vm")
 
 VM_HELPER_NAME = "safeyolo-vm"
+VSOCK_TERM_NAME = "vsock-term"
+VSOCK_TERM_INSTALL_HINT = "make -C vm install"
 
 
 class VMError(Exception):
@@ -69,6 +71,27 @@ def find_vm_helper() -> Path:
     )
 
 
+def get_vsock_term_path() -> Path:
+    """Return the installed host-side vsock-term path."""
+    return get_config_dir() / "bin" / VSOCK_TERM_NAME
+
+
+def require_vsock_term() -> Path:
+    """Return vsock-term or raise a clear error for macOS interactive runs."""
+    path = get_vsock_term_path()
+    if not path.exists():
+        raise VMError(
+            f"vsock-term not found at {path} - the interactive terminal cannot start. "
+            f"Build and install it with: {VSOCK_TERM_INSTALL_HINT}"
+        )
+    if not os.access(path, os.X_OK):
+        raise VMError(
+            f"vsock-term at {path} is not executable - the interactive terminal cannot start. "
+            f"Build and install it with: {VSOCK_TERM_INSTALL_HINT}"
+        )
+    return path
+
+
 def get_kernel_path() -> Path:
     return get_share_dir() / "Image"
 
@@ -86,12 +109,20 @@ def get_base_rootfs_path() -> Path:
 
 
 def get_agent_rootfs_path(name: str) -> Path:
-    # No per-agent rootfs file. All agents share get_base_rootfs_path();
-    # per-agent runtime state lives in the in-VM overlay upper
-    # (persistent when /dev/vdb is attached, ephemeral via tmpfs when
-    # safeyolo.ephemeral_upper=1) and the /home/agent virtiofs bind.
-    # Kept as a function because callers expect a Path; points at the
-    # shared base so any code that treats it as a read target works.
+    # macOS VZ boot rootfs selection. Default: the shared
+    # get_base_rootfs_path(); per-agent runtime state lives in the in-VM
+    # overlay upper (persistent when /dev/vdb is attached, ephemeral via
+    # tmpfs when safeyolo.ephemeral_upper=1) and the /home/agent virtiofs
+    # bind.
+    #
+    # Override: a custom --rootfs-script writes a per-agent ext4 to
+    # agents/<name>/rootfs.ext4 (see build_custom_rootfs). When present
+    # that image is this agent's rootfs and takes precedence over the
+    # shared base. Mirrors the Linux platform's agent_rootfs_path, which
+    # overrides the shared tree with agents/<name>/rootfs/ the same way.
+    per_agent = get_agents_dir() / name / "rootfs.ext4"
+    if per_agent.exists():
+        return per_agent
     return get_base_rootfs_path()
 
 
@@ -689,7 +720,7 @@ def prepare_config_share(
         debug_marker.unlink(missing_ok=True)
 
     # vsock-term binary -- cross-compiled, served from config share
-    vsock_term_src = config_dir / "bin" / "vsock-term"
+    vsock_term_src = get_vsock_term_path()
     if vsock_term_src.exists():
         shutil.copy2(str(vsock_term_src), str(share_dir / "vsock-term"))
         (share_dir / "vsock-term").chmod(0o755)
@@ -844,6 +875,9 @@ def start_vm(
     if not rootfs.exists():
         raise VMError(f"Agent rootfs not found: {rootfs}\nRun 'safeyolo agent add' first.")
 
+    if platform.system() == "Darwin" and not background:
+        require_vsock_term()
+
     kernel = get_kernel_path()
     initrd = get_initrd_path()
     for path, label in [(kernel, "kernel"), (initrd, "initramfs")]:
@@ -921,6 +955,7 @@ def start_vm(
         "--share", f"{config_share}:config:ro",
         "--share", f"{get_agent_status_dir(name)}:status:rw",
         "--share", f"{agent_home}:home:rw",
+        "--serial-log", str(get_agents_dir() / name / "console.log"),
         "--cmdline", cmdline,
     ]
 

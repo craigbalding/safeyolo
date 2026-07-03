@@ -12,6 +12,12 @@ SafeYolo invokes them via:
 safeyolo agent add <name> <folder> --host-script path/to/my-host-setup.sh
 ```
 
+For an existing agent, reapply or change the host setup before boot:
+
+```sh
+safeyolo agent run <name> --host-script path/to/my-host-setup.sh
+```
+
 There is no template system, no DSL, no TOML -- just a shell script that
 does what any shell script does. Read it, edit it, run it anywhere else
 to confirm what it does.
@@ -59,7 +65,7 @@ Sketch:
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${SAFEYOLO_AGENT_HOME:?run this via safeyolo agent add --host-script}"
+: "${SAFEYOLO_AGENT_HOME:?run this via safeyolo agent add/run --host-script}"
 
 # Stage from host (best-effort)
 mkdir -p "$SAFEYOLO_AGENT_HOME/.myagent"
@@ -77,6 +83,15 @@ fi
 exec myagent --auto "$@"
 EOF
 chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-command"
+```
+
+For Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
+try to build Node from source against musl. Use Alpine's native packages and
+a persistent home prefix instead:
+
+```sh
+sudo apk add nodejs npm
+npm install --global --prefix /home/agent/.local @example/myagent@latest
 ```
 
 ## Idempotency

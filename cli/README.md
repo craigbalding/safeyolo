@@ -7,7 +7,7 @@ Command-line interface for managing the SafeYolo security proxy.
 ```bash
 # From source (PyPI package coming soon)
 git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo/cli && uv tool install -e .
+cd safeyolo && uv tool install -e .
 ```
 
 ## Quick Start
@@ -101,7 +101,7 @@ Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gViso
 | Command | Description |
 |---------|-------------|
 | `safeyolo agent add <name> <folder> [--host-script PATH]` | Add an agent and run it |
-| `safeyolo agent run <name> [-f folder] [-- cmd args…]` | Run an existing agent |
+| `safeyolo agent run <name> [-f folder] [--host-script PATH] [-- cmd args…]` | Run an existing agent |
 | `safeyolo agent stop <name>` | Stop a running agent |
 | `safeyolo agent list` | List configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
@@ -119,6 +119,9 @@ safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
 
 # Later, just run by name
 safeyolo agent run myproject
+
+# Reapply or switch host setup for an existing agent
+safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
 
 # Or run with a different folder
 safeyolo agent run myproject -f ~/other-project
@@ -390,7 +393,7 @@ When a credential is blocked:
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12 or 3.13
 - Docker
 
 ## Environment Variables

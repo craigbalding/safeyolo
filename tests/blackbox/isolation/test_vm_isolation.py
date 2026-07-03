@@ -719,9 +719,11 @@ class TestSandboxExposure:
         }
         if _is_microvm():
             # VZ microVMs run a real Linux kernel — standard VM devices
-            # are expected. The VM boundary IS the isolation layer.
+            # are expected. The VM boundary IS the isolation layer. vda is
+            # the read-only base rootfs and vdb is the persistent overlay
+            # disk used by guest/initramfs/init.
             whitelist |= {
-                "vsock", "vda", "rtc0", "hwrng", "kmsg", "port",
+                "vsock", "vda", "vdb", "rtc0", "hwrng", "kmsg", "port",
                 "vga_arbiter", "vport0p0", "vcs", "vcsu", "vcsa",
             }
             # hvc* (virtio console), tty*, pty*, vcs* are standard

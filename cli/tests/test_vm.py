@@ -46,13 +46,25 @@ class TestPathHelpers:
         assert get_base_rootfs_path() == tmp_config_dir / "share" / "rootfs-base.ext4"
 
     def test_agent_rootfs_path_returns_shared_base(self, tmp_config_dir):
-        # After exp/erofs-vz-phase-a, there is no per-agent rootfs clone.
-        # The shared ext4 base is read-only-booted by every macOS VZ agent;
-        # per-agent writes land in the overlay (/dev/vdb) and /home/agent.
-        # get_agent_rootfs_path therefore aliases the shared base so
-        # callers that expect a Path to boot from get the right file.
+        # No per-agent rootfs clone for ordinary agents. The shared ext4
+        # base is booted by every macOS VZ agent; per-agent writes land
+        # in the overlay (/dev/vdb) and /home/agent. get_agent_rootfs_path
+        # therefore aliases the shared base so callers that expect a Path
+        # to boot from get the right file.
         assert get_agent_rootfs_path("myagent") == tmp_config_dir / "share" / "rootfs-base.ext4"
         assert get_agent_rootfs_path("other") == tmp_config_dir / "share" / "rootfs-base.ext4"
+
+    def test_agent_rootfs_path_prefers_custom_rootfs_script_image(self, tmp_config_dir):
+        # A custom --rootfs-script writes a per-agent ext4 to
+        # agents/<name>/rootfs.ext4 (build_custom_rootfs). That image is
+        # the agent's rootfs and must take precedence over the shared
+        # base — otherwise the custom image is built but never booted.
+        custom = tmp_config_dir / "agents" / "custom" / "rootfs.ext4"
+        custom.parent.mkdir(parents=True, exist_ok=True)
+        custom.write_bytes(b"\0")
+        assert get_agent_rootfs_path("custom") == custom
+        # Other agents without a per-agent image still get the base.
+        assert get_agent_rootfs_path("plain") == tmp_config_dir / "share" / "rootfs-base.ext4"
 
     def test_agent_pid_path(self, tmp_config_dir):
         assert get_agent_pid_path("myagent") == tmp_config_dir / "agents" / "myagent" / "vm.pid"
@@ -546,6 +558,9 @@ class TestStartVm:
         helper = bin_dir / "safeyolo-vm"
         helper.write_text("#!/bin/sh\n")
         helper.chmod(0o755)
+        vsock_term = bin_dir / "vsock-term"
+        vsock_term.write_text("#!/bin/sh\n")
+        vsock_term.chmod(0o755)
 
     def test_raises_when_base_rootfs_missing(self, tmp_config_dir, monkeypatch):
         # get_agent_rootfs_path aliases the shared base; removing the
@@ -566,6 +581,36 @@ class TestStartVm:
 
         with pytest.raises(VMError, match="initramfs not found"):
             start_vm("agent1", "/workspace")
+
+    def test_darwin_foreground_requires_vsock_term(self, tmp_config_dir, monkeypatch):
+        (tmp_config_dir / "bin" / "vsock-term").unlink()
+        monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Darwin")
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+
+        with pytest.raises(VMError, match="vsock-term not found"):
+            start_vm("agent1", "/workspace", background=False)
+
+    def test_linux_foreground_does_not_require_vsock_term(self, tmp_config_dir, monkeypatch):
+        (tmp_config_dir / "bin" / "vsock-term").unlink()
+        monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Linux")
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: MagicMock(pid=1))
+
+        start_vm("agent1", "/workspace", background=False)
+
+    def test_darwin_background_does_not_require_vsock_term(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+        (tmp_config_dir / "bin" / "vsock-term").unlink()
+        monkeypatch.setattr("safeyolo.vm.platform.system", lambda: "Darwin")
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            return MagicMock(pid=1)
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace", background=True)
+
+        assert "--no-terminal" in captured_cmd
 
     def test_writes_pid_file(self, tmp_config_dir, monkeypatch):
         mock_proc = MagicMock()
@@ -604,6 +649,24 @@ class TestStartVm:
         assert "--kernel" in captured_cmd
         assert "--initrd" in captured_cmd
         assert "--rootfs" in captured_cmd
+
+    def test_command_includes_per_agent_serial_console_log(self, tmp_config_dir, monkeypatch):
+        captured_cmd = []
+
+        def mock_popen(cmd, **kw):
+            captured_cmd.extend(cmd)
+            proc = MagicMock()
+            proc.pid = 1
+            return proc
+
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        start_vm("agent1", "/workspace")
+
+        idx = captured_cmd.index("--serial-log")
+        assert captured_cmd[idx + 1] == str(
+            tmp_config_dir / "agents" / "agent1" / "console.log"
+        )
 
     def test_command_includes_cpus_and_memory(self, tmp_config_dir, monkeypatch):
         captured_cmd = []

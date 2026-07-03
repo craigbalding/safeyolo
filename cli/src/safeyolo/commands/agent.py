@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 import typer
@@ -101,6 +102,47 @@ def _validate_instance_name(name: str) -> None:
 def _load_agent_metadata(name: str) -> dict:
     """Load agent metadata from policy.toml [agents] section."""
     return _store_load_agent(name)
+
+
+def _resolve_host_script_path(host_script: str | None) -> Path | None:
+    if not host_script:
+        return None
+    host_script_path = Path(host_script).expanduser().resolve()
+    if not host_script_path.is_file():
+        console.print(f"[red]Host script not found: {host_script_path}[/red]")
+        raise typer.Exit(1)
+    if not os.access(host_script_path, os.X_OK):
+        console.print(f"[red]Host script is not executable: {host_script_path}[/red]")
+        console.print(f"  Fix: chmod +x {host_script_path}")
+        raise typer.Exit(1)
+    return host_script_path
+
+
+def _run_host_script_for_agent(
+    *,
+    name: str,
+    host_script_path: Path,
+    folder_str: str,
+) -> None:
+    from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+
+    ensure_agent_persistent_dirs(name)
+    agent_home = get_agent_home_dir(name)
+    env = {
+        **os.environ,
+        "SAFEYOLO_AGENT_NAME": name,
+        "SAFEYOLO_AGENT_HOME": str(agent_home),
+        "SAFEYOLO_AGENT_FOLDER": folder_str,
+    }
+    console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
+    try:
+        result = subprocess.run([str(host_script_path)], env=env, check=False)
+    except OSError as err:
+        console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
+        raise typer.Exit(1)
+    if result.returncode != 0:
+        console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+        raise typer.Exit(result.returncode)
 
 
 def _capture_snapshot_blocking(
@@ -871,16 +913,7 @@ def add(
     _check_project_ownership(folder_path, dangerously_allow_unowned)
     folder_str = str(folder_path)
 
-    host_script_path: Path | None = None
-    if host_script:
-        host_script_path = Path(host_script).expanduser().resolve()
-        if not host_script_path.is_file():
-            console.print(f"[red]Host script not found: {host_script_path}[/red]")
-            raise typer.Exit(1)
-        if not os.access(host_script_path, os.X_OK):
-            console.print(f"[red]Host script is not executable: {host_script_path}[/red]")
-            console.print(f"  Fix: chmod +x {host_script_path}")
-            raise typer.Exit(1)
+    host_script_path = _resolve_host_script_path(host_script)
 
     rootfs_script_path: Path | None = None
     if rootfs_script:
@@ -968,30 +1001,18 @@ def add(
     # so existing agents get backfilled, but creating it on `add`
     # covers the --no-run path and is required before running the
     # host script (which writes into it).
-    from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
+    from ..vm import ensure_agent_persistent_dirs
     ensure_agent_persistent_dirs(name)
 
     # Run the host script (if provided). Host-side, as the invoking
     # user. It sees SAFEYOLO_AGENT_NAME, SAFEYOLO_AGENT_HOME (the
     # persistent bind-mount source for /home/agent), SAFEYOLO_AGENT_FOLDER.
     if host_script_path is not None:
-        agent_home = get_agent_home_dir(name)
-        env = {
-            **os.environ,
-            "SAFEYOLO_AGENT_NAME": name,
-            "SAFEYOLO_AGENT_HOME": str(agent_home),
-            "SAFEYOLO_AGENT_FOLDER": folder_str,
-        }
-        console.print(f"  [bold]Running host script:[/bold] {host_script_path}")
         try:
-            result = subprocess.run([str(host_script_path)], env=env, check=False)
-        except OSError as err:
-            console.print(f"[red]Host script failed to launch:[/red] {escape(str(err))}")
-            raise typer.Exit(1)
-        if result.returncode != 0:
-            console.print(f"[red]Host script exited with code {result.returncode}.[/red]")
+            _run_host_script_for_agent(name=name, host_script_path=host_script_path, folder_str=folder_str)
+        except typer.Exit as exc:
             console.print(f"  Agent '{name}' config persisted; re-run with --force after fixing the script.")
-            raise typer.Exit(result.returncode)
+            raise exc
 
     # Validate and normalize mount specs
     parsed_mounts = [_parse_mount(m) for m in mount]
@@ -1168,6 +1189,11 @@ def run(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
     folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
+    host_script: str = typer.Option(
+        None,
+        "--host-script",
+        help="Run/reapply a host setup script before booting this existing agent",
+    ),
     yolo: bool = typer.Option(True, "--yolo/--no-yolo", help="Auto-accept mode (skips permission prompts)"),
     fresh: bool = typer.Option(False, "--fresh", help="Ignore user_default_args, start fresh session"),
     detach: bool = typer.Option(False, "--detach", "-d", help="Boot VM in background and return (use 'agent shell' to connect)"),
@@ -1217,6 +1243,9 @@ def run(
 
     Persistent mounts (from 'agent add --mount' or 'agent config --add-mount')
     are always included. Use --mount/-m here for additional one-off mounts.
+    Use --host-script to apply or refresh a host setup script on an existing
+    agent before boot; the script can update /home/agent and
+    .safeyolo-command.
 
     Examples:
 
@@ -1224,6 +1253,7 @@ def run(
         safeyolo agent run myproject -f ~/other/folder
         safeyolo agent run myproject --no-yolo
         safeyolo agent run myproject --detach
+        safeyolo agent run myproject --host-script contrib/codex-host-setup.sh
         safeyolo agent run myproject --mount ~/data:/data:ro
         safeyolo agent run myproject --port 6080:6080
         safeyolo agent run myproject -- --continue
@@ -1237,6 +1267,31 @@ def run(
 
     # Validate transient port specs
     parsed_ports = [_parse_port(p) for p in port]
+
+    host_script_path = _resolve_host_script_path(host_script)
+    if host_script_path is not None:
+        metadata = _load_agent_metadata(name)
+        if not metadata:
+            console.print(f"[red]Agent '{name}' is not configured.[/red]")
+            console.print("Create it first with: [bold]safeyolo agent add[/bold]")
+            raise typer.Exit(1)
+        folder_for_script = folder or metadata.get("folder")
+        if not folder_for_script:
+            console.print(f"[red]Agent '{name}' has no configured folder.[/red]")
+            raise typer.Exit(1)
+        folder_path = Path(folder_for_script).expanduser().resolve()
+        if not folder_path.is_dir():
+            console.print(f"[red]Folder not found: {folder_path}[/red]")
+            raise typer.Exit(1)
+        _check_project_ownership(folder_path, dangerously_allow_unowned)
+        _run_host_script_for_agent(
+            name=name,
+            host_script_path=host_script_path,
+            folder_str=str(folder_path),
+        )
+        updated_metadata = dict(metadata)
+        updated_metadata["host_script"] = str(host_script_path)
+        save_agent(name, updated_metadata)
 
     exit_code = _run_agent(
         name,
@@ -1289,6 +1344,139 @@ def shell(
     exit_code = plat.exec_in_sandbox(
         name, command, user=user, interactive=not command,
     )
+    raise typer.Exit(exit_code)
+
+
+@agent_app.command()
+def preview(
+    name: str = typer.Argument(..., help="Agent instance name"),
+    guest_port: int = typer.Argument(..., help="Agent-local HTTP port to preview"),
+    host_port: int = typer.Option(
+        0,
+        "--host-port",
+        help="Host loopback port to bind (default: choose a free port)",
+    ),
+    open_browser: bool = typer.Option(
+        False,
+        "--open",
+        help="Open the preview URL in the default browser",
+    ),
+    ttl: str | None = typer.Option(
+        None,
+        "--ttl",
+        help="Close automatically after a duration like 30s, 10m, or 1h",
+    ),
+    start_vnc: bool = typer.Option(
+        False,
+        "--start-vnc",
+        help="Start/restart the contrib noVNC helper inside the agent before previewing",
+    ),
+    vnc_size: str = typer.Option(
+        "auto",
+        "--vnc-size",
+        help="noVNC desktop size used with --start-vnc or --browser: auto or WIDTHxHEIGHT",
+    ),
+    browser_url: str | None = typer.Option(
+        None,
+        "--browser",
+        "-b",
+        help="Start noVNC and open this URL in Chromium inside the agent",
+    ),
+) -> None:
+    """Preview an agent-local HTTP service from the host browser.
+
+    Creates an explicit, token-gated localhost listener for one running
+    agent and one guest port. The browser URL never selects the agent; the
+    route is bound to this command's session.
+    """
+    _validate_instance_name(name)
+
+    from ..platform import get_platform
+    from ..preview import PreviewConfig, parse_ttl, resolve_vnc_geometry, serve_agent_preview, validate_guest_port
+
+    try:
+        validate_guest_port(guest_port)
+        ttl_seconds = parse_ttl(ttl)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1)
+
+    plat = get_platform()
+    if not plat.is_sandbox_running(name):
+        console.print(f"[red]Agent '{name}' is not running.[/red]")
+        console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
+        raise typer.Exit(1)
+
+    start_novnc = start_vnc or browser_url is not None
+    if start_novnc:
+        try:
+            vnc_geometry, detected_display_size = resolve_vnc_geometry(vnc_size)
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(1)
+        if detected_display_size:
+            action = "Starting noVNC"
+            if browser_url:
+                action += f" and Chromium for {browser_url}"
+            console.print(
+                f"{action} in '{name}' at {vnc_geometry} "
+                f"(host display {detected_display_size[0]}x{detected_display_size[1]})..."
+            )
+        else:
+            action = "Starting noVNC"
+            if browser_url:
+                action += f" and Chromium for {browser_url}"
+            console.print(f"{action} in '{name}' at {vnc_geometry}...")
+        if guest_port != 6080:
+            console.print(
+                f"[yellow]Warning:[/yellow] noVNC starts on guest port 6080; "
+                f"this preview is forwarding port {guest_port}."
+            )
+        command = (
+            "port_open() { (exec 3<>/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }; "
+            "command -v startvnc >/dev/null 2>&1 || "
+            "{ echo 'startvnc not found; use an agent rootfs with the noVNC helper' >&2; exit 127; }; "
+            "if port_open 6080; then "
+            "echo 'noVNC already running in the agent on 127.0.0.1:6080'; "
+            "else "
+            f"SAFEYOLO_PREVIEW_MANAGED=1 startvnc {shlex.quote(vnc_geometry)}; "
+            "fi"
+        )
+        if browser_url:
+            cdp_url = "http://127.0.0.1:9222/json/new?" + urllib.parse.quote(browser_url, safe="")
+            command += (
+                "; command -v chrome >/dev/null 2>&1 || "
+                "{ echo 'chrome not found; use an agent rootfs with the Chromium helper "
+                "or use --start-vnc for display-only preview' >&2; exit 127; }; "
+                "if port_open 9222; then "
+                "command -v curl >/dev/null 2>&1 || "
+                "{ echo 'curl not found; cannot ask existing Chromium to open a URL' >&2; exit 127; }; "
+                f"curl -fsS -X PUT --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
+                f"curl -fsS --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
+                "{ echo 'failed to open URL in existing Chromium (log: /tmp/chrome-cdp.log)' >&2; exit 1; }; "
+                "echo 'Opened URL in existing Chromium'; "
+                "else "
+                f"setsid chrome {shlex.quote(browser_url)} >/tmp/chrome.log 2>&1 < /dev/null & "
+                "echo 'Chromium started in noVNC display (logs: /tmp/chrome.log)'; "
+                "fi"
+            )
+        start_exit = plat.exec_in_sandbox(name, command, user="agent", interactive=False)
+        if start_exit != 0:
+            raise typer.Exit(start_exit)
+
+    config = PreviewConfig(
+        agent=name,
+        guest_port=guest_port,
+        host_port=host_port,
+        ttl_seconds=ttl_seconds,
+        open_browser=open_browser,
+        display_path="/vnc.html#autoconnect=true&resize=remote" if start_novnc else "/",
+    )
+    try:
+        exit_code = serve_agent_preview(config, plat)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        console.print(f"[red]Preview failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(1)
     raise typer.Exit(exit_code)
 
 

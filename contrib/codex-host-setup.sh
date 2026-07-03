@@ -45,10 +45,19 @@ set -e
 export CODEX_HOME=/home/agent/.codex
 : "${SAFEYOLO_CODEX_NODE_SPEC:=node@22}"
 : "${SAFEYOLO_CODEX_NPM_SPEC:=npm:@openai/codex@latest}"
+: "${SAFEYOLO_CODEX_NPM_PACKAGE:=@openai/codex@latest}"
+export PATH="/home/agent/.local/bin:${PATH}"
 
 if ! command -v codex >/dev/null 2>&1; then
-    mise use -g "$SAFEYOLO_CODEX_NODE_SPEC" >&2
-    mise use -g "$SAFEYOLO_CODEX_NPM_SPEC" >&2
+    if [ -f /etc/alpine-release ]; then
+        if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+            sudo apk add nodejs npm >&2
+        fi
+        npm install --global --prefix /home/agent/.local "$SAFEYOLO_CODEX_NPM_PACKAGE" >&2
+    else
+        mise use -g "$SAFEYOLO_CODEX_NODE_SPEC" >&2
+        mise use -g "$SAFEYOLO_CODEX_NPM_SPEC" >&2
+    fi
 fi
 
 # Brief SafeYolo reminder -- full agent API / troubleshooting guide at

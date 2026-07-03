@@ -22,14 +22,10 @@ os.environ.setdefault(
 
 import pytest
 
-# Post-#200-phase-5: addons live under the installed `safeyolo` package,
-# not as top-level modules in `addons/`. CI's test-addons job runs
-# `uv sync --frozen --group dev` at the repo root — that installs
-# transitive deps but doesn't necessarily install workspace-member
-# packages as editable. So we add `cli/src` to sys.path for
-# `from safeyolo.X import ...` resolution and `mitm_addons/` for
-# the older "bare" pattern (`from pid_writer import ...`) that
-# mitmproxy's `-s` loader exposes at runtime.
+# Addons live under the installed `safeyolo` package. Keep the source tree
+# first on sys.path for local edits, and expose `mitm_addons/` for the older
+# "bare" import pattern (`from pid_writer import ...`) that mitmproxy's `-s`
+# loader exposes at runtime.
 _CLI_SRC_DIR = Path(__file__).parent.parent / "cli" / "src"
 sys.path.insert(0, str(_CLI_SRC_DIR))
 _MITM_ADDONS_DIR = _CLI_SRC_DIR / "safeyolo" / "mitm_addons"

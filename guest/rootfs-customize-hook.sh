@@ -137,7 +137,7 @@ chroot "$ROOTFS" pip3 install --break-system-packages --quiet \
 # sshd config: pubkey only, no passwords
 sed -i "s/#PubkeyAuthentication yes/PubkeyAuthentication yes/" "$ROOTFS/etc/ssh/sshd_config"
 sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" "$ROOTFS/etc/ssh/sshd_config"
-chroot "$ROOTFS" ssh-keygen -A >/dev/null 2>&1
+rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key "$ROOTFS"/etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
 
 # Install guest init stub from the repo's guest/rootfs/ into the new rootfs
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"

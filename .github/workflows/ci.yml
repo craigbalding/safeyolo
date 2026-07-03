@@ -58,11 +58,16 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - name: Install CLI package
-        run: cd cli && uv sync --frozen --extra dev
+      - name: Install CLI test system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends socat
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
 
       - name: Run CLI tests
-        run: cd cli && uv run pytest tests/ -v --tb=short
+        run: uv run pytest cli/tests/ -v --tb=short
 
   lint:
     name: Lint
