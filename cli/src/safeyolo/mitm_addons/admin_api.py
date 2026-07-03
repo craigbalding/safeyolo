@@ -25,6 +25,7 @@ from mitmproxy import ctx
 
 from pdp import get_policy_client, is_policy_client_configured
 from safeyolo.core.audit_schema import EventKind, Severity
+from safeyolo.core.plumb_service import get_plumb_service
 from safeyolo.core.utils import sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.admin")
@@ -337,6 +338,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/baseline": self._handle_get_policy_baseline,
             "/admin/budgets": self._handle_get_budgets,
             "/admin/gateway/grants": self._handle_get_gateway_grants,
+            "/admin/plumb/pending": self._handle_get_plumb_pending,
+            "/admin/plumb/conversations": self._handle_get_plumb_conversations,
         }
 
         if path in static_handlers:
@@ -1038,6 +1041,9 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/budgets/reset": self._handle_post_budgets_reset,
             "/admin/gateway/grant": self._handle_post_gateway_grant,
             "/admin/gateway/contract-binding": self._handle_post_contract_binding,
+            "/admin/plumb/approve": self._handle_post_plumb_approve,
+            "/admin/plumb/deny": self._handle_post_plumb_deny,
+            "/admin/plumb/close": self._handle_post_plumb_close,
         }
 
         if path in static_handlers:
@@ -1050,6 +1056,77 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json({"error": "not found"}, 404)
         return None
+
+    # =========================================================================
+    # Plumb (agent-to-agent collaboration) handlers
+    #
+    # PlumbService's mailbox state (asyncio.Condition waiters, in-memory dicts)
+    # is owned by mitmproxy's event loop. This handler runs on the admin HTTP
+    # server thread, so every call is marshalled onto the loop via
+    # run_coroutine_threadsafe — the same idiom as _handle_put_proxy_mode.
+    # =========================================================================
+
+    def _plumb_call(self, coro, timeout: float = 5.0):
+        """Run an async PlumbService coroutine on mitmproxy's event loop from
+        this HTTP thread. Returns (result_dict, None) or (None, error_str)."""
+        try:
+            fut = asyncio.run_coroutine_threadsafe(coro, ctx.master.event_loop)
+            return fut.result(timeout=timeout), None
+        except TimeoutError:
+            return None, "timeout waiting for plumb operation"
+        except Exception as e:  # noqa: BLE001 — surface to caller as 4xx/5xx
+            return None, f"{type(e).__name__}: {e}"
+
+    def _plumb_send(self, coro) -> None:
+        """Common path: marshal, map the service `status` to the HTTP code."""
+        result, err = self._plumb_call(coro)
+        if err:
+            self._send_json({"error": err}, 500)
+            return
+        status = result.pop("status", 200)
+        self._send_json(result, status)
+
+    def _handle_get_plumb_pending(self) -> None:
+        """GET /admin/plumb/pending - pending chat requests (for watch)."""
+        result, err = self._plumb_call(get_plumb_service().list_pending())
+        if err:
+            self._send_json({"error": err}, 500)
+            return
+        self._send_json(result)
+
+    def _handle_get_plumb_conversations(self) -> None:
+        """GET /admin/plumb/conversations - active conversation grants."""
+        result, err = self._plumb_call(get_plumb_service().admin_list_conversations())
+        if err:
+            self._send_json({"error": err}, 500)
+            return
+        self._send_json(result)
+
+    def _handle_post_plumb_approve(self) -> None:
+        """POST /admin/plumb/approve {request_id, ttl_seconds?}."""
+        data = self._read_json()
+        if not data or not data.get("request_id"):
+            self._send_json({"error": "missing 'request_id'"}, 400)
+            return
+        self._plumb_send(
+            get_plumb_service().approve_request(data["request_id"], data.get("ttl_seconds"))
+        )
+
+    def _handle_post_plumb_deny(self) -> None:
+        """POST /admin/plumb/deny {request_id}."""
+        data = self._read_json()
+        if not data or not data.get("request_id"):
+            self._send_json({"error": "missing 'request_id'"}, 400)
+            return
+        self._plumb_send(get_plumb_service().deny_request(data["request_id"]))
+
+    def _handle_post_plumb_close(self) -> None:
+        """POST /admin/plumb/close {conversation_id}."""
+        data = self._read_json()
+        if not data or not data.get("conversation_id"):
+            self._send_json({"error": "missing 'conversation_id'"}, 400)
+            return
+        self._plumb_send(get_plumb_service().close_conversation(data["conversation_id"]))
 
     # =========================================================================
     # PUT Handlers

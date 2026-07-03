@@ -36,6 +36,19 @@ DEFAULT_CONFIG = {
     "notifications": {
         "method": "none",
     },
+    "plumb": {
+        # Max participants in an agent-to-agent conversation, INCLUDING the
+        # requester. Over-limit requests are rejected with 400, never
+        # truncated into a different conversation than the one asked for.
+        "max_participants": 8,
+        # Maximum accepted message body size in bytes. Set to 0 to disable the
+        # SafeYolo plumb cap; secret scanning and durable audit still apply.
+        "max_message_bytes": 1_048_576,
+        # Maximum messages returned by one read. History itself is durable and
+        # uncapped; this only bounds individual responses.
+        "message_page_limit": 200,
+        "default_ttl_seconds": 3600,
+    },
     "test": {
         "enabled": False,
         # Sinkhole routing: redirect upstream to local test sinkhole
