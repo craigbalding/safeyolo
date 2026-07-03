@@ -187,7 +187,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             for option_name in option_names:
                 setattr(ctx.options, option_name, option_value)
             option_values = dict.fromkeys(option_names, option_value)
-            log.info(f"Mode changed: {_sanitize_log(addon_name)} -> {_sanitize_log(mode)} ({option_values})")
+            log.info("Admin mode changed")
             return {
                 "addon": addon_name,
                 "mode": mode,
@@ -195,7 +195,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "status": "updated",
             }
         except Exception as e:
-            log.error(f"Failed to set mode for {_sanitize_log(addon_name)}: {type(e).__name__}: {e}")
+            log.error("Failed to set admin mode: %s", type(e).__name__)
             return {"addon": addon_name, "error": f"{type(e).__name__}: {e}"}
 
     def _get_all_modes(self) -> dict:
@@ -411,9 +411,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "destination": destination, "cred_id": cred_id, "tier": tier},
         )
-        safe_cred_id = _sanitize_log(cred_id)
-        safe_destination = _sanitize_log(destination)
-        log.info(f"Baseline approval added: {safe_cred_id} -> {safe_destination}")
+        log.info("Baseline approval added")
 
         self._send_json(
             {
@@ -452,9 +450,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "destination": destination, "cred_id": cred_id, "reason": reason},
         )
-        safe_cred_id = _sanitize_log(cred_id)
-        safe_destination = _sanitize_log(destination)
-        log.info(f"Credential denied: {safe_cred_id} -> {safe_destination} ({_sanitize_log(reason)})")
+        log.info("Credential denial recorded")
 
         self._send_json(
             {
@@ -671,10 +667,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "credential": credential,
             },
         )
-        log.info(
-            f"Agent service authorized: {_sanitize_log(agent_name)} -> "
-            f"{_sanitize_log(service)} (capability={_sanitize_log(capability)})"
-        )
+        log.info("Agent service authorized")
 
         self._send_json({
             "status": "authorized",
@@ -724,7 +717,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 "credential": credential,
             },
         )
-        log.info(f"Agent service revoked: {_sanitize_log(agent_name)} -> {_sanitize_log(service_name)}")
+        log.info("Agent service revoked")
 
         self._send_json({
             "status": "revoked",
@@ -818,7 +811,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(e)}, 400)
             return
         except Exception as e:
-            log.error("Internal error updating host rate: %s: %s", type(e).__name__, e)
+            log.error("Internal error updating host rate: %s", type(e).__name__)
             self._send_json({"error": "Internal server error"}, 500)
             return
 
@@ -831,7 +824,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host, "old_rate": result.get("old_rate"), "new_rate": rate},
         )
-        log.info("Host rate updated: %s -> %s", _sanitize_log(host), _sanitize_log(str(rate)))
+        log.info("Host rate updated")
         self._send_json(result)
 
     def _handle_post_host_allow(self) -> None:
@@ -862,7 +855,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(e)}, 400)
             return
         except Exception as e:
-            log.error("Internal error adding host allowance: %s: %s", type(e).__name__, e)
+            log.error("Internal error adding host allowance: %s", type(e).__name__)
             self._send_json({"error": "Internal server error"}, 500)
             return
 
@@ -875,7 +868,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host, "rate": rate},
         )
-        log.info("Host allowed: %s (rate=%s)", _sanitize_log(host), _sanitize_log(str(rate)))
+        log.info("Host allowed")
         self._send_json(result)
 
     def _handle_post_host_deny(self) -> None:
@@ -919,7 +912,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host, "expires": expires},
         )
-        log.info("Host denied: %s (expires=%s)", _sanitize_log(host), _sanitize_log(str(expires)))
+        log.info("Host denied")
         self._send_json(result)
 
     def _handle_post_circuit_breaker_reset(self) -> None:
@@ -950,7 +943,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host},
         )
-        log.info(f"Circuit breaker reset: {_sanitize_log(host)}")
+        log.info("Circuit breaker reset")
         self._send_json({"status": "reset", "host": host})
 
     def _handle_post_host_bypass(self) -> None:
@@ -977,7 +970,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(e)}, 400)
             return
         except Exception as e:
-            log.error("Internal error adding host bypass: %s: %s", type(e).__name__, e)
+            log.error("Internal error adding host bypass: %s", type(e).__name__)
             self._send_json({"error": "Internal server error"}, 500)
             return
 
@@ -990,7 +983,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "host": host, "addon": addon, "bypass": result.get("bypass")},
         )
-        log.info(f"Host bypass added: {_sanitize_log(host)} bypass={_sanitize_log(addon)}")
+        log.info("Host bypass added")
         self._send_json(result)
 
     def _handle_post_budgets_reset(self) -> None:
@@ -1003,7 +996,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         result = client.reset_budgets(resource=resource)
 
         if result.get("status") == "error":
-            log.error(f"Failed to reset budgets: {result.get('error')}")
+            log.error("Failed to reset budgets")
             self._send_json({"error": result.get("error")}, 500)
             return
 
@@ -1017,7 +1010,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "resource": resource},
         )
-        log.info(f"Budget counters reset: {safe_resource}")
+        log.info("Budget counters reset")
         self._send_json(result)
 
     def do_POST(self):
@@ -1327,7 +1320,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             addon="admin-api",
             details={"client_ip": client_ip, "task_id": task_id, "permission_count": permission_count},
         )
-        log.info(f"Task policy '{_sanitize_log(task_id)}' updated: {permission_count} permissions")
+        log.info("Task policy updated")
 
         self._send_json(
             {

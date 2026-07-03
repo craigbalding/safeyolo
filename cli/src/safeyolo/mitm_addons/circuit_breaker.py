@@ -151,7 +151,7 @@ class CircuitBreaker(SecurityAddon):
     name = "circuit-breaker"
 
     def __init__(self):
-        # Don't call super().__init__() - we have custom stats
+        super().__init__()
         self._state = InMemoryCircuitState()
 
         # Default config (fallback when PDP isn't loaded)
