@@ -16,6 +16,17 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
 
     static let PROXY_PORT: UInt32 = 1080
     private static let LABEL = "proxy-relay"
+    private static let firstByteTimeoutMs: Int32 = {
+        let key = "SAFEYOLO_PROXY_FIRST_BYTE_TIMEOUT_MS"
+        guard let raw = ProcessInfo.processInfo.environment[key] else {
+            return 30_000
+        }
+        guard let parsed = Int32(raw), parsed >= 0 else {
+            Log.warn(LABEL, "\(key)=\(raw) is invalid; using 30000")
+            return 30_000
+        }
+        return parsed
+    }()
 
     private let vm: VZVirtualMachine
     private let queue: DispatchQueue
@@ -58,7 +69,7 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
             self.listener = lst
             device.setSocketListener(lst, forPort: VSockProxyRelay.PROXY_PORT)
             Log.info(Self.LABEL,
-                     "listen vsock=\(VSockProxyRelay.PROXY_PORT) agent=\(agent) upstream=unix:\(socketPath)")
+                     "listen vsock=\(VSockProxyRelay.PROXY_PORT) agent=\(agent) upstream=unix:\(socketPath) first_byte_timeout_ms=\(Self.firstByteTimeoutMs)")
         }
     }
 
@@ -72,9 +83,11 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         let flow = flowCounter.next()
         Log.debug(Self.LABEL,
                   "accept flow=\(flow) agent=\(agent) src=vsock:\(VSockProxyRelay.PROXY_PORT)")
-        DispatchQueue.global(qos: .default).async { [self] in
+        let thread = Thread { [self] in
             relay(flow: flow, vsockConnection: connection)
         }
+        thread.name = "safeyolo.proxy-relay.\(agent).\(flow)"
+        thread.start()
         return true
     }
 
@@ -84,10 +97,36 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         let started = Date()
         let vsockFD = vsockConnection.fileDescriptor
 
+        var firstBuf = [UInt8](repeating: 0, count: 65536)
+        let firstBytes: Int
+        switch Self.readFirstBytes(vsockFD: vsockFD, buf: &firstBuf, timeoutMs: Self.firstByteTimeoutMs) {
+        case .data(let count):
+            firstBytes = count
+        case .timeout:
+            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+            Log.info(Self.LABEL,
+                     "idle_timeout flow=\(flow) agent=\(agent) first_byte_timeout_ms=\(Self.firstByteTimeoutMs) duration_ms=\(durationMs)")
+            close(vsockFD)
+            return
+        case .closed:
+            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+            Log.debug(Self.LABEL,
+                      "closed_before_first_byte flow=\(flow) agent=\(agent) duration_ms=\(durationMs)")
+            close(vsockFD)
+            return
+        case .failed(let message):
+            Log.warn(Self.LABEL,
+                     "flow=\(flow) read first byte: \(message)")
+            close(vsockFD)
+            return
+        }
+
         // Open a fresh UDS client connection for this flow. Mitmproxy's
         // UnixInstance accepts on <socketPath> and parses the attribution
         // IP / agent name from its own filename — this relay never
-        // touches identity.
+        // touches identity. Deliberately do this only after the guest has
+        // sent request bytes; browser preconnect/restore sockets that stay
+        // idle should not occupy a mitmproxy UDS connection.
         let udsFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard udsFD >= 0 else {
             Log.warn(Self.LABEL,
@@ -128,30 +167,22 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
             return
         }
 
-        // Bidirectional pump via DispatchGroup — symmetric fix to
-        // VSockShellBridge's race. Thread.isExecuting has a window
-        // between start() and actual scheduling where both can read
-        // false, making the while-loop return early and tear the fds
-        // down under a pump that hadn't yet begun reading.
-        let group = DispatchGroup()
-        let bgQueue = DispatchQueue.global(qos: .default)
-
-        var bytesInbound = 0  // vsock → uds (client request)
-        var bytesOutbound = 0 // uds → vsock (proxy response)
-
-        group.enter()
-        bgQueue.async {
-            defer { group.leave() }
-            bytesInbound = Self.forwardData(from: vsockFD, to: udsFD)
-            shutdown(udsFD, SHUT_WR)
+        guard Self.writeAll(udsFD, buf: &firstBuf, count: firstBytes) else {
+            Log.warn(Self.LABEL,
+                     "flow=\(flow) write first bytes to upstream: \(String(cString: strerror(errno)))")
+            close(udsFD)
+            close(vsockFD)
+            return
         }
-        group.enter()
-        bgQueue.async {
-            defer { group.leave() }
-            bytesOutbound = Self.forwardData(from: udsFD, to: vsockFD)
-            shutdown(vsockFD, SHUT_WR)
-        }
-        group.wait()
+
+        // Per-flow poll loop on this dedicated relay thread. Browser restore
+        // can create many long-lived idle CONNECT tunnels; using the shared
+        // global DispatchQueue for blocking reads lets those tunnels starve
+        // unrelated new proxy flows. One thread per live flow keeps that
+        // blocking isolated without multiplying each tunnel into separate
+        // pump threads.
+        let (moreInbound, bytesOutbound) = Self.relayBidirectional(vsockFD: vsockFD, udsFD: udsFD)
+        let bytesInbound = firstBytes + moreInbound
 
         let durationMs = Int(Date().timeIntervalSince(started) * 1000)
         Log.info(Self.LABEL,
@@ -163,25 +194,130 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         close(udsFD)
     }
 
-    private static func forwardData(from srcFD: Int32, to dstFD: Int32) -> Int {
-        var buf = [UInt8](repeating: 0, count: 65536)
-        var total = 0
+    private enum FirstReadResult {
+        case data(Int)
+        case timeout
+        case closed
+        case failed(String)
+    }
+
+    private static func readFirstBytes(vsockFD: Int32, buf: inout [UInt8], timeoutMs: Int32) -> FirstReadResult {
+        let deadline = timeoutMs > 0
+            ? Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+            : nil
+
         while true {
-            let n = read(srcFD, &buf, buf.count)
-            if n <= 0 { break }
-            var written = 0
-            buf.withUnsafeBufferPointer { ptr in
-                while written < n {
-                    let w = Darwin.write(dstFD, ptr.baseAddress! + written, n - written)
-                    if w <= 0 { return }
-                    written += w
+            let pollTimeout: Int32
+            if let deadline {
+                let remainingMs = Int32(max(0, Int(deadline.timeIntervalSinceNow * 1000)))
+                pollTimeout = remainingMs
+            } else {
+                pollTimeout = -1
+            }
+
+            var fd = pollfd(fd: vsockFD, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&fd, nfds_t(1), pollTimeout)
+            if ready == 0 {
+                return .timeout
+            }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return .failed(String(cString: strerror(errno)))
+            }
+
+            if (fd.revents & Int16(POLLNVAL)) != 0 {
+                return .failed("poll(POLLNVAL)")
+            }
+            if (fd.revents & Int16(POLLERR)) != 0 {
+                return .failed("poll(POLLERR)")
+            }
+
+            let n = read(vsockFD, &buf, buf.count)
+            if n > 0 {
+                return .data(n)
+            }
+            if n == 0 {
+                return .closed
+            }
+            if errno == EINTR {
+                continue
+            }
+            return .failed(String(cString: strerror(errno)))
+        }
+    }
+
+    private static func relayBidirectional(vsockFD: Int32, udsFD: Int32) -> (Int, Int) {
+        var buf = [UInt8](repeating: 0, count: 65536)
+        var bytesInbound = 0  // vsock → uds (client request)
+        var bytesOutbound = 0 // uds → vsock (proxy response)
+        var vsockReadable = true
+        var udsReadable = true
+        let readableEvents = Int16(POLLIN | POLLHUP | POLLERR | POLLNVAL)
+
+        while vsockReadable || udsReadable {
+            var fds = [
+                pollfd(fd: vsockFD, events: vsockReadable ? Int16(POLLIN) : 0, revents: 0),
+                pollfd(fd: udsFD, events: udsReadable ? Int16(POLLIN) : 0, revents: 0),
+            ]
+
+            let ready = poll(&fds, nfds_t(fds.count), -1)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+
+            if vsockReadable && (fds[0].revents & readableEvents) != 0 {
+                let n = read(vsockFD, &buf, buf.count)
+                if n > 0 {
+                    if writeAll(udsFD, buf: &buf, count: n) {
+                        bytesInbound += n
+                    } else {
+                        vsockReadable = false
+                        shutdown(udsFD, SHUT_WR)
+                    }
+                } else if n == 0 || errno != EINTR {
+                    vsockReadable = false
+                    shutdown(udsFD, SHUT_WR)
                 }
             }
-            if written < n { break }
-            total += written
+
+            if udsReadable && (fds[1].revents & readableEvents) != 0 {
+                let n = read(udsFD, &buf, buf.count)
+                if n > 0 {
+                    if writeAll(vsockFD, buf: &buf, count: n) {
+                        bytesOutbound += n
+                    } else {
+                        udsReadable = false
+                        shutdown(vsockFD, SHUT_WR)
+                    }
+                } else if n == 0 || errno != EINTR {
+                    udsReadable = false
+                    shutdown(vsockFD, SHUT_WR)
+                }
+            }
         }
-        return total
+
+        return (bytesInbound, bytesOutbound)
     }
+
+    private static func writeAll(_ dstFD: Int32, buf: inout [UInt8], count: Int) -> Bool {
+        var written = 0
+        return buf.withUnsafeBufferPointer { ptr in
+            while written < count {
+                let w = Darwin.write(dstFD, ptr.baseAddress! + written, count - written)
+                if w > 0 {
+                    written += w
+                    continue
+                }
+                if w < 0 && errno == EINTR {
+                    continue
+                }
+                return false
+            }
+            return true
+        }
+    }
+
 }
 
 /// Thread-safe monotonic counter used to stamp flow ids.
