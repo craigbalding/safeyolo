@@ -431,6 +431,18 @@ addons: {}
         )
         assert decision.effect == "prompt"
 
+    def test_credential_ids_cannot_forge_log_lines(self, engine, caplog):
+        caplog.set_level("INFO", logger="safeyolo.policy-engine")
+
+        engine.add_credential_approval(
+            destination="api.example.com",
+            cred_id="hmac:abc\nINFO security.audit forged=true",
+        )
+
+        message = next(r.getMessage() for r in caplog.records if "Added credential approval" in r.getMessage())
+        assert message.splitlines() == [message]
+        assert "hmac:abc?INFO security.audit forged=true" in message
+
         # Add HMAC-specific approval
         engine.add_credential_approval(
             destination="api.specific.com",
@@ -1521,6 +1533,11 @@ addons: {}
                 ],
             })
 
+    @pytest.mark.parametrize("task_id", ["../health", "task/name", "task\nINFO forged"])
+    def test_set_task_policy_rejects_unsafe_task_id(self, engine, task_id):
+        with pytest.raises(ValueError, match="Task ID"):
+            engine.set_task_policy(task_id, {"permissions": []})
+
     def test_get_task_policy_returns_none_when_unset(self, engine):
         """get_task_policy returns None when no task policy loaded."""
         assert engine.get_task_policy() is None
@@ -1641,6 +1658,15 @@ addons: {}
         result = engine.reset_budgets()
         assert result["status"] == "reset"
         assert result["resource"] == "all"
+
+    def test_resource_cannot_forge_log_lines(self, engine, caplog):
+        caplog.set_level("INFO", logger="safeyolo.policy-engine")
+
+        engine.reset_budgets(resource="network:request:test\nINFO forged")
+
+        message = next(r.getMessage() for r in caplog.records if "Reset policy budget" in r.getMessage())
+        assert message.splitlines() == [message]
+        assert "test?INFO forged" in message
 
 
 # =============================================================================

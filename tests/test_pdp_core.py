@@ -5,6 +5,7 @@ and decision-building logic without needing YAML files or the full
 policy stack.
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -557,6 +558,61 @@ class TestApplyTaskPolicy:
         """task_id not in _task_policies dict => no action."""
         pdp_core._apply_task_policy("nonexistent-task")
         # Engine's loader should not have been touched for task policy
+
+    def test_success_log_is_single_line_even_if_validation_is_bypassed(
+        self, pdp_core, caplog
+    ):
+        hostile = "task-1\nINFO security.audit forged=true"
+        policy_data = {
+            "metadata": {"version": "1.0"},
+            "permissions": [],
+            "budgets": {},
+            "required": [],
+        }
+        pdp_core._task_policies[hostile] = policy_data
+        caplog.set_level(logging.DEBUG, logger="safeyolo.pdp.core")
+
+        with patch("pdp.core.validate_task_id", return_value=hostile):
+            pdp_core._apply_task_policy(hostile)
+
+        message = next(r.getMessage() for r in caplog.records if "Applied task policy" in r.getMessage())
+        assert message.splitlines() == [message]
+        assert "task-1?INFO security.audit forged=true" in message
+
+    def test_failure_log_sanitizes_task_id_and_multiline_exception(
+        self, pdp_core, caplog
+    ):
+        hostile = "task-1\nINFO security.audit forged=true"
+        pdp_core._task_policies[hostile] = {"permissions": "not-a-list"}
+        caplog.set_level(logging.WARNING, logger="safeyolo.pdp.core")
+
+        with patch("pdp.core.validate_task_id", return_value=hostile):
+            pdp_core._apply_task_policy(hostile)
+
+        message = next(r.getMessage() for r in caplog.records if "Failed to apply" in r.getMessage())
+        assert message.splitlines() == [message]
+        assert "task-1?INFO security.audit forged=true" in message
+
+    def test_invalid_upsert_log_sanitizes_task_id_and_multiline_exception(
+        self, pdp_core, caplog
+    ):
+        hostile = "task-1\nINFO security.audit forged=true"
+        caplog.set_level(logging.WARNING, logger="safeyolo.pdp.core")
+
+        with patch("pdp.core.validate_task_id", return_value=hostile):
+            result = pdp_core.upsert_task_policy(hostile, {"permissions": "not-a-list"})
+
+        assert result["status"] == "error"
+        message = next(r.getMessage() for r in caplog.records if "Invalid task policy" in r.getMessage())
+        assert message.splitlines() == [message]
+        assert "task-1?INFO security.audit forged=true" in message
+
+    @pytest.mark.parametrize("task_id", ["../health", "task/name", "task\nINFO forged"])
+    def test_invalid_task_id_is_rejected_before_cache_access(self, pdp_core, task_id):
+        result = pdp_core.upsert_task_policy(task_id, {"permissions": []})
+
+        assert result == {"status": "error", "error": "Invalid task ID"}
+        assert task_id not in pdp_core._task_policies
 
 
 # =========================================================================

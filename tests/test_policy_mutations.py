@@ -219,6 +219,18 @@ class TestAddHostBypass:
         assert result["status"] == "unchanged"
         assert result["bypass"].count("pattern-scanner") == 1
 
+    def test_addon_name_cannot_forge_log_lines(self, engine, caplog):
+        caplog.set_level("INFO", logger="safeyolo.policy-engine")
+
+        engine.add_host_bypass(
+            "api.openai.com",
+            "pattern-scanner\nINFO security.audit forged=true",
+        )
+
+        message = next(r.getMessage() for r in caplog.records if "Added host bypass" in r.getMessage())
+        assert message.splitlines() == [message]
+        assert "pattern-scanner?INFO security.audit forged=true" in message
+
     def test_append_to_existing_bypass(self, tmp_path):
         from safeyolo.policy.engine import PolicyEngine
 

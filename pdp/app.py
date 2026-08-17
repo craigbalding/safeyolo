@@ -47,6 +47,9 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from safeyolo.core.audit_schema import sanitize_for_log
+from safeyolo.core.identifiers import validate_task_id
+
 from .core import _sanitize_for_log, get_pdp, reset_pdp
 from .schemas import HttpEvent, PolicyDecision
 
@@ -68,7 +71,7 @@ async def lifespan(app: FastAPI):
         baseline_path=Path(baseline_path) if baseline_path else None,
         budget_state_path=Path(budget_path) if budget_path else None,
     )
-    log.info("PDP started", extra={"baseline_path": baseline_path})
+    log.info("PDP started", extra={"baseline_path": sanitize_for_log(baseline_path)})
 
     yield
 
@@ -96,13 +99,13 @@ app = FastAPI(
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     """Handle unexpected errors with proper logging."""
-    log.error(f"Unhandled exception: {type(exc).__name__}: {exc}")
+    log.error("Unhandled exception: %s: %s", type(exc).__name__, sanitize_for_log(exc))
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal Server Error",
             "error_code": "INTERNAL_ERROR",
-            "message": str(exc),
+            "message": "An internal error occurred",
         },
     )
 
@@ -137,7 +140,7 @@ async def evaluate(event: HttpEvent) -> PolicyDecision:
         )
         return decision
     except Exception as e:
-        log.error(f"Evaluation failed: {type(e).__name__}: {e}")
+        log.error("Evaluation failed: %s: %s", type(e).__name__, sanitize_for_log(e))
         raise HTTPException(status_code=500, detail="Evaluation failed")
 
 
@@ -152,6 +155,10 @@ async def upsert_task_policy(task_id: str, policy: dict[str, Any]) -> dict:
     Returns:
         Status with task_id and permission count
     """
+    try:
+        task_id = validate_task_id(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     pdp = get_pdp()
     result = pdp.upsert_task_policy(task_id, policy)
     if result["status"] == "error":
@@ -167,6 +174,10 @@ async def get_task_policy(task_id: str) -> dict:
     Returns:
         The policy data, or 404 if not found
     """
+    try:
+        task_id = validate_task_id(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     pdp = get_pdp()
     policy = pdp.get_task_policy(task_id)
     if policy is None:
@@ -182,6 +193,10 @@ async def delete_task_policy(task_id: str) -> dict:
     Returns:
         Status with task_id
     """
+    try:
+        task_id = validate_task_id(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     pdp = get_pdp()
     result = pdp.delete_task_policy(task_id)
     if result["status"] == "not_found":

@@ -474,6 +474,56 @@ class TestHttpPolicyClient:
         result = client.add_host_bypass("example.com", "credential-guard")
         assert "error" in result
 
+    # ---- task policy path safety ----
+
+    @pytest.mark.parametrize(
+        "task_id",
+        ["../health", "task/name", "task?admin=true", "task#fragment", "task\nINFO forged"],
+    )
+    def test_get_task_policy_rejects_unsafe_task_id_without_request(self, task_id):
+        client = self._make_client()
+
+        with patch.object(client._client, "get") as mock_get:
+            assert client.get_task_policy(task_id) is None
+
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "task_id",
+        ["../health", "task/name", "task?admin=true", "task#fragment", "task\nINFO forged"],
+    )
+    def test_upsert_task_policy_rejects_unsafe_task_id_without_request(self, task_id):
+        client = self._make_client()
+
+        with patch.object(client._client, "put") as mock_put:
+            result = client.upsert_task_policy(task_id, {"permissions": []})
+
+        assert result == {"error": "Invalid task ID"}
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize("task_id", ["task-abc", "task_abc.123", "a" * 128])
+    def test_task_policy_requests_use_one_validated_path_segment(self, task_id):
+        client = self._make_client()
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 404
+
+        with patch.object(client._client, "get", return_value=response) as mock_get:
+            client.get_task_policy(task_id)
+
+        assert mock_get.call_args.args[0] == f"/v1/tasks/{task_id}/policy"
+
+    def test_upsert_task_policy_uses_one_validated_path_segment(self):
+        client = self._make_client()
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {"status": "ok"}
+
+        with patch.object(client._client, "put", return_value=response) as mock_put:
+            result = client.upsert_task_policy("task-abc", {"permissions": []})
+
+        assert result == {"status": "ok"}
+        assert mock_put.call_args.args[0] == "/v1/tasks/task-abc/policy"
+
     # ---- shutdown ----
 
     def test_shutdown_closes_http_client(self):

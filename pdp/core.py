@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "addons"))
 # Canonical sanitize_for_log lives in audit_schema.
 from safeyolo.core.audit_schema import sanitize_for_log as _sanitize_for_log
+from safeyolo.core.identifiers import validate_task_id
 from safeyolo.policy.engine import PolicyDecision as LegacyDecision
 from safeyolo.policy.engine import PolicyEngine, UnifiedPolicy
 
@@ -91,8 +92,8 @@ class PDPCore:
         log.info(
             "PDPCore initialized",
             extra={
-                "baseline_path": str(baseline_path) if baseline_path else None,
-                "budget_state_path": str(budget_state_path) if budget_state_path else None,
+                "baseline_path": _sanitize_for_log(baseline_path) if baseline_path else None,
+                "budget_state_path": _sanitize_for_log(budget_state_path) if budget_state_path else None,
             },
         )
 
@@ -143,7 +144,7 @@ class PDPCore:
         except Exception as exc:
             log.error(
                 "PDPCore.evaluate() internal error: %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__, _sanitize_for_log(exc),
             )
             return PolicyDecision(
                 version=1,
@@ -423,6 +424,13 @@ class PDPCore:
 
     def _apply_task_policy(self, task_id: str) -> None:
         """Apply task policy if one exists for this task_id."""
+        try:
+            task_id = validate_task_id(task_id)
+        except ValueError:
+            log.warning("Rejected invalid task ID during policy application")
+            return
+
+        safe_task_id = _sanitize_for_log(task_id)
         with self._lock:
             if task_id in self._task_policies:
                 policy_data = self._task_policies[task_id]
@@ -430,9 +438,14 @@ class PDPCore:
                     policy = UnifiedPolicy.model_validate(policy_data)
                     policy.metadata.task_id = task_id
                     self._engine._loader._task_policy = policy
-                    log.debug(f"Applied task policy for {task_id}")
+                    log.debug("Applied task policy for %s", safe_task_id)
                 except Exception as e:
-                    log.warning(f"Failed to apply task policy {task_id}: {type(e).__name__}: {e}")
+                    log.warning(
+                        "Failed to apply task policy %s: %s: %s",
+                        safe_task_id,
+                        type(e).__name__,
+                        _sanitize_for_log(e),
+                    )
 
     # -------------------------------------------------------------------------
     # Baseline Policy Management
@@ -547,13 +560,13 @@ class PDPCore:
                 "permission_count": result.get("permission_count", 0),
             }
         except ValueError as e:
-            log.warning(f"Invalid baseline policy: {type(e).__name__}: {e}")
+            log.warning("Invalid baseline policy: %s: %s", type(e).__name__, _sanitize_for_log(e))
             return {
                 "status": "error",
                 "error": "Invalid policy document",
             }
         except Exception as e:
-            log.error(f"Failed to replace baseline: {type(e).__name__}: {e}")
+            log.error("Failed to replace baseline: %s: %s", type(e).__name__, _sanitize_for_log(e))
             return {
                 "status": "error",
                 "error": "Failed to replace baseline policy",
@@ -605,13 +618,13 @@ class PDPCore:
                 "permission_count": result.get("permission_count", 1),
             }
         except ValueError as e:
-            log.warning(f"Invalid credential approval: {type(e).__name__}: {e}")
+            log.warning("Invalid credential approval: %s: %s", type(e).__name__, _sanitize_for_log(e))
             return {
                 "status": "error",
                 "error": "Invalid credential approval parameters",
             }
         except Exception as e:
-            log.error(f"Failed to add credential approval: {type(e).__name__}: {e}")
+            log.error("Failed to add credential approval: %s: %s", type(e).__name__, _sanitize_for_log(e))
             return {
                 "status": "error",
                 "error": "Failed to add credential approval",
@@ -649,7 +662,7 @@ class PDPCore:
                 "reset_count": result.get("reset_count", 0) if isinstance(result, dict) else 0,
             }
         except Exception as e:
-            log.error(f"Failed to reset budgets: {type(e).__name__}: {e}")
+            log.error("Failed to reset budgets: %s: %s", type(e).__name__, _sanitize_for_log(e))
             return {
                 "status": "error",
                 "error": "Failed to reset budget counters",
@@ -686,13 +699,25 @@ class PDPCore:
         Returns:
             Status dict with task_id and validation result
         """
+        try:
+            task_id = validate_task_id(task_id)
+        except ValueError:
+            log.warning("Rejected invalid task policy ID")
+            return {"status": "error", "error": "Invalid task ID"}
+
+        safe_task_id = _sanitize_for_log(task_id)
         with self._lock:
             # Validate policy
             try:
                 policy = UnifiedPolicy.model_validate(policy_data)
                 policy.metadata.task_id = task_id
             except Exception as e:
-                log.warning(f"Invalid task policy for {task_id}: {type(e).__name__}: {e}")
+                log.warning(
+                    "Invalid task policy for %s: %s: %s",
+                    safe_task_id,
+                    type(e).__name__,
+                    _sanitize_for_log(e),
+                )
                 return {
                     "status": "error",
                     "task_id": task_id,
@@ -718,6 +743,11 @@ class PDPCore:
         Returns:
             Status dict
         """
+        try:
+            task_id = validate_task_id(task_id)
+        except ValueError:
+            return {"status": "error", "error": "Invalid task ID"}
+
         with self._lock:
             if task_id in self._task_policies:
                 del self._task_policies[task_id]
@@ -732,6 +762,10 @@ class PDPCore:
 
     def get_task_policy(self, task_id: str) -> dict | None:
         """Get task policy data if it exists."""
+        try:
+            task_id = validate_task_id(task_id)
+        except ValueError:
+            return None
         with self._lock:
             return self._task_policies.get(task_id)
 

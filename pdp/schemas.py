@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from safeyolo.core.identifiers import validate_task_id
 
 # =============================================================================
 # Enums
@@ -199,6 +201,11 @@ class ContextBlock(BaseModel):
     gateway_capability: str | None = Field(None, description="Capability name for gateway requests")
     gateway_account: str | None = Field(None, description="Account persona (agent/operator/custom)")
     gateway_risky_route: dict | None = Field(None, description="Serialized risky route signals")
+
+    @field_validator("task_id")
+    @classmethod
+    def _validate_task_id(cls, value: str | None) -> str | None:
+        return validate_task_id(value) if value is not None else None
 
 
 class HttpEvent(BaseModel):
