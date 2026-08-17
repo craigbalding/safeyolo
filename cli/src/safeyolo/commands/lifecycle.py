@@ -1,7 +1,9 @@
 """Proxy lifecycle commands: start, stop, status, build."""
 
+import platform
 import secrets
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -106,10 +108,7 @@ def start(
     if not check_guest_images():
         missing = missing_guest_images()
         console.print(f"[yellow]Guest images missing: {', '.join(missing)}[/yellow]")
-        console.print("Build them first: [bold]cd guest && ./build-all.sh[/bold]")
-        console.print("Then install: [bold]mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/[/bold]")
-        if "rootfs-erofs" in missing:
-            console.print("  [dim]erofs-utils is required on the build host: sudo apt-get install erofs-utils[/dim]")
+        console.print("Build and install them with: [bold]safeyolo build[/bold]")
 
     config = load_config()
     proxy_port = config["proxy"]["port"]
@@ -379,14 +378,66 @@ def status() -> None:
             console.print(agent_table)
 
 
+def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:
+    """Install built artifacts, preserving Linux rootfs ownership.
+
+    The Linux rootfs is a directory whose uid/gid values are part of the
+    rootless user-namespace contract. A normal ``shutil.copytree`` would
+    recreate every entry as the invoking user, so use privileged rsync to
+    preserve the uid-100000 ownership emitted by build-rootfs.sh.
+    """
+    for artifact in [
+        "Image",
+        "initramfs.cpio.gz",
+        "rootfs-base.ext4",
+        "cache-paths.txt",
+    ]:
+        src = out_dir / artifact
+        if src.is_file():
+            shutil.copy2(src, share_dir / artifact)
+            console.print(f"  Installed {artifact}")
+
+    rootfs_tree = out_dir / "rootfs-tree"
+    if platform.system() == "Linux" and rootfs_tree.is_dir():
+        destination = share_dir / "rootfs-tree"
+        try:
+            subprocess.run(
+                [
+                    "sudo", "rsync", "-aHAX", "--numeric-ids", "--delete",
+                    f"{rootfs_tree}/", f"{destination}/",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["sudo", "chown", "100000:100000", str(destination)],
+                check=True,
+            )
+        except FileNotFoundError as err:
+            console.print(
+                "[red]Cannot install rootfs-tree: sudo and rsync are required.[/red]"
+            )
+            raise typer.Exit(1) from err
+        except subprocess.CalledProcessError as err:
+            console.print(
+                f"[red]Installing rootfs-tree failed with exit code {err.returncode}[/red]"
+            )
+            raise typer.Exit(1) from err
+
+        if destination.stat().st_uid != 100000:
+            console.print(
+                "[red]Installed rootfs-tree has incorrect ownership; "
+                "expected uid 100000.[/red]"
+            )
+            raise typer.Exit(1)
+        console.print("  Installed rootfs-tree")
+
+
 def build() -> None:
     """Build guest VM images (kernel, initramfs, rootfs).
 
-    Requires Docker for cross-compilation. Output is installed to
-    ~/.safeyolo/share/.
+    Runs natively on Linux and through Lima on macOS. Output is installed
+    to ~/.safeyolo/share/.
     """
-    import subprocess
-
     # Find build script
     repo_root = Path(__file__).resolve().parents[4]
     build_script = repo_root / "guest" / "build-all.sh"
@@ -397,7 +448,7 @@ def build() -> None:
         raise typer.Exit(1)
 
     console.print("[bold]Building guest VM images...[/bold]")
-    console.print("This requires Docker and takes several minutes on first build.\n")
+    console.print("This takes several minutes on first build.\n")
 
     try:
         subprocess.run(
@@ -413,18 +464,11 @@ def build() -> None:
     share_dir.mkdir(parents=True, exist_ok=True)
     out_dir = build_script.parent / "out"
 
-    # rootfs-base.erofs is what gVisor mounts on Linux; the list here has to
-    # include it or `safeyolo build` silently leaves a Linux host in the
-    # broken-at-agent-add state the README warns about.
-    for artifact in [
-        "Image",
-        "initramfs.cpio.gz",
-        "rootfs-base.ext4",
-        "rootfs-base.erofs",
-    ]:
-        src = out_dir / artifact
-        if src.exists():
-            shutil.copy2(str(src), str(share_dir / artifact))
-            console.print(f"  Installed {artifact}")
+    _install_guest_artifacts(out_dir, share_dir)
+
+    if not check_guest_images():
+        missing = ", ".join(missing_guest_images())
+        console.print(f"[red]Guest image installation incomplete: {missing}[/red]")
+        raise typer.Exit(1)
 
     console.print(f"\n[green]Guest images installed to {share_dir}[/green]")

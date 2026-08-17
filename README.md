@@ -22,7 +22,7 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 - Python 3.12 or 3.13
 - [uv](https://docs.astral.sh/uv/) — the Python package/project manager SafeYolo uses for the editable install. Grab it with your distro's package manager, or follow the upstream install instructions; either works.
 - macOS only: [Lima](https://lima-vm.io/) for the guest image build. Any of `brew install lima`, `sudo port install lima`, or `mise use -g lima` is fine.
-- Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime. gVisor is a Google-maintained project (gvisor.dev is operated by Google); install command below.
+- Linux only: [gVisor (`runsc`)](https://gvisor.dev/) as the VM runtime. On apt-based hosts, `safeyolo setup` installs it from gVisor's signed repository; other distributions must install it first using the upstream instructions.
 
 ### Build
 
@@ -57,7 +57,9 @@ _macOS_ — build the Swift VM helper and its guest-side companion binaries:
 cd vm && make install && cd ..
 ```
 
-_Linux_ — install gVisor (`runsc`) as the VM runtime. The `vm/` directory is macOS-only and is not used here:
+_Linux (apt-based)_ — no separate step. `safeyolo setup` below installs gVisor (`runsc`), `uidmap`, and `acl` when they are missing. The `vm/` directory is macOS-only and is not used here.
+
+For a non-apt Linux distribution, install gVisor using its upstream instructions before running `safeyolo setup`. The equivalent apt commands are:
 
 ```bash
 curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
@@ -80,8 +82,8 @@ This script pipx-installs `mitmproxy` and injects the exact set of addon deps Sa
 # policy), addons.yaml, an admin token, and the certs/data/lists directories.
 safeyolo init
 
-# Check and apply any host-level prerequisites (Linux: AppArmor profile
-# for user namespaces, /dev/kvm udev rule for hardware isolation).
+# Check and apply any host-level prerequisites (Linux: gVisor, uidmap, acl,
+# AppArmor profile for user namespaces, /dev/kvm udev rule for hardware isolation).
 # Safe to re-run; idempotent. No effect on macOS.
 safeyolo setup
 
