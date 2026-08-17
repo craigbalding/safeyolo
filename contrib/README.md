@@ -8,10 +8,12 @@ Example integrations. Copy and adapt for your own use.
 |-------|-------------|
 | `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent add --host-script` |
 | `ROOTFS_SCRIPT_GUIDE.md` | How to write custom rootfs builders for `safeyolo agent add --rootfs-script` (replace the default base with any distro) |
-| `../docs/AGENTS.md` | Agent-facing reference (environment, agent API, block responses, troubleshooting). Staged into each sandbox at `~/.safeyolo/AGENTS.md` by the bundled host scripts. |
-| `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions from `~/.claude/` and writes an install-on-first-run foreground command |
-| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI |
+| `../docs/AGENTS.md` | Compact always-on agent baseline (environment, Agent API health check, security boundaries) |
+| `skills/safeyolo/` | Shared Codex/Claude skill for Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
+| `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions, injects the baseline, links `/safeyolo`, and writes an install-on-first-run foreground command |
+| `codex-host-setup.sh` | Host setup for OpenAI Codex CLI -- stages user state, injects the baseline, links `$safeyolo`, and writes an install-on-first-run foreground command |
 | `mise-shell-host-setup.sh` | Minimal BYOA -- drops into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
+| `lib/stage-safeyolo-context.sh` | Shared idempotent baseline/skill staging used by the bundled host scripts |
 | `alpine-minimal/build-alpine-rootfs.sh` | Minimal custom rootfs example -- Alpine Linux via skopeo+umoci+apk |
 | `kali-pentest/build-kali-rootfs.sh` | Kali Linux pentest toolkit rootfs (nuclei, httpx, ffuf, sqlmap, ...) |
 | `kali-pentest/pentest-tools.md` | Tool reference for the Kali rootfs -- usage, proxy integration notes |

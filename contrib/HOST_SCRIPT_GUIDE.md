@@ -59,6 +59,20 @@ Typical tasks:
    it to install the agent binary on first run (idempotently) and then
    exec it with the flags you want.
 
+First-party integrations also source `contrib/lib/stage-safeyolo-context.sh`
+to install SafeYolo's compact baseline and shared operational skill. Pass
+`codex`, `claude`, or `none` to select the agent-specific discovery link:
+
+```sh
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/lib/stage-safeyolo-context.sh"
+stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
+```
+
+The helper updates only `~/.safeyolo/` and a `safeyolo` symlink under the
+agent's skill directory. It refuses to overwrite a user-owned skill with the
+same name. Custom standalone scripts may instead stage their own instructions.
+
 Sketch:
 
 ```sh
@@ -96,10 +110,10 @@ npm install --global --prefix /home/agent/.local @example/myagent@latest
 
 ## Idempotency
 
-Host scripts don't run on every boot -- only on `safeyolo agent add`.
-Re-running `agent add --force` reruns the script, so make yours
-re-runnable: check before creating, overwrite what you own, don't
-assume a blank slate.
+Host scripts run on `safeyolo agent add` and whenever an existing agent is
+started with `safeyolo agent run <name> --host-script PATH`. Re-running
+`agent add --force` also reruns the script. Make yours re-runnable: check before
+creating, overwrite only what you own, and don't assume a blank slate.
 
 ## Using an agent to write host scripts
 
