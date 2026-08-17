@@ -57,6 +57,23 @@ def _runsc_root() -> str:
     return root
 
 
+def _wrap_runsc_command(command: str) -> str:
+    """Load guest runtime environment without losing mise's shim path.
+
+    ``/etc/environment`` contains the proxy and CA variables required by
+    commands launched through ``runsc exec``, but its base PATH intentionally
+    omits per-user tools. Source the mise activation file afterwards so its
+    persistent data directories and shims win.
+    """
+    return (
+        ". /etc/environment 2>/dev/null; "
+        "if [ -f /etc/mise-activate.sh ]; then "
+        ". /etc/mise-activate.sh; "
+        "fi; "
+        f"{command}"
+    )
+
+
 def _run(
     cmd: list[str],
     check: bool = True,
@@ -784,7 +801,7 @@ class LinuxPlatform(AgentPlatform):
             # explicitly source /etc/environment so HTTP_PROXY, SSL_CERT_FILE,
             # etc. reach the user's command -- under `runsc exec` there's
             # no PAM path that would otherwise load /etc/environment.
-            wrapped = f". /etc/environment 2>/dev/null; {command}"
+            wrapped = _wrap_runsc_command(command)
             cmd.extend(["/bin/bash", "-lc", wrapped])
         else:
             cmd.extend(["/bin/bash", "-l"])
@@ -806,7 +823,7 @@ class LinuxPlatform(AgentPlatform):
         upid = _get_userns_pid(name)
         prefix = _nsenter_cmd(upid) if upid else []
 
-        wrapped = f". /etc/environment 2>/dev/null; {command}"
+        wrapped = _wrap_runsc_command(command)
         cmd = prefix + [
             _find_runsc(), "--root", root, "exec",
             "--user", uid,
@@ -837,7 +854,7 @@ class LinuxPlatform(AgentPlatform):
         upid = _get_userns_pid(name)
         prefix = _nsenter_cmd(upid) if upid else []
 
-        wrapped = f". /etc/environment 2>/dev/null; {command}"
+        wrapped = _wrap_runsc_command(command)
         cmd = prefix + [
             _find_runsc(), "--root", root, "exec",
             "--user", uid,
@@ -944,6 +961,9 @@ class LinuxPlatform(AgentPlatform):
             "HOME=/home/agent",
             "USER=agent",
             "TERM=xterm-256color",
+            "MISE_DATA_DIR=/home/agent/.mise",
+            "MISE_CONFIG_DIR=/home/agent/.mise",
+            "MISE_CACHE_DIR=/home/agent/.mise/cache",
             "PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         ]
 

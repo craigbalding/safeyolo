@@ -46,7 +46,14 @@ export CODEX_HOME=/home/agent/.codex
 : "${SAFEYOLO_CODEX_NODE_SPEC:=node@22}"
 : "${SAFEYOLO_CODEX_NPM_SPEC:=npm:@openai/codex@latest}"
 : "${SAFEYOLO_CODEX_NPM_PACKAGE:=@openai/codex@latest}"
-export PATH="/home/agent/.local/bin:${PATH}"
+# Do not rely on a login shell or BASH_ENV here. Linux launches this file
+# through runsc exec, and /etc/environment may have reset PATH before this
+# child shell starts. Keep mise's persistent per-agent layout explicit so a
+# tool installed below is immediately executable in this same process.
+export MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.mise}"
+export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.mise}"
+export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.mise/cache}"
+export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
 if ! command -v codex >/dev/null 2>&1; then
     if [ -f /etc/alpine-release ]; then
