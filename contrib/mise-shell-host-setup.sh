@@ -26,13 +26,13 @@ set -euo pipefail
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 mkdir -p "$AGENT_HOME"
 
-# Stage the SafeYolo agent guide at a conventional path for users and
-# any BYO agent to reference. The MOTD below points at it.
-GUIDE_SRC="$(cd "$(dirname "$0")/.." && pwd)/docs/AGENTS.md"
-mkdir -p "$AGENT_HOME/.safeyolo"
-if [ -f "$GUIDE_SRC" ]; then
-    cp "$GUIDE_SRC" "$AGENT_HOME/.safeyolo/AGENTS.md"
-fi
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=lib/stage-safeyolo-context.sh
+. "$SCRIPT_DIR/lib/stage-safeyolo-context.sh"
+
+# Stage the vendor-neutral baseline and skill. A BYO agent can link the skill
+# from ~/.safeyolo/skills/safeyolo into its own discovery directory.
+stage_safeyolo_context "$AGENT_HOME" none
 
 # Welcome MOTD -- shown once when the shell starts. Lists the tools
 # mise exposes and points the user at the cheatsheet.
@@ -54,6 +54,7 @@ List available:
 
 Docs: https://mise.jdx.dev
 SafeYolo agent guide: ~/.safeyolo/AGENTS.md
+SafeYolo skill:       ~/.safeyolo/skills/safeyolo/
 =========================================================
 EOF
 

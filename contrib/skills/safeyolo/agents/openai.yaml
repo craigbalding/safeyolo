@@ -1,0 +1,4 @@
+interface:
+  display_name: "SafeYolo"
+  short_description: "Operate and troubleshoot a SafeYolo sandbox"
+  default_prompt: "Use $safeyolo to diagnose this SafeYolo sandbox issue safely."

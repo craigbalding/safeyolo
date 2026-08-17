@@ -17,6 +17,10 @@ set -euo pipefail
 AGENT_HOME="$SAFEYOLO_AGENT_HOME"
 mkdir -p "$AGENT_HOME/.claude"
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=lib/stage-safeyolo-context.sh
+. "$SCRIPT_DIR/lib/stage-safeyolo-context.sh"
+
 # --- 1. Stage host Claude state (best-effort) ---------------------------------
 # Credentials + settings are the core "identity + prefs" bucket. User-authored
 # extensions (plugins, commands, agents, skills) are copied so the user's
@@ -46,9 +50,24 @@ stage_dir() {
 stage_file .credentials.json
 stage_file settings.json
 
-for d in plugins commands agents skills; do
+for d in plugins commands agents; do
     stage_dir "$d"
 done
+
+# SafeYolo owns the `safeyolo` skill name in the sandbox. Copy the operator's
+# other Claude skills individually so a host-side skill with that name cannot
+# overwrite or collide with the managed SafeYolo skill on first or later runs.
+if [ -d "$host_claude/skills" ]; then
+    mkdir -p "$AGENT_HOME/.claude/skills"
+    while IFS= read -r -d '' host_skill; do
+        skill_name="$(basename "$host_skill")"
+        if [ "$skill_name" = "safeyolo" ]; then
+            echo "  Skipped host Claude skill 'safeyolo' (reserved by SafeYolo)" >&2
+            continue
+        fi
+        cp -R "$host_skill" "$AGENT_HOME/.claude/skills/" 2>/dev/null || true
+    done < <(find "$host_claude/skills" -mindepth 1 -maxdepth 1 -print0)
+fi
 
 # --- 2. Seed .claude.json with nag-free defaults ------------------------------
 # Minimum set of top-level keys Claude Code checks on launch. /workspace is a
@@ -129,23 +148,17 @@ with open(path, "w") as f:
 PY
 fi
 
-# --- 4. Stage SafeYolo agent guide ------------------------------------------
-# Copy docs/AGENTS.md into the persistent home so the foreground command can feed it
-# to Claude as system context on every run. We write to a path outside
-# .claude/ because .claude/ is a live VirtioFS mount from the host and we
-# don't want to shadow the user's own CLAUDE.md.
-GUIDE_SRC="$(cd "$(dirname "$0")/.." && pwd)/docs/AGENTS.md"
-mkdir -p "$AGENT_HOME/.safeyolo"
-if [ -f "$GUIDE_SRC" ]; then
-    cp "$GUIDE_SRC" "$AGENT_HOME/.safeyolo/AGENTS.md"
-fi
+# --- 4. Stage SafeYolo baseline + shared skill ------------------------------
+# Keep SafeYolo's always-on baseline outside .claude/ so it cannot shadow the
+# user's CLAUDE.md. Link the shared on-demand skill into Claude's native path.
+stage_safeyolo_context "$AGENT_HOME" claude
 
 # --- 5. Write the foreground command -----------------------------------------
 # Installs claude-code on first run (idempotent: command -v short-circuits on
 # subsequent runs). On Alpine, Node comes from apk because mise may build Node
 # from source against musl; elsewhere we use mise. Appends the SafeYolo agent
-# guide as system context so Claude knows about the agent API, block responses,
-# security boundaries, etc. Any args after `safeyolo agent run <name> -- ...`
+# baseline as system context. Detailed operations remain in the on-demand
+# safeyolo skill. Any args after `safeyolo agent run <name> -- ...`
 # come through as "$@".
 
 cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'

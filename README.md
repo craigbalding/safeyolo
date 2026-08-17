@@ -182,8 +182,8 @@ The `contrib/` directory has ready-made host scripts:
 
 | Script | Purpose |
 |--------|---------|
-| `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, installs claude-code on first boot, launches nag-free |
-| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, installs codex via mise on first boot, launches with sandboxing disabled inside the guest (`-s danger-full-access -a never`) while SafeYolo remains the outer boundary |
+| `contrib/claude-host-setup.sh` | Claude Code — stages host `~/.claude/` auth + user extensions, injects SafeYolo's compact baseline, installs the shared `/safeyolo` skill, and launches nag-free |
+| `contrib/codex-host-setup.sh` | OpenAI Codex CLI — stages `~/.codex/`, injects SafeYolo's compact baseline, installs the shared `$safeyolo` skill, and launches with sandboxing disabled inside the guest (`-s danger-full-access -a never`) while SafeYolo remains the outer boundary |
 | `contrib/mise-shell-host-setup.sh` | BYOA — boots into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 
 Without `--host-script`, the sandbox boots to an interactive bash shell in a per-agent persistent home.
@@ -196,7 +196,17 @@ Writing your own: see [`contrib/HOST_SCRIPT_GUIDE.md`](contrib/HOST_SCRIPT_GUIDE
 
 The default Debian base is intentionally small but agent-friendly. It includes common search and debugging tools (`ripgrep`, `fd-find`, `file`, `unzip`, `zip`, `tmux`, `lsof`, `strace`, `jq`, `less`), Python venv support, and BusyBox-backed `nc`/`hexdump` shims. Language ecosystems still come from `mise`, not from stuffing extra runtimes into the image.
 
-Once inside the sandbox, the agent-facing reference lives at [`docs/AGENTS.md`](docs/AGENTS.md) -- agent environment, agent API endpoints, block-response anatomy, security boundaries, troubleshooting. The bundled host scripts stage it at `~/.safeyolo/AGENTS.md` inside the sandbox; the Claude Code host script also feeds it to `claude --append-system-prompt` so the model has it in context from turn 1.
+SafeYolo splits agent guidance by when it is needed. The compact, always-on
+baseline at [`docs/AGENTS.md`](docs/AGENTS.md) covers environment invariants,
+the correct Agent API health check, and security boundaries. Detailed Agent
+API, flow, gateway, `plumb`, block-response, and troubleshooting workflows live
+in one progressively disclosed [`safeyolo` skill](contrib/skills/safeyolo/SKILL.md).
+
+The bundled host scripts stage both under `~/.safeyolo/`. Claude receives the
+baseline through `--append-system-prompt` and discovers the skill as
+`/safeyolo`; Codex receives the baseline as `developer_instructions` and
+discovers the skill as `$safeyolo`. The scripts use relative symlinks into each
+agent's native skill directory, leaving existing user instructions untouched.
 
 ## Controlling Agent Access
 
