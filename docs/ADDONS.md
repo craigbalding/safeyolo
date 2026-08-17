@@ -672,9 +672,36 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 4. Valid header → parsed, stored in metadata, stripped before upstream
 5. Response phase logs the response with the test context
 
-**Header format:** `X-Test-Context: run=<run_id>;agent=<agent_id>;test=<test_id>`
+**Header format:** semicolon-delimited `key=value` pairs. `run` and `agent`
+are required. The canonical optional dimensions, in formatter order, are
+`role`, `suite`, `subject`, `step`, `test`, `intent`, and `expect`. Additional
+safe fields may follow them. Keys and values must match `[A-Za-z0-9_.:-]+`.
 
-Required keys: `run`, `agent`. Optional: `test`, `phase`.
+Use the first-party helper instead of assembling the value in scripts:
+
+```bash
+safeyolo test-context \
+  --run sec3 \
+  --agent logic \
+  --role guest \
+  --suite payment \
+  --subject CTRL-PAY-011 \
+  --step 4 \
+  --test PAY-011-return \
+  --intent forge-return \
+  --expect blocked
+```
+
+The default output is the canonical value. `--header` emits the complete
+`X-Test-Context: ...` line for `curl -H`, and `--write FILE` atomically
+replaces a watched context file while still printing the value. Repeat
+`--field key=value` for additional parser-supported fields. Invalid values
+are rejected, not rewritten or slugged, and duplicate helper fields fail.
+
+The header's `agent=` value is declared test attribution. It does not replace
+the trusted SafeYolo agent principal derived from the sandbox connection.
+Context is immutable record-time provenance; mutable post-hoc annotations
+belong in flow tags.
 
 **Configuration (addons.yaml):**
 ```yaml
@@ -693,7 +720,7 @@ addons:
   "destination": "target.example.com",
   "header": "X-Test-Context",
   "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
-  "example": "X-Test-Context: run=sec1;agent=idor;test=IDOR-003"
+  "example": "X-Test-Context: run=sec1;agent=logic;test=PAY-003"
 }
 ```
 
