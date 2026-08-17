@@ -442,6 +442,25 @@ class TestRecordFlow:
 # ---------------------------------------------------------------------------
 
 class TestSearchFlows:
+    def test_search_rejects_unknown_filters(self, store):
+        store.record_flow(_make_record(request_id="req-unknown001"))
+
+        with pytest.raises(ValueError, match=r"unknown filter\(s\): bogus"):
+            store.search_flows({"bogus": "value"})
+
+    @pytest.mark.parametrize(
+        ("filters", "message"),
+        [
+            ({"limit": "many"}, "limit must be an integer"),
+            ({"limit": 0}, "limit must be at least 1"),
+            ({"offset": -1}, "offset must be at least 0"),
+            ({"status_code": "ok"}, "status_code must be an integer"),
+        ],
+    )
+    def test_search_rejects_invalid_filter_values(self, store, filters, message):
+        with pytest.raises(ValueError, match=message):
+            store.search_flows(filters)
+
     def test_search_by_host(self, store):
         store.record_flow(_make_record(request_id="req-host000001"))
         store.record_flow(_make_record(
@@ -475,6 +494,42 @@ class TestSearchFlows:
         results = store.search_flows({"path_contains": "/todos"})
         assert len(results) == 1
         assert results[0]["path"] == "/api/todos/42"
+
+    def test_search_by_path_alias(self, store):
+        store.record_flow(_make_record(request_id="req-pathalias1", path="/api/actions/CreateSecret"))
+        store.record_flow(_make_record(request_id="req-pathalias2", path="/api/actions/ListSecrets"))
+
+        results = store.search_flows({"path": "CreateSecret"})
+
+        assert [result["request_id"] for result in results] == ["req-pathalias1"]
+
+    @pytest.mark.parametrize("field", ["path", "host", "full_url", "request_body", "response_body"])
+    def test_search_by_q(self, store, field):
+        marker = "needle-42"
+        matching = _make_record(request_id=f"req-q-{field[:6]}")
+        if field == "path":
+            matching["path"] = f"/api/{marker}"
+        elif field == "host":
+            matching["host"] = f"{marker}.example.com"
+        elif field == "full_url":
+            matching["full_url"] = f"https://app.example.com/{marker}"
+        elif field == "request_body":
+            matching["request_body"] = marker.encode()
+            matching["request_content_type"] = "text/plain"
+        else:
+            matching["response_body"] = marker.encode()
+            matching["response_content_type"] = "text/plain"
+        store.record_flow(matching)
+        store.record_flow(_make_record(request_id=f"req-q-other-{field[:4]}"))
+
+        results = store.search_flows({"q": marker})
+
+        assert [result["request_id"] for result in results] == [matching["request_id"]]
+
+    def test_search_by_q_returns_empty_for_absent_term(self, store):
+        store.record_flow(_make_record(request_id="req-q-absent01"))
+
+        assert store.search_flows({"q": "definitely-not-present"}) == []
 
     def test_search_by_time_range(self, store):
         store.record_flow(_make_record(
@@ -962,11 +1017,11 @@ class TestStatusCodeRange:
         results = store.search_flows({"status_class": "5xx"})
         assert len(results) == 2
 
-    def test_status_class_unknown_ignored(self, store):
-        """Unknown status class is ignored (returns all)."""
+    def test_status_class_unknown_rejected(self, store):
         store.record_flow(_make_record(request_id="req-scuk000001", status_code=200))
-        results = store.search_flows({"status_class": "9xx"})
-        assert len(results) == 1
+
+        with pytest.raises(ValueError, match="status_class must be one of"):
+            store.search_flows({"status_class": "9xx"})
 
 
 # ---------------------------------------------------------------------------

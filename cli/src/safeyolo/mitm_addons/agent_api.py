@@ -962,19 +962,14 @@ class AgentAPI:
             return
 
         if flow.request.method == "GET":
-            # Build filters from query params
             filters = dict(flow.request.query)
-            # Convert numeric params
-            for key in ("limit", "offset", "status_code", "status_min", "status_max"):
-                if key in filters:
-                    try:
-                        filters[key] = int(filters[key])
-                    except (ValueError, TypeError):
-                        pass  # Leave non-numeric filter values as strings
         else:
             filters = self._read_json_body(flow)
             if filters is None:
                 self._respond(flow, 400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(filters, dict):
+                self._respond(flow, 400, {"error": "Search filters must be a JSON object"})
                 return
 
         # Scope to calling agent — prevent cross-agent info disclosure.
@@ -982,7 +977,11 @@ class AgentAPI:
         if agent_id:
             filters["agent_id"] = agent_id
 
-        results = store.search_flows(filters)
+        try:
+            results = store.search_flows(filters)
+        except ValueError as exc:
+            self._respond(flow, 400, {"error": str(exc)})
+            return
         self._respond(flow, 200, {"flows": results, "count": len(results)})
 
     def _verify_flow_ownership(self, flow: http.HTTPFlow,
