@@ -139,3 +139,39 @@ def test_home_agent_is_bind_mounted(isolated_env):
     assert "rw" in m["options"]
     assert "nosuid" in m["options"]
     assert "nodev" in m["options"]
+
+
+def test_oci_environment_pins_persistent_mise_paths(isolated_env):
+    """The base sandbox environment points mise and PATH at agent home."""
+    from safeyolo.platform.linux import LinuxPlatform
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "probe-agent-mise"
+    ensure_agent_persistent_dirs(name)
+    plat = LinuxPlatform()
+    spec = plat._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "agents" / name / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "agents" / name / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.3"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    env = dict(item.split("=", 1) for item in spec["process"]["env"])
+    assert env["MISE_DATA_DIR"] == "/home/agent/.mise"
+    assert env["MISE_CONFIG_DIR"] == "/home/agent/.mise"
+    assert env["MISE_CACHE_DIR"] == "/home/agent/.mise/cache"
+    assert env["PATH"].startswith("/home/agent/.mise/shims:")
+
+
+def test_runsc_command_restores_mise_after_environment_path():
+    """runsc commands source mise activation after /etc/environment."""
+    from safeyolo.platform.linux import _wrap_runsc_command
+
+    wrapped = _wrap_runsc_command("codex --version")
+
+    assert wrapped.index("/etc/environment") < wrapped.index("/etc/mise-activate.sh")
+    assert wrapped.endswith("codex --version")

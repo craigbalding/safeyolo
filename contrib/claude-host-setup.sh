@@ -152,10 +152,17 @@ cat > "$AGENT_HOME/.safeyolo-command" <<'EOF'
 #!/usr/bin/env bash
 set -e
 
-export PATH="/home/agent/.local/bin:${PATH}"
 : "${SAFEYOLO_CLAUDE_NODE_SPEC:=node@22}"
 : "${SAFEYOLO_CLAUDE_NPM_SPEC:=npm:@anthropic-ai/claude-code@latest}"
 : "${SAFEYOLO_CLAUDE_NPM_PACKAGE:=@anthropic-ai/claude-code@latest}"
+# Do not rely on a login shell or BASH_ENV here. Linux launches this file
+# through runsc exec, and /etc/environment may have reset PATH before this
+# child shell starts. Keep mise's persistent per-agent layout explicit so a
+# tool installed below is immediately executable in this same process.
+export MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.mise}"
+export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.mise}"
+export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.mise/cache}"
+export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
 # First-boot install. Tool installs live under persistent /home/agent.
 if ! command -v claude >/dev/null 2>&1; then
