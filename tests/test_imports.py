@@ -25,6 +25,7 @@ ADDON_MODULES = [
     "file_logging",
     "flow_pruner",
     "flow_recorder",
+    "ignored_host_logger",
     "loop_guard",
     "memory_monitor",
     "metrics",

@@ -5,7 +5,6 @@ The addon stack, options, and behavior are identical — only the
 execution environment changes (host process vs. container).
 """
 
-import ipaddress
 import logging
 import os
 import shutil
@@ -16,6 +15,10 @@ import time
 from pathlib import Path
 
 from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
+from .ignore_hosts import (
+    build_ignore_patterns,
+    normalize_ignore_hosts,
+)
 
 log = logging.getLogger("safeyolo.proxy")
 
@@ -53,6 +56,7 @@ ADDON_CHAIN = [
     # Layer 3: Observability
     "flow_recorder.py",
     "request_logger.py",
+    "ignored_host_logger.py",
     "metrics.py",
     "admin_api.py",
 ]
@@ -241,84 +245,6 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
     return admin_token, agent_token
 
 
-# ---------------------------------------------------------------------------
-# SAFEYOLO_IGNORE_CIDRS — pass a CIDR (or comma-separated list of CIDRs) as
-# an env var to add mitmproxy --ignore-hosts exemptions for those IP ranges.
-# CIDR-only by design: no regex surface for the user to misuse, validated at
-# startup, and /0–/7 is refused so you can't accidentally exempt half the
-# internet.
-# ---------------------------------------------------------------------------
-
-# Refuse prefixes wider than this — user-facing footgun guard.
-_IGNORE_CIDR_MIN_PREFIX = 8
-
-
-def _octet_range_regex(lo: int, hi: int) -> str:
-    """Regex fragment matching any integer in [lo, hi]. 0 ≤ lo ≤ hi ≤ 255."""
-    if lo == 0 and hi == 255:
-        return r"\d+"
-    # Alternation is fine here: the widest CIDRs we accept (/8) give at most
-    # 256 values in the partial octet, which regex engines compile happily.
-    return "(?:" + "|".join(str(n) for n in range(lo, hi + 1)) + ")"
-
-
-def _cidr_to_ignore_regex(cidr: str) -> str:
-    """Convert an IPv4 CIDR to a mitmproxy --ignore-hosts regex.
-
-    Output matches `<ip>` or `<ip>:<port>` where <ip> is any IPv4 address in
-    the CIDR. Rejects IPv6 (the host:port regex shape doesn't map cleanly)
-    and prefixes < /8 (accidental-over-exemption guard).
-    """
-    try:
-        net = ipaddress.ip_network(cidr.strip(), strict=False)
-    except ValueError as e:
-        raise ValueError(f"Invalid CIDR {cidr!r}: {e}") from e
-
-    if isinstance(net, ipaddress.IPv6Network):
-        raise ValueError(f"IPv6 CIDR not supported: {cidr!r}")
-
-    if net.prefixlen < _IGNORE_CIDR_MIN_PREFIX:
-        raise ValueError(
-            f"CIDR {cidr!r} is too wide (prefix /{net.prefixlen} < "
-            f"/{_IGNORE_CIDR_MIN_PREFIX}); refusing to exempt that large a range"
-        )
-
-    octets = net.network_address.packed  # 4 bytes
-    full = net.prefixlen // 8        # number of fully-fixed leading octets
-    partial = net.prefixlen % 8      # bits constraining the next octet, if any
-
-    parts: list[str] = [str(octets[i]) for i in range(full)]
-
-    if full < 4:
-        if partial == 0:
-            # Whole remaining octets are wildcards
-            parts.extend([r"\d+"] * (4 - full))
-        else:
-            lo = octets[full]
-            hi = lo + (1 << (8 - partial)) - 1
-            parts.append(_octet_range_regex(lo, hi))
-            parts.extend([r"\d+"] * (4 - full - 1))
-
-    return r"^" + r"\.".join(parts) + r"(?::\d+)?$"
-
-
-def _parse_ignore_cidrs_env() -> list[str]:
-    """Parse SAFEYOLO_IGNORE_CIDRS into a list of --ignore-hosts regexes.
-
-    Fails fast on any invalid entry so a typo can't silently drop a passthrough.
-    """
-    raw = os.environ.get("SAFEYOLO_IGNORE_CIDRS", "").strip()
-    if not raw:
-        return []
-    regexes: list[str] = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        regexes.append(_cidr_to_ignore_regex(entry))
-    return regexes
-
-
 def _initial_mode_specs(data_dir: Path) -> list[str]:
     """Build the startup `mode` list from agent_map.json.
 
@@ -394,6 +320,50 @@ def sync_proxy_modes(admin_port: int = 9090, timeout: float = 5.0) -> bool:
     return True
 
 
+def sync_proxy_ignore_hosts(
+    hosts: list[str] | None = None,
+    admin_port: int | None = None,
+    timeout: float = 5.0,
+) -> bool:
+    """Push configured exact passthrough hosts to a running mitmproxy."""
+    import httpx
+
+    config = load_config()
+    if hosts is None:
+        hosts = normalize_ignore_hosts(config.get("proxy", {}).get("ignore_hosts", []))
+    else:
+        hosts = normalize_ignore_hosts(hosts)
+    if admin_port is None:
+        admin_port = int(config.get("proxy", {}).get("admin_port", 9090))
+
+    token_path = get_data_dir() / "admin_token"
+    if not token_path.exists():
+        log.warning("admin_token not found; skipping proxy ignore-host sync")
+        return False
+
+    url = f"http://127.0.0.1:{admin_port}/admin/proxy/ignore-hosts"
+    try:
+        response = httpx.put(
+            url,
+            json={"hosts": hosts},
+            headers={"Authorization": f"Bearer {token_path.read_text().strip()}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        log.warning("proxy ignore-host sync failed: %s: %s", type(exc).__name__, exc)
+        return False
+
+    if response.status_code != 200:
+        log.warning(
+            "proxy ignore-host sync returned %d: %s",
+            response.status_code,
+            response.text[:200],
+        )
+        return False
+    log.info("proxy ignore-host sync ok (%d operator entries)", len(hosts))
+    return True
+
+
 def _build_command(
     addons_dir: Path,
     cert_dir: Path,
@@ -404,6 +374,7 @@ def _build_command(
     proxy_port: int = 8080,
     admin_port: int = 9090,
     test_config: dict | None = None,
+    proxy_config: dict | None = None,
 ) -> list[str]:
     """Build the mitmdump command line."""
     # Find mitmdump matching the running Python interpreter FIRST.
@@ -451,15 +422,12 @@ def _build_command(
     admin_token_file = data_dir / "admin_token"
     cmd.extend(["--set", f"admin_api_token_file={admin_token_file}"])
 
-    # TLS passthrough for frpc — frp protocol doesn't work through MITM
-    cmd.extend(["--ignore-hosts", r"^api\.asterfold\.ai:7000$"])
-
-    # User-supplied IPv4 CIDR passthroughs (comma-separated in
-    # SAFEYOLO_IGNORE_CIDRS). Useful for e.g. Tailscale CGNAT (100.64.0.0/10)
-    # or RFC1918 admin networks. Validation failures raise here so the proxy
-    # refuses to start with a mis-typed CIDR rather than silently dropping it.
-    for regex in _parse_ignore_cidrs_env():
-        cmd.extend(["--ignore-hosts", regex])
+    # Complete TLS passthrough list: built-ins, constrained CIDR environment
+    # entries, and exact operator-managed hosts from config.yaml. Validation
+    # failures abort startup instead of silently losing an exemption.
+    configured_hosts = (proxy_config or {}).get("ignore_hosts", [])
+    for pattern in build_ignore_patterns(configured_hosts):
+        cmd.extend(["--ignore-hosts", pattern])
 
     # -------------------------------------------------------------------------
     # Blocking mode configuration
@@ -697,6 +665,7 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
         proxy_port=proxy_port,
         admin_port=admin_port,
         test_config=test_config,
+        proxy_config=full_config.get("proxy", {}),
     )
 
     # Environment: set PYTHONPATH so addons can import pdp, models, etc.

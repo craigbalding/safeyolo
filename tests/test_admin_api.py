@@ -1186,6 +1186,77 @@ class TestAgentServiceEndpoints:
 # ---------------------------------------------------------------------------
 
 
+class TestPutProxyIgnoreHosts:
+    def test_replaces_runtime_patterns_and_emits_audit_event(self, handler_class):
+        body = json.dumps({"hosts": ["Service.Example.Test:443"]})
+        handler = _make_handler(
+            handler_class, "PUT", "/admin/proxy/ignore-hosts", body=body
+        )
+
+        future = MagicMock()
+
+        def submit(coroutine, _loop):
+            try:
+                coroutine.send(None)
+            except StopIteration:
+                pass
+            finally:
+                coroutine.close()
+            return future
+
+        with (
+            patch("admin_api.ctx") as mock_ctx,
+            patch("admin_api.asyncio.run_coroutine_threadsafe", side_effect=submit),
+            patch("admin_api.write_event") as write_event,
+        ):
+            handler.do_PUT()
+
+        assert handler._status == 200
+        response = _parse_response(handler)
+        assert response["hosts"] == ["service.example.test:443"]
+        patterns = mock_ctx.options.update.call_args.kwargs["ignore_hosts"]
+        assert r"^service\.example\.test:443$" in patterns
+        future.result.assert_called_once_with(timeout=2.0)
+        assert write_event.call_args.args[0] == "admin.proxy_ignore_hosts_update"
+        assert write_event.call_args.kwargs["details"]["hosts"] == [
+            "service.example.test:443"
+        ]
+
+    @pytest.mark.parametrize(
+        "hosts",
+        ["service.example.test", ["*.example.test"], ["https://service.example.test"]],
+    )
+    def test_rejects_non_list_or_non_exact_entries(self, handler_class, hosts):
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/ignore-hosts",
+            body=json.dumps({"hosts": hosts}),
+        )
+
+        with patch("admin_api.ctx") as mock_ctx:
+            handler.do_PUT()
+
+        assert handler._status == 400
+        mock_ctx.options.update.assert_not_called()
+
+    def test_rejects_non_object_json(self, handler_class):
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/ignore-hosts",
+            body=json.dumps(["service.example.test"]),
+        )
+
+        with patch("admin_api.ctx") as mock_ctx:
+            handler.do_PUT()
+
+        assert handler._status == 400
+        assert _parse_response(handler)["error"] == "request body must be a JSON object"
+        mock_ctx.options.update.assert_not_called()
+
+
+
 class TestAuthentication:
     """Bearer token authentication."""
 
