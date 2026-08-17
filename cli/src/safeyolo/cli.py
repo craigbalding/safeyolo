@@ -16,6 +16,7 @@ from .commands.lifecycle import build, start, status, stop
 from .commands.logs import logs
 from .commands.mount import mount_app
 from .commands.policy import policy_app
+from .commands.proxy import proxy_app
 from .commands.services import services_app
 from .commands.setup import setup_app
 from .commands.tmux import tmux_app
@@ -82,6 +83,7 @@ app.add_typer(agent_app, name="agent")
 app.add_typer(cert_app, name="cert")
 app.add_typer(mount_app, name="mount")
 app.add_typer(policy_app, name="policy")
+app.add_typer(proxy_app, name="proxy")
 app.add_typer(setup_app, name="setup")
 app.add_typer(tmux_app, name="tmux")
 app.add_typer(vault_app, name="vault")

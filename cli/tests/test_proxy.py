@@ -20,9 +20,9 @@ class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
 
     def test_addon_chain_has_expected_count(self):
-        """ADDON_CHAIN contains 22 addons (unix_listener + bootstrap_mode + ...)."""
+        """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 22
+        assert len(ADDON_CHAIN) == 23
 
     def test_addon_chain_starts_with_unix_listener(self):
         """First addon loaded is unix_listener.py.
@@ -1257,6 +1257,29 @@ class TestIgnoreCidrsIntegration:
         monkeypatch.setenv("SAFEYOLO_IGNORE_CIDRS", "  ,, ")
         cmd = _build_command(admin_token="tok", **cmd_env)
         assert self._ignore_hosts(cmd) == [r"^api\.asterfold\.ai:7000$"]
+
+    def test_operator_hosts_are_appended_as_exact_patterns(self, cmd_env, monkeypatch):
+        from safeyolo.proxy import _build_command
+        monkeypatch.delenv("SAFEYOLO_IGNORE_CIDRS", raising=False)
+        cmd = _build_command(
+            admin_token="tok",
+            proxy_config={"ignore_hosts": ["Service.Example.Test:443"]},
+            **cmd_env,
+        )
+        assert self._ignore_hosts(cmd) == [
+            r"^api\.asterfold\.ai:7000$",
+            r"^service\.example\.test:443$",
+        ]
+
+    def test_invalid_operator_host_fails_startup(self, cmd_env, monkeypatch):
+        from safeyolo.proxy import _build_command
+        monkeypatch.delenv("SAFEYOLO_IGNORE_CIDRS", raising=False)
+        with pytest.raises(ValueError, match="valid hostname"):
+            _build_command(
+                admin_token="tok",
+                proxy_config={"ignore_hosts": ["*.example.test"]},
+                **cmd_env,
+            )
 
     def test_invalid_cidr_fails_startup(self, cmd_env, monkeypatch):
         """Fail-fast: one bad entry refuses to build the command at all, so

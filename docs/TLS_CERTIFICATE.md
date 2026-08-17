@@ -87,16 +87,30 @@ Some applications embed expected certificate fingerprints ("pinning") and will r
 
 **Option 1: TLS passthrough (recommended)**
 
-Add to your config to skip inspection for pinned domains:
+Use the host-side operator command to skip inspection for an exact pinned
+domain. Agents cannot access this command or the authenticated admin endpoint:
+
+```bash
+safeyolo proxy ignore-host add pinned-app.example.test:443
+safeyolo proxy ignore-host list
+safeyolo proxy ignore-host remove pinned-app.example.test:443
+```
+
+The command persists entries under `proxy.ignore_hosts` and updates a running
+proxy immediately. The equivalent configuration is:
 
 ```yaml
 # In ~/.safeyolo/config.yaml
-tls_passthrough:
-  - pinned-app.example.com
-  - another-pinned-domain.com
+proxy:
+  ignore_hosts:
+    - pinned-app.example.test:443
+    - another-pinned-domain.example.test
 ```
 
-Traffic passes through encrypted without inspection. SafeYolo still logs the connection.
+Entries are exact `HOST` or `HOST:PORT` values; regular expressions and
+wildcards are rejected. Traffic passes through encrypted without inspection.
+SafeYolo logs connection start, failure, and end metadata but does not retain
+the encrypted payload.
 
 **Option 2: Disable pinning in the app**
 

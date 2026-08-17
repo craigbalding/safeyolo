@@ -27,6 +27,7 @@ from pdp import get_policy_client, is_policy_client_configured
 from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.plumb_service import get_plumb_service
 from safeyolo.core.utils import sanitize_for_log, write_event
+from safeyolo.ignore_hosts import build_ignore_patterns, normalize_ignore_hosts
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -1204,6 +1205,58 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         )
         self._send_json({"status": "updated", "modes": modes})
 
+    def _handle_put_proxy_ignore_hosts(self) -> None:
+        """PUT /admin/proxy/ignore-hosts - Replace TLS passthrough hosts."""
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "missing request body"}, 400)
+            return
+        if not isinstance(data, dict):
+            self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
+
+        hosts = data.get("hosts")
+        try:
+            normalized = normalize_ignore_hosts(hosts)
+            patterns = build_ignore_patterns(normalized)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+
+        async def _apply() -> None:
+            ctx.options.update(ignore_hosts=patterns)
+            await asyncio.sleep(0)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_apply(), ctx.master.event_loop)
+            future.result(timeout=2.0)
+        except TimeoutError:
+            self._send_json({"error": "timeout applying ignore hosts"}, 504)
+            return
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 400)
+            return
+
+        write_event(
+            "admin.proxy_ignore_hosts_update",
+            kind=EventKind.ADMIN,
+            severity=Severity.HIGH,
+            summary=f"Proxy TLS passthrough list replaced ({len(normalized)} operator entries)",
+            addon="admin-api",
+            details={
+                "client_ip": self._get_client_ip(),
+                "hosts": normalized,
+                "pattern_count": len(patterns),
+            },
+        )
+        self._send_json(
+            {
+                "status": "updated",
+                "hosts": normalized,
+                "pattern_count": len(patterns),
+            }
+        )
+
     def _handle_put_plugin_mode(self, addon_name: str) -> None:
         """PUT /plugins/{name}/mode - Set mode for a specific addon."""
         data = self._read_json()
@@ -1344,6 +1397,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/modes": self._handle_put_modes,
             "/admin/policy/baseline": self._handle_put_policy_baseline,
             "/admin/proxy/mode": self._handle_put_proxy_mode,
+            "/admin/proxy/ignore-hosts": self._handle_put_proxy_ignore_hosts,
         }
 
         if path in static_handlers:

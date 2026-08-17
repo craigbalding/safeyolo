@@ -30,6 +30,7 @@ proxy:
   admin_port: 9090     # Admin API port
   image: safeyolo:latest
   container_name: safeyolo
+  ignore_hosts: []      # Exact HOST or HOST:PORT TLS passthrough entries
 
 modes:
   credential_guard: block
@@ -37,6 +38,10 @@ modes:
   pattern_scanner: warn
   test_context: block
 ```
+
+Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add|list|remove`.
+Changes are persisted atomically and applied to a running proxy through the
+operator-only admin API. Wildcards and regular expressions are not accepted.
 
 ## policy.toml
 

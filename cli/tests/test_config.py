@@ -83,6 +83,16 @@ class TestLoadConfig:
         config = load_config()
         assert config == DEFAULT_CONFIG
 
+    def test_returned_defaults_do_not_share_nested_mutable_state(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".safeyolo"
+        config_dir.mkdir()
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+        config = load_config()
+        config["proxy"]["ignore_hosts"].append("service.example.test")
+
+        assert DEFAULT_CONFIG["proxy"]["ignore_hosts"] == []
+
 
 class TestSaveConfig:
     """Tests for save_config()."""

@@ -1,6 +1,8 @@
 """Configuration loading and path management."""
 
 import os
+import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ DEFAULT_CONFIG = {
         "admin_port": 9090,
         "image": "safeyolo:latest",
         "container_name": "safeyolo",
+        "ignore_hosts": [],
     },
     "modes": {
         "credential_guard": "block",
@@ -142,24 +145,39 @@ def load_config() -> dict[str, Any]:
     """
     config_path = get_config_path()
     if not config_path.exists():
-        return DEFAULT_CONFIG.copy()
+        return deepcopy(DEFAULT_CONFIG)
 
     with open(config_path) as f:
         user_config = yaml.safe_load(f) or {}
 
     # Merge with defaults
-    config = DEFAULT_CONFIG.copy()
+    config = deepcopy(DEFAULT_CONFIG)
     _deep_merge(config, user_config)
     return config
 
 
 def save_config(config: dict[str, Any]) -> None:
-    """Save configuration to config.yaml."""
+    """Atomically save configuration to config.yaml."""
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(config_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    content = yaml.dump(config, default_flow_style=False, sort_keys=False)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=config_path.parent,
+            prefix=f".{config_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_path = Path(temp_file.name)
+        temp_path.replace(config_path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _deep_merge(base: dict, override: dict) -> None:
