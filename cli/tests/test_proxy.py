@@ -1121,27 +1121,27 @@ class TestCidrToIgnoreRegex:
     """
 
     def test_slash_32_single_host(self):
-        from safeyolo.proxy import _cidr_to_ignore_regex
-        assert _cidr_to_ignore_regex("10.0.0.5/32") == r"^10\.0\.0\.5(?::\d+)?$"
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
+        assert cidr_to_ignore_regex("10.0.0.5/32") == r"^10\.0\.0\.5(?::\d+)?$"
 
     def test_slash_24(self):
-        from safeyolo.proxy import _cidr_to_ignore_regex
-        assert _cidr_to_ignore_regex("192.168.1.0/24") == r"^192\.168\.1\.\d+(?::\d+)?$"
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
+        assert cidr_to_ignore_regex("192.168.1.0/24") == r"^192\.168\.1\.\d+(?::\d+)?$"
 
     def test_slash_16(self):
-        from safeyolo.proxy import _cidr_to_ignore_regex
-        assert _cidr_to_ignore_regex("192.168.0.0/16") == r"^192\.168\.\d+\.\d+(?::\d+)?$"
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
+        assert cidr_to_ignore_regex("192.168.0.0/16") == r"^192\.168\.\d+\.\d+(?::\d+)?$"
 
     def test_slash_8(self):
-        from safeyolo.proxy import _cidr_to_ignore_regex
-        assert _cidr_to_ignore_regex("10.0.0.0/8") == r"^10\.\d+\.\d+\.\d+(?::\d+)?$"
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
+        assert cidr_to_ignore_regex("10.0.0.0/8") == r"^10\.\d+\.\d+\.\d+(?::\d+)?$"
 
     def test_slash_10_tailscale_cgnat(self):
         """Tailscale CGNAT: the main driving case. 100.64.0.0 – 100.127.x.x."""
         import re
 
-        from safeyolo.proxy import _cidr_to_ignore_regex
-        regex = _cidr_to_ignore_regex("100.64.0.0/10")
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
+        regex = cidr_to_ignore_regex("100.64.0.0/10")
         # Structural shape
         assert regex.startswith(r"^100\.(?:64|")
         assert regex.endswith(r")\.\d+\.\d+(?::\d+)?$")
@@ -1159,37 +1159,37 @@ class TestCidrToIgnoreRegex:
         """`strict=False` means a non-network address still parses; it should
         normalise to the actual network and produce the same regex as the
         canonical form."""
-        from safeyolo.proxy import _cidr_to_ignore_regex
-        a = _cidr_to_ignore_regex("192.168.1.5/24")    # host bits set
-        b = _cidr_to_ignore_regex("192.168.1.0/24")    # canonical
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
+        a = cidr_to_ignore_regex("192.168.1.5/24")    # host bits set
+        b = cidr_to_ignore_regex("192.168.1.0/24")    # canonical
         assert a == b
 
     def test_rejects_invalid_cidr(self):
         import pytest as _pytest
 
-        from safeyolo.proxy import _cidr_to_ignore_regex
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
         with _pytest.raises(ValueError, match="Invalid CIDR"):
-            _cidr_to_ignore_regex("not-a-cidr")
+            cidr_to_ignore_regex("not-a-cidr")
         with _pytest.raises(ValueError, match="Invalid CIDR"):
-            _cidr_to_ignore_regex("10.0.0.0/99")
+            cidr_to_ignore_regex("10.0.0.0/99")
 
     def test_rejects_ipv6(self):
         import pytest as _pytest
 
-        from safeyolo.proxy import _cidr_to_ignore_regex
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
         with _pytest.raises(ValueError, match="IPv6"):
-            _cidr_to_ignore_regex("fd00::/8")
+            cidr_to_ignore_regex("fd00::/8")
 
     def test_rejects_too_wide(self):
         """Prefixes < /8 are refused — footgun guard against opening huge
         ranges by typo."""
         import pytest as _pytest
 
-        from safeyolo.proxy import _cidr_to_ignore_regex
+        from safeyolo.ignore_hosts import cidr_to_ignore_regex
         with _pytest.raises(ValueError, match="too wide"):
-            _cidr_to_ignore_regex("0.0.0.0/0")
+            cidr_to_ignore_regex("0.0.0.0/0")
         with _pytest.raises(ValueError, match="too wide"):
-            _cidr_to_ignore_regex("10.0.0.0/7")
+            cidr_to_ignore_regex("10.0.0.0/7")
 
 
 class TestIgnoreCidrsIntegration:

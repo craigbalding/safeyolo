@@ -17,14 +17,10 @@ from pathlib import Path
 from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
 from .ignore_hosts import (
     build_ignore_patterns,
-    cidr_to_ignore_regex,
     normalize_ignore_hosts,
 )
 
 log = logging.getLogger("safeyolo.proxy")
-
-# Backward-compatible private name retained for the existing converter tests.
-_cidr_to_ignore_regex = cidr_to_ignore_regex
 
 # Addon load order — mirrors scripts/start-safeyolo.sh exactly
 ADDON_CHAIN = [
