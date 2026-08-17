@@ -28,333 +28,47 @@ using mitmproxy options (--set policy_file=/path/to/policy.yaml).
 It must be loaded BEFORE any addon that calls get_policy_client().
 """
 
-import fnmatch
 import logging
 import threading
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
 
 from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.identifiers import validate_task_id
 from safeyolo.core.utils import matches_host_pattern, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.policy.budget_tracker import GCRABudgetTracker
-
-# `PolicyLoader` is imported lazily inside `PolicyEngine.__init__` to
-# avoid a module-level cycle: `loader.py` type-hints `UnifiedPolicy`
-# (defined here) under `TYPE_CHECKING`, which CodeQL's
-# `py/unsafe-cyclic-import` flags as a cycle even though there's no
-# runtime edge. Keeping the runtime import at the call site eliminates
-# both the lint complaint and any lingering import-order risk.
+from safeyolo.policy.loader import PolicyLoader
+from safeyolo.policy.models import (
+    AddonConfig,
+    Condition,
+    CredentialRule,
+    DomainOverride,
+    Permission,
+    PolicyDecision,
+    PolicyMetadata,
+    ScanPattern,
+    UnifiedPolicy,
+    _matches_pattern,
+)
 
 log = logging.getLogger("safeyolo.policy-engine")
 
-
-# =============================================================================
-# Pydantic Models
-# =============================================================================
-
-
-class PolicyMetadata(BaseModel):
-    """Policy file metadata."""
-
-    version: str = "1.0"
-    task_id: str | None = None
-    description: str | None = None
-    created: str | None = None
-    approved: str | None = None
-    brief_hash: str | None = None
-    policy_hash: str | None = None
-
-    @field_validator("task_id")
-    @classmethod
-    def _validate_task_id(cls, value: str | None) -> str | None:
-        return validate_task_id(value) if value is not None else None
-
-
-class Condition(BaseModel):
-    """Optional conditions for permission matching."""
-
-    # For credential:use - what credentials can access this destination
-    credential: str | list[str] | None = None  # e.g., ["openai:*", "hmac:a1b2c3"]
-    # For network:request
-    method: str | list[str] | None = None
-    path_prefix: str | None = None
-    content_type: str | None = None
-    # For gateway:risky_route
-    tactics: list[str] | None = None  # ANY-match against route tactics
-    enables: list[str] | None = None  # ANY-match against route enables
-    irreversible: bool | None = None  # exact match
-    account: str | list[str] | None = None  # persona match
-    agent: str | None = None  # glob match
-    service: str | None = None  # glob match
-    capability: str | None = None  # glob match
-
-    def _matches_credential(self, context: dict[str, Any]) -> bool:
-        """Check if credential condition matches."""
-        if self.credential is None:
-            return True
-
-        ctx_cred = context.get("credential_type", "")
-        ctx_hmac = context.get("credential_hmac", "")
-        credentials = [self.credential] if isinstance(self.credential, str) else self.credential
-
-        for cred_pattern in credentials:
-            if cred_pattern.startswith("hmac:"):
-                if ctx_hmac and cred_pattern == f"hmac:{ctx_hmac}":
-                    return True
-            elif _matches_pattern(f"{ctx_cred}:x", cred_pattern):
-                return True
-        return False
-
-    def _matches_method(self, context: dict[str, Any]) -> bool:
-        """Check if method condition matches."""
-        if self.method is None:
-            return True
-
-        ctx_method = context.get("method", "").upper()
-        methods = [self.method] if isinstance(self.method, str) else self.method
-        return ctx_method in [m.upper() for m in methods]
-
-    def _matches_path_prefix(self, context: dict[str, Any]) -> bool:
-        """Check if path_prefix condition matches."""
-        if self.path_prefix is None:
-            return True
-
-        ctx_path = context.get("path", "")
-        return ctx_path.startswith(self.path_prefix)
-
-    def _matches_content_type(self, context: dict[str, Any]) -> bool:
-        """Check if content_type condition matches."""
-        if self.content_type is None:
-            return True
-
-        ctx_ct = context.get("content_type", "")
-        return self.content_type in ctx_ct
-
-    def _matches_tactics(self, context: dict[str, Any]) -> bool:
-        """Check if any condition tactic is in the route's tactics (ANY-match)."""
-        if self.tactics is None:
-            return True
-        ctx_tactics = context.get("tactics", [])
-        return bool(set(self.tactics) & set(ctx_tactics))
-
-    def _matches_enables(self, context: dict[str, Any]) -> bool:
-        """Check if any condition enables is in the route's enables (ANY-match)."""
-        if self.enables is None:
-            return True
-        ctx_enables = context.get("enables", [])
-        return bool(set(self.enables) & set(ctx_enables))
-
-    def _matches_irreversible(self, context: dict[str, Any]) -> bool:
-        """Check if irreversible condition matches exactly."""
-        if self.irreversible is None:
-            return True
-        return context.get("irreversible", False) == self.irreversible
-
-    def _matches_account(self, context: dict[str, Any]) -> bool:
-        """Check if account persona matches."""
-        if self.account is None:
-            return True
-        ctx_account = context.get("account", "")
-        accounts = [self.account] if isinstance(self.account, str) else self.account
-        return ctx_account in accounts
-
-    def _matches_agent(self, context: dict[str, Any]) -> bool:
-        """Check if agent matches (glob)."""
-        if self.agent is None:
-            return True
-        ctx_agent = context.get("agent", "")
-        return fnmatch.fnmatch(ctx_agent, self.agent)
-
-    def _matches_service(self, context: dict[str, Any]) -> bool:
-        """Check if service matches (glob)."""
-        if self.service is None:
-            return True
-        ctx_service = context.get("service", "")
-        return fnmatch.fnmatch(ctx_service, self.service)
-
-    def _matches_capability(self, context: dict[str, Any]) -> bool:
-        """Check if capability matches (glob)."""
-        if self.capability is None:
-            return True
-        ctx_capability = context.get("capability", "")
-        return fnmatch.fnmatch(ctx_capability, self.capability)
-
-    def matches(self, context: dict[str, Any]) -> bool:
-        """Check if all specified conditions match the context."""
-        return (
-            self._matches_credential(context)
-            and self._matches_method(context)
-            and self._matches_path_prefix(context)
-            and self._matches_content_type(context)
-            and self._matches_tactics(context)
-            and self._matches_enables(context)
-            and self._matches_irreversible(context)
-            and self._matches_account(context)
-            and self._matches_agent(context)
-            and self._matches_service(context)
-            and self._matches_capability(context)
-        )
-
-
-class Permission(BaseModel):
-    """IAM-style permission rule.
-
-    For credential:use:
-      - resource = destination pattern (e.g., "api.openai.com/*")
-      - condition.credential = allowed credential types/HMACs (e.g., ["openai:*"])
-
-    For network:request:
-      - resource = destination pattern (e.g., "api.openai.com/*")
-      - effect = budget means rate limiting
-    """
-
-    action: Literal[
-        "credential:use",
-        "network:request",
-        "file:read",
-        "file:write",
-        "subprocess:exec",
-        "gateway:risky_route",
-        "gateway:request",
-    ]
-    resource: str  # glob pattern for destination: "api.openai.com/*", "*.example.com/*"
-    effect: Literal["allow", "deny", "prompt", "budget"] = "allow"
-    budget: int | None = None  # Required if effect=budget (requests per minute)
-    tier: Literal["explicit", "inferred"] = "explicit"
-    condition: Condition | None = None
-
-    @model_validator(mode="after")
-    def validate_budget_required(self):
-        """Ensure budget is set when effect is 'budget'."""
-        if self.effect == "budget" and self.budget is None:
-            raise ValueError("budget must be set when effect is 'budget'")
-        return self
-
-
-class CredentialRule(BaseModel):
-    """Credential detection and routing rule.
-
-    Defines patterns for detecting credential types and where they can be routed.
-    Used by credential_guard for detection and policy evaluation for routing.
-    """
-
-    name: str  # e.g., "openai", "anthropic", "github"
-    patterns: list[str]  # Regex patterns for detection
-    allowed_hosts: list[str]  # Where this credential can go
-    header_names: list[str] = Field(default_factory=lambda: ["authorization", "x-api-key"])
-    suggested_url: str = ""  # Hint for error messages
-
-
-class ScanPattern(BaseModel):
-    """Content scan pattern rule.
-
-    Defines patterns for detecting sensitive content in URLs, headers, or bodies.
-    Used by pattern_scanner to block or log matching content.
-    """
-
-    name: str
-    pattern: str  # Regex pattern
-    target: Literal["request", "response", "both"] = "both"
-    scope: list[Literal["url", "headers", "body"]] = Field(default_factory=lambda: ["body"])
-    action: Literal["block", "log"] = "log"
-    severity: Literal["low", "medium", "high", "critical"] = "medium"
-    message: str = ""
-    case_sensitive: bool = True
-
-
-class AddonConfig(BaseModel):
-    """Configuration for a single addon."""
-
-    enabled: bool = True
-    settings: dict[str, Any] = Field(default_factory=dict)
-
-    class Config:
-        extra = "allow"  # Allow extra fields as settings
-
-
-class DomainOverride(BaseModel):
-    """Domain or client-specific policy override."""
-
-    bypass: list[str] = Field(default_factory=list)
-    addons: dict[str, AddonConfig] = Field(default_factory=dict)
-
-
-class UnifiedPolicy(BaseModel):
-    """Complete policy document.
-
-    Contains all security configuration for a baseline or task policy:
-    - permissions: IAM-style access control rules
-    - credential_rules: Credential detection patterns and allowed destinations
-    - scan_patterns: Content scanning patterns for URLs/headers/bodies
-    - budgets: Global rate limit caps
-    - addons: Addon-specific configuration
-    """
-
-    metadata: PolicyMetadata = Field(default_factory=PolicyMetadata)
-    permissions: list[Permission] = Field(default_factory=list)
-    budgets: dict[str, int] = Field(default_factory=dict)  # Global budget caps
-    required: list[str] = Field(default_factory=list)  # Addons that cannot be disabled
-
-    # Credential detection and routing
-    credential_rules: list[CredentialRule] = Field(default_factory=list)
-
-    # Content scanning patterns
-    scan_patterns: list[ScanPattern] = Field(default_factory=list)
-
-    # Addon and domain configuration
-    addons: dict[str, AddonConfig] = Field(default_factory=dict)
-    domains: dict[str, DomainOverride] = Field(default_factory=dict)
-    clients: dict[str, DomainOverride] = Field(default_factory=dict)
-
-    # Service gateway: agent-to-service token bindings (compiled from agents: section)
-    gateway: dict = Field(default_factory=dict)
-
-    # Summary of permissions extracted into simple sets (not in permissions list)
-    # Format: {"network:request:deny": 92276, "network:request:allow": 5}
-    simple_permissions: dict[str, int] = Field(default_factory=dict)
-
-
-# =============================================================================
-# Decision Types
-# =============================================================================
-
-
-@dataclass
-class PolicyDecision:
-    """Result of policy evaluation."""
-
-    effect: Literal["allow", "deny", "prompt", "budget_exceeded"]
-    permission: Permission | None = None  # Matched permission (if any)
-    reason: str = ""
-    budget_remaining: int | None = None
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-
-def _matches_pattern(value: str, pattern: str) -> bool:
-    """Check if value matches pattern (supports glob wildcards)."""
-    value = value.lower()
-    pattern = pattern.lower()
-
-    # Exact match
-    if value == pattern:
-        return True
-
-    # Wildcard domain patterns: *.example.com
-    if pattern.startswith("*."):
-        suffix = pattern[1:]  # .example.com
-        return value.endswith(suffix) or value == pattern[2:]
-
-    # Glob patterns: api.stripe.com/*
-    return fnmatch.fnmatch(value, pattern)
+__all__ = [
+    "AddonConfig",
+    "Condition",
+    "CredentialRule",
+    "DomainOverride",
+    "Permission",
+    "PolicyDecision",
+    "PolicyEngine",
+    "PolicyMetadata",
+    "ScanPattern",
+    "UnifiedPolicy",
+    "_matches_pattern",
+    "_specificity_score",
+]
 
 
 def _specificity_score(pattern: str) -> int:
@@ -397,8 +111,6 @@ class PolicyEngine:
         self._budget_tracker = GCRABudgetTracker(budget_state_path)
 
         # Policy loader handles file loading, watching, SIGHUP.
-        # Lazy import — see module-level comment about the cycle.
-        from safeyolo.policy.loader import PolicyLoader  # noqa: PLC0415
         self._loader = PolicyLoader(baseline_path, services_dir=services_dir)
         if baseline_path:
             self._loader.start_watcher()

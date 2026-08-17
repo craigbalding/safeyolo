@@ -20,10 +20,7 @@ import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from safeyolo.policy.engine import UnifiedPolicy
+from typing import Optional
 
 try:
     import yaml
@@ -38,6 +35,7 @@ from datetime import UTC
 from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.policy.compiler import compile_policy, is_host_centric
+from safeyolo.policy.models import UnifiedPolicy
 
 log = logging.getLogger("safeyolo.policy-loader")
 
@@ -184,11 +182,6 @@ class PolicyLoader:
             on_reload: Optional callback when policies are reloaded
             services_dir: Path to service definitions directory (for capability route compilation)
         """
-        # Import here to avoid circular imports
-        from safeyolo.policy.engine import UnifiedPolicy
-
-        self._UnifiedPolicy = UnifiedPolicy
-
         self._baseline_path = baseline_path
         self._services_dir = services_dir
         self._on_reload_callbacks: list[Callable[[], None]] = []
@@ -451,7 +444,7 @@ class PolicyLoader:
                 }
 
             with self._lock:
-                self._baseline = self._UnifiedPolicy.model_validate(raw)
+                self._baseline = UnifiedPolicy.model_validate(raw)
                 self._last_baseline_mtime = self._baseline_path.stat().st_mtime
                 addons_path = self._addons_path()
                 if addons_path:
@@ -520,7 +513,7 @@ class PolicyLoader:
 
         try:
             with self._lock:
-                self._task_policy = self._UnifiedPolicy.model_validate(raw)
+                self._task_policy = UnifiedPolicy.model_validate(raw)
                 self._task_policy_path = path
                 self._last_task_mtime = path.stat().st_mtime
 
