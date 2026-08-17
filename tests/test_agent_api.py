@@ -1005,6 +1005,68 @@ class TestFlowStoreAPI:
             assert body["count"] == 1
             assert body["flows"][0]["host"] == "app.example.com"
 
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_flow_search_rejects_unknown_filters(self, api_with_store, method):
+        """Unknown filters fail loudly instead of returning plausible recent flows."""
+        api, store, token = api_with_store
+        with _patch_active_token(token):
+            if method == "GET":
+                flow = _make_api_flow("/api/flows/search", token=token, query="bogus=value")
+            else:
+                flow = _make_post_api_flow("/api/flows/search", {"bogus": "value"}, token)
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 400
+        body = json.loads(flow.response.content)
+        assert "unknown filter(s): bogus" in body["error"]
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "limit=many",
+            "limit=0",
+            "offset=-1",
+            "status_class=9xx",
+        ],
+    )
+    def test_get_flow_search_rejects_invalid_values(self, api_with_store, query):
+        api, store, token = api_with_store
+        with _patch_active_token(token):
+            flow = _make_api_flow("/api/flows/search", token=token, query=query)
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 400
+
+    @pytest.mark.parametrize("query", ["q=CreateSecret", "path=CreateSecret"])
+    def test_get_flow_search_supports_intuitive_filters(self, api_with_store, query):
+        api, store, token = api_with_store
+        store.record_flow({
+            **dict(store.get_flow(1)),
+            "request_id": "req-create-secret",
+            "path": "/api/actions/CreateSecret",
+            "full_url": "https://app.example.com/api/actions/CreateSecret",
+            "request_body": b"",
+            "response_body": b"",
+        })
+        with _patch_active_token(token):
+            flow = _make_api_flow("/api/flows/search", token=token, query=query)
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert [result["request_id"] for result in body["flows"]] == ["req-create-secret"]
+
+    def test_post_flow_search_requires_json_object(self, api_with_store):
+        api, store, token = api_with_store
+        with _patch_active_token(token):
+            flow = _make_api_flow("/api/flows/search", method="POST", token=token)
+            flow.request.content = b"[]"
+            flow.request.headers["content-type"] = "application/json"
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 400
+        assert json.loads(flow.response.content) == {"error": "Search filters must be a JSON object"}
+
     def test_post_flow_search_invalid_json(self, api_with_store):
         """POST /api/flows/search with invalid JSON returns 400."""
         api, store, token = api_with_store

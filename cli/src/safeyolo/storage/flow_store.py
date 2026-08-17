@@ -19,6 +19,47 @@ import time
 
 log = logging.getLogger("safeyolo.flow-store")
 
+_FLOW_SEARCH_EXACT_FILTERS = {
+    "engagement_id": "engagement_id = ?",
+    "agent_id": "agent_id = ?",
+    "run": "run = ?",
+    "test": "test = ?",
+    "host": "host = ?",
+    "method": "method = ?",
+    "status_code": "status_code = ?",
+    "flow_state": "flow_state = ?",
+}
+_FLOW_SEARCH_TEXT_FILTERS = {
+    "path_contains",
+    "text_contains",
+    "response_header_contains",
+    "request_header_contains",
+    "tag",
+    "path",
+    "q",
+    "status_class",
+}
+_FLOW_SEARCH_INTEGER_FILTERS = {
+    "status_code",
+    "status_min",
+    "status_max",
+    "from_ts",
+    "to_ts",
+    "limit",
+    "offset",
+}
+FLOW_SEARCH_FILTER_KEYS = frozenset(
+    set(_FLOW_SEARCH_EXACT_FILTERS)
+    | _FLOW_SEARCH_TEXT_FILTERS
+    | _FLOW_SEARCH_INTEGER_FILTERS
+)
+_STATUS_CLASS_RANGES = {
+    "2xx": (200, 299),
+    "3xx": (300, 399),
+    "4xx": (400, 499),
+    "5xx": (500, 599),
+}
+
 # Text-like content types for preview extraction and FTS indexing
 _TEXT_LIKE_TYPES = re.compile(
     r"^("
@@ -200,6 +241,66 @@ def headers_to_json(headers, redact_headers: set[str] | None = None) -> str:
             value = f"[GATEWAY:...{suffix}]"
         decoded.append([name, value])
     return json.dumps(decoded)
+
+
+def normalize_flow_search_filters(filters: dict) -> dict:
+    """Validate and normalize filters accepted by ``search_flows``.
+
+    Unknown or malformed filters are errors: silently dropping them can turn a
+    targeted diagnostics query into a plausible-looking unfiltered result set.
+    """
+    if not isinstance(filters, dict):
+        raise ValueError("Search filters must be a JSON object")
+
+    unknown = sorted(set(filters) - FLOW_SEARCH_FILTER_KEYS)
+    if unknown:
+        valid = ", ".join(sorted(FLOW_SEARCH_FILTER_KEYS))
+        raise ValueError(f"unknown filter(s): {', '.join(unknown)}; valid filters: {valid}")
+
+    normalized = dict(filters)
+    for key in _FLOW_SEARCH_INTEGER_FILTERS:
+        if key not in normalized:
+            continue
+        value = normalized[key]
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError(f"{key} must be an integer")
+        try:
+            normalized[key] = int(value)
+        except ValueError as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+
+    for key in _FLOW_SEARCH_TEXT_FILTERS | (set(_FLOW_SEARCH_EXACT_FILTERS) - {"status_code"}):
+        if key not in normalized:
+            continue
+        value = normalized[key]
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{key} must be a non-empty string")
+
+    if "method" in normalized:
+        normalized["method"] = normalized["method"].upper()
+
+    if "status_class" in normalized:
+        normalized["status_class"] = normalized["status_class"].lower()
+        if normalized["status_class"] not in _STATUS_CLASS_RANGES:
+            valid = ", ".join(_STATUS_CLASS_RANGES)
+            raise ValueError(f"status_class must be one of: {valid}")
+
+    if "limit" in normalized:
+        if normalized["limit"] < 1:
+            raise ValueError("limit must be at least 1")
+        normalized["limit"] = min(normalized["limit"], 500)
+    if normalized.get("offset", 0) < 0:
+        raise ValueError("offset must be at least 0")
+
+    for key in ("status_code", "status_min", "status_max", "from_ts", "to_ts"):
+        if normalized.get(key, 0) < 0:
+            raise ValueError(f"{key} must be at least 0")
+    if normalized.get("status_min", 0) > normalized.get("status_max", float("inf")):
+        raise ValueError("status_min must not exceed status_max")
+    if normalized.get("from_ts", 0) > normalized.get("to_ts", float("inf")):
+        raise ValueError("from_ts must not exceed to_ts")
+
+    return normalized
 
 
 class FlowStore:
@@ -436,22 +537,12 @@ class FlowStore:
 
     def search_flows(self, filters: dict) -> list[dict]:
         """Search flows by filter criteria. Returns summaries (no body blobs)."""
+        filters = normalize_flow_search_filters(filters)
         conditions = []
         params = []
 
-        _filter_map = {
-            "engagement_id": ("engagement_id = ?", None),
-            "agent_id": ("agent_id = ?", None),
-            "run": ("run = ?", None),
-            "test": ("test = ?", None),
-            "host": ("host = ?", None),
-            "method": ("method = ?", None),
-            "status_code": ("status_code = ?", None),
-            "flow_state": ("flow_state = ?", None),
-        }
-
-        for key, (clause, _) in _filter_map.items():
-            if key in filters and filters[key] is not None:
+        for key, clause in _FLOW_SEARCH_EXACT_FILTERS.items():
+            if key in filters:
                 conditions.append(clause)
                 params.append(filters[key])
 
@@ -475,19 +566,11 @@ class FlowStore:
             params.append(filters["status_max"])
 
         if "status_class" in filters and filters["status_class"]:
-            sc = filters["status_class"]
-            _class_ranges = {
-                "2xx": (200, 299),
-                "3xx": (300, 399),
-                "4xx": (400, 499),
-                "5xx": (500, 599),
-            }
-            if sc in _class_ranges:
-                lo, hi = _class_ranges[sc]
-                conditions.append("status_code >= ?")
-                params.append(lo)
-                conditions.append("status_code <= ?")
-                params.append(hi)
+            lo, hi = _STATUS_CLASS_RANGES[filters["status_class"]]
+            conditions.append("status_code >= ?")
+            params.append(lo)
+            conditions.append("status_code <= ?")
+            params.append(hi)
 
         if "response_header_contains" in filters and filters["response_header_contains"]:
             conditions.append("response_headers_json LIKE ?")
@@ -519,6 +602,18 @@ class FlowStore:
         if "to_ts" in filters and filters["to_ts"] is not None:
             conditions.append("ts_start <= ?")
             params.append(filters["to_ts"])
+
+        if "path" in filters:
+            conditions.append("path LIKE ?")
+            params.append(f"%{filters['path']}%")
+
+        if "q" in filters:
+            term = f"%{filters['q']}%"
+            conditions.append(
+                "(path LIKE ? OR host LIKE ? OR full_url LIKE ? "
+                "OR response_body_text_preview LIKE ? OR request_body_text_preview LIKE ?)"
+            )
+            params.extend([term, term, term, term, term])
 
         where = " AND ".join(conditions) if conditions else "1=1"
         limit = min(filters.get("limit", 50), 500)
