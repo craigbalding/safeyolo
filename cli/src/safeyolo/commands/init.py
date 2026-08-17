@@ -77,9 +77,8 @@ def init(
         console.print(
             Panel(
                 "[yellow]Guest VM images not found.[/yellow]\n\n"
-                "Build them with:\n"
-                "  cd guest && ./build-all.sh\n"
-                "  mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/",
+                "Build and install them with:\n"
+                "  safeyolo build",
                 title="Note",
             )
         )

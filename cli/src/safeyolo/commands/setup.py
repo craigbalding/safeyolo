@@ -3,7 +3,9 @@
 import os
 import platform as _platform
 import re as _re
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import typer
@@ -22,6 +24,8 @@ _VALID_USERNAME = _re.compile(r"^[a-z_][a-z0-9_-]*$")
 # unprivileged user namespace runsc needs unless this profile is present.
 _APPARMOR_TEMPLATE = Path(__file__).parent.parent / "templates" / "apparmor-safeyolo-runsc"
 _APPARMOR_DEST = Path("/etc/apparmor.d/safeyolo-runsc")
+_GVISOR_KEYRING = Path("/usr/share/keyrings/gvisor-archive-keyring.gpg")
+_GVISOR_APT_SOURCE = Path("/etc/apt/sources.list.d/gvisor.list")
 
 setup_app = typer.Typer(
     name="setup",
@@ -135,6 +139,106 @@ def _announce_linux_sudo_changes(need_apparmor: bool, need_kvm: bool,
     console.print()
 
 
+def _install_linux_runtime_packages(
+    *, need_runsc: bool, need_uidmap: bool, need_acl: bool,
+) -> bool:
+    """Install missing apt-managed Linux runtime prerequisites."""
+    if not (need_runsc or need_uidmap or need_acl):
+        return True
+
+    if not all(shutil.which(command) for command in ("sudo", "apt-get", "dpkg")):
+        console.print(
+            "  [red]FAIL[/red]  Automatic runtime installation requires "
+            "an apt-based Linux host with sudo."
+        )
+        return False
+
+    packages = []
+    if need_uidmap:
+        packages.append("uidmap")
+    if need_acl:
+        packages.append("acl")
+
+    console.print("\n[bold]`safeyolo setup` needs sudo to install:[/bold]")
+    if need_runsc:
+        console.print(
+            "  • [bold]gVisor (`runsc`)[/bold] from its official signed apt repository\n"
+            f"      write   {_GVISOR_KEYRING}\n"
+            f"      write   {_GVISOR_APT_SOURCE}"
+        )
+    if packages:
+        console.print(f"  • [bold]Host packages[/bold]: {', '.join(packages)}")
+    console.print()
+
+    try:
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+
+        if need_runsc:
+            subprocess.run(
+                [
+                    "sudo", "apt-get", "install", "-y",
+                    "apt-transport-https", "ca-certificates", "curl", "gnupg",
+                ],
+                check=True,
+            )
+            architecture = subprocess.run(
+                ["dpkg", "--print-architecture"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if architecture not in {"amd64", "arm64"}:
+                console.print(
+                    f"  [red]FAIL[/red]  gVisor does not support apt architecture "
+                    f"{architecture!r}."
+                )
+                return False
+
+            with tempfile.TemporaryDirectory(prefix="safeyolo-gvisor-key-") as tmp:
+                key = Path(tmp) / "archive.key"
+                keyring = Path(tmp) / "archive.gpg"
+                subprocess.run(
+                    ["curl", "-fsSL", "https://gvisor.dev/archive.key", "-o", str(key)],
+                    check=True,
+                )
+                subprocess.run(
+                    [
+                        "gpg", "--batch", "--yes", "--dearmor",
+                        "--output", str(keyring), str(key),
+                    ],
+                    check=True,
+                )
+                subprocess.run(
+                    ["sudo", "install", "-m", "0644", str(keyring), str(_GVISOR_KEYRING)],
+                    check=True,
+                )
+
+            apt_source = (
+                f"deb [arch={architecture} signed-by={_GVISOR_KEYRING}] "
+                "https://storage.googleapis.com/gvisor/releases release main\n"
+            )
+            subprocess.run(
+                ["sudo", "tee", str(_GVISOR_APT_SOURCE)],
+                input=apt_source,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                check=True,
+            )
+            subprocess.run(["sudo", "apt-get", "update"], check=True)
+            packages.append("runsc")
+
+        if packages:
+            subprocess.run(
+                ["sudo", "apt-get", "install", "-y", *packages],
+                check=True,
+            )
+    except (FileNotFoundError, subprocess.CalledProcessError) as err:
+        console.print(f"  [red]FAIL[/red]  Runtime package installation failed: {err}")
+        return False
+
+    return True
+
+
 @setup_app.callback(invoke_without_command=True)
 def setup() -> None:
     """Apply system prerequisites for SafeYolo agent sandboxes.
@@ -145,6 +249,7 @@ def setup() -> None:
 
     Linux installs (only when missing):
 
+      - gVisor (runsc), uidmap, and acl packages on apt-based hosts.
       - AppArmor profile at /etc/apparmor.d/safeyolo-runsc, loaded via
         `apparmor_parser -r`.
       - udev rule at /etc/udev/rules.d/99-safeyolo-kvm.rules + immediate
@@ -160,16 +265,14 @@ def setup() -> None:
 
     all_ok = True
 
-    # Guest images (platform-aware: Linux needs EROFS, macOS needs ext4+kernel+initramfs).
+    # Guest images (platform-aware: Linux needs a rootfs tree; macOS needs
+    # ext4 + kernel + initramfs).
     if check_guest_images():
         console.print("  [green]OK[/green]  Guest images available")
     else:
         missing = missing_guest_images()
         console.print(f"  [red]MISSING[/red]  Guest images: {', '.join(missing)}")
-        console.print("    Build with: cd guest && ./build-all.sh")
-        console.print("    Install:    cp guest/out/* ~/.safeyolo/share/")
-        if "rootfs-erofs" in missing:
-            console.print("    [dim](erofs-utils is required on the build host: sudo apt-get install erofs-utils)[/dim]")
+        console.print("    Build and install with: safeyolo build")
         all_ok = False
 
     # Platform-specific checks. macOS uses a Swift VM helper (vsock-based
@@ -193,8 +296,23 @@ def setup() -> None:
             find_runsc,
         )
 
-        # runsc (gVisor) — the Linux VM runtime
+        # Detect and install apt-managed runtime prerequisites before
+        # evaluating the final state. This is the one-time host setup the
+        # command promises, rather than a diagnostic-only pass.
         runsc_path = find_runsc()
+        userns = check_userns_prerequisites()
+        install_ok = _install_linux_runtime_packages(
+            need_runsc=runsc_path is None,
+            need_uidmap=not (userns["newuidmap"] and userns["newgidmap"]),
+            need_acl=not userns["setfacl"],
+        )
+        if install_ok:
+            runsc_path = find_runsc()
+            userns = check_userns_prerequisites()
+        else:
+            all_ok = False
+
+        # runsc (gVisor) — the Linux VM runtime
         if runsc_path:
             console.print(f"  [green]OK[/green]  runsc (found at {runsc_path})")
         else:
@@ -202,8 +320,19 @@ def setup() -> None:
             console.print("    Install gVisor — see README 'Linux' section for apt commands.")
             all_ok = False
 
-        # User namespace prerequisites (purely diagnostic)
-        userns = check_userns_prerequisites()
+        # User namespace prerequisites
+        if not userns["newuidmap"]:
+            console.print("  [red]MISSING[/red]  newuidmap (install the `uidmap` package)")
+            all_ok = False
+        if not userns["newgidmap"]:
+            console.print("  [red]MISSING[/red]  newgidmap (install the `uidmap` package)")
+            all_ok = False
+        if not userns["subuid"]:
+            console.print("  [red]MISSING[/red]  /etc/subuid entry for the current user")
+            all_ok = False
+        if not userns["subgid"]:
+            console.print("  [red]MISSING[/red]  /etc/subgid entry for the current user")
+            all_ok = False
         if not userns["setfacl"]:
             console.print("  [red]MISSING[/red]  setfacl (required for rootless rootfs ACL)")
             console.print("    Debian/Ubuntu: [bold]sudo apt-get install acl[/bold]")
@@ -279,6 +408,7 @@ def setup() -> None:
         console.print("\n[green]All prerequisites met.[/green]")
     else:
         console.print("\n[yellow]Some prerequisites missing — see above.[/yellow]")
+        raise typer.Exit(1)
 
 
 @setup_app.command()

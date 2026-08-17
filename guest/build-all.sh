@@ -6,7 +6,7 @@
 #   Image              - Linux kernel (macOS microVMs only, not needed for gVisor)
 #   initramfs.cpio.gz  - Minimal initramfs (macOS microVMs only)
 #   rootfs-base.ext4   - Debian trixie rootfs (macOS VZ mounts this)
-#   rootfs-base.erofs  - Debian trixie rootfs (Linux gVisor mounts this)
+#   rootfs-tree/       - Debian trixie rootfs (Linux gVisor OCI root)
 #
 # Platform handling:
 #   Linux  - runs the three build-*.sh scripts natively
@@ -69,7 +69,7 @@ run_builds_native() {
     ls -lh "$OUTPUT_DIR/"
     echo ""
     echo "Install to ~/.safeyolo/share/ with:"
-    echo "  mkdir -p ~/.safeyolo/share && rsync -a --delete $OUTPUT_DIR/ ~/.safeyolo/share/"
+    echo "  mkdir -p ~/.safeyolo/share && sudo cp -a $OUTPUT_DIR/* ~/.safeyolo/share/"
 }
 
 ensure_lima_vm() {
@@ -158,7 +158,7 @@ run_builds_via_lima() {
     ls -lh "$OUTPUT_DIR/"
     echo ""
     echo "Install to ~/.safeyolo/share/ with:"
-    echo "  mkdir -p ~/.safeyolo/share && rsync -a --delete $OUTPUT_DIR/ ~/.safeyolo/share/"
+    echo "  mkdir -p ~/.safeyolo/share && sudo cp -a $OUTPUT_DIR/* ~/.safeyolo/share/"
 }
 
 # --- Dispatch ---

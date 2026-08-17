@@ -9,7 +9,7 @@ All subprocess/vm/proxy/firewall calls are mocked. No real processes are started
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -319,6 +319,70 @@ class TestLifecycleBuild:
         assert (config_dir / "share" / "Image").read_bytes() == b"kernel"
         assert (config_dir / "share" / "initramfs.cpio.gz").read_bytes() == b"initramfs"
         assert (config_dir / "share" / "rootfs-base.ext4").read_bytes() == b"rootfs"
+
+    def test_install_guest_artifacts_includes_cache_paths(self, tmp_path):
+        """The installer copies the Linux cache bind manifest too."""
+        from safeyolo.commands.lifecycle import _install_guest_artifacts
+
+        out_dir = tmp_path / "out"
+        share_dir = tmp_path / "share"
+        out_dir.mkdir()
+        share_dir.mkdir()
+        (out_dir / "rootfs-base.ext4").write_bytes(b"rootfs")
+        (out_dir / "cache-paths.txt").write_text("/var/cache/apt\n")
+
+        with patch("safeyolo.commands.lifecycle.platform.system", return_value="Darwin"):
+            _install_guest_artifacts(out_dir, share_dir)
+
+        assert (share_dir / "rootfs-base.ext4").read_bytes() == b"rootfs"
+        assert (share_dir / "cache-paths.txt").read_text() == "/var/cache/apt\n"
+
+    def test_install_guest_artifacts_preserves_linux_tree_ownership(self, tmp_path):
+        """Linux installs rootfs-tree with privileged, numeric-id rsync."""
+        from safeyolo.commands.lifecycle import _install_guest_artifacts
+
+        out_dir = tmp_path / "out"
+        share_dir = tmp_path / "share"
+        rootfs_tree = out_dir / "rootfs-tree"
+        destination = share_dir / "rootfs-tree"
+        (rootfs_tree / "etc").mkdir(parents=True)
+        share_dir.mkdir()
+
+        real_stat = Path.stat
+
+        def stat_with_subuid_owner(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if path == destination:
+                values = list(result)
+                values[4] = 100000
+                return type(result)(values)
+            return result
+
+        def fake_rsync(*args, **kwargs):
+            if args[0][1] == "rsync":
+                destination.mkdir()
+            return subprocess.CompletedProcess(args[0], 0)
+
+        with (
+            patch("safeyolo.commands.lifecycle.platform.system", return_value="Linux"),
+            patch("safeyolo.commands.lifecycle.subprocess.run", side_effect=fake_rsync) as run,
+            patch.object(Path, "stat", autospec=True, side_effect=stat_with_subuid_owner),
+        ):
+            _install_guest_artifacts(out_dir, share_dir)
+
+        assert run.call_args_list == [
+            call(
+                [
+                    "sudo", "rsync", "-aHAX", "--numeric-ids", "--delete",
+                    f"{rootfs_tree}/", f"{destination}/",
+                ],
+                check=True,
+            ),
+            call(
+                ["sudo", "chown", "100000:100000", str(destination)],
+                check=True,
+            ),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +983,33 @@ class TestSetup:
     # Pin the platform + stub _pf_conf_state so these run consistently on
     # any CI host regardless of its /etc/pf.conf state.
 
+    def test_linux_runtime_installer_adds_signed_gvisor_repo(self):
+        """The apt installer uses gVisor's signed release repository."""
+        from safeyolo.commands.setup import _install_linux_runtime_packages
+
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            stdout = "amd64\n" if command[:2] == ["dpkg", "--print-architecture"] else ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+        with (
+            patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/tool"),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+        ):
+            assert _install_linux_runtime_packages(
+                need_runsc=True,
+                need_uidmap=True,
+                need_acl=True,
+            )
+
+        commands = [command for command, _kwargs in calls]
+        assert ["sudo", "tee", "/etc/apt/sources.list.d/gvisor.list"] in commands
+        assert [
+            "sudo", "apt-get", "install", "-y", "uidmap", "acl", "runsc",
+        ] in commands
+
     def test_guest_images_ok(self, runner, config_dir):
         """Reports OK when guest images are available."""
         with (
@@ -934,7 +1025,7 @@ class TestSetup:
 
     def test_guest_images_missing_shows_missing(self, runner, config_dir):
         """Reports MISSING when guest images are absent, listing the platform-
-        appropriate artifacts (e.g. initramfs on Darwin, EROFS on Linux)."""
+        appropriate artifacts (e.g. initramfs on Darwin, rootfs-tree on Linux)."""
         with (
             patch("safeyolo.commands.setup._platform.system", return_value="Darwin"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=False),
@@ -946,7 +1037,7 @@ class TestSetup:
         ):
             result = runner.invoke(app, ["setup"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "missing" in result.output.lower()
         assert "initramfs" in result.output.lower()
 
@@ -961,7 +1052,7 @@ class TestSetup:
         ):
             result = runner.invoke(app, ["setup"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "missing" in result.output.lower()
         assert "safeyolo-vm" in result.output.lower()
 
@@ -1011,6 +1102,10 @@ class TestSetup:
             patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
             patch("safeyolo.commands.setup.check_guest_images", return_value=True),
             patch("safeyolo.platform.linux.find_runsc", return_value=None),
+            patch(
+                "safeyolo.commands.setup._install_linux_runtime_packages",
+                return_value=False,
+            ),
             patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
                 "newuidmap": True, "newgidmap": True,
                 "subuid": True, "subgid": True,
@@ -1025,10 +1120,72 @@ class TestSetup:
         ):
             result = runner.invoke(app, ["setup"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "missing" in result.output.lower()
         assert "runsc" in result.output.lower()
         assert "gvisor" in result.output.lower()
+
+    def test_setup_installs_missing_runsc_on_apt_linux(self, runner, config_dir):
+        """Linux setup installs runsc, then evaluates the refreshed state."""
+        userns = {
+            "newuidmap": True, "newgidmap": True,
+            "subuid": True, "subgid": True,
+            "setfacl": True,
+            "apparmor_restricts": False, "apparmor_profile_loaded": False,
+        }
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch(
+                "safeyolo.platform.linux.find_runsc",
+                side_effect=[None, "/usr/bin/runsc"],
+            ),
+            patch(
+                "safeyolo.platform.linux.check_userns_prerequisites",
+                return_value=userns,
+            ),
+            patch(
+                "safeyolo.commands.setup._install_linux_runtime_packages",
+                return_value=True,
+            ) as install,
+            patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
+                "platform": "systrap", "kvm_exists": False,
+                "kvm_operator_access": False, "kvm_subordinate_access": False,
+                "reason": "/dev/kvm not found",
+            }),
+        ):
+            result = runner.invoke(app, ["setup"])
+
+        assert result.exit_code == 0
+        install.assert_called_once_with(
+            need_runsc=True,
+            need_uidmap=False,
+            need_acl=False,
+        )
+        assert "all prerequisites met" in result.output.lower()
+
+    def test_setup_fails_when_subuid_mapping_is_missing(self, runner, config_dir):
+        """A missing user mapping must stop callers such as migration."""
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc"),
+            patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
+                "newuidmap": True, "newgidmap": True,
+                "subuid": False, "subgid": True,
+                "setfacl": True,
+                "apparmor_restricts": False, "apparmor_profile_loaded": False,
+            }),
+            patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
+                "platform": "systrap", "kvm_exists": False,
+                "kvm_operator_access": False, "kvm_subordinate_access": False,
+                "reason": "/dev/kvm not found",
+            }),
+        ):
+            result = runner.invoke(app, ["setup"])
+
+        assert result.exit_code == 1
+        assert "/etc/subuid" in result.output
 
 
 # ---------------------------------------------------------------------------
