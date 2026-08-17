@@ -1447,7 +1447,7 @@ addons: {}
 
     def test_update_host_rate_rejects_zero(self, engine):
         """update_host_rate raises ValueError for rate < 1."""
-        with pytest.raises(ValueError, match="rate must be >= 1"):
+        with pytest.raises(ValueError, match="positive integer"):
             engine.update_host_rate("api.test.com", 0)
 
 

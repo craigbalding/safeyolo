@@ -93,12 +93,17 @@ class TestUpdateHostRate:
         assert doc["hosts"]["api.openai.com"]["rate"] == 9000
 
     def test_invalid_rate_rejected(self, engine_toml):
-        with pytest.raises(ValueError, match="rate must be >= 1"):
+        with pytest.raises(ValueError, match="positive integer"):
             engine_toml.update_host_rate("api.openai.com", 0)
 
     def test_negative_rate_rejected(self, engine_toml):
-        with pytest.raises(ValueError, match="rate must be >= 1"):
+        with pytest.raises(ValueError, match="positive integer"):
             engine_toml.update_host_rate("api.openai.com", -1)
+
+    @pytest.mark.parametrize("rate", [True, 1.5, "100"])
+    def test_non_integer_rate_rejected(self, engine_toml, rate):
+        with pytest.raises(ValueError, match="positive integer"):
+            engine_toml.update_host_rate("api.openai.com", rate)
 
     def test_toml_comments_preserved(self, tmp_path):
         from safeyolo.policy.engine import PolicyEngine

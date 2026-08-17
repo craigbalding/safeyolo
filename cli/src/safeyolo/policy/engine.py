@@ -1123,8 +1123,8 @@ class PolicyEngine:
         Returns:
             Dict with status, host, old_rate, new_rate
         """
-        if rate < 1:
-            raise ValueError("rate must be >= 1")
+        if type(rate) is not int or rate < 1:
+            raise ValueError("rate must be a positive integer")
 
         with self._loader._lock:
             baseline = self._loader._baseline
@@ -1166,7 +1166,12 @@ class PolicyEngine:
             except Exception as e:
                 log.warning("TOML round-trip save failed for host rate update: %s", sanitize_for_log(e))
 
-        log.info("Updated host rate: %s %s -> %s", sanitize_for_log(host), old_rate, rate)
+        log.info(
+            "Updated host rate: %s %s -> %s",
+            sanitize_for_log(host),
+            sanitize_for_log(str(old_rate)),
+            sanitize_for_log(str(rate)),
+        )
         write_event(
             "admin.host_rate_updated",
             kind=EventKind.ADMIN,
