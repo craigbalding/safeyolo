@@ -55,7 +55,11 @@ def sanitize_for_log(value, max_len: int | None = 200) -> str:
     """
     if value is None:
         return ""
-    text = _ANSI_ESCAPE_RE.sub("?", str(value))
+    # Keep these explicit replacements even though the category filter below
+    # also rejects controls. CodeQL recognizes this standard log-injection
+    # barrier, while the remaining filters cover broader terminal/Unicode cases.
+    text = str(value).replace("\r\n", "?").replace("\r", "?").replace("\n", "?")
+    text = _ANSI_ESCAPE_RE.sub("?", text)
     sanitized = "".join(
         c if (ord(c) not in _BLOCKED_CODEPOINTS and unicodedata.category(c) in _SAFE_CATEGORIES)
         else "?"

@@ -97,6 +97,13 @@ class TestSanitizeForLog:
         for ch in ["\n", "\t", "\r", "\x00", "\x1f", "\x7f"]:
             assert "?" in sanitize_for_log(f"a{ch}b")
 
+    def test_crlf_and_newlines_cannot_create_additional_log_lines(self):
+        hostile = "task-1\r\nINFO forged\nWARNING forged"
+        sanitized = sanitize_for_log(hostile)
+
+        assert sanitized == "task-1?INFO forged?WARNING forged"
+        assert sanitized.splitlines() == [sanitized]
+
     def test_line_separator_u2028_blocked(self):
         """U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are blocked
         log-injection vectors."""

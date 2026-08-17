@@ -37,6 +37,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
+
+from safeyolo.core.audit_schema import sanitize_for_log
+from safeyolo.core.identifiers import validate_task_id
 
 from .schemas import (
     DecisionEventBlock,
@@ -47,6 +51,13 @@ from .schemas import (
 )
 
 log = logging.getLogger("safeyolo.pdp.client")
+
+
+def _task_policy_path(task_id: str) -> str:
+    """Build a task-policy path from one validated, encoded segment."""
+    validated = validate_task_id(task_id)
+    encoded = quote(validated, safe="")
+    return f"/v1/tasks/{encoded}/policy"
 
 
 class UnavailableMode(StrEnum):
@@ -403,7 +414,7 @@ class LocalPolicyClient(PolicyClient):
         try:
             return self._pdp.evaluate(event)
         except Exception as e:
-            log.error(f"LocalPolicyClient error: {type(e).__name__}: {e}")
+            log.error("LocalPolicyClient error: %s: %s", type(e).__name__, sanitize_for_log(e))
             # Even local errors should fail closed
             return self._error_decision(event.event.event_id, str(e))
 
@@ -581,7 +592,7 @@ class HttpPolicyClient(PolicyClient):
         log.info(
             "HttpPolicyClient initialized",
             extra={
-                "endpoint": self._endpoint,
+                "endpoint": sanitize_for_log(self._endpoint),
                 "timeout_ms": config.timeout_ms,
                 "max_inflight": config.max_inflight,
             },
@@ -621,27 +632,39 @@ class HttpPolicyClient(PolicyClient):
             if 400 <= response.status_code < 500:
                 log.error(
                     f"PDP client error: {response.status_code}",
-                    extra={"event_id": event_id, "body": response.text[:500]},
+                    extra={
+                        "event_id": sanitize_for_log(event_id),
+                        "body": sanitize_for_log(response.text[:500]),
+                    },
                 )
                 return self._error_decision(event_id, f"PDP rejected request: {response.status_code}")
 
             # 5xx = server error
             log.error(
                 f"PDP server error: {response.status_code}",
-                extra={"event_id": event_id},
+                extra={"event_id": sanitize_for_log(event_id)},
             )
             return self._unavailable_decision(event_id, f"PDP error: {response.status_code}")
 
         except httpx.TimeoutException:
-            log.warning("PDP timeout", extra={"event_id": event_id})
+            log.warning("PDP timeout", extra={"event_id": sanitize_for_log(event_id)})
             return self._unavailable_decision(event_id, "timeout")
 
         except httpx.ConnectError as e:
-            log.warning(f"PDP connection error: {type(e).__name__}", extra={"event_id": event_id})
+            log.warning(
+                "PDP connection error: %s",
+                type(e).__name__,
+                extra={"event_id": sanitize_for_log(event_id)},
+            )
             return self._unavailable_decision(event_id, "connection_error")
 
         except Exception as e:
-            log.error(f"PDP unexpected error: {type(e).__name__}: {e}", extra={"event_id": event_id})
+            log.error(
+                "PDP unexpected error: %s: %s",
+                type(e).__name__,
+                sanitize_for_log(e),
+                extra={"event_id": sanitize_for_log(event_id)},
+            )
             return self._unavailable_decision(event_id, str(e))
 
     def health_check(self) -> bool:
@@ -707,7 +730,7 @@ class HttpPolicyClient(PolicyClient):
             log.warning("get_sensor_config timeout")
             return {"credential_rules": [], "scan_patterns": [], "policy_hash": "timeout"}
         except Exception as e:
-            log.warning(f"get_sensor_config error: {type(e).__name__}: {e}")
+            log.warning("get_sensor_config error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return {"credential_rules": [], "scan_patterns": [], "policy_hash": "error"}
 
     # -------------------------------------------------------------------------
@@ -723,7 +746,7 @@ class HttpPolicyClient(PolicyClient):
                 return data.get("policy")
             return None
         except Exception as e:
-            log.warning(f"get_baseline error: {type(e).__name__}: {e}")
+            log.warning("get_baseline error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return None
 
     def get_baseline_path(self) -> str | None:
@@ -735,19 +758,24 @@ class HttpPolicyClient(PolicyClient):
                 return data.get("path")
             return None
         except Exception as e:
-            log.warning(f"get_baseline_path error: {type(e).__name__}: {e}")
+            log.warning("get_baseline_path error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return None
 
     def get_task_policy(self, task_id: str) -> dict | None:
         """Get task policy by ID via HTTP."""
         try:
-            response = self._client.get(f"/v1/tasks/{task_id}/policy", timeout=2.0)
+            path = _task_policy_path(task_id)
+        except ValueError:
+            log.warning("Rejected invalid task ID for get_task_policy")
+            return None
+        try:
+            response = self._client.get(path, timeout=2.0)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("policy")
             return None
         except Exception as e:
-            log.warning(f"get_task_policy error: {type(e).__name__}: {e}")
+            log.warning("get_task_policy error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return None
 
     def get_budget_stats(self) -> dict:
@@ -758,7 +786,7 @@ class HttpPolicyClient(PolicyClient):
                 return response.json()
             return {}
         except Exception as e:
-            log.warning(f"get_budget_stats error: {type(e).__name__}: {e}")
+            log.warning("get_budget_stats error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return {}
 
     # -------------------------------------------------------------------------
@@ -782,7 +810,7 @@ class HttpPolicyClient(PolicyClient):
                 return response.json()
             return {"error": f"HTTP {response.status_code}"}
         except Exception as e:
-            log.error(f"add_credential_approval error: {type(e).__name__}: {e}")
+            log.error("add_credential_approval error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return {"error": str(e)}
 
     def reset_budgets(self, resource: str | None = None) -> dict:
@@ -794,7 +822,7 @@ class HttpPolicyClient(PolicyClient):
                 return response.json()
             return {"error": f"HTTP {response.status_code}"}
         except Exception as e:
-            log.error(f"reset_budgets error: {type(e).__name__}: {e}")
+            log.error("reset_budgets error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return {"error": str(e)}
 
     def update_host_rate(self, host: str, rate: int) -> dict:
@@ -825,14 +853,19 @@ class HttpPolicyClient(PolicyClient):
                 return response.json()
             return {"error": f"HTTP {response.status_code}"}
         except Exception as e:
-            log.error(f"replace_baseline error: {type(e).__name__}: {e}")
+            log.error("replace_baseline error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return {"error": str(e)}
 
     def upsert_task_policy(self, task_id: str, policy_data: dict) -> dict:
         """Upsert a task policy via HTTP."""
         try:
+            path = _task_policy_path(task_id)
+        except ValueError:
+            log.warning("Rejected invalid task ID for upsert_task_policy")
+            return {"error": "Invalid task ID"}
+        try:
             response = self._client.put(
-                f"/v1/tasks/{task_id}/policy",
+                path,
                 json=policy_data,
                 timeout=5.0,
             )
@@ -840,7 +873,7 @@ class HttpPolicyClient(PolicyClient):
                 return response.json()
             return {"error": f"HTTP {response.status_code}"}
         except Exception as e:
-            log.error(f"upsert_task_policy error: {type(e).__name__}: {e}")
+            log.error("upsert_task_policy error: %s: %s", type(e).__name__, sanitize_for_log(e))
             return {"error": str(e)}
 
     def _unavailable_decision(self, event_id: str, reason: str) -> PolicyDecision:
@@ -849,7 +882,10 @@ class HttpPolicyClient(PolicyClient):
         Applies unavailable_mode: deny (default) or allow.
         """
         if self._unavailable_mode == UnavailableMode.ALLOW:
-            log.warning("PDP unavailable, failing OPEN (dangerous)", extra={"event_id": event_id})
+            log.warning(
+                "PDP unavailable, failing OPEN (dangerous)",
+                extra={"event_id": sanitize_for_log(event_id)},
+            )
             return PolicyDecision(
                 version=1,
                 event=DecisionEventBlock(
@@ -863,7 +899,10 @@ class HttpPolicyClient(PolicyClient):
             )
 
         # Default: fail closed (DENY)
-        log.warning("PDP unavailable, failing CLOSED", extra={"event_id": event_id, "reason": reason})
+        log.warning(
+            "PDP unavailable, failing CLOSED",
+            extra={"event_id": sanitize_for_log(event_id), "reason": sanitize_for_log(reason)},
+        )
         return PolicyDecision(
             version=1,
             event=DecisionEventBlock(
@@ -952,7 +991,7 @@ def configure_policy_client(config: PolicyClientConfig) -> None:
             "PolicyClient configured",
             extra={
                 "mode": config.mode,
-                "baseline_path": str(config.baseline_path) if config.baseline_path else None,
+                "baseline_path": sanitize_for_log(config.baseline_path) if config.baseline_path else None,
             },
         )
 

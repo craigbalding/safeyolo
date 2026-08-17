@@ -418,6 +418,26 @@ class TestCreateHttpEvent:
         assert event.context.task_id == "task-abc"
         assert event.context.agent is None
 
+    @pytest.mark.parametrize(
+        "task_id",
+        ["../health", "task/name", "task?admin=true", "task#fragment", "task\nINFO forged"],
+    )
+    def test_context_rejects_task_ids_that_are_not_safe_path_segments(self, task_id):
+        from pdp.schemas import create_http_event
+
+        with pytest.raises(ValueError, match="Task ID"):
+            create_http_event(
+                event_id="evt_invalid_task",
+                sensor_id="sensor-1",
+                principal_id="agent:test",
+                method="GET",
+                host="example.com",
+                port=443,
+                path="/",
+                headers_present=[],
+                task_id=task_id,
+            )
+
     def test_context_created_when_agent_present(self):
         from pdp.schemas import create_http_event
 

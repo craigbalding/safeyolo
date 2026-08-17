@@ -36,9 +36,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from safeyolo.core.audit_schema import EventKind, Severity
+from safeyolo.core.identifiers import validate_task_id
 from safeyolo.core.utils import matches_host_pattern, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.policy.budget_tracker import GCRABudgetTracker
 
@@ -67,6 +68,11 @@ class PolicyMetadata(BaseModel):
     approved: str | None = None
     brief_hash: str | None = None
     policy_hash: str | None = None
+
+    @field_validator("task_id")
+    @classmethod
+    def _validate_task_id(cls, value: str | None) -> str | None:
+        return validate_task_id(value) if value is not None else None
 
 
 class Condition(BaseModel):
@@ -1021,7 +1027,7 @@ class PolicyEngine:
         """
         if resource:
             self._budget_tracker.reset(resource)
-            log.info(f"Reset policy budget for: {resource}")
+            log.info("Reset policy budget for: %s", sanitize_for_log(resource))
             write_event(
                 "admin.budget_reset",
                 kind=EventKind.ADMIN,
@@ -1091,12 +1097,13 @@ class PolicyEngine:
         if self._loader.baseline_path:
             self._save_baseline_incremental(new_permission)
 
-        log.info("Added credential approval: %s accepts %s", sanitize_for_log(destination), cred_ids)
+        safe_cred_ids = [sanitize_for_log(cred_id) for cred_id in cred_ids]
+        log.info("Added credential approval: %s accepts %s", sanitize_for_log(destination), safe_cred_ids)
         write_event(
             "admin.approval_added",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
-            summary=f"Credential approval added: {sanitize_for_log(destination)} accepts {cred_ids}",
+            summary=f"Credential approval added: {sanitize_for_log(destination)} accepts {safe_cred_ids}",
             addon="policy-engine",
             details={"destination": destination, "cred_id": cred_ids, "tier": tier},
         )
@@ -1157,7 +1164,7 @@ class PolicyEngine:
                 update_host_field(doc, host, "rate", rate)
                 save_roundtrip(self._loader.baseline_path, doc)
             except Exception as e:
-                log.warning("TOML round-trip save failed for host rate update: %s", e)
+                log.warning("TOML round-trip save failed for host rate update: %s", sanitize_for_log(e))
 
         log.info("Updated host rate: %s %s -> %s", sanitize_for_log(host), old_rate, rate)
         write_event(
@@ -1239,7 +1246,7 @@ class PolicyEngine:
                     upsert_host(doc, host, config)
                 save_roundtrip(self._loader.baseline_path, doc)
             except (OSError, ValueError) as e:
-                log.warning("TOML round-trip save failed for host allowance: %s", e)
+                log.warning("TOML round-trip save failed for host allowance: %s", sanitize_for_log(e))
 
         log.info("Added host allowance: %s (rate=%s, agent=%s)",
                  sanitize_for_log(host), sanitize_for_log(str(rate)), sanitize_for_log(str(agent)))
@@ -1315,7 +1322,7 @@ class PolicyEngine:
                     upsert_host(doc, host, config)
                 save_roundtrip(self._loader.baseline_path, doc)
             except (OSError, ValueError) as e:
-                log.warning("TOML round-trip save failed for host denial: %s", e)
+                log.warning("TOML round-trip save failed for host denial: %s", sanitize_for_log(e))
 
         log.info("Added host denial: %s (expires=%s, agent=%s)",
                  sanitize_for_log(host), sanitize_for_log(str(expires)), sanitize_for_log(str(agent)))
@@ -1393,18 +1400,19 @@ class PolicyEngine:
             update_host_field(doc, host, "bypass", updated_bypass)
             save_roundtrip(baseline_path, doc)
         except Exception as e:
-            log.warning("TOML round-trip save failed for host bypass: %s", e)
+            log.warning("TOML round-trip save failed for host bypass: %s", sanitize_for_log(e))
             raise
 
         # Reload from disk to pick up the change
         self._loader.reload()
 
-        log.info("Added host bypass: %s bypass=%s", sanitize_for_log(host), updated_bypass)
+        safe_bypass = [sanitize_for_log(value) for value in updated_bypass]
+        log.info("Added host bypass: %s bypass=%s", sanitize_for_log(host), safe_bypass)
         write_event(
             "admin.host_bypass_added",
             kind=EventKind.ADMIN,
             severity=Severity.MEDIUM,
-            summary=f"Host bypass added: {sanitize_for_log(host)} bypass={addon}",
+            summary=f"Host bypass added: {sanitize_for_log(host)} bypass={sanitize_for_log(addon)}",
             addon="policy-engine",
             details={"host": host, "addon": addon, "bypass": updated_bypass},
         )
@@ -1460,6 +1468,7 @@ class PolicyEngine:
         Returns:
             Dict with status and permission count
         """
+        task_id = validate_task_id(task_id)
         try:
             new_policy = UnifiedPolicy.model_validate(policy_data)
         except Exception as e:
@@ -1470,7 +1479,11 @@ class PolicyEngine:
 
         self._loader.set_task_policy(new_policy)
 
-        log.info(f"Set task policy '{task_id}': {len(new_policy.permissions)} permissions")
+        log.info(
+            "Set task policy '%s': %s permissions",
+            sanitize_for_log(task_id),
+            len(new_policy.permissions),
+        )
         write_event(
             "ops.policy_update",
             kind=EventKind.OPS,
@@ -1528,7 +1541,7 @@ class PolicyEngine:
                 # will be correct on the next full reload/save cycle.
                 log.error(
                     "TOML round-trip save failed (in-memory state preserved, "
-                    "file NOT overwritten): %s", e,
+                    "file NOT overwritten): %s", sanitize_for_log(e),
                 )
                 return
 
@@ -1565,10 +1578,10 @@ class PolicyEngine:
                     tmp.write(content)
                     tmp_path = tmp.name
                 shutil.move(tmp_path, baseline_path)
-                log.info(f"Saved baseline policy (TOML full) to {baseline_path}")
+                log.info("Saved baseline policy (TOML full) to %s", sanitize_for_log(baseline_path))
                 return
             except Exception as e:
-                log.warning("TOML full save failed, falling back to plain: %s", e)
+                log.warning("TOML full save failed, falling back to plain: %s", sanitize_for_log(e))
             self._save_baseline_plain()
             return
 
@@ -1613,10 +1626,10 @@ class PolicyEngine:
                 tmp_path = tmp.name
 
             shutil.move(tmp_path, baseline_path)
-            log.info(f"Saved baseline policy (plain) to {baseline_path}")
+            log.info("Saved baseline policy (plain) to %s", sanitize_for_log(baseline_path))
 
         except Exception as e:
-            log.error(f"Failed to save baseline: {type(e).__name__}: {e}")
+            log.error("Failed to save baseline: %s: %s", type(e).__name__, sanitize_for_log(e))
             raise
 
     # -------------------------------------------------------------------------
