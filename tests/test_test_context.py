@@ -517,13 +517,11 @@ class TestParseContextHeaderEdgeCases:
         assert _parse_context_header("run=sec1;agent=id<or>") is None
         assert _parse_context_header("run=sec1;agent=id\tor") is None
 
-    def test_duplicate_keys_last_wins(self):
-        """When a key appears twice, the last value wins."""
+    def test_duplicate_keys_rejected(self):
+        """Duplicate provenance keys are ambiguous and rejected."""
         from test_context import _parse_context_header
 
-        result = _parse_context_header("run=first;agent=idor;run=second")
-        assert result is not None
-        assert result["run"] == "second"
+        assert _parse_context_header("run=first;agent=idor;run=second") is None
 
     def test_max_pairs_boundary_accepted(self):
         """Exactly _MAX_CONTEXT_PAIRS pairs are accepted."""
@@ -538,20 +536,17 @@ class TestParseContextHeaderEdgeCases:
         assert result is not None
         assert len(result) == _MAX_CONTEXT_PAIRS
 
-    def test_pairs_beyond_max_are_silently_dropped(self):
-        """Pairs beyond _MAX_CONTEXT_PAIRS are ignored; result uses first 20."""
+    def test_pairs_beyond_max_are_rejected(self):
+        """Over-limit provenance is rejected instead of silently truncated."""
         from test_context import _MAX_CONTEXT_PAIRS, _parse_context_header
 
         pairs = ["run=sec1", "agent=idor"]
         for i in range(_MAX_CONTEXT_PAIRS - 2):
             pairs.append(f"k{i}=v{i}")
-        # 21st pair should be dropped
+        # A 21st pair makes the complete provenance value invalid.
         pairs.append("extra=dropped")
         header = ";".join(pairs)
-        result = _parse_context_header(header)
-        assert result is not None
-        assert "extra" not in result
-        assert len(result) == _MAX_CONTEXT_PAIRS
+        assert _parse_context_header(header) is None
 
     def test_trailing_semicolons_tolerated(self):
         """Trailing semicolons produce empty parts that are skipped."""

@@ -19,7 +19,6 @@ Usage:
 """
 
 import logging
-import re
 import time
 
 from mitmproxy import http
@@ -27,50 +26,27 @@ from mitmproxy import http
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
 from safeyolo.core.utils import matches_host_pattern, sanitize_for_log, write_event
+from safeyolo.test_context_contract import (
+    CONTEXT_HEADER,
+    MAX_CONTEXT_PAIRS,
+    TestContextError,
+    parse_test_context,
+)
 
 log = logging.getLogger("safeyolo.test-context")
 
-CONTEXT_HEADER = "X-Test-Context"
-REQUIRED_KEYS = {"run", "agent"}
-_SAFE_VALUE = re.compile(r"^[a-zA-Z0-9_\-.:]+$")
-_MAX_CONTEXT_PAIRS = 20
+_MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
 
 
 def _parse_context_header(value: str) -> dict | None:
-    """Parse X-Test-Context header value into a dict.
+    """Compatibility wrapper returning ``None`` for invalid context.
 
-    Format: semicolon-delimited key=value pairs.
-    Example: "run=sec1;agent=idor;test=IDOR-003"
-
-    Returns None if malformed or missing required keys.
+    The reusable parser and formatter live in ``safeyolo.test_context_contract``.
     """
-    if not value or not value.strip():
+    try:
+        return parse_test_context(value)
+    except TestContextError:
         return None
-
-    result = {}
-    for part in value.split(";")[:_MAX_CONTEXT_PAIRS]:
-        part = part.strip()
-        if not part:
-            continue
-        if "=" not in part:
-            return None
-        key, _, val = part.partition("=")
-        key = key.strip()
-        val = val.strip()
-        if not key or not val:
-            return None
-        if not _SAFE_VALUE.match(key) or not _SAFE_VALUE.match(val):
-            return None
-        result[key] = val
-
-    if not result:
-        return None
-
-    # Check required keys
-    if not REQUIRED_KEYS.issubset(result.keys()):
-        return None
-
-    return result
 
 
 def _capture_body(content: bytes, max_head: int = 4096, tail_lines: int = 5) -> str:
