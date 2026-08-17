@@ -7,6 +7,7 @@ PID file lifecycle, and directory discovery.
 
 import os
 import signal
+import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,39 @@ import pytest
 
 class TestAddonChain:
     """Tests for ADDON_CHAIN ordering and completeness."""
+
+    def test_all_addons_load_with_mitmproxy_script_loader(self, monkeypatch):
+        """Every packaged addon loads through mitmdump's real loader.
+
+        A normal Python import is not equivalent: mitmproxy executes addon
+        scripts without first registering their transient module in
+        ``sys.modules``.  Exercising ``load_script`` here catches import-time
+        failures that ordinary unit tests cannot reproduce.
+        """
+        from mitmproxy.addons.script import load_script
+
+        from safeyolo.proxy import ADDON_CHAIN, _find_addons_dir, _find_pdp_dir
+
+        addons_dir = _find_addons_dir()
+        assert addons_dir is not None
+        pdp_dir = _find_pdp_dir()
+        assert pdp_dir is not None
+        monkeypatch.syspath_prepend(str(pdp_dir.parent))
+
+        addon_paths = {
+            path.name: path
+            for path in addons_dir.glob("*.py")
+            if path.name != "__init__.py"
+        }
+        missing = sorted(set(ADDON_CHAIN) - addon_paths.keys())
+        failures = [
+            name
+            for name, path in sorted(addon_paths.items())
+            if load_script(str(path)) is None
+        ]
+
+        assert missing == []
+        assert failures == []
 
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
@@ -1608,6 +1642,66 @@ class TestGetCaCertPath:
         result = get_ca_cert_path()
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestProxyStartupSmoke
+# ---------------------------------------------------------------------------
+
+class TestProxyStartupSmoke:
+    """Exercise the production addon chain in a real mitmdump process."""
+
+    def test_real_full_addon_chain_reaches_running(self, tmp_config_dir, monkeypatch):
+        """The command used by ``safeyolo start`` reaches its ready hook.
+
+        Unit tests mock ``Popen`` for process-management edge cases.  This
+        smoke test deliberately launches mitmdump so addon registration,
+        option configuration, and startup lifecycle hooks are exercised
+        together.  A temporary local port also verifies that the final addon,
+        the admin API, completed its ``running`` hook.
+        """
+        from safeyolo import proxy
+
+        real_popen = proxy.subprocess.Popen
+        processes = []
+
+        def tracked_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        # CA merging mutates the active Python environment and is unrelated
+        # to addon startup. Certificate generation itself remains real.
+        monkeypatch.setattr(proxy, "_merge_system_cas_into_certifi", lambda: None)
+        monkeypatch.setattr(proxy.subprocess, "Popen", tracked_popen)
+
+        try:
+            with socket.socket() as port_reservation:
+                port_reservation.bind(("127.0.0.1", 0))
+                admin_port = port_reservation.getsockname()[1]
+
+            proxy.start_proxy(admin_port=admin_port)
+
+            pid_file = tmp_config_dir / "data" / "proxy.pid"
+            assert pid_file.exists()
+            proxy_pid = int(pid_file.read_text().strip())
+            proxy_process = next(process for process in processes if process.pid == proxy_pid)
+            assert proxy_process.poll() is None
+            assert proxy.wait_for_healthy(timeout=5, admin_port=admin_port)
+
+            startup_log = proxy.get_logs_dir() / "mitmproxy.log"
+            startup_output = startup_log.read_text()
+            assert "error in script" not in startup_output
+            assert "Traceback (most recent call last)" not in startup_output
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except proxy.subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
 
 
 # ---------------------------------------------------------------------------

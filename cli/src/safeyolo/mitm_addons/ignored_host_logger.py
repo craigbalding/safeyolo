@@ -1,7 +1,5 @@
 """Audit connection metadata for traffic that bypasses TLS inspection."""
 
-from __future__ import annotations
-
 import re
 import time
 from dataclasses import dataclass
