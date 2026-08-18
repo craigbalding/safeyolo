@@ -56,7 +56,7 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 23
+        assert len(ADDON_CHAIN) == 25
 
     def test_addon_chain_starts_with_unix_listener(self):
         """First addon loaded is unix_listener.py.
@@ -646,6 +646,30 @@ class TestEnsureTokens:
 # TestBuildCommand
 # ---------------------------------------------------------------------------
 
+class TestFlowCacheConfiguration:
+    def test_cli_overrides_environment(self):
+        from safeyolo.proxy import resolve_flow_cache
+
+        assert resolve_flow_cache(123, {"SAFEYOLO_FLOW_CACHE": "456"}) == 123
+
+    def test_environment_overrides_default(self):
+        from safeyolo.proxy import resolve_flow_cache
+
+        assert resolve_flow_cache(None, {"SAFEYOLO_FLOW_CACHE": "456"}) == 456
+
+    def test_default_is_used_when_unconfigured(self):
+        from safeyolo.proxy import resolve_flow_cache
+
+        assert resolve_flow_cache(None, {}) == 5000
+
+    @pytest.mark.parametrize("value", ["", "invalid", "0", "-1"])
+    def test_invalid_environment_fails(self, value):
+        from safeyolo.proxy import resolve_flow_cache
+
+        with pytest.raises(ValueError, match="positive integer"):
+            resolve_flow_cache(None, {"SAFEYOLO_FLOW_CACHE": value})
+
+
 class TestBuildCommand:
     """Tests for _build_command() — mitmdump command line construction."""
 
@@ -696,13 +720,21 @@ class TestBuildCommand:
             **cmd_env,
         )
 
-        assert cmd[0] == "mitmdump" or cmd[0].endswith("/mitmdump")
+        assert cmd[1:3] == ["-m", "safeyolo.traffic_master"]
         assert "--listen-host" not in cmd
         # No `--set mode=...` — bootstrap_mode does the wiring.
         assert not any(a.startswith("mode=") for a in cmd)
         # Transient default listener pinned to loopback:ephemeral.
         assert "listen_host=127.0.0.1" in cmd
         assert "listen_port=0" in cmd
+        assert "flow_pruner_max=5000" in cmd
+
+    def test_explicit_flow_cache_is_forwarded(self, cmd_env):
+        from safeyolo.proxy import _build_command
+
+        cmd = _build_command(admin_token="tok", flow_cache=4321, **cmd_env)
+
+        assert "flow_pruner_max=4321" in cmd
 
     def test_addons_loaded_in_chain_order(self, cmd_env):
         """Addons appear as -s flags in ADDON_CHAIN order."""
@@ -896,58 +928,24 @@ class TestBuildCommand:
         assert "-p" not in cmd
         assert "--listen-host" not in cmd
 
-    def test_mitmdump_sibling_preferred_over_shutil_which(self, cmd_env):
-        """The active environment's mitmdump wins over PATH lookup."""
+    def test_hybrid_master_uses_active_python_environment(self, cmd_env):
+        """The hybrid entrypoint runs in SafeYolo's active Python runtime."""
         from safeyolo.proxy import _build_command
 
         fake_python_dir = cmd_env["config_dir"] / "bin"
         fake_python_dir.mkdir(exist_ok=True)
-        fake_mitmdump = fake_python_dir / "mitmdump"
-        fake_mitmdump.touch()
 
-        with patch("safeyolo.proxy.shutil.which", return_value="/usr/local/bin/mitmdump"), \
-             patch("safeyolo.proxy.sys.executable", str(fake_python_dir / "python")):
+        with patch("safeyolo.proxy.sys.executable", str(fake_python_dir / "python")):
             cmd = _build_command(
                 admin_token="tok",
                 **cmd_env,
             )
 
-        assert cmd[0] == str(fake_mitmdump)
-
-    def test_mitmdump_fallback_to_sibling_of_python(self, cmd_env):
-        """When shutil.which fails, checks sibling of sys.executable."""
-        from safeyolo.proxy import _build_command
-
-        fake_python_dir = cmd_env["config_dir"] / "bin"
-        fake_python_dir.mkdir(exist_ok=True)
-        fake_mitmdump = fake_python_dir / "mitmdump"
-        fake_mitmdump.touch()
-
-        with patch("safeyolo.proxy.shutil.which", return_value=None), \
-             patch("safeyolo.proxy.sys.executable", str(fake_python_dir / "python")):
-            cmd = _build_command(
-                admin_token="tok",
-                **cmd_env,
-            )
-
-        assert cmd[0] == str(fake_mitmdump)
-
-    def test_mitmdump_fallback_to_bare_name(self, cmd_env, tmp_path):
-        """When shutil.which and sibling both fail, falls back to 'mitmdump'."""
-        from safeyolo.proxy import _build_command
-
-        fake_python = tmp_path / "nowhere" / "python"
-        fake_python.parent.mkdir(parents=True)
-        fake_python.touch()
-
-        with patch("safeyolo.proxy.shutil.which", return_value=None), \
-             patch("safeyolo.proxy.sys.executable", str(fake_python)):
-            cmd = _build_command(
-                admin_token="tok",
-                **cmd_env,
-            )
-
-        assert cmd[0] == "mitmdump"
+        assert cmd[:3] == [
+            str(fake_python_dir / "python"),
+            "-m",
+            "safeyolo.traffic_master",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1662,46 +1660,70 @@ class TestProxyStartupSmoke:
         """
         from safeyolo import proxy
 
-        real_popen = proxy.subprocess.Popen
-        processes = []
-
-        def tracked_popen(*args, **kwargs):
-            process = real_popen(*args, **kwargs)
-            processes.append(process)
-            return process
-
         # CA merging mutates the active Python environment and is unrelated
         # to addon startup. Certificate generation itself remains real.
         monkeypatch.setattr(proxy, "_merge_system_cas_into_certifi", lambda: None)
-        monkeypatch.setattr(proxy.subprocess, "Popen", tracked_popen)
 
         try:
             with socket.socket() as port_reservation:
                 port_reservation.bind(("127.0.0.1", 0))
                 admin_port = port_reservation.getsockname()[1]
+            with socket.socket() as port_reservation:
+                port_reservation.bind(("127.0.0.1", 0))
+                web_port = port_reservation.getsockname()[1]
+
+            from safeyolo.config import save_config
+
+            config = proxy.load_config()
+            config["proxy"]["web_port"] = web_port
+            save_config(config)
 
             proxy.start_proxy(admin_port=admin_port)
 
             pid_file = tmp_config_dir / "data" / "proxy.pid"
             assert pid_file.exists()
             proxy_pid = int(pid_file.read_text().strip())
-            proxy_process = next(process for process in processes if process.pid == proxy_pid)
-            assert proxy_process.poll() is None
+            os.kill(proxy_pid, 0)
             assert proxy.wait_for_healthy(timeout=5, admin_port=admin_port)
+
+            from safeyolo.api import AdminAPI
+
+            token = (tmp_config_dir / "data" / "admin_token").read_text().strip()
+            api = AdminAPI(base_url=f"http://127.0.0.1:{admin_port}", token=token)
+            scoped = api.set_traffic_scope(agent="cody", test_id="FLOW-05")
+            assert scoped["agent"] == "cody"
+            assert scoped["test_id"] == "FLOW-05"
+            stats = api.stats()
+            assert stats["flow-pruner"]["configured_max"] == 5000
+
+            import httpx
+
+            with httpx.Client(
+                base_url=f"http://127.0.0.1:{web_port}",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as web_client:
+                web_response = web_client.get("/")
+                assert web_response.status_code == 200
+                assert "SafeYolo Traffic" in web_response.text
+                scope_response = web_client.get("/safeyolo/scope")
+                assert scope_response.status_code == 200
+                assert scope_response.json()["scope"]["agent"] == "cody"
+                xsrf = web_client.cookies.get("_mitmproxy_xsrf") or web_client.cookies.get("_xsrf")
+                assert xsrf is not None
+                update_response = web_client.put(
+                    "/safeyolo/scope",
+                    headers={"X-XSRFToken": xsrf},
+                    json={"agent": "alice", "unattributed": False},
+                )
+                assert update_response.status_code == 200
+                assert update_response.json()["scope"]["agent"] == "alice"
 
             startup_log = proxy.get_logs_dir() / "mitmproxy.log"
             startup_output = startup_log.read_text()
             assert "error in script" not in startup_output
             assert "Traceback (most recent call last)" not in startup_output
         finally:
-            for process in processes:
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except proxy.subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
+            proxy.stop_proxy()
 
 
 # ---------------------------------------------------------------------------
@@ -1757,24 +1779,18 @@ class TestStartProxy:
         addons_dir.mkdir()
         pid_file = data_dir / "proxy.pid"
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 42
-        mock_proc.poll.return_value = None  # still alive
-
-        def _popen_simulate_addon(*args, **kwargs):
+        def _start_simulate_addon(*args, **kwargs):
             # Simulate addons/pid_writer.py's `running` hook writing the
             # pid file after mitmproxy binds the listener.
             pid_file.write_text("42\n")
-            return mock_proc
 
         with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
              patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
              patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
              patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
-             patch("safeyolo.proxy._build_command", return_value=["mitmdump"]), \
-             patch("safeyolo.proxy.subprocess.Popen", side_effect=_popen_simulate_addon), \
-             patch("builtins.open", MagicMock()):
+             patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
+             patch("safeyolo.proxy.start_session", side_effect=_start_simulate_addon):
             start_proxy()
 
         assert pid_file.exists()
@@ -1799,19 +1815,16 @@ class TestStartProxy:
         addons_dir = tmp_path / "addons"
         addons_dir.mkdir()
 
-        mock_proc = MagicMock()
-        mock_proc.pid = 99
-        mock_proc.poll.return_value = 1  # already dead
-        mock_proc.returncode = 1
-
         with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
              patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
              patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
              patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
-             patch("safeyolo.proxy._build_command", return_value=["mitmdump"]), \
-             patch("safeyolo.proxy.subprocess.Popen", return_value=mock_proc):
-            with pytest.raises(RuntimeError, match="mitmdump exited during startup"):
+             patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
+             patch("safeyolo.proxy.start_session"), \
+             patch("safeyolo.proxy.session_process_alive", return_value=False), \
+             patch("safeyolo.proxy.capture_session", return_value="startup failed"):
+            with pytest.raises(RuntimeError, match="shared traffic master exited"):
                 start_proxy()
 
 

@@ -86,6 +86,12 @@ def start(
         "--test",
         help="Enable test mode (sinkhole routing, test CA -- reads test section from config.yaml)",
     ),
+    flow_cache: int | None = typer.Option(
+        None,
+        "--flow-cache",
+        min=1,
+        help="Maximum flows retained in the shared live traffic view",
+    ),
 ) -> None:
     """Start SafeYolo proxy and firewall."""
     first_run = False
@@ -137,7 +143,11 @@ def start(
 
     # Start host mitmproxy
     try:
-        start_proxy(proxy_port=proxy_port, admin_port=admin_port)
+        start_proxy(
+            proxy_port=proxy_port,
+            admin_port=admin_port,
+            flow_cache=flow_cache,
+        )
     except Exception as err:
         console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)

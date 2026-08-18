@@ -143,6 +143,22 @@ class TestLifecycleStart:
         assert result.exit_code == 0
         mock_wait.assert_not_called()
 
+    def test_flow_cache_is_forwarded_to_proxy_start(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
+            patch("safeyolo.commands.lifecycle.start_proxy") as start_proxy,
+        ):
+            result = runner.invoke(app, ["start", "--no-wait", "--flow-cache", "4321"])
+
+        assert result.exit_code == 0
+        assert start_proxy.call_args.kwargs["flow_cache"] == 4321
+
+    def test_non_positive_flow_cache_is_rejected(self, runner, config_dir):
+        result = runner.invoke(app, ["start", "--flow-cache", "0"])
+
+        assert result.exit_code == 2
+
 
 # ---------------------------------------------------------------------------
 # lifecycle.py: stop

@@ -37,6 +37,18 @@ log = logging.getLogger("safeyolo.test-context")
 
 _MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
 
+_LIVE_METADATA_FIELDS = {
+    "run": "test_run",
+    "agent": "test_agent",
+    "role": "test_role",
+    "suite": "test_suite",
+    "subject": "test_subject",
+    "step": "test_step",
+    "test": "test_id",
+    "intent": "test_intent",
+    "expect": "test_expect",
+}
+
 
 def _parse_context_header(value: str) -> dict | None:
     """Compatibility wrapper returning ``None`` for invalid context.
@@ -74,6 +86,22 @@ def _capture_body(content: bytes, max_head: int = 4096, tail_lines: int = 5) -> 
         result += tail
 
     return result
+
+
+def _promote_live_metadata(flow: http.HTTPFlow, context: dict[str, str]) -> bool | None:
+    """Expose canonical context fields without replacing trusted identity."""
+    for context_key, metadata_key in _LIVE_METADATA_FIELDS.items():
+        if context_key in context:
+            flow.metadata[metadata_key] = context[context_key]
+
+    trusted_agent = flow.metadata.get("agent")
+    declared_agent = context.get("agent")
+    if trusted_agent is None or declared_agent is None:
+        return None
+
+    agent_matches = trusted_agent == declared_agent
+    flow.metadata["test_agent_match"] = agent_matches
+    return agent_matches
 
 
 class TestContext(SecurityAddon):
@@ -187,6 +215,7 @@ class TestContext(SecurityAddon):
 
         # Valid context - store for response() and log, then strip before sending
         flow.metadata["ccapt_context"] = context
+        test_agent_match = _promote_live_metadata(flow, context)
         flow.metadata["ccapt_request_time"] = time.time()
         del flow.request.headers[CONTEXT_HEADER]
 
@@ -205,6 +234,8 @@ class TestContext(SecurityAddon):
                 "method": flow.request.method,
                 "path": flow.request.path,
                 "context": context,
+                "trusted_agent": flow.metadata.get("agent"),
+                "test_agent_match": test_agent_match,
                 "request_body_snippet": request_body[:512] if request_body else "",
             },
         )
@@ -235,6 +266,8 @@ class TestContext(SecurityAddon):
                 "method": flow.request.method,
                 "path": flow.request.path,
                 "context": context,
+                "trusted_agent": flow.metadata.get("agent"),
+                "test_agent_match": flow.metadata.get("test_agent_match"),
                 "status_code": flow.response.status_code if flow.response else 0,
                 "response_body_snippet": response_body[:512] if response_body else "",
                 "duration_ms": duration_ms,

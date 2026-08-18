@@ -19,8 +19,16 @@ from .ignore_hosts import (
     build_ignore_patterns,
     normalize_ignore_hosts,
 )
+from .traffic_session import (
+    capture_session,
+    session_process_alive,
+    start_session,
+    stop_session,
+)
 
 log = logging.getLogger("safeyolo.proxy")
+
+DEFAULT_FLOW_CACHE = 5_000
 
 # Addon load order — mirrors scripts/start-safeyolo.sh exactly
 ADDON_CHAIN = [
@@ -58,6 +66,8 @@ ADDON_CHAIN = [
     "request_logger.py",
     "ignored_host_logger.py",
     "metrics.py",
+    "traffic_scope.py",
+    "flow_pruner.py",
     "admin_api.py",
 ]
 
@@ -90,6 +100,24 @@ def _read_log_tail(path: Path, lines: int = 15) -> str:
         return b"\n".join(data.splitlines()[-lines:]).decode(errors="replace")
     except OSError:
         return "(log file not readable)"
+
+
+def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = None) -> int:
+    """Resolve CLI > environment > default flow-cache configuration."""
+    environment = os.environ if environ is None else environ
+    raw_value: int | str = (
+        cli_value
+        if cli_value is not None
+        else environment.get("SAFEYOLO_FLOW_CACHE", DEFAULT_FLOW_CACHE)
+    )
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SAFEYOLO_FLOW_CACHE must be a positive integer") from exc
+    if value <= 0:
+        source = "--flow-cache" if cli_value is not None else "SAFEYOLO_FLOW_CACHE"
+        raise ValueError(f"{source} must be a positive integer")
+    return value
 
 
 def _find_addons_dir() -> Path | None:
@@ -373,26 +401,14 @@ def _build_command(
     admin_token: str,
     proxy_port: int = 8080,
     admin_port: int = 9090,
+    flow_cache: int = DEFAULT_FLOW_CACHE,
     test_config: dict | None = None,
     proxy_config: dict | None = None,
 ) -> list[str]:
     """Build the mitmdump command line."""
-    # Find mitmdump matching the running Python interpreter FIRST.
-    # SafeYolo addons import PyYAML, mitmproxy2swagger, etc. which live in
-    # the project's .venv; Homebrew's mitmdump bottle ships its own sealed
-    # Python env that does NOT have those deps and crashes on startup with
-    # "ModuleNotFoundError: No module named 'yaml'". PATH lookup can find
-    # the wrong one (depends on PATH ordering vs /opt/homebrew/bin). Prefer
-    # the sibling of sys.executable (the interpreter that's running us) so
-    # the addon deps are always resolvable.
-    python_dir = Path(sys.executable).parent
-    candidate = python_dir / "mitmdump"
-    if candidate.exists():
-        mitmdump = str(candidate)
-    else:
-        mitmdump = shutil.which("mitmdump") or "mitmdump"
-
-    cmd = [mitmdump]
+    # The SafeYolo entrypoint composes ConsoleMaster and mitmweb around one
+    # canonical View/Proxyserver. It must run inside the private tmux PTY.
+    cmd = [sys.executable, "-m", "safeyolo.traffic_master"]
 
     # Load addons before any `--set mode=...` so UnixMode is registered
     # (via __init_subclass__) by the time Proxyserver parses the spec.
@@ -415,6 +431,10 @@ def _build_command(
     cmd.extend(["--set", f"confdir={cert_dir}"])
     cmd.extend(["--set", "block_global=false"])
     cmd.extend(["--set", "stream_large_bodies=10m"])
+    cmd.extend(["--set", f"flow_pruner_max={flow_cache}"])
+    cmd.extend(["--set", "web_open_browser=false"])
+    cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])
+    cmd.extend(["--set", f"web_port={(proxy_config or {}).get('web_port', 8081)}"])
     cmd.extend(["--set", f"admin_port={admin_port}"])
     # Pass token via file path, NOT on the command line. The cmdline is
     # visible to any local user via /proc/PID/cmdline or `ps aux` — putting
@@ -609,7 +629,11 @@ def _build_combined_ca_bundle(custom_ca: Path, data_dir: Path) -> Path:
     return combined
 
 
-def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
+def start_proxy(
+    proxy_port: int = 8080,
+    admin_port: int = 9090,
+    flow_cache: int | None = None,
+) -> None:
     """Start mitmproxy as a host background process."""
     if is_proxy_running():
         log.info("Proxy already running")
@@ -654,6 +678,8 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     else:
         log.info("Test mode enabled via config.yaml")
 
+    resolved_flow_cache = resolve_flow_cache(flow_cache)
+
     # Build command
     cmd = _build_command(
         addons_dir=addons_dir,
@@ -664,6 +690,7 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
         admin_token=admin_token,
         proxy_port=proxy_port,
         admin_port=admin_port,
+        flow_cache=resolved_flow_cache,
         test_config=test_config,
         proxy_config=full_config.get("proxy", {}),
     )
@@ -690,6 +717,7 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     # file below rather than sleeping -- the absence of the file during
     # the poll window tells us mitmdump crashed.
     env["SAFEYOLO_PROXY_PID_FILE"] = str(_pid_file())
+    env["SAFEYOLO_WEB_PASSWORD_FILE"] = str(data_dir / "admin_token")
 
     # Pass test sinkhole config to child process (read by sinkhole_router addon)
     if test_config:
@@ -704,16 +732,14 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.unlink(missing_ok=True)
 
-    # Start as background process
+    # Start inside SafeYolo's private terminal server. ConsoleMaster receives
+    # a real PTY even when no operator is attached; mitmweb and proxy traffic
+    # remain alive across console attach/detach.
     log_file = logs_dir / "mitmproxy.log"
-    with open(log_file, "a") as lf:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=lf,
-            stderr=lf,
-            env=env,
-            start_new_session=True,  # Detach from terminal
-        )
+    try:
+        start_session(cmd, env=env)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"failed to start private traffic session: {exc}") from exc
 
     # Wait for addons/pid_writer.py to signal ready, OR for mitmdump to
     # die (whichever first). No fixed sleep: the pid file usually appears
@@ -723,11 +749,11 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
     while time.monotonic() < deadline:
         if pid_file.exists():
             break
-        if proc.poll() is not None:
-            tail = _read_log_tail(log_file, lines=15)
+        if not session_process_alive():
+            tail = capture_session() or _read_log_tail(log_file, lines=15)
             raise RuntimeError(
-                f"mitmdump exited during startup (rc={proc.returncode}).\n"
-                f"Last {15} log lines:\n{tail}"
+                "shared traffic master exited during startup.\n"
+                f"Last console output:\n{tail}"
             )
         time.sleep(0.05)
     else:
@@ -735,12 +761,15 @@ def start_proxy(proxy_port: int = 8080, admin_port: int = 9090) -> None:
         # file -- bound but `running` never fired? Unusual. Surface log
         # tail so whatever hung shows up.
         tail = _read_log_tail(log_file, lines=15)
+        console_tail = capture_session()
         raise RuntimeError(
-            f"Proxy did not signal ready within 10s (pid={proc.pid}).\n"
+            "Proxy did not signal ready within 10s.\n"
+            f"Last console output:\n{console_tail}\n"
             f"Last {15} log lines:\n{tail}"
         )
 
-    log.info("Proxy started (PID %d) on port %d", proc.pid, proxy_port)
+    pid = int(pid_file.read_text().strip())
+    log.info("Proxy started (PID %d) on port %d", pid, proxy_port)
 
 
 def stop_proxy() -> None:
@@ -756,6 +785,7 @@ def stop_proxy() -> None:
     """
     pid_file = _pid_file()
     if not pid_file.exists():
+        stop_session()
         return
 
     pid = int(pid_file.read_text().strip())
@@ -764,6 +794,7 @@ def stop_proxy() -> None:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pid_file.unlink(missing_ok=True)
+        stop_session()
         return
 
     # Wait up to 5 seconds for clean exit
@@ -782,6 +813,7 @@ def stop_proxy() -> None:
             pass
 
     pid_file.unlink(missing_ok=True)
+    stop_session()
     log.info("Proxy stopped")
 
 
