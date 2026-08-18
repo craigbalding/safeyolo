@@ -4,9 +4,16 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mitmproxy import options
+from mitmproxy import flowfilter, options
+from mitmproxy.test import tflow
 
-from safeyolo.traffic_master import SafeYoloStatusBar, TrafficMaster
+from safeyolo.traffic_master import (
+    _SCOPE_SCRIPT,
+    _SCOPE_STYLE,
+    SafeYoloStatusBar,
+    TrafficMaster,
+    _scope_toolbar,
+)
 
 
 def make_master() -> TrafficMaster:
@@ -80,3 +87,32 @@ def test_status_bar_leads_with_host_and_pinned_evidence_scope():
         ("heading_key", "[SafeYolo workstation · alice · FLOW-05 · forge · blocked]"),
         "[stock]",
     ]
+
+
+def test_web_scope_has_explicit_modes_and_responsive_pinned_summary():
+    toolbar = _scope_toolbar("workstation")
+
+    assert "SafeYolo Traffic — workstation" in toolbar
+    assert "Pinned: all agents · no test context" in toolbar
+    assert 'aria-label="Pinned agent"' in toolbar
+    assert "Unattributed traffic" in _SCOPE_SCRIPT
+    assert "All agents" in _SCOPE_SCRIPT
+    assert "No restriction" in _SCOPE_SCRIPT
+    assert "Search preserved" in _SCOPE_SCRIPT
+    assert "@media (max-width:600px)" in _SCOPE_STYLE
+    assert "flex-wrap:wrap" in _SCOPE_STYLE
+
+
+def test_websocket_broadcasts_only_flows_in_composed_live_view(monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+    master = make_master()
+    matching = tflow.tflow(resp=True)
+    matching.metadata["agent"] = "alice"
+    hidden = tflow.tflow(resp=True)
+    hidden.metadata["agent"] = "bob"
+    master.view.filter = flowfilter.parse('~meta "^agent: alice$" & (~m GET)')
+
+    with patch("safeyolo.traffic_master.app.ClientConnection.broadcast_flow") as broadcast:
+        master.view.add([matching, hidden])
+
+    broadcast.assert_called_once_with("flows/add", matching)

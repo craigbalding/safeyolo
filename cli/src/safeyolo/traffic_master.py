@@ -65,35 +65,58 @@ class ScopeScriptHandler(app.RequestHandler):
         self.write(_SCOPE_SCRIPT)
 
 
+class ScopeStyleHandler(app.RequestHandler):
+    def get(self) -> None:
+        self.set_header("Content-Type", "text/css; charset=UTF-8")
+        self.write(_SCOPE_STYLE)
+
+
 class SafeYoloIndexHandler(app.IndexHandler):
     def get(self) -> None:
         _ = self.xsrf_token
         index_path = Path(app.__file__).with_name("index.html")
         html = index_path.read_text(encoding="utf-8")
         host = escape(socket.gethostname())
-        toolbar = f"""
-<div id="safeyolo-scope" style="height:42px;padding:6px 10px;background:#17212b;color:#fff;display:flex;gap:8px;align-items:center;font:13px sans-serif">
-  <strong>SafeYolo Traffic — {host}</strong>
-  <label>Agent <select data-scope="agent"></select></label>
-  <label>Test <select data-scope="test_id"></select></label>
-  <label>Intent <select data-scope="intent"></select></label>
-  <label>Role <select data-scope="role"></select></label>
-  <label>Expect <select data-scope="expect"></select></label>
-</div>
-<script type="module" src="/safeyolo/scope.js"></script>
-"""
-        self.write(
-            html.replace(
-                "<body>",
-                f'<body style="padding-top:42px">{toolbar}',
-            )
-        )
+        self.write(html.replace("</head>", '<link rel="stylesheet" href="/safeyolo/scope.css"></head>').replace("<body>", f"<body>{_scope_toolbar(host)}"))
 
     post = get
 
 
+def _scope_toolbar(host: str) -> str:
+    return f"""
+<section id="safeyolo-scope" aria-label="Pinned SafeYolo traffic scope">
+  <header><strong>SafeYolo Traffic — {host}</strong><output data-scope-summary>Pinned: all agents · no test context</output></header>
+  <div class="safeyolo-scope-controls">
+    <label>Agent <select data-scope="agent" aria-label="Pinned agent"></select></label>
+    <label>Test <select data-scope="test_id" aria-label="Pinned test"></select></label>
+    <label>Intent <select data-scope="intent" aria-label="Pinned intent"></select></label>
+    <label>Role <select data-scope="role" aria-label="Pinned role"></select></label>
+    <label>Expect <select data-scope="expect" aria-label="Pinned expectation"></select></label>
+  </div>
+</section>
+<script type="module" src="/safeyolo/scope.js"></script>
+"""
+
+
+_SCOPE_STYLE = r"""
+#safeyolo-scope { position:sticky; top:0; z-index:1000; padding:7px 10px; background:#17212b; color:#fff; font:13px sans-serif; box-shadow:0 1px 4px #0008; }
+#safeyolo-scope header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:6px; }
+#safeyolo-scope [data-scope-summary] { color:#9fd3ff; overflow-wrap:anywhere; text-align:right; }
+.safeyolo-scope-controls { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; }
+.safeyolo-scope-controls label { display:flex; gap:4px; align-items:center; white-space:nowrap; }
+.safeyolo-scope-controls select { min-width:8rem; max-width:15rem; }
+@media (max-width:600px) {
+  #safeyolo-scope header { align-items:flex-start; flex-direction:column; gap:2px; }
+  #safeyolo-scope [data-scope-summary] { text-align:left; }
+  .safeyolo-scope-controls label { flex:1 1 9rem; }
+  .safeyolo-scope-controls select { min-width:0; width:100%; }
+}
+"""
+
+
 _SCOPE_SCRIPT = r"""
 const mapping = {agent: "agent", test_id: "test_id", intent: "test_intent", role: "test_role", expect: "test_expect"};
+const UNATTRIBUTED = '__safeyolo_unattributed__';
 const cookie = name => document.cookie.split('; ').find(x => x.startsWith(name + '='))?.split('=').slice(1).join('=') || '';
 async function state() {
   const response = await fetch('/safeyolo/scope');
@@ -102,17 +125,30 @@ async function state() {
 }
 async function render() {
   const data = await state();
+  const pinned = [data.scope.unattributed ? 'unattributed' : (data.scope.agent || 'all agents')];
+  for (const field of ['test_id', 'intent', 'role', 'expect']) if (data.scope[field]) pinned.push(data.scope[field]);
+  const summary = document.querySelector('[data-scope-summary]');
+  if (summary) summary.textContent = `Pinned: ${pinned.join(' · ')}${data.scope.user_filter ? ' · Search preserved' : ''}`;
   for (const select of document.querySelectorAll('[data-scope]')) {
     const field = select.dataset.scope;
     const facet = mapping[field];
-    const current = data.scope[field] || '';
-    select.replaceChildren(new Option('All', ''));
+    const current = field === 'agent' && data.scope.unattributed ? UNATTRIBUTED : (data.scope[field] || '');
+    select.replaceChildren(new Option(field === 'agent' ? 'All agents' : 'No restriction', ''));
+    if (field === 'agent') select.add(new Option('Unattributed traffic', UNATTRIBUTED));
     for (const item of data.facets[facet] || []) select.add(new Option(`${item.value} (${item.count})`, item.value));
     select.value = current;
     select.onchange = async () => {
       const body = {};
-      for (const control of document.querySelectorAll('[data-scope]')) body[control.dataset.scope] = control.value || null;
-      body.unattributed = false;
+      const controls = [...document.querySelectorAll('[data-scope]')];
+      const changed = controls.indexOf(select);
+      for (const [index, control] of controls.entries()) {
+        if (index > changed) {
+          body[control.dataset.scope] = null;
+          continue;
+        }
+        body[control.dataset.scope] = control.dataset.scope === 'agent' && control.value === UNATTRIBUTED ? null : (control.value || null);
+      }
+      body.unattributed = document.querySelector('[data-scope="agent"]').value === UNATTRIBUTED;
       const response = await fetch('/safeyolo/scope', {
         method: 'PUT',
         headers: {'Content-Type': 'application/json', 'X-XSRFToken': decodeURIComponent(cookie('_mitmproxy_xsrf') || cookie('_xsrf'))},
@@ -124,6 +160,7 @@ async function render() {
   }
 }
 render().catch(error => console.error('SafeYolo scope controls:', error));
+setInterval(() => render().catch(error => console.error('SafeYolo scope refresh:', error)), 5000);
 """
 
 
@@ -236,6 +273,7 @@ class TrafficMaster(ConsoleMaster):
             [
                 (r"/safeyolo/scope", ScopeAPIHandler),
                 (r"/safeyolo/scope.js", ScopeScriptHandler),
+                (r"/safeyolo/scope.css", ScopeStyleHandler),
                 (r"/", SafeYoloIndexHandler),
             ],
         )
