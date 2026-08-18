@@ -235,6 +235,19 @@ class WebFrontend:
             )
             if exc.errno == errno.EADDRINUSE:
                 message += " (address already in use)"
+            write_event(
+                "ops.proxy_start_failed",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=message,
+                addon="traffic-master",
+                details={
+                    "component": "web-frontend",
+                    "host": self.master.options.web_host,
+                    "port": self.master.options.web_port,
+                    "errno": exc.errno,
+                },
+            )
             raise OSError(exc.errno, message, exc.filename) from exc
         auth = self.master.addons.get("webauth")
         log.info("Shared traffic web UI listening at %s", auth.web_url)
@@ -298,20 +311,7 @@ class TrafficMaster(ConsoleMaster):
                 self.keymap.add(key, command_text, ["global"], help_text)
 
     async def running(self) -> None:
-        try:
-            await super().running()
-        except Exception as exc:
-            # This process may exit before the parent CLI can inspect it. Use
-            # the shared structured audit channel as the failure boundary.
-            write_event(
-                "ops.proxy_start_failed",
-                kind=EventKind.OPS,
-                severity=Severity.HIGH,
-                summary=f"Traffic master startup failed: {exc}",
-                addon="traffic-master",
-                details={"error_type": type(exc).__name__, "error": str(exc)},
-            )
-            raise
+        await super().running()
         if self.window is not None:
             native_status = SafeYoloStatusBar(self)
             self.window.statusbar = native_status
