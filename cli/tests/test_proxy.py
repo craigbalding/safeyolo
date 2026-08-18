@@ -1823,9 +1823,8 @@ class TestStartProxy:
              patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
              patch("safeyolo.proxy.start_session"), \
              patch("safeyolo.proxy.session_process_alive", return_value=False), \
-             patch("safeyolo.proxy.capture_session", return_value="startup failed"), \
              patch("safeyolo.proxy.stop_session") as stop_session:
-            with pytest.raises(RuntimeError, match="shared traffic master exited"):
+            with pytest.raises(RuntimeError, match="ModuleNotFoundError"):
                 start_proxy()
         stop_session.assert_called_once_with()
 
@@ -1866,7 +1865,8 @@ class TestWaitForHealthy:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
+             patch("urllib.request.urlopen", return_value=mock_resp):
             result = wait_for_healthy(timeout=1, admin_port=9090)
 
         assert result is True
@@ -1880,7 +1880,8 @@ class TestWaitForHealthy:
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)
 
-        with patch("urllib.request.urlopen", side_effect=ConnectionError), \
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
+             patch("urllib.request.urlopen", side_effect=ConnectionError), \
              patch("safeyolo.proxy.time.sleep"):
             result = wait_for_healthy(timeout=2, admin_port=9090)
 
@@ -1907,8 +1908,24 @@ class TestWaitForHealthy:
             captured_request = req
             return mock_resp
 
-        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+        with patch("safeyolo.proxy.is_proxy_running", return_value=True), \
+             patch("urllib.request.urlopen", side_effect=capture_urlopen):
             wait_for_healthy(timeout=1, admin_port=9090)
 
         assert captured_request is not None
         assert captured_request.get_header("Authorization") == "Bearer secret-tok-123"
+
+    def test_returns_false_immediately_when_proxy_dies(self, tmp_path, monkeypatch):
+        from safeyolo.proxy import wait_for_healthy
+
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "data").mkdir()
+
+        with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
+             patch("urllib.request.urlopen") as urlopen, \
+             patch("safeyolo.proxy.time.sleep") as sleep:
+            result = wait_for_healthy(timeout=30, admin_port=9090)
+
+        assert result is False
+        urlopen.assert_not_called()
+        sleep.assert_not_called()

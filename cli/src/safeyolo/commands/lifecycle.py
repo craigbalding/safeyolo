@@ -16,9 +16,11 @@ from ..config import (
     DEFAULT_CONFIG,
     find_config_dir,
     get_config_dir,
+    get_logs_dir,
     load_config,
     save_config,
 )
+from ..events import EventKind, Severity, write_event
 from ..proxy import (
     is_proxy_running,
     start_proxy,
@@ -149,6 +151,14 @@ def start(
             flow_cache=flow_cache,
         )
     except Exception as err:
+        write_event(
+            "ops.proxy_start_failed",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary="SafeYolo proxy failed during launch",
+            addon="cli.lifecycle",
+            details={"phase": "launch", "error_type": type(err).__name__, "error": str(err)},
+        )
         console.print(f"[red]Failed to start proxy:[/red] {err}")
         raise typer.Exit(1)
 
@@ -161,7 +171,21 @@ def start(
         if wait_for_healthy(timeout=30, admin_port=admin_port):
             console.print("[green]ready![/green]")
         else:
-            console.print("[yellow]timeout (may still be starting)[/yellow]")
+            console.print("[red]failed[/red]")
+            stop_proxy()
+            write_event(
+                "ops.proxy_start_failed",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary="SafeYolo proxy did not remain healthy during startup",
+                addon="cli.lifecycle",
+                details={"phase": "health", "admin_port": admin_port},
+            )
+            console.print(
+                "[red]SafeYolo did not remain healthy during startup.[/red]\n"
+                f"Check: {get_logs_dir() / 'mitmproxy.log'}"
+            )
+            raise typer.Exit(1)
 
     # Show connection info
     if first_run:

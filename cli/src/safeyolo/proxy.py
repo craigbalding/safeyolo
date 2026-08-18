@@ -20,7 +20,6 @@ from .ignore_hosts import (
     normalize_ignore_hosts,
 )
 from .traffic_session import (
-    capture_session,
     session_process_alive,
     start_session,
     stop_session,
@@ -758,19 +757,17 @@ def start_proxy(
             if pid_file.exists():
                 break
             if not session_process_alive():
-                tail = capture_session() or _read_log_tail(log_file, lines=15)
+                tail = _read_log_tail(log_file, lines=15)
                 raise RuntimeError(
                     "shared traffic master exited during startup.\n"
-                    f"Last console output:\n{tail}"
+                    f"Last 15 mitmproxy log lines ({log_file}):\n{tail}"
                 )
             time.sleep(0.05)
         else:
             tail = _read_log_tail(log_file, lines=15)
-            console_tail = capture_session()
             raise RuntimeError(
                 "Proxy did not signal ready within 10s.\n"
-                f"Last console output:\n{console_tail}\n"
-                f"Last {15} log lines:\n{tail}"
+                f"Last 15 mitmproxy log lines ({log_file}):\n{tail}"
             )
     except Exception:
         pid_file.unlink(missing_ok=True)
@@ -856,6 +853,10 @@ def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
     token = admin_token_file.read_text().strip() if admin_token_file.exists() else ""
 
     for _ in range(timeout):
+        # start_proxy has already published its final readiness marker. If
+        # that process disappears, no amount of HTTP retrying can recover it.
+        if not is_proxy_running():
+            return False
         try:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{admin_port}/health",
