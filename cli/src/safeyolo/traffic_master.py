@@ -14,12 +14,14 @@ from typing import Any
 import tornado.httpserver
 import tornado.ioloop
 import urwid
+from argon2 import PasswordHasher
 from mitmproxy import options, optmanager
 from mitmproxy.tools import cmdline, main
+from mitmproxy.tools.console import common, statusbar
 from mitmproxy.tools.console import signals as console_signals
-from mitmproxy.tools.console import statusbar
 from mitmproxy.tools.console.master import ConsoleMaster
 from mitmproxy.tools.web import app, static_viewer, webaddons
+from mitmproxy.utils import human
 
 from .events import EventKind, Severity, write_event
 
@@ -27,7 +29,17 @@ log = logging.getLogger("safeyolo.traffic-master")
 
 
 class SafeYoloStatusBar(statusbar.StatusBar):
-    """Put host and evidence scope ahead of mitmproxy's ordinary status."""
+    """Put evidence scope ahead of useful mitmproxy status indicators."""
+
+    @staticmethod
+    def _format_stream_threshold(value: str) -> str:
+        size = human.parse_size(value)
+        if size is None:
+            return value
+        for suffix, factor in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+            if size >= factor:
+                return f"{size / factor:g} {suffix}"
+        return f"{size} bytes"
 
     def get_status(self) -> list[tuple[str, str] | str]:
         scope = self.master.addons.get("traffic-scope")
@@ -35,14 +47,53 @@ class SafeYoloStatusBar(statusbar.StatusBar):
             return super().get_status()
         state = scope.get_stats()
         agent = "unattributed" if state["unattributed"] else state["agent"] or "all agents"
-        parts = [socket.gethostname(), agent]
+        parts = [agent]
         parts.extend(
             value
             for value in (state["test_id"], state["intent"], state["role"], state["expect"])
             if value
         )
         pinned = " · ".join(parts)
-        return [("heading_key", f"[SafeYolo {pinned}]"), *super().get_status()]
+        stock = super().get_status()
+        modes = self.master.options.mode
+        mode_indicator = f"[{modes[0]}]" if len(modes) == 1 else f"[modes:{len(modes)}]"
+        scripts_indicator = f"[scripts:{len(self.master.options.scripts)}]"
+        useful = [item for item in stock if item not in {mode_indicator, scripts_indicator}]
+        stream_threshold = self.master.options.stream_large_bodies
+        if stream_threshold:
+            combined_suffix = f":{stream_threshold}]"
+            cleaned = []
+            for item in useful:
+                if item == f"[{stream_threshold}]":
+                    continue
+                if isinstance(item, str) and item.endswith(combined_suffix):
+                    item = f"{item[: -len(combined_suffix)]}]"
+                cleaned.append(item)
+            useful = cleaned
+            useful.append(
+                f"[stream≥{self._format_stream_threshold(stream_threshold)}]"
+            )
+        return [("heading_key", f"[SafeYolo · {pinned}]"), *useful]
+
+    def redraw(self) -> None:
+        """Render scope without exposing implementation-detail UDS paths."""
+        flow_count = self.master.commands.execute("view.properties.length")
+        if self.master.view.focus.index is None:
+            offset = 0
+        else:
+            offset = self.master.view.focus.index + 1
+
+        arrow = (
+            common.SYMBOL_UP
+            if self.master.options.view_order_reversed
+            else common.SYMBOL_DOWN
+        )
+        marked = "M" if self.master.commands.execute("view.properties.marked") else ""
+        text: list[tuple[str, str] | str] = [
+            ("heading", f"{arrow} {marked} [{offset}/{flow_count}]".ljust(11)),
+            *self.get_status(),
+        ]
+        self.ib._w = urwid.AttrMap(urwid.Text(text), "heading")
 
 
 class ScopeAPIHandler(app.RequestHandler):
@@ -87,7 +138,7 @@ class SafeYoloIndexHandler(app.IndexHandler):
 def _scope_toolbar(host: str) -> str:
     return f"""
 <section id="safeyolo-scope" aria-label="Pinned SafeYolo traffic scope">
-  <header><strong>SafeYolo Traffic — {host}</strong><output data-scope-summary>Pinned: all agents · no test context</output></header>
+  <div class="safeyolo-scope-heading"><strong>SafeYolo Traffic — {host}</strong><output data-scope-summary>Pinned: all agents · no test context</output></div>
   <div class="safeyolo-scope-controls">
     <label>Agent <select data-scope="agent" aria-label="Pinned agent"></select></label>
     <label>Test <select data-scope="test_id" aria-label="Pinned test"></select></label>
@@ -101,14 +152,15 @@ def _scope_toolbar(host: str) -> str:
 
 
 _SCOPE_STYLE = r"""
-#safeyolo-scope { position:sticky; top:0; z-index:1000; padding:7px 10px; background:#17212b; color:#fff; font:13px sans-serif; box-shadow:0 1px 4px #0008; }
-#safeyolo-scope header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:6px; }
-#safeyolo-scope [data-scope-summary] { color:#9fd3ff; overflow-wrap:anywhere; text-align:right; }
+#safeyolo-scope { position:relative; z-index:1000; box-sizing:border-box; padding:6px 10px; background:#fff; color:#333; font:14px/1.42857143 Arial,sans-serif; border-bottom:1px solid #a6a6a6; }
+.safeyolo-scope-heading { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:5px; }
+#safeyolo-scope [data-scope-summary] { color:#777; overflow-wrap:anywhere; text-align:right; font-size:12px; }
 .safeyolo-scope-controls { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; }
-.safeyolo-scope-controls label { display:flex; gap:4px; align-items:center; white-space:nowrap; }
-.safeyolo-scope-controls select { min-width:8rem; max-width:15rem; }
+.safeyolo-scope-controls label { display:flex; gap:5px; align-items:center; white-space:nowrap; color:#777; font-size:12px; font-weight:400; }
+.safeyolo-scope-controls select { min-width:8rem; max-width:15rem; height:30px; padding:4px 8px; color:#333; background:#fff; border:1px solid #ccc; border-radius:4px; font:14px/1.42857143 Arial,sans-serif; }
+.safeyolo-scope-controls select:focus-visible { outline:0; border-color:#66afe9; box-shadow:0 0 8px #66afe999; }
 @media (max-width:600px) {
-  #safeyolo-scope header { align-items:flex-start; flex-direction:column; gap:2px; }
+  .safeyolo-scope-heading { align-items:flex-start; flex-direction:column; gap:2px; }
   #safeyolo-scope [data-scope-summary] { text-align:left; }
   .safeyolo-scope-controls label { flex:1 1 9rem; }
   .safeyolo-scope-controls select { min-width:0; width:100%; }
@@ -120,8 +172,16 @@ _SCOPE_SCRIPT = r"""
 const mapping = {agent: "agent", test_id: "test_id", intent: "test_intent", role: "test_role", expect: "test_expect"};
 const UNATTRIBUTED = '__safeyolo_unattributed__';
 const cookie = name => document.cookie.split('; ').find(x => x.startsWith(name + '='))?.split('=').slice(1).join('=') || '';
+async function scopeRequest(options) {
+  const response = await fetch('/safeyolo/scope', options);
+  if (response.status === 403) {
+    window.location.assign('/');
+    throw new Error('scope authentication expired; reloading login');
+  }
+  return response;
+}
 async function state() {
-  const response = await fetch('/safeyolo/scope');
+  const response = await scopeRequest();
   if (!response.ok) throw new Error(`scope read failed: ${response.status}`);
   return response.json();
 }
@@ -151,7 +211,7 @@ async function render() {
         body[control.dataset.scope] = control.dataset.scope === 'agent' && control.value === UNATTRIBUTED ? null : (control.value || null);
       }
       body.unattributed = document.querySelector('[data-scope="agent"]').value === UNATTRIBUTED;
-      const response = await fetch('/safeyolo/scope', {
+      const response = await scopeRequest({
         method: 'PUT',
         headers: {'Content-Type': 'application/json', 'X-XSRFToken': decodeURIComponent(cookie('_mitmproxy_xsrf') || cookie('_xsrf'))},
         body: JSON.stringify(body),
@@ -263,6 +323,13 @@ class TrafficMaster(ConsoleMaster):
 
     def __init__(self, opts: options.Options) -> None:
         super().__init__(opts)
+        # Establish SafeYolo's live-traffic defaults before mitmproxy loads
+        # config files and CLI options, which remain authoritative overrides.
+        opts.update(
+            view_order="time",
+            view_order_reversed=True,
+            console_focus_follow=True,
+        )
         # mitmproxy's stock uppercase-Q binding bypasses prompt_for_exit and
         # shuts the master down immediately.  Keep shutdown an explicit
         # lifecycle action so a viewer cannot accidentally stop the proxy.
@@ -281,7 +348,9 @@ class TrafficMaster(ConsoleMaster):
                 raise RuntimeError(f"cannot read web password file: {exc}") from exc
             if not password:
                 raise RuntimeError("web password file is empty")
-            opts.update(web_password=password)
+            # Mitmweb verifies Argon2 hashes against the password entered by
+            # the operator. Keep plaintext out of its option state.
+            opts.update(web_password=PasswordHasher().hash(password))
         self.web_app = app.Application(self, self.options.web_debug)
         self.web_app.add_handlers(
             r".*$",

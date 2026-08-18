@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from argon2 import PasswordHasher
 from mitmproxy import flowfilter, options
 from mitmproxy.test import tflow
 
@@ -35,6 +36,28 @@ def test_hybrid_master_has_one_canonical_view_and_proxyserver(monkeypatch):
     assert sum(addon is master.view for addon in chain) == 1
     assert master.addons.get("safeyolo-web-frontend") is not None
     assert master.web_app.master is master
+
+
+def test_live_traffic_defaults_show_and_follow_newest_flows(monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+
+    master = make_master()
+
+    assert master.options.view_order == "time"
+    assert master.options.view_order_reversed is True
+    assert master.options.console_focus_follow is True
+
+
+def test_web_password_is_hashed_in_option_state(tmp_path, monkeypatch):
+    password_file = tmp_path / "admin_token"
+    password_file.write_text("operator-secret")
+    monkeypatch.setenv("SAFEYOLO_WEB_PASSWORD_FILE", str(password_file))
+
+    master = make_master()
+
+    assert master.options.web_password.startswith("$argon2")
+    assert "operator-secret" not in master.options.web_password
+    assert PasswordHasher().verify(master.options.web_password, "operator-secret")
 
 
 def test_normal_console_exit_prompt_does_not_shutdown_data_plane(monkeypatch):
@@ -98,21 +121,88 @@ def test_status_bar_leads_with_host_and_pinned_evidence_scope():
         }
     )
     bar = SafeYoloStatusBar.__new__(SafeYoloStatusBar)
-    bar.master = SimpleNamespace(addons=SimpleNamespace(get=lambda _name: scope))
+    bar.master = SimpleNamespace(
+        addons=SimpleNamespace(get=lambda _name: scope),
+        options=SimpleNamespace(
+            mode=["unix:/long/private/socket.sock"],
+            scripts=["one.py", "two.py"],
+            stream_large_bodies="10m",
+        ),
+    )
 
     with (
         patch("safeyolo.traffic_master.socket.gethostname", return_value="workstation"),
         patch(
             "safeyolo.traffic_master.statusbar.StatusBar.get_status",
-            return_value=["[stock]"],
+            return_value=[
+                "[stock]",
+                "[unix:/long/private/socket.sock]",
+                "[scripts:2]",
+                "[10m]",
+            ],
         ),
     ):
         result = bar.get_status()
 
     assert result == [
-        ("heading_key", "[SafeYolo workstation · alice · FLOW-05 · forge · blocked]"),
+        ("heading_key", "[SafeYolo · alice · FLOW-05 · forge · blocked]"),
         "[stock]",
+        "[stream≥10 MiB]",
     ]
+
+
+def test_status_bar_extracts_stream_threshold_from_combined_stock_modes():
+    scope = SimpleNamespace(
+        get_stats=lambda: {
+            "agent": None,
+            "unattributed": False,
+            "test_id": None,
+            "intent": None,
+            "role": None,
+            "expect": None,
+        }
+    )
+    bar = SafeYoloStatusBar.__new__(SafeYoloStatusBar)
+    bar.master = SimpleNamespace(
+        addons=SimpleNamespace(get=lambda _name: scope),
+        options=SimpleNamespace(
+            mode=["regular"], scripts=[], stream_large_bodies="1g"
+        ),
+    )
+
+    with patch(
+        "safeyolo.traffic_master.statusbar.StatusBar.get_status",
+        return_value=["[anticache:1g]"],
+    ):
+        result = bar.get_status()
+
+    assert result == [
+        ("heading_key", "[SafeYolo · all agents]"),
+        "[anticache]",
+        "[stream≥1 GiB]",
+    ]
+
+
+def test_status_bar_redraw_omits_raw_listener_addresses():
+    bar = SafeYoloStatusBar.__new__(SafeYoloStatusBar)
+    bar.ib = SimpleNamespace(_w=None)
+    bar.master = SimpleNamespace(
+        commands=SimpleNamespace(
+            execute=lambda command: {
+                "view.properties.length": 3,
+                "view.properties.marked": False,
+            }[command]
+        ),
+        options=SimpleNamespace(view_order_reversed=False),
+        view=SimpleNamespace(focus=SimpleNamespace(index=0)),
+    )
+    bar.get_status = lambda: [("heading_key", "[SafeYolo · alice]")]  # type: ignore[method-assign]
+
+    bar.redraw()
+
+    rendered = bar.ib._w.original_widget.text
+    assert "SafeYolo · alice" in rendered
+    assert "/sockets/" not in rendered
 
 
 def test_web_scope_has_explicit_modes_and_responsive_pinned_summary():
@@ -125,6 +215,13 @@ def test_web_scope_has_explicit_modes_and_responsive_pinned_summary():
     assert "All agents" in _SCOPE_SCRIPT
     assert "No restriction" in _SCOPE_SCRIPT
     assert "Search preserved" in _SCOPE_SCRIPT
+    assert "response.status === 403" in _SCOPE_SCRIPT
+    assert "window.location.assign('/')" in _SCOPE_SCRIPT
+    assert "<header>" not in toolbar
+    assert 'class="safeyolo-scope-heading"' in toolbar
+    assert "background:#fff" in _SCOPE_STYLE
+    assert "border-bottom:1px solid #a6a6a6" in _SCOPE_STYLE
+    assert "border:1px solid #ccc" in _SCOPE_STYLE
     assert "@media (max-width:600px)" in _SCOPE_STYLE
     assert "flex-wrap:wrap" in _SCOPE_STYLE
 

@@ -3,7 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mitmproxy import flowfilter
+import pytest
+from mitmproxy import exceptions, flowfilter
 from traffic_scope import TrafficScope
 
 
@@ -80,6 +81,27 @@ def test_external_user_filter_edit_cannot_remove_pinned_scope():
     assert options.view_filter.endswith("(~u example.com)")
 
 
+def test_malformed_user_filter_does_not_poison_scope_shortcuts():
+    addon = TrafficScope()
+    options = FakeOptions("~m GET")
+    master = SimpleNamespace(
+        view=FakeView([fake_flow("alice"), fake_flow("claude")]),
+        addons=SimpleNamespace(get=lambda _name: None),
+    )
+    with patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)):
+        addon.running()
+        addon.set_scope(agent="alice")
+        options.view_filter = '~meta "unterminated'
+        with pytest.raises(exceptions.OptionsError):
+            addon.configure({"view_filter"})
+
+        assert addon.user_filter == "~m GET"
+        assert addon.next_agent() is None
+
+    assert addon.agent == "claude"
+    assert flowfilter.parse(options.view_filter) is not None
+
+
 def test_scope_values_are_escaped_and_unattributed_is_distinct():
     addon = TrafficScope()
     options = FakeOptions()
@@ -106,6 +128,21 @@ def test_setting_new_scope_clears_omitted_dimensions():
     assert result["intent"] is None
 
 
+def test_key_bound_scope_actions_do_not_return_modal_output():
+    addon = TrafficScope()
+    options = FakeOptions()
+    master = SimpleNamespace(
+        view=FakeView([fake_flow("alice")]),
+        addons=SimpleNamespace(get=lambda _name: None),
+    )
+    with patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)):
+        assert addon.select_agent("alice") is None
+        assert addon.all_agents() is None
+        assert addon.unattributed_only() is None
+        assert addon.clear_test() is None
+        assert addon.clear_scope() is None
+
+
 def test_seven_agent_cycle_uses_canonical_store_and_keeps_user_filter():
     addon = TrafficScope()
     options = FakeOptions("~m GET")
@@ -116,13 +153,18 @@ def test_seven_agent_cycle_uses_canonical_store_and_keeps_user_filter():
     )
     with patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)):
         addon.running()
-        selected = [addon.next_agent() for _ in agents]
-        wrapped = addon.next_agent()
-        previous = addon.previous_agent()
+        selected = []
+        for _ in agents:
+            assert addon.next_agent() is None
+            selected.append(addon.agent)
+        assert addon.next_agent() is None
+        wrapped = addon.agent
+        assert addon.previous_agent() is None
+        previous = addon.agent
 
-    assert selected == [f"SafeYolo scope: agent {agent}" for agent in agents]
-    assert wrapped == "SafeYolo scope: agent agent-0"
-    assert previous == "SafeYolo scope: agent agent-6"
+    assert selected == agents
+    assert wrapped == "agent-0"
+    assert previous == "agent-6"
     assert addon.user_filter == "~m GET"
     assert options.view_filter.endswith("(~m GET)")
 
