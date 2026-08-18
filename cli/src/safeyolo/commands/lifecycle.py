@@ -339,10 +339,8 @@ def status() -> None:
 
     # Running agents. The displayed IP is the agent's attribution address --
     # what mitmproxy sees as the request source and what service_discovery
-    # maps back to the name for audit/policy. On Linux's UDS-only arch
-    # every guest has HTTP_PROXY pointing at 127.0.0.1, so the guest-side
-    # vm-ip file is always 127.0.0.1 and no longer identifies the agent.
-    # agent_map.json is the source of truth.
+    # maps back to the name for audit/policy. agent_map.json is the source
+    # of truth on both UDS/vsock platforms.
     import json as _json
 
     from ..config import get_agent_map_path, get_agents_dir

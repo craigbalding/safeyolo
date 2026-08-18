@@ -479,7 +479,7 @@ def _run_agent(
         config_share_dir = get_agent_config_share_dir(name)
         config_share = config_share_dir
         status_dir = get_agent_status_dir(name)
-        ip_file = status_dir / "vm-ip"
+        per_run_started = status_dir / "per-run-started"
 
         # --- Restore attempt (macOS warm-boot fast path) -------------------
         # If the valid-snapshot path fails -- typically because VZ rejects
@@ -516,7 +516,7 @@ def _run_agent(
             # promptly. prepare_config_share unlinked any stale copy, so
             # appearance of this file means the restored VM actually
             # resumed and got into per-run -- no race against stale
-            # vm-ip, no need for a settle wait.
+            # any static-phase marker, with no need for a settle wait.
             #
             # Budget: 8s. On success the happy path is ~1-2s (VZ restore
             # + VirtioFS dentry cache TTL + per-run startup). A failed
@@ -524,7 +524,6 @@ def _run_agent(
             # mismatch or VZ rejection), so is_sandbox_running catches
             # that quickly. 8s leaves headroom for slow disks / first-
             # boot cold caches without dragging out the fallback.
-            per_run_started = status_dir / "per-run-started"
             deadline = _time.time() + 8.0
             restore_ok = False
             _t("wait per-run-started (guest wake + per-run prefix)")
@@ -590,8 +589,9 @@ def _run_agent(
 
             if snapshot_mode == "capture":
                 # Capture happens between static and per-run -- static has
-                # already written vm-ip by the time we get here, so the
-                # subsequent vm-ip poll will complete on the first iteration.
+                # completed by the time we get here. Snapshot orchestration
+                # releases the per-run gate before returning, after which the
+                # guest writes per-run-started.
                 _t("capture orchestration (static-done → SIGUSR1 → save + clone)")
                 _capture_snapshot_blocking(
                     name=name,
@@ -601,20 +601,27 @@ def _run_agent(
                     plat=plat,
                 )
 
-            # Wait for VM IP (indicates guest init is running).
-            _t("wait vm-ip (guest static write)")
+            # Wait until the guest reaches its per-run phase. The marker was
+            # cleared by prepare_config_share, so its appearance belongs to
+            # this boot rather than a prior run.
+            _t("wait per-run-started (cold boot)")
             # Poll fast (50ms) for the first 2s so the host detects the file
             # within ~50ms instead of waiting up to 500ms; fall back to 0.5s
             # after that to keep the long-tail wait cheap.
             deadline = _time.time() + 120
             fast_until = _time.time() + 2.0
+            boot_ready = False
             while _time.time() < deadline and plat.is_sandbox_running(name):
-                if ip_file.exists() and ip_file.read_text().strip():
+                if per_run_started.exists():
+                    boot_ready = True
                     break
                 _time.sleep(0.05 if _time.time() < fast_until else 0.5)
 
-            if not plat.is_sandbox_running(name):
+            if not boot_ready:
                 console.print(" [red]failed[/red]")
+                if plat.is_sandbox_running(name):
+                    console.print("  Guest did not reach per-run startup within 120s.")
+                    plat.stop_sandbox(name)
                 # Point the user at the log that actually exists on their
                 # platform. On macOS the Swift VM helper writes the guest
                 # serial console to serial.log. On Linux there is no serial

@@ -67,7 +67,7 @@ Run gVisor with loopback-only networking, no real root, no sudo.
 
 ### Exp 12: Full guest-init integration
 - Container went to stopped before exec could run
-- Status signals written (static-init-done, per-run-started, vm-ip)
+- Status signals written (static-init-done, per-run-started)
 - Likely guest-init exited — needs debugging separately
 
 ### Exp 13: Simple container with CAP_NET_ADMIN inside
@@ -303,4 +303,3 @@ KVM ACL changes: ZERO
 - Both curl 200, correct attribution in mitmproxy
 - No crosstalk
 - PASS
-

@@ -32,9 +32,9 @@ hwclock -s 2>/dev/null || true
 ls /safeyolo >/dev/null 2>&1 || true
 
 # Definitive "the guest reached per-run" signal. The host-side CLI polls
-# for this marker to decide whether a restore attempt succeeded, rather
-# than racing on the stale vm-ip file that persists across runs. Written
-# after the VirtioFS readdir above so the host sees the write promptly.
+# for this marker to decide whether a cold boot or restore reached the
+# per-run phase. Written after the VirtioFS readdir above so the host sees
+# the write promptly.
 echo "$(date +%s)" > /safeyolo-status/per-run-started
 echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 

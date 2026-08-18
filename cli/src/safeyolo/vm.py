@@ -707,7 +707,7 @@ def prepare_config_share(
     # "restore succeeded" signal; a stale copy would make a failed
     # restore look successful.
     status_dir = get_agent_status_dir(name)
-    for marker in ("static-init-done", "per-run-started", "vm-status", "vm-ip"):
+    for marker in ("static-init-done", "per-run-started", "vm-status"):
         (status_dir / marker).unlink(missing_ok=True)
 
     # Debug-mode marker -- presence enables per-iteration guest tracing.

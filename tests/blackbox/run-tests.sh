@@ -306,23 +306,19 @@ if [ "$RUN_ISOLATION" = true ]; then
     STARTED_VM=true
 
     echo "  Waiting for VM..."
-    VM_IP=""
-    for i in $(seq 1 15); do
-        VM_IP=$(cat "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/status/vm-ip" 2>/dev/null || echo "")
-        [ -n "$VM_IP" ] && break
-        sleep 1
-    done
-    if [ -z "$VM_IP" ]; then
-        echo "ERROR: Could not determine VM IP"
-        exit 2
-    fi
+    VM_READY=false
     for i in $(seq 1 60); do
         if safeyolo agent shell "$AGENT_NAME" -c true >/dev/null 2>&1; then
-            echo "  VM ready ($VM_IP)"
+            echo "  VM ready"
+            VM_READY=true
             break
         fi
         sleep 1
     done
+    if [ "$VM_READY" != true ]; then
+        echo "ERROR: VM did not become ready"
+        exit 2
+    fi
 fi
 
 echo ""
