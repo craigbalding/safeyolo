@@ -1,8 +1,9 @@
 """Composition tests for the shared console and web master."""
 
 import asyncio
+import errno
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from mitmproxy import flowfilter, options
@@ -13,6 +14,7 @@ from safeyolo.traffic_master import (
     _SCOPE_STYLE,
     SafeYoloStatusBar,
     TrafficMaster,
+    WebFrontend,
     _scope_toolbar,
 )
 
@@ -51,22 +53,27 @@ def test_normal_console_exit_prompt_does_not_shutdown_data_plane(monkeypatch):
     assert "safeyolo stop" in status.call_args.kwargs["message"]
 
 
-def test_startup_exception_is_written_to_structured_event_log(monkeypatch):
-    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
-    master = make_master()
+def test_web_bind_failure_is_written_at_source_to_structured_event_log():
+    master = SimpleNamespace(
+        web_app=object(),
+        options=SimpleNamespace(web_host="127.0.0.1", web_port=8081),
+    )
+    frontend = WebFrontend.__new__(WebFrontend)
+    frontend.master = master
+    frontend.server = None
+    server = MagicMock()
+    server.listen.side_effect = OSError(errno.EADDRINUSE, "Address already in use")
 
     with (
-        patch(
-            "safeyolo.traffic_master.ConsoleMaster.running",
-            new=AsyncMock(side_effect=OSError("address already in use")),
-        ),
+        patch("safeyolo.traffic_master.tornado.httpserver.HTTPServer", return_value=server),
         patch("safeyolo.traffic_master.write_event") as write_event,
-        pytest.raises(OSError, match="address already in use"),
+        pytest.raises(OSError, match="127.0.0.1:8081"),
     ):
-        asyncio.run(master.running())
+        asyncio.run(frontend.running())
 
     assert write_event.call_args.args[0] == "ops.proxy_start_failed"
-    assert "address already in use" in write_event.call_args.kwargs["summary"]
+    assert "127.0.0.1:8081" in write_event.call_args.kwargs["summary"]
+    assert write_event.call_args.kwargs["details"]["port"] == 8081
 
 
 def test_native_scope_keys_do_not_replace_stock_bindings(monkeypatch):
