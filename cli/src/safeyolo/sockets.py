@@ -49,7 +49,8 @@ def remove_stale_sockets() -> list[Path]:
                 path.unlink()
                 removed.append(path)
         except FileNotFoundError:
-            pass
+            # Another cleanup path won the race; continue scanning.
+            continue
     return removed
 
 
