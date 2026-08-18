@@ -5,6 +5,7 @@ The addon stack, options, and behavior are identical — only the
 execution environment changes (host process vs. container).
 """
 
+import json
 import logging
 import os
 import shutil
@@ -76,30 +77,25 @@ def _pid_file() -> Path:
     return get_data_dir() / "proxy.pid"
 
 
-def _read_log_tail(path: Path, lines: int = 15) -> str:
-    """Read the last N lines of a log file for user-facing error output.
-
-    Used on startup failure: the log already contains mitmdump's own
-    error output (stdout+stderr are redirected to it), so a tail tells
-    the user what actually went wrong (ImportError, port collision,
-    config typo, etc.).
-    """
+def _read_startup_failure(path: Path, offset: int) -> str:
+    """Read this launch attempt's structured failure event, if present."""
     try:
-        with open(path, "rb") as f:
-            try:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                # 8KB is plenty for ~15 log lines even with long addon
-                # tracebacks; avoids reading megabytes of prior runs.
-                read_size = min(size, 8192)
-                f.seek(size - read_size)
-                data = f.read()
-            except OSError:
-                f.seek(0)
-                data = f.read()
-        return b"\n".join(data.splitlines()[-lines:]).decode(errors="replace")
+        with path.open(encoding="utf-8") as event_file:
+            event_file.seek(offset)
+            candidates = []
+            for line in event_file:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") == "ops.proxy_start_failed":
+                    candidates.append(event)
     except OSError:
-        return "(log file not readable)"
+        return "Traffic master exited before recording a structured startup failure."
+    if not candidates:
+        return "Traffic master exited before recording a structured startup failure."
+    event = candidates[-1]
+    return str(event.get("summary") or event.get("details", {}).get("error") or "Proxy startup failed")
 
 
 def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = None) -> int:
@@ -741,7 +737,11 @@ def start_proxy(
     # Start inside SafeYolo's private terminal server. ConsoleMaster receives
     # a real PTY even when no operator is attached; mitmweb and proxy traffic
     # remain alive across console attach/detach.
-    log_file = logs_dir / "mitmproxy.log"
+    event_log = logs_dir / "safeyolo.jsonl"
+    try:
+        event_offset = event_log.stat().st_size
+    except OSError:
+        event_offset = 0
     try:
         start_session(cmd, env=env)
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -757,17 +757,17 @@ def start_proxy(
             if pid_file.exists():
                 break
             if not session_process_alive():
-                tail = _read_log_tail(log_file, lines=15)
+                failure = _read_startup_failure(event_log, event_offset)
                 raise RuntimeError(
                     "shared traffic master exited during startup.\n"
-                    f"Last 15 mitmproxy log lines ({log_file}):\n{tail}"
+                    f"{failure}"
                 )
             time.sleep(0.05)
         else:
-            tail = _read_log_tail(log_file, lines=15)
+            failure = _read_startup_failure(event_log, event_offset)
             raise RuntimeError(
                 "Proxy did not signal ready within 10s.\n"
-                f"Last 15 mitmproxy log lines ({log_file}):\n{tail}"
+                f"{failure}"
             )
     except Exception:
         pid_file.unlink(missing_ok=True)
