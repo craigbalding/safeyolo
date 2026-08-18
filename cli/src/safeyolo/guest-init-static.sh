@@ -66,11 +66,9 @@ rm -f /dev/fuse 2>/dev/null || true
 # --------------------------------------------------------------------------
 ip link set lo up
 
-# Source network.env unconditionally -- GUEST_IP is needed later for the
-# /safeyolo/vm-ip readiness signal even on runtimes where `ip link show
-# eth0` is unhappy (notably gVisor: its netstack doesn't surface the
-# netns's eth0 as a kernel interface, so standard `ip` queries find
-# only lo -- yet traffic flows fine because netstack forwards transparently).
+# Source network.env unconditionally. The guest uses GUEST_IP and GATEWAY_IP
+# to configure eth0 on runtimes that expose one, and AGENT_IP for the
+# per-agent attribution address on loopback.
 if [ -f /safeyolo/network.env ]; then
     . /safeyolo/network.env
 fi
@@ -256,19 +254,6 @@ mkdir -p /run/sshd
 echo "[static] sshd launched pid=$!" > /dev/console 2>/dev/null || true
 
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-
-# --------------------------------------------------------------------------
-# 5. Write VM IP so the CLI can discover it
-# --------------------------------------------------------------------------
-# Prefer GUEST_IP from network.env (host-written, accurate on every runtime);
-# fall back to `ip addr` for legacy paths or for cases where the env wasn't
-# staged. On gVisor the `ip addr` path returns nothing because eth0 isn't
-# visible from inside the sandbox -- the env-var path is what makes vm-ip
-# reliably appear there.
-VM_IP="${GUEST_IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP 'inet \K[0-9.]+' || echo '')}"
-if [ -n "$VM_IP" ]; then
-    echo "$VM_IP" > /safeyolo-status/vm-ip
-fi
 
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
 # to exec after a restore. VirtioFS file reads are unreliable post-
