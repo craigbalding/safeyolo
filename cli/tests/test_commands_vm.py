@@ -116,18 +116,21 @@ class TestLifecycleStart:
         assert result.exit_code == 1
         assert "failed to start" in result.output.lower()
 
-    def test_wait_timeout_is_nonfatal(self, runner, config_dir):
-        """Health check timeout is a warning, not a failure."""
+    def test_wait_timeout_fails_and_cleans_up(self, runner, config_dir):
+        """A proxy that does not remain healthy cannot report success."""
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
             patch("safeyolo.commands.lifecycle.start_proxy"),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=False),
+            patch("safeyolo.commands.lifecycle.stop_proxy") as stop_proxy,
         ):
             result = runner.invoke(app, ["start"])
 
-        assert result.exit_code == 0
-        assert "timeout" in result.output.lower()
+        assert result.exit_code == 1
+        assert "did not remain healthy" in result.output.lower()
+        assert "safeyolo is running" not in result.output.lower()
+        stop_proxy.assert_called_once_with()
 
     def test_no_wait_skips_health_check(self, runner, config_dir):
         """--no-wait skips the health check entirely."""
