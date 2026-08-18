@@ -13,6 +13,7 @@ The same docstrings drive docs/blackbox-coverage.md. Any test lacking the
 schema fails at collection time so contributors see it locally on first run.
 """
 import re
+from pathlib import Path
 
 
 def check_function(docstring: str | None, qualname: str) -> list[str]:
@@ -43,11 +44,19 @@ def check_class(docstring: str | None, qualname: str) -> list[str]:
     return []
 
 
-def validate_items(items) -> None:
-    """Raise RuntimeError if any collected pytest item fails the schema."""
+def validate_items(items, suite_root: Path) -> None:
+    """Raise if a collected test inside ``suite_root`` fails the schema.
+
+    Pytest calls collection hooks with the complete session item list, even
+    when the hook is defined in a nested conftest. Filter by path here so a
+    blackbox hook cannot impose this schema on unrelated repository tests.
+    """
+    suite_root = suite_root.resolve()
     violations = []
     seen_classes = set()
     for item in items:
+        if not Path(item.path).resolve().is_relative_to(suite_root):
+            continue
         if not hasattr(item, "function"):
             continue
         func = item.function

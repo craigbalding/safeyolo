@@ -34,6 +34,8 @@ from uds_transport import UDSProxyTransport  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _docstring_lint import validate_items  # noqa: E402
 
+HOST_SUITE_ROOT = Path(__file__).resolve().parent
+
 
 def pytest_collection_modifyitems(config, items):
     """Reject collection if any test's docstring is missing structure.
@@ -41,7 +43,7 @@ def pytest_collection_modifyitems(config, items):
     Schema lives in tests/blackbox/_docstring_lint.py and is shared
     with the isolation suite and docs/blackbox-coverage.md generator.
     """
-    validate_items(items)
+    validate_items(items, HOST_SUITE_ROOT)
 
 # ---------------------------------------------------------------------------
 # Host-side configuration — everything on localhost
