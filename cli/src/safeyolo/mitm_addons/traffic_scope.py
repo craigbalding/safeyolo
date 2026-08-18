@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Sequence
 
-from mitmproxy import ctx, exceptions, flowfilter
+from mitmproxy import command, ctx, exceptions, flowfilter, types
 
 
 def _metadata_filter(key: str, value: str) -> str:
@@ -25,6 +27,7 @@ class TrafficScope:
         self.user_filter = ""
         self._effective_filter = ""
         self._applying = False
+        self._test_choices: dict[str, dict[str, str | None]] = {}
 
     def running(self) -> None:
         self.user_filter = ctx.options.view_filter or ""
@@ -148,6 +151,151 @@ class TrafficScope:
                 for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
             ]
         return result
+
+    def _all_flows(self) -> list:
+        view = getattr(getattr(ctx, "master", None), "view", None)
+        return list(view.resolve("@all")) if view is not None else []
+
+    def observed_agents(self) -> list[str]:
+        """Return running and observed agents without depending on visible flows."""
+        agents: set[str] = set()
+        master = getattr(ctx, "master", None)
+        discovery = master.addons.get("service-discovery") if master is not None else None
+        if discovery is not None:
+            agents.update(discovery.get_agents().get("agents", {}))
+        for flow in self._all_flows():
+            value = getattr(flow, "metadata", {}).get("agent")
+            if value:
+                agents.add(str(value))
+        return sorted(agents)
+
+    @command.command("safeyolo.traffic.agent.options")
+    def agent_options(self) -> Sequence[str]:
+        """List running or observed agents for the native chooser."""
+        return self.observed_agents()
+
+    @command.command("safeyolo.traffic.agent.set")
+    @command.argument("agent", type=types.Choice("safeyolo.traffic.agent.options"))
+    def select_agent(self, agent: str) -> str:
+        """Pin traffic to an agent and clear the prior test context."""
+        self.set_scope(agent=agent)
+        return f"SafeYolo scope: agent {agent}"
+
+    @command.command("safeyolo.traffic.agent.next")
+    def next_agent(self) -> str:
+        """Cycle to the next running or observed agent."""
+        return self._cycle_agent(1)
+
+    @command.command("safeyolo.traffic.agent.prev")
+    def previous_agent(self) -> str:
+        """Cycle to the previous running or observed agent."""
+        return self._cycle_agent(-1)
+
+    def _cycle_agent(self, offset: int) -> str:
+        agents = self.observed_agents()
+        if not agents:
+            return "SafeYolo scope: no running or observed agents"
+        try:
+            index = agents.index(self.agent) + offset
+        except ValueError:
+            index = 0 if offset > 0 else -1
+        return self.select_agent(agents[index % len(agents)])
+
+    @command.command("safeyolo.traffic.agent.all")
+    def all_agents(self) -> str:
+        """Show attributed traffic from all agents."""
+        self.set_scope()
+        return "SafeYolo scope: all agents"
+
+    @command.command("safeyolo.traffic.agent.unattributed")
+    def unattributed_only(self) -> str:
+        """Show traffic with no agent attribution."""
+        self.set_scope(unattributed=True)
+        return "SafeYolo scope: unattributed traffic"
+
+    @staticmethod
+    def _flow_timestamp(flow) -> float:
+        values = (
+            getattr(getattr(flow, "response", None), "timestamp_end", None),
+            getattr(getattr(flow, "request", None), "timestamp_start", None),
+            getattr(flow, "timestamp_created", None),
+        )
+        return max((float(value) for value in values if value is not None), default=0.0)
+
+    @staticmethod
+    def _age_label(age: float) -> str:
+        if age < 60:
+            return f"{int(age)}s ago"
+        if age < 3600:
+            return f"{int(age // 60)}m ago"
+        if age < 86400:
+            return f"{int(age // 3600)}h ago"
+        return f"{int(age // 86400)}d ago"
+
+    @command.command("safeyolo.traffic.test.options")
+    def test_options(self) -> Sequence[str]:
+        """List observed test contexts with count and recency."""
+        grouped: dict[tuple[str, str | None, str | None, str | None], tuple[int, float]] = {}
+        for flow in self._all_flows():
+            metadata = getattr(flow, "metadata", {})
+            if self.agent is not None and metadata.get("agent") != self.agent:
+                continue
+            if self.unattributed and metadata.get("agent") is not None:
+                continue
+            test_id = metadata.get("test_id")
+            if test_id is None:
+                continue
+            key = (
+                str(test_id),
+                str(metadata["test_intent"]) if metadata.get("test_intent") is not None else None,
+                str(metadata["test_role"]) if metadata.get("test_role") is not None else None,
+                str(metadata["test_expect"]) if metadata.get("test_expect") is not None else None,
+            )
+            count, latest = grouped.get(key, (0, 0.0))
+            grouped[key] = (count + 1, max(latest, self._flow_timestamp(flow)))
+
+        self._test_choices = {}
+        now = time.time()
+        ordered = sorted(grouped.items(), key=lambda item: (-item[1][1], item[0]))
+        for (test_id, intent, role, expect), (count, latest) in ordered:
+            detail = " · ".join(value for value in (intent, role, expect) if value)
+            label = f"{test_id}{' · ' + detail if detail else ''} · {count} flow{'s' if count != 1 else ''} · {self._age_label(max(0, now - latest))}"
+            self._test_choices[label] = {
+                "test_id": test_id,
+                "intent": intent,
+                "role": role,
+                "expect": expect,
+            }
+        return list(self._test_choices)
+
+    @command.command("safeyolo.traffic.test.set")
+    @command.argument("choice", type=types.Choice("safeyolo.traffic.test.options"))
+    def select_test(self, choice: str) -> str:
+        """Pin an observed test context while retaining the agent scope."""
+        selected = self._test_choices.get(choice)
+        if selected is None:
+            self.test_options()
+            selected = self._test_choices.get(choice)
+        if selected is None:
+            raise exceptions.CommandError(f"unknown test context: {choice}")
+        self.set_scope(
+            agent=self.agent,
+            unattributed=self.unattributed,
+            **selected,
+        )
+        return f"SafeYolo scope: test {selected['test_id']}"
+
+    @command.command("safeyolo.traffic.test.clear")
+    def clear_test(self) -> str:
+        """Clear test dimensions while retaining the agent scope."""
+        self.set_scope(agent=self.agent, unattributed=self.unattributed)
+        return "SafeYolo scope: test context cleared"
+
+    @command.command("safeyolo.traffic.scope.clear")
+    def clear_scope(self) -> str:
+        """Clear every SafeYolo scope while retaining the user's filter."""
+        self.set_scope()
+        return "SafeYolo scope: cleared"
 
 
 addons = [TrafficScope()]
