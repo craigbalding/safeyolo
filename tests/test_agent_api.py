@@ -789,6 +789,20 @@ class TestFlowStoreAPI:
             body = json.loads(flow.response.content)
             assert body["count"] == 1
 
+    def test_post_flow_facets_is_scoped_to_calling_agent(self, api_with_store):
+        api, store, token = api_with_store
+        with _patch_active_token(token):
+            flow = _make_post_api_flow(
+                "/api/flows/facets",
+                {"test": "idor-baseline"},
+                token,
+            )
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 200
+            facets = json.loads(flow.response.content)["facets"]
+            assert facets["agent_id"][0]["value"] == "agent-1"
+            assert facets["test"][0]["value"] == "idor-baseline"
+
     def test_post_flow_body_search(self, api_with_store):
         """POST /api/flows/body-search returns FTS results."""
         api, store, token = api_with_store

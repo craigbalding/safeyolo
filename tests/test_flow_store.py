@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from safeyolo.storage.flow_store import (
+    SCHEMA_VERSION,
     FlowStore,
     compress_body,
     decompress_body,
@@ -1350,3 +1351,108 @@ class TestFlowTagging:
         """get_flow_tags returns empty list for a flow with no tags."""
         flow_id = store.record_flow(_make_record(request_id="req-notag00001"))
         assert store.get_flow_tags(flow_id) == []
+
+
+class TestCompleteContext:
+    def test_combined_filters_and_endpoint_aggregation(self, store):
+        common = {
+            "agent_id": "cody", "test": "FLOW-05", "test_agent": "logic",
+            "suite": "checkout", "subject": "CTRL-123", "step": "submit",
+            "intent": "forge-return", "expect": "blocked",
+        }
+        store.record_flow(_make_record(request_id="req-context001", **common))
+        store.record_flow(_make_record(
+            request_id="req-context002", agent_id="cody", test="FLOW-05",
+            intent="baseline", expect="allowed",
+        ))
+
+        results = store.search_flows({"agent_id": "cody", "test": "FLOW-05", "intent": "forge-return"})
+        assert len(results) == 1
+        assert results[0]["test_agent"] == "logic"
+        assert results[0]["expect"] == "blocked"
+        assert store.get_endpoints({"test": "FLOW-05", "expect": "blocked"})[0]["count"] == 1
+
+    def test_promoted_filters_apply_to_both_body_searches(self, store):
+        store.record_flow(_make_record(
+            request_id="req-contextfts1", intent="forge-return", expect="blocked",
+            request_content_type="application/json",
+            request_body=b'{"needle":"request-context"}',
+            response_body=b'{"needle":"response-context"}',
+        ))
+        filters = {"engagement_id": "acme-portal", "intent": "forge-return", "expect": "blocked"}
+        assert len(store.search_bodies({**filters, "query": "response-context"})) == 1
+        assert len(store.search_request_bodies({**filters, "query": "request-context"})) == 1
+        assert store.search_bodies({**filters, "intent": "baseline", "query": "response-context"}) == []
+
+    def test_facets_respect_context_and_time_filters(self, store):
+        store.record_flow(_make_record(
+            request_id="req-facet00001", ts_start=100, agent_id="cody",
+            test="FLOW-05", intent="forge-return", expect="blocked",
+        ))
+        store.record_flow(_make_record(
+            request_id="req-facet00002", ts_start=200, agent_id="cody",
+            test="FLOW-05", intent="baseline", expect="allowed",
+        ))
+        store.record_flow(_make_record(
+            request_id="req-facet00003", ts_start=200, agent_id="alice", test="AUTH-12",
+        ))
+
+        facets = store.get_facets({"agent_id": "cody", "test": "FLOW-05", "from_ts": 150})
+        assert facets["agent_id"] == [{"value": "cody", "count": 1, "last_seen": 200}]
+        assert facets["intent"] == [{"value": "baseline", "count": 1, "last_seen": 200}]
+        assert facets["expect"] == [{"value": "allowed", "count": 1, "last_seen": 200}]
+
+
+class TestSchemaMigration:
+    def test_legacy_database_migrates_idempotently_without_evidence_loss(self, tmp_path):
+        from safeyolo.storage import flow_store as module
+
+        path = tmp_path / "legacy.sqlite3"
+        legacy_schema = module._CREATE_FLOWS_TABLE
+        for column in module._CONTEXT_COLUMNS:
+            legacy_schema = legacy_schema.replace(f"    {column} TEXT,\n", "")
+        conn = sqlite3.connect(path)
+        conn.execute(legacy_schema)
+        conn.execute(module._CREATE_FTS_TABLE)
+        conn.execute(module._CREATE_REQUEST_FTS_TABLE)
+        conn.execute(module._CREATE_FLOW_TAGS_TABLE)
+        conn.execute(
+            """INSERT INTO flows
+               (request_id, ts_start, engagement_id, agent_id, run, test, context_json,
+                flow_state, host, response_body_blob, response_body_encoding,
+                response_body_size, response_body_stored)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("req-legacy0001", 100, "engagement", "cody", "run-1", "FLOW-05",
+             '{"extra":"preserved"}', "completed", "example.com", b"legacy-body",
+             "identity", 11, 1),
+        )
+        conn.execute(
+            "INSERT INTO flow_fts (flow_id, engagement_id, agent_id, host, run, test, response_body_text) VALUES (1, ?, ?, ?, ?, ?, ?)",
+            ("engagement", "cody", "example.com", "run-1", "FLOW-05", "legacy-body"),
+        )
+        conn.execute(
+            "INSERT INTO flow_request_fts (flow_id, engagement_id, agent_id, host, run, test, request_body_text) VALUES (1, ?, ?, ?, ?, ?, ?)",
+            ("engagement", "cody", "example.com", "run-1", "FLOW-05", "legacy-request"),
+        )
+        conn.execute("INSERT INTO flow_tags (flow_id, tag, value, created_at) VALUES (1, 'evidence', 'kept', 100)")
+        conn.commit()
+        conn.close()
+
+        migrated = FlowStore(db_path=str(path), compress_bodies=False)
+        migrated.init_db()
+        assert migrated._conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        row = migrated.get_flow(1)
+        assert row["context_json"] == '{"extra":"preserved"}'
+        assert row["intent"] is None
+        assert row["tags"][0]["value"] == "kept"
+        assert migrated.get_response_body(1)["body"] == b"legacy-body"
+        assert len(migrated.search_bodies({"engagement_id": "engagement", "query": "legacy-body"})) == 1
+        assert len(migrated.search_request_bodies(
+            {"engagement_id": "engagement", "query": "legacy-request"}
+        )) == 1
+        migrated.close()
+
+        reopened = FlowStore(db_path=str(path), compress_bodies=False)
+        reopened.init_db()
+        assert reopened.get_flow(1)["request_id"] == "req-legacy0001"
+        reopened.close()

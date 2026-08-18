@@ -24,6 +24,13 @@ _FLOW_SEARCH_EXACT_FILTERS = {
     "agent_id": "agent_id = ?",
     "run": "run = ?",
     "test": "test = ?",
+    "role": "role = ?",
+    "test_agent": "test_agent = ?",
+    "suite": "suite = ?",
+    "subject": "subject = ?",
+    "step": "step = ?",
+    "intent": "intent = ?",
+    "expect": "expect = ?",
     "host": "host = ?",
     "method": "method = ?",
     "status_code": "status_code = ?",
@@ -93,6 +100,12 @@ CREATE TABLE IF NOT EXISTS flows (
     run TEXT,
     test TEXT,
     role TEXT,
+    test_agent TEXT,
+    suite TEXT,
+    subject TEXT,
+    step TEXT,
+    intent TEXT,
+    expect TEXT,
     context_json TEXT,
 
     source_type TEXT,
@@ -182,9 +195,29 @@ _CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_ts ON flows (engagement_id, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_agent_ts ON flows (engagement_id, agent_id, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_test_ts ON flows (engagement_id, test, ts_start DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_flows_agent_test_intent_ts ON flows (agent_id, test, intent, ts_start DESC);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_host_path ON flows (engagement_id, host, path);",
     "CREATE INDEX IF NOT EXISTS idx_flows_engagement_status_ts ON flows (engagement_id, status_code, ts_start DESC);",
 ]
+
+SCHEMA_VERSION = 1
+_CONTEXT_COLUMNS = ("test_agent", "suite", "subject", "step", "intent", "expect")
+
+
+def _append_context_conditions(
+    conditions: list[str], params: list, filters: dict, *, prefix: str = ""
+) -> None:
+    """Append promoted context and time constraints to a SQL predicate."""
+    for key in ("engagement_id", "agent_id", "run", "test", "role", *_CONTEXT_COLUMNS):
+        if filters.get(key) is not None:
+            conditions.append(f"{prefix}{key} = ?")
+            params.append(filters[key])
+    if filters.get("from_ts") is not None:
+        conditions.append(f"{prefix}ts_start >= ?")
+        params.append(filters["from_ts"])
+    if filters.get("to_ts") is not None:
+        conditions.append(f"{prefix}ts_start <= ?")
+        params.append(filters["to_ts"])
 
 
 def compress_body(data: bytes) -> bytes:
@@ -332,6 +365,7 @@ class FlowStore:
         self._conn.execute("PRAGMA temp_store=MEMORY;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._conn.execute(_CREATE_FLOWS_TABLE)
+        self._migrate_schema()
         self._conn.execute(_CREATE_FTS_TABLE)
         self._conn.execute(_CREATE_REQUEST_FTS_TABLE)
         self._conn.execute(_CREATE_FLOW_TAGS_TABLE)
@@ -344,6 +378,21 @@ class FlowStore:
             "CREATE INDEX IF NOT EXISTS idx_flow_tags_tag ON flow_tags (tag, value);"
         )
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """Bring legacy databases forward without rebuilding stored evidence."""
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"FlowStore schema {version} is newer than supported version {SCHEMA_VERSION}"
+            )
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(flows)").fetchall()
+        }
+        for column in _CONTEXT_COLUMNS:
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE flows ADD COLUMN {column} TEXT")
+        self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def record_flow(self, record: dict) -> int:
         """Insert a flow record and update FTS index.
@@ -406,7 +455,7 @@ class FlowStore:
         INSERT INTO flows (
             request_id, ts_start, ts_end, duration_ms,
             engagement_id, agent_id, source_id,
-            run, test, role, context_json,
+            run, test, role, test_agent, suite, subject, step, intent, expect, context_json,
             source_type, flow_state,
             scheme, host, port, method, path, query_string, full_url,
             status_code, reason,
@@ -420,7 +469,7 @@ class FlowStore:
             request_body_stored, response_body_stored,
             request_body_truncated, response_body_truncated
         ) VALUES (
-            ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?,
@@ -448,6 +497,12 @@ class FlowStore:
             record.get("run"),
             record.get("test"),
             record.get("role"),
+            record.get("test_agent"),
+            record.get("suite"),
+            record.get("subject"),
+            record.get("step"),
+            record.get("intent"),
+            record.get("expect"),
             record.get("context_json"),
             record.get("source_type"),
             record.get("flow_state"),
@@ -630,7 +685,7 @@ class FlowStore:
         sql = f"""
         SELECT id, request_id, ts_start, ts_end, duration_ms,
                engagement_id, agent_id, source_id,
-               run, test, role,
+               run, test, role, test_agent, suite, subject, step, intent, expect,
                source_type, flow_state, method, host, path, query_string, full_url,
                status_code, reason,
                request_content_type, response_content_type, is_websocket,
@@ -663,7 +718,8 @@ class FlowStore:
         sql = """
         SELECT id, request_id, ts_start, ts_end, duration_ms,
                engagement_id, agent_id, source_id,
-               run, test, role, context_json,
+               run, test, role, test_agent, suite, subject, step, intent, expect,
+               context_json,
                source_type, flow_state,
                scheme, host, port, method, path, query_string, full_url,
                status_code, reason,
@@ -731,19 +787,7 @@ class FlowStore:
         """Group flows by method+host+path with counts and status codes."""
         conditions = []
         params = []
-
-        if "engagement_id" in filters and filters["engagement_id"]:
-            conditions.append("engagement_id = ?")
-            params.append(filters["engagement_id"])
-        if "agent_id" in filters and filters["agent_id"]:
-            conditions.append("agent_id = ?")
-            params.append(filters["agent_id"])
-        if "run" in filters and filters["run"]:
-            conditions.append("run = ?")
-            params.append(filters["run"])
-        if "test" in filters and filters["test"]:
-            conditions.append("test = ?")
-            params.append(filters["test"])
+        _append_context_conditions(conditions, params, filters)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         limit = min(filters.get("limit", 100), 500)
@@ -807,24 +851,16 @@ class FlowStore:
 
         query = self._sanitize_fts_query(query)
 
-        # Build FTS WHERE conditions for the non-FTS filter columns
-        fts_conditions = ["fts.engagement_id = ?"]
-        params: list = [engagement_id]
-
-        if filters.get("agent_id"):
-            fts_conditions.append("fts.agent_id = ?")
-            params.append(filters["agent_id"])
-        if filters.get("test"):
-            fts_conditions.append("fts.test = ?")
-            params.append(filters["test"])
+        # Exact provenance/context filters stay in the relational table;
+        # only body text belongs in FTS.
+        fts_conditions: list[str] = []
+        params: list = []
+        _append_context_conditions(fts_conditions, params, filters, prefix="f.")
         if filters.get("host"):
-            fts_conditions.append("fts.host = ?")
+            fts_conditions.append("f.host = ?")
             params.append(filters["host"])
-        if filters.get("run"):
-            fts_conditions.append("fts.run = ?")
-            params.append(filters["run"])
         if filters.get("path"):
-            fts_conditions.append("fts.path = ?")
+            fts_conditions.append("f.path = ?")
             params.append(filters["path"])
 
         fts_where = " AND ".join(fts_conditions)
@@ -837,7 +873,8 @@ class FlowStore:
         sql = f"""
         SELECT f.id, f.request_id, f.ts_start, f.duration_ms,
                f.engagement_id, f.agent_id,
-               f.run, f.test,
+               f.run, f.test, f.role, f.test_agent, f.suite, f.subject,
+               f.step, f.intent, f.expect,
                f.method, f.host, f.path,
                f.status_code, f.flow_state,
                snippet(flow_fts, 7, '<mark>', '</mark>', '...', 64) as snippet
@@ -924,23 +961,14 @@ class FlowStore:
 
         query = self._sanitize_fts_query(query)
 
-        fts_conditions = ["fts.engagement_id = ?"]
-        params: list = [engagement_id]
-
-        if filters.get("agent_id"):
-            fts_conditions.append("fts.agent_id = ?")
-            params.append(filters["agent_id"])
-        if filters.get("test"):
-            fts_conditions.append("fts.test = ?")
-            params.append(filters["test"])
+        fts_conditions: list[str] = []
+        params: list = []
+        _append_context_conditions(fts_conditions, params, filters, prefix="f.")
         if filters.get("host"):
-            fts_conditions.append("fts.host = ?")
+            fts_conditions.append("f.host = ?")
             params.append(filters["host"])
-        if filters.get("run"):
-            fts_conditions.append("fts.run = ?")
-            params.append(filters["run"])
         if filters.get("path"):
-            fts_conditions.append("fts.path = ?")
+            fts_conditions.append("f.path = ?")
             params.append(filters["path"])
 
         fts_where = " AND ".join(fts_conditions)
@@ -952,7 +980,8 @@ class FlowStore:
         sql = f"""
         SELECT f.id, f.request_id, f.ts_start, f.duration_ms,
                f.engagement_id, f.agent_id,
-               f.run, f.test,
+               f.run, f.test, f.role, f.test_agent, f.suite, f.subject,
+               f.step, f.intent, f.expect,
                f.method, f.host, f.path,
                f.status_code, f.flow_state,
                snippet(flow_request_fts, 7, '<mark>', '</mark>', '...', 64) as snippet
@@ -969,6 +998,42 @@ class FlowStore:
             rows = self._conn.execute(sql, params).fetchall()
 
         return [dict(row) for row in rows]
+
+    def get_facets(self, filters: dict) -> dict[str, list[dict]]:
+        """Return filter-aware counts for the evidence selection hierarchy."""
+        allowed = set(_FLOW_SEARCH_EXACT_FILTERS) | {"from_ts", "to_ts"}
+        unknown = sorted(set(filters) - allowed)
+        if unknown:
+            raise ValueError(f"unknown facet filter(s): {', '.join(unknown)}")
+        normalized = normalize_flow_search_filters(filters)
+        conditions: list[str] = []
+        params: list = []
+        for key, clause in _FLOW_SEARCH_EXACT_FILTERS.items():
+            if key in normalized:
+                conditions.append(clause)
+                params.append(normalized[key])
+        if normalized.get("from_ts") is not None:
+            conditions.append("ts_start >= ?")
+            params.append(normalized["from_ts"])
+        if normalized.get("to_ts") is not None:
+            conditions.append("ts_start <= ?")
+            params.append(normalized["to_ts"])
+        where = " AND ".join(conditions) if conditions else "1=1"
+
+        result: dict[str, list[dict]] = {}
+        with self._lock:
+            for dimension in ("agent_id", "test", "intent", "expect"):
+                rows = self._conn.execute(
+                    f"""SELECT {dimension} AS value, COUNT(*) AS count,
+                               MAX(ts_start) AS last_seen
+                        FROM flows
+                        WHERE {where} AND {dimension} IS NOT NULL
+                        GROUP BY {dimension}
+                        ORDER BY count DESC, value ASC""",
+                    params,
+                ).fetchall()
+                result[dimension] = [dict(row) for row in rows]
+        return result
 
     def tag_flow(self, flow_id: int, tag: str, value: str = "") -> dict:
         """Add or update a tag on a flow. Returns the tag dict."""

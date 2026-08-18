@@ -195,6 +195,36 @@ class TestResponseRecording:
         assert results[0]["test"] == "SQLI-001"
         assert results[0]["role"] == "attacker"
 
+    def test_complete_context_is_promoted_without_changing_context_json(self, recorder):
+        flow = _make_test_flow(agent="trusted-agent")
+        context = {
+            "run": "run-1",
+            "agent": "declared-agent",
+            "test": "FLOW-05",
+            "role": "guest",
+            "suite": "checkout",
+            "subject": "CTRL-123",
+            "step": "submit",
+            "intent": "forge-return",
+            "expect": "blocked",
+            "extra": "retained",
+        }
+        flow.metadata["ccapt_context"] = context
+
+        recorder.response(flow)
+
+        stored = recorder.store.get_flow(recorder.store.search_flows({})[0]["id"])
+        assert stored["agent_id"] == "trusted-agent"
+        assert stored["test_agent"] == "declared-agent"
+        assert {key: stored[key] for key in ("suite", "subject", "step", "intent", "expect")} == {
+            "suite": "checkout",
+            "subject": "CTRL-123",
+            "step": "submit",
+            "intent": "forge-return",
+            "expect": "blocked",
+        }
+        assert json.loads(stored["context_json"]) == context
+
     def test_request_id_recorded(self, recorder):
         """request_id from flow metadata appears in the stored record."""
         flow = _make_test_flow(request_id="req-abc123xyz")
