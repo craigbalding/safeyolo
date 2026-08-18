@@ -78,10 +78,10 @@ def _check_attribution_ip(entry: dict) -> Check:
     ip = entry.get("ip")
     if not ip:
         return Check("Attribution IP", "FAIL", "no 'ip' field in agent map entry")
-    # Attribution IP is encoded into the per-agent UDS filename
-    # (`<ip>_<agent>.sock`) and parsed by mitmproxy's UnixInstance at
+    # Attribution IP is encoded into the per-agent UDS directory
+    # (`<ip>_<agent>/proxy.sock`) and parsed by mitmproxy's UnixInstance at
     # bind time. No lo0 alias or kernel bind required.
-    return Check("Attribution IP", "PASS", f"{ip} (UDS filename)")
+    return Check("Attribution IP", "PASS", f"{ip} (UDS directory)")
 
 
 def _check_proxy_socket(name: str, entry: dict) -> Check:

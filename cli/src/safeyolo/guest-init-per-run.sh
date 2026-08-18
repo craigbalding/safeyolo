@@ -77,7 +77,7 @@ echo 'export HOME=/home/agent' >> /etc/profile.d/safeyolo-proxy.sh
 #
 # Bridges the agent's HTTP_PROXY target (a plain TCP listener the agent
 # can reach via loopback) to the host-side SafeYolo proxy. Transport is
-# UDS on Linux/gVisor (bind-mounted /safeyolo/proxy.sock, reached via
+# UDS on Linux/gVisor (directory-mounted /safeyolo/proxy/proxy.sock, via
 # gVisor --host-uds=open) or vsock on macOS (port 1080 on the VM helper).
 #
 # Runs unconditionally: if neither transport is available, the forwarder

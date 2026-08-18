@@ -2,8 +2,8 @@
 
 Guest has no external network interface. Egress goes guest → vsock:1080 →
 safeyolo-vm's VSockProxyRelay → per-agent host UDS → mitmproxy's
-per-agent UnixInstance. Identity comes from the socket filename
-(`<ip>_<agent>.sock`), parsed at UnixInstance bind.
+per-agent UnixInstance. Identity comes from the socket directory
+(`<ip>_<agent>/proxy.sock`), parsed at UnixInstance bind.
 
 Shell access (`safeyolo agent shell`) goes via a second per-agent UDS →
 VSockShellBridge → vsock:2220 → guest-shell-bridge → sshd. No host firewall
@@ -28,7 +28,7 @@ from . import AgentPlatform
 def _shell_socket_path(name: str) -> Path:
     """Per-agent UDS the host-side shell bridge listens on. Kept under
     `shell-sockets/<name>.sock` — a separate subdir from the per-agent
-    proxy sockets (which use `sockets/<ip>_<agent>.sock`, owned by
+    proxy sockets (which use `sockets/<ip>_<agent>/proxy.sock`, owned by
     mitmproxy's UnixInstance)."""
     return get_data_dir() / "shell-sockets" / f"{name}.sock"
 
@@ -94,7 +94,7 @@ class DarwinPlatform(AgentPlatform):
         # Thread the per-agent proxy socket through to safeyolo-vm so
         # VSockProxyRelay can connect() to it on each guest-initiated
         # flow. The socket file is owned by mitmproxy's UnixInstance
-        # (one per agent); its filename is `<ip>_<agent>.sock`.
+        # (one per agent); its directory is `<ip>_<agent>`.
         # Also allocate a shell-bridge UDS so `safeyolo agent shell`
         # can reach the VM's sshd over vsock.
         from ..sockets import path_for as _sock_for  # noqa: PLC0415

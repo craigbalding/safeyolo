@@ -4,7 +4,7 @@ These tests run on the HOST, not inside the VM. The host has direct
 access to the sinkhole control API (localhost:19999) and the admin
 API (localhost:ADMIN_PORT). The proxy no longer listens on TCP — it
 binds per-agent Unix domain sockets under `$SAFEYOLO_CONFIG_DIR/data/
-sockets/<ip>_<agent>.sock`. `proxy_client` provisions a test listener
+sockets/<ip>_<agent>/proxy.sock`. `proxy_client` provisions a test listener
 at session start via `PUT /admin/proxy/mode` and speaks to mitmproxy
 through that UDS.
 
@@ -91,7 +91,7 @@ def _agent_map_mode_specs() -> list[str]:
             ip = entry.get("ip")
             if not ip:
                 continue
-            sock = str(sockets_dir / f"{ip}_{name}.sock")
+            sock = str(sockets_dir / f"{ip}_{name}" / "proxy.sock")
         specs.append(f"unix:{sock}")
     return specs
 
@@ -155,7 +155,8 @@ def proxy_uds_path(admin_client, wait_for_safeyolo):
     """
     sockets_dir = _CONFIG_DIR / "data" / "sockets"
     sockets_dir.mkdir(parents=True, exist_ok=True)
-    uds_path = sockets_dir / f"{_TEST_AGENT_IP}_{_TEST_AGENT_NAME}.sock"
+    uds_path = sockets_dir / f"{_TEST_AGENT_IP}_{_TEST_AGENT_NAME}" / "proxy.sock"
+    uds_path.parent.mkdir(parents=True, exist_ok=True)
     spec = f"unix:{uds_path}"
 
     # When proxy/ and isolation/ run in the same blackbox invocation, the

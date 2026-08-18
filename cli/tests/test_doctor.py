@@ -469,12 +469,14 @@ def _install_fake_socket(monkeypatch, fake: _FakeSocket) -> None:
 
 
 def _make_agent_socket(tmp_config_dir, name: str = "127.0.0.2_demo.sock"):
-    """Create a fake `<ip>_<agent>.sock` file the probe will pick up."""
+    """Create a fake `<ip>_<agent>/proxy.sock` for the probe."""
     socks_dir = tmp_config_dir / "data" / "sockets"
     socks_dir.mkdir(parents=True, exist_ok=True)
-    sock = socks_dir / name
+    identity = name.removesuffix(".sock")
+    sock = socks_dir / identity / "proxy.sock"
+    sock.parent.mkdir()
     sock.touch()
-    ip, agent = name.removesuffix(".sock").split("_", 1)
+    ip, agent = identity.split("_", 1)
     (tmp_config_dir / "data" / "agent_map.json").write_text(
         json.dumps({agent: {"ip": ip}})
     )
@@ -580,7 +582,7 @@ class TestCheckPipelineProbe:
         _install_fake_socket(monkeypatch, fake)
         result = _check_pipeline_probe()
         assert result.status == "pass"
-        assert "127.0.0.2_demo.sock" in result.message
+        assert "proxy.sock" in result.message
         # The probe sent the request through the fake socket
         assert b"GET /health HTTP/1.0" in fake._sent
         assert b"Host: _safeyolo.proxy.internal" in fake._sent

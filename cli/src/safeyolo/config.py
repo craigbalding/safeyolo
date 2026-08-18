@@ -229,7 +229,7 @@ def get_agent_map_path() -> Path:
 
 
 def get_bridge_sockets_dir() -> Path:
-    """Per-agent UDS listener sockets (`<ip>_<agent>.sock`) live here.
+    """Per-agent UDS directories (`<ip>_<agent>/proxy.sock`) live here.
 
     Owned by mitmproxy's `UnixInstance` (one per agent). Kept as
     `get_bridge_sockets_dir` rather than renamed to preserve the

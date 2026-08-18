@@ -14,7 +14,7 @@ The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCS
 │  │ mitmproxy (host process, UDS-only) │                          │
 │  │   - mitmdump with ~15 addons       │                          │
 │  │   - per-agent UnixInstance listens │                          │
-│  │     on <ip>_<agent>.sock (identity │                          │
+│  │     on <ip>_<agent>/proxy.sock     │                          │
 │  │     parsed from filename)          │                          │
 │  │   - admin API on 127.0.0.1:9090    │                          │
 │  └──────────────▲─────────────────────┘                          │
@@ -55,7 +55,7 @@ All agent-initiated HTTP traffic takes this path:
 1. Agent makes an HTTP request honouring `HTTP_PROXY=http://127.0.0.1:8080`
 2. `guest-proxy-forwarder.sh` (socat, listening on `127.0.0.1:8080` inside the guest) accepts the connection and relays bytes over vsock
 3. `VSockProxyRelay` (in `safeyolo-vm`) accepts on vsock port 1080 and connects to the per-agent host UDS
-4. mitmproxy's per-agent `UnixInstance` accepts on that UDS. Identity (attribution IP + agent name) is parsed from the socket filename (`<ip>_<agent>.sock`) once at bind time and stamped on every connection via `client.peername = (ip, 0)`
+4. mitmproxy's per-agent `UnixInstance` accepts on that UDS. Identity (attribution IP + agent name) is parsed from the socket directory (`<ip>_<agent>/proxy.sock`) once at bind time and stamped on every connection via `client.peername = (ip, 0)`
 5. mitmproxy's `service_discovery` addon maps the attribution IP back to the agent name for policy evaluation and audit
 
 An agent that unsets proxy env vars has nowhere to go — there is no other network path out of the sandbox.
@@ -104,7 +104,7 @@ The rootfs has a 30-line stub at `/usr/local/bin/safeyolo-guest-init` that mount
 ```
 TRUSTED: Host
   mitmproxy + addons + PDP + policy (owns per-agent UDS listeners
-    via UnixInstance; identity from socket filename)
+    via UnixInstance; identity from socket directory)
   safeyolo-vm (Swift, manages VM lifecycle + vsock bridges)
   Python CLI (agent management)
   VirtioFS config share contents
@@ -153,7 +153,7 @@ The `service_discovery` addon reads this file (mtime-cached) to resolve the attr
 | `guest-shell-bridge.py` | Python (in guest) | vsock:2220 → sshd on `127.0.0.1:22` |
 | `proxy.py` | Python | Host mitmproxy process management |
 | `unix_listener.py` (addon) | Python | `UnixMode`/`UnixInstance` — per-agent UDS ingress |
-| `sockets.py` | Python | Socket-path helpers; `<ip>_<agent>.sock` is identity |
+| `sockets.py` | Python | Socket-path helpers; `<ip>_<agent>/proxy.sock` is identity |
 | `vm.py` | Python | VM lifecycle, config share, agent map |
 | `guest-init.sh` | Bash | Guest init (on config share, not rootfs) |
 

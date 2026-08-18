@@ -60,7 +60,7 @@ def _build_specs() -> list[str]:
         except ValueError:
             log.warning("skipping agent %r: invalid ip %r", name, ip)
             continue
-        specs.append(f"unix:{sockets_dir}/{ip}_{name}.sock")
+        specs.append(f"unix:{sockets_dir}/{ip}_{name}/proxy.sock")
     return specs
 
 

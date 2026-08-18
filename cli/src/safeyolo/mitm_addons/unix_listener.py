@@ -2,10 +2,10 @@
 
 Defines a custom ProxyMode + ServerInstance pair so mitmproxy terminates
 agent connections directly on a Unix domain socket. Identity comes from
-the socket filename (`<ip>_<agent>.sock`) — parsed once at bind, then
+the socket directory (`<ip>_<agent>/proxy.sock`) — parsed once at bind, then
 stamped onto every accepted connection as `client.peername = (ip, 0)`.
 
-Mode spec: `unix:/absolute/path/to/<ip>_<agent>.sock`.
+Mode spec: `unix:/absolute/path/to/<ip>_<agent>/proxy.sock`.
 
 Loaded first in the addon chain so `UnixMode` is registered via
 `ProxyMode.__init_subclass__` before `Proxyserver` parses `options.mode`.
@@ -37,21 +37,21 @@ from mitmproxy.proxy.mode_servers import (
 log = logging.getLogger("safeyolo.unix-listener")
 
 
-# Local copy of the filename parser. `cli/src/safeyolo/sockets.py` has
+# Local copy of the path parser. `cli/src/safeyolo/sockets.py` has
 # the same shape; the duplication is deliberate so the addon can be
 # loaded by mitmproxy without pulling in the CLI package.
 _AGENT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _parse_sock_path(path: str) -> tuple[str, str]:
-    """Return `(ip, agent)` from a socket path `.../<ip>_<agent>.sock`."""
-    name = Path(path).name
-    if not name.endswith(".sock"):
-        raise ValueError(f"expected .sock suffix: {path}")
-    stem = name[: -len(".sock")]
+    """Return `(ip, agent)` from `.../<ip>_<agent>/proxy.sock`."""
+    socket_path = Path(path)
+    if socket_path.name != "proxy.sock":
+        raise ValueError(f"expected proxy.sock filename: {path}")
+    stem = socket_path.parent.name
     ip, sep, agent = stem.partition("_")
     if not sep:
-        raise ValueError(f"expected '<ip>_<agent>.sock' layout: {path}")
+        raise ValueError(f"expected '<ip>_<agent>/proxy.sock' layout: {path}")
     ipaddress.IPv4Address(ip)  # validate
     if not _AGENT_NAME_RE.match(agent):
         raise ValueError(f"invalid agent name in path: {path}")
@@ -61,8 +61,8 @@ def _parse_sock_path(path: str) -> tuple[str, str]:
 class UnixMode(mode_specs.ProxyMode):
     """A SafeYolo per-agent Unix domain socket listener.
 
-    Spec: `unix:/path/to/<ip>_<agent>.sock`. The path is the full socket
-    location on disk; identity (ip, agent) is derived from its filename.
+    Spec: `unix:/path/to/<ip>_<agent>/proxy.sock`. Identity is derived
+    from the private socket directory name.
     """
 
     description = "UDS ingress"
@@ -79,7 +79,7 @@ class UnixMode(mode_specs.ProxyMode):
             raise ValueError("unix mode requires a socket path: `unix:/path/...`")
         if not self.data.startswith("/"):
             raise ValueError(f"unix mode requires an absolute path: {self.data!r}")
-        # Validate filename shape by parsing. Result is discarded — we
+        # Validate path shape by parsing. Result is discarded — we
         # re-parse on demand via the `ip`/`agent` properties so that
         # the socket path remains the single source of truth.
         _parse_sock_path(self.data)

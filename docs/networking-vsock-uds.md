@@ -15,7 +15,7 @@ agent comms, team proxy, fleet PDP).
 The sandbox has **no external network interface**. All agent-initiated
 traffic is routed to a per-agent Unix domain socket on the host, bound
 directly by a per-agent `UnixInstance` inside mitmproxy. Identity is
-encoded in the socket filename (`<ip>_<agent>.sock`) — parsed once at
+encoded in the socket directory (`<ip>_<agent>/proxy.sock`) — parsed once at
 bind and stamped on every accepted connection via
 `client.peername = (ip, 0)`. `service_discovery` and all downstream
 addons see per-agent identity for audit, policy, and rate limiting.
@@ -47,7 +47,7 @@ macOS) or `runsc exec` (on Linux) reaches the guest's `sshd` for
 │       │  AF_UNIX or AF_VSOCK     │
 └───────┼──────────────────────────┘
         │
-        │ (Linux: bind-mounted UDS at /safeyolo/proxy.sock)
+        │ (Linux: /safeyolo/proxy/proxy.sock)
         │ (macOS: vsock cid=2 port=1080)
         │
 ┌───────▼──────────────────────────┐
@@ -60,7 +60,7 @@ macOS) or `runsc exec` (on Linux) reaches the guest's `sshd` for
 │       ▼                          │
 │  mitmproxy                       │
 │    └── UnixInstance per agent,   │
-│        binds <ip>_<agent>.sock   │
+│        binds <ip>_<agent>/proxy.sock │
 │    └── peername = (ip, 0)        │
 │        (parsed from filename)    │
 │    └── service_discovery maps    │
@@ -108,7 +108,7 @@ UDS filename on the host.
 
 Identity mechanism:
 
-1. CLI computes `sockets.path_for(agent, ip)` → `<data_dir>/sockets/<ip>_<agent>.sock`
+1. CLI computes `sockets.path_for(agent, ip)` → `<data_dir>/sockets/<ip>_<agent>/proxy.sock`
    and writes the agent entry to `agent_map.json`.
 2. CLI calls admin API `PUT /admin/proxy/mode` with the current
    `unix:<path>` list. Mitmproxy's `Proxyserver.configure()`
@@ -123,10 +123,10 @@ Identity mechanism:
 This means:
 
 - **Identity is enforced by the filesystem**, never claimed by the
-  guest. The socket filename is authoritative and parent-directory
+  guest. The private directory name is authoritative; directory
   permissions prevent agents from renaming each other's sockets.
-- **Structural isolation**: agent A's UDS (`sockets/10.200.0.1_A.sock`)
-  is only bind-mounted into agent A's sandbox. Agent A literally cannot
+- **Structural isolation**: agent A's directory (`sockets/10.200.0.1_agent-a/`)
+  is the only socket directory mounted into agent A's sandbox. Agent A cannot
   address agent B's socket.
 - **No TCP listener**. Mitmproxy binds Unix domain sockets only; the
   0.0.0.0 TCP listener used by earlier builds is gone.
@@ -136,11 +136,11 @@ This means:
 ## Per-agent sockets
 
 ```
-~/.safeyolo/data/sockets/<ip>_<agent>.sock    # mitmproxy UnixInstance per agent
+~/.safeyolo/data/sockets/<ip>_<agent>/proxy.sock # mitmproxy UnixInstance per agent
 ~/.safeyolo/data/shell-sockets/<agent>.sock   # shell bridge listener (macOS only)
 ```
 
-The proxy socket is bind-mounted into the guest at `/safeyolo/proxy.sock`
+The private socket directory is mounted read-only at `/safeyolo/proxy`
 (Linux, via gVisor `--host-uds=open`) or reached via `vsock:1080` (macOS,
 via `VSockProxyRelay`). In both cases the agent's in-guest forwarder
 sends bytes to "its" socket, and there's no cross-agent socket visibility.
@@ -211,7 +211,7 @@ Exit code 0 on all-pass, 1 on any fail.
 | Symptom                                   | Most likely cause                                        | Check / fix                                                   |
 |-------------------------------------------|----------------------------------------------------------|---------------------------------------------------------------|
 | `curl: (7) Failed to connect` inside agent after a few retries | mitmproxy not running, or `UnixInstance` not bound for this agent | `safeyolo status`; `safeyolo agent diag`                     |
-| Agent traffic shows in mitmproxy as `unknown` | Attribution IP on `peername` doesn't match an `agent_map.json` entry | `cat ~/.safeyolo/data/agent_map.json`; check socket filename is `<ip>_<agent>.sock` |
+| Agent traffic shows in mitmproxy as `unknown` | Attribution IP on `peername` doesn't match an `agent_map.json` entry | `cat ~/.safeyolo/data/agent_map.json`; check the socket path is `<ip>_<agent>/proxy.sock` |
 | `safeyolo agent shell` hangs              | Shell-bridge relay not firing, or `sshd` not in guest   | `ls ~/.safeyolo/data/shell-sockets/<name>.sock`; serial.log for `listen agent=…` |
 | `VM running (detached)` but dies seconds later | Helper process `proc_exit`ed silently (historically SIGPIPE, RunLoop exit) | `sudo log show --last 60s --predicate 'processID == <pid>'` — shows exit reason |
 
@@ -239,7 +239,7 @@ hop to see one specific connection's accept + done pair.
 | Guest sees sandbox as  | loopback-only netns            | no network interface (vsock only)         |
 | Agent → proxy path     | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
 | Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
-| Attribution mechanism  | `<ip>_<agent>.sock` filename  | `<ip>_<agent>.sock` filename              |
+| Attribution mechanism  | `<ip>_<agent>` directory name | `<ip>_<agent>` directory name             |
 | Host firewall          | none (structural)             | none (structural)                         |
 | Sudo at runtime        | none                          | none                                      |
 
