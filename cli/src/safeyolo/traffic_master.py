@@ -301,6 +301,12 @@ class TrafficMaster(ConsoleMaster):
             native_status = SafeYoloStatusBar(self)
             self.window.statusbar = native_status
             self.window.footer = urwid.AttrMap(native_status, "background")
+        # ConsoleMaster dispatches addon running hooks in registration order;
+        # WebFrontend may therefore fail after pid_writer has run. Publish the
+        # PID only here, once every addon (including the web listener) is live.
+        pid_writer = self.addons.get("pid-writer")
+        if pid_writer is not None:
+            pid_writer.signal_ready()
 
     def prompt_for_exit(self) -> None:
         """Keep ordinary console back/quit keys from stopping the data plane."""

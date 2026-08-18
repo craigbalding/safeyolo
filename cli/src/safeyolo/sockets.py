@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -34,6 +35,23 @@ _AGENT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 def sockets_dir() -> Path:
     """Directory containing per-agent listener sockets."""
     return get_bridge_sockets_dir()
+
+
+def remove_stale_sockets() -> list[Path]:
+    """Remove socket inodes left behind while the shared proxy is stopped."""
+    directory = sockets_dir()
+    if not directory.exists():
+        return []
+    removed = []
+    for path in directory.glob("*.sock"):
+        try:
+            if stat.S_ISSOCK(path.lstat().st_mode):
+                path.unlink()
+                removed.append(path)
+        except FileNotFoundError:
+            # Another cleanup path won the race; continue scanning.
+            continue
+    return removed
 
 
 def path_for(agent: str, ip: str) -> Path:

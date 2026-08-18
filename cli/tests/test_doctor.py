@@ -474,6 +474,10 @@ def _make_agent_socket(tmp_config_dir, name: str = "127.0.0.2_demo.sock"):
     socks_dir.mkdir(parents=True, exist_ok=True)
     sock = socks_dir / name
     sock.touch()
+    ip, agent = name.removesuffix(".sock").split("_", 1)
+    (tmp_config_dir / "data" / "agent_map.json").write_text(
+        json.dumps({agent: {"ip": ip}})
+    )
     return sock
 
 
@@ -493,6 +497,17 @@ class TestCheckPipelineProbe:
     def test_no_sockets_present_skips(self, tmp_config_dir):
         (tmp_config_dir / "data" / "sockets").mkdir()
         result = _check_pipeline_probe()
+        assert result.status == "skip"
+        assert "no agents" in result.message.lower()
+
+    def test_orphaned_socket_without_registered_agent_skips(self, tmp_config_dir):
+        socks_dir = tmp_config_dir / "data" / "sockets"
+        socks_dir.mkdir()
+        (socks_dir / "10.200.0.1_old-agent.sock").touch()
+        (tmp_config_dir / "data" / "agent_map.json").write_text("{}")
+
+        result = _check_pipeline_probe()
+
         assert result.status == "skip"
         assert "no agents" in result.message.lower()
 

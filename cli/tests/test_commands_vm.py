@@ -169,10 +169,12 @@ class TestLifecycleStop:
 
     def test_not_running_exits_zero(self, runner, config_dir):
         """If proxy not running, prints message and exits 0."""
-        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False):
+        with patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False), \
+             patch("safeyolo.commands.lifecycle.stop_proxy") as stop_proxy:
             result = runner.invoke(app, ["stop"])
         assert result.exit_code == 0
         assert "not running" in result.output.lower()
+        stop_proxy.assert_called_once_with()
 
     def test_stop_does_not_stop_agents(self, runner, config_dir):
         """Plain stop does NOT stop running agents."""

@@ -87,7 +87,11 @@ def start_session(
     data_dir.chmod(0o700)
     base = _base_command(tmux)
     if session_exists(tmux):
-        raise RuntimeError("SafeYolo traffic session is already running")
+        if session_process_alive(tmux):
+            raise RuntimeError("SafeYolo traffic session is already running")
+        # remain-on-exit deliberately preserves the console after a crash.
+        # Reap that dead pane before retrying startup.
+        stop_session(tmux)
     subprocess.run(
         [*base, "new-session", "-d", "-s", SESSION_NAME],
         check=True,

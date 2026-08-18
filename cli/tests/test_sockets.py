@@ -1,9 +1,11 @@
 """Tests for the socket-path helpers (cli/src/safeyolo/sockets.py)."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 
-from safeyolo.sockets import _SUN_PATH_MAX, parse, path_for
+from safeyolo.sockets import _SUN_PATH_MAX, parse, path_for, remove_stale_sockets
 
 
 class TestPathFor:
@@ -80,3 +82,21 @@ class TestParse:
     def test_invalid_agent_name_in_path(self):
         with pytest.raises(ValueError, match="invalid agent name"):
             parse("/s/10.0.0.1_Alice.sock")
+
+
+def test_remove_stale_sockets_only_removes_socket_inodes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    directory = tmp_path / "data" / "sockets"
+    directory.mkdir(parents=True)
+    stale = directory / "10.200.0.1_demo.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(stale))
+    ordinary = directory / "do-not-delete.sock"
+    ordinary.write_text("not a socket")
+    try:
+        assert remove_stale_sockets() == [stale]
+    finally:
+        listener.close()
+
+    assert not stale.exists()
+    assert ordinary.exists()

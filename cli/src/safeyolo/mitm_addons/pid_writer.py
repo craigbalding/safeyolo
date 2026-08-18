@@ -20,16 +20,26 @@ import os
 
 
 class PidWriter:
+    name = "pid-writer"
+
     def __init__(self) -> None:
         self.path = os.environ.get("SAFEYOLO_PROXY_PID_FILE")
 
     def running(self) -> None:
         """mitmproxy lifecycle: fires after all addons loaded and the
         listener is bound. File appearance = proxy ready for traffic."""
+        if os.environ.get("SAFEYOLO_DEFER_PROXY_READY") == "1":
+            return
+        self.signal_ready()
+
+    def signal_ready(self) -> None:
+        """Publish readiness atomically after the complete addon chain starts."""
         if not self.path:
             return
-        with open(self.path, "w") as f:
+        temp_path = f"{self.path}.tmp"
+        with open(temp_path, "w") as f:
             f.write(f"{os.getpid()}\n")
+        os.replace(temp_path, self.path)
 
     def done(self) -> None:
         """Graceful shutdown -- remove our pid marker."""

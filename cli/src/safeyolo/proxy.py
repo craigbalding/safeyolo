@@ -718,6 +718,7 @@ def start_proxy(
     # file below rather than sleeping -- the absence of the file during
     # the poll window tells us mitmdump crashed.
     env["SAFEYOLO_PROXY_PID_FILE"] = str(_pid_file())
+    env["SAFEYOLO_DEFER_PROXY_READY"] = "1"
     env["SAFEYOLO_WEB_PASSWORD_FILE"] = str(data_dir / "admin_token")
 
     # Pass test sinkhole config to child process (read by sinkhole_router addon)
@@ -733,6 +734,11 @@ def start_proxy(
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.unlink(missing_ok=True)
 
+    # A crash can leave filesystem socket inodes behind. No proxy is alive at
+    # this point, so none can be a functioning listener.
+    from .sockets import remove_stale_sockets
+    remove_stale_sockets()
+
     # Start inside SafeYolo's private terminal server. ConsoleMaster receives
     # a real PTY even when no operator is attached; mitmweb and proxy traffic
     # remain alive across console attach/detach.
@@ -746,30 +752,37 @@ def start_proxy(
     # die (whichever first). No fixed sleep: the pid file usually appears
     # in 150-300ms; poll interval 50ms = sub-tick on success. On failure
     # proc.poll() surfaces the exit code immediately.
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if pid_file.exists():
-            break
-        if not session_process_alive():
-            tail = capture_session() or _read_log_tail(log_file, lines=15)
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if pid_file.exists():
+                break
+            if not session_process_alive():
+                tail = capture_session() or _read_log_tail(log_file, lines=15)
+                raise RuntimeError(
+                    "shared traffic master exited during startup.\n"
+                    f"Last console output:\n{tail}"
+                )
+            time.sleep(0.05)
+        else:
+            tail = _read_log_tail(log_file, lines=15)
+            console_tail = capture_session()
             raise RuntimeError(
-                "shared traffic master exited during startup.\n"
-                f"Last console output:\n{tail}"
+                "Proxy did not signal ready within 10s.\n"
+                f"Last console output:\n{console_tail}\n"
+                f"Last {15} log lines:\n{tail}"
             )
-        time.sleep(0.05)
-    else:
-        # Ran past the deadline with mitmdump still alive but no pid
-        # file -- bound but `running` never fired? Unusual. Surface log
-        # tail so whatever hung shows up.
-        tail = _read_log_tail(log_file, lines=15)
-        console_tail = capture_session()
-        raise RuntimeError(
-            "Proxy did not signal ready within 10s.\n"
-            f"Last console output:\n{console_tail}\n"
-            f"Last {15} log lines:\n{tail}"
-        )
+    except Exception:
+        pid_file.unlink(missing_ok=True)
+        stop_session()
+        raise
 
-    pid = int(pid_file.read_text().strip())
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (OSError, ValueError):
+        pid_file.unlink(missing_ok=True)
+        stop_session()
+        raise RuntimeError("Proxy published an invalid readiness marker") from None
     log.info("Proxy started (PID %d) on port %d", pid, proxy_port)
 
 
