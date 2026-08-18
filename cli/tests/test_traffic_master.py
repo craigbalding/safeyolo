@@ -2,8 +2,9 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from mitmproxy import flowfilter, options
 from mitmproxy.test import tflow
 
@@ -48,6 +49,24 @@ def test_normal_console_exit_prompt_does_not_shutdown_data_plane(monkeypatch):
 
     shutdown.assert_not_called()
     assert "safeyolo stop" in status.call_args.kwargs["message"]
+
+
+def test_startup_exception_is_written_to_structured_event_log(monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+    master = make_master()
+
+    with (
+        patch(
+            "safeyolo.traffic_master.ConsoleMaster.running",
+            new=AsyncMock(side_effect=OSError("address already in use")),
+        ),
+        patch("safeyolo.traffic_master.write_event") as write_event,
+        pytest.raises(OSError, match="address already in use"),
+    ):
+        asyncio.run(master.running())
+
+    assert write_event.call_args.args[0] == "ops.proxy_start_failed"
+    assert "address already in use" in write_event.call_args.kwargs["summary"]
 
 
 def test_native_scope_keys_do_not_replace_stock_bindings(monkeypatch):

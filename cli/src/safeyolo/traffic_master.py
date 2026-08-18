@@ -21,6 +21,8 @@ from mitmproxy.tools.console import statusbar
 from mitmproxy.tools.console.master import ConsoleMaster
 from mitmproxy.tools.web import app, static_viewer, webaddons
 
+from .events import EventKind, Severity, write_event
+
 log = logging.getLogger("safeyolo.traffic-master")
 
 
@@ -296,7 +298,20 @@ class TrafficMaster(ConsoleMaster):
                 self.keymap.add(key, command_text, ["global"], help_text)
 
     async def running(self) -> None:
-        await super().running()
+        try:
+            await super().running()
+        except Exception as exc:
+            # This process may exit before the parent CLI can inspect it. Use
+            # the shared structured audit channel as the failure boundary.
+            write_event(
+                "ops.proxy_start_failed",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=f"Traffic master startup failed: {exc}",
+                addon="traffic-master",
+                details={"error_type": type(exc).__name__, "error": str(exc)},
+            )
+            raise
         if self.window is not None:
             native_status = SafeYoloStatusBar(self)
             self.window.statusbar = native_status

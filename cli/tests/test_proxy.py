@@ -5,6 +5,7 @@ Tests command construction, token generation, cert management,
 PID file lifecycle, and directory discovery.
 """
 
+import json
 import os
 import signal
 import socket
@@ -1815,16 +1816,22 @@ class TestStartProxy:
         addons_dir = tmp_path / "addons"
         addons_dir.mkdir()
 
+        def _write_structured_failure(*args, **kwargs):
+            (logs_dir / "safeyolo.jsonl").write_text(json.dumps({
+                "event": "ops.proxy_start_failed",
+                "summary": "Traffic master startup failed: address already in use",
+            }) + "\n")
+
         with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
              patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
              patch("safeyolo.proxy._find_pdp_dir", return_value=None), \
              patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
              patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
-             patch("safeyolo.proxy.start_session"), \
+             patch("safeyolo.proxy.start_session", side_effect=_write_structured_failure), \
              patch("safeyolo.proxy.session_process_alive", return_value=False), \
              patch("safeyolo.proxy.stop_session") as stop_session:
-            with pytest.raises(RuntimeError, match="ModuleNotFoundError"):
+            with pytest.raises(RuntimeError, match="address already in use"):
                 start_proxy()
         stop_session.assert_called_once_with()
 
