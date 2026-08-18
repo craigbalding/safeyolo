@@ -11,6 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _docstring_lint import validate_items  # noqa: E402
 
+ISOLATION_SUITE_ROOT = Path(__file__).resolve().parent
+
 
 def pytest_collection_modifyitems(config, items):
     """Reject collection if any test's docstring is missing structure.
@@ -18,4 +20,4 @@ def pytest_collection_modifyitems(config, items):
     Schema lives in tests/blackbox/_docstring_lint.py and is shared
     with the host suite and docs/blackbox-coverage.md generator.
     """
-    validate_items(items)
+    validate_items(items, ISOLATION_SUITE_ROOT)
