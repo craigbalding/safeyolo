@@ -41,6 +41,7 @@ from ..vm import (
 )
 from ._service_discovery import find_service
 from .mount import is_path_protected
+from .tmux import associate_agent_pane
 
 log = logging.getLogger("safeyolo.agent")
 console = Console()
@@ -1300,6 +1301,7 @@ def run(
         updated_metadata["host_script"] = str(host_script_path)
         save_agent(name, updated_metadata)
 
+    associate_agent_pane(name)
     exit_code = _run_agent(
         name,
         folder_override=folder,
