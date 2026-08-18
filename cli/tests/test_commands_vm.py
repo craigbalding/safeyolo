@@ -839,6 +839,16 @@ class TestAgentStop:
 
 class TestRunAgent:
 
+    def test_run_associates_current_tmux_pane(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.agent._run_agent", return_value=0),
+            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+        ):
+            result = runner.invoke(app, ["agent", "run", "test-agent"])
+
+        assert result.exit_code == 0
+        associate.assert_called_once_with("test-agent")
+
     def test_rootfs_missing_exits_one(self, runner, config_dir):
         """_run_agent via `agent run` exits 1 if rootfs doesn't exist."""
         # Use the run command which calls _run_agent
