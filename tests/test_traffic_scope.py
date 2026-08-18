@@ -170,3 +170,24 @@ def test_running_agents_are_available_before_they_have_flows():
     )
     with patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)):
         assert addon.agent_options() == ["observed", "running-no-traffic"]
+
+
+def test_web_facets_offer_seven_agents_and_only_relevant_test_contexts():
+    addon = TrafficScope()
+    options = FakeOptions()
+    agents = [f"agent-{number}" for number in range(7)]
+    flows = [
+        fake_flow(agent, f"TEST-{number}", timestamp=number)
+        for number, agent in enumerate(agents)
+    ]
+    master = SimpleNamespace(
+        view=FakeView(flows),
+        addons=SimpleNamespace(get=lambda _name: None),
+    )
+    with patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)):
+        all_facets = addon.facet_values()
+        addon.set_scope(agent="agent-4")
+        narrowed = addon.facet_values()
+
+    assert [item["value"] for item in all_facets["agent"]] == agents
+    assert narrowed["test_id"] == [{"value": "TEST-4", "count": 1}]
