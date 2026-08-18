@@ -145,6 +145,7 @@ class AgentAPI:
         post_handlers = {
             "/api/flows/search": self._handle_flow_search,  # also accepts POST
             "/api/flows/endpoints": self._handle_flow_endpoints,
+            "/api/flows/facets": self._handle_flow_facets,
             "/api/flows/body-search": self._handle_flow_body_search,
             "/api/flows/diff": self._handle_flow_diff,
             "/api/flows/request-body-search": self._handle_flow_request_body_search,
@@ -1077,6 +1078,26 @@ class AgentAPI:
             body["agent_id"] = agent_id
         results = store.get_endpoints(body)
         self._respond(flow, 200, {"endpoints": results, "count": len(results)})
+
+    def _handle_flow_facets(self, flow: http.HTTPFlow):
+        """POST /api/flows/facets - Get scoped evidence selector counts."""
+        store = self._get_flow_store()
+        if not store:
+            self._respond(flow, 503, {"error": "Flow store not available"})
+            return
+        body = self._read_json_body(flow)
+        if body is None or not isinstance(body, dict):
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id:
+            body["agent_id"] = agent_id
+        try:
+            facets = store.get_facets(body)
+        except ValueError as exc:
+            self._respond(flow, 400, {"error": str(exc)})
+            return
+        self._respond(flow, 200, {"facets": facets})
 
     def _handle_flow_body_search(self, flow: http.HTTPFlow):
         """POST /api/flows/body-search - Full-text search over response bodies."""
