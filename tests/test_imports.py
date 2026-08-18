@@ -30,6 +30,7 @@ ADDON_MODULES = [
     "memory_monitor",
     "metrics",
     "network_guard",
+    "operator_provenance",
     "pattern_scanner",
     "pid_writer",
     "policy_engine",
