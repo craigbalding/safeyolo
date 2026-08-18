@@ -13,13 +13,34 @@ from typing import Any
 
 import tornado.httpserver
 import tornado.ioloop
+import urwid
 from mitmproxy import options, optmanager
 from mitmproxy.tools import cmdline, main
 from mitmproxy.tools.console import signals as console_signals
+from mitmproxy.tools.console import statusbar
 from mitmproxy.tools.console.master import ConsoleMaster
 from mitmproxy.tools.web import app, static_viewer, webaddons
 
 log = logging.getLogger("safeyolo.traffic-master")
+
+
+class SafeYoloStatusBar(statusbar.StatusBar):
+    """Put host and evidence scope ahead of mitmproxy's ordinary status."""
+
+    def get_status(self) -> list[tuple[str, str] | str]:
+        scope = self.master.addons.get("traffic-scope")
+        if scope is None:
+            return super().get_status()
+        state = scope.get_stats()
+        agent = "unattributed" if state["unattributed"] else state["agent"] or "all agents"
+        parts = [socket.gethostname(), agent]
+        parts.extend(
+            value
+            for value in (state["test_id"], state["intent"], state["role"], state["expect"])
+            if value
+        )
+        pinned = " · ".join(parts)
+        return [("heading_key", f"[SafeYolo {pinned}]"), *super().get_status()]
 
 
 class ScopeAPIHandler(app.RequestHandler):
@@ -219,6 +240,29 @@ class TrafficMaster(ConsoleMaster):
             ],
         )
         self.addons.add(WebFrontend(self))
+        self._add_scope_keys()
+
+    def _add_scope_keys(self) -> None:
+        bindings = (
+            ("\\", 'console.choose.cmd "SafeYolo agent" safeyolo.traffic.agent.options safeyolo.traffic.agent.set {choice}', "Choose SafeYolo agent"),
+            ("[", "safeyolo.traffic.agent.prev", "Previous SafeYolo agent"),
+            ("]", "safeyolo.traffic.agent.next", "Next SafeYolo agent"),
+            ("0", "safeyolo.traffic.agent.all", "Show all SafeYolo agents"),
+            ("9", "safeyolo.traffic.agent.unattributed", "Show unattributed SafeYolo traffic"),
+            ("}", 'console.choose.cmd "SafeYolo test context" safeyolo.traffic.test.options safeyolo.traffic.test.set {choice}', "Choose SafeYolo test context"),
+            ("{", "safeyolo.traffic.test.clear", "Clear SafeYolo test context"),
+            ("ctrl 0", "safeyolo.traffic.scope.clear", "Clear all SafeYolo scopes"),
+        )
+        for key, command_text, help_text in bindings:
+            if self.keymap.get("global", key) is None:
+                self.keymap.add(key, command_text, ["global"], help_text)
+
+    async def running(self) -> None:
+        await super().running()
+        if self.window is not None:
+            native_status = SafeYoloStatusBar(self)
+            self.window.statusbar = native_status
+            self.window.footer = urwid.AttrMap(native_status, "background")
 
     def prompt_for_exit(self) -> None:
         """Keep ordinary console back/quit keys from stopping the data plane."""
