@@ -1572,6 +1572,7 @@ name = "safeyolo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "argon2-cffi" },
     { name = "confusable-homoglyphs" },
     { name = "cryptography" },
     { name = "httpx" },
@@ -1601,6 +1602,7 @@ sbom = [
 
 [package.metadata]
 requires-dist = [
+    { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "confusable-homoglyphs", specifier = ">=3.3.0" },
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "httpx", specifier = ">=0.25.0" },

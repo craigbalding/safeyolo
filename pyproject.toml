@@ -36,6 +36,7 @@ classifiers = [
 
 dependencies = [
     "mitmproxy>=12.2.2",
+    "argon2-cffi>=25.1.0",
     "httpx>=0.25.0",
     "tenacity>=8.2.0",
     "pyyaml>=6.0",

@@ -39,8 +39,16 @@ class TrafficScope:
         incoming = ctx.options.view_filter or ""
         if incoming == self._effective_filter:
             return
+        previous = self.user_filter
         self.user_filter = incoming
-        self._apply()
+        try:
+            self._apply()
+        except exceptions.OptionsError:
+            # An invalid edit belongs to the option transaction, not to our
+            # durable scope state. Keep the last valid user filter so agent
+            # shortcuts can replace the rejected option and recover.
+            self.user_filter = previous
+            raise
 
     def _scope_parts(self) -> list[str]:
         parts: list[str] = []
@@ -176,42 +184,39 @@ class TrafficScope:
 
     @command.command("safeyolo.traffic.agent.set")
     @command.argument("agent", type=types.Choice("safeyolo.traffic.agent.options"))
-    def select_agent(self, agent: str) -> str:
+    def select_agent(self, agent: str) -> None:
         """Pin traffic to an agent and clear the prior test context."""
         self.set_scope(agent=agent)
-        return f"SafeYolo scope: agent {agent}"
 
     @command.command("safeyolo.traffic.agent.next")
-    def next_agent(self) -> str:
+    def next_agent(self) -> None:
         """Cycle to the next running or observed agent."""
-        return self._cycle_agent(1)
+        self._cycle_agent(1)
 
     @command.command("safeyolo.traffic.agent.prev")
-    def previous_agent(self) -> str:
+    def previous_agent(self) -> None:
         """Cycle to the previous running or observed agent."""
-        return self._cycle_agent(-1)
+        self._cycle_agent(-1)
 
-    def _cycle_agent(self, offset: int) -> str:
+    def _cycle_agent(self, offset: int) -> None:
         agents = self.observed_agents()
         if not agents:
-            return "SafeYolo scope: no running or observed agents"
+            return
         try:
             index = agents.index(self.agent) + offset
         except ValueError:
             index = 0 if offset > 0 else -1
-        return self.select_agent(agents[index % len(agents)])
+        self.select_agent(agents[index % len(agents)])
 
     @command.command("safeyolo.traffic.agent.all")
-    def all_agents(self) -> str:
+    def all_agents(self) -> None:
         """Show attributed traffic from all agents."""
         self.set_scope()
-        return "SafeYolo scope: all agents"
 
     @command.command("safeyolo.traffic.agent.unattributed")
-    def unattributed_only(self) -> str:
+    def unattributed_only(self) -> None:
         """Show traffic with no agent attribution."""
         self.set_scope(unattributed=True)
-        return "SafeYolo scope: unattributed traffic"
 
     @staticmethod
     def _flow_timestamp(flow) -> float:
@@ -270,7 +275,7 @@ class TrafficScope:
 
     @command.command("safeyolo.traffic.test.set")
     @command.argument("choice", type=types.Choice("safeyolo.traffic.test.options"))
-    def select_test(self, choice: str) -> str:
+    def select_test(self, choice: str) -> None:
         """Pin an observed test context while retaining the agent scope."""
         selected = self._test_choices.get(choice)
         if selected is None:
@@ -283,19 +288,16 @@ class TrafficScope:
             unattributed=self.unattributed,
             **selected,
         )
-        return f"SafeYolo scope: test {selected['test_id']}"
 
     @command.command("safeyolo.traffic.test.clear")
-    def clear_test(self) -> str:
+    def clear_test(self) -> None:
         """Clear test dimensions while retaining the agent scope."""
         self.set_scope(agent=self.agent, unattributed=self.unattributed)
-        return "SafeYolo scope: test context cleared"
 
     @command.command("safeyolo.traffic.scope.clear")
-    def clear_scope(self) -> str:
+    def clear_scope(self) -> None:
         """Clear every SafeYolo scope while retaining the user's filter."""
         self.set_scope()
-        return "SafeYolo scope: cleared"
 
 
 addons = [TrafficScope()]
