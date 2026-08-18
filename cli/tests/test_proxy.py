@@ -1823,9 +1823,26 @@ class TestStartProxy:
              patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
              patch("safeyolo.proxy.start_session"), \
              patch("safeyolo.proxy.session_process_alive", return_value=False), \
-             patch("safeyolo.proxy.capture_session", return_value="startup failed"):
+             patch("safeyolo.proxy.capture_session", return_value="startup failed"), \
+             patch("safeyolo.proxy.stop_session") as stop_session:
             with pytest.raises(RuntimeError, match="shared traffic master exited"):
                 start_proxy()
+        stop_session.assert_called_once_with()
+
+
+def test_pid_writer_defers_until_traffic_master_signals_ready(tmp_path, monkeypatch):
+    from safeyolo.mitm_addons.pid_writer import PidWriter
+
+    pid_file = tmp_path / "proxy.pid"
+    monkeypatch.setenv("SAFEYOLO_PROXY_PID_FILE", str(pid_file))
+    monkeypatch.setenv("SAFEYOLO_DEFER_PROXY_READY", "1")
+    writer = PidWriter()
+
+    writer.running()
+    assert not pid_file.exists()
+
+    writer.signal_ready()
+    assert pid_file.read_text().strip().isdigit()
 
 
 # ---------------------------------------------------------------------------

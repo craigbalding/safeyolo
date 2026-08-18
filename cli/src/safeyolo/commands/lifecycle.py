@@ -194,6 +194,8 @@ def stop(
         return
 
     if not is_proxy_running():
+        # Also reap a dead remain-on-exit traffic pane left by a failed start.
+        stop_proxy()
         console.print("[yellow]SafeYolo proxy is not running.[/yellow]")
         raise typer.Exit(0)
 

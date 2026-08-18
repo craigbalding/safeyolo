@@ -66,3 +66,28 @@ def test_start_cleans_up_session_after_configuration_failure(tmp_path, monkeypat
             start_session(["command"], tmux=tmux)
 
     assert stop.call_args == call(tmux)
+
+
+def test_start_reaps_dead_retained_session_before_recreating(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    tmux = Path("/opt/safeyolo/tmux")
+    with (
+        patch("safeyolo.traffic_session.session_exists", return_value=True),
+        patch("safeyolo.traffic_session.session_process_alive", return_value=False),
+        patch("safeyolo.traffic_session.stop_session") as stop,
+        patch("safeyolo.traffic_session.subprocess.run", return_value=MagicMock(returncode=0)),
+    ):
+        start_session(["command"], tmux=tmux)
+
+    stop.assert_called_once_with(tmux)
+
+
+def test_start_refuses_live_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    tmux = Path("/opt/safeyolo/tmux")
+    with (
+        patch("safeyolo.traffic_session.session_exists", return_value=True),
+        patch("safeyolo.traffic_session.session_process_alive", return_value=True),
+        pytest.raises(RuntimeError, match="already running"),
+    ):
+        start_session(["command"], tmux=tmux)

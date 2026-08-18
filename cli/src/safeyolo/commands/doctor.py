@@ -9,6 +9,7 @@ import ssl
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 import yaml
@@ -17,6 +18,7 @@ from rich.console import Console
 from ..config import (
     find_config_dir,
     get_admin_token_path,
+    get_agent_map_path,
     get_agent_token_path,
     get_certs_dir,
     get_data_dir,
@@ -28,6 +30,23 @@ from ..proxy import is_proxy_running
 console = Console()
 
 _FLOW_STORE_WARN_MB = 500
+
+
+def _registered_agent_sockets() -> list[Path]:
+    """Return socket paths for agents in the live-agent registry."""
+    from ..sockets import path_for
+
+    try:
+        agent_map = json.loads(get_agent_map_path().read_text())
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return []
+    paths = []
+    for name, entry in agent_map.items():
+        try:
+            paths.append(path_for(name, entry["ip"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(paths)
 
 
 @dataclass
@@ -123,7 +142,8 @@ def _check_firewall() -> DiagResult:
 
     socks = sockets_dir()
     if is_proxy_running():
-        active = [p.name for p in socks.glob("*.sock")] if socks.exists() else []
+        expected = _registered_agent_sockets()
+        active = [p.name for p in expected if p.exists()]
         if active:
             return DiagResult(
                 name="Egress enforcement",
@@ -225,8 +245,16 @@ def _check_pipeline_probe() -> DiagResult:
             status="skip",
             message=f"No sockets directory ({socks_dir})",
         )
-    socks = sorted(socks_dir.glob("*.sock"))
+    expected = _registered_agent_sockets()
+    socks = [path for path in expected if path.exists()]
     if not socks:
+        if expected:
+            return DiagResult(
+                name="Pipeline probe",
+                status="fail",
+                message=f"No UDS listener for registered agent ({expected[0].name})",
+                remediation="safeyolo stop && safeyolo start",
+            )
         return DiagResult(
             name="Pipeline probe",
             status="skip",
