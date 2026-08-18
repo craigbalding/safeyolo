@@ -318,6 +318,14 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         budget_stats = client.get_budget_stats()
         self._send_json(budget_stats)
 
+    def _handle_get_traffic_scope(self) -> None:
+        """GET /admin/traffic/scope - Current pinned live-view scope."""
+        addon = self.addons_with_stats.get("traffic-scope")
+        if addon is None:
+            self._send_json({"error": "traffic scope addon is unavailable"}, 503)
+            return
+        self._send_json(addon.get_stats())
+
     def do_GET(self):
         """Handle GET requests."""
         parsed = urlparse(self.path)
@@ -338,6 +346,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/modes": self._handle_get_modes,
             "/admin/policy/baseline": self._handle_get_policy_baseline,
             "/admin/budgets": self._handle_get_budgets,
+            "/admin/traffic/scope": self._handle_get_traffic_scope,
             "/admin/gateway/grants": self._handle_get_gateway_grants,
             "/admin/plumb/pending": self._handle_get_plumb_pending,
             "/admin/plumb/conversations": self._handle_get_plumb_conversations,
@@ -1257,6 +1266,45 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_put_traffic_scope(self) -> None:
+        """PUT /admin/traffic/scope - Replace the pinned live-view scope."""
+        data = self._read_json()
+        if not isinstance(data, dict):
+            self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
+        allowed = {"agent", "unattributed", "test_id", "intent", "role", "expect"}
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            self._send_json({"error": f"unknown scope field(s): {', '.join(unknown)}"}, 400)
+            return
+        addon = self.addons_with_stats.get("traffic-scope")
+        if addon is None:
+            self._send_json({"error": "traffic scope addon is unavailable"}, 503)
+            return
+
+        async def _apply():
+            return addon.set_scope(**data)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_apply(), ctx.master.event_loop)
+            result = future.result(timeout=2.0)
+        except TimeoutError:
+            self._send_json({"error": "timeout applying traffic scope"}, 504)
+            return
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+
+        write_event(
+            "admin.traffic_scope_update",
+            kind=EventKind.ADMIN,
+            severity=Severity.LOW,
+            summary="Shared traffic scope updated",
+            addon="admin-api",
+            details={"client_ip": self._get_client_ip(), **data},
+        )
+        self._send_json({"status": "updated", **result})
+
     def _handle_put_plugin_mode(self, addon_name: str) -> None:
         """PUT /plugins/{name}/mode - Set mode for a specific addon."""
         data = self._read_json()
@@ -1398,6 +1446,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/baseline": self._handle_put_policy_baseline,
             "/admin/proxy/mode": self._handle_put_proxy_mode,
             "/admin/proxy/ignore-hosts": self._handle_put_proxy_ignore_hosts,
+            "/admin/traffic/scope": self._handle_put_traffic_scope,
         }
 
         if path in static_handlers:

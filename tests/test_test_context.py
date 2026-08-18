@@ -272,6 +272,58 @@ class TestTestContextAddon:
         # Context still preserved in metadata for response logging
         assert flow.metadata["ccapt_context"]["run"] == "sec1"
 
+    def test_canonical_context_is_promoted_without_overwriting_trusted_agent(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(
+            headers={
+                "X-Test-Context": (
+                    "run=sec1;agent=declared;role=guest;suite=payments;"
+                    "subject=CTRL-1;step=4;test=FLOW-05;intent=forge;expect=blocked;"
+                    "extra=retained"
+                )
+            }
+        )
+        flow.metadata["agent"] = "trusted"
+
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event") as mock_write:
+            addon.request(flow)
+
+        assert flow.metadata["agent"] == "trusted"
+        assert flow.metadata["test_run"] == "sec1"
+        assert flow.metadata["test_agent"] == "declared"
+        assert flow.metadata["test_role"] == "guest"
+        assert flow.metadata["test_suite"] == "payments"
+        assert flow.metadata["test_subject"] == "CTRL-1"
+        assert flow.metadata["test_step"] == "4"
+        assert flow.metadata["test_id"] == "FLOW-05"
+        assert flow.metadata["test_intent"] == "forge"
+        assert flow.metadata["test_expect"] == "blocked"
+        assert flow.metadata["test_agent_match"] is False
+        assert "extra" not in flow.metadata
+        assert flow.metadata["ccapt_context"]["extra"] == "retained"
+        details = mock_write.call_args.kwargs["details"]
+        assert details["trusted_agent"] == "trusted"
+        assert details["test_agent_match"] is False
+
+    def test_matching_agent_is_explicit_and_absent_trusted_agent_is_unknown(self):
+        addon = _make_addon_with_targets()
+        matching = _make_mock_flow(
+            headers={"X-Test-Context": "run=sec1;agent=cody"}
+        )
+        matching.metadata["agent"] = "cody"
+        unattributed = _make_mock_flow(
+            headers={"X-Test-Context": "run=sec1;agent=cody"}
+        )
+
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event"):
+            addon.request(matching)
+            addon.request(unattributed)
+
+        assert matching.metadata["test_agent_match"] is True
+        assert "test_agent_match" not in unattributed.metadata
+
     def test_warn_mode_does_not_block(self):
         """In warn mode, missing header logs but doesn't block."""
         addon = _make_addon_with_targets()

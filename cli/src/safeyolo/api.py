@@ -100,6 +100,12 @@ class AdminAPI:
         """Get aggregated stats from all addons."""
         return self._request("GET", "/stats")
 
+    def get_traffic_scope(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/traffic/scope")
+
+    def set_traffic_scope(self, **scope: Any) -> dict[str, Any]:
+        return self._request("PUT", "/admin/traffic/scope", json=scope)
+
     def metrics(self) -> str:
         """Get Prometheus format metrics."""
         return self._request("GET", "/metrics")
