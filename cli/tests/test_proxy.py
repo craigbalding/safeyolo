@@ -1708,7 +1708,8 @@ class TestProxyStartupSmoke:
                 scope_response = web_client.get("/safeyolo/scope")
                 assert scope_response.status_code == 200
                 assert scope_response.json()["scope"]["agent"] == "cody"
-                xsrf = web_client.cookies["_mitmproxy_xsrf"]
+                xsrf = web_client.cookies.get("_mitmproxy_xsrf") or web_client.cookies.get("_xsrf")
+                assert xsrf is not None
                 update_response = web_client.put(
                     "/safeyolo/scope",
                     headers={"X-XSRFToken": xsrf},

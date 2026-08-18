@@ -39,6 +39,7 @@ ADDON_MODULES = [
     "service_gateway",
     "sse_streaming",
     "test_context",
+    "traffic_scope",
     "unix_listener",
 ]
 

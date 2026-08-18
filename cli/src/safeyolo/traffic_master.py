@@ -94,7 +94,7 @@ async function render() {
       body.unattributed = false;
       const response = await fetch('/safeyolo/scope', {
         method: 'PUT',
-        headers: {'Content-Type': 'application/json', 'X-XSRFToken': decodeURIComponent(cookie('_mitmproxy_xsrf'))},
+        headers: {'Content-Type': 'application/json', 'X-XSRFToken': decodeURIComponent(cookie('_mitmproxy_xsrf') || cookie('_xsrf'))},
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error(`scope update failed: ${response.status}`);
@@ -203,7 +203,7 @@ class TrafficMaster(ConsoleMaster):
         password_file = os.environ.get("SAFEYOLO_WEB_PASSWORD_FILE")
         if password_file:
             try:
-                password = open(password_file, encoding="utf-8").read().strip()
+                password = Path(password_file).read_text(encoding="utf-8").strip()
             except OSError as exc:
                 raise RuntimeError(f"cannot read web password file: {exc}") from exc
             if not password:
