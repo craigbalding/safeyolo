@@ -15,7 +15,7 @@ Network isolation is structural: each agent runs in its own user
 namespace with a loopback-only network namespace. The only egress
 path is a bind-mounted UDS on which mitmproxy's per-agent
 `UnixInstance` is listening — no bridge process, identity comes
-from the socket filename.
+from the socket directory name.
 """
 
 import json
@@ -563,7 +563,6 @@ class LinuxPlatform(AgentPlatform):
         ensure_agent_persistent_dirs(name)
 
         os.makedirs(rootfs / "workspace", exist_ok=True)
-
         # runsc inside the userns operates as subordinate uid 100000
         # on the host filesystem and needs rwx on its state dir.
         # Scope the grant tightly via ACL to that single uid rather
@@ -978,6 +977,8 @@ class LinuxPlatform(AgentPlatform):
                         env.append(kv)
 
         # Mounts
+        proxy_mountpoint = config_share / "proxy"
+        proxy_mountpoint.mkdir(parents=True, exist_ok=True)
         mounts = [
             {"destination": "/proc", "type": "proc", "source": "proc"},
             {"destination": "/dev", "type": "tmpfs", "source": "tmpfs",
@@ -1008,17 +1009,17 @@ class LinuxPlatform(AgentPlatform):
              "options": ["rbind", "rw", "nosuid", "nodev"]},
         ]
 
-        # Per-agent proxy UDS — mitmproxy's UnixInstance binds this
-        # socket (one per agent) under `<ip>_<agent>.sock`; gVisor's
-        # --host-uds=open lets the sandboxed process connect through.
-        from ..sockets import path_for as _proxy_sock_for  # noqa: PLC0415
-        proxy_sock = _proxy_sock_for(name, fw_alloc.get("attribution_ip", ""))
-        if proxy_sock.exists():
+        # Mount the private per-agent directory, not the socket inode.
+        # Mitmproxy can replace proxy.sock across restarts and a running
+        # sandbox resolves the new inode through this stable mount.
+        from ..sockets import directory_for as _proxy_dir_for  # noqa: PLC0415
+        proxy_dir = _proxy_dir_for(name, fw_alloc.get("attribution_ip", ""))
+        if proxy_dir.exists():
             mounts.append({
-                "destination": "/safeyolo/proxy.sock",
+                "destination": "/safeyolo/proxy",
                 "type": "bind",
-                "source": str(proxy_sock),
-                "options": ["bind", "rw"],
+                "source": str(proxy_dir),
+                "options": ["rbind", "ro", "nosuid", "nodev"],
             })
 
         # CA cert

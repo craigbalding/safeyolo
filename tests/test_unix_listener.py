@@ -1,7 +1,7 @@
 """Tests for addons/unix_listener.py.
 
 Focus on the parts we can unit-test without a running mitmproxy:
-  - `_parse_sock_path` (filename → (ip, agent)) handles valid / invalid
+  - `_parse_sock_path` (directory → (ip, agent)) handles valid / invalid
   - `UnixMode.__post_init__` validates the `data` field (the socket path)
   - `UnixMode.ip` / `UnixMode.agent` properties expose parsed values
 
@@ -27,11 +27,11 @@ import unix_listener  # noqa: E402
 
 class TestParseSockPath:
     def test_valid(self):
-        ip, agent = unix_listener._parse_sock_path("/s/10.0.0.1_alice.sock")
+        ip, agent = unix_listener._parse_sock_path("/s/10.0.0.1_alice/proxy.sock")
         assert (ip, agent) == ("10.0.0.1", "alice")
 
     def test_hyphen_in_agent(self):
-        ip, agent = unix_listener._parse_sock_path("/s/10.0.0.1_my-agent.sock")
+        ip, agent = unix_listener._parse_sock_path("/s/10.0.0.1_my-agent/proxy.sock")
         assert agent == "my-agent"
 
     def test_rejects_missing_sock(self):
@@ -40,20 +40,20 @@ class TestParseSockPath:
 
     def test_rejects_no_underscore(self):
         with pytest.raises(ValueError):
-            unix_listener._parse_sock_path("/s/10.0.0.1-alice.sock")
+            unix_listener._parse_sock_path("/s/10.0.0.1-alice/proxy.sock")
 
     def test_rejects_bad_ip(self):
         with pytest.raises(ValueError):
-            unix_listener._parse_sock_path("/s/999.0.0.1_alice.sock")
+            unix_listener._parse_sock_path("/s/999.0.0.1_alice/proxy.sock")
 
 
 class TestUnixMode:
     def test_parse_registers_mode(self):
         from mitmproxy.proxy import mode_specs
 
-        mode = mode_specs.ProxyMode.parse("unix:/tmp/10.200.0.5_alice.sock")
+        mode = mode_specs.ProxyMode.parse("unix:/tmp/10.200.0.5_alice/proxy.sock")
         assert isinstance(mode, unix_listener.UnixMode)
-        assert mode.path == "/tmp/10.200.0.5_alice.sock"
+        assert mode.path == "/tmp/10.200.0.5_alice/proxy.sock"
         assert mode.ip == "10.200.0.5"
         assert mode.agent == "alice"
 
@@ -61,7 +61,7 @@ class TestUnixMode:
         from mitmproxy.proxy import mode_specs
 
         with pytest.raises(ValueError, match="absolute path"):
-            mode_specs.ProxyMode.parse("unix:relative/10.0.0.1_alice.sock")
+            mode_specs.ProxyMode.parse("unix:relative/10.0.0.1_alice/proxy.sock")
 
     def test_rejects_missing_data(self):
         from mitmproxy.proxy import mode_specs
@@ -72,5 +72,5 @@ class TestUnixMode:
     def test_transport_protocol_is_tcp(self):
         from mitmproxy.proxy import mode_specs
 
-        mode = mode_specs.ProxyMode.parse("unix:/tmp/10.200.0.5_bob.sock")
+        mode = mode_specs.ProxyMode.parse("unix:/tmp/10.200.0.5_bob/proxy.sock")
         assert mode.transport_protocol == "tcp"

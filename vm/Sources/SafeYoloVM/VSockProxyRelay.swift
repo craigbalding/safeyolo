@@ -5,12 +5,12 @@ import Virtualization
 /// each one bidirectionally to a Unix domain socket on the host.
 ///
 /// The upstream UDS is bound by mitmproxy's per-agent UnixInstance;
-/// identity comes from the socket filename (<ip>_<agent>.sock) which
+/// identity comes from the socket directory (<ip>_<agent>/proxy.sock) which
 /// mitmproxy parses at bind. This relay is a dumb vsock↔UDS pump —
 /// one process per VM, no TCP logic, no knowledge of mitmproxy.
 ///
 ///   Guest: curl → guest-forwarder → vsock
-///   Host:  safeyolo-vm → UDS <sockets_dir>/<ip>_<agent>.sock
+///   Host:  safeyolo-vm → UDS <sockets_dir>/<ip>_<agent>/proxy.sock
 ///          (mitmproxy UnixInstance listens here)
 class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
 
@@ -33,11 +33,11 @@ class VSockProxyRelay: NSObject, VZVirtioSocketListenerDelegate {
         self.vm = vm
         self.queue = queue
         self.socketPath = socketPath
-        // Derive agent name from the per-agent socket path
-        // (<dir>/<ip>_<agent>.sock). Log-only; relay forwards bytes
+        // Derive agent name from the private socket directory
+        // (<dir>/<ip>_<agent>/proxy.sock). Log-only; relay forwards bytes
         // regardless of identity.
-        let stem = ((socketPath as NSString).lastPathComponent
-                    as NSString).deletingPathExtension
+        let stem = ((socketPath as NSString).deletingLastPathComponent
+                    as NSString).lastPathComponent
         if let underscore = stem.firstIndex(of: "_") {
             self.agent = String(stem[stem.index(after: underscore)...])
         } else {

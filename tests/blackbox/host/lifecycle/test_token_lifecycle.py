@@ -1,4 +1,4 @@
-"""Agent token lifecycle test — verify token survives proxy restart.
+"""Live-agent lifecycle test — verify egress survives proxy restart.
 
 In the Docker era, the agent_token file was bind-mounted into the
 container, so the proxy could regenerate it on restart and the
@@ -10,11 +10,12 @@ This test exercises the full lifecycle:
 1. Start proxy (token generated)
 2. Boot agent, verify agent API works
 3. Restart proxy (token may regenerate)
-4. Verify agent API still works from the SAME running sandbox
+4. Verify the recreated UDS is reachable from the SAME running sandbox
 
-If step 4 fails with 401, the token lifecycle is broken.
+This catches both stale token copies and stale bind-mounted UDS inodes.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -33,8 +34,8 @@ import pytest
         "is exercised by the sandbox-boot flow itself."
     ),
 )
-class TestAgentTokenLifecycle:
-    """Agent token survives proxy restart without breaking a running sandbox.
+class TestLiveAgentLifecycle:
+    """Agent egress survives proxy restart without restarting its sandbox.
 
     Why: The agent_token authenticates the sandbox's requests to the
     agent API. If a proxy restart regenerates the token but the
@@ -80,16 +81,21 @@ class TestAgentTokenLifecycle:
         What: Verify agent API /health returns 200 from inside the
         sandbox; stop + start the test proxy; assert /health still
         returns 200 from the same running sandbox.
-        Why: If the sandbox's cached token goes stale on proxy
-        restart, every agent-originated diagnostic call fails 401.
-        This regression killed `safeyolo explain` when we first
-        migrated from Docker bind-mounts to microVM copies.
+        Why: A recreated token or Unix socket must remain reachable from
+        the same sandbox. File-binding the old socket inode made every
+        reconnect fail even though the host pathname had been recreated.
         """
         from pathlib import Path
         config_dir = Path(os.environ.get(
             "SAFEYOLO_CONFIG_DIR", str(Path.home() / ".safeyolo"),
         ))
         agent_name = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
+        from safeyolo.sockets import path_for
+        map_data = json.loads(
+            (config_dir / "data" / "agent_map.json").read_text()
+        )
+        socket_path = path_for(agent_name, map_data[agent_name]["ip"])
+        socket_directory_inode = socket_path.parent.stat().st_ino
 
         # 1. Verify sandbox is running and agent API works
         status = self._agent_api_health(agent_name)
@@ -138,4 +144,8 @@ class TestAgentTokenLifecycle:
             f"(token {'changed' if token_changed else 'unchanged'}) — "
             f"this is the Docker→microVM token lifecycle regression. "
             f"The sandbox holds a stale copy of the agent token."
+        )
+        assert socket_path.is_socket(), "proxy restart did not recreate the agent UDS"
+        assert socket_path.parent.stat().st_ino == socket_directory_inode, (
+            "proxy restart replaced the stable per-agent socket directory"
         )

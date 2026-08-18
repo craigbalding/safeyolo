@@ -4,12 +4,12 @@
 # Bridges the agent's HTTP_PROXY target (127.0.0.1:8080 TCP inside the
 # sandbox) to the host-side SafeYolo proxy via one of:
 #
-#   UDS (Linux / gVisor): /safeyolo/proxy.sock — bind-mounted from the
-#     host, reached through gVisor's --host-uds=open.
+#   UDS (Linux / gVisor): /safeyolo/proxy/proxy.sock — resolved through
+#     a stable, private per-agent directory mount.
 #   vsock (macOS / VZ):   port 1080 on the host CID — safeyolo-vm's
 #     VSockProxyRelay accepts and forwards to mitmproxy.
 #
-# Transport auto-selection: UDS is preferred when /safeyolo/proxy.sock
+# Transport auto-selection: UDS is preferred when the mounted proxy socket
 # exists; otherwise fall back to vsock. Same contract as the previous
 # guest-proxy-forwarder.py that this replaces (socat 1.8+ gained
 # VSOCK-CONNECT, making the python stdlib pump unnecessary).
@@ -19,7 +19,7 @@
 set -eu
 
 LISTEN_PORT="${1:-8080}"
-UDS_PATH="${2:-/safeyolo/proxy.sock}"
+UDS_PATH="${2:-/safeyolo/proxy/proxy.sock}"
 VSOCK_HOST_CID=2
 VSOCK_HOST_PORT=1080
 

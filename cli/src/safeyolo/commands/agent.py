@@ -366,9 +366,9 @@ def _run_agent(
 
     # Identity attribution: `attribution_ip` is the source IP mitmproxy
     # sees, which service_discovery maps back to the agent name.
-    # Per-agent UDS lives at `<sockets_dir>/<ip>_<agent>.sock` —
+    # Per-agent UDS lives at `<sockets_dir>/<ip>_<agent>/proxy.sock` —
     # mitmproxy's UnixInstance binds it and parses identity from the
-    # filename. agent_map.json is written before start_sandbox so
+    # directory name. agent_map.json is written before start_sandbox so
     # service_discovery is ready when the first request arrives, and
     # the admin-API call below triggers mitmproxy to bind the socket.
     attribution_ip = fw_alloc.get("attribution_ip", guest_ip)

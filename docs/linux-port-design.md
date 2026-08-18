@@ -67,7 +67,7 @@ Both share:
 | Kernel | Custom Linux kernel in VM | gVisor Sentry (userspace kernel) |
 | KVM | N/A (Hypervisor.framework) | Optional, auto-detected; systrap fallback |
 | Runtime privileges | none (sudo only if user opts into lo0 aliases, now unused) | none (rootless user namespace via `newuidmap`/`newgidmap`) |
-| Identity attribution | `<ip>_<agent>.sock` filename parsed by mitmproxy's `UnixInstance` | `<ip>_<agent>.sock` filename parsed by mitmproxy's `UnixInstance` (same mechanism) |
+| Identity attribution | `<ip>_<agent>` directory parsed by mitmproxy's `UnixInstance` | `<ip>_<agent>` directory parsed by mitmproxy's `UnixInstance` (same mechanism) |
 
 ## What Does NOT Change
 
@@ -219,8 +219,8 @@ setup_networking(agent_index):
 ```
 
 The sandbox has no external network interface. The per-agent UDS at
-`~/.safeyolo/data/sockets/<ip>_<agent>.sock` is bind-mounted into the
-sandbox at `/safeyolo/proxy.sock` (via `runsc --host-uds=open`); the
+`~/.safeyolo/data/sockets/<ip>_<agent>/` is bind-mounted read-only into the
+sandbox at `/safeyolo/proxy` (via `runsc --host-uds=open`); the
 in-guest forwarder relays HTTP to it, and mitmproxy's `UnixInstance`
 accepts directly on the UDS. Identity is parsed from the socket
 filename at bind time and stamped on every accepted connection via
@@ -276,7 +276,7 @@ to the agent user. Key fields:
   CAP_SETGID) — no CAP_NET_RAW, no CAP_SYS_ADMIN
 - `mounts`: workspace (rw), `/safeyolo` (ro, the config share),
   `/safeyolo-status` (rw, the status share for guest→host signals),
-  `/safeyolo/proxy.sock` (rw, the per-agent UDS)
+  `/safeyolo/proxy` (ro, the private per-agent UDS directory)
 - `linux.namespaces`: PID, IPC, UTS, mount — and a `network` namespace
   path pointing at the userns holder's netns (`/proc/<holder>/ns/net`),
   so the sandbox's network is the loopback-configured netns we set up
@@ -431,7 +431,7 @@ decisions that landed differently from the original plan:
   of truth for CA trust, mise install, and agent launch.
 - **Filename as identity envelope.** Earlier designs threaded identity
   through a PROXY-v2 header or synthetic source ports. Current design:
-  mitmproxy binds a per-agent UDS whose filename (`<ip>_<agent>.sock`)
+  mitmproxy binds a per-agent UDS whose directory (`<ip>_<agent>/proxy.sock`)
   encodes both the attribution IP and the agent name. The
   `UnixInstance` parses the filename once at bind and stamps every
   accepted connection — no wire-protocol adapter, no host-side

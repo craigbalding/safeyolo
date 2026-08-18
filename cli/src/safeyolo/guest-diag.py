@@ -11,7 +11,7 @@ Chain (macOS / VZ microVM):
 
 Chain (Linux / gVisor):
   curl → 127.0.0.1:8080 (guest-proxy-forwarder)
-       → /safeyolo/proxy.sock UDS (bind-mounted, gVisor --host-uds=open)
+       → /safeyolo/proxy/proxy.sock UDS (directory-mounted, gVisor --host-uds=open)
        → host per-agent UDS (mitmproxy UnixInstance)
 
 Usage:
@@ -29,7 +29,7 @@ import sys
 import time
 
 PROXY_PORT = 8080
-UDS_PATH = "/safeyolo/proxy.sock"
+UDS_PATH = "/safeyolo/proxy/proxy.sock"
 VSOCK_HOST_CID = 2
 VSOCK_PROXY_PORT = 1080
 VSOCK_SHELL_PORT = 2220

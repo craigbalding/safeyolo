@@ -1,12 +1,12 @@
 """Per-agent UDS path conventions.
 
-Filename `<ip>_<agent>.sock` is the single source of truth for agent
+Directory `<ip>_<agent>` is the single source of truth for agent
 identity. Every downstream use (hostname, log field, attribution IP)
 derives from this at parse-time — never stored or passed as a parallel
 value. If you find yourself threading `(ip, agent)` through multiple
 layers, re-parse the socket path instead.
 
-The filename layout is unambiguous because SafeYolo agent names are
+The directory-name layout is unambiguous because SafeYolo agent names are
 validated as RFC 1123 hostnames (lowercase alphanumeric + hyphens,
 no underscores — see `commands/agent.py::_validate_instance_name`),
 so `split('_', 1)` reliably splits the IP prefix from the agent
@@ -43,7 +43,7 @@ def remove_stale_sockets() -> list[Path]:
     if not directory.exists():
         return []
     removed = []
-    for path in directory.glob("*.sock"):
+    for path in directory.rglob("*.sock"):
         try:
             if stat.S_ISSOCK(path.lstat().st_mode):
                 path.unlink()
@@ -54,12 +54,8 @@ def remove_stale_sockets() -> list[Path]:
     return removed
 
 
-def path_for(agent: str, ip: str) -> Path:
-    """Host-side UDS path for an agent.
-
-    Raises ValueError on invalid agent name, malformed IP, or a path
-    that would exceed `sun_path` length on either supported platform.
-    """
+def directory_for(agent: str, ip: str) -> Path:
+    """Stable private directory containing one agent's proxy socket."""
     if not _AGENT_NAME_RE.match(agent):
         raise ValueError(
             f"invalid agent name {agent!r}: must match RFC 1123 hostname "
@@ -67,7 +63,12 @@ def path_for(agent: str, ip: str) -> Path:
         )
     # ipaddress.IPv4Address raises on malformed input.
     ipaddress.IPv4Address(ip)
-    p = sockets_dir() / f"{ip}_{agent}.sock"
+    return sockets_dir() / f"{ip}_{agent}"
+
+
+def path_for(agent: str, ip: str) -> Path:
+    """Host-side UDS path for an agent."""
+    p = directory_for(agent, ip) / "proxy.sock"
     if len(str(p).encode()) > _SUN_PATH_MAX:
         raise ValueError(
             f"socket path exceeds sun_path limit ({_SUN_PATH_MAX} bytes): {p}"
@@ -78,15 +79,15 @@ def path_for(agent: str, ip: str) -> Path:
 def parse(path: Path | str) -> tuple[str, str]:
     """Return `(ip, agent)` from a socket path built by `path_for`.
 
-    Raises ValueError if the filename doesn't match the expected shape.
+    Raises ValueError if the path doesn't match the expected shape.
     """
-    name = Path(path).name
-    if not name.endswith(".sock"):
-        raise ValueError(f"expected .sock suffix: {path}")
-    stem = name[: -len(".sock")]
+    socket_path = Path(path)
+    if socket_path.name != "proxy.sock":
+        raise ValueError(f"expected proxy.sock filename: {path}")
+    stem = socket_path.parent.name
     ip, sep, agent = stem.partition("_")
     if not sep:
-        raise ValueError(f"expected '<ip>_<agent>.sock' layout: {path}")
+        raise ValueError(f"expected '<ip>_<agent>/proxy.sock' layout: {path}")
     ipaddress.IPv4Address(ip)  # validate
     if not _AGENT_NAME_RE.match(agent):
         raise ValueError(f"invalid agent name in path: {path}")

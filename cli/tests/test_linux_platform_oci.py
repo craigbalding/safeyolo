@@ -167,6 +167,35 @@ def test_oci_environment_pins_persistent_mise_paths(isolated_env):
     assert env["PATH"].startswith("/home/agent/.mise/shims:")
 
 
+def test_proxy_mount_uses_stable_private_directory(isolated_env):
+    """Socket replacement must remain visible to a running sandbox."""
+    from safeyolo.platform.linux import LinuxPlatform
+    from safeyolo.sockets import directory_for
+
+    name = "proxy-mount"
+    proxy_dir = directory_for(name, "10.200.0.4")
+    proxy_dir.mkdir(parents=True)
+
+    spec = LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.4"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    mount = next(
+        item for item in spec["mounts"]
+        if item["destination"] == "/safeyolo/proxy"
+    )
+    assert mount["source"] == str(proxy_dir)
+    assert {"rbind", "ro", "nosuid", "nodev"} <= set(mount["options"])
+    assert mount["source"] != str(proxy_dir / "proxy.sock")
+
+
 def test_runsc_command_restores_mise_after_environment_path():
     """runsc commands source mise activation after /etc/environment."""
     from safeyolo.platform.linux import _wrap_runsc_command

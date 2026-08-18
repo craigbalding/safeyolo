@@ -65,7 +65,7 @@ this invariant.
 
 ### `tests/blackbox/host/lifecycle/test_token_lifecycle.py`
 
-#### TestAgentTokenLifecycle — Agent token survives proxy restart without breaking a running sandbox.
+#### TestLiveAgentLifecycle — Agent egress survives proxy restart without restarting its sandbox.
 
 **Threat:** The agent_token authenticates the sandbox's requests to the
 agent API. If a proxy restart regenerates the token but the
@@ -80,10 +80,9 @@ regression point.
   - *Probe:* Verify agent API /health returns 200 from inside the
 sandbox; stop + start the test proxy; assert /health still
 returns 200 from the same running sandbox.
-  - *Consequence if unasserted:* If the sandbox's cached token goes stale on proxy
-restart, every agent-originated diagnostic call fails 401.
-This regression killed `safeyolo explain` when we first
-migrated from Docker bind-mounts to microVM copies.
+  - *Consequence if unasserted:* A recreated token or Unix socket must remain reachable from
+the same sandbox. File-binding the old socket inode made every
+reconnect fail even though the host pathname had been recreated.
 
 ### `tests/blackbox/host/proxy/test_credential_guard.py`
 
