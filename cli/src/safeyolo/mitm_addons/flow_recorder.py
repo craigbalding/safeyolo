@@ -163,7 +163,7 @@ class FlowRecorder:
         # Context
         context_json = json.dumps(context) if context else None
 
-        return {
+        record = {
             "request_id": flow.metadata.get("request_id"),
             "ts_start": ts_start,
             "ts_end": ts_end,
@@ -175,7 +175,7 @@ class FlowRecorder:
             "test": context.get("test"),
             "role": context.get("role"),
             "context_json": context_json,
-            "source_type": None,
+            "source_type": flow.metadata.get("origin"),
             "flow_state": flow_state,
             "scheme": scheme,
             "host": host,
@@ -194,6 +194,12 @@ class FlowRecorder:
             "request_body": req_body,
             "response_body": resp_body,
         }
+        if flow.metadata.get("origin") == "operator":
+            record["provenance_tags"] = {
+                "operator_action": str(flow.metadata.get("operator_action", "")),
+                "source_flow_id": str(flow.metadata.get("source_flow_id", flow.id)),
+            }
+        return record
 
     def _derive_flow_state(self, flow: http.HTTPFlow) -> str:
         """Determine flow state from flow metadata."""

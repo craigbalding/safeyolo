@@ -49,6 +49,7 @@ ADDON_CHAIN = [
     "agent_api.py",
     "loop_guard.py",
     "request_id.py",
+    "operator_provenance.py",
     "service_discovery.py",
     "sse_streaming.py",
     "policy_engine.py",

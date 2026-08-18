@@ -28,6 +28,7 @@ _FLOW_SEARCH_EXACT_FILTERS = {
     "method": "method = ?",
     "status_code": "status_code = ?",
     "flow_state": "flow_state = ?",
+    "source_type": "source_type = ?",
 }
 _FLOW_SEARCH_TEXT_FILTERS = {
     "path_contains",
@@ -483,6 +484,13 @@ class FlowStore:
         with self._lock:
             cursor = self._conn.execute(sql, params)
             flow_id = cursor.lastrowid
+            created_at = int(time.time() * 1000)
+            for tag, value in (record.get("provenance_tags") or {}).items():
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO flow_tags (flow_id, tag, value, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (flow_id, tag, value, created_at),
+                )
             self._conn.commit()
 
         # FTS insert (separate try/except so failure doesn't break recording)
@@ -623,7 +631,7 @@ class FlowStore:
         SELECT id, request_id, ts_start, ts_end, duration_ms,
                engagement_id, agent_id, source_id,
                run, test, role,
-               flow_state, method, host, path, query_string, full_url,
+               source_type, flow_state, method, host, path, query_string, full_url,
                status_code, reason,
                request_content_type, response_content_type, is_websocket,
                request_body_size, response_body_size,

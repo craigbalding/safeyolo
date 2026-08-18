@@ -164,6 +164,22 @@ class TestResponseRecording:
         assert results[0]["agent_id"] == "boris"
         assert results[0]["engagement_id"] == "boris"
 
+    def test_operator_origin_is_persisted_as_source_type(self, recorder):
+        flow = _make_test_flow()
+        flow.metadata["origin"] = "operator"
+        flow.metadata["operator_action"] = "replay"
+        flow.metadata["source_flow_id"] = "source-flow-123"
+
+        recorder.response(flow)
+
+        summary = recorder.store.search_flows({"source_type": "operator"})[0]
+        assert summary["source_type"] == "operator"
+        stored = recorder.store.get_flow(summary["id"])
+        assert {tag["tag"]: tag["value"] for tag in stored["tags"]} == {
+            "operator_action": "replay",
+            "source_flow_id": "source-flow-123",
+        }
+
     def test_context_fields_extracted(self, recorder):
         flow = _make_test_flow()
         flow.metadata["ccapt_context"] = {

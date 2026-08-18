@@ -56,7 +56,7 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 25
+        assert len(ADDON_CHAIN) == 26
 
     def test_addon_chain_starts_with_unix_listener(self):
         """First addon loaded is unix_listener.py.
