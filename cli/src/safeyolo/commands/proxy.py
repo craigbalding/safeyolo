@@ -2,14 +2,34 @@
 
 from __future__ import annotations
 
+import webbrowser
+from copy import deepcopy
+
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
 from ..config import load_config, save_config
+from ..events import EventKind, Severity, write_event
 from ..ignore_hosts import normalize_ignore_host, normalize_ignore_hosts
-from ..proxy import is_proxy_running, sync_proxy_ignore_hosts
+from ..proxy import (
+    is_proxy_running,
+    sync_proxy_ignore_hosts,
+    sync_web_tailnet,
+    web_tailnet_status_file,
+)
+from ..tailnet import (
+    TailnetServeError,
+    preflight_tailnet_serve,
+    read_tailnet_state,
+    run_tailscale_json,
+    tailnet_identity,
+    tailnet_mapping_ready,
+    tailnet_port_in_use,
+    tailnet_url,
+    validate_tailnet_port,
+)
 
 console = Console()
 
@@ -23,7 +43,282 @@ ignore_host_app = typer.Typer(
     help="Manage exact TLS passthrough hosts.",
     no_args_is_help=True,
 )
+web_app = typer.Typer(
+    name="web",
+    help="Manage the operator WebMITM interface.",
+    no_args_is_help=True,
+)
 proxy_app.add_typer(ignore_host_app, name="ignore-host")
+proxy_app.add_typer(web_app, name="web")
+
+
+def _web_tailnet_config(config: dict) -> dict:
+    proxy_config = config.setdefault("proxy", {})
+    value = proxy_config.setdefault("web_tailnet", {"enabled": False, "port": 443})
+    if not isinstance(value, dict):
+        raise ValueError("proxy.web_tailnet must be a mapping")
+    return value
+
+
+def _web_target(config: dict) -> str:
+    return f"http://127.0.0.1:{int(config['proxy'].get('web_port', 8081))}"
+
+
+def _web_tailnet_runtime(config: dict) -> dict:
+    """Inspect configured and actual state without mutating Tailscale."""
+    share = _web_tailnet_config(config)
+    enabled = share.get("enabled", False) is True
+    port = share.get("port", 443)
+    result = {
+        "enabled": enabled,
+        "port": port,
+        "state": "disabled" if not enabled else "inactive",
+        "url": None,
+        "detail": None,
+    }
+    if not enabled:
+        return result
+    try:
+        validate_tailnet_port(port)
+        dns_name = tailnet_identity()
+        result["url"] = tailnet_url(dns_name, port)
+        serve_status = run_tailscale_json("serve", "status", "--json")
+        target = _web_target(config)
+        if tailnet_mapping_ready(serve_status, port, target):
+            result["state"] = "healthy"
+        elif tailnet_port_in_use(serve_status, port):
+            result["state"] = "collision"
+            result["detail"] = "port is mapped to a different target"
+        elif is_proxy_running():
+            state = read_tailnet_state(web_tailnet_status_file())
+            result["state"] = "degraded"
+            result["detail"] = state.get("detail") or "Serve mapping is absent"
+    except (TailnetServeError, ValueError) as exc:
+        result["state"] = "degraded" if is_proxy_running() else "inactive"
+        result["detail"] = str(exc)
+    return result
+
+
+def _apply_web_config(config: dict, previous: dict) -> bool:
+    """Persist and live-reconcile a web change, rolling back both on failure."""
+    running = is_proxy_running()
+    save_config(config)
+    if not running:
+        return False
+
+    share = _web_tailnet_config(config)
+    admin_port = int(config["proxy"].get("admin_port", 9090))
+    applied, result = sync_web_tailnet(
+        share.get("enabled") is True,
+        int(share.get("port", 443)),
+        admin_port=admin_port,
+    )
+    if applied:
+        return True
+
+    save_config(previous)
+    prior_share = _web_tailnet_config(previous)
+    restored, restore_result = sync_web_tailnet(
+        prior_share.get("enabled") is True,
+        int(prior_share.get("port", 443)),
+        admin_port=int(previous["proxy"].get("admin_port", 9090)),
+    )
+    error = str(result.get("error") or "live reconcile failed")
+    if not restored:
+        restore_error = str(restore_result.get("error") or "live rollback failed")
+        raise RuntimeError(
+            f"change failed ({error}); previous live state could not be restored "
+            f"({restore_error})"
+        )
+    raise RuntimeError(f"change failed; previous configuration and live state restored: {error}")
+
+
+def _print_web_share(runtime: dict) -> None:
+    url = runtime.get("url")
+    if url:
+        console.print(f"WebMITM Tailnet URL: [bold cyan]{escape(str(url))}[/bold cyan]")
+    console.print(
+        "[dim]Authentication remains enabled; use the host's existing SafeYolo admin credential when prompted.[/dim]"
+    )
+
+
+@web_app.command("share")
+def web_share(
+    tailnet: bool = typer.Option(
+        False,
+        "--tailnet",
+        help="Persistently publish WebMITM with Tailscale Serve",
+    ),
+    port: int | None = typer.Option(
+        None,
+        "--port",
+        min=1,
+        max=65535,
+        help="Tailnet HTTPS port (default: 443)",
+    ),
+) -> None:
+    """Persistently share WebMITM with authenticated Tailnet HTTPS."""
+    if not tailnet:
+        console.print("[red]Error:[/red] choose the sharing boundary with --tailnet")
+        raise typer.Exit(2)
+
+    config = load_config()
+    previous = deepcopy(config)
+    proxy_config = config.setdefault("proxy", {})
+    if proxy_config.get("web_host", "127.0.0.1") != "127.0.0.1":
+        console.print("[red]Error:[/red] Tailnet sharing requires proxy.web_host to remain 127.0.0.1")
+        raise typer.Exit(2)
+    share = _web_tailnet_config(config)
+    selected_port = port if port is not None else int(share.get("port", 443))
+    try:
+        validate_tailnet_port(selected_port)
+        target = _web_target(config)
+        same_config = (
+            is_proxy_running() and share.get("enabled") is True and share.get("port", 443) == selected_port
+        )
+        current_runtime = _web_tailnet_runtime(config) if same_config else {}
+        already_active = current_runtime.get("state") == "healthy"
+        dns_name = preflight_tailnet_serve(
+            selected_port,
+            allow_target=target if already_active else None,
+        )
+    except (TailnetServeError, ValueError) as exc:
+        event = (
+            "ops.web_tailnet_share_collision"
+            if "already has a Tailscale Serve mapping" in str(exc)
+            else "ops.web_tailnet_share_enable_failed"
+        )
+        write_event(
+            event,
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary="WebMITM Tailnet sharing preflight failed",
+            addon="cli.proxy.web",
+            details={"port": selected_port, "error": str(exc)},
+        )
+        console.print(f"[red]WebMITM share preflight failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(1) from exc
+
+    if already_active:
+        console.print("[yellow]WebMITM Tailnet sharing is already active.[/yellow]")
+        _print_web_share({"url": tailnet_url(dns_name, selected_port), "state": "healthy"})
+        return
+
+    share["enabled"] = True
+    share["port"] = selected_port
+    try:
+        applied = _apply_web_config(config, previous)
+    except RuntimeError as exc:
+        write_event(
+            "ops.web_tailnet_share_enable_failed",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary="Failed to enable persistent WebMITM Tailnet sharing",
+            addon="cli.proxy.web",
+            details={"port": selected_port, "error": str(exc)},
+        )
+        console.print(f"[red]Failed to enable WebMITM sharing:[/red] {escape(str(exc))}")
+        raise typer.Exit(1) from exc
+
+    write_event(
+        "ops.web_tailnet_share_enabled",
+        kind=EventKind.OPS,
+        severity=Severity.HIGH,
+        summary=f"Persistent WebMITM Tailnet sharing enabled on port {selected_port}",
+        addon="cli.proxy.web",
+        details={"port": selected_port},
+    )
+    suffix = "applied to running proxy" if applied else "applies on next SafeYolo start"
+    console.print(f"[green]WebMITM Tailnet sharing enabled[/green] [dim]({suffix})[/dim]")
+    runtime = _web_tailnet_runtime(config)
+    if runtime.get("url") is None:
+        runtime["url"] = tailnet_url(dns_name, selected_port)
+    _print_web_share(runtime)
+
+
+@web_app.command("unshare")
+def web_unshare() -> None:
+    """Disable persistent WebMITM Tailnet sharing."""
+    config = load_config()
+    previous = deepcopy(config)
+    share = _web_tailnet_config(config)
+    if share.get("enabled") is not True:
+        console.print("[yellow]WebMITM Tailnet sharing is already disabled.[/yellow]")
+        return
+    old_port = int(share.get("port", 443))
+    share["enabled"] = False
+    try:
+        applied = _apply_web_config(config, previous)
+    except RuntimeError as exc:
+        write_event(
+            "ops.web_tailnet_share_disable_failed",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary="Failed to disable persistent WebMITM Tailnet sharing",
+            addon="cli.proxy.web",
+            details={"port": old_port, "error": str(exc)},
+        )
+        console.print(f"[red]Failed to disable WebMITM sharing:[/red] {escape(str(exc))}")
+        raise typer.Exit(1) from exc
+    write_event(
+        "ops.web_tailnet_share_disabled",
+        kind=EventKind.OPS,
+        severity=Severity.HIGH,
+        summary=f"Persistent WebMITM Tailnet sharing disabled on port {old_port}",
+        addon="cli.proxy.web",
+        details={"port": old_port},
+    )
+    suffix = "applied to running proxy" if applied else "applies on next SafeYolo start"
+    console.print(f"[green]WebMITM Tailnet sharing disabled[/green] [dim]({suffix})[/dim]")
+
+
+@web_app.command("status")
+def web_status() -> None:
+    """Show local and Tailnet WebMITM access state."""
+    config = load_config()
+    runtime = _web_tailnet_runtime(config)
+    proxy_config = config["proxy"]
+    table = Table(title="WebMITM Interface", show_header=False)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+    table.add_row(
+        "Local",
+        f"http://127.0.0.1:{int(proxy_config.get('web_port', 8081))}",
+    )
+    table.add_row("Proxy", "[green]running[/green]" if is_proxy_running() else "stopped")
+    table.add_row("Tailnet", "enabled" if runtime["enabled"] else "disabled")
+    if runtime["enabled"]:
+        state = str(runtime["state"])
+        style = "green" if state == "healthy" else "yellow"
+        table.add_row("Tailnet Health", f"[{style}]{escape(state)}[/{style}]")
+        table.add_row("Tailnet HTTPS Port", str(runtime["port"]))
+        if runtime.get("url"):
+            table.add_row("Tailnet URL", escape(str(runtime["url"])))
+        if runtime.get("detail"):
+            table.add_row("Detail", escape(str(runtime["detail"])))
+    console.print(table)
+
+
+@web_app.command("open")
+def web_open() -> None:
+    """Open the configured WebMITM interface in the operator's browser."""
+    if not is_proxy_running():
+        console.print("[red]WebMITM is not running.[/red] Start SafeYolo first.")
+        raise typer.Exit(1)
+    config = load_config()
+    runtime = _web_tailnet_runtime(config)
+    if runtime["enabled"]:
+        if runtime["state"] != "healthy" or not runtime.get("url"):
+            console.print(
+                f"[red]Tailnet WebMITM share is {escape(str(runtime['state']))}.[/red] "
+                "Run [bold]safeyolo proxy web status[/bold] for details."
+            )
+            raise typer.Exit(1)
+        url = str(runtime["url"])
+    else:
+        url = f"http://127.0.0.1:{int(config['proxy'].get('web_port', 8081))}"
+    console.print(f"Opening: {escape(url)}")
+    webbrowser.open(url)
 
 
 def _load_entries() -> tuple[dict, list[str]]:

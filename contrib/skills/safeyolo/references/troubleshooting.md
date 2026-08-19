@@ -100,6 +100,7 @@ Request the narrowest relevant host-side action and explain the evidence:
 | `safeyolo policy show` | You need the operator to inspect compiled policy |
 | `safeyolo policy host add HOST --agent AGENT` | `/lookup` confirms a specific expected host is missing |
 | `safeyolo services show SERVICE` | You need capability, route, auth-header, or risk details |
+| `safeyolo agent shell AGENT --root` | The guest sudo helper is missing or broken and needs narrow operator repair; never use this for a policy or approval block |
 
 Do not tell the operator merely to "disable SafeYolo" or switch a guard to
 warn mode. State the exact host, capability, approval, or failing hop needed.

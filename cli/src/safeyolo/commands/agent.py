@@ -6,7 +6,6 @@ import os
 import re
 import shlex
 import subprocess
-import urllib.parse
 from pathlib import Path
 
 import typer
@@ -17,7 +16,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..agents_store import load_agent as _store_load_agent
-from ..agents_store import load_all_agents, save_agent
+from ..agents_store import (
+    load_all_agents,
+    reserve_agent_tailnet_port_change,
+    restore_agent_tailnet_port,
+    save_agent,
+)
 from ..agents_store import remove_agent as _store_remove_agent
 from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
@@ -38,6 +42,7 @@ from ..vm import (
     get_agent_config_share_dir,
     get_agent_status_dir,
     prepare_config_share,
+    stage_guest_desktop_launcher,
 )
 from ._service_discovery import find_service
 from .mount import is_path_protected
@@ -103,6 +108,45 @@ def _validate_instance_name(name: str) -> None:
 def _load_agent_metadata(name: str) -> dict:
     """Load agent metadata from policy.toml [agents] section."""
     return _store_load_agent(name)
+
+
+def _resolve_preview_tailnet_port(
+    name: str,
+    share: str,
+    requested_port: int | None,
+) -> tuple[int | None, int | None]:
+    """Validate preview sharing and reserve a stable per-agent port."""
+    normalized = share.strip().lower()
+    if normalized not in {"local", "tailnet"}:
+        raise ValueError("share must be local or tailnet")
+    if normalized == "local":
+        if requested_port is not None:
+            raise ValueError("--tailnet-port requires --share tailnet")
+        return None, None
+
+    from ..tailnet import validate_tailnet_port
+
+    if requested_port is not None:
+        validate_tailnet_port(requested_port)
+    return reserve_agent_tailnet_port_change(name, requested_port)
+
+
+def _rollback_preview_tailnet_port(
+    name: str,
+    reserved_port: int | None,
+    previous_port: int | None,
+) -> None:
+    """Undo a changed provisional reservation after preview startup fails."""
+    if reserved_port is None or reserved_port == previous_port:
+        return
+    try:
+        restore_agent_tailnet_port(name, reserved_port, previous_port)
+    except Exception as exc:  # noqa: BLE001 - preserve the original failure
+        log.warning(
+            "could not restore tailnet port reservation for %s: %s",
+            name,
+            exc,
+        )
 
 
 def _resolve_host_script_path(host_script: str | None) -> Path | None:
@@ -1324,13 +1368,15 @@ def shell(
     root: bool = typer.Option(
         False,
         "--root",
-        help="Open shell as root (default: non-root agent user)",
+        help="Operator recovery shell as guest root (default: agent user)",
     ),
 ) -> None:
     """Open a shell in a running agent sandbox.
 
-    By default, opens as the non-root agent user. Use --root for root access.
-    Use -c to run a single command and return its exit code.
+    By default, opens as the non-root agent user. Agents can use the in-guest
+    sudo helper for routine package installation; --root is the
+    operator-mediated recovery path. Use -c to run a single command and
+    return its exit code.
 
     Examples:
 
@@ -1378,7 +1424,7 @@ def preview(
     start_vnc: bool = typer.Option(
         False,
         "--start-vnc",
-        help="Start/restart the contrib noVNC helper inside the agent before previewing",
+        help="Start/restart SafeYolo's optional guest desktop before previewing",
     ),
     vnc_size: str = typer.Option(
         "auto",
@@ -1389,7 +1435,17 @@ def preview(
         None,
         "--browser",
         "-b",
-        help="Start noVNC and open this URL in Chromium inside the agent",
+        help="Start the guest desktop and open this URL in an available browser",
+    ),
+    share: str = typer.Option(
+        "local",
+        "--share",
+        help="Preview transport: local or tailnet",
+    ),
+    tailnet_port: int | None = typer.Option(
+        None,
+        "--tailnet-port",
+        help="Tailnet HTTPS port (default: stable per-agent allocation)",
     ),
 ) -> None:
     """Preview an agent-local HTTP service from the host browser.
@@ -1416,11 +1472,22 @@ def preview(
         console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
         raise typer.Exit(1)
 
+    try:
+        resolved_tailnet_port, previous_tailnet_port = _resolve_preview_tailnet_port(
+            name, share, tailnet_port,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1)
+
     start_novnc = start_vnc or browser_url is not None
     if start_novnc:
         try:
             vnc_geometry, detected_display_size = resolve_vnc_geometry(vnc_size)
         except ValueError as exc:
+            _rollback_preview_tailnet_port(
+                name, resolved_tailnet_port, previous_tailnet_port,
+            )
             console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         if detected_display_size:
@@ -1441,36 +1508,21 @@ def preview(
                 f"[yellow]Warning:[/yellow] noVNC starts on guest port 6080; "
                 f"this preview is forwarding port {guest_port}."
             )
+        stage_guest_desktop_launcher(name)
         command = (
-            "port_open() { (exec 3<>/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }; "
-            "command -v startvnc >/dev/null 2>&1 || "
-            "{ echo 'startvnc not found; use an agent rootfs with the noVNC helper' >&2; exit 127; }; "
-            "if port_open 6080; then "
-            "echo 'noVNC already running in the agent on 127.0.0.1:6080'; "
-            "else "
-            f"SAFEYOLO_PREVIEW_MANAGED=1 startvnc {shlex.quote(vnc_geometry)}; "
-            "fi"
+            "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start "
+            f"{shlex.quote(vnc_geometry)}"
         )
         if browser_url:
-            cdp_url = "http://127.0.0.1:9222/json/new?" + urllib.parse.quote(browser_url, safe="")
             command += (
-                "; command -v chrome >/dev/null 2>&1 || "
-                "{ echo 'chrome not found; use an agent rootfs with the Chromium helper "
-                "or use --start-vnc for display-only preview' >&2; exit 127; }; "
-                "if port_open 9222; then "
-                "command -v curl >/dev/null 2>&1 || "
-                "{ echo 'curl not found; cannot ask existing Chromium to open a URL' >&2; exit 127; }; "
-                f"curl -fsS -X PUT --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
-                f"curl -fsS --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
-                "{ echo 'failed to open URL in existing Chromium (log: /tmp/chrome-cdp.log)' >&2; exit 1; }; "
-                "echo 'Opened URL in existing Chromium'; "
-                "else "
-                f"setsid chrome {shlex.quote(browser_url)} >/tmp/chrome.log 2>&1 < /dev/null & "
-                "echo 'Chromium started in noVNC display (logs: /tmp/chrome.log)'; "
-                "fi"
+                " && /safeyolo/guest-desktop browser "
+                f"{shlex.quote(browser_url)}"
             )
         start_exit = plat.exec_in_sandbox(name, command, user="agent", interactive=False)
         if start_exit != 0:
+            _rollback_preview_tailnet_port(
+                name, resolved_tailnet_port, previous_tailnet_port,
+            )
             raise typer.Exit(start_exit)
 
     config = PreviewConfig(
@@ -1480,11 +1532,161 @@ def preview(
         ttl_seconds=ttl_seconds,
         open_browser=open_browser,
         display_path="/vnc.html#autoconnect=true&resize=remote" if start_novnc else "/",
+        tailnet_port=resolved_tailnet_port,
     )
     try:
         exit_code = serve_agent_preview(config, plat)
     except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _rollback_preview_tailnet_port(
+            name, resolved_tailnet_port, previous_tailnet_port,
+        )
         console.print(f"[red]Preview failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(1)
+    raise typer.Exit(exit_code)
+
+
+@agent_app.command()
+def desktop(
+    name: str = typer.Argument(..., help="Agent instance name"),
+    open_browser: bool = typer.Option(
+        False,
+        "--open",
+        help="Open the token-gated desktop preview in the default browser",
+    ),
+    ttl: str | None = typer.Option(
+        None,
+        "--ttl",
+        help="Close the host preview after a duration like 30s, 10m, or 1h",
+    ),
+    size: str = typer.Option(
+        "auto",
+        "--size",
+        "--vnc-size",
+        help="Desktop size: auto or WIDTHxHEIGHT",
+    ),
+    browser_url: str | None = typer.Option(
+        None,
+        "--browser",
+        "-b",
+        help="Launch an available guest browser at this URL",
+    ),
+    host_port: int = typer.Option(
+        0,
+        "--host-port",
+        help="Host loopback port to bind (default: choose a free port)",
+    ),
+    share: str = typer.Option(
+        "local",
+        "--share",
+        help="Preview transport: local or tailnet",
+    ),
+    tailnet_port: int | None = typer.Option(
+        None,
+        "--tailnet-port",
+        help="Tailnet HTTPS port (default: stable per-agent allocation)",
+    ),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help="Report guest desktop status without opening a preview",
+    ),
+    stop: bool = typer.Option(
+        False,
+        "--stop",
+        help="Stop the guest desktop stack",
+    ),
+) -> None:
+    """Start and securely access an optional graphical agent desktop.
+
+    SafeYolo owns desktop lifecycle and preview security. The running agent's
+    rootfs only needs to supply the graphical packages and optional browser.
+    """
+    _validate_instance_name(name)
+    if status and stop:
+        console.print("[red]Use only one of --status or --stop.[/red]")
+        raise typer.Exit(2)
+    if (status or stop) and (
+        open_browser or ttl is not None or browser_url is not None
+        or host_port != 0 or size != "auto" or share != "local"
+        or tailnet_port is not None
+    ):
+        console.print(
+            "[red]--status and --stop cannot be combined with preview or browser options.[/red]"
+        )
+        raise typer.Exit(2)
+
+    from ..platform import get_platform
+    from ..preview import PreviewConfig, parse_ttl, resolve_vnc_geometry, serve_agent_preview
+
+    platform = get_platform()
+    if not platform.is_sandbox_running(name):
+        console.print(f"[red]Agent '{escape(name)}' is not running.[/red]")
+        console.print(f"Start it with: [bold]safeyolo agent run {escape(name)}[/bold]")
+        raise typer.Exit(1)
+
+    stage_guest_desktop_launcher(name)
+    if status or stop:
+        action = "status" if status else "stop"
+        exit_code = platform.exec_in_sandbox(
+            name,
+            f"/safeyolo/guest-desktop {action}",
+            user="agent",
+            interactive=False,
+        )
+        raise typer.Exit(exit_code)
+
+    try:
+        geometry, detected_display_size = resolve_vnc_geometry(size)
+        ttl_seconds = parse_ttl(ttl)
+        resolved_tailnet_port, previous_tailnet_port = _resolve_preview_tailnet_port(
+            name, share, tailnet_port,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1)
+
+    if detected_display_size:
+        console.print(
+            f"Starting desktop in '{escape(name)}' at {geometry} "
+            f"(host display {detected_display_size[0]}x{detected_display_size[1]})..."
+        )
+    else:
+        console.print(f"Starting desktop in '{escape(name)}' at {geometry}...")
+
+    command = (
+        "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start "
+        f"{shlex.quote(geometry)}"
+    )
+    if browser_url:
+        command += (
+            " && /safeyolo/guest-desktop browser "
+            f"{shlex.quote(browser_url)}"
+        )
+    start_exit = platform.exec_in_sandbox(
+        name, command, user="agent", interactive=False,
+    )
+    if start_exit != 0:
+        _rollback_preview_tailnet_port(
+            name, resolved_tailnet_port, previous_tailnet_port,
+        )
+        raise typer.Exit(start_exit)
+
+    config = PreviewConfig(
+        agent=name,
+        guest_port=6080,
+        host_port=host_port,
+        ttl_seconds=ttl_seconds,
+        open_browser=open_browser,
+        display_path="/vnc.html#autoconnect=true&resize=remote",
+        tailnet_port=resolved_tailnet_port,
+    )
+    try:
+        exit_code = serve_agent_preview(config, platform)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _rollback_preview_tailnet_port(
+            name, resolved_tailnet_port, previous_tailnet_port,
+        )
+        console.print(f"[red]Desktop preview failed:[/red] {escape(str(exc))}")
         raise typer.Exit(1)
     raise typer.Exit(exit_code)
 
@@ -1663,6 +1865,11 @@ def config(
             table.add_row("Ports", "\n".join(current_ports))
         else:
             table.add_row("Ports", "[dim]none[/dim]")
+        tailnet_https_port = metadata.get("tailnet_port")
+        table.add_row(
+            "Tailnet HTTPS",
+            str(tailnet_https_port) if tailnet_https_port else "[dim]not reserved[/dim]",
+        )
         console.print(table)
         return
 

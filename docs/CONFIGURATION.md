@@ -28,6 +28,11 @@ version: 1
 proxy:
   port: 8080           # Proxy port for agents
   admin_port: 9090     # Admin API port
+  web_host: 127.0.0.1  # WebMITM remains host-loopback only
+  web_port: 8081
+  web_tailnet:
+    enabled: false     # Persistent Tailscale Serve publication
+    port: 443          # Fixed Tailnet HTTPS port
   image: safeyolo:latest
   container_name: safeyolo
   ignore_hosts: []      # Exact HOST or HOST:PORT TLS passthrough entries
@@ -42,6 +47,31 @@ modes:
 Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add|list|remove`.
 Changes are persisted atomically and applied to a running proxy through the
 operator-only admin API. Wildcards and regular expressions are not accepted.
+
+Manage the WebMITM interface with `safeyolo proxy web`:
+
+```bash
+safeyolo proxy web share --tailnet           # Use Tailnet HTTPS port 443
+safeyolo proxy web share --tailnet --port 8446
+safeyolo proxy web status
+safeyolo proxy web open
+safeyolo proxy web unshare
+```
+
+Sharing is persistent: the traffic master owns a foreground Tailscale Serve
+process, restores it on `safeyolo start`, and removes only that mapping on
+`safeyolo stop` or `proxy web unshare`. SafeYolo refuses an occupied Tailnet
+port and never resets unrelated Serve mappings or enables Funnel. The local
+WebMITM listener remains on `127.0.0.1`; the Tailnet URL retains mitmweb's
+admin-password authentication. Changes are reconciled live through the
+authenticated operator API when SafeYolo is running; the proxy and agent
+traffic are not restarted.
+
+The WebMITM interface can inspect and manipulate proxied traffic. Treat remote
+access as an administrative capability: restrict the host and port with
+Tailnet ACLs/grants and do not share the admin credential. On hosts where the
+Tailscale CLI cannot manage Serve as the current user, the operator can grant
+that one-time host capability with `sudo tailscale set --operator=$USER`.
 
 ## policy.toml
 
@@ -258,10 +288,19 @@ safeyolo policy host list --agent boris
 safeyolo policy host bypass api.stripe.com circuit_breaker
 safeyolo policy host bypass api.stripe.com pattern_scanner --agent boris
 
+# Safely add/remove string values in addons.yaml lists
+safeyolo policy addon-list add test_context target_hosts target.example.com
+safeyolo policy addon-list add circuit_breaker excluded_domains dev.example.com
+safeyolo policy addon-list remove circuit_breaker excluded_domains dev.example.com
+
 # Apply a named list as a host entry
 safeyolo policy host add-list known_bad --egress deny
 safeyolo policy host add-list package_registries --rate 1200
 ```
+
+`policy addon-list` holds an exclusive lock, preserves unrelated YAML text and
+comments, validates the document before and after the narrow list mutation, and
+atomically replaces `addons.yaml`. Repeated add/remove operations are idempotent.
 
 ### Egress posture
 

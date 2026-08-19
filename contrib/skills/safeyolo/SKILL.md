@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Operate and troubleshoot from inside a SafeYolo sandbox. Use for SafeYolo proxy or TLS failures, policy and credential blocks, HTTP 403/428/429/503/508 responses, X-Blocked-By responses, Agent API queries, flow inspection, budgets, circuit breakers, service-gateway access, approvals through safeyolo watch, and approved agent-to-agent plumb collaboration.
+description: Operate and troubleshoot from inside a SafeYolo sandbox. Use for SafeYolo proxy or TLS failures, policy and credential blocks, HTTP 403/428/429/503/508 responses, guest package installation and sudo/setpriv behavior, X-Blocked-By responses, Agent API queries, flow inspection, budgets, circuit breakers, service-gateway access, approvals through safeyolo watch, and approved agent-to-agent plumb collaboration.
 ---
 
 # Operate inside SafeYolo
@@ -33,6 +33,9 @@ interfaces; do not try to bypass or weaken it.
 - Read [Troubleshooting and escalation](references/troubleshooting.md) for
   blocked responses, proxy/TLS failures, logs, request correlation, and exact
   host commands to ask the operator to run.
+- Read [Guest tools and privilege](references/guest-tools.md) before installing
+  native packages, diagnosing `sudo`, using Linux `setpriv`, or deciding
+  whether an operator root shell is actually necessary.
 
 Read only the reference needed for the current task.
 
@@ -44,4 +47,7 @@ Read only the reference needed for the current task.
   secrets.
 - Never request the admin token or port 9090, change addon modes, edit host
   policy, or suggest direct network bypasses.
+- Guest `sudo` is an intended capability, not host elevation. Keep its effects
+  inside the declared writable mounts and do not confuse it with permission to
+  alter host policy or SafeYolo's security boundary.
 - Ask for narrow operator action and explain why it is needed.

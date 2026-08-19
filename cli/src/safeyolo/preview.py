@@ -27,6 +27,11 @@ from http.cookies import SimpleCookie
 
 from .core.audit_schema import EventKind, Severity
 from .events import write_event
+from .tailnet import (
+    TailnetServeError,
+    TailnetServeSession,
+    start_tailnet_serve,
+)
 
 log = logging.getLogger("safeyolo.preview")
 
@@ -50,6 +55,12 @@ REQUEST_BODY_CHUNK_SIZE = 64 * 1024
 MAX_RESPONSE_HEADER_BYTES = 128 * 1024
 STREAM_CHUNK_SIZE = 64 * 1024
 DEFAULT_VNC_GEOMETRY = "1280x800"
+FORWARDED_PREVIEW_HEADERS = {
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+}
 
 
 @dataclass(frozen=True)
@@ -61,10 +72,10 @@ class PreviewConfig:
     ttl_seconds: int | None = None
     open_browser: bool = False
     display_path: str = "/"
+    tailnet_port: int | None = None
 
 
-class PreviewError(RuntimeError):
-    """Preview session failed."""
+PreviewError = TailnetServeError
 
 
 class PreviewHTTPServer(http.server.ThreadingHTTPServer):
@@ -202,14 +213,28 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         return bool(provided) and secrets.compare_digest(provided, self.server.session_token)
 
     def _unlock_request_has_local_origin(self) -> bool:
+        scheme = "http"
         host = self.headers.get("Host", "")
+        if self.client_address[0] in {"127.0.0.1", "::1"}:
+            forwarded_proto = self.headers.get("X-Forwarded-Proto", "")
+            forwarded_host = self.headers.get("X-Forwarded-Host", "")
+            if forwarded_proto == "https" and forwarded_host:
+                scheme = forwarded_proto
+                host = forwarded_host
         origin = self.headers.get("Origin")
         if origin:
             parsed = urllib.parse.urlsplit(origin)
-            if parsed.scheme != "http" or parsed.netloc != host:
+            if parsed.scheme != scheme or parsed.netloc != host:
                 return False
         sec_fetch_site = self.headers.get("Sec-Fetch-Site")
         return sec_fetch_site not in {"cross-site", "same-site"}
+
+    def _is_forwarded_https(self) -> bool:
+        return (
+            self.client_address[0] in {"127.0.0.1", "::1"}
+            and self.headers.get("X-Forwarded-Proto") == "https"
+            and bool(self.headers.get("X-Forwarded-Host"))
+        )
 
     def _read_unlock_code(self) -> str:
         content_type = self.headers.get("Content-Type", "")
@@ -373,9 +398,11 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
     def _set_session_cookie_and_redirect(self) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", normalize_display_path(self.server.config.display_path))
+        secure = "; Secure" if self._is_forwarded_https() else ""
         self.send_header(
             "Set-Cookie",
-            f"{TOKEN_COOKIE}={self.server.session_token}; Path=/; HttpOnly; SameSite=Strict",
+            f"{TOKEN_COOKIE}={self.server.session_token}; "
+            f"Path=/; HttpOnly; SameSite=Strict{secure}",
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
@@ -615,6 +642,10 @@ def sanitize_request_headers(headers, guest_port: int, *, is_upgrade: bool = Fal
         lk = key.lower()
         if lk == "host" or lk == TOKEN_HEADER.lower():
             continue
+        if lk.startswith("tailscale-") or lk in FORWARDED_PREVIEW_HEADERS:
+            # Tailscale Serve identity belongs to the operator/host boundary;
+            # it must not become attacker-controlled authority inside a guest.
+            continue
         if lk in HOP_BY_HOP_HEADERS and not (is_upgrade and lk in {"connection", "upgrade"}):
             continue
         if lk == "cookie":
@@ -727,46 +758,83 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
         raise
     host, port = server.server_address
     display_path = normalize_display_path(config.display_path)
-    url = f"http://{host}:{port}{display_path}"
-
-    write_event(
-        "agent.preview_open",
-        kind=EventKind.AGENT,
-        severity=Severity.LOW,
-        summary=f"Preview opened for {config.agent}:127.0.0.1:{config.guest_port}",
-        agent=config.agent,
-        addon="agent-preview",
-        details={"agent": config.agent, "guest_port": config.guest_port, "host": host, "host_port": port},
-    )
-
-    print("Preview open:")
-    print(f"  {url}")
-    print("Unlock code:")
-    print(f"  {unlock_code}")
-    print("Agent:")
-    print(f"  {config.agent} -> 127.0.0.1:{config.guest_port}")
-    print("Press Ctrl-C to close.")
-
-    if config.open_browser:
-        webbrowser.open(url)
-
+    tailnet_session: TailnetServeSession | None = None
+    preview_opened = False
     try:
+        if config.tailnet_port is not None:
+            tailnet_session = start_tailnet_serve(port, config.tailnet_port)
+            url = tailnet_session.url(display_path)
+        else:
+            url = f"http://{host}:{port}{display_path}"
+
+        write_event(
+            "agent.preview_open",
+            kind=EventKind.AGENT,
+            severity=Severity.LOW,
+            summary=f"Preview opened for {config.agent}:127.0.0.1:{config.guest_port}",
+            agent=config.agent,
+            addon="agent-preview",
+            details={
+                "agent": config.agent,
+                "guest_port": config.guest_port,
+                "host": host,
+                "host_port": port,
+                "tailnet_port": config.tailnet_port,
+            },
+        )
+        preview_opened = True
+
+        print("Tailnet preview:" if tailnet_session else "Preview open:")
+        print(f"  {url}")
+        print("Unlock code:")
+        print(f"  {unlock_code}")
+        print("Agent:")
+        print(f"  {config.agent} -> 127.0.0.1:{config.guest_port}")
+        print("Press Ctrl-C to close.")
+
+        if config.open_browser:
+            webbrowser.open(url)
+
+        if tailnet_session:
+            def watch_tailnet_serve() -> None:
+                tailnet_session.process.wait()
+                if not tailnet_session.closing:
+                    server.shutdown()
+
+            threading.Thread(target=watch_tailnet_serve, daemon=True).start()
         if config.ttl_seconds:
             timer = threading.Timer(config.ttl_seconds, server.shutdown)
             timer.daemon = True
             timer.start()
         server.serve_forever()
+        if tailnet_session and tailnet_session.process.poll() is not None:
+            output = tailnet_session.read_output()
+            suffix = f": {output}" if output else ""
+            print(
+                f"Tailscale Serve stopped unexpectedly"
+                f" (exit {tailnet_session.process.returncode}){suffix}",
+                file=sys.stderr,
+            )
+            return 1
         return 0
     except KeyboardInterrupt:
         return 0
     finally:
+        if tailnet_session:
+            tailnet_session.close()
         server.server_close()
-        write_event(
-            "agent.preview_close",
-            kind=EventKind.AGENT,
-            severity=Severity.LOW,
-            summary=f"Preview closed for {config.agent}:127.0.0.1:{config.guest_port}",
-            agent=config.agent,
-            addon="agent-preview",
-            details={"agent": config.agent, "guest_port": config.guest_port, "host_port": port},
-        )
+        if preview_opened:
+            write_event(
+                "agent.preview_close",
+                kind=EventKind.AGENT,
+                severity=Severity.LOW,
+                summary=f"Preview closed for {config.agent}:127.0.0.1:{config.guest_port}",
+                agent=config.agent,
+                addon="agent-preview",
+                details={
+                    "agent": config.agent,
+                    "guest_port": config.guest_port,
+                    "host_port": port,
+                    "tailnet_port": config.tailnet_port,
+                },
+            )

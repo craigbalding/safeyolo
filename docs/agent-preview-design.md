@@ -68,19 +68,50 @@ Useful options:
 safeyolo agent preview codey 8000 --host-port 54321
 safeyolo agent preview codey 8000 --open
 safeyolo agent preview codey 8000 --ttl 30m
+safeyolo agent desktop web --open
+safeyolo agent desktop web --browser https://example.com --open --ttl 15m
+safeyolo agent desktop web --share tailnet --ttl 15m
 safeyolo agent preview web 6080 --start-vnc
 safeyolo agent preview web 6080 -b https://example.com
 safeyolo agent preview web 6080 --start-vnc --vnc-size 1600x900
 ```
 
-`--start-vnc` is an explicit convenience for rootfs images that provide the
-contrib `startvnc` helper. With `--vnc-size auto`, the CLI detects the host
-display and starts the guest noVNC desktop at a size that fits the operator's
-browser better. `--browser` / `-b` is the higher-level browser path: it starts
-noVNC and launches Chromium inside the noVNC session at the requested URL.
-Managed noVNC previews print `/vnc.html#autoconnect=true&resize=remote`, so
-the noVNC web client connects when the page opens.
+`agent desktop` is the first-class operator workflow. SafeYolo stages its own
+launcher at `/safeyolo/guest-desktop`, checks the optional rootfs capability,
+starts the guest stack on loopback, and opens the same token-gated preview.
+The named agent must already be running; desktop access never starts its
+configured coding-agent process implicitly. `--status` and `--stop` manage the
+guest stack without opening a host preview.
+
+`preview --start-vnc` and `preview --browser` remain compatibility spellings,
+but call the same core launcher. With automatic sizing, the CLI detects the
+host display and starts the guest noVNC desktop at a size that fits the
+operator's browser. Managed noVNC previews use
+`/vnc.html#autoconnect=true&resize=remote`, so the client connects when the
+page opens. Rootfs images supply Xvfb, x11vnc, websockify/noVNC assets, a
+window manager, and optionally Chromium; SafeYolo never installs those
+packages at runtime.
 Ordinary HTTP preview sessions do not start guest services.
+
+### Optional Tailscale transport
+
+`--share tailnet` wraps the same loopback-only preview gateway in a foreground
+Tailscale Serve HTTPS mapping. It does not bind the gateway or guest service to
+a LAN/tailnet interface and never enables Funnel. The unlock code, session
+cookie, agent binding, audit events, and TTL remain enforced by SafeYolo.
+
+SafeYolo reserves a stable HTTPS port per configured agent in `policy.toml`,
+starting at 8443, so several agent previews can coexist on one host. An
+explicit `--tailnet-port` replaces that agent's reservation after checking it
+is not assigned to another SafeYolo agent. Before starting Serve, the CLI also
+refuses to replace an existing node-level Tailscale mapping on that port.
+
+The Tailscale process runs in foreground mode and is owned by the preview
+command. Ctrl-C, TTL shutdown, setup failure, and normal exit terminate that
+process; SafeYolo never calls `tailscale serve reset`. Requests arriving from
+the loopback reverse proxy may use Tailscale's forwarded HTTPS host/protocol
+for same-origin unlock validation and a Secure cookie. Tailscale identity and
+forwarding headers are removed before the request crosses into the guest.
 
 ## Transport model
 

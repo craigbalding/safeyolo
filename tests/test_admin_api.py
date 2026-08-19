@@ -1256,6 +1256,96 @@ class TestPutProxyIgnoreHosts:
         mock_ctx.options.update.assert_not_called()
 
 
+class TestPutProxyWebTailnet:
+    def test_reconciles_on_master_event_loop(self, handler_class):
+        addon = MagicMock()
+        handler_class._addons_obj = MagicMock()
+        handler_class._addons_obj.get.return_value = addon
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/web-tailnet",
+            body=json.dumps({"enabled": True, "port": 8446}),
+        )
+        future = MagicMock()
+        future.result.return_value = {
+            "enabled": True,
+            "port": 8446,
+            "state": "healthy",
+            "url": "https://host.example.ts.net:8446/",
+        }
+
+        with (
+            patch("admin_api.ctx") as mock_ctx,
+            patch(
+                "admin_api.asyncio.run_coroutine_threadsafe",
+                return_value=future,
+            ) as submit,
+            patch("admin_api.write_event") as write_event,
+        ):
+            handler.do_PUT()
+
+        assert handler._status == 200
+        response = _parse_response(handler)
+        assert response["state"] == "healthy"
+        assert response["port"] == 8446
+        addon.reconcile.assert_called_once_with(True, 8446)
+        submit.assert_called_once_with(
+            addon.reconcile.return_value,
+            mock_ctx.master.event_loop,
+        )
+        future.result.assert_called_once_with(timeout=40)
+        assert write_event.call_args.args[0] == "admin.web_tailnet_reconcile"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"enabled": "true", "port": 443},
+            {"enabled": True, "port": 0},
+            {"enabled": True, "port": 443, "funnel": True},
+        ],
+    )
+    def test_rejects_invalid_or_expansive_requests(self, handler_class, body):
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/web-tailnet",
+            body=json.dumps(body),
+        )
+
+        handler.do_PUT()
+
+        assert handler._status == 400
+
+    def test_surfaces_reconcile_failure_without_mutating_other_routes(
+        self, handler_class
+    ):
+        addon = MagicMock()
+        handler_class._addons_obj = MagicMock()
+        handler_class._addons_obj.get.return_value = addon
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/web-tailnet",
+            body=json.dumps({"enabled": True, "port": 443}),
+        )
+        future = MagicMock()
+        future.result.side_effect = RuntimeError("port already mapped")
+
+        with (
+            patch("admin_api.ctx"),
+            patch(
+                "admin_api.asyncio.run_coroutine_threadsafe",
+                return_value=future,
+            ),
+        ):
+            handler.do_PUT()
+
+        assert handler._status == 409
+        assert "port already mapped" in _parse_response(handler)["error"]
+
+
 
 class TestAuthentication:
     """Bearer token authentication."""

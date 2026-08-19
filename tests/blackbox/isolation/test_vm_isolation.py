@@ -15,6 +15,7 @@ import platform as _platform
 import socket
 import struct
 import subprocess
+import sys
 
 import pytest
 
@@ -42,6 +43,28 @@ def _is_microvm() -> bool:
         return False
     # VZ microVMs have /dev/vsock (virtio socket) and a real kernel
     return os.path.exists("/dev/vsock")
+
+
+def _run_as_gvisor_sandbox_root(
+    command: list[str],
+    *,
+    timeout: int = 10,
+) -> subprocess.CompletedProcess:
+    """Run one probe as gVisor's namespace-root, never as host root."""
+    if not _is_gvisor():
+        pytest.skip("sandbox-root setpriv probes apply to Linux gVisor")
+    return subprocess.run(
+        [
+            "setpriv",
+            "--reuid=0",
+            "--regid=0",
+            "--clear-groups",
+            *command,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
 class TestNetworkEscape:
@@ -523,13 +546,13 @@ class TestHostAdjacentReachability:
             self._assert_tcp_unreachable(host, port, f"sinkhole port {port}")
 
 
-class TestPrivilegeEscalation:
-    """Agent cannot gain root, load modules, or poke kernel memory.
+class TestGuestPrivilegeBoundary:
+    """Guest privilege remains inside the sandbox boundary.
 
-    Why: Every local privilege-escalation vector — running as root,
-    setuid(0), kernel module loading, /dev/mem, eBPF — is a path
-    to full sandbox escape. The agent must run unprivileged and be
-    unable to acquire privileges through any of these mechanisms.
+    Why: Agents start as uid 1000 but may need guest root to install
+    packages. On Linux that root is deliberately namespace-root,
+    mapped to an unprivileged subordinate host uid. Kernel modules,
+    host memory, and eBPF remain unavailable regardless of guest uid.
     """
 
     def test_runs_as_nonroot(self):
@@ -553,16 +576,46 @@ class TestPrivilegeEscalation:
         """
         assert os.getuid() == 1000, f"Expected UID 1000, got {os.getuid()}"
 
-    def test_cannot_gain_root(self):
-        """setuid(0) raises PermissionError.
+    def test_privilege_transition_matches_platform_contract(self):
+        """Guest-root transition follows the platform's isolation model.
 
-        What: os.setuid(0) under pytest.raises(PermissionError).
-        Why: If setuid to root works, the agent is 'nonroot' only
-        by convention. Any suid binary or kernel bug that bypasses
-        normal checks could elevate. Must fail at the syscall level.
+        What: On a hardware microVM, direct setuid(0) must fail. On
+        Linux gVisor, setpriv must reach uid 0 inside the sandbox;
+        the host-side uid-map test separately proves this maps to a
+        subordinate uid rather than host root.
+        Why: Package installation needs an intentional guest-root
+        path, while treating namespace-root as host root would both
+        break that feature and test the wrong security boundary.
         """
+        if _is_gvisor():
+            result = _run_as_gvisor_sandbox_root(["id", "-u"])
+            assert result.returncode == 0, (
+                f"setpriv could not reach sandbox root: {result.stderr}"
+            )
+            assert result.stdout.strip() == "0", result.stdout
+            return
+
         with pytest.raises(PermissionError):
             os.setuid(0)
+
+    def test_sudo_reaches_guest_root(self):
+        """The standard sudo command reaches root only inside the guest.
+
+        What: Run `sudo -n id -u` as the agent and require uid 0. On
+        gVisor the SafeYolo shim uses namespace capabilities; on a
+        hardware microVM the distro's normal sudo transition applies.
+        Why: Agents need a familiar, non-operator-mediated way to
+        install native packages without confusing host root with
+        sandbox or VM root.
+        """
+        result = subprocess.run(
+            ["sudo", "-n", "id", "-u"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "0", result.stdout
 
     def test_kernel_modules_disabled(self):
         """init_module(2) syscall returns non-success.
@@ -629,6 +682,105 @@ class TestPrivilegeEscalation:
                 ret = libc.syscall(sys_bpf, 0, 0, 0)
                 if ret == 0:
                     pytest.fail(f"BPF syscall ({sys_bpf}) succeeded")
+
+
+class TestSandboxRootContainment:
+    """Linux namespace-root cannot cross SafeYolo's host boundary.
+
+    Why: Allowing agents to install distro packages intentionally
+    grants root inside gVisor. The security property is therefore
+    containment: namespace-root must still be unable to modify the
+    host config share, reach host listeners, inspect host processes,
+    or access host devices.
+    """
+
+    def test_config_share_stays_readonly_as_sandbox_root(self):
+        """Sandbox root cannot write the host-backed config share.
+
+        What: Elevate with setpriv and attempt to create a file under
+        /safeyolo; require the write to fail and the path to remain
+        absent.
+        Why: If namespace-root can modify this host bind mount it can
+        tamper with proxy configuration or guest bootstrap state,
+        turning guest package installation into host-state mutation.
+        """
+        probe = "/safeyolo/sandbox-root-write-probe"
+        result = _run_as_gvisor_sandbox_root(
+            ["/bin/sh", "-c", f"printf x > {probe}"],
+        )
+        assert result.returncode != 0, (
+            "Sandbox root wrote to the read-only /safeyolo share"
+        )
+        assert not os.path.exists(probe), (
+            f"Sandbox-root write probe unexpectedly exists: {probe}"
+        )
+
+    def test_host_listener_stays_unreachable_as_sandbox_root(self):
+        """Sandbox root cannot connect to a live host TCP listener.
+
+        What: Elevate with setpriv, parse the host endpoint from the
+        configured proxy URL, and attempt a direct TCP connection to
+        the harness's known-live host listener; require failure.
+        Why: Guest root must not turn the loopback-only network
+        namespace into a path to host services or the admin API.
+        """
+        marker = "/safeyolo/host-listener-port"
+        if not os.path.exists(marker):
+            pytest.skip("Host listener marker not provided by harness")
+        port = open(marker).read().strip()
+        proxy = os.environ.get("HTTP_PROXY", "")
+        if not proxy:
+            pytest.skip("HTTP_PROXY not set")
+        from urllib.parse import urlparse
+        host = urlparse(proxy).hostname
+        if not host:
+            pytest.skip(f"Could not parse host from HTTP_PROXY={proxy!r}")
+
+        code = (
+            "import socket,sys; "
+            "s=socket.socket(); s.settimeout(3); "
+            "\ntry: s.connect((sys.argv[1], int(sys.argv[2])))"
+            "\nexcept OSError: sys.exit(0)"
+            "\nelse: sys.exit(9)"
+        )
+        result = _run_as_gvisor_sandbox_root(
+            [sys.executable, "-c", code, host, port],
+        )
+        assert result.returncode == 0, (
+            f"Sandbox root connected to live host listener {host}:{port}"
+        )
+
+    def test_host_kernel_surfaces_stay_absent_as_sandbox_root(self):
+        """Sandbox root sees neither host devices nor the host PID 1.
+
+        What: Elevate with setpriv, assert /dev/kvm, /dev/mem and
+        /dev/kmem are absent, then assert PID 1's command line is not
+        a host init such as systemd or launchd.
+        Why: Exposing a host device or process namespace to guest root
+        would convert an intentionally useful guest capability into a
+        direct host-compromise primitive.
+        """
+        code = """
+import os
+import sys
+
+for path in ("/dev/kvm", "/dev/mem", "/dev/kmem"):
+    if os.path.exists(path):
+        raise SystemExit(f"host device exposed: {path}")
+
+try:
+    cmdline = open("/proc/1/cmdline", "rb").read().decode(errors="replace")
+except OSError:
+    cmdline = ""
+for host_init in ("systemd", "launchd"):
+    if host_init in cmdline:
+        raise SystemExit(f"host PID namespace exposed: {cmdline!r}")
+sys.exit(0)
+"""
+        result = _run_as_gvisor_sandbox_root(
+            [sys.executable, "-c", code],
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class TestFilesystemIsolation:

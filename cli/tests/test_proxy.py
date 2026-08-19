@@ -1696,6 +1696,15 @@ class TestProxyStartupSmoke:
             assert scoped["test_id"] == "FLOW-05"
             stats = api.stats()
             assert stats["flow-pruner"]["configured_max"] == 5000
+            assert stats["safeyolo-web-tailnet-share"]["state"] == "disabled"
+
+            reconciled, web_tailnet = proxy.sync_web_tailnet(
+                False,
+                443,
+                admin_port=admin_port,
+            )
+            assert reconciled is True
+            assert web_tailnet["state"] == "disabled"
 
             import httpx
 
@@ -1779,11 +1788,13 @@ class TestStartProxy:
         addons_dir = tmp_path / "addons"
         addons_dir.mkdir()
         pid_file = data_dir / "proxy.pid"
+        launched = {}
 
         def _start_simulate_addon(*args, **kwargs):
             # Simulate addons/pid_writer.py's `running` hook writing the
             # pid file after mitmproxy binds the listener.
             pid_file.write_text("42\n")
+            launched.update(kwargs)
 
         with patch("safeyolo.proxy.is_proxy_running", return_value=False), \
              patch("safeyolo.proxy._find_addons_dir", return_value=addons_dir), \
@@ -1796,6 +1807,11 @@ class TestStartProxy:
 
         assert pid_file.exists()
         assert pid_file.read_text().strip() == "42"
+        assert launched["env"]["SAFEYOLO_WEB_TAILNET_ENABLED"] == "0"
+        assert launched["env"]["SAFEYOLO_WEB_TAILNET_PORT"] == "443"
+        assert launched["env"]["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] == str(
+            data_dir / "web-tailnet-status.json"
+        )
 
     def test_raises_when_mitmdump_dies_during_startup(self, tmp_path, monkeypatch):
         """start_proxy surfaces exit code + log tail when mitmdump dies early."""

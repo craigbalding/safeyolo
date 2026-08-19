@@ -20,6 +20,7 @@ from .ignore_hosts import (
     build_ignore_patterns,
     normalize_ignore_hosts,
 )
+from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
 from .traffic_session import (
     session_process_alive,
     start_session,
@@ -75,6 +76,11 @@ ADDON_CHAIN = [
 
 def _pid_file() -> Path:
     return get_data_dir() / "proxy.pid"
+
+
+def web_tailnet_status_file() -> Path:
+    """Return the traffic master's durable WebMITM Tailnet state path."""
+    return get_data_dir() / "web-tailnet-status.json"
 
 
 def _read_startup_failure(path: Path, offset: int) -> str:
@@ -386,6 +392,49 @@ def sync_proxy_ignore_hosts(
         return False
     log.info("proxy ignore-host sync ok (%d operator entries)", len(hosts))
     return True
+
+
+def sync_web_tailnet(
+    enabled: bool,
+    port: int,
+    *,
+    admin_port: int | None = None,
+    timeout: float = TAILSCALE_OPERATION_TIMEOUT_SECONDS + 2.0,
+) -> tuple[bool, dict]:
+    """Ask the running traffic master to reconcile its Serve child."""
+    import httpx
+
+    config = load_config()
+    if admin_port is None:
+        admin_port = int(config.get("proxy", {}).get("admin_port", 9090))
+    token_path = get_data_dir() / "admin_token"
+    if not token_path.exists():
+        return False, {"error": "admin token is unavailable"}
+
+    try:
+        response = httpx.put(
+            f"http://127.0.0.1:{admin_port}/admin/proxy/web-tailnet",
+            json={"enabled": enabled, "port": port},
+            headers={"Authorization": f"Bearer {token_path.read_text().strip()}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        return False, {"error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"error": response.text[:200] or "invalid admin API response"}
+    if not isinstance(payload, dict):
+        payload = {"error": "unexpected admin API response"}
+    if response.status_code != 200:
+        log.warning(
+            "WebMITM Tailnet reconcile returned %d: %s",
+            response.status_code,
+            response.text[:200],
+        )
+        return False, payload
+    return True, payload
 
 
 def _build_command(
@@ -715,6 +764,19 @@ def start_proxy(
     env["SAFEYOLO_PROXY_PID_FILE"] = str(_pid_file())
     env["SAFEYOLO_DEFER_PROXY_READY"] = "1"
     env["SAFEYOLO_WEB_PASSWORD_FILE"] = str(data_dir / "admin_token")
+    web_tailnet = full_config.get("proxy", {}).get("web_tailnet", {})
+    if not isinstance(web_tailnet, dict):
+        raise ValueError("proxy.web_tailnet must be a mapping")
+    web_tailnet_enabled = web_tailnet.get("enabled", False)
+    if type(web_tailnet_enabled) is not bool:
+        raise ValueError("proxy.web_tailnet.enabled must be true or false")
+    web_tailnet_port = web_tailnet.get("port", 443)
+    validate_tailnet_port(web_tailnet_port)
+    if web_tailnet_enabled and full_config.get("proxy", {}).get("web_host", "127.0.0.1") != "127.0.0.1":
+        raise ValueError("WebMITM Tailnet sharing requires proxy.web_host to remain 127.0.0.1")
+    env["SAFEYOLO_WEB_TAILNET_ENABLED"] = "1" if web_tailnet_enabled else "0"
+    env["SAFEYOLO_WEB_TAILNET_PORT"] = str(web_tailnet_port)
+    env["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] = str(web_tailnet_status_file())
 
     # Pass test sinkhole config to child process (read by sinkhole_router addon)
     if test_config:
@@ -752,7 +814,8 @@ def start_proxy(
     # in 150-300ms; poll interval 50ms = sub-tick on success. On failure
     # proc.poll() surfaces the exit code immediately.
     try:
-        deadline = time.monotonic() + 10.0
+        startup_timeout = TAILSCALE_OPERATION_TIMEOUT_SECONDS if web_tailnet_enabled else 10.0
+        deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
             if pid_file.exists():
                 break
@@ -766,7 +829,7 @@ def start_proxy(
         else:
             failure = _read_startup_failure(event_log, event_offset)
             raise RuntimeError(
-                "Proxy did not signal ready within 10s.\n"
+                f"Proxy did not signal ready within {startup_timeout:g}s.\n"
                 f"{failure}"
             )
     except Exception:

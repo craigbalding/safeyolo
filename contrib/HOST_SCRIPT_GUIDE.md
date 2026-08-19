@@ -104,9 +104,15 @@ try to build Node from source against musl. Use Alpine's native packages and
 a persistent home prefix instead:
 
 ```sh
-sudo apk add nodejs npm
+sudo -n apk add nodejs npm
 npm install --global --prefix /home/agent/.local @example/myagent@latest
 ```
+
+This `sudo` is guest-only. On rootless Linux, SafeYolo's compatibility helper
+uses `setpriv` to reach namespace uid 0, which maps to a subordinate host uid;
+on hardware microVMs it delegates to ordinary distro sudo. Host scripts should
+use `sudo -n` for noninteractive guest package setup and must not instruct the
+operator to run `safeyolo agent shell --root` for routine installs.
 
 ## Idempotency
 

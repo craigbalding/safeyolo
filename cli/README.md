@@ -74,6 +74,33 @@ safeyolo doctor --fix       # Attempt to fix problems automatically
 | `safeyolo logs --security` | Show only security events |
 | `safeyolo logs --raw` | Output raw JSONL |
 
+### WebMITM interface
+
+WebMITM listens only on host loopback at `127.0.0.1:8081`. For a remote
+SafeYolo host, it can be persistently exposed to the tailnet without opening a
+public listener:
+
+```bash
+safeyolo proxy web share --tailnet          # Fixed HTTPS port 443
+safeyolo proxy web share --tailnet --port 8446
+safeyolo proxy web status
+safeyolo proxy web open
+safeyolo proxy web unshare
+```
+
+The mapping follows the SafeYolo proxy lifecycle and is restored after a
+restart; it has no daily TTL. Port collisions fail without replacing existing
+Tailscale Serve mappings, so per-agent desktop previews can coexist on their
+own ports. Funnel is never enabled. WebMITM still requires the existing host
+admin credential. Enabling, changing, or disabling the mapping on a running
+host is applied live without restarting the proxy or interrupting agents.
+
+Remote WebMITM access is an administrative capability: a logged-in operator
+can inspect and manipulate proxied traffic. Restrict the URL with Tailnet
+ACLs/grants and do not distribute the admin credential. If Tailscale reports
+`serve config denied`, run `sudo tailscale set --operator=$USER` once on the
+host, then retry the SafeYolo command.
+
 ### Approval Workflow
 
 | Command | Description |
@@ -105,6 +132,7 @@ Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gViso
 | `safeyolo agent stop <name>` | Stop a running agent |
 | `safeyolo agent list` | List configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
+| `safeyolo agent desktop <name> [--open]` | Start and securely preview an optional graphical desktop |
 | `safeyolo agent config <name>` | View or update agent configuration |
 | `safeyolo agent remove <name>` | Remove an agent |
 
@@ -134,6 +162,16 @@ safeyolo agent run myproject
 
 # Disable yolo mode
 safeyolo agent run myproject --no-yolo
+
+# If the running rootfs supplies a desktop stack, start and open it directly
+safeyolo agent desktop myproject --open
+
+# Optionally launch a guest browser and expire the host preview automatically
+safeyolo agent desktop myproject --browser https://example.com --open --ttl 15m
+
+# On a remote Tailscale host, publish the same gated preview to the tailnet
+safeyolo agent desktop myproject --share tailnet --ttl 15m
+
 ```
 
 **Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
@@ -147,6 +185,15 @@ safeyolo agent run myproject --no-yolo
 - `add` is idempotent: running it twice with the same folder + script just runs the existing agent
 - Use `--no-run` with `add` to create config without running
 - Without `--host-script`, the sandbox boots to a plain bash shell
+- Inside an agent, use ordinary `sudo apt install ...` (or the distro
+  equivalent) for ephemeral guest packages. This grants root only inside the
+  VM or gVisor sandbox; it does not invoke host sudo. `agent shell --root` is
+  the operator-mediated recovery path when the guest helper itself is broken.
+- `agent desktop` requires an already-running agent and never installs missing
+  guest packages; use `--status` or `--stop` for desktop lifecycle checks
+- `--share tailnet` keeps the guest and preview gateway loopback-only, then
+  publishes the gated gateway with foreground Tailscale Serve. SafeYolo
+  reserves a stable per-agent HTTPS port starting at 8443.
 
 ### Service Gateway
 
@@ -237,6 +284,13 @@ Manage hosts, egress posture, and named lists in policy.toml.
 | `safeyolo policy host list` | List all host rules |
 | `safeyolo policy host bypass <host>` | Bypass proxy for a host (no MITM) |
 | `safeyolo policy host add-list <host> --list <name>` | Add a host from a named list |
+
+**Addon list settings:**
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo policy addon-list add <addon> <setting> <value>` | Add a unique string to an `addons.yaml` list |
+| `safeyolo policy addon-list remove <addon> <setting> <value>` | Remove a string from an `addons.yaml` list |
 
 **Egress posture:**
 

@@ -251,11 +251,11 @@ echo "=== Installing base packages ==="
 # once globally, not per-agent. Keeping the compiler in the shared base
 # is the better tradeoff.
 #
-# Agents that need OTHER packages at runtime can still
-# `apt-get install X` as sandbox-root (via `safeyolo agent shell
-# --root`) — the sudoers + /etc/apt/apt.conf.d/99safeyolo-proxy in
-# rootfs-customize-hook.sh plus the /var/cache/apt + /var/lib/apt/lists
-# cache binds make that path work. It just doesn't survive restart.
+# Agents that need OTHER packages at runtime can still install them as
+# namespace-root without host sudo. The SafeYolo sudo shim uses the sandbox's
+# CAP_SETUID/CAP_SETGID path; /etc/apt/apt.conf.d/99safeyolo-proxy plus the
+# /var/cache/apt + /var/lib/apt/lists cache binds keep traffic mediated and
+# downloads warm. The unpacked install does not survive restart.
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends \
     ca-certificates curl git jq build-essential gnupg \

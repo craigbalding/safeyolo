@@ -14,6 +14,9 @@ from .config import get_config_dir
 
 log = logging.getLogger("safeyolo.agents-store")
 
+TAILNET_PORT_START = 8443
+TAILNET_PORT_END = 8999
+
 
 def _policy_toml_path() -> Path:
     """Path to ~/.safeyolo/policy.toml."""
@@ -137,6 +140,117 @@ def save_agent(name: str, metadata: dict) -> None:
         agents.add(name, _dict_to_toml_table(metadata))
 
     _locked_mutate(mutate)
+
+
+def reserve_agent_tailnet_port_change(
+    name: str,
+    requested: int | None = None,
+) -> tuple[int, int | None]:
+    """Persist a unique tailnet HTTPS port and return it with its prior value.
+
+    Allocation shares the policy lock with other agent metadata mutations, so
+    concurrent preview commands cannot reserve the same SafeYolo-managed port.
+    An explicit port may sit outside the automatic range, but still cannot be
+    assigned to two configured agents. The prior value lets a caller roll back
+    a provisional reservation when preview startup fails.
+    """
+    if requested is not None and (
+        type(requested) is not int or not 1 <= requested <= 65535
+    ):
+        raise ValueError("tailnet HTTPS port must be 1-65535")
+
+    def mutate(doc):
+        all_agents = _get_agents(doc)
+        if name not in all_agents:
+            raise KeyError(f"Agent not found: {name}")
+
+        metadata = dict(all_agents[name])
+        current = metadata.get("tailnet_port")
+        used = {
+            value.get("tailnet_port")
+            for other_name, value in all_agents.items()
+            if other_name != name
+            and isinstance(value, dict)
+            and type(value.get("tailnet_port")) is int
+        }
+        if requested is None and current is not None and type(current) is not int:
+            raise ValueError(
+                f"agent {name!r} has invalid tailnet HTTPS port {current!r}"
+            )
+        if requested is None and type(current) is int:
+            if not 1 <= current <= 65535:
+                raise ValueError(
+                    f"agent {name!r} has invalid tailnet HTTPS port {current}"
+                )
+            if current in used:
+                raise ValueError(
+                    f"tailnet HTTPS port {current} is already assigned to another agent"
+                )
+            return current, current
+        if requested is not None:
+            port = requested
+            if port in used:
+                raise ValueError(
+                    f"tailnet HTTPS port {port} is already assigned to another agent"
+                )
+        else:
+            port = next(
+                (candidate for candidate in range(TAILNET_PORT_START, TAILNET_PORT_END + 1)
+                 if candidate not in used),
+                None,
+            )
+            if port is None:
+                raise ValueError(
+                    f"no free automatic tailnet ports in "
+                    f"{TAILNET_PORT_START}-{TAILNET_PORT_END}"
+                )
+
+        metadata["tailnet_port"] = port
+        agents = _ensure_agents_table(doc)
+        del agents[name]
+        agents.add(name, _dict_to_toml_table(metadata))
+        previous = current if type(current) is int else None
+        return port, previous
+
+    return _locked_mutate(mutate)
+
+
+def reserve_agent_tailnet_port(name: str, requested: int | None = None) -> int:
+    """Return and persist a unique tailnet HTTPS port for an agent."""
+    port, _previous = reserve_agent_tailnet_port_change(name, requested)
+    return port
+
+
+def restore_agent_tailnet_port(
+    name: str,
+    expected: int,
+    previous: int | None,
+) -> bool:
+    """Compare-and-swap a provisional reservation back to its prior value."""
+    if type(expected) is not int or not 1 <= expected <= 65535:
+        raise ValueError("tailnet HTTPS port must be 1-65535")
+    if previous is not None and (
+        type(previous) is not int or not 1 <= previous <= 65535
+    ):
+        raise ValueError("previous tailnet HTTPS port must be 1-65535")
+
+    def mutate(doc):
+        all_agents = _get_agents(doc)
+        if name not in all_agents:
+            return False
+        metadata = dict(all_agents[name])
+        if metadata.get("tailnet_port") != expected:
+            return False
+        if previous is None:
+            metadata.pop("tailnet_port", None)
+        else:
+            metadata["tailnet_port"] = previous
+        agents = _ensure_agents_table(doc)
+        del agents[name]
+        agents.add(name, _dict_to_toml_table(metadata))
+        return True
+
+    return _locked_mutate(mutate)
 
 
 def remove_agent(name: str) -> bool:

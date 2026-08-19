@@ -69,6 +69,10 @@ What's required:
    - `shadow` or equivalent (provides `useradd` + `usermod`; the latter
      is used to unlock the agent account so OpenSSH accepts pubkey auth
      — Alpine's OpenSSH refuses locked accounts even for pubkey)
+   - `sudo` (the distro implementation used for standard command-line
+     semantics and hardware-microVM guest elevation)
+   - `setpriv` from `util-linux` (the SafeYolo sudo shim uses the agent's
+     existing namespace capabilities on rootless Linux gVisor)
 
    Optional:
    - `python3` — only needed if you want `safeyolo agent shell <name>
@@ -90,6 +94,11 @@ install_safeyolo_mise /path/to/unpacked/rootfs "$SAFEYOLO_TARGET_ARCH"
 install_safeyolo_guest_common /path/to/unpacked/rootfs
 ```
 
+The helper also pre-creates SafeYolo's host bind-mount destinations before
+Linux remaps the finished tree to its subordinate UID range. Custom builders
+should not defer creation of `/workspace`, `/safeyolo`, `/safeyolo-status`, or
+the CA certificate mount target to agent startup.
+
 Use `install_safeyolo_mise` only for glibc-compatible rootfs trees. Alpine
 should install its native musl-linked package instead:
 
@@ -107,6 +116,7 @@ This installs:
   other `sbin` tools are visible in non-login shells
 - mise profile glue at `/etc/profile.d/mise.sh` (if `mise` is in the tree)
 - BusyBox-backed `hexdump` / `nc` shims (if BusyBox is in the tree)
+- `/usr/local/bin/sudo` compatibility shim and passwordless guest-root policy
 - hostname = `safeyolo`
 
 The helper is idempotent — safe to re-run.
@@ -141,7 +151,14 @@ The Lima VM is created on first `agent add --rootfs-script` run (or first
 that VM with the script directory and the target agent directory mounted
 in. Output images land on the macOS host via the bind mount.
 
-Linux hosts skip Lima entirely and run the script natively.
+Linux hosts skip Lima and run a private copy of the script from the native
+temporary build directory. Staging avoids `ETXTBSY` (`Text file busy`) when
+the selected script lives on a writable 9p/FUSE share or is open in an editor.
+SafeYolo itself does not elevate arbitrary custom scripts. The bundled Kali
+example requests command-scoped `sudo` for rootful `umoci unpack`, chrooted
+distro package installation (including temporary `/proc`, `/sys`, and `/dev`
+binds), filesystem staging, and the uid-100000 ownership required by the
+rootless gVisor mapping. Downloads and orchestration remain unprivileged.
 
 ## Tooling cheat sheet, by approach
 
@@ -199,8 +216,11 @@ Review the script, save it in `contrib/<distro>/`, and wire it in via
 
 ## Security note
 
-The script runs with your permissions on your Linux host, or as root inside
-your Lima VM. That's fine when the script is yours or from a source you
-trust. Don't run rootfs scripts from strangers without reading them — same
-rule as any shell script, with the added sharp edge that rootfs scripts
-routinely invoke package managers and download tool binaries.
+SafeYolo invokes the script with your permissions on Linux, or as root inside
+the isolated Lima builder VM on macOS. A Linux script may request privilege
+itself; the bundled Kali example uses command-scoped `sudo` rather than
+elevating the entire script. Its chrooted distro package manager still executes
+signed package maintainer scripts as host root, and `chroot` is not a security
+boundary. Downloads from other sources should remain unprivileged and be
+staged before privileged installation. Don't run rootfs scripts from strangers
+without reading them.

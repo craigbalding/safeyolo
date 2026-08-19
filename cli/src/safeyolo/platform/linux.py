@@ -507,6 +507,29 @@ class LinuxPlatform(AgentPlatform):
                 f"install etc.) would fail on permission denied.\n"
                 f"Fix: sudo chown -R 100000:100000 {path}"
             )
+
+        # Bind destinations must be part of the built tree.  A custom Linux
+        # tree is deliberately owned by subordinate uid 100000, so the
+        # unprivileged host launcher cannot create a missing directory at run
+        # time.  guest/install-guest-common.sh and the default rootfs hook both
+        # establish these targets before uid remapping.
+        required_dirs = ("workspace", "safeyolo", "safeyolo-status", "home/agent")
+        missing_targets = [
+            f"/{relative}"
+            for relative in required_dirs
+            if not (path / relative).is_dir()
+        ]
+        ca_target = path / "usr/local/share/ca-certificates/safeyolo.crt"
+        if not ca_target.is_file():
+            missing_targets.append("/usr/local/share/ca-certificates/safeyolo.crt")
+        if missing_targets:
+            rendered = ", ".join(missing_targets)
+            raise RuntimeError(
+                f"Rootfs tree {path} is missing required SafeYolo bind-mount "
+                f"target(s): {rendered}.\n"
+                f"Rebuild it with the current guest/install-guest-common.sh "
+                f"helper."
+            )
         return path
 
     # --- Sandbox lifecycle ---
@@ -562,7 +585,6 @@ class LinuxPlatform(AgentPlatform):
         # Idempotent; matches the Darwin pattern at vm.py:start_vm.
         ensure_agent_persistent_dirs(name)
 
-        os.makedirs(rootfs / "workspace", exist_ok=True)
         # runsc inside the userns operates as subordinate uid 100000
         # on the host filesystem and needs rwx on its state dir.
         # Scope the grant tightly via ACL to that single uid rather

@@ -143,27 +143,12 @@ rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key "$ROOTFS"/etc/ssh/ssh_host_*_key.pub 2>/d
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
-# Pre-create OCI bind-mount targets. gVisor's gofer tries to create any
-# missing bind-mount destinations; with overlay-dir= mode the overlay
-# upper takes the creates, but some places (rootfs paths blocked by
-# readonly + host-uid ownership) can still trip the gofer. Pre-creating
-# the exact target paths in the image sidesteps it entirely — the bind
-# mount lands on an existing directory/file regardless of overlay state.
-#
-# /home/agent already exists from useradd -m above; listed here for doc.
-# safeyolo.crt is a zero-byte file because it's a FILE bind-mount
-# target (vs the directory bind-mounts above); bind-mounting onto
-# a file requires the target to be a regular file.
-mkdir -p \
-    "$ROOTFS/workspace" \
-    "$ROOTFS/safeyolo" \
-    "$ROOTFS/safeyolo-status" \
-    "$ROOTFS/home/agent"
-: > "$ROOTFS/usr/local/share/ca-certificates/safeyolo.crt"
-# /safeyolo/proxy.sock — the per-agent proxy UDS is file-bind-mounted
-# here by the platform layer. Pre-create as an empty regular file so
-# gVisor can bind over it without needing to create-on-readonly-root.
-: > "$ROOTFS/safeyolo/proxy.sock"
+# Pre-create the host bind-mount destinations.  Custom rootfs builders call
+# the same function through install_safeyolo_guest_common, keeping the two
+# image-build paths on one runtime contract.
+source "$GUEST_SRC_DIR/install-guest-common.sh"
+install_safeyolo_runtime_mount_targets "$ROOTFS"
+install_safeyolo_privilege_helper "$ROOTFS"
 
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"
@@ -213,21 +198,15 @@ find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 # compilers and system libs can be pulled on demand instead of living
 # in the shipped base.
 #
-# Operator model under rootless gVisor: on-demand package installs
-# are a HOST-OPERATOR action, not an in-sandbox agent action.
+# Agent package model under rootless gVisor: on-demand installs are a
+# sandbox-root action, not a host-root action. The agent's runsc exec process
+# can use CAP_SETUID/CAP_SETGID to enter uid 0 inside gVisor; the outer userns
+# maps that identity to subordinate host uid 100000 rather than host root.
 #
-#   Works:
-#     safeyolo agent shell NAME --root -c "apt-get install -y PKG"
-#
-#   Doesn't work:
-#     (agent user inside the sandbox) sudo apt-get install -y PKG
-#
-# Why: rootless user namespaces ignore the setuid bit, so `sudo`
-# running as the agent user (uid 1000) can't escalate to root. No
-# sudoers config fixes that — it's a kernel/userns property. Package
-# installs therefore happen via `safeyolo agent shell --root`, which
-# invokes `runsc exec --user 0:0` directly and lands the caller as
-# sandbox-root with no setuid dance.
+# SafeYolo's guest helper exposes the capability as the normal sudo-like UX:
+#   sudo apt-get install -y PKG
+# `safeyolo agent shell NAME --root` remains an operator recovery path, not
+# a requirement for routine package installation.
 #
 # Important caveat: the install itself persists only for the life of
 # the sandbox. The Linux overlay is memory-backed (gVisor silently

@@ -68,5 +68,35 @@ mise use -g npm:typescript
 ```
 
 Use the OS package manager only for native libraries, headers, daemons, and
-other system dependencies. On Alpine custom rootfs images, prefer `apk`'s
-musl-native Node.js package rather than asking mise to build Node from source.
+other system dependencies. SafeYolo provides passwordless **guest** sudo for
+that purpose; use `-n` so a broken configuration fails instead of waiting for
+a password that does not exist:
+
+```sh
+# Debian, Ubuntu, or Kali
+sudo -n apt-get update
+sudo -n apt-get install -y PACKAGE
+
+# Alpine
+sudo -n apk add PACKAGE
+```
+
+This reaches root only inside the isolated guest. It does not invoke host sudo
+or grant access beyond the guest's existing writable mounts and mediated
+network path. Package downloads still traverse SafeYolo and can require normal
+policy approval.
+
+On rootless Linux gVisor, `/usr/local/bin/sudo` uses the agent's existing
+namespace capabilities through `/usr/bin/setpriv`; guest uid 0 maps to an
+unprivileged subordinate host uid. The underlying Linux-only diagnostic form
+is `setpriv --reuid=0 --regid=0 --clear-groups COMMAND`, but prefer `sudo` for
+normal work because it is portable to hardware microVMs and preserves the
+configured proxy and CA environment. Do not ask the operator for
+`safeyolo agent shell --root` for routine installs; that is a recovery path
+when guest sudo itself is broken.
+
+Only `/home/agent` and `/workspace` are guaranteed persistent. In particular,
+Linux gVisor discards installed OS-package files when the agent stops, although
+per-agent package-download caches keep reinstalls cheap. On Alpine custom
+rootfs images, prefer `apk`'s musl-native Node.js package rather than asking
+mise to build Node from source.

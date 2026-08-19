@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import os
 import socket
 import sys
+import threading
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,12 @@ from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
 from .events import EventKind, Severity, write_event
+from .tailnet import (
+    TailnetServeSession,
+    start_tailnet_serve,
+    validate_tailnet_port,
+    write_tailnet_state,
+)
 
 log = logging.getLogger("safeyolo.traffic-master")
 
@@ -318,6 +326,206 @@ class WebFrontend:
             await self.server.close_all_connections()
 
 
+class WebTailnetShare:
+    """Own the persistent foreground Serve process for the WebMITM UI."""
+
+    name = "safeyolo-web-tailnet-share"
+
+    def __init__(self, master: TrafficMaster) -> None:
+        self.master = master
+        self.session: TailnetServeSession | None = None
+        self.enabled = os.environ.get("SAFEYOLO_WEB_TAILNET_ENABLED") == "1"
+        self.port = int(os.environ.get("SAFEYOLO_WEB_TAILNET_PORT", "443"))
+        self._reconcile_lock = asyncio.Lock()
+        raw_state_path = os.environ.get("SAFEYOLO_WEB_TAILNET_STATUS_FILE")
+        self.state_path = Path(raw_state_path) if raw_state_path else None
+
+    def _write_state(self, state: str, **details: Any) -> None:
+        if self.state_path is None:
+            return
+        try:
+            write_tailnet_state(
+                self.state_path,
+                {
+                    "state": state,
+                    "enabled": self.enabled,
+                    "port": self.port,
+                    **details,
+                },
+            )
+        except OSError as exc:
+            log.warning("Could not persist WebMITM Tailnet state: %s", exc)
+
+    def get_stats(self) -> dict[str, Any]:
+        session = self.session
+        healthy = session is not None and session.process.poll() is None
+        return {
+            "enabled": self.enabled,
+            "port": self.port,
+            "state": "healthy" if healthy else ("degraded" if self.enabled else "disabled"),
+            "url": session.url("/") if healthy else None,
+        }
+
+    async def reconcile(
+        self,
+        enabled: bool,
+        port: int,
+        *,
+        startup: bool = False,
+    ) -> dict[str, Any]:
+        """Apply desired state without interrupting the proxy event loop."""
+        async with self._reconcile_lock:
+            return await self._reconcile(enabled, port, startup=startup)
+
+    async def _reconcile(
+        self,
+        enabled: bool,
+        port: int,
+        *,
+        startup: bool,
+    ) -> dict[str, Any]:
+        validate_tailnet_port(port)
+        current = self.session
+        current_healthy = current is not None and current.process.poll() is None
+
+        if not enabled:
+            was_enabled = self.enabled
+            self.enabled = False
+            self.port = port
+            self.session = None
+            if current is not None:
+                await asyncio.to_thread(current.close)
+            self._write_state("disabled")
+            if was_enabled or current is not None:
+                write_event(
+                    "ops.web_tailnet_share_stopped",
+                    kind=EventKind.OPS,
+                    severity=Severity.MEDIUM,
+                    summary=f"WebMITM Tailnet share stopped on HTTPS port {port}",
+                    addon=self.name,
+                    details={"port": port},
+                )
+            return self.get_stats()
+
+        if self.master.options.web_host != "127.0.0.1":
+            message = "WebMITM Tailnet sharing requires proxy.web_host to remain 127.0.0.1"
+            self._record_failure(message, port=port, startup=startup)
+            raise RuntimeError(message)
+
+        if current_healthy and self.port == port:
+            self.enabled = True
+            return self.get_stats()
+
+        self._write_state("starting", port=port)
+        try:
+            replacement = await asyncio.to_thread(
+                start_tailnet_serve,
+                self.master.options.web_port,
+                port,
+            )
+        except Exception as exc:
+            message = f"WebMITM Tailnet share failed: {exc}"
+            self._record_failure(message, port=port, startup=startup)
+            if current_healthy and current is not None:
+                self._write_healthy_state(current, self.port)
+            raise RuntimeError(message) from exc
+
+        self.enabled = True
+        self.port = port
+        self.session = replacement
+        if current is not None:
+            await asyncio.to_thread(current.close)
+
+        url = replacement.url("/")
+        self._write_healthy_state(replacement, port)
+        write_event(
+            "ops.web_tailnet_share_started",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary=f"WebMITM Tailnet share started on HTTPS port {port}",
+            addon=self.name,
+            details={"port": port, "url": url, "target": replacement.target},
+        )
+        log.info("WebMITM Tailnet UI listening at %s", url)
+        self._watch_session(replacement, url, port)
+        return self.get_stats()
+
+    def _write_healthy_state(self, session: TailnetServeSession, port: int) -> None:
+        self._write_state(
+            "healthy",
+            port=port,
+            url=session.url("/"),
+            target=session.target,
+            pid=session.process.pid,
+        )
+
+    def _watch_session(
+        self,
+        session: TailnetServeSession,
+        url: str,
+        port: int,
+    ) -> None:
+        def watch_session() -> None:
+            exit_code = session.process.wait()
+            if session.closing:
+                return
+            detail = session.read_output()
+            if self.session is session:
+                self._write_state(
+                    "degraded",
+                    port=port,
+                    url=url,
+                    target=session.target,
+                    exit_code=exit_code,
+                    detail=detail,
+                )
+            write_event(
+                "ops.web_tailnet_share_exited",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=("WebMITM Tailnet share stopped unexpectedly; proxy egress remains available"),
+                addon=self.name,
+                details={"port": port, "exit_code": exit_code, "error": detail},
+            )
+
+        threading.Thread(
+            target=watch_session,
+            name="safeyolo-web-tailnet-watch",
+            daemon=True,
+        ).start()
+
+    def _record_failure(self, message: str, *, port: int, startup: bool) -> None:
+        self._write_state("error", port=port, detail=message)
+        details = {"component": "web-tailnet-share", "port": port, "error": message}
+        write_event(
+            "ops.web_tailnet_share_failed",
+            kind=EventKind.OPS,
+            severity=Severity.HIGH,
+            summary=message,
+            addon=self.name,
+            details=details,
+        )
+        if startup:
+            write_event(
+                "ops.proxy_start_failed",
+                kind=EventKind.OPS,
+                severity=Severity.HIGH,
+                summary=message,
+                addon=self.name,
+                details=details,
+            )
+
+    async def running(self) -> None:
+        if not self.enabled:
+            if self.state_path is not None:
+                self.state_path.unlink(missing_ok=True)
+            return
+        await self.reconcile(True, self.port, startup=True)
+
+    async def done(self) -> None:
+        await self.reconcile(False, self.port)
+
+
 class TrafficMaster(ConsoleMaster):
     """One canonical flow store with native console and web frontends."""
 
@@ -376,7 +584,7 @@ class TrafficMaster(ConsoleMaster):
                 (r"/", SafeYoloIndexHandler),
             ],
         )
-        self.addons.add(WebFrontend(self))
+        self.addons.add(WebFrontend(self), WebTailnetShare(self))
         self._add_scope_keys()
 
     def _add_scope_keys(self) -> None:

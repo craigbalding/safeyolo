@@ -66,7 +66,7 @@ Both share:
 | Guest init | guest-init.sh (runs as PID 1 in VM) | guest-init.sh (runs as PID 1 inside sandbox — same script) |
 | Kernel | Custom Linux kernel in VM | gVisor Sentry (userspace kernel) |
 | KVM | N/A (Hypervisor.framework) | Optional, auto-detected; systrap fallback |
-| Runtime privileges | none (sudo only if user opts into lo0 aliases, now unused) | none (rootless user namespace via `newuidmap`/`newgidmap`) |
+| Runtime host privileges | none (sudo only if user opts into lo0 aliases, now unused) | none; guest uid 0 is mapped to subordinate host uid 100000 by `newuidmap`/`newgidmap` |
 | Identity attribution | `<ip>_<agent>` directory parsed by mitmproxy's `UnixInstance` | `<ip>_<agent>` directory parsed by mitmproxy's `UnixInstance` (same mechanism) |
 
 ## What Does NOT Change
@@ -197,6 +197,12 @@ Result:
 - Container uid 1000 → host operator uid (the user launching
   agents; owns workspace, config share, etc.)
 
+The agent starts as uid 1000 but may intentionally transition to sandbox
+uid 0 to install distro packages. That is not host privilege escalation:
+the outer user namespace maps sandbox root to uid 100000, and gVisor plus
+the mount/network namespaces remain the host boundary. The blackbox suite
+tests both the live uid mapping and host containment after this transition.
+
 The operator launches agents with zero sudo. AppArmor on Ubuntu 24.04+
 restricts unprivileged userns creation unless a profile allows it;
 `safeyolo setup` installs `safeyolo-runsc` if needed.
@@ -271,9 +277,10 @@ to the agent user. Key fields:
 - `process.user`: `{uid: 0, gid: 0}` — init runs as root-in-sandbox
   (mapped to host uid 100000 via the userns); `guest-init-per-run.sh`
   drops to uid 1000 via `su agent -l` before launching the agent
-- `process.capabilities`: only what init needs (CAP_CHOWN,
-  CAP_DAC_OVERRIDE, CAP_NET_ADMIN to configure loopback, CAP_SETUID,
-  CAP_SETGID) — no CAP_NET_RAW, no CAP_SYS_ADMIN
+- `process.capabilities`: guest-init receives CAP_CHOWN,
+  CAP_DAC_OVERRIDE, CAP_NET_ADMIN, CAP_SETUID, and CAP_SETGID among its
+  bounded guest capabilities. CAP_SETUID/CAP_SETGID also provide the
+  intentional namespace-root package-management path; no CAP_SYS_ADMIN
 - `mounts`: workspace (rw), `/safeyolo` (ro, the config share),
   `/safeyolo-status` (rw, the status share for guest→host signals),
   `/safeyolo/proxy` (ro, the private per-agent UDS directory)
@@ -359,7 +366,7 @@ Every blackbox isolation test maps to a property of the runtime:
 | Raw socket blocked | VM kernel lacks CAP_NET_RAW | gVisor Sentry blocks SOCK_RAW without the cap |
 | Proxy reachable | vsock → host UDS → mitmproxy | bind-mounted UDS → mitmproxy |
 | Non-root (uid 1000) | VM runs as agent user | OCI config user.uid=1000; userns maps to operator uid |
-| Cannot gain root | setuid(0) in VM kernel fails | Sentry blocks setuid(0); noNewPrivileges set |
+| Guest-root boundary | direct setuid(0) in VM kernel fails; the hardware VM remains the boundary for any separately configured guest-root path | setpriv reaches namespace-root; host uid_map proves it maps to subordinate uid 100000 and root-context probes recheck host containment |
 | Kernel modules disabled | CONFIG_MODULES=n | gVisor: init_module returns ENOSYS |
 | No /dev/mem or /dev/kmem | VM kernel doesn't expose | gVisor's /dev doesn't include them |
 | No eBPF | VM kernel blocks BPF | gVisor: BPF syscall not implemented |

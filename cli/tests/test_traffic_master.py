@@ -16,6 +16,7 @@ from safeyolo.traffic_master import (
     SafeYoloStatusBar,
     TrafficMaster,
     WebFrontend,
+    WebTailnetShare,
     _scope_toolbar,
 )
 
@@ -35,6 +36,7 @@ def test_hybrid_master_has_one_canonical_view_and_proxyserver(monkeypatch):
     assert sum(addon.__class__.__name__ == "Proxyserver" for addon in chain) == 1
     assert sum(addon is master.view for addon in chain) == 1
     assert master.addons.get("safeyolo-web-frontend") is not None
+    assert master.addons.get("safeyolo-web-tailnet-share") is not None
     assert master.web_app.master is master
 
 
@@ -115,6 +117,147 @@ def test_web_bind_failure_is_written_at_source_to_structured_event_log():
     assert write_event.call_args.args[0] == "ops.proxy_start_failed"
     assert "127.0.0.1:8081" in write_event.call_args.kwargs["summary"]
     assert write_event.call_args.kwargs["details"]["port"] == 8081
+
+
+def test_web_tailnet_share_owns_foreground_session(tmp_path, monkeypatch):
+    state_path = tmp_path / "web-tailnet-status.json"
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "8445")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_STATUS_FILE", str(state_path))
+    master = SimpleNamespace(
+        options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
+    )
+    session = MagicMock()
+    session.url.return_value = "https://host.example.ts.net:8445/"
+    session.target = "http://127.0.0.1:8081"
+    session.process.pid = 1234
+    session.process.poll.return_value = None
+    share = WebTailnetShare(master)
+
+    with (
+        patch("safeyolo.traffic_master.start_tailnet_serve", return_value=session) as start,
+        patch.object(share, "_watch_session") as watch,
+        patch("safeyolo.traffic_master.write_event") as write_event,
+    ):
+        asyncio.run(share.running())
+        assert '"state": "healthy"' in state_path.read_text()
+        asyncio.run(share.done())
+
+    start.assert_called_once_with(8081, 8445)
+    watch.assert_called_once_with(session, "https://host.example.ts.net:8445/", 8445)
+    session.close.assert_called_once_with()
+    events = [call.args[0] for call in write_event.call_args_list]
+    assert events == [
+        "ops.web_tailnet_share_started",
+        "ops.web_tailnet_share_stopped",
+    ]
+    assert '"state": "disabled"' in state_path.read_text()
+
+
+def test_web_tailnet_share_failure_blocks_proxy_readiness(tmp_path, monkeypatch):
+    state_path = tmp_path / "web-tailnet-status.json"
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "443")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_STATUS_FILE", str(state_path))
+    share = WebTailnetShare(
+        SimpleNamespace(
+            options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
+        )
+    )
+
+    with (
+        patch(
+            "safeyolo.traffic_master.start_tailnet_serve",
+            side_effect=RuntimeError("port already mapped"),
+        ),
+        patch("safeyolo.traffic_master.write_event") as write_event,
+        pytest.raises(RuntimeError, match="port already mapped"),
+    ):
+        asyncio.run(share.running())
+
+    events = [call.args[0] for call in write_event.call_args_list]
+    assert events == [
+        "ops.web_tailnet_share_failed",
+        "ops.proxy_start_failed",
+    ]
+    assert '"state": "error"' in state_path.read_text()
+
+
+def test_web_tailnet_live_port_change_preserves_old_share_until_ready(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "8445")
+    monkeypatch.setenv(
+        "SAFEYOLO_WEB_TAILNET_STATUS_FILE",
+        str(tmp_path / "web-tailnet-status.json"),
+    )
+    share = WebTailnetShare(
+        SimpleNamespace(
+            options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
+        )
+    )
+    old = MagicMock()
+    old.process.poll.return_value = None
+    old.url.return_value = "https://host.example.ts.net:8445/"
+    old.target = "http://127.0.0.1:8081"
+    replacement = MagicMock()
+    replacement.process.poll.return_value = None
+    replacement.process.pid = 4321
+    replacement.url.return_value = "https://host.example.ts.net:8446/"
+    replacement.target = "http://127.0.0.1:8081"
+    share.session = old
+
+    with (
+        patch(
+            "safeyolo.traffic_master.start_tailnet_serve",
+            return_value=replacement,
+        ) as start,
+        patch.object(share, "_watch_session"),
+        patch("safeyolo.traffic_master.write_event"),
+    ):
+        result = asyncio.run(share.reconcile(True, 8446))
+
+    start.assert_called_once_with(8081, 8446)
+    old.close.assert_called_once_with()
+    assert share.session is replacement
+    assert result["state"] == "healthy"
+    assert result["port"] == 8446
+
+
+def test_web_tailnet_live_failure_keeps_existing_healthy_share(
+    tmp_path, monkeypatch
+):
+    state_path = tmp_path / "web-tailnet-status.json"
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_ENABLED", "1")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_PORT", "8445")
+    monkeypatch.setenv("SAFEYOLO_WEB_TAILNET_STATUS_FILE", str(state_path))
+    share = WebTailnetShare(
+        SimpleNamespace(
+            options=SimpleNamespace(web_host="127.0.0.1", web_port=8081)
+        )
+    )
+    old = MagicMock()
+    old.process.poll.return_value = None
+    old.process.pid = 1234
+    old.url.return_value = "https://host.example.ts.net:8445/"
+    old.target = "http://127.0.0.1:8081"
+    share.session = old
+
+    with (
+        patch(
+            "safeyolo.traffic_master.start_tailnet_serve",
+            side_effect=RuntimeError("serve denied"),
+        ),
+        patch("safeyolo.traffic_master.write_event"),
+        pytest.raises(RuntimeError, match="serve denied"),
+    ):
+        asyncio.run(share.reconcile(True, 8446))
+
+    assert share.session is old
+    old.close.assert_not_called()
+    assert '"state": "healthy"' in state_path.read_text()
+    assert '"port": 8445' in state_path.read_text()
 
 
 def test_native_scope_keys_do_not_replace_stock_bindings(monkeypatch):

@@ -28,6 +28,7 @@ from safeyolo.core.audit_schema import EventKind, Severity
 from safeyolo.core.plumb_service import get_plumb_service
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.ignore_hosts import build_ignore_patterns, normalize_ignore_hosts
+from safeyolo.tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS
 
 log = logging.getLogger("safeyolo.admin")
 
@@ -1266,6 +1267,60 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_put_proxy_web_tailnet(self) -> None:
+        """PUT /admin/proxy/web-tailnet - Reconcile the live Serve child."""
+        data = self._read_json()
+        if not isinstance(data, dict):
+            self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
+        unknown = sorted(set(data) - {"enabled", "port"})
+        if unknown:
+            self._send_json({"error": f"unknown field(s): {', '.join(unknown)}"}, 400)
+            return
+        enabled = data.get("enabled")
+        port = data.get("port")
+        if type(enabled) is not bool:
+            self._send_json({"error": "'enabled' must be true or false"}, 400)
+            return
+        if type(port) is not int or port < 1 or port > 65535:
+            self._send_json({"error": "'port' must be an integer from 1 to 65535"}, 400)
+            return
+
+        addon = self._get_addon("safeyolo-web-tailnet-share")
+        if addon is None or not hasattr(addon, "reconcile"):
+            self._send_json({"error": "WebMITM Tailnet lifecycle owner is unavailable"}, 503)
+            return
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                addon.reconcile(enabled, port),
+                ctx.master.event_loop,
+            )
+            result = future.result(timeout=TAILSCALE_OPERATION_TIMEOUT_SECONDS)
+        except TimeoutError:
+            self._send_json({"error": "timeout reconciling WebMITM Tailnet share"}, 504)
+            return
+        except Exception as exc:
+            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, 409)
+            return
+
+        write_event(
+            "admin.web_tailnet_reconcile",
+            kind=EventKind.ADMIN,
+            severity=Severity.HIGH,
+            summary=(
+                f"WebMITM Tailnet sharing {'enabled' if enabled else 'disabled'} "
+                f"on port {port}"
+            ),
+            addon="admin-api",
+            details={
+                "client_ip": self._get_client_ip(),
+                "enabled": enabled,
+                "port": port,
+            },
+        )
+        self._send_json({"status": "updated", **result})
+
     def _handle_put_traffic_scope(self) -> None:
         """PUT /admin/traffic/scope - Replace the pinned live-view scope."""
         data = self._read_json()
@@ -1446,6 +1501,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             "/admin/policy/baseline": self._handle_put_policy_baseline,
             "/admin/proxy/mode": self._handle_put_proxy_mode,
             "/admin/proxy/ignore-hosts": self._handle_put_proxy_ignore_hosts,
+            "/admin/proxy/web-tailnet": self._handle_put_proxy_web_tailnet,
             "/admin/traffic/scope": self._handle_put_traffic_scope,
         }
 

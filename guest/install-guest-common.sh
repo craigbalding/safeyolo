@@ -17,19 +17,20 @@
 #     same pinned mise binary as the default rootfs
 #   * agent user (uid 1000, shell /bin/bash, home /home/agent)
 #   * /usr/local/bin/safeyolo-guest-init stub (exec'd as PID 1)
+#   * host bind-mount targets required by the Linux gVisor runtime
 #   * sshd: pubkey auth only, password off, host keys generated
 #   * baseline PATH glue at /etc/profile.d/00-path.sh + /etc/environment
 #   * mise profile glue at /etc/profile.d/mise.sh (only if mise present)
 #   * BusyBox applet shims (`hexdump`, `nc`) when busybox is present
+#   * `/usr/local/bin/sudo` compatibility shim + passwordless guest-root policy
 #   * hostname = safeyolo
 #
 # What it deliberately does NOT install:
 #   * Package-manager policy (apt sources, proxy config).
 #     Custom rootfs authors own that; the default Debian base's
 #     customize-hook writes /etc/apt/apt.conf.d/99safeyolo-proxy so
-#     `apt-get install` (run via `safeyolo agent shell --root`)
-#     routes through SafeYolo's proxy, but this library doesn't force
-#     the policy.
+#     `sudo apt-get install` routes through SafeYolo's proxy, but this library
+#     doesn't force distro-specific proxy policy.
 #
 # Idempotent -- safe to re-run on the same rootfs.
 
@@ -76,6 +77,68 @@ install_safeyolo_mise() {
     rm -rf "$tmp_dir"
 }
 
+install_safeyolo_runtime_mount_targets() {
+    local rootfs="$1"
+
+    [ -n "$rootfs" ] || {
+        echo "install_safeyolo_runtime_mount_targets: rootfs arg required" >&2
+        return 1
+    }
+    [ -d "$rootfs" ] || {
+        echo "install_safeyolo_runtime_mount_targets: rootfs not a dir: $rootfs" >&2
+        return 1
+    }
+
+    # Linux uid-remaps the completed tree (container root becomes host uid
+    # 100000), so its unprivileged launcher cannot add a missing bind target.
+    # macOS also benefits: every mount lands on a known object in the ext4
+    # image.  Keep this function shared by the default and custom build paths.
+    install -d -m 0755 \
+        "$rootfs/workspace" \
+        "$rootfs/safeyolo" \
+        "$rootfs/safeyolo-status" \
+        "$rootfs/home/agent" \
+        "$rootfs/usr/local/share/ca-certificates"
+    install -m 0644 /dev/null \
+        "$rootfs/usr/local/share/ca-certificates/safeyolo.crt"
+}
+
+
+install_safeyolo_privilege_helper() {
+    local rootfs="$1"
+    local helper="$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-sudo"
+
+    [ -n "$rootfs" ] || {
+        echo "install_safeyolo_privilege_helper: rootfs arg required" >&2
+        return 1
+    }
+    [ -d "$rootfs" ] || {
+        echo "install_safeyolo_privilege_helper: rootfs not a dir: $rootfs" >&2
+        return 1
+    }
+    [ -r "$helper" ] || {
+        echo "install_safeyolo_privilege_helper: missing $helper" >&2
+        return 1
+    }
+
+    # Do not shadow a missing real sudo with a helper that can never delegate.
+    # Bundled rootfs builders install sudo; third-party minimal builders may
+    # intentionally omit package management and should remain usable.
+    if [ ! -x "$rootfs/usr/bin/sudo" ]; then
+        echo "=== sudo absent; skipping SafeYolo guest-root helper ==="
+        return 0
+    fi
+
+    install -d -m 0755 "$rootfs/usr/local/bin" "$rootfs/etc/sudoers.d"
+    install -m 0755 "$helper" "$rootfs/usr/local/bin/sudo"
+    cat > "$rootfs/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
+agent ALL=(ALL) NOPASSWD:ALL
+Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
+SUDOERS
+    chmod 0440 "$rootfs/etc/sudoers.d/safeyolo-agent"
+}
+
+
 install_safeyolo_guest_common() {
     local rootfs="$1"
 
@@ -109,6 +172,9 @@ install_safeyolo_guest_common() {
     # flag; pubkey auth then works. PasswordAuthentication is off in our
     # sshd_config so this cannot be abused for passwordless login.
     chroot "$rootfs" usermod -p '*' agent 2>/dev/null || true
+
+    install_safeyolo_runtime_mount_targets "$rootfs"
+    install_safeyolo_privilege_helper "$rootfs"
 
     # sshd config: pubkey only, no passwords. Skip silently if no sshd
     # package is installed -- some minimal rootfs don't ship one and the
