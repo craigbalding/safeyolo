@@ -222,7 +222,11 @@ _start_dbus() {
 }
 
 _start() {
-    local geometry="${1:-${VNC_GEOMETRY:-1280x800}}"
+    local configured_geometry=""
+    if [ -r /safeyolo/desktop-size ]; then
+        configured_geometry="$(head -n 1 /safeyolo/desktop-size)"
+    fi
+    local geometry="${1:-${VNC_GEOMETRY:-${configured_geometry:-1280x800}}}"
     local depth="${VNC_DEPTH:-24}" width height current=""
     local web_root window_manager agent_name managed_window_manager=""
 

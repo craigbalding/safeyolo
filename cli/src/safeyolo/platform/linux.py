@@ -22,14 +22,17 @@ import json
 import logging
 import os
 import shutil
+import socket
+import stat
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 from ..config import get_agents_dir
 from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
-from . import AgentPlatform
+from . import AgentPlatform, BinaryRelay
 
 log = logging.getLogger("safeyolo.platform.linux")
 
@@ -38,6 +41,92 @@ AA_PROFILE = "safeyolo-runsc"
 
 # runsc state directory -- user-writable, no sudo needed.
 RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
+PORT_FORWARD_TIMEOUT_SECONDS = 10
+
+
+class _SocketReader:
+    """Minimal binary reader over one native runsc port-forward socket."""
+
+    def __init__(self, stream: socket.socket):
+        self._stream = stream
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        if self.closed:
+            return b""
+        if size < 0:
+            chunks = []
+            while chunk := self._stream.recv(64 * 1024):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        return self._stream.recv(size)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _SocketWriter:
+    """Minimal binary writer whose close preserves TCP half-close semantics."""
+
+    def __init__(self, stream: socket.socket):
+        self._stream = stream
+        self.closed = False
+
+    def write(self, data: bytes) -> int:
+        if self.closed:
+            raise ValueError("write to closed relay")
+        self._stream.sendall(data)
+        return len(data)
+
+    def flush(self) -> None:
+        if self.closed:
+            raise ValueError("flush of closed relay")
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self._stream.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+class _SocketRelay:
+    """Popen-shaped owner of a connected native runsc stream."""
+
+    def __init__(self, stream: socket.socket):
+        self._stream = stream
+        self.stdin = _SocketWriter(stream)
+        self.stdout = _SocketReader(stream)
+        self.returncode: int | None = None
+        self._lock = threading.Lock()
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+        self._close()
+        return 0
+
+    def terminate(self) -> None:
+        self._close()
+
+    def kill(self) -> None:
+        self._close()
+
+    def _close(self) -> None:
+        with self._lock:
+            if self.returncode is not None:
+                return
+            self.stdin.close()
+            self.stdout.close()
+            try:
+                self._stream.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self._stream.close()
+            self.returncode = 0
 
 
 def _runsc_root() -> str:
@@ -357,6 +446,19 @@ def _nsenter_cmd(userns_pid: int) -> list[str]:
     return ["nsenter", "--user", "--net", "--target", str(userns_pid), "--"]
 
 
+def _direct_rootfs_target_state(path: Path, expected: str) -> bool | None:
+    """Return target validity, or None when host DAC prevents inspection."""
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        return None
+    if expected == "directory":
+        return stat.S_ISDIR(mode)
+    return stat.S_ISREG(mode)
+
+
 def _kill_userns(name: str) -> None:
     """Kill the userns holder process."""
     pid_file = _userns_pid_file(name)
@@ -460,7 +562,10 @@ class LinuxPlatform(AgentPlatform):
                 f"canonical template) or remove the per-agent .erofs to fall\n"
                 f"back to the shared base."
             )
-        if per_agent_dir.is_dir() and (per_agent_dir / "etc").is_dir():
+        # The tree's contents may deliberately be private to subordinate uid
+        # 100000.  Selecting it must only require statting the tree itself;
+        # prepare_rootfs validates its contents through the runtime uid map.
+        if per_agent_dir.is_dir():
             return per_agent_dir
         return get_base_rootfs_tree_path()
 
@@ -520,16 +625,42 @@ class LinuxPlatform(AgentPlatform):
         # unprivileged host launcher cannot create a missing directory at run
         # time.  guest/install-guest-common.sh and the default rootfs hook both
         # establish these targets before uid remapping.
-        required_dirs = ("workspace", "safeyolo", "safeyolo-status", "home/agent")
-        missing_targets = [
-            f"/{relative}"
-            for relative in required_dirs
-            if not (path / relative).is_dir()
+        checks = [
+            (path / relative, "directory")
+            for relative in (
+                "etc", "workspace", "safeyolo", "safeyolo-status", "home/agent",
+            )
         ]
-        ca_target = path / "usr/local/share/ca-certificates/safeyolo.crt"
-        if not ca_target.is_file():
-            missing_targets.append("/usr/local/share/ca-certificates/safeyolo.crt")
-        if missing_targets:
+        checks.append((
+            path / "usr/local/share/ca-certificates/safeyolo.crt", "file",
+        ))
+        direct_states = [
+            _direct_rootfs_target_state(target, expected)
+            for target, expected in checks
+        ]
+        inaccessible_paths = [
+            target
+            for (target, _expected), state in zip(checks, direct_states, strict=True)
+            if state is None
+        ]
+        if inaccessible_paths:
+            rendered = ", ".join(
+                f"/{target.relative_to(path)}" for target in inaccessible_paths
+            )
+            raise RuntimeError(
+                f"Rootfs tree {path} is not host-traversable at: {rendered}.\n"
+                "The builder must leave the root and required target parents "
+                "mode 0755 before remapping ownership."
+            )
+        missing_paths = [
+            target
+            for (target, _expected), state in zip(checks, direct_states, strict=True)
+            if not state
+        ]
+        if missing_paths:
+            missing_targets = [
+                f"/{target.relative_to(path)}" for target in missing_paths
+            ]
             rendered = ", ".join(missing_targets)
             raise RuntimeError(
                 f"Rootfs tree {path} is missing required SafeYolo bind-mount "
@@ -898,6 +1029,71 @@ class LinuxPlatform(AgentPlatform):
             bufsize=0,
         )
 
+    def popen_port_forward(
+        self,
+        name: str,
+        guest_port: int,
+        user: str = "agent",
+    ) -> BinaryRelay:
+        """Open one stream with gVisor's native connected-FD donation.
+
+        Stream mode connects to an operator-owned UDS and passes that
+        connected descriptor into the sentry. It does not bind a host TCP
+        listener and does not start a process inside the sandbox.
+        """
+        del user  # Native port forwarding targets the container network stack.
+        temporary = tempfile.TemporaryDirectory(prefix="safeyolo-port-forward-")
+        stream_path = Path(temporary.name) / "relay.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.settimeout(PORT_FORWARD_TIMEOUT_SECONDS)
+        connection: socket.socket | None = None
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            listener.bind(str(stream_path))
+            listener.listen(1)
+
+            upid = _get_userns_pid(name)
+            prefix = _nsenter_cmd(upid) if upid else []
+            command = prefix + [
+                _find_runsc(),
+                "--root",
+                _runsc_root(),
+                "port-forward",
+                "--stream",
+                str(stream_path),
+                _container_id(name),
+                str(guest_port),
+            ]
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            connection, _ = listener.accept()
+            stdout, stderr = process.communicate(timeout=PORT_FORWARD_TIMEOUT_SECONDS)
+            if process.returncode != 0:
+                detail = (stderr or stdout).decode(errors="replace").strip()
+                raise RuntimeError(
+                    f"runsc port-forward exited {process.returncode}: "
+                    f"{detail or '<no output>'}"
+                )
+            return _SocketRelay(connection)
+        except Exception:
+            if connection is not None:
+                connection.close()
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            raise
+        finally:
+            listener.close()
+            temporary.cleanup()
+
     def is_sandbox_running(self, name: str) -> bool:
         """Check if a gVisor sandbox is running."""
         cid = _container_id(name)
@@ -1099,6 +1295,11 @@ class LinuxPlatform(AgentPlatform):
         for in_rootfs_path in read_agent_cache_paths(name):
             host_cache_dir = get_agent_cache_dir(name, in_rootfs_path)
             host_cache_dir.mkdir(parents=True, exist_ok=True)
+            # The runner may have a restrictive umask. Apt drops privileges to
+            # `_apt`, which needs to traverse this mount root before using its
+            # own partial/ directory. The parent agent directory remains
+            # private and caches contain only public package artifacts.
+            host_cache_dir.chmod(0o755)
             mounts.append({
                 "destination": in_rootfs_path,
                 "type": "bind",

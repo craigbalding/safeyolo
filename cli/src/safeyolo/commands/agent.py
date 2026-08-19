@@ -18,12 +18,19 @@ from rich.table import Table
 from ..agents_store import load_agent as _store_load_agent
 from ..agents_store import (
     load_all_agents,
+    reserve_agent_network_slot,
     reserve_agent_tailnet_port_change,
     restore_agent_tailnet_port,
     save_agent,
 )
 from ..agents_store import remove_agent as _store_remove_agent
-from ..config import find_config_dir, get_agents_dir, load_config
+from ..config import (
+    find_config_dir,
+    get_agents_dir,
+    get_desktop_size,
+    load_config,
+    save_config,
+)
 from ..events import EventKind, Severity, write_event
 from ..proxy import is_proxy_running, start_proxy, wait_for_healthy
 from ..snapshot import (
@@ -39,6 +46,7 @@ from ..timing import enter as _t
 from ..vm import (
     _update_agent_map,
     build_custom_rootfs,
+    clone_custom_rootfs,
     get_agent_config_share_dir,
     get_agent_status_dir,
     prepare_config_share,
@@ -385,9 +393,13 @@ def _run_agent(
     from ..platform import get_platform
     plat = get_platform()
 
-    agents_dir = get_agents_dir()
-    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
-    agent_index = existing.index(name) if name in existing else len(existing)
+    try:
+        agent_index = reserve_agent_network_slot(name)
+    except (KeyError, ValueError, OSError) as err:
+        console.print(
+            f"[red]Agent network allocation failed:[/red] {escape(str(err))}"
+        )
+        raise typer.Exit(1)
 
     try:
         _t("setup_networking")
@@ -880,6 +892,14 @@ def add(
         "--rootfs-script",
         help="Path to a rootfs builder script. Produces a custom per-agent rootfs image instead of cloning the default base. See contrib/ROOTFS_SCRIPT_GUIDE.md.",
     ),
+    rootfs_from: str = typer.Option(
+        None,
+        "--rootfs-from",
+        help=(
+            "Clone another agent's immutable custom rootfs. Home, overlay, "
+            "credentials, workspace, and caches are not copied."
+        ),
+    ),
     ephemeral: bool = typer.Option(
         False,
         "--ephemeral",
@@ -936,15 +956,16 @@ def add(
     shell with a fresh per-agent /home/agent (seeded from /etc/skel).
 
     --rootfs-script replaces the default SafeYolo base rootfs with one the
-    script produces (full replacement, any distro). On Linux the script
-    runs natively; on macOS it runs inside the shared safeyolo-builder
-    Lima VM. See contrib/ROOTFS_SCRIPT_GUIDE.md.
+    script produces (full replacement, any distro). --rootfs-from clones an
+    existing agent's custom rootfs without its mutable runtime state. These
+    options are mutually exclusive. See contrib/ROOTFS_SCRIPT_GUIDE.md.
 
     Examples:
 
         safeyolo agent add plain .
         safeyolo agent add claude . --host-script contrib/claude-host-setup.sh
         safeyolo agent add boris . --host-script ./my-setup.sh --mount ~/data:/data
+        safeyolo agent add pentest-two ~/other-target --rootfs-from pentest
         safeyolo agent add pentest ~/target \\
             --rootfs-script contrib/kali-pentest/build-kali-rootfs.sh \\
             --host-script contrib/claude-host-setup.sh
@@ -967,6 +988,14 @@ def add(
 
     host_script_path = _resolve_host_script_path(host_script)
 
+    if rootfs_script and rootfs_from:
+        console.print(
+            "[red]--rootfs-script and --rootfs-from are mutually exclusive[/red]"
+        )
+        raise typer.Exit(1)
+    if rootfs_from:
+        _validate_instance_name(rootfs_from)
+
     rootfs_script_path: Path | None = None
     if rootfs_script:
         rootfs_script_path = Path(rootfs_script).expanduser().resolve()
@@ -987,13 +1016,16 @@ def add(
         if existing:
             existing_host = existing.get("host_script")
             existing_rootfs = existing.get("rootfs_script")
+            existing_rootfs_from = existing.get("rootfs_from")
             existing_folder = existing.get("folder")
             requested_host = str(host_script_path) if host_script_path else None
             requested_rootfs = str(rootfs_script_path) if rootfs_script_path else None
+            requested_rootfs_from = rootfs_from or None
 
             same_config = (
                 existing_host == requested_host
                 and existing_rootfs == requested_rootfs
+                and existing_rootfs_from == requested_rootfs_from
                 and existing_folder == folder_str
             )
             if same_config and not force:
@@ -1006,16 +1038,18 @@ def add(
             else:
                 # Different config
                 if not force:
-                    def _fmt(host, rootfs, folder):
+                    def _fmt(host, rootfs, rootfs_source, folder):
                         bits = []
                         bits.append(host or "(no host script)")
                         if rootfs:
                             bits.append(f"rootfs-script={rootfs}")
+                        if rootfs_source:
+                            bits.append(f"rootfs-from={rootfs_source}")
                         return f"{' '.join(bits)} → {folder}"
                     console.print(
                         f"[yellow]Agent '{name}' exists with different config:[/yellow]\n"
-                        f"  Current:  {_fmt(existing_host, existing_rootfs, existing_folder)}\n"
-                        f"  Requested: {_fmt(requested_host, requested_rootfs, folder_str)}\n"
+                        f"  Current:  {_fmt(existing_host, existing_rootfs, existing_rootfs_from, existing_folder)}\n"
+                        f"  Requested: {_fmt(requested_host, requested_rootfs, requested_rootfs_from, folder_str)}\n"
                         "Use --force to overwrite, or 'safeyolo agent run' to run existing."
                     )
                     raise typer.Exit(1)
@@ -1029,7 +1063,7 @@ def add(
 
     # --rootfs-script runs before platform.prepare_rootfs so the script's
     # output is in place when the platform layer goes looking for the image.
-    # On Linux, writes ~/.safeyolo/agents/<name>/rootfs.erofs. On Darwin,
+    # On Linux, writes ~/.safeyolo/agents/<name>/rootfs/. On Darwin,
     # writes rootfs.ext4. Platform layer then finds the pre-built image and
     # skips its default clone/share step.
     if rootfs_script_path is not None:
@@ -1038,6 +1072,13 @@ def add(
             build_custom_rootfs(name, rootfs_script_path)
         except Exception as err:
             console.print(f"[red]Rootfs script failed:[/red] {escape(str(err))}")
+            raise typer.Exit(1)
+    elif rootfs_from:
+        console.print(f"  [bold]Cloning rootfs from agent:[/bold] {rootfs_from}")
+        try:
+            clone_custom_rootfs(rootfs_from, name)
+        except Exception as err:
+            console.print(f"[red]Rootfs clone failed:[/red] {escape(str(err))}")
             raise typer.Exit(1)
 
     # Create rootfs for this agent (platform-specific: APFS clone on macOS, overlayfs on Linux)
@@ -1078,6 +1119,8 @@ def add(
         metadata["host_script"] = str(host_script_path)
     if rootfs_script_path is not None:
         metadata["rootfs_script"] = str(rootfs_script_path)
+    if rootfs_from:
+        metadata["rootfs_from"] = rootfs_from
     if ephemeral:
         # Stored as a typed string rather than a bool so the schema can
         # grow: future overlay backings (e.g. "disk-persistent-ro",
@@ -1107,6 +1150,8 @@ def add(
         panel_lines.append(f"Host script: {host_script_path}")
     if rootfs_script_path is not None:
         panel_lines.append(f"Rootfs script: {rootfs_script_path}")
+    if rootfs_from:
+        panel_lines.append(f"Rootfs cloned from: {rootfs_from}")
     if parsed_args:
         panel_lines.append(f"Default args: {' '.join(parsed_args)}")
     if parsed_mounts:
@@ -1122,6 +1167,8 @@ def add(
         event_details["host_script"] = str(host_script_path)
     if rootfs_script_path is not None:
         event_details["rootfs_script"] = str(rootfs_script_path)
+    if rootfs_from:
+        event_details["rootfs_from"] = rootfs_from
     write_event("agent.added", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} added", agent=name, details=event_details)
 
     # Auto-run unless --no-run
@@ -1193,13 +1240,11 @@ def remove(
     from ..platform import get_platform
     plat = get_platform()
 
-    # Agent index must be computed before the agent dir disappears,
-    # since it's derived from the sorted list of agent dirs -- the same
-    # allocation rule used by setup_networking. Using the stale index
-    # here is what lets us target this agent's netns/veth for teardown
-    # rather than leaking them.
-    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
-    agent_index = existing.index(name) if name in existing else -1
+    # Read the persistent network slot before removing agent metadata. Current
+    # platforms have no host-side interface to tear down, but preserving the
+    # platform contract here avoids reintroducing name-order allocation.
+    network_slot = _load_agent_metadata(name).get("network_slot")
+    agent_index = network_slot if type(network_slot) is int else -1
 
     # stop_sandbox is idempotent on both platforms (Linux probes runsc
     # state first; Darwin's stop_vm returns early if no pid). Calling
@@ -1426,10 +1471,10 @@ def preview(
         "--start-vnc",
         help="Start/restart SafeYolo's optional guest desktop before previewing",
     ),
-    vnc_size: str = typer.Option(
-        "auto",
+    vnc_size: str | None = typer.Option(
+        None,
         "--vnc-size",
-        help="noVNC desktop size used with --start-vnc or --browser: auto or WIDTHxHEIGHT",
+        help="noVNC size override used with --start-vnc or --browser: auto or WIDTHxHEIGHT",
     ),
     browser_url: str | None = typer.Option(
         None,
@@ -1457,7 +1502,13 @@ def preview(
     _validate_instance_name(name)
 
     from ..platform import get_platform
-    from ..preview import PreviewConfig, parse_ttl, resolve_vnc_geometry, serve_agent_preview, validate_guest_port
+    from ..preview import (
+        PreviewConfig,
+        parse_ttl,
+        resolve_vnc_geometry,
+        serve_agent_preview,
+        validate_guest_port,
+    )
 
     try:
         validate_guest_port(guest_port)
@@ -1483,7 +1534,10 @@ def preview(
     start_novnc = start_vnc or browser_url is not None
     if start_novnc:
         try:
-            vnc_geometry, detected_display_size = resolve_vnc_geometry(vnc_size)
+            preferred_size = get_desktop_size()
+            vnc_geometry, detected_display_size = resolve_vnc_geometry(
+                vnc_size if vnc_size is not None else preferred_size
+            )
         except ValueError as exc:
             _rollback_preview_tailnet_port(
                 name, resolved_tailnet_port, previous_tailnet_port,
@@ -1508,7 +1562,7 @@ def preview(
                 f"[yellow]Warning:[/yellow] noVNC starts on guest port 6080; "
                 f"this preview is forwarding port {guest_port}."
             )
-        stage_guest_desktop_launcher(name)
+        stage_guest_desktop_launcher(name, preferred_size=preferred_size)
         command = (
             "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start "
             f"{shlex.quote(vnc_geometry)}"
@@ -1558,11 +1612,16 @@ def desktop(
         "--ttl",
         help="Close the host preview after a duration like 30s, 10m, or 1h",
     ),
-    size: str = typer.Option(
-        "auto",
+    size: str | None = typer.Option(
+        None,
         "--size",
         "--vnc-size",
-        help="Desktop size: auto or WIDTHxHEIGHT",
+        help="Desktop size override: auto or WIDTHxHEIGHT (default: config desktop.size)",
+    ),
+    remember_size: bool = typer.Option(
+        False,
+        "--remember-size",
+        help="Persist the explicit --size as this host's default",
     ),
     browser_url: str | None = typer.Option(
         None,
@@ -1607,16 +1666,24 @@ def desktop(
         raise typer.Exit(2)
     if (status or stop) and (
         open_browser or ttl is not None or browser_url is not None
-        or host_port != 0 or size != "auto" or share != "local"
-        or tailnet_port is not None
+        or host_port != 0 or size is not None or share != "local"
+        or tailnet_port is not None or remember_size
     ):
         console.print(
             "[red]--status and --stop cannot be combined with preview or browser options.[/red]"
         )
         raise typer.Exit(2)
+    if remember_size and size is None:
+        console.print("[red]--remember-size requires an explicit --size.[/red]")
+        raise typer.Exit(2)
 
     from ..platform import get_platform
-    from ..preview import PreviewConfig, parse_ttl, resolve_vnc_geometry, serve_agent_preview
+    from ..preview import (
+        PreviewConfig,
+        parse_ttl,
+        resolve_vnc_geometry,
+        serve_agent_preview,
+    )
 
     platform = get_platform()
     if not platform.is_sandbox_running(name):
@@ -1624,8 +1691,8 @@ def desktop(
         console.print(f"Start it with: [bold]safeyolo agent run {escape(name)}[/bold]")
         raise typer.Exit(1)
 
-    stage_guest_desktop_launcher(name)
     if status or stop:
+        stage_guest_desktop_launcher(name)
         action = "status" if status else "stop"
         exit_code = platform.exec_in_sandbox(
             name,
@@ -1636,7 +1703,10 @@ def desktop(
         raise typer.Exit(exit_code)
 
     try:
-        geometry, detected_display_size = resolve_vnc_geometry(size)
+        preferred_size = get_desktop_size()
+        geometry, detected_display_size = resolve_vnc_geometry(
+            size if size is not None else preferred_size
+        )
         ttl_seconds = parse_ttl(ttl)
         resolved_tailnet_port, previous_tailnet_port = _resolve_preview_tailnet_port(
             name, share, tailnet_port,
@@ -1644,6 +1714,22 @@ def desktop(
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
+
+    if remember_size:
+        remembered_size = size.strip().lower()
+        config = load_config()
+        desktop_config = config.setdefault("desktop", {})
+        if not isinstance(desktop_config, dict):
+            console.print("[red]desktop config must be a mapping[/red]")
+            raise typer.Exit(1)
+        desktop_config["size"] = remembered_size
+        save_config(config)
+        preferred_size = remembered_size
+        console.print(
+            f"[green]Remembered host desktop size:[/green] {remembered_size}"
+        )
+
+    stage_guest_desktop_launcher(name, preferred_size=preferred_size)
 
     if detected_display_size:
         console.print(
@@ -1850,6 +1936,9 @@ def config(
         rootfs_script = metadata.get("rootfs_script")
         if rootfs_script:
             table.add_row("Rootfs script", rootfs_script)
+        rootfs_from = metadata.get("rootfs_from")
+        if rootfs_from:
+            table.add_row("Rootfs cloned from", rootfs_from)
         current_args = metadata.get("user_default_args")
         if current_args:
             table.add_row("Default args", " ".join(current_args))

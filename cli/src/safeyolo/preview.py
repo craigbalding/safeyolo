@@ -3,7 +3,7 @@
 Provides a host-local, token-gated HTTP gateway to one agent-local HTTP
 service. The browser-facing server is not a general router: each instance is
 bound to one `(agent, guest_port)` pair and forwards through a command-owned
-guest helper process.
+platform relay.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from .tailnet import (
 log = logging.getLogger("safeyolo.preview")
 
 TOKEN_HEADER = "X-SafeYolo-Preview-Token"
-TOKEN_COOKIE = "safeyolo_preview_token"
+TOKEN_COOKIE_PREFIX = "safeyolo_preview_token_"
 CONTROL_PREFIX = "/_safeyolo_preview"
 UNLOCK_PATH = f"{CONTROL_PREFIX}/unlock"
 UNLOCK_CODE_TTL_SECONDS = 300
@@ -95,6 +95,8 @@ class PreviewHTTPServer(http.server.ThreadingHTTPServer):
         self.config = config
         self.platform = platform
         self.session_token = session_token
+        browser_port = config.tailnet_port or self.server_address[1]
+        self.token_cookie = preview_cookie_name(browser_port)
         self.unlock_code = unlock_code
         self.unlock_expires_at = time.time() + UNLOCK_CODE_TTL_SECONDS
         self.unlock_failures = 0
@@ -206,9 +208,9 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         self._log_event("agent.preview_unlock", "preview unlocked", status=303, started=started)
 
     def _is_authorized(self) -> bool:
-        provided = (
-            self.headers.get(TOKEN_HEADER)
-            or preview_token_from_cookie(self.headers.get("Cookie", ""))
+        provided = self.headers.get(TOKEN_HEADER) or preview_token_from_cookie(
+            self.headers.get("Cookie", ""),
+            self.server.token_cookie,
         )
         return bool(provided) and secrets.compare_digest(provided, self.server.session_token)
 
@@ -273,8 +275,10 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             proc.stdin.write(request)
             self._copy_request_body(proc.stdin, is_upgrade=is_upgrade)
             proc.stdin.flush()
-            if not is_upgrade:
-                proc.stdin.close()
+            # Do not close stdin here. Across gVisor's exec and port-forward
+            # relays, a host-side write EOF can close the whole guest stream
+            # before its HTTP response reaches stdout. Relay cleanup closes it
+            # after the response has been consumed.
 
             status, bytes_out = self._forward_response_head(proc.stdout)
             if is_upgrade and status == HTTPStatus.SWITCHING_PROTOCOLS:
@@ -285,9 +289,17 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         finally:
             self._close_relay(proc)
 
-    def _open_guest_relay(self) -> subprocess.Popen[bytes]:
-        command = build_guest_relay_command(self.server.config.guest_port)
-        proc = self.server.platform.popen_binary_in_sandbox(self.server.config.agent, command, user="agent")
+    def _open_guest_relay(self):
+        open_port_forward = getattr(self.server.platform, "popen_port_forward", None)
+        if open_port_forward is None:
+            command = build_guest_relay_command(self.server.config.guest_port)
+            proc = self.server.platform.popen_binary_in_sandbox(self.server.config.agent, command, user="agent")
+        else:
+            proc = open_port_forward(
+                self.server.config.agent,
+                self.server.config.guest_port,
+                user="agent",
+            )
         if proc.stdin is None or proc.stdout is None:
             raise PreviewError("preview relay did not expose stdin/stdout")
         return proc
@@ -378,14 +390,14 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _send_unlock_page(self) -> None:
         body = (
-            b"<!doctype html><html><head><meta charset=\"utf-8\">"
+            b'<!doctype html><html><head><meta charset="utf-8">'
             b"<title>SafeYolo Preview Unlock</title>"
             b"<style>body{font-family:system-ui,sans-serif;margin:3rem;max-width:32rem}"
             b"input,button{font:inherit;padding:.6rem;margin-top:.5rem}</style>"
             b"</head><body><h1>Unlock Preview</h1>"
-            b"<form method=\"post\" action=\"/_safeyolo_preview/unlock\">"
-            b"<label>Unlock code<br><input name=\"code\" autocomplete=\"one-time-code\" autofocus></label><br>"
-            b"<button type=\"submit\">Unlock</button></form></body></html>"
+            b'<form method="post" action="/_safeyolo_preview/unlock">'
+            b'<label>Unlock code<br><input name="code" autocomplete="one-time-code" autofocus></label><br>'
+            b'<button type="submit">Unlock</button></form></body></html>'
         )
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -401,8 +413,7 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         secure = "; Secure" if self._is_forwarded_https() else ""
         self.send_header(
             "Set-Cookie",
-            f"{TOKEN_COOKIE}={self.server.session_token}; "
-            f"Path=/; HttpOnly; SameSite=Strict{secure}",
+            f"{self.server.token_cookie}={self.server.session_token}; Path=/; HttpOnly; SameSite=Strict{secure}",
         )
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
@@ -618,7 +629,12 @@ def normalize_display_path(path: str) -> str:
     return out or "/"
 
 
-def preview_token_from_cookie(raw_cookie: str) -> str:
+def preview_cookie_name(browser_port: int) -> str:
+    """Return the preview session cookie name for one browser-facing port."""
+    return f"{TOKEN_COOKIE_PREFIX}{browser_port}"
+
+
+def preview_token_from_cookie(raw_cookie: str, cookie_name: str) -> str:
     if not raw_cookie:
         return ""
     cookie = SimpleCookie()
@@ -626,7 +642,7 @@ def preview_token_from_cookie(raw_cookie: str) -> str:
         cookie.load(raw_cookie)
     except Exception:
         return ""
-    morsel = cookie.get(TOKEN_COOKIE)
+    morsel = cookie.get(cookie_name)
     return morsel.value if morsel else ""
 
 
@@ -649,7 +665,7 @@ def sanitize_request_headers(headers, guest_port: int, *, is_upgrade: bool = Fal
         if lk in HOP_BY_HOP_HEADERS and not (is_upgrade and lk in {"connection", "upgrade"}):
             continue
         if lk == "cookie":
-            value = strip_preview_cookie(value)
+            value = strip_preview_cookies(value)
             if not value:
                 continue
         out.append((key, value))
@@ -660,14 +676,15 @@ def sanitize_request_headers(headers, guest_port: int, *, is_upgrade: bool = Fal
     return out
 
 
-def strip_preview_cookie(raw_cookie: str) -> str:
+def strip_preview_cookies(raw_cookie: str) -> str:
     cookie = SimpleCookie()
     try:
         cookie.load(raw_cookie)
     except Exception:
         return raw_cookie
-    if TOKEN_COOKIE in cookie:
-        del cookie[TOKEN_COOKIE]
+    for key in list(cookie):
+        if key.startswith(TOKEN_COOKIE_PREFIX):
+            del cookie[key]
     return "; ".join(f"{key}={morsel.value}" for key, morsel in cookie.items())
 
 
@@ -720,9 +737,7 @@ def parse_response_status(head: bytes) -> int:
 def add_preview_response_headers(head: bytes, config: PreviewConfig) -> bytes:
     prefix = head[:-4]
     preview_headers = (
-        f"\r\nX-SafeYolo-Agent: {config.agent}"
-        f"\r\nX-SafeYolo-Preview-Port: {config.guest_port}"
-        "\r\n\r\n"
+        f"\r\nX-SafeYolo-Agent: {config.agent}\r\nX-SafeYolo-Preview-Port: {config.guest_port}\r\n\r\n"
     ).encode("iso-8859-1")
     return prefix + preview_headers
 
@@ -796,6 +811,7 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
             webbrowser.open(url)
 
         if tailnet_session:
+
             def watch_tailnet_serve() -> None:
                 tailnet_session.process.wait()
                 if not tailnet_session.closing:
@@ -811,8 +827,7 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
             output = tailnet_session.read_output()
             suffix = f": {output}" if output else ""
             print(
-                f"Tailscale Serve stopped unexpectedly"
-                f" (exit {tailnet_session.process.returncode}){suffix}",
+                f"Tailscale Serve stopped unexpectedly (exit {tailnet_session.process.returncode}){suffix}",
                 file=sys.stderr,
             )
             return 1

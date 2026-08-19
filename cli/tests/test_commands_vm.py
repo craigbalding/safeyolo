@@ -582,6 +582,88 @@ class TestAgentAdd:
         assert "rootfs script failed" in result.output.lower()
         assert "builder returned 1" in result.output
 
+    def test_rootfs_from_clones_rootfs_and_saves_provenance(
+        self, runner, config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        mock_rootfs = config_dir / "agents" / "engagement" / "rootfs"
+        mock_platform = MagicMock()
+        mock_platform.prepare_rootfs.return_value = mock_rootfs
+        saved = {}
+
+        def _capture_save(name, metadata):
+            saved["name"] = name
+            saved["metadata"] = metadata
+
+        with (
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.vm.ensure_agent_persistent_dirs"),
+            patch("safeyolo.commands.agent.save_agent", side_effect=_capture_save),
+            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.clone_custom_rootfs") as mock_clone,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent", "add", "engagement", str(folder),
+                    "--rootfs-from", "kali-base", "--no-run",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_clone.assert_called_once_with("kali-base", "engagement")
+        assert saved["metadata"]["rootfs_from"] == "kali-base"
+        assert "Rootfs cloned from: kali-base" in result.output
+
+    def test_rootfs_from_and_script_are_mutually_exclusive(
+        self, runner, config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        script = tmp_path / "builder.sh"
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o755)
+
+        result = runner.invoke(
+            app,
+            [
+                "agent", "add", "engagement", str(folder),
+                "--rootfs-script", str(script),
+                "--rootfs-from", "kali-base", "--no-run",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_rootfs_from_failure_surfaces_error(
+        self, runner, config_dir, tmp_path
+    ):
+        from safeyolo.vm import VMError
+
+        folder = tmp_path / "project"
+        folder.mkdir()
+        with (
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch(
+                "safeyolo.commands.agent.clone_custom_rootfs",
+                side_effect=VMError("source has no custom rootfs"),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent", "add", "engagement", str(folder),
+                    "--rootfs-from", "kali-base", "--no-run",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "rootfs clone failed" in result.output.lower()
+        assert "source has no custom rootfs" in result.output
+
     def test_creates_rootfs_on_add(self, runner, config_dir, tmp_path):
         """add calls plat.prepare_rootfs and saves metadata (no host script)."""
         folder = tmp_path / "project"

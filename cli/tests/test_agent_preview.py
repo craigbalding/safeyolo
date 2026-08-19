@@ -11,11 +11,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from safeyolo.commands.agent import agent_app
+from safeyolo.config import get_desktop_size
 from safeyolo.preview import (
-    TOKEN_COOKIE,
+    TOKEN_COOKIE_PREFIX,
     TOKEN_HEADER,
     UNLOCK_PATH,
     PreviewConfig,
@@ -24,12 +26,13 @@ from safeyolo.preview import (
     normalize_display_path,
     parse_ttl,
     preferred_vnc_geometry,
+    preview_cookie_name,
     preview_token_from_cookie,
     resolve_vnc_geometry,
     sanitize_request_headers,
     serve_agent_preview,
     start_preview_server,
-    strip_preview_cookie,
+    strip_preview_cookies,
     validate_guest_port,
 )
 from safeyolo.tailnet import (
@@ -70,6 +73,37 @@ class LocalRelayPlatform:
             stderr=subprocess.PIPE,
             bufsize=0,
         )
+
+
+class HalfCloseSensitiveProcess:
+    """Relay double matching gVisor's response-losing stdin half-close."""
+
+    def __init__(self):
+        self.stdin = io.BytesIO()
+        self.stdout = self.Response(self.stdin)
+        self.returncode = 0
+
+    class Response:
+        def __init__(self, request):
+            self.request = request
+            self.response = io.BytesIO(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nrelay-ok\n")
+
+        def read(self, size=-1):
+            if self.request.closed:
+                return b""
+            return self.response.read(size)
+
+    def poll(self):
+        return self.returncode
+
+
+class HalfCloseSensitivePlatform:
+    def __init__(self):
+        self.process = None
+
+    def popen_port_forward(self, name, guest_port, user="agent"):  # noqa: ARG002
+        self.process = HalfCloseSensitiveProcess()
+        return self.process
 
 
 class FakePlatform:
@@ -186,12 +220,7 @@ class FakeWebSocketUpstream:
         conn, _ = self.sock.accept()
         with conn:
             self.handshake = _recv_until(conn, b"\r\n\r\n")
-            conn.sendall(
-                b"HTTP/1.1 101 Switching Protocols\r\n"
-                b"Upgrade: websocket\r\n"
-                b"Connection: Upgrade\r\n"
-                b"\r\n"
-            )
+            conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
             data = conn.recv(4)
             if data == b"ping":
                 conn.sendall(b"pong")
@@ -222,9 +251,43 @@ def test_validate_tailnet_port_rejects_out_of_range():
 
 
 def test_cookie_helpers_strip_preview_token():
-    cookie = f"session=abc; {TOKEN_COOKIE}=secret; theme=dark"
-    assert preview_token_from_cookie(cookie) == "secret"
-    assert strip_preview_cookie(cookie) == "session=abc; theme=dark"
+    cookie_name = preview_cookie_name(8443)
+    cookie = f"session=abc; {cookie_name}=secret; theme=dark"
+    assert preview_token_from_cookie(cookie, cookie_name) == "secret"
+    assert strip_preview_cookies(cookie) == "session=abc; theme=dark"
+
+
+def test_preview_cookie_helpers_isolate_ports_and_strip_all_preview_cookies():
+    cookie_8443 = preview_cookie_name(8443)
+    cookie_8444 = preview_cookie_name(8444)
+    raw = f"{cookie_8443}=first; {cookie_8444}=second; app=ok"
+
+    assert cookie_8443 != cookie_8444
+    assert preview_token_from_cookie(raw, cookie_8443) == "first"
+    assert preview_token_from_cookie(raw, cookie_8444) == "second"
+    assert strip_preview_cookies(raw) == "app=ok"
+
+
+def test_preview_servers_scope_cookies_to_browser_facing_ports():
+    local = start_preview_server(
+        PreviewConfig(agent="local", guest_port=8000),
+        NoRelayPlatform(),
+        "local-session",
+        "1234-5678",
+    )
+    tailnet = start_preview_server(
+        PreviewConfig(agent="tailnet", guest_port=8001, tailnet_port=8444),
+        NoRelayPlatform(),
+        "tailnet-session",
+        "1234-5678",
+    )
+    try:
+        assert local.token_cookie == preview_cookie_name(local.server_address[1])
+        assert tailnet.token_cookie == preview_cookie_name(8444)
+        assert local.token_cookie != tailnet.token_cookie
+    finally:
+        local.server_close()
+        tailnet.server_close()
 
 
 def test_tailnet_status_detects_node_ports_without_counting_services():
@@ -267,25 +330,27 @@ def test_tailnet_status_matches_exact_foreground_target():
 def test_start_tailnet_serve_uses_foreground_mapping(monkeypatch):
     process = BlockingFakeProcess()
     target = "http://127.0.0.1:54321"
-    responses = iter([
-        {
-            "BackendState": "Running",
-            "Self": {"DNSName": "host.example.ts.net."},
-        },
-        {},
-        {
-            "Foreground": {
-                "owned-session": {
-                    "TCP": {"8443": {"HTTPS": True}},
-                    "Web": {
-                        "host.example.ts.net:8443": {
-                            "Handlers": {"/": {"Proxy": target}},
+    responses = iter(
+        [
+            {
+                "BackendState": "Running",
+                "Self": {"DNSName": "host.example.ts.net."},
+            },
+            {},
+            {
+                "Foreground": {
+                    "owned-session": {
+                        "TCP": {"8443": {"HTTPS": True}},
+                        "Web": {
+                            "host.example.ts.net:8443": {
+                                "Handlers": {"/": {"Proxy": target}},
+                            },
                         },
                     },
                 },
             },
-        },
-    ])
+        ]
+    )
     monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
     monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
 
@@ -309,18 +374,19 @@ def test_start_tailnet_serve_uses_foreground_mapping(monkeypatch):
 
 
 def test_start_tailnet_serve_refuses_existing_mapping(monkeypatch):
-    responses = iter([
-        {
-            "BackendState": "Running",
-            "Self": {"DNSName": "host.example.ts.net."},
-        },
-        {"TCP": {"8443": {"HTTPS": True}}},
-    ])
+    responses = iter(
+        [
+            {
+                "BackendState": "Running",
+                "Self": {"DNSName": "host.example.ts.net."},
+            },
+            {"TCP": {"8443": {"HTTPS": True}}},
+        ]
+    )
     monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
     monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
 
-    with patch("safeyolo.tailnet.subprocess.Popen") as popen, \
-         pytest.raises(PreviewError, match="already has"):
+    with patch("safeyolo.tailnet.subprocess.Popen") as popen, pytest.raises(PreviewError, match="already has"):
         start_tailnet_serve(54321, 8443)
 
     popen.assert_not_called()
@@ -328,13 +394,15 @@ def test_start_tailnet_serve_refuses_existing_mapping(monkeypatch):
 
 def test_start_tailnet_serve_cleans_process_on_readiness_failure(monkeypatch):
     process = BlockingFakeProcess()
-    responses = iter([
-        {
-            "BackendState": "Running",
-            "Self": {"DNSName": "host.example.ts.net."},
-        },
-        {},
-    ])
+    responses = iter(
+        [
+            {
+                "BackendState": "Running",
+                "Self": {"DNSName": "host.example.ts.net."},
+            },
+            {},
+        ]
+    )
     monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
     monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
     monkeypatch.setattr("safeyolo.tailnet.TAILSCALE_READY_TIMEOUT_SECONDS", 0)
@@ -388,10 +456,11 @@ def test_guest_relay_command_streams_http_response():
 
 
 def test_sanitize_request_headers_strips_preview_authority():
+    cookie_name = preview_cookie_name(8443)
     headers = {
         "Host": "127.0.0.1:5000",
         TOKEN_HEADER: "secret",
-        "Cookie": f"a=b; {TOKEN_COOKIE}=secret",
+        "Cookie": f"a=b; {cookie_name}=secret",
         "Connection": "close",
         "Accept": "text/html",
         "Tailscale-User-Login": "operator@example.com",
@@ -445,7 +514,7 @@ def test_preview_server_unlocks_with_one_time_code(monkeypatch):
         assert body == b""
         assert resp.getheader("Location") == "/"
         cookie = resp.getheader("Set-Cookie")
-        assert f"{TOKEN_COOKIE}=session" in cookie
+        assert f"{server.token_cookie}=session" in cookie
         assert "HttpOnly" in cookie
         assert "SameSite=Strict" in cookie
         assert platform.calls == []
@@ -539,7 +608,7 @@ def test_preview_server_streams_http_and_strips_preview_cookie(monkeypatch):
         resp, body = _request(
             server,
             "/",
-            headers={"Cookie": f"{TOKEN_COOKIE}=session; app=ok", TOKEN_HEADER: "session"},
+            headers={"Cookie": f"{server.token_cookie}=session; app=ok", TOKEN_HEADER: "session"},
         )
         assert resp.status == 200
         assert body == b"helper-ok"
@@ -548,7 +617,7 @@ def test_preview_server_streams_http_and_strips_preview_cookie(monkeypatch):
         assert len(platform.calls) == 1
         assert TinyHandler.last_path == "/"
         assert TinyHandler.last_headers["Host"] == f"127.0.0.1:{upstream.server_address[1]}"
-        assert TOKEN_COOKIE not in TinyHandler.last_headers["Cookie"]
+        assert TOKEN_COOKIE_PREFIX not in TinyHandler.last_headers["Cookie"]
         assert TinyHandler.last_headers["Cookie"] == "app=ok"
         assert TOKEN_HEADER not in TinyHandler.last_headers
     finally:
@@ -556,6 +625,27 @@ def test_preview_server_streams_http_and_strips_preview_cookie(monkeypatch):
         server.server_close()
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_preview_server_keeps_relay_write_side_open_until_response(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    platform = HalfCloseSensitivePlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=6080),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        resp, body = _request(server, "/vnc.html", headers={TOKEN_HEADER: "session"})
+        assert resp.status == 200
+        assert body == b"relay-ok\n"
+        assert platform.process is not None
+        assert not platform.process.stdin.closed
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_preview_server_preserves_chunked_response(monkeypatch):
@@ -570,7 +660,7 @@ def test_preview_server_preserves_chunked_response(monkeypatch):
     )
     _serve(server)
     try:
-        resp, body = _request(server, "/", headers={"Cookie": f"{TOKEN_COOKIE}=session"})
+        resp, body = _request(server, "/", headers={"Cookie": f"{server.token_cookie}=session"})
         assert resp.status == 200
         assert resp.getheader("Transfer-Encoding") == "chunked"
         assert body == b"hello there"
@@ -590,7 +680,7 @@ def test_preview_control_paths_are_not_forwarded(monkeypatch):
         resp, body = _request(
             server,
             "/_safeyolo_preview/not-real",
-            headers={"Cookie": f"{TOKEN_COOKIE}=session"},
+            headers={"Cookie": f"{server.token_cookie}=session"},
         )
         assert resp.status == 404
         assert b"not found" in body
@@ -621,7 +711,7 @@ def test_preview_server_tunnels_websocket_upgrade(monkeypatch):
                 "Connection: Upgrade\r\n"
                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                 "Sec-WebSocket-Version: 13\r\n"
-                f"Cookie: {TOKEN_COOKIE}=session; app=ok\r\n"
+                f"Cookie: {server.token_cookie}=session; app=ok\r\n"
                 f"{TOKEN_HEADER}: session\r\n"
                 "\r\n"
             ).encode()
@@ -641,7 +731,7 @@ def test_preview_server_tunnels_websocket_upgrade(monkeypatch):
     assert upstream.handshake is not None
     assert b"GET /ws HTTP/1.1" in upstream.handshake
     assert f"Host: 127.0.0.1:{upstream.port}".encode() in upstream.handshake
-    assert TOKEN_COOKIE.encode() not in upstream.handshake
+    assert TOKEN_COOKIE_PREFIX.encode() not in upstream.handshake
     assert TOKEN_HEADER.encode() not in upstream.handshake
     assert b"Cookie: app=ok" in upstream.handshake
 
@@ -650,8 +740,10 @@ def test_preview_command_builds_single_agent_config():
     runner = CliRunner()
     fake_platform = FakePlatform(running=True)
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+    ):
         result = runner.invoke(
             agent_app,
             ["preview", "codey", "8000", "--host-port", "54321", "--ttl", "30s"],
@@ -671,20 +763,19 @@ def test_preview_command_can_start_host_sized_vnc(monkeypatch):
     fake_platform = FakePlatform(running=True)
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage, \
-         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+    ):
         result = runner.invoke(agent_app, ["preview", "codey", "6080", "--start-vnc"])
 
     assert result.exit_code == 0
-    mock_stage.assert_called_once_with("codey")
+    mock_stage.assert_called_once_with("codey", preferred_size="auto")
     assert fake_platform.exec_calls == [
         {
             "name": "codey",
-            "command": (
-                "SAFEYOLO_PREVIEW_MANAGED=1 "
-                "/safeyolo/guest-desktop start 1760x900"
-            ),
+            "command": ("SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1760x900"),
             "user": "agent",
             "interactive": False,
         }
@@ -700,9 +791,11 @@ def test_preview_command_can_start_browser_url(monkeypatch):
     fake_platform = FakePlatform(running=True)
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
-         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+    ):
         result = runner.invoke(
             agent_app,
             ["preview", "codey", "6080", "-b", "https://example.com/a b"],
@@ -721,10 +814,12 @@ def test_preview_command_can_start_browser_url(monkeypatch):
 def test_preview_command_requires_running_agent():
     runner = CliRunner()
 
-    with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)), \
-         patch(
-             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
-         ) as mock_reserve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)),
+        patch(
+            "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+        ) as mock_reserve,
+    ):
         result = runner.invoke(agent_app, ["preview", "codey", "8000"])
 
     assert result.exit_code == 1
@@ -737,25 +832,29 @@ def test_desktop_command_starts_core_launcher_and_preview(monkeypatch):
     fake_platform = FakePlatform(running=True)
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage, \
-         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+    ):
         result = runner.invoke(
             agent_app,
             ["desktop", "codey", "--open", "--ttl", "15m", "--browser", "https://example.com/a b"],
         )
 
     assert result.exit_code == 0
-    mock_stage.assert_called_once_with("codey")
-    assert fake_platform.exec_calls == [{
-        "name": "codey",
-        "command": (
-            "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1760x900"
-            " && /safeyolo/guest-desktop browser 'https://example.com/a b'"
-        ),
-        "user": "agent",
-        "interactive": False,
-    }]
+    mock_stage.assert_called_once_with("codey", preferred_size="auto")
+    assert fake_platform.exec_calls == [
+        {
+            "name": "codey",
+            "command": (
+                "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1760x900"
+                " && /safeyolo/guest-desktop browser 'https://example.com/a b'"
+            ),
+            "user": "agent",
+            "interactive": False,
+        }
+    ]
     config, platform = mock_serve.call_args.args
     assert platform is fake_platform
     assert config.agent == "codey"
@@ -763,6 +862,81 @@ def test_desktop_command_starts_core_launcher_and_preview(monkeypatch):
     assert config.ttl_seconds == 900
     assert config.open_browser is True
     assert config.display_path == "/vnc.html#autoconnect=true&resize=remote"
+
+
+def test_desktop_command_uses_persistent_host_size(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr(
+        "safeyolo.config.load_config",
+        lambda: {"desktop": {"size": "1280x1246"}},
+    )
+
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0),
+    ):
+        result = runner.invoke(agent_app, ["desktop", "codey"])
+
+    assert result.exit_code == 0
+    assert fake_platform.exec_calls[0]["command"] == (
+        "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1280x1246"
+    )
+
+
+def test_desktop_command_explicit_size_overrides_host_preference(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr(
+        "safeyolo.config.load_config",
+        lambda: {"desktop": {"size": "1280x1246"}},
+    )
+
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch("safeyolo.preview.serve_agent_preview", return_value=0),
+    ):
+        result = runner.invoke(agent_app, ["desktop", "codey", "--size", "1600x900"])
+
+    assert result.exit_code == 0
+    assert fake_platform.exec_calls[0]["command"].endswith("start 1600x900")
+
+
+def test_desktop_command_remembers_explicit_host_size(tmp_config_dir):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0),
+    ):
+        result = runner.invoke(
+            agent_app,
+            [
+                "desktop",
+                "codey",
+                "--size",
+                "1280x1246",
+                "--remember-size",
+            ],
+        )
+
+    assert result.exit_code == 0
+    config = yaml.safe_load((tmp_config_dir / "config.yaml").read_text())
+    assert config["desktop"]["size"] == "1280x1246"
+    mock_stage.assert_called_once_with("codey", preferred_size="1280x1246")
+
+
+def test_desktop_command_remember_requires_explicit_size():
+    runner = CliRunner()
+
+    result = runner.invoke(agent_app, ["desktop", "codey", "--remember-size"])
+
+    assert result.exit_code == 2
+    assert "requires an explicit --size" in result.output
 
 
 def test_desktop_command_requires_running_agent():
@@ -780,9 +954,11 @@ def test_desktop_status_uses_core_launcher_without_preview():
     runner = CliRunner()
     fake_platform = FakePlatform(running=True)
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
-         patch("safeyolo.preview.serve_agent_preview") as mock_serve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch("safeyolo.preview.serve_agent_preview") as mock_serve,
+    ):
         result = runner.invoke(agent_app, ["desktop", "codey", "--status"])
 
     assert result.exit_code == 0
@@ -804,13 +980,15 @@ def test_desktop_command_reserves_tailnet_port(monkeypatch):
     fake_platform = FakePlatform(running=True)
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: None)
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
-         patch(
-             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
-             return_value=(8443, None),
-         ) as mock_reserve, \
-         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch(
+            "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+            return_value=(8443, None),
+        ) as mock_reserve,
+        patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve,
+    ):
         result = runner.invoke(
             agent_app,
             ["desktop", "codey", "--share", "tailnet"],
@@ -828,17 +1006,19 @@ def test_desktop_restores_changed_port_when_preview_start_fails(monkeypatch):
     fake_platform = FakePlatform(running=True)
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: None)
 
-    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
-         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
-         patch(
-             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
-             return_value=(8444, 8443),
-         ), \
-         patch("safeyolo.commands.agent.restore_agent_tailnet_port") as mock_restore, \
-         patch(
-             "safeyolo.preview.serve_agent_preview",
-             side_effect=RuntimeError("serve denied"),
-         ):
+    with (
+        patch("safeyolo.platform.get_platform", return_value=fake_platform),
+        patch("safeyolo.commands.agent.stage_guest_desktop_launcher"),
+        patch(
+            "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+            return_value=(8444, 8443),
+        ),
+        patch("safeyolo.commands.agent.restore_agent_tailnet_port") as mock_restore,
+        patch(
+            "safeyolo.preview.serve_agent_preview",
+            side_effect=RuntimeError("serve denied"),
+        ),
+    ):
         result = runner.invoke(
             agent_app,
             ["desktop", "codey", "--share", "tailnet", "--tailnet-port", "8444"],
@@ -992,6 +1172,16 @@ def test_resolve_vnc_geometry_auto_uses_detected_display(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (2560, 1440))
 
     assert resolve_vnc_geometry("auto") == ("2400x1260", (2560, 1440))
+
+
+def test_get_desktop_size_uses_host_preference(monkeypatch):
+    monkeypatch.setattr(
+        "safeyolo.config.load_config",
+        lambda: {"desktop": {"size": "1280x1246"}},
+    )
+
+    assert get_desktop_size(None) == "1280x1246"
+    assert get_desktop_size("1600x900") == "1600x900"
 
 
 def test_resolve_vnc_geometry_accepts_explicit_size():

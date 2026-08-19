@@ -83,6 +83,12 @@ The named agent must already be running; desktop access never starts its
 configured coding-agent process implicitly. `--status` and `--stop` manage the
 guest stack without opening a host preview.
 
+The host-level `desktop.size` value in `~/.safeyolo/config.yaml` provides the
+persistent default (`auto` or `WIDTHxHEIGHT`). SafeYolo stages the same value at
+`/safeyolo/desktop-size`, so trusted agent-side browser orchestrators invoke the
+core launcher with the same preference. An explicit `--size` wins for one host
+command; `--remember-size` also saves that explicit size as the host default.
+
 `preview --start-vnc` and `preview --browser` remain compatibility spellings,
 but call the same core launcher. With automatic sizing, the CLI detects the
 host display and starts the guest noVNC desktop at a size that fits the
@@ -129,8 +135,9 @@ Platform bridge:
 
 - macOS: same shell bridge family as `safeyolo agent shell`
   (`ssh` over `ProxyCommand=nc -U <shell.sock>`).
-- Linux: same sandbox execution family as `safeyolo agent shell`
-  (`runsc exec` in the agent sandbox).
+- Linux: gVisor's native `runsc port-forward --stream` connected-FD donation.
+  SafeYolo creates a short-lived operator-owned UDS for each request; no host
+  TCP listener or guest process is created.
 
 The session has two layers:
 
@@ -139,10 +146,9 @@ The session has two layers:
   strips SafeYolo preview cookies/headers, logs/audits, and enforces HTTP
   policy.
 - **Private platform bridge:** command-owned transport from the host gate to
-  the agent-local service. For each authenticated browser request, the host
-  gate starts a short-lived binary subprocess in the sandbox using the same
-  platform control path as `safeyolo agent shell`. Inside the guest, `socat`
-  connects stdio to `TCP:127.0.0.1:<guest-port>`.
+  the agent-local service. For each authenticated browser request, Linux
+  donates one connected UDS stream into gVisor; macOS uses its existing
+  shell-bridge subprocess and guest `socat`.
 
 The host gate parses only enough HTTP to authenticate the browser request,
 reserve SafeYolo control paths, strip SafeYolo cookies/headers, and attach
@@ -158,7 +164,9 @@ The browser-facing URL should not contain the preview secret. The CLI prints a
 clean localhost URL plus a one-time unlock code in the terminal. The first
 browser visit shows a local unlock form; a successful unlock invalidates the
 code, sets an `HttpOnly; SameSite=Strict` session cookie, and redirects back to
-`/`.
+`/`. The cookie name includes the browser-facing port, allowing one operator to
+keep multiple local or Tailnet previews open on the same hostname without one
+preview overwriting another's session.
 
 ## Request handling
 
@@ -167,9 +175,11 @@ For each inbound host request:
 1. Reject unless the request includes a valid preview session cookie.
 2. Strip SafeYolo preview cookies/headers before forwarding.
 3. Reject methods outside an MVP allowlist if needed.
-4. Forward the cleaned HTTP/1.1 request over a private `socat` bridge to
+4. Forward the cleaned HTTP/1.1 request over the private platform bridge to
    `127.0.0.1:<guest-port>` inside the agent. Non-upgrade requests force
    `Connection: close` upstream to avoid implementing a full keep-alive proxy.
+   Keep the relay write side open until the response is consumed: gVisor may
+   translate an early host write EOF into closure of the whole guest stream.
 5. Stream response headers and body back to the host client. For
    `101 Switching Protocols`, relay bytes bidirectionally until either side
    closes.
@@ -237,8 +247,8 @@ Fields:
 4. Start a `ThreadingHTTPServer` bound to `127.0.0.1`.
 5. Generate a high-entropy session token with `secrets.token_urlsafe` plus a
    short one-time unlock code.
-6. For each cookie-authenticated guest request, launch a binary platform
-   subprocess running `socat - TCP:127.0.0.1:<guest-port>`.
+6. For each cookie-authenticated guest request, open a binary platform relay:
+   native gVisor stream donation on Linux and the shell/socat bridge on macOS.
 7. Stream HTTP/1.1 responses and WebSocket upgrade traffic through that bridge.
 8. Log audit events.
 9. Add focused unit tests for unlock enforcement, clean URL printing, command
@@ -246,7 +256,8 @@ Fields:
 
 ## Later work
 
-- Persistent bridge or UDS plug for lower latency.
+- Persistent/multiplexed bridge if native per-request stream donation later
+  proves too costly for very high request counts.
 - Optional HTTPS/local-cert mode for secure-context browser APIs.
 - Optional `--open` browser integration.
 - Route registry visible in `safeyolo status`.

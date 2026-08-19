@@ -32,6 +32,18 @@ from .proxy import _web_tailnet_runtime
 
 console = Console()
 
+
+def _attribution_ip_conflicts(
+    running: list[tuple[str, str]],
+) -> dict[str, list[str]]:
+    """Return attribution IPs held by more than one running agent."""
+    by_ip: dict[str, list[str]] = {}
+    for name, ip in running:
+        if ip != "?":
+            by_ip.setdefault(ip, []).append(name)
+    return {ip: names for ip, names in by_ip.items() if len(names) > 1}
+
+
 # Path to bundled templates in package
 POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
@@ -416,15 +428,30 @@ def status() -> None:
                 running.append((agent_dir.name, ip))
 
         if running:
+            conflicts = _attribution_ip_conflicts(running)
             agent_table = Table(title="Running Agents", show_header=True)
             agent_table.add_column("Name", style="bold")
             agent_table.add_column("IP")
 
             for name, ip in sorted(running):
-                agent_table.add_row(name, ip)
+                rendered_ip = (
+                    f"[red]{ip} · CONFLICT[/red]" if ip in conflicts else ip
+                )
+                agent_table.add_row(name, rendered_ip)
 
             console.print()
             console.print(agent_table)
+            if conflicts:
+                names = sorted({
+                    name
+                    for conflict in conflicts.values()
+                    for name in conflict
+                })
+                console.print(
+                    "[red]Agent attribution conflict:[/red] stop and rerun "
+                    f"{', '.join(names)} before trusting agent-scoped policy "
+                    "or audit attribution."
+                )
 
 
 def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:

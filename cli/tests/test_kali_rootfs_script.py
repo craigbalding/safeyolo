@@ -36,6 +36,7 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
         "for arg in \"$@\"; do printf '|%s' \"$arg\" >> \"$TEST_CALL_LOG\"; done\n"
         "printf '\\n' >> \"$TEST_CALL_LOG\"\n"
         "[ \"${1-}\" = -v ] && exit 0\n"
+        "[ \"${1-}\" = rm ] && exec \"$@\"\n"
         "exit 73\n",
     )
     _write_executable(
@@ -73,11 +74,11 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
     assert calls[0] == "sudo|-v"
     pull_index = next(i for i, call in enumerate(calls) if call.startswith("skopeo|"))
     unpack_index = next(
-        i for i, call in enumerate(calls) if call.startswith("sudo|umoci|unpack|")
+        i for i, call in enumerate(calls)
+        if call.startswith("sudo|umoci|unpack|")
     )
     assert pull_index < unpack_index
     assert not any(call.startswith("sudo|skopeo|") for call in calls)
-
 
 def test_kali_apt_phase_restores_container_runtime_environment() -> None:
     """Protect the shared fix for systemd/dbus package configuration."""
@@ -99,6 +100,11 @@ def test_kali_apt_phase_restores_container_runtime_environment() -> None:
     assert apt_phase.index("dpkg --audit") < apt_phase.index(
         "_unmount_chroot_runtime"
     )
+    assert "Kali apt request" in apt_phase
+    assert "APT_DPKG_BEFORE" in apt_phase
+    assert "APT_DPKG_AFTER" in apt_phase
+    assert "Kali apt packages ready" in apt_phase
+    assert "chromium fluxbox novnc websockify xterm python3 ffuf sqlmap" in apt_phase
 
     mount_helper = source[
         source.index("_mount_chroot_runtime()") :
@@ -114,6 +120,48 @@ def test_kali_apt_phase_restores_container_runtime_environment() -> None:
     assert "exit 101" in source
 
 
+def test_kali_root_directory_mode_does_not_inherit_operator_umask() -> None:
+    """A caller's umask 077 must not make the remapped rootfs opaque."""
+    source = KALI_BUILDER.read_text()
+    unpack_phase = source[
+        source.index('echo "=== Unpacking ==="') :
+        source.index("# Plumbing for chroot-installs.")
+    ]
+
+    assert '_as_root mv "$SAFEYOLO_ROOTFS_WORK_DIR/unpack/rootfs" "$TREE"' in unpack_phase
+    assert '_as_root chmod 0755 "$TREE"' in unpack_phase
+    assert unpack_phase.index("_as_root mv") < unpack_phase.index("_as_root chmod 0755")
+
+
+def test_kali_staged_tree_is_verified_before_success() -> None:
+    """The builder must not claim success for an unbootable copied tree."""
+    source = KALI_BUILDER.read_text()
+    staging = source[
+        source.index('echo "=== Staging tree') :
+        source.index("# Per-distro package caches")
+    ]
+
+    assert '_as_root chmod 0755 "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
+    assert '_as_root chown -R 100000:100000 "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
+    assert "etc workspace safeyolo safeyolo-status home/agent" in staging
+    assert "usr/local/share/ca-certificates/safeyolo.crt" in staging
+    assert '_as_root stat -c %u "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
+    assert '_as_root stat -c %a "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
+    assert source.index("Invalid staged rootfs ownership/mode") < source.index(
+        'echo "=== Kali rootfs built successfully ==="'
+    )
+
+
+def test_kali_guest_installer_runs_with_strict_shell_errors() -> None:
+    """A failed shared-helper command must stop the expensive build."""
+    source = KALI_BUILDER.read_text()
+
+    assert (
+        "bash -c 'set -euo pipefail; source \"$1\"; "
+        "install_safeyolo_guest_common \"$2\"'"
+    ) in source
+
+
 def test_kali_chroots_use_deterministic_utf8_locale() -> None:
     """Do not leak an unsupported operator locale into the minimal rootfs."""
     source = KALI_BUILDER.read_text()
@@ -121,6 +169,14 @@ def test_kali_chroots_use_deterministic_utf8_locale() -> None:
     assert '"LANG=C.UTF-8"' in source
     assert '"LC_ALL=C.UTF-8"' in source
     assert source.count('/usr/bin/env -i "${CHROOT_ENV[@]}"') == 2
+
+
+def test_kali_postinstall_reads_subordinate_tree_as_root() -> None:
+    """Host-user probes must not assume private rootfs paths are readable."""
+    source = KALI_BUILDER.read_text()
+
+    assert "if _as_root grep -q '^PATH=' \"$TREE/etc/environment\"; then" in source
+    assert "if grep -q '^PATH=' \"$TREE/etc/environment\"; then" not in source
 
 
 def test_kali_rootfs_seeds_hushlogin_for_persistent_agent_home() -> None:

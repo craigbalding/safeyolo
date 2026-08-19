@@ -3,6 +3,7 @@
 from rich.text import Text
 
 from safeyolo.cli import app
+from safeyolo.commands.lifecycle import _attribution_ip_conflicts
 from safeyolo.commands.logs import format_event
 
 
@@ -205,6 +206,16 @@ class TestStatusCommand:
         result = cli_runner.invoke(app, ["status"])
         assert "no safeyolo configuration" in result.output.lower()
 
+    def test_finds_duplicate_running_agent_ips(self):
+        assert _attribution_ip_conflicts(
+            [
+                ("alice", "10.200.0.3"),
+                ("boris", "10.200.0.3"),
+                ("charlie", "10.200.0.4"),
+            ]
+        ) == {"10.200.0.3": ["alice", "boris"]}
+
+
 class TestModeCommand:
     """Tests for mode command."""
 
@@ -277,4 +288,3 @@ class TestCheckCommand:
         result = cli_runner.invoke(app, ["check"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "start" in result.output.lower()
-

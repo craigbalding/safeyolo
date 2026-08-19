@@ -90,14 +90,17 @@ if [ -n "${AGENT_IP:-}" ] \
     ip addr add "${AGENT_IP}/32" dev lo
 fi
 
-# /etc/hosts -- make the agent hostname resolve so sudo, hostname -f, and
-# any getaddrinfo() caller don't fail with "Temporary failure in name
-# resolution". Append only if no existing entry maps the name; leaves
-# any distro-default or user-added lines intact.
-if [ -n "$_agent_name" ] \
-   && ! grep -qE "^[[:space:]]*[^#]*[[:space:]]${_agent_name}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
-    printf '%s %s\n' "${AGENT_IP:-127.0.1.1}" "$_agent_name" >> /etc/hosts
-fi
+# /etc/hosts -- map both the requested name and the runtime hostname. gVisor
+# supplies `safeyolo-<name>` in the OCI spec and may reject a later hostname(2)
+# change, while macOS accepts the bare requested name. sudo must resolve the
+# value the kernel actually kept on either platform.
+_runtime_hostname=$(hostname 2>/dev/null || echo "")
+for _hostname_alias in "$_agent_name" "$_runtime_hostname"; do
+    if [ -n "$_hostname_alias" ] \
+       && ! grep -qE "^[[:space:]]*[^#]*[[:space:]]${_hostname_alias}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+        printf '%s %s\n' "${AGENT_IP:-127.0.1.1}" "$_hostname_alias" >> /etc/hosts
+    fi
+done
 
 if ip link show eth0 >/dev/null 2>&1; then
     # On gVisor the sandbox inherits eth0 fully configured from the netns

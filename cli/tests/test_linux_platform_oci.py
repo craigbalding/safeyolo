@@ -8,7 +8,9 @@ via tmp_path, and assert the spec shape and filesystem side-effects.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import socket
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -97,6 +99,40 @@ def test_extra_shares_under_home_precreate_destinations(isolated_env):
     m = matches[0]
     assert m["source"] == str(fake_claude.resolve()), m
     assert "ro" in m["options"], m
+
+
+def test_package_cache_mount_root_ignores_restrictive_umask(isolated_env):
+    """The `_apt` user must be able to traverse persistent cache roots."""
+    from safeyolo.platform.linux import LinuxPlatform
+    from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_cache_dir
+
+    name = "cache-agent"
+    ensure_agent_persistent_dirs(name)
+    agent_dir = isolated_env / "agents" / name
+    (agent_dir / "cache-paths.txt").write_text("/var/lib/apt/lists\n")
+
+    previous_umask = os.umask(0o077)
+    try:
+        spec = LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+            name=name,
+            rootfs_path=agent_dir / "rootfs",
+            workspace_path=str(isolated_env),
+            config_share=agent_dir / "config-share",
+            fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.8"},
+            cpus=1,
+            memory_mb=1024,
+            extra_shares=None,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    cache_dir = get_agent_cache_dir(name, "/var/lib/apt/lists")
+    assert cache_dir.stat().st_mode & 0o777 == 0o755
+    assert any(
+        mount.get("destination") == "/var/lib/apt/lists"
+        and mount.get("source") == str(cache_dir)
+        for mount in spec["mounts"]
+    )
 
 
 def test_home_agent_is_bind_mounted(isolated_env):
@@ -231,6 +267,54 @@ def test_runsc_command_restores_mise_after_environment_path():
 
     assert wrapped.index("/etc/environment") < wrapped.index("/etc/mise-activate.sh")
     assert wrapped.endswith("codex --version")
+
+
+def test_native_port_forward_donates_connected_uds(isolated_env, monkeypatch):
+    """Linux preview uses runsc stream mode without a host TCP listener."""
+    from safeyolo.platform import linux
+
+    created = []
+
+    class FakePortForwardProcess:
+        def __init__(self, command, **kwargs):
+            self.command = command
+            self.kwargs = kwargs
+            self.returncode = 0
+            stream_path = command[command.index("--stream") + 1]
+            self.peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.peer.connect(stream_path)
+            created.append(self)
+
+        def communicate(self, timeout=None):
+            assert timeout == linux.PORT_FORWARD_TIMEOUT_SECONDS
+            return b"", b""
+
+    monkeypatch.setattr(linux, "_get_userns_pid", lambda name: 4242)
+    monkeypatch.setattr(linux, "_find_runsc", lambda: "/test/runsc")
+    monkeypatch.setattr(linux, "_runsc_root", lambda: "/test/run")
+    monkeypatch.setattr(linux.subprocess, "Popen", FakePortForwardProcess)
+
+    relay = linux.LinuxPlatform().popen_port_forward("desktop-agent", 6080)
+    process = created[0]
+    stream_path = process.command[process.command.index("--stream") + 1]
+    assert process.command[:6] == [
+        "nsenter", "--user", "--net", "--target", "4242", "--",
+    ]
+    assert process.command[6:11] == [
+        "/test/runsc", "--root", "/test/run", "port-forward", "--stream",
+    ]
+    assert process.command[-2:] == ["safeyolo-desktop-agent", "6080"]
+    assert not os.path.exists(stream_path)
+    assert "6080:6080" not in process.command
+
+    relay.stdin.write(b"request")
+    assert process.peer.recv(7) == b"request"
+    process.peer.sendall(b"response")
+    assert relay.stdout.read(8) == b"response"
+
+    assert relay.wait(timeout=1) == 0
+    assert relay.poll() == 0
+    process.peer.close()
 
 
 def test_remove_agent_dir_retries_subuid_tree_in_temporary_userns(

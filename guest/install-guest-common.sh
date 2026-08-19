@@ -37,9 +37,9 @@
 install_safeyolo_mise() {
     local rootfs="$1"
     local target_arch="${2:-${SAFEYOLO_TARGET_ARCH:-}}"
-    local mise_version="${MISE_VERSION:-2026.4.19}"
-    local mise_sha_arm64="${MISE_SHA256_ARM64:-882d10aa67fcb4fd8008c1e31ac3c6d0dc80dac2c4cb3c0d794ca9e0e5aece3d}"
-    local mise_sha_amd64="${MISE_SHA256_AMD64:-17bf037c94dd5e790a9b56ab0a00f64a9ed910df1e0b67ad041d6336bafc44cb}"
+    local mise_version="${MISE_VERSION:-2026.8.8}"
+    local mise_sha_arm64="${MISE_SHA256_ARM64:-6e6e96d319fe274996db5aed691f5398552865e641dc4b6fb6b01d73f4853a17}"
+    local mise_sha_amd64="${MISE_SHA256_AMD64:-58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f}"
     local mise_arch mise_sha
 
     [ -n "$rootfs" ] || { echo "install_safeyolo_mise: rootfs arg required" >&2; return 1; }
@@ -164,14 +164,19 @@ install_safeyolo_guest_common() {
         echo "install_safeyolo_guest_common: no useradd in rootfs -- install the shadow/shadow-utils package first" >&2
         return 1
     fi
-    chroot "$rootfs" useradd -m -s /bin/bash -u 1000 agent 2>/dev/null || true
+    # Idempotency must not hide a genuine useradd failure. Check the passwd
+    # database first, then require creation to succeed when the account is
+    # absent.
+    if ! grep -q '^agent:[^:]*:1000:' "$rootfs/etc/passwd" 2>/dev/null; then
+        chroot "$rootfs" useradd -m -s /bin/bash -u 1000 agent
+    fi
     # Unlock the agent account's password field so OpenSSH accepts pubkey
     # auth. useradd creates accounts with pw="!" (locked). OpenSSH on
     # Alpine (9.7+) refuses any auth for locked accounts, including
     # pubkey. Setting pw="*" means "no password set" without the locked
     # flag; pubkey auth then works. PasswordAuthentication is off in our
     # sshd_config so this cannot be abused for passwordless login.
-    chroot "$rootfs" usermod -p '*' agent 2>/dev/null || true
+    chroot "$rootfs" usermod -p '*' agent
 
     install_safeyolo_runtime_mount_targets "$rootfs"
     install_safeyolo_privilege_helper "$rootfs"
@@ -241,6 +246,16 @@ MISE_PROFILE
 
     # Hostname. DNS is overridden by DHCP / guest-init at boot.
     echo "safeyolo" > "$rootfs/etc/hostname"
+
+    # Treat these as the function's output contract, not best-effort setup.
+    # This also protects callers that source this library without `set -e`.
+    [ -x "$rootfs/usr/local/bin/safeyolo-guest-init" ] || return 1
+    grep -q '^agent:[^:]*:1000:' "$rootfs/etc/passwd" || return 1
+    local required_dir
+    for required_dir in workspace safeyolo safeyolo-status home/agent; do
+        [ -d "$rootfs/$required_dir" ] || return 1
+    done
+    [ -f "$rootfs/usr/local/share/ca-certificates/safeyolo.crt" ] || return 1
 
     echo "=== SafeYolo guest bits installed ==="
 }

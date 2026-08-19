@@ -42,6 +42,11 @@ DEFAULT_CONFIG = {
         "network_guard": "block",
         "pattern_scanner": "warn",
     },
+    "desktop": {
+        # "auto" sizes from a local host display when one is detectable and
+        # otherwise falls back to SafeYolo's generic 1280x800 geometry.
+        "size": "auto",
+    },
     "notifications": {
         "method": "none",
     },
@@ -160,6 +165,19 @@ def load_config() -> dict[str, Any]:
     config = deepcopy(DEFAULT_CONFIG)
     _deep_merge(config, user_config)
     return config
+
+
+def get_desktop_size(explicit: str | None = None) -> str:
+    """Return an explicit desktop size or the persistent host preference."""
+    if explicit is not None:
+        return explicit
+    desktop = load_config().get("desktop", {})
+    if not isinstance(desktop, dict):
+        raise ValueError("desktop config must be a mapping")
+    size = desktop.get("size", "auto")
+    if not isinstance(size, str):
+        raise ValueError("desktop.size must be auto or WIDTHxHEIGHT")
+    return size
 
 
 def save_config(config: dict[str, Any]) -> None:

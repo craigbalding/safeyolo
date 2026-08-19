@@ -127,7 +127,7 @@ Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gViso
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo agent add <name> <folder> [--host-script PATH]` | Add an agent and run it |
+| `safeyolo agent add <name> <folder> [--host-script PATH] [--rootfs-script PATH\|--rootfs-from AGENT]` | Add an agent and run it |
 | `safeyolo agent run <name> [-f folder] [--host-script PATH] [-- cmd args…]` | Run an existing agent |
 | `safeyolo agent stop <name>` | Stop a running agent |
 | `safeyolo agent list` | List configured agents |
@@ -144,6 +144,9 @@ safeyolo init
 
 # Add and run a Claude Code agent using the bundled host script
 safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
+
+# Reuse another agent's custom rootfs with fresh home, overlay, and credentials
+safeyolo agent add second-project ~/code-2 --rootfs-from myproject
 
 # Later, just run by name
 safeyolo agent run myproject
@@ -165,6 +168,12 @@ safeyolo agent run myproject --no-yolo
 
 # If the running rootfs supplies a desktop stack, start and open it directly
 safeyolo agent desktop myproject --open
+
+# Override the persistent desktop.size preference for one invocation
+safeyolo agent desktop myproject --size 1600x900 --open
+
+# Set this host's default once, then use ordinary desktop commands thereafter
+safeyolo agent desktop myproject --size 1280x1246 --remember-size --open
 
 # Optionally launch a guest browser and expire the host preview automatically
 safeyolo agent desktop myproject --browser https://example.com --open --ttl 15m
@@ -191,6 +200,10 @@ safeyolo agent desktop myproject --share tailnet --ttl 15m
   the operator-mediated recovery path when the guest helper itself is broken.
 - `agent desktop` requires an already-running agent and never installs missing
   guest packages; use `--status` or `--stop` for desktop lifecycle checks
+- Set `desktop.size` in `~/.safeyolo/config.yaml` to `auto` or a persistent
+  `WIDTHxHEIGHT` operator preference. SafeYolo also stages that preference for
+  trusted agent-side desktop orchestrators. `--remember-size` persists an
+  explicit `--size`; without it, `--size` remains a one-shot override.
 - `--share tailnet` keeps the guest and preview gateway loopback-only, then
   publishes the gated gateway with foreground Tailscale Serve. SafeYolo
   reserves a stable per-agent HTTPS port starting at 8443.
