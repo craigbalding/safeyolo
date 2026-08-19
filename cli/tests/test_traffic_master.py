@@ -48,6 +48,24 @@ def test_live_traffic_defaults_show_and_follow_newest_flows(monkeypatch):
     assert master.options.console_focus_follow is True
 
 
+def test_web_flow_columns_follow_native_chronological_order(monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+
+    master = make_master()
+
+    assert master.options.web_columns == [
+        "timestamp",
+        "tls",
+        "icon",
+        "method",
+        "version",
+        "path",
+        "status",
+        "size",
+        "time",
+    ]
+
+
 def test_web_password_is_hashed_in_option_state(tmp_path, monkeypatch):
     password_file = tmp_path / "admin_token"
     password_file.write_text("operator-secret")
@@ -107,6 +125,13 @@ def test_native_scope_keys_do_not_replace_stock_bindings(monkeypatch):
     assert master.keymap.get("global", "]").command == "safeyolo.traffic.agent.next"
     assert "safeyolo.traffic.test.options" in master.keymap.get("global", "}").command
     assert master.keymap.get("global", "ctrl 0").command == "safeyolo.traffic.scope.clear"
+
+
+def test_filter_key_edits_only_the_user_owned_filter(monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_WEB_PASSWORD_FILE", raising=False)
+    master = make_master()
+
+    assert master.keymap.get("flowlist", "f").command == "safeyolo.traffic.filter.edit"
 
 
 def test_status_bar_leads_with_host_and_pinned_evidence_scope():

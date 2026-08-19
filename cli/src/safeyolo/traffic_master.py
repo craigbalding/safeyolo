@@ -340,6 +340,21 @@ class TrafficMaster(ConsoleMaster):
             webaddons.WebAuth(),
             static_viewer.StaticViewer(),
         )
+        # Give the web flow list the same chronological reading order as the
+        # native table while retaining mitmweb's TLS and resource icons.
+        opts.update(
+            web_columns=[
+                "timestamp",
+                "tls",
+                "icon",
+                "method",
+                "version",
+                "path",
+                "status",
+                "size",
+                "time",
+            ]
+        )
         password_file = os.environ.get("SAFEYOLO_WEB_PASSWORD_FILE")
         if password_file:
             try:
@@ -365,6 +380,15 @@ class TrafficMaster(ConsoleMaster):
         self._add_scope_keys()
 
     def _add_scope_keys(self) -> None:
+        # The stock binding edits view_filter, which includes SafeYolo's
+        # generated pinned scope. Present only the viewer-owned subfilter.
+        self.keymap.remove("f", ["flowlist"])
+        self.keymap.add(
+            "f",
+            "safeyolo.traffic.filter.edit",
+            ["flowlist"],
+            "Set view filter",
+        )
         bindings = (
             ("\\", 'console.choose.cmd "SafeYolo agent" safeyolo.traffic.agent.options safeyolo.traffic.agent.set {choice}', "Choose SafeYolo agent"),
             ("[", "safeyolo.traffic.agent.prev", "Previous SafeYolo agent"),
