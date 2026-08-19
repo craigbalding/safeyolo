@@ -8,6 +8,7 @@ from safeyolo.agents_store import (
     load_agent,
     load_all_agents,
     remove_agent,
+    reserve_agent_network_slot,
     reserve_agent_tailnet_port,
     reserve_agent_tailnet_port_change,
     restore_agent_tailnet_port,
@@ -236,3 +237,67 @@ class TestReserveAgentTailnetPort:
 
         with pytest.raises(ValueError, match="invalid tailnet HTTPS port"):
             reserve_agent_tailnet_port("alice")
+
+
+class TestReserveAgentNetworkSlot:
+    def test_allocates_stable_distinct_slots(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"zulu": {"folder": "/z"}, "alpha": {"folder": "/a"}},
+        )
+
+        assert reserve_agent_network_slot("zulu") == 0
+        assert reserve_agent_network_slot("alpha") == 1
+        assert reserve_agent_network_slot("zulu") == 0
+        assert load_agent("zulu")["network_slot"] == 0
+
+    def test_avoids_running_legacy_agent_slot(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"legacy": {"folder": "/old"}, "new": {"folder": "/new"}},
+        )
+        data_dir = tmp_config_dir / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "agent_map.json").write_text(
+            '{"legacy": {"ip": "10.200.0.1"}}\n'
+        )
+
+        assert reserve_agent_network_slot("new") == 1
+
+    def test_adopts_unique_running_legacy_agent_slot(self, tmp_config_dir):
+        _write_policy(tmp_config_dir, agents={"legacy": {"folder": "/old"}})
+        data_dir = tmp_config_dir / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "agent_map.json").write_text(
+            '{"legacy": {"ip": "10.200.1.0"}}\n'
+        )
+
+        assert reserve_agent_network_slot("legacy") == 255
+        assert load_agent("legacy")["network_slot"] == 255
+
+    def test_does_not_adopt_conflicting_legacy_slot(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a"}, "boris": {"folder": "/b"}},
+        )
+        data_dir = tmp_config_dir / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "agent_map.json").write_text(
+            '{"alice": {"ip": "10.200.0.3"}, '
+            '"boris": {"ip": "10.200.0.3"}}\n'
+        )
+
+        assert reserve_agent_network_slot("alice") == 0
+        assert reserve_agent_network_slot("boris") == 1
+
+    def test_rejects_duplicate_saved_slots(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={
+                "alice": {"folder": "/a", "network_slot": 2},
+                "boris": {"folder": "/b", "network_slot": 2},
+            },
+        )
+
+        with pytest.raises(ValueError, match="already assigned"):
+            reserve_agent_network_slot("alice")

@@ -18,6 +18,7 @@ from rich.table import Table
 from ..agents_store import load_agent as _store_load_agent
 from ..agents_store import (
     load_all_agents,
+    reserve_agent_network_slot,
     reserve_agent_tailnet_port_change,
     restore_agent_tailnet_port,
     save_agent,
@@ -392,9 +393,13 @@ def _run_agent(
     from ..platform import get_platform
     plat = get_platform()
 
-    agents_dir = get_agents_dir()
-    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir()) if agents_dir.exists() else []
-    agent_index = existing.index(name) if name in existing else len(existing)
+    try:
+        agent_index = reserve_agent_network_slot(name)
+    except (KeyError, ValueError, OSError) as err:
+        console.print(
+            f"[red]Agent network allocation failed:[/red] {escape(str(err))}"
+        )
+        raise typer.Exit(1)
 
     try:
         _t("setup_networking")
@@ -1235,13 +1240,11 @@ def remove(
     from ..platform import get_platform
     plat = get_platform()
 
-    # Agent index must be computed before the agent dir disappears,
-    # since it's derived from the sorted list of agent dirs -- the same
-    # allocation rule used by setup_networking. Using the stale index
-    # here is what lets us target this agent's netns/veth for teardown
-    # rather than leaking them.
-    existing = sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
-    agent_index = existing.index(name) if name in existing else -1
+    # Read the persistent network slot before removing agent metadata. Current
+    # platforms have no host-side interface to tear down, but preserving the
+    # platform contract here avoids reintroducing name-order allocation.
+    network_slot = _load_agent_metadata(name).get("network_slot")
+    agent_index = network_slot if type(network_slot) is int else -1
 
     # stop_sandbox is idempotent on both platforms (Linux probes runsc
     # state first; Darwin's stop_vm returns early if no pid). Calling
