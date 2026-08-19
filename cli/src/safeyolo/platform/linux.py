@@ -976,6 +976,7 @@ class LinuxPlatform(AgentPlatform):
             try:
                 os.kill(upid, 9)
             except (ProcessLookupError, OSError):
+                # The one-shot holder may already have exited after cleanup.
                 pass
 
     # --- OCI config generation ---
