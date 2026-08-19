@@ -105,6 +105,7 @@ Runs AI agents in isolated sandboxes (Apple VZ microVMs on macOS, rootless gViso
 | `safeyolo agent stop <name>` | Stop a running agent |
 | `safeyolo agent list` | List configured agents |
 | `safeyolo agent shell <name>` | Open shell in running agent |
+| `safeyolo agent desktop <name> [--open]` | Start and securely preview an optional graphical desktop |
 | `safeyolo agent config <name>` | View or update agent configuration |
 | `safeyolo agent remove <name>` | Remove an agent |
 
@@ -134,6 +135,13 @@ safeyolo agent run myproject
 
 # Disable yolo mode
 safeyolo agent run myproject --no-yolo
+
+# If the running rootfs supplies a desktop stack, start and open it directly
+safeyolo agent desktop myproject --open
+
+# Optionally launch a guest browser and expire the host preview automatically
+safeyolo agent desktop myproject --browser https://example.com --open --ttl 15m
+
 ```
 
 **Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
@@ -147,6 +155,8 @@ safeyolo agent run myproject --no-yolo
 - `add` is idempotent: running it twice with the same folder + script just runs the existing agent
 - Use `--no-run` with `add` to create config without running
 - Without `--host-script`, the sandbox boots to a plain bash shell
+- `agent desktop` requires an already-running agent and never installs missing
+  guest packages; use `--status` or `--stop` for desktop lifecycle checks
 
 ### Service Gateway
 

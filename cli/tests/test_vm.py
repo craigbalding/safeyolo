@@ -24,6 +24,7 @@ from safeyolo.vm import (
     guest_image_status,
     is_vm_running,
     prepare_config_share,
+    stage_guest_desktop_launcher,
     start_vm,
     stop_vm,
 )
@@ -295,6 +296,22 @@ class TestPrepareConfigShare:
             path = share / name
             assert path.exists(), f"{name} missing from config share"
             assert os.access(path, os.X_OK), f"{name} not executable"
+
+    def test_guest_desktop_launcher_is_staged_and_executable(self, tmp_config_dir):
+        share = prepare_config_share("agent1", "/workspace")
+        launcher = share / "guest-desktop"
+
+        assert launcher.exists()
+        assert os.access(launcher, os.X_OK)
+        assert "desktop capability unavailable" in launcher.read_text()
+
+    def test_guest_desktop_launcher_can_refresh_live_share(self, tmp_config_dir):
+        destination = stage_guest_desktop_launcher("agent1")
+
+        assert destination == (
+            tmp_config_dir / "agents" / "agent1" / "config-share" / "guest-desktop"
+        )
+        assert os.access(destination, os.X_OK)
 
     def test_per_run_go_sentinel_pre_written(self, tmp_config_dir):
         """Pre-write /safeyolo/per-run-go so the orchestrator falls straight

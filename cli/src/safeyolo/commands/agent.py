@@ -6,7 +6,6 @@ import os
 import re
 import shlex
 import subprocess
-import urllib.parse
 from pathlib import Path
 
 import typer
@@ -38,6 +37,7 @@ from ..vm import (
     get_agent_config_share_dir,
     get_agent_status_dir,
     prepare_config_share,
+    stage_guest_desktop_launcher,
 )
 from ._service_discovery import find_service
 from .mount import is_path_protected
@@ -1378,7 +1378,7 @@ def preview(
     start_vnc: bool = typer.Option(
         False,
         "--start-vnc",
-        help="Start/restart the contrib noVNC helper inside the agent before previewing",
+        help="Start/restart SafeYolo's optional guest desktop before previewing",
     ),
     vnc_size: str = typer.Option(
         "auto",
@@ -1389,7 +1389,7 @@ def preview(
         None,
         "--browser",
         "-b",
-        help="Start noVNC and open this URL in Chromium inside the agent",
+        help="Start the guest desktop and open this URL in an available browser",
     ),
 ) -> None:
     """Preview an agent-local HTTP service from the host browser.
@@ -1441,33 +1441,15 @@ def preview(
                 f"[yellow]Warning:[/yellow] noVNC starts on guest port 6080; "
                 f"this preview is forwarding port {guest_port}."
             )
+        stage_guest_desktop_launcher(name)
         command = (
-            "port_open() { (exec 3<>/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }; "
-            "command -v startvnc >/dev/null 2>&1 || "
-            "{ echo 'startvnc not found; use an agent rootfs with the noVNC helper' >&2; exit 127; }; "
-            "if port_open 6080; then "
-            "echo 'noVNC already running in the agent on 127.0.0.1:6080'; "
-            "else "
-            f"SAFEYOLO_PREVIEW_MANAGED=1 startvnc {shlex.quote(vnc_geometry)}; "
-            "fi"
+            "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start "
+            f"{shlex.quote(vnc_geometry)}"
         )
         if browser_url:
-            cdp_url = "http://127.0.0.1:9222/json/new?" + urllib.parse.quote(browser_url, safe="")
             command += (
-                "; command -v chrome >/dev/null 2>&1 || "
-                "{ echo 'chrome not found; use an agent rootfs with the Chromium helper "
-                "or use --start-vnc for display-only preview' >&2; exit 127; }; "
-                "if port_open 9222; then "
-                "command -v curl >/dev/null 2>&1 || "
-                "{ echo 'curl not found; cannot ask existing Chromium to open a URL' >&2; exit 127; }; "
-                f"curl -fsS -X PUT --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
-                f"curl -fsS --max-time 3 {shlex.quote(cdp_url)} >/tmp/chrome-cdp.log 2>&1 || "
-                "{ echo 'failed to open URL in existing Chromium (log: /tmp/chrome-cdp.log)' >&2; exit 1; }; "
-                "echo 'Opened URL in existing Chromium'; "
-                "else "
-                f"setsid chrome {shlex.quote(browser_url)} >/tmp/chrome.log 2>&1 < /dev/null & "
-                "echo 'Chromium started in noVNC display (logs: /tmp/chrome.log)'; "
-                "fi"
+                " && /safeyolo/guest-desktop browser "
+                f"{shlex.quote(browser_url)}"
             )
         start_exit = plat.exec_in_sandbox(name, command, user="agent", interactive=False)
         if start_exit != 0:
@@ -1485,6 +1467,131 @@ def preview(
         exit_code = serve_agent_preview(config, plat)
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         console.print(f"[red]Preview failed:[/red] {escape(str(exc))}")
+        raise typer.Exit(1)
+    raise typer.Exit(exit_code)
+
+
+@agent_app.command()
+def desktop(
+    name: str = typer.Argument(..., help="Agent instance name"),
+    open_browser: bool = typer.Option(
+        False,
+        "--open",
+        help="Open the token-gated desktop preview in the default browser",
+    ),
+    ttl: str | None = typer.Option(
+        None,
+        "--ttl",
+        help="Close the host preview after a duration like 30s, 10m, or 1h",
+    ),
+    size: str = typer.Option(
+        "auto",
+        "--size",
+        "--vnc-size",
+        help="Desktop size: auto or WIDTHxHEIGHT",
+    ),
+    browser_url: str | None = typer.Option(
+        None,
+        "--browser",
+        "-b",
+        help="Launch an available guest browser at this URL",
+    ),
+    host_port: int = typer.Option(
+        0,
+        "--host-port",
+        help="Host loopback port to bind (default: choose a free port)",
+    ),
+    status: bool = typer.Option(
+        False,
+        "--status",
+        help="Report guest desktop status without opening a preview",
+    ),
+    stop: bool = typer.Option(
+        False,
+        "--stop",
+        help="Stop the guest desktop stack",
+    ),
+) -> None:
+    """Start and securely access an optional graphical agent desktop.
+
+    SafeYolo owns desktop lifecycle and preview security. The running agent's
+    rootfs only needs to supply the graphical packages and optional browser.
+    """
+    _validate_instance_name(name)
+    if status and stop:
+        console.print("[red]Use only one of --status or --stop.[/red]")
+        raise typer.Exit(2)
+    if (status or stop) and (
+        open_browser or ttl is not None or browser_url is not None
+        or host_port != 0 or size != "auto"
+    ):
+        console.print(
+            "[red]--status and --stop cannot be combined with preview or browser options.[/red]"
+        )
+        raise typer.Exit(2)
+
+    from ..platform import get_platform
+    from ..preview import PreviewConfig, parse_ttl, resolve_vnc_geometry, serve_agent_preview
+
+    platform = get_platform()
+    if not platform.is_sandbox_running(name):
+        console.print(f"[red]Agent '{escape(name)}' is not running.[/red]")
+        console.print(f"Start it with: [bold]safeyolo agent run {escape(name)}[/bold]")
+        raise typer.Exit(1)
+
+    stage_guest_desktop_launcher(name)
+    if status or stop:
+        action = "status" if status else "stop"
+        exit_code = platform.exec_in_sandbox(
+            name,
+            f"/safeyolo/guest-desktop {action}",
+            user="agent",
+            interactive=False,
+        )
+        raise typer.Exit(exit_code)
+
+    try:
+        geometry, detected_display_size = resolve_vnc_geometry(size)
+        ttl_seconds = parse_ttl(ttl)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1)
+
+    if detected_display_size:
+        console.print(
+            f"Starting desktop in '{escape(name)}' at {geometry} "
+            f"(host display {detected_display_size[0]}x{detected_display_size[1]})..."
+        )
+    else:
+        console.print(f"Starting desktop in '{escape(name)}' at {geometry}...")
+
+    command = (
+        "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start "
+        f"{shlex.quote(geometry)}"
+    )
+    if browser_url:
+        command += (
+            " && /safeyolo/guest-desktop browser "
+            f"{shlex.quote(browser_url)}"
+        )
+    start_exit = platform.exec_in_sandbox(
+        name, command, user="agent", interactive=False,
+    )
+    if start_exit != 0:
+        raise typer.Exit(start_exit)
+
+    config = PreviewConfig(
+        agent=name,
+        guest_port=6080,
+        host_port=host_port,
+        ttl_seconds=ttl_seconds,
+        open_browser=open_browser,
+        display_path="/vnc.html#autoconnect=true&resize=remote",
+    )
+    try:
+        exit_code = serve_agent_preview(config, platform)
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        console.print(f"[red]Desktop preview failed:[/red] {escape(str(exc))}")
         raise typer.Exit(1)
     raise typer.Exit(exit_code)
 

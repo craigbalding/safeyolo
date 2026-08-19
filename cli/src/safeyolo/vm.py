@@ -649,6 +649,30 @@ def _ensure_lima_vm(limactl: str) -> None:
 # Config share (VirtioFS directory mounted read-only in the guest)
 # ---------------------------------------------------------------------------
 
+def stage_guest_desktop_launcher(name: str) -> Path:
+    """Copy the current core desktop launcher into an agent's live share.
+
+    The share is mounted into running Linux and macOS guests, so this also
+    upgrades an already-running agent before ``agent desktop`` invokes it.
+    """
+    share_dir = get_agent_config_share_dir(name)
+    share_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(__file__).parent / "guest-desktop.sh"
+    destination = share_dir / "guest-desktop"
+    fd, temporary_name = tempfile.mkstemp(prefix=".guest-desktop-", dir=share_dir)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    try:
+        shutil.copy2(source, temporary)
+        temporary.chmod(0o755)
+        # Replacing the directory entry is safe even if another invocation is
+        # still executing the previous inode, and prevents partial reads.
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
 def prepare_config_share(
     name: str,
     workspace_path: str,
@@ -695,6 +719,8 @@ def prepare_config_share(
         dst = share_dir / dst_name
         shutil.copy2(str(src), str(dst))
         dst.chmod(0o755)
+
+    stage_guest_desktop_launcher(name)
 
     # Pre-write the per-run gate so the orchestrator falls straight through
     # to per-run after static. CAPTURE / RESTORE callers disable this and

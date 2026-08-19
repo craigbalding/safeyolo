@@ -457,22 +457,18 @@ def test_preview_command_can_start_host_sized_vnc(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
     with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage, \
          patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
         result = runner.invoke(agent_app, ["preview", "codey", "6080", "--start-vnc"])
 
     assert result.exit_code == 0
+    mock_stage.assert_called_once_with("codey")
     assert fake_platform.exec_calls == [
         {
             "name": "codey",
             "command": (
-                "port_open() { (exec 3<>/dev/tcp/127.0.0.1/$1) >/dev/null 2>&1; }; "
-                "command -v startvnc >/dev/null 2>&1 || "
-                "{ echo 'startvnc not found; use an agent rootfs with the noVNC helper' >&2; exit 127; }; "
-                "if port_open 6080; then "
-                "echo 'noVNC already running in the agent on 127.0.0.1:6080'; "
-                "else "
-                "SAFEYOLO_PREVIEW_MANAGED=1 startvnc 1760x900; "
-                "fi"
+                "SAFEYOLO_PREVIEW_MANAGED=1 "
+                "/safeyolo/guest-desktop start 1760x900"
             ),
             "user": "agent",
             "interactive": False,
@@ -490,6 +486,7 @@ def test_preview_command_can_start_browser_url(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
 
     with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
          patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
         result = runner.invoke(
             agent_app,
@@ -497,9 +494,10 @@ def test_preview_command_can_start_browser_url(monkeypatch):
         )
 
     assert result.exit_code == 0
-    assert "if port_open 9222; then" in fake_platform.exec_calls[0]["command"]
-    assert "http://127.0.0.1:9222/json/new?https%3A%2F%2Fexample.com%2Fa%20b" in fake_platform.exec_calls[0]["command"]
-    assert "setsid chrome 'https://example.com/a b'" in fake_platform.exec_calls[0]["command"]
+    assert fake_platform.exec_calls[0]["command"] == (
+        "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1760x900"
+        " && /safeyolo/guest-desktop browser 'https://example.com/a b'"
+    )
     config, platform = mock_serve.call_args.args
     assert platform is fake_platform
     assert config.display_path == "/vnc.html#autoconnect=true&resize=remote"
@@ -513,6 +511,73 @@ def test_preview_command_requires_running_agent():
 
     assert result.exit_code == 1
     assert "is not running" in result.output
+
+
+def test_desktop_command_starts_core_launcher_and_preview(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: (1920, 1080))
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.commands.agent.stage_guest_desktop_launcher") as mock_stage, \
+         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+        result = runner.invoke(
+            agent_app,
+            ["desktop", "codey", "--open", "--ttl", "15m", "--browser", "https://example.com/a b"],
+        )
+
+    assert result.exit_code == 0
+    mock_stage.assert_called_once_with("codey")
+    assert fake_platform.exec_calls == [{
+        "name": "codey",
+        "command": (
+            "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1760x900"
+            " && /safeyolo/guest-desktop browser 'https://example.com/a b'"
+        ),
+        "user": "agent",
+        "interactive": False,
+    }]
+    config, platform = mock_serve.call_args.args
+    assert platform is fake_platform
+    assert config.agent == "codey"
+    assert config.guest_port == 6080
+    assert config.ttl_seconds == 900
+    assert config.open_browser is True
+    assert config.display_path == "/vnc.html#autoconnect=true&resize=remote"
+
+
+def test_desktop_command_requires_running_agent():
+    runner = CliRunner()
+
+    with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)):
+        result = runner.invoke(agent_app, ["desktop", "codey"])
+
+    assert result.exit_code == 1
+    assert "Agent 'codey' is not running" in result.output
+    assert "safeyolo agent run codey" in result.output
+
+
+def test_desktop_status_uses_core_launcher_without_preview():
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
+         patch("safeyolo.preview.serve_agent_preview") as mock_serve:
+        result = runner.invoke(agent_app, ["desktop", "codey", "--status"])
+
+    assert result.exit_code == 0
+    assert fake_platform.exec_calls[0]["command"] == "/safeyolo/guest-desktop status"
+    mock_serve.assert_not_called()
+
+
+def test_desktop_rejects_conflicting_lifecycle_options():
+    runner = CliRunner()
+
+    result = runner.invoke(agent_app, ["desktop", "codey", "--status", "--stop"])
+
+    assert result.exit_code == 2
+    assert "only one" in result.output
 
 
 def test_serve_agent_preview_prints_clean_url(monkeypatch, capsys):
