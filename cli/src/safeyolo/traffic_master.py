@@ -395,7 +395,7 @@ class TrafficMaster(ConsoleMaster):
             ("]", "safeyolo.traffic.agent.next", "Next SafeYolo agent"),
             ("0", "safeyolo.traffic.agent.all", "Show all SafeYolo agents"),
             ("9", "safeyolo.traffic.agent.unattributed", "Show unattributed SafeYolo traffic"),
-            ("}", 'console.choose.cmd "SafeYolo test context" safeyolo.traffic.test.options safeyolo.traffic.test.set {choice}', "Choose SafeYolo test context"),
+            ("}", "safeyolo.traffic.test.choose", "Choose SafeYolo test context"),
             ("{", "safeyolo.traffic.test.clear", "Clear SafeYolo test context"),
             ("ctrl 0", "safeyolo.traffic.scope.clear", "Clear all SafeYolo scopes"),
         )

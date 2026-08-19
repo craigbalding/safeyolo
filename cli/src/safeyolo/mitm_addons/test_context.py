@@ -1,12 +1,11 @@
 """
 test_context.py - Link HTTP traffic to test activities
 
-Activates for operator-declared test target hosts. Requires requests
-to those hosts to include an X-Test-Context header linking the request
-to a specific test run, agent, and test case. Logs request/response pairs
-with full context for post-analysis.
+Requires operator-declared test target hosts to include an X-Test-Context
+header. Valid headers on any host opt that request into test provenance and
+FlowStore recording, even when the host is not an enforcement target.
 
-Requests to non-target hosts pass through untouched.
+Requests without the header to non-target hosts pass through untouched.
 
 Design:
 - Active when target_hosts is non-empty in policy.yaml (no separate enable flag)
@@ -160,20 +159,40 @@ class TestContext(SecurityAddon):
 
         self._maybe_reload_config()
 
-        if not self._target_hosts:
-            return
+        is_target = self._is_target_host(flow.request.host)
+        header_value = flow.request.headers.get(CONTEXT_HEADER, "")
 
-        # Not a target host -> pass through
-        if not self._is_target_host(flow.request.host):
+        # Optional provenance is inert unless the caller supplies the header.
+        if not is_target and not header_value:
             return
 
         self.stats.checks += 1
 
         # Parse context header
-        header_value = flow.request.headers.get(CONTEXT_HEADER, "")
         context = _parse_context_header(header_value)
 
         if context is None:
+            if not is_target:
+                # The reserved header must not leak upstream, but an invalid
+                # optional annotation must not turn an ordinary host into an
+                # enforcement target.
+                del flow.request.headers[CONTEXT_HEADER]
+                self.log_decision(
+                    flow,
+                    Decision.WARN,
+                    severity=Severity.MEDIUM,
+                    summary=(
+                        "Malformed optional test context for "
+                        f"{sanitize_for_log(flow.request.host)}"
+                    ),
+                    host=flow.request.host,
+                    reason="malformed_optional_context",
+                    path=flow.request.path,
+                    method=flow.request.method,
+                )
+                self.warn(flow)
+                return
+
             # Missing or malformed context
             reason = "missing_context" if not header_value else "malformed_context"
 

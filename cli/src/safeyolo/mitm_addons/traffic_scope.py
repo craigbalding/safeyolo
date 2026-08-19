@@ -305,6 +305,20 @@ class TrafficScope:
             }
         return list(self._test_choices)
 
+    @command.command("safeyolo.traffic.test.choose")
+    def choose_test(self) -> None:
+        """Open the native chooser only when this scope has test contexts."""
+        if not self.test_options():
+            scope = f" for agent {self.agent}" if self.agent is not None else ""
+            console_signals.status_message.send(
+                message=f"No test contexts recorded{scope}."
+            )
+            return
+        ctx.master.commands.execute(
+            'console.choose.cmd "SafeYolo test context" '
+            "safeyolo.traffic.test.options safeyolo.traffic.test.set {choice}"
+        )
+
     @command.command("safeyolo.traffic.test.set")
     @command.argument("choice", type=types.Choice("safeyolo.traffic.test.options"))
     def select_test(self, choice: str) -> None:

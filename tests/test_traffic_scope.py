@@ -244,6 +244,47 @@ def test_test_chooser_has_context_count_and_recency_and_clear_retains_agent():
     assert addon.test_id is None
 
 
+def test_test_chooser_reports_empty_agent_scope_without_opening_modal():
+    addon = TrafficScope()
+    options = FakeOptions()
+    commands = SimpleNamespace(execute=lambda _command: pytest.fail("opened chooser"))
+    master = SimpleNamespace(
+        view=FakeView([fake_flow("codey", "CTX-001")]),
+        addons=SimpleNamespace(get=lambda _name: None),
+        commands=commands,
+    )
+    with (
+        patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)),
+        patch("traffic_scope.console_signals.status_message.send") as status,
+    ):
+        addon.set_scope(agent="claude")
+        addon.choose_test()
+
+    status.assert_called_once_with(
+        message="No test contexts recorded for agent claude."
+    )
+
+
+def test_test_chooser_opens_stock_modal_when_choices_exist():
+    addon = TrafficScope()
+    options = FakeOptions()
+    commands = SimpleNamespace(execute=lambda command: executed.append(command))
+    master = SimpleNamespace(
+        view=FakeView([fake_flow("codey", "CTX-001")]),
+        addons=SimpleNamespace(get=lambda _name: None),
+        commands=commands,
+    )
+    executed = []
+    with patch("traffic_scope.ctx", SimpleNamespace(options=options, master=master)):
+        addon.set_scope(agent="codey")
+        addon.choose_test()
+
+    assert executed == [
+        'console.choose.cmd "SafeYolo test context" '
+        "safeyolo.traffic.test.options safeyolo.traffic.test.set {choice}"
+    ]
+
+
 def test_running_agents_are_available_before_they_have_flows():
     addon = TrafficScope()
     options = FakeOptions()

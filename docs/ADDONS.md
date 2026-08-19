@@ -666,11 +666,13 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 **Activation:** Active when `target_hosts` is non-empty in the policy file. No separate enable flag — add target hosts to activate, remove to deactivate.
 
 **How it works:**
-1. Requests to non-target hosts pass through untouched
+1. Requests without the header to non-target hosts pass through untouched
 2. Requests to target hosts must include `X-Test-Context` header
 3. Missing or malformed header → 428 response with instructions
-4. Valid header → parsed, stored in metadata, stripped before upstream
-5. Response phase logs the response with the test context
+4. A valid header on any host opts the request into test provenance and FlowStore recording
+5. Valid headers are parsed, stored in metadata, and stripped before upstream
+6. A malformed header on a non-target host is stripped and warned, but not blocked
+7. Response phase logs the response with the test context
 
 **Header format:** semicolon-delimited `key=value` pairs. `run` and `agent`
 are required. The canonical optional dimensions, in formatter order, are

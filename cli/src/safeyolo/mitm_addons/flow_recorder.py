@@ -6,7 +6,7 @@ writes them to the FlowStore. Runs as Layer 3 (Observability), after
 all security addons.
 
 Scope gate: Only records flows that have flow.metadata["ccapt_context"]
-(set by test_context.py for target host traffic with valid X-Test-Context).
+(set by test_context.py for any valid X-Test-Context header).
 
 Does NOT extend SecurityAddon — this is observability, not a security gate.
 
@@ -90,7 +90,7 @@ class FlowRecorder:
             return False
         if self.store is None:
             return False
-        # Must have test context (set by test_context.py for target hosts)
+        # Must have test context (set by test_context.py for valid headers)
         if "ccapt_context" not in flow.metadata:
             return False
         # Skip agent API internal traffic
