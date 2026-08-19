@@ -123,7 +123,10 @@ def test_native_scope_keys_do_not_replace_stock_bindings(monkeypatch):
 
     assert master.keymap.get("global", "q").command == "console.view.pop"
     assert master.keymap.get("global", "]").command == "safeyolo.traffic.agent.next"
-    assert "safeyolo.traffic.test.options" in master.keymap.get("global", "}").command
+    assert (
+        master.keymap.get("global", "}").command
+        == "safeyolo.traffic.test.choose"
+    )
     assert master.keymap.get("global", "ctrl 0").command == "safeyolo.traffic.scope.clear"
 
 
