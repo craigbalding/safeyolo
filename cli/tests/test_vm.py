@@ -1460,6 +1460,29 @@ class TestBuildCustomRootfs:
              pytest.raises(VMError, match="exited with code 7"):
             build_custom_rootfs("agent0", script)
 
+    def test_linux_executes_staged_copy_when_source_inode_is_write_open(
+        self, tmp_config_dir, tmp_path
+    ):
+        """A live-edited/shared source inode must not cause ETXTBSY."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(
+            tmp_path,
+            '#!/bin/sh\n'
+            'set -e\n'
+            'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
+            'echo -n staged > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
+        )
+
+        # On Linux, direct exec of this source path would fail with errno 26.
+        # SafeYolo should read it into its private work directory and execute
+        # the closed staged inode instead.
+        with script.open("a"), \
+             patch("safeyolo.vm.platform.system", return_value="Linux"):
+            out = build_custom_rootfs("agent0", script)
+
+        assert (out / "etc" / "hostname").read_bytes() == b"staged"
+
     def test_linux_work_dir_cleaned_up_on_success(
         self, tmp_config_dir, tmp_path
     ):

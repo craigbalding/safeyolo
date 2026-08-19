@@ -143,27 +143,11 @@ rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key "$ROOTFS"/etc/ssh/ssh_host_*_key.pub 2>/d
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
-# Pre-create OCI bind-mount targets. gVisor's gofer tries to create any
-# missing bind-mount destinations; with overlay-dir= mode the overlay
-# upper takes the creates, but some places (rootfs paths blocked by
-# readonly + host-uid ownership) can still trip the gofer. Pre-creating
-# the exact target paths in the image sidesteps it entirely — the bind
-# mount lands on an existing directory/file regardless of overlay state.
-#
-# /home/agent already exists from useradd -m above; listed here for doc.
-# safeyolo.crt is a zero-byte file because it's a FILE bind-mount
-# target (vs the directory bind-mounts above); bind-mounting onto
-# a file requires the target to be a regular file.
-mkdir -p \
-    "$ROOTFS/workspace" \
-    "$ROOTFS/safeyolo" \
-    "$ROOTFS/safeyolo-status" \
-    "$ROOTFS/home/agent"
-: > "$ROOTFS/usr/local/share/ca-certificates/safeyolo.crt"
-# /safeyolo/proxy.sock — the per-agent proxy UDS is file-bind-mounted
-# here by the platform layer. Pre-create as an empty regular file so
-# gVisor can bind over it without needing to create-on-readonly-root.
-: > "$ROOTFS/safeyolo/proxy.sock"
+# Pre-create the host bind-mount destinations.  Custom rootfs builders call
+# the same function through install_safeyolo_guest_common, keeping the two
+# image-build paths on one runtime contract.
+source "$GUEST_SRC_DIR/install-guest-common.sh"
+install_safeyolo_runtime_mount_targets "$ROOTFS"
 
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"

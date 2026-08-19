@@ -17,6 +17,7 @@
 #     same pinned mise binary as the default rootfs
 #   * agent user (uid 1000, shell /bin/bash, home /home/agent)
 #   * /usr/local/bin/safeyolo-guest-init stub (exec'd as PID 1)
+#   * host bind-mount targets required by the Linux gVisor runtime
 #   * sshd: pubkey auth only, password off, host keys generated
 #   * baseline PATH glue at /etc/profile.d/00-path.sh + /etc/environment
 #   * mise profile glue at /etc/profile.d/mise.sh (only if mise present)
@@ -76,6 +77,33 @@ install_safeyolo_mise() {
     rm -rf "$tmp_dir"
 }
 
+install_safeyolo_runtime_mount_targets() {
+    local rootfs="$1"
+
+    [ -n "$rootfs" ] || {
+        echo "install_safeyolo_runtime_mount_targets: rootfs arg required" >&2
+        return 1
+    }
+    [ -d "$rootfs" ] || {
+        echo "install_safeyolo_runtime_mount_targets: rootfs not a dir: $rootfs" >&2
+        return 1
+    }
+
+    # Linux uid-remaps the completed tree (container root becomes host uid
+    # 100000), so its unprivileged launcher cannot add a missing bind target.
+    # macOS also benefits: every mount lands on a known object in the ext4
+    # image.  Keep this function shared by the default and custom build paths.
+    install -d -m 0755 \
+        "$rootfs/workspace" \
+        "$rootfs/safeyolo" \
+        "$rootfs/safeyolo-status" \
+        "$rootfs/home/agent" \
+        "$rootfs/usr/local/share/ca-certificates"
+    install -m 0644 /dev/null \
+        "$rootfs/usr/local/share/ca-certificates/safeyolo.crt"
+}
+
+
 install_safeyolo_guest_common() {
     local rootfs="$1"
 
@@ -109,6 +137,8 @@ install_safeyolo_guest_common() {
     # flag; pubkey auth then works. PasswordAuthentication is off in our
     # sshd_config so this cannot be abused for passwordless login.
     chroot "$rootfs" usermod -p '*' agent 2>/dev/null || true
+
+    install_safeyolo_runtime_mount_targets "$rootfs"
 
     # sshd config: pubkey only, no passwords. Skip silently if no sshd
     # package is installed -- some minimal rootfs don't ship one and the

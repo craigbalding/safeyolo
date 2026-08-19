@@ -9,6 +9,7 @@ via tmp_path, and assert the spec shape and filesystem side-effects.
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -194,6 +195,30 @@ def test_proxy_mount_uses_stable_private_directory(isolated_env):
     assert mount["source"] == str(proxy_dir)
     assert {"rbind", "ro", "nosuid", "nodev"} <= set(mount["options"])
     assert mount["source"] != str(proxy_dir / "proxy.sock")
+
+
+def test_prepare_rootfs_rejects_missing_bind_targets(isolated_env, monkeypatch):
+    """A uid-remapped tree cannot be repaired by the host launcher."""
+    from pathlib import Path
+
+    from safeyolo.platform.linux import LinuxPlatform
+
+    rootfs = isolated_env / "agents" / "incomplete" / "rootfs"
+    (rootfs / "etc").mkdir(parents=True)
+
+    platform = LinuxPlatform()
+    monkeypatch.setattr(platform, "agent_rootfs_path", lambda _name: rootfs)
+    original_stat = Path.stat
+
+    def subordinate_root_stat(path, *args, **kwargs):
+        if path == rootfs:
+            return SimpleNamespace(st_uid=100000)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", subordinate_root_stat)
+
+    with pytest.raises(RuntimeError, match=r"missing required.*?/workspace"):
+        platform.prepare_rootfs("incomplete")
 
 
 def test_runsc_command_restores_mise_after_environment_path():

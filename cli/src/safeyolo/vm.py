@@ -444,7 +444,7 @@ def _run_rootfs_script_native(
     name: str, script_path: Path, out_key: str, out_path: Path,
     cache_paths_file: Path,
 ) -> None:
-    """Run the rootfs-script directly on the Linux host."""
+    """Run a private staged copy of the rootfs-script on the Linux host."""
     guest_src = _guest_src_dir()
     if not guest_src.is_dir():
         raise VMError(
@@ -454,6 +454,15 @@ def _run_rootfs_script_native(
 
     work_dir = Path(tempfile.mkdtemp(prefix="safeyolo-rootfs-"))
     try:
+        # Do not exec the checkout inode directly. A live editor or a writable
+        # 9p/FUSE workspace share may still have that inode open for writing,
+        # in which case Linux rejects execve with ETXTBSY ("Text file busy").
+        # The private, closed copy also matches the staging model used by the
+        # Lima runner below.
+        staged_script = work_dir / "rootfs-script"
+        shutil.copy2(script_path, staged_script)
+        staged_script.chmod(0o700)
+
         env = {
             **os.environ,
             "SAFEYOLO_AGENT_NAME": name,
@@ -464,7 +473,7 @@ def _run_rootfs_script_native(
             "SAFEYOLO_TARGET_ARCH": _host_target_arch(),
         }
         log.info("Running rootfs script: %s", script_path)
-        result = subprocess.run([str(script_path)], env=env, check=False)
+        result = subprocess.run([str(staged_script)], env=env, check=False)
         if result.returncode != 0:
             raise VMError(
                 f"Rootfs script {script_path} exited with code "
