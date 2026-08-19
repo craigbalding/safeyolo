@@ -75,7 +75,7 @@ echo "=== Installing Alpine packages ==="
 # musl-linked; do not use the upstream glibc tarball on Alpine.
 cp /etc/resolv.conf "$TREE/etc/resolv.conf" 2>/dev/null || true
 chroot "$TREE" /sbin/apk add --no-cache \
-    bash socat ca-certificates shadow openssh-server curl git jq sudo mise \
+    bash socat ca-certificates shadow openssh-server curl git jq sudo util-linux-misc mise \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf
 
@@ -83,18 +83,8 @@ chroot "$TREE" /sbin/apk add --no-cache \
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_guest_common "$TREE"
 
-# --- Runtime apk support: passwordless sudo, env-propagated proxy. ---
-# apk honours the http_proxy / https_proxy env vars natively, so unlike
-# apt we don't need an apk-specific config file -- we just need sudo to
-# keep those vars across the privilege boundary. env_keep covers the
-# SafeYolo CA paths too for curl/pip/etc. when invoked via sudo.
-mkdir -p "$TREE/etc/sudoers.d"
-cat > "$TREE/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
-agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy"
-Defaults env_keep += "NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
-SUDOERS
-chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
+# apk honours http_proxy / https_proxy natively. The shared guest installer
+# supplies the sudo compatibility shim and preserves proxy + CA variables.
 
 # --- Pack into the format SafeYolo asked for. ---
 # Exactly one of OUT_EXT4 / OUT_TREE is set per invocation.

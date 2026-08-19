@@ -148,6 +148,7 @@ chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 # image-build paths on one runtime contract.
 source "$GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_runtime_mount_targets "$ROOTFS"
+install_safeyolo_privilege_helper "$ROOTFS"
 
 # Hostname + DNS defaults (DNS overridden by DHCP at boot)
 echo "safeyolo" > "$ROOTFS/etc/hostname"
@@ -197,21 +198,15 @@ find "$ROOTFS" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 # compilers and system libs can be pulled on demand instead of living
 # in the shipped base.
 #
-# Operator model under rootless gVisor: on-demand package installs
-# are a HOST-OPERATOR action, not an in-sandbox agent action.
+# Agent package model under rootless gVisor: on-demand installs are a
+# sandbox-root action, not a host-root action. The agent's runsc exec process
+# can use CAP_SETUID/CAP_SETGID to enter uid 0 inside gVisor; the outer userns
+# maps that identity to subordinate host uid 100000 rather than host root.
 #
-#   Works:
-#     safeyolo agent shell NAME --root -c "apt-get install -y PKG"
-#
-#   Doesn't work:
-#     (agent user inside the sandbox) sudo apt-get install -y PKG
-#
-# Why: rootless user namespaces ignore the setuid bit, so `sudo`
-# running as the agent user (uid 1000) can't escalate to root. No
-# sudoers config fixes that — it's a kernel/userns property. Package
-# installs therefore happen via `safeyolo agent shell --root`, which
-# invokes `runsc exec --user 0:0` directly and lands the caller as
-# sandbox-root with no setuid dance.
+# SafeYolo's guest helper exposes the capability as the normal sudo-like UX:
+#   sudo apt-get install -y PKG
+# `safeyolo agent shell NAME --root` remains an operator recovery path, not
+# a requirement for routine package installation.
 #
 # Important caveat: the install itself persists only for the life of
 # the sandbox. The Linux overlay is memory-backed (gVisor silently

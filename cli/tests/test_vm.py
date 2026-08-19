@@ -297,6 +297,16 @@ class TestPrepareConfigShare:
             assert path.exists(), f"{name} missing from config share"
             assert os.access(path, os.X_OK), f"{name} not executable"
 
+    def test_guest_init_static_seeds_missing_skeleton_entries(self, tmp_config_dir):
+        """Pre-seeded host config must not prevent distro skeleton defaults."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-static").read_text()
+
+        assert 'su agent -c' in source
+        assert '/etc/skel/.[!.]*' in source
+        assert '[ -e "/home/agent/$name" ]' in source
+        assert '[ -z "$(ls -A /home/agent' not in source
+
     def test_guest_desktop_launcher_is_staged_and_executable(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
         launcher = share / "guest-desktop"

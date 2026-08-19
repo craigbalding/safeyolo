@@ -277,6 +277,43 @@ def test_shared_skill_has_cross_agent_frontmatter_and_direct_references() -> Non
     assert set(metadata) == {"name", "description"}
     assert metadata["name"] == "safeyolo"
     assert "SafeYolo" in metadata["description"]
-    for reference in ("agent-api.md", "troubleshooting.md"):
+    for reference in ("agent-api.md", "troubleshooting.md", "guest-tools.md"):
         assert f"references/{reference}" in body
         assert (SKILL_SOURCE / "references" / reference).is_file()
+
+
+def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:
+    """The always-on launch prompt must teach the supported package path."""
+    content = BASELINE_SOURCE.read_text()
+
+    for expected in (
+        "sudo -n apt-get install -y PACKAGE",
+        "sudo -n apk add PACKAGE",
+        "setpriv --reuid=0 --regid=0 --clear-groups COMMAND",
+        "root only inside the isolated guest",
+        "safeyolo agent shell --root",
+        "Linux gVisor discards installed OS-package files",
+    ):
+        assert expected in content
+
+    guest_tools = (SKILL_SOURCE / "references/guest-tools.md").read_text()
+    for expected in (
+        "Guest root is not host root",
+        "`sudo -n`",
+        "for routine work",
+        "expected to fail in a hardware microVM",
+        "not a remedy for proxy policy, approval, or budget blocks",
+    ):
+        assert expected in guest_tools
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    ("codex-host-setup.sh", "claude-host-setup.sh"),
+)
+def test_alpine_bootstrap_uses_noninteractive_guest_sudo(script_name: str) -> None:
+    """First-boot package setup must never wait for a guest password."""
+    source = (REPO_ROOT / "contrib" / script_name).read_text()
+
+    assert "sudo -n apk add nodejs npm" in source
+    assert "sudo apk add nodejs npm" not in source

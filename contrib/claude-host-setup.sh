@@ -181,7 +181,7 @@ export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 if ! command -v claude >/dev/null 2>&1; then
     if [ -f /etc/alpine-release ]; then
         if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-            sudo apk add nodejs npm >&2
+            sudo -n apk add nodejs npm >&2
         fi
         npm install --global --prefix /home/agent/.local "$SAFEYOLO_CLAUDE_NPM_PACKAGE" >&2
     else

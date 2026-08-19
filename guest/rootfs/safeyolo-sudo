@@ -1,0 +1,28 @@
+#!/bin/sh
+# SafeYolo guest-root compatibility shim.
+#
+# Linux gVisor runs with a nosuid rootfs, so the normal setuid transition in
+# /usr/bin/sudo cannot work. The agent process already has CAP_SETUID and
+# CAP_SETGID inside gVisor; its outer user namespace maps guest uid 0 to an
+# unprivileged subordinate host uid. Use that existing guest capability, then
+# delegate all option parsing and command execution to the distro's real sudo.
+#
+# Hardware microVMs do not grant those capabilities to the agent. The setpriv
+# probe fails there and we fall through to the ordinary setuid sudo binary.
+# This shim is a compatibility mechanism, not a privilege boundary.
+set -eu
+
+REAL_SUDO=/usr/bin/sudo
+SETPRIV=/usr/bin/setpriv
+
+if [ ! -x "$REAL_SUDO" ]; then
+    echo "safeyolo-sudo: $REAL_SUDO is not installed" >&2
+    exit 127
+fi
+
+if [ -x "$SETPRIV" ] && \
+        "$SETPRIV" --reuid=0 --regid=0 --clear-groups /bin/true 2>/dev/null; then
+    exec "$SETPRIV" --reuid=0 --regid=0 --clear-groups "$REAL_SUDO" "$@"
+fi
+
+exec "$REAL_SUDO" "$@"

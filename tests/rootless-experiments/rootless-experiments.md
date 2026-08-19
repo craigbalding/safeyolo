@@ -303,3 +303,33 @@ KVM ACL changes: ZERO
 - Both curl 200, correct attribution in mitmproxy
 - No crosstalk
 - PASS
+
+## Sandbox-root containment acceptance
+
+### T47: setpriv namespace-root remains host-contained
+- Motivation: the original experiments proved the multi-uid mapping and
+  rootless launch path, but `runsc exec --user 1000:1000` was checked only
+  for identity and expected filesystem access. It did not inspect effective
+  capabilities or attempt `setuid(0)`.
+- The current runtime deliberately permits uid 1000 to become sandbox uid 0
+  for guest package installation.
+- Host-side assertions:
+  - sandbox uid 0 maps to host subordinate uid 100000, never host uid 0
+  - sandbox uid 1000 maps to the host operator for workspace ownership
+  - a rootfs-overlay write does not mutate the host lower rootfs tree
+  - host canaries in an unmounted path and the read-only config share remain
+    unchanged
+- Sandbox-root assertions:
+  - uid/gid 0 is reachable with `setpriv` without host sudo
+  - the read-only `/safeyolo` bind cannot be modified
+  - a known-live host TCP listener remains unreachable
+  - `/dev/kvm`, `/dev/mem`, and `/dev/kmem` remain absent
+  - PID 1 remains the sandbox init rather than the host init
+- Run against an already-running Linux agent:
+
+  ```sh
+  tests/rootless-experiments/t47_sandbox_root_containment.sh AGENT_NAME
+  ```
+
+- Status: in-sandbox probes pass in a production gVisor agent. The full
+  host-side experiment must be run from a Linux SafeYolo operator host.

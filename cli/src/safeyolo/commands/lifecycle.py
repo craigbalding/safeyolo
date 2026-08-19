@@ -28,6 +28,7 @@ from ..proxy import (
     wait_for_healthy,
 )
 from ..vm import check_guest_images, missing_guest_images
+from .proxy import _web_tailnet_runtime
 
 console = Console()
 
@@ -188,11 +189,15 @@ def start(
             raise typer.Exit(1)
 
     # Show connection info
+    web_tailnet = _web_tailnet_runtime(config)
+    tailnet_line = ""
+    if web_tailnet.get("enabled") and web_tailnet.get("url"):
+        tailnet_line = f"\nWebMITM: {web_tailnet['url']}"
     if first_run:
         console.print(
             Panel(
                 f"[green]SafeYolo is running![/green]\n\n"
-                f"Proxy: http://localhost:{proxy_port}\n\n"
+                f"Proxy: http://localhost:{proxy_port}{tailnet_line}\n\n"
                 f"Next:\n"
                 f"  safeyolo agent add myproject . --host-script contrib/claude-host-setup.sh   [dim]# Add and run an agent[/dim]\n",
                 title="Ready",
@@ -202,7 +207,7 @@ def start(
         console.print(
             Panel(
                 f"[green]SafeYolo is running[/green]\n\n"
-                f"Proxy: http://localhost:{proxy_port}",
+                f"Proxy: http://localhost:{proxy_port}{tailnet_line}",
                 title="Started",
             )
         )
@@ -318,6 +323,16 @@ def status() -> None:
     table.add_row("Proxy", "[green]running[/green]")
     table.add_row("Proxy Port", str(config["proxy"]["port"]))
     table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
+    web_tailnet = _web_tailnet_runtime(config)
+    if web_tailnet.get("enabled"):
+        state = str(web_tailnet.get("state", "unknown"))
+        style = "green" if state == "healthy" else "yellow"
+        value = f"[{style}]{state}[/{style}]"
+        if web_tailnet.get("url"):
+            value += f" · {web_tailnet['url']}"
+        table.add_row("WebMITM Tailnet", value)
+    else:
+        table.add_row("WebMITM Tailnet", "disabled")
 
     # Guest images
     if check_guest_images():

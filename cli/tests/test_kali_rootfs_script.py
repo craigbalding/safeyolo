@@ -123,6 +123,13 @@ def test_kali_chroots_use_deterministic_utf8_locale() -> None:
     assert source.count('/usr/bin/env -i "${CHROOT_ENV[@]}"') == 2
 
 
+def test_kali_rootfs_seeds_hushlogin_for_persistent_agent_home() -> None:
+    """Suppress Kali's login banner after SafeYolo mounts the agent home."""
+    source = KALI_BUILDER.read_text()
+
+    assert 'install -m 0644 /dev/null "$TREE/etc/skel/.hushlogin"' in source
+
+
 def test_unprivileged_tool_installs_get_only_minimal_build_devices() -> None:
     """Git needs /dev/null, without exposing the host's complete /dev."""
     source = KALI_BUILDER.read_text()

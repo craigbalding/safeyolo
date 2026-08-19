@@ -20,10 +20,6 @@ from safeyolo.preview import (
     UNLOCK_PATH,
     PreviewConfig,
     PreviewError,
-    TailnetServeSession,
-    _run_tailscale_json,
-    _tailnet_mapping_ready,
-    _tailnet_port_in_use,
     build_guest_relay_command,
     normalize_display_path,
     parse_ttl,
@@ -33,10 +29,22 @@ from safeyolo.preview import (
     sanitize_request_headers,
     serve_agent_preview,
     start_preview_server,
-    start_tailnet_serve,
     strip_preview_cookie,
     validate_guest_port,
+)
+from safeyolo.tailnet import (
+    TailnetServeSession,
+    start_tailnet_serve,
     validate_tailnet_port,
+)
+from safeyolo.tailnet import (
+    run_tailscale_json as _run_tailscale_json,
+)
+from safeyolo.tailnet import (
+    tailnet_mapping_ready as _tailnet_mapping_ready,
+)
+from safeyolo.tailnet import (
+    tailnet_port_in_use as _tailnet_port_in_use,
 )
 
 
@@ -278,10 +286,10 @@ def test_start_tailnet_serve_uses_foreground_mapping(monkeypatch):
             },
         },
     ])
-    monkeypatch.setattr("safeyolo.preview.shutil.which", lambda command: "/usr/bin/tailscale")
-    monkeypatch.setattr("safeyolo.preview._run_tailscale_json", lambda *args: next(responses))
+    monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
+    monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
 
-    with patch("safeyolo.preview.subprocess.Popen", return_value=process) as popen:
+    with patch("safeyolo.tailnet.subprocess.Popen", return_value=process) as popen:
         session = start_tailnet_serve(54321, 8443)
 
     assert session.url("/") == "https://host.example.ts.net:8443/"
@@ -308,10 +316,10 @@ def test_start_tailnet_serve_refuses_existing_mapping(monkeypatch):
         },
         {"TCP": {"8443": {"HTTPS": True}}},
     ])
-    monkeypatch.setattr("safeyolo.preview.shutil.which", lambda command: "/usr/bin/tailscale")
-    monkeypatch.setattr("safeyolo.preview._run_tailscale_json", lambda *args: next(responses))
+    monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
+    monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
 
-    with patch("safeyolo.preview.subprocess.Popen") as popen, \
+    with patch("safeyolo.tailnet.subprocess.Popen") as popen, \
          pytest.raises(PreviewError, match="already has"):
         start_tailnet_serve(54321, 8443)
 
@@ -327,10 +335,10 @@ def test_start_tailnet_serve_cleans_process_on_readiness_failure(monkeypatch):
         },
         {},
     ])
-    monkeypatch.setattr("safeyolo.preview.shutil.which", lambda command: "/usr/bin/tailscale")
-    monkeypatch.setattr("safeyolo.preview._run_tailscale_json", lambda *args: next(responses))
-    monkeypatch.setattr("safeyolo.preview.TAILSCALE_READY_TIMEOUT_SECONDS", 0)
-    monkeypatch.setattr("safeyolo.preview.subprocess.Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
+    monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
+    monkeypatch.setattr("safeyolo.tailnet.TAILSCALE_READY_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("safeyolo.tailnet.subprocess.Popen", lambda *args, **kwargs: process)
 
     with pytest.raises(PreviewError, match="did not publish"):
         start_tailnet_serve(54321, 8443)
@@ -345,7 +353,7 @@ def test_tailscale_serve_empty_status_accepts_json_null(monkeypatch):
         stdout="null\n",
         stderr="",
     )
-    monkeypatch.setattr("safeyolo.preview.subprocess.run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr("safeyolo.tailnet.subprocess.run", lambda *args, **kwargs: completed)
 
     assert _run_tailscale_json("serve", "status", "--json") == {}
 
@@ -714,7 +722,9 @@ def test_preview_command_requires_running_agent():
     runner = CliRunner()
 
     with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)), \
-         patch("safeyolo.commands.agent.reserve_agent_tailnet_port") as mock_reserve:
+         patch(
+             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+         ) as mock_reserve:
         result = runner.invoke(agent_app, ["preview", "codey", "8000"])
 
     assert result.exit_code == 1
@@ -797,8 +807,8 @@ def test_desktop_command_reserves_tailnet_port(monkeypatch):
     with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
          patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
          patch(
-             "safeyolo.commands.agent.reserve_agent_tailnet_port",
-             return_value=8443,
+             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+             return_value=(8443, None),
          ) as mock_reserve, \
          patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
         result = runner.invoke(
@@ -811,6 +821,32 @@ def test_desktop_command_reserves_tailnet_port(monkeypatch):
     config, platform = mock_serve.call_args.args
     assert platform is fake_platform
     assert config.tailnet_port == 8443
+
+
+def test_desktop_restores_changed_port_when_preview_start_fails(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: None)
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
+         patch(
+             "safeyolo.commands.agent.reserve_agent_tailnet_port_change",
+             return_value=(8444, 8443),
+         ), \
+         patch("safeyolo.commands.agent.restore_agent_tailnet_port") as mock_restore, \
+         patch(
+             "safeyolo.preview.serve_agent_preview",
+             side_effect=RuntimeError("serve denied"),
+         ):
+        result = runner.invoke(
+            agent_app,
+            ["desktop", "codey", "--share", "tailnet", "--tailnet-port", "8444"],
+        )
+
+    assert result.exit_code == 1
+    assert "serve denied" in result.output
+    mock_restore.assert_called_once_with("codey", 8444, 8443)
 
 
 def test_desktop_rejects_tailnet_port_with_local_share():

@@ -69,6 +69,10 @@ What's required:
    - `shadow` or equivalent (provides `useradd` + `usermod`; the latter
      is used to unlock the agent account so OpenSSH accepts pubkey auth
      — Alpine's OpenSSH refuses locked accounts even for pubkey)
+   - `sudo` (the distro implementation used for standard command-line
+     semantics and hardware-microVM guest elevation)
+   - `setpriv` from `util-linux` (the SafeYolo sudo shim uses the agent's
+     existing namespace capabilities on rootless Linux gVisor)
 
    Optional:
    - `python3` — only needed if you want `safeyolo agent shell <name>
@@ -112,6 +116,7 @@ This installs:
   other `sbin` tools are visible in non-login shells
 - mise profile glue at `/etc/profile.d/mise.sh` (if `mise` is in the tree)
 - BusyBox-backed `hexdump` / `nc` shims (if BusyBox is in the tree)
+- `/usr/local/bin/sudo` compatibility shim and passwordless guest-root policy
 - hostname = `safeyolo`
 
 The helper is idempotent — safe to re-run.

@@ -15,10 +15,8 @@ import os
 import re
 import secrets
 import shlex
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -26,10 +24,14 @@ import webbrowser
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.cookies import SimpleCookie
-from typing import TextIO
 
 from .core.audit_schema import EventKind, Severity
 from .events import write_event
+from .tailnet import (
+    TailnetServeError,
+    TailnetServeSession,
+    start_tailnet_serve,
+)
 
 log = logging.getLogger("safeyolo.preview")
 
@@ -53,7 +55,6 @@ REQUEST_BODY_CHUNK_SIZE = 64 * 1024
 MAX_RESPONSE_HEADER_BYTES = 128 * 1024
 STREAM_CHUNK_SIZE = 64 * 1024
 DEFAULT_VNC_GEOMETRY = "1280x800"
-TAILSCALE_READY_TIMEOUT_SECONDS = 15
 FORWARDED_PREVIEW_HEADERS = {
     "forwarded",
     "x-forwarded-for",
@@ -74,54 +75,7 @@ class PreviewConfig:
     tailnet_port: int | None = None
 
 
-class PreviewError(RuntimeError):
-    """Preview session failed."""
-
-
-@dataclass
-class TailnetServeSession:
-    """One foreground Tailscale Serve mapping owned by a preview command."""
-
-    process: subprocess.Popen[str]
-    dns_name: str
-    exposed_port: int
-    target: str
-    output: TextIO | None = None
-    closing: bool = False
-
-    def url(self, display_path: str) -> str:
-        authority = self.dns_name
-        if self.exposed_port != 443:
-            authority = f"{authority}:{self.exposed_port}"
-        return f"https://{authority}{normalize_display_path(display_path)}"
-
-    def close(self) -> None:
-        if self.process.poll() is None:
-            self.closing = True
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=5)
-        self.close_output()
-
-    def read_output(self) -> str:
-        stream = self.output or self.process.stdout
-        if stream is None:
-            return ""
-        try:
-            stream.flush()
-            stream.seek(0)
-            return stream.read().strip()
-        except (OSError, ValueError):
-            return ""
-
-    def close_output(self) -> None:
-        streams = [self.output, self.process.stdout]
-        for stream in streams:
-            if stream is not None and not stream.closed:
-                stream.close()
+PreviewError = TailnetServeError
 
 
 class PreviewHTTPServer(http.server.ThreadingHTTPServer):
@@ -775,149 +729,6 @@ def add_preview_response_headers(head: bytes, config: PreviewConfig) -> bytes:
 
 def build_guest_relay_command(guest_port: int) -> str:
     return f"exec socat - TCP:127.0.0.1:{shlex.quote(str(guest_port))}"
-
-
-def validate_tailnet_port(port: int) -> None:
-    if type(port) is not int or port < 1 or port > 65535:
-        raise ValueError("tailnet HTTPS port must be 1-65535")
-
-
-def _run_tailscale_json(*args: str) -> dict:
-    try:
-        result = subprocess.run(
-            ["tailscale", *args],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise PreviewError(
-            "Tailscale is not installed; use --share local or install and connect Tailscale"
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise PreviewError(f"tailscale {' '.join(args)} timed out") from exc
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        suffix = f": {detail}" if detail else ""
-        raise PreviewError(f"tailscale {' '.join(args)} failed{suffix}")
-    try:
-        payload = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise PreviewError(f"tailscale {' '.join(args)} returned invalid JSON") from exc
-    # `tailscale serve status --json` may report JSON null when there is no
-    # Serve configuration yet. Treat that as the empty configuration.
-    if payload is None and args == ("serve", "status", "--json"):
-        return {}
-    if not isinstance(payload, dict):
-        raise PreviewError(f"tailscale {' '.join(args)} returned unexpected JSON")
-    return payload
-
-
-def _node_serve_configs(status: dict):
-    """Yield node-level background and foreground configs, not Services."""
-    yield status
-    foreground = status.get("Foreground", {})
-    if isinstance(foreground, dict):
-        for config in foreground.values():
-            if isinstance(config, dict):
-                yield config
-
-
-def _tailnet_port_in_use(status: dict, port: int) -> bool:
-    for config in _node_serve_configs(status):
-        tcp = config.get("TCP", {})
-        if isinstance(tcp, dict) and str(port) in tcp:
-            return True
-    return False
-
-
-def _tailnet_mapping_ready(status: dict, port: int, target: str) -> bool:
-    def contains_exact(value) -> bool:
-        if value == target:
-            return True
-        if isinstance(value, dict):
-            return any(contains_exact(child) for child in value.values())
-        if isinstance(value, list):
-            return any(contains_exact(child) for child in value)
-        return False
-
-    for config in _node_serve_configs(status):
-        tcp = config.get("TCP", {})
-        if not isinstance(tcp, dict) or str(port) not in tcp:
-            continue
-        web = config.get("Web", {})
-        if isinstance(web, dict) and contains_exact(web):
-            return True
-    return False
-
-
-def start_tailnet_serve(local_port: int, exposed_port: int) -> TailnetServeSession:
-    """Publish one loopback preview through foreground Tailscale Serve."""
-    validate_tailnet_port(exposed_port)
-    if shutil.which("tailscale") is None:
-        raise PreviewError(
-            "Tailscale is not installed; use --share local or install and connect Tailscale"
-        )
-
-    node_status = _run_tailscale_json("status", "--json")
-    if node_status.get("BackendState") != "Running":
-        state = node_status.get("BackendState", "unknown")
-        raise PreviewError(f"Tailscale is not connected (state: {state})")
-    self_status = node_status.get("Self")
-    dns_name = self_status.get("DNSName", "") if isinstance(self_status, dict) else ""
-    dns_name = str(dns_name).rstrip(".")
-    if not dns_name:
-        raise PreviewError("Tailscale status did not report a MagicDNS name")
-
-    serve_status = _run_tailscale_json("serve", "status", "--json")
-    if _tailnet_port_in_use(serve_status, exposed_port):
-        raise PreviewError(
-            f"tailnet HTTPS port {exposed_port} already has a Tailscale Serve mapping; "
-            "choose another with --tailnet-port"
-        )
-
-    target = f"http://127.0.0.1:{local_port}"
-    command = [
-        "tailscale", "serve", "--yes", f"--https={exposed_port}", target,
-    ]
-    output = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except OSError as exc:
-        output.close()
-        raise PreviewError(f"failed to start Tailscale Serve: {exc}") from exc
-
-    session = TailnetServeSession(
-        process, dns_name, exposed_port, target, output=output,
-    )
-    deadline = time.monotonic() + TAILSCALE_READY_TIMEOUT_SECONDS
-    try:
-        while time.monotonic() < deadline:
-            exit_code = process.poll()
-            if exit_code is not None:
-                detail = session.read_output()
-                suffix = f": {detail}" if detail else ""
-                raise PreviewError(
-                    f"Tailscale Serve exited with code {exit_code}{suffix}"
-                )
-            status = _run_tailscale_json("serve", "status", "--json")
-            if _tailnet_mapping_ready(status, exposed_port, target):
-                return session
-            time.sleep(0.25)
-        raise PreviewError(
-            f"Tailscale Serve did not publish HTTPS port {exposed_port} within "
-            f"{TAILSCALE_READY_TIMEOUT_SECONDS}s"
-        )
-    except Exception:
-        session.close()
-        raise
 
 
 def start_preview_server(

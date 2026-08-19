@@ -58,7 +58,10 @@ class TestWriteEvent:
     def test_survives_write_failure(self, tmp_path, monkeypatch, capsys):
         """write_event prints to stderr on failure, doesn't raise."""
         log_file = tmp_path / "safeyolo.jsonl"
-        log_file.touch(mode=0o000)
+        # A mode-000 file remains writable when the test process has the
+        # guest CAP_DAC_OVERRIDE capability. A directory at the file path is
+        # an invariant failure on both ordinary hosts and SafeYolo guests.
+        log_file.mkdir()
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path))
         write_event("agent.started", kind=EventKind.AGENT, severity=Severity.LOW, summary="Started", agent="test")
         captured = capsys.readouterr()

@@ -49,6 +49,10 @@ Install tools:
   mise use -g rust@latest
   mise use -g npm:<package>       # node-backed npm package
 
+Native guest packages:
+  sudo -n apt-get install -y PACKAGE   # Debian/Kali
+  sudo -n apk add PACKAGE              # Alpine
+
 List available:
   mise ls-remote go
 

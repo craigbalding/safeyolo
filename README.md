@@ -90,6 +90,9 @@ safeyolo setup
 # Start the proxy
 safeyolo start
 
+# Optional: persistently publish the authenticated WebMITM UI to your tailnet
+safeyolo proxy web share --tailnet
+
 # Run Claude Code in an isolated sandbox
 safeyolo agent add myproject ~/code --host-script contrib/claude-host-setup.sh
 ```
@@ -244,7 +247,7 @@ Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.
 
 Linux specifics:
 
-- **Rootless**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`). Agents operate with zero sudo; container uid 0 maps to a subordinate uid (100000), container uid 1000 maps to the operator.
+- **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to subordinate host uid 100000, while container uid 1000 maps to the operator.
 - **Rootfs**: a single shared directory tree at `~/.safeyolo/share/rootfs-tree/` used directly as gVisor's OCI `root.path` (no image packaging step). Writes go to a memory-backed overlay upper per sandbox; per-agent persistent bind mounts cover apt caches so reinstalls stay cheap.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. Auto-detected by `safeyolo setup` and surfaced in `safeyolo doctor`.
 - **One-time setup**: AppArmor profile to allow unprivileged user namespaces on Ubuntu 24.04+, and a udev rule granting the subordinate uid access to `/dev/kvm` — both applied idempotently by `safeyolo setup`.

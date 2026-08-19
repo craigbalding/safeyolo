@@ -67,7 +67,7 @@ echo "=== Installing Alpine packages ==="
 #   x11vnc      -- exposes that display over VNC (localhost:5900)
 #   novnc       -- the web client assets served at /usr/share/novnc
 #   websockify  -- WebSocket<->VNC bridge that serves noVNC on :6080
-#   openbox     -- tiny window manager so Chromium can maximize/fill Xvfb
+#   fluxbox/xterm -- tiny window manager plus a discoverable app menu/terminal
 #   font-noto      -- without fonts the browser renders blank/tofu text
 #   procps-ng      -- the core desktop launcher uses pkill (not in busybox)
 #   util-linux-misc -- provides setsid for detached desktop processes
@@ -81,7 +81,7 @@ chroot "$TREE" /sbin/apk add --no-cache \
     python3 py3-pip py3-virtualenv \
     ripgrep fd file unzip zip tmux lsof strace pkgconf \
     xvfb x11vnc novnc websockify font-noto procps-ng util-linux-misc \
-    nss-tools dbus openbox chromium
+    nss-tools dbus fluxbox xterm chromium
 
 # SafeYolo stages its current desktop lifecycle/browser helper at
 # /safeyolo/guest-desktop on every run. This rootfs supplies only the optional
@@ -91,16 +91,8 @@ chroot "$TREE" /sbin/apk add --no-cache \
 source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_guest_common "$TREE"
 
-# --- Runtime apk support: passwordless sudo, env-propagated proxy. ---
-# apk honours http_proxy / https_proxy natively, so we only need sudo to keep
-# those vars (and the SafeYolo CA paths) across the privilege boundary.
-mkdir -p "$TREE/etc/sudoers.d"
-cat > "$TREE/etc/sudoers.d/safeyolo-agent" <<'SUDOERS'
-agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy"
-Defaults env_keep += "NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
-SUDOERS
-chmod 0440 "$TREE/etc/sudoers.d/safeyolo-agent"
+# apk honours http_proxy / https_proxy natively. The shared guest installer
+# supplies the sudo compatibility shim and preserves proxy + CA variables.
 
 # --- Pack into the format SafeYolo asked for. ---
 # Exactly one of OUT_EXT4 / OUT_TREE is set per invocation.

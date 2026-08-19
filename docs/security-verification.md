@@ -36,8 +36,8 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Only egress = proxy UDS | Private per-agent directory mounted read-only at `/safeyolo/proxy`, containing `proxy.sock` | [cli/src/safeyolo/sockets.py](../cli/src/safeyolo/sockets.py) |
 | Identity on every flow | Mitmproxy's per-agent `UnixInstance` parses `<ip>_<agent>/proxy.sock` and stamps `client.peername = (ip, 0)` | [addons/unix_listener.py](../addons/unix_listener.py) |
 | Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
-| Agent user | Runs as uid 1000 inside the sandbox; host operator uid maps to 1000 via userns | [guest/rootfs-customize-hook.sh](../guest/rootfs-customize-hook.sh) |
-| Minimal capabilities | CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_NET_ADMIN for init only — no CAP_NET_RAW, no CAP_SYS_ADMIN | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
+| Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
+| Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Read-only config share | `/safeyolo` mounted `ro` | [cli/src/safeyolo/vm.py](../cli/src/safeyolo/vm.py) |
 | Read-only rootfs (Linux) | EROFS image; writable overlay lives in gVisor's sentry, not on disk | [guest/build-rootfs.sh](../guest/build-rootfs.sh) |
 
@@ -91,7 +91,7 @@ The [blackbox test suite](../tests/blackbox/) verifies SafeYolo's security guara
 
 | Test | Verifies |
 |------|----------|
-| Non-root execution | `setuid(0)` fails with PermissionError |
+| Guest-root containment | macOS rejects direct `setuid(0)`; Linux permits namespace-root but verifies its subordinate host uid mapping, read-only host shares, host network isolation, device isolation, and PID isolation |
 | Network isolation | Direct HTTP/HTTPS/DNS blocked, proxy-only egress |
 | Kernel modules disabled | `init_module` syscall returns ENOSYS |
 | No /dev/mem | Physical memory device does not exist |

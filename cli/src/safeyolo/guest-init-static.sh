@@ -146,21 +146,29 @@ fi
 # from each land in the host-side mount (~/.safeyolo/agents/<name>/
 # home/) rather than the ephemeral rootfs. MISE_DATA_DIR is
 # $HOME/.mise (see /etc/profile.d/mise.sh + vsock-term), so mise
-# installs persist here too. First boot: /etc/skel seeds sensible
-# dotfiles for the agent's login shell.
+# installs persist here too. Seed missing /etc/skel entries without replacing
+# anything already written by a host setup script or the operator.
 mkdir -p /home/agent
 if _needs_virtiofs_mount; then
     mount -t virtiofs home /home/agent
 else
     mount -t virtiofs home /home/agent 2>/dev/null || true
 fi
-if [ -z "$(ls -A /home/agent 2>/dev/null)" ] && [ -d /etc/skel ]; then
+if [ -d /etc/skel ]; then
     # `cp -r` (not `-a`) -- VirtioFS on VZ rejects utimes, which makes
     # `cp -a`'s timestamp-preserve step fail, and `set -e` takes PID 1
     # down with it (kernel panic "Attempted to kill init"). Timestamps
-    # on skel dotfiles aren't load-bearing; default modes under umask
-    # are fine for .bashrc / .profile / .bash_logout.
-    cp -r /etc/skel/. /home/agent/
+    # on skel dotfiles aren't load-bearing. Copy as agent so newly seeded
+    # files have the right ownership on both Linux bind mounts and VZ
+    # VirtioFS. Globs cover ordinary and hidden skeleton entries.
+    su agent -c '
+        for source in /etc/skel/* /etc/skel/.[!.]* /etc/skel/..?*; do
+            [ -e "$source" ] || [ -L "$source" ] || continue
+            name=${source##*/}
+            [ -e "/home/agent/$name" ] || [ -L "/home/agent/$name" ] ||
+                cp -r "$source" "/home/agent/$name"
+        done
+    '
 fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)

@@ -9,6 +9,8 @@ from safeyolo.agents_store import (
     load_all_agents,
     remove_agent,
     reserve_agent_tailnet_port,
+    reserve_agent_tailnet_port_change,
+    restore_agent_tailnet_port,
     save_agent,
 )
 
@@ -171,6 +173,27 @@ class TestReserveAgentTailnetPort:
 
         assert reserve_agent_tailnet_port("alice", 11443) == 11443
         assert load_agent("alice")["tailnet_port"] == 11443
+
+    def test_failed_start_can_restore_previous_reservation(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a", "tailnet_port": 8443}},
+        )
+
+        assert reserve_agent_tailnet_port_change("alice", 8444) == (8444, 8443)
+        assert restore_agent_tailnet_port("alice", 8444, 8443)
+        assert load_agent("alice")["tailnet_port"] == 8443
+
+    def test_restore_does_not_overwrite_newer_reservation(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a", "tailnet_port": 8443}},
+        )
+        reserve_agent_tailnet_port("alice", 8444)
+        reserve_agent_tailnet_port("alice", 8445)
+
+        assert not restore_agent_tailnet_port("alice", 8444, 8443)
+        assert load_agent("alice")["tailnet_port"] == 8445
 
     def test_rejects_invalid_explicit_port(self, tmp_config_dir):
         _write_policy(tmp_config_dir, agents={"alice": {"folder": "/a"}})

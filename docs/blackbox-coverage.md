@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**90 tests across 31 threat categories.**
+**95 tests across 33 threat categories.**
 
 ## Host-side
 
@@ -38,6 +38,21 @@ UnixInstance) is the only egress path for the agent. A missing or
 stale socket means every agent request fails with ENOENT —
 effectively a denial of service, not a security issue, but a strong
 signal that the identity chain is broken.
+
+#### TestRootlessUidMapping — Linux sandbox identities map to non-root host identities.
+
+**Threat:** SafeYolo intentionally permits namespace-root for package
+installation. Its host safety depends on the enclosing user
+namespace mapping sandbox uid 0 to a subordinate uid while mapping
+sandbox uid 1000 to the operator for workspace access.
+
+- **`test_sandbox_root_maps_to_subordinate_host_uid`** — Sandbox uid 0 maps to uid 100000 rather than host root.
+  - *Probe:* On Linux, read the live user-namespace holder's uid_map
+and assert sandbox uid 0 maps to host uid 100000, while uid
+1000 maps only to the current host operator uid.
+  - *Consequence if unasserted:* If sandbox uid 0 mapped to host uid 0, setpriv or a package
+maintainer script would gain real host root. If uid 1000 did
+not map to the operator, normal workspace ownership would fail.
 
 ### `tests/blackbox/host/lifecycle/test_home_persistence.py`
 
@@ -715,12 +730,12 @@ ARE listening — unlike the 44444 test. A direct sandbox →
 sinkhole connect succeeding here would mean the isolation
 boundary has a real hole, not just absence of services.
 
-#### TestPrivilegeEscalation — Agent cannot gain root, load modules, or poke kernel memory.
+#### TestGuestPrivilegeBoundary — Guest privilege remains inside the sandbox boundary.
 
-**Threat:** Every local privilege-escalation vector — running as root,
-setuid(0), kernel module loading, /dev/mem, eBPF — is a path
-to full sandbox escape. The agent must run unprivileged and be
-unable to acquire privileges through any of these mechanisms.
+**Threat:** Agents start as uid 1000 but may need guest root to install
+packages. On Linux that root is deliberately namespace-root,
+mapped to an unprivileged subordinate host uid. Kernel modules,
+host memory, and eBPF remain unavailable regardless of guest uid.
 
 - **`test_runs_as_nonroot`** — Agent process uid is not 0.
   - *Probe:* os.getuid() != 0.
@@ -733,11 +748,21 @@ container is one kernel vuln away from host root.
 ownership, userns mapping) all assume uid 1000 inside the
 sandbox. A different uid means ownership mismatches and
 identity confusion.
-- **`test_cannot_gain_root`** — setuid(0) raises PermissionError.
-  - *Probe:* os.setuid(0) under pytest.raises(PermissionError).
-  - *Consequence if unasserted:* If setuid to root works, the agent is 'nonroot' only
-by convention. Any suid binary or kernel bug that bypasses
-normal checks could elevate. Must fail at the syscall level.
+- **`test_privilege_transition_matches_platform_contract`** — Guest-root transition follows the platform's isolation model.
+  - *Probe:* On a hardware microVM, direct setuid(0) must fail. On
+Linux gVisor, setpriv must reach uid 0 inside the sandbox;
+the host-side uid-map test separately proves this maps to a
+subordinate uid rather than host root.
+  - *Consequence if unasserted:* Package installation needs an intentional guest-root
+path, while treating namespace-root as host root would both
+break that feature and test the wrong security boundary.
+- **`test_sudo_reaches_guest_root`** — The standard sudo command reaches root only inside the guest.
+  - *Probe:* Run `sudo -n id -u` as the agent and require uid 0. On
+gVisor the SafeYolo shim uses namespace capabilities; on a
+hardware microVM the distro's normal sudo transition applies.
+  - *Consequence if unasserted:* Agents need a familiar, non-operator-mediated way to
+install native packages without confusing host root with
+sandbox or VM root.
 - **`test_kernel_modules_disabled`** — init_module(2) syscall returns non-success.
   - *Probe:* Direct syscall to init_module with null args; assert
 return value is -1 and errno non-zero.
@@ -762,6 +787,35 @@ for SYS_bpf with zero args; if any returns 0, fail.
 network introspection, kprobe instrumentation, cgroup
 hooks. Even with verifier constraints, eBPF has been a
 recurring privilege-escalation vector.
+
+#### TestSandboxRootContainment — Linux namespace-root cannot cross SafeYolo's host boundary.
+
+**Threat:** Allowing agents to install distro packages intentionally
+grants root inside gVisor. The security property is therefore
+containment: namespace-root must still be unable to modify the
+host config share, reach host listeners, inspect host processes,
+or access host devices.
+
+- **`test_config_share_stays_readonly_as_sandbox_root`** — Sandbox root cannot write the host-backed config share.
+  - *Probe:* Elevate with setpriv and attempt to create a file under
+/safeyolo; require the write to fail and the path to remain
+absent.
+  - *Consequence if unasserted:* If namespace-root can modify this host bind mount it can
+tamper with proxy configuration or guest bootstrap state,
+turning guest package installation into host-state mutation.
+- **`test_host_listener_stays_unreachable_as_sandbox_root`** — Sandbox root cannot connect to a live host TCP listener.
+  - *Probe:* Elevate with setpriv, parse the host endpoint from the
+configured proxy URL, and attempt a direct TCP connection to
+the harness's known-live host listener; require failure.
+  - *Consequence if unasserted:* Guest root must not turn the loopback-only network
+namespace into a path to host services or the admin API.
+- **`test_host_kernel_surfaces_stay_absent_as_sandbox_root`** — Sandbox root sees neither host devices nor the host PID 1.
+  - *Probe:* Elevate with setpriv, assert /dev/kvm, /dev/mem and
+/dev/kmem are absent, then assert PID 1's command line is not
+a host init such as systemd or launchd.
+  - *Consequence if unasserted:* Exposing a host device or process namespace to guest root
+would convert an intentionally useful guest capability into a
+direct host-compromise primitive.
 
 #### TestFilesystemIsolation — Config share mount is read-only and holds no private keys.
 

@@ -12,6 +12,9 @@ NOVNC_PORT=6080
 GEOMETRY_FILE=/tmp/safeyolo-vnc-geometry
 DBUS_ENV=/tmp/safeyolo-dbus-env
 DBUS_PID_FILE=/tmp/safeyolo-dbus.pid
+FLUXBOX_CONFIG_DIR=/tmp/safeyolo-fluxbox
+OPENBOX_CONFIG_DIR=/tmp/safeyolo-openbox
+WINDOW_MANAGER_FILE=/tmp/safeyolo-window-manager
 
 export DISPLAY=":${DISPLAY_NUM}"
 export PATH="/home/agent/.local/bin:${PATH}"
@@ -61,6 +64,28 @@ _find_window_manager() {
     return 1
 }
 
+_find_terminal() {
+    local candidate
+    for candidate in xterm xfce4-terminal lxterminal; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_find_browser() {
+    local candidate
+    for candidate in chromium chromium-browser google-chrome; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 _check_capability() {
     local missing=() command_name
     for command_name in Xvfb x11vnc websockify setsid pkill seq; do
@@ -79,6 +104,78 @@ _check_capability() {
     fi
 }
 
+_configure_fluxbox() {
+    mkdir -p "$FLUXBOX_CONFIG_DIR"
+    printf '%s\n' 'background: unset' >"$FLUXBOX_CONFIG_DIR/overlay"
+    cat >"$FLUXBOX_CONFIG_DIR/init" <<EOF
+session.menuFile: $FLUXBOX_CONFIG_DIR/menu
+session.styleOverlay: $FLUXBOX_CONFIG_DIR/overlay
+session.screen0.rootCommand: /bin/true
+session.screen0.workspaceNames: Apps: right-click desktop,
+session.screen0.toolbar.visible: true
+session.screen0.toolbar.tools: workspacename, iconbar, systemtray, clock
+EOF
+    cat >"$FLUXBOX_CONFIG_DIR/menu" <<'EOF'
+[begin] (SafeYolo Desktop)
+EOF
+    if _find_terminal >/dev/null; then
+        cat >>"$FLUXBOX_CONFIG_DIR/menu" <<'EOF'
+  [exec] (Terminal) {/safeyolo/guest-desktop terminal}
+EOF
+    fi
+    if _find_browser >/dev/null; then
+        cat >>"$FLUXBOX_CONFIG_DIR/menu" <<'EOF'
+  [exec] (Browser) {/safeyolo/guest-desktop browser about:blank}
+EOF
+    fi
+    cat >>"$FLUXBOX_CONFIG_DIR/menu" <<'EOF'
+[end]
+EOF
+}
+
+_configure_openbox() {
+    local system_rc=""
+    mkdir -p "$OPENBOX_CONFIG_DIR"
+    cat >"$OPENBOX_CONFIG_DIR/menu.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="SafeYolo Desktop">
+EOF
+    if _find_terminal >/dev/null; then
+        cat >>"$OPENBOX_CONFIG_DIR/menu.xml" <<'EOF'
+    <item label="Terminal"><action name="Execute"><command>/safeyolo/guest-desktop terminal</command></action></item>
+EOF
+    fi
+    if _find_browser >/dev/null; then
+        cat >>"$OPENBOX_CONFIG_DIR/menu.xml" <<'EOF'
+    <item label="Browser"><action name="Execute"><command>/safeyolo/guest-desktop browser about:blank</command></action></item>
+EOF
+    fi
+    cat >>"$OPENBOX_CONFIG_DIR/menu.xml" <<'EOF'
+  </menu>
+</openbox_menu>
+EOF
+
+    for system_rc in /etc/xdg/openbox/rc.xml /usr/share/openbox/rc.xml; do
+        [ -r "$system_rc" ] && break
+        system_rc=""
+    done
+    if [ -n "$system_rc" ]; then
+        cp "$system_rc" "$OPENBOX_CONFIG_DIR/rc.xml"
+        sed -E -i \
+            "s|<file>[^<]*menu.xml</file>|<file>$OPENBOX_CONFIG_DIR/menu.xml</file>|g" \
+            "$OPENBOX_CONFIG_DIR/rc.xml"
+    else
+        cat >"$OPENBOX_CONFIG_DIR/rc.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <menu><file>$OPENBOX_CONFIG_DIR/menu.xml</file></menu>
+  <mouse><context name="Root"><mousebind button="Right" action="Press"><action name="ShowMenu"><menu>root-menu</menu></action></mousebind></context></mouse>
+</openbox_config>
+EOF
+    fi
+}
+
 _stop() {
     pkill -f "websockify.*${NOVNC_PORT}" 2>/dev/null || true
     pkill -f "x11vnc -display :${DISPLAY_NUM}" 2>/dev/null || true
@@ -91,7 +188,8 @@ _stop() {
     rm -f \
         "/tmp/.X${DISPLAY_NUM}-lock" \
         "/tmp/.X11-unix/X${DISPLAY_NUM}" \
-        "$DBUS_ENV" "$DBUS_PID_FILE" "$GEOMETRY_FILE"
+        "$DBUS_ENV" "$DBUS_PID_FILE" "$GEOMETRY_FILE" \
+        "$WINDOW_MANAGER_FILE"
 }
 
 _start_dbus() {
@@ -126,7 +224,7 @@ _start_dbus() {
 _start() {
     local geometry="${1:-${VNC_GEOMETRY:-1280x800}}"
     local depth="${VNC_DEPTH:-24}" width height current=""
-    local web_root window_manager agent_name
+    local web_root window_manager agent_name managed_window_manager=""
 
     if [[ "$geometry" =~ ^([0-9]+)x([0-9]+)(x([0-9]+))?$ ]]; then
         width="${BASH_REMATCH[1]}"
@@ -141,13 +239,28 @@ _start() {
     if [ -r "$GEOMETRY_FILE" ]; then
         current="$(tr ' ' x <"$GEOMETRY_FILE")"
     fi
+    window_manager="$(_find_window_manager)"
     if _is_ready && [ "$current" = "${width}x${height}" ]; then
-        echo "desktop already ready on 127.0.0.1:${NOVNC_PORT} (${width}x${height})"
-        return 0
+        [ -r "$WINDOW_MANAGER_FILE" ] && \
+            managed_window_manager="$(cat "$WINDOW_MANAGER_FILE")"
+        if [ "$managed_window_manager" = "$window_manager" ]; then
+            # Refresh discovery after an agent installs a browser or terminal.
+            # Fluxbox automatically rereads its menu when the file changes;
+            # Openbox needs an explicit reconfigure request.
+            if [ "$window_manager" = fluxbox ]; then
+                _configure_fluxbox
+            else
+                _configure_openbox
+                openbox --reconfigure >/tmp/window-manager-reconfigure.log 2>&1 \
+                    || true
+            fi
+            echo "desktop already ready on 127.0.0.1:${NOVNC_PORT} (${width}x${height})"
+            return 0
+        fi
+        echo "desktop uses legacy window-manager configuration; restarting" >&2
     fi
 
     web_root="$(_find_web_root)"
-    window_manager="$(_find_window_manager)"
     _stop
     printf '%s %s\n' "$width" "$height" >"$GEOMETRY_FILE"
     _start_dbus
@@ -157,7 +270,22 @@ _start() {
     _wait_for "Xvfb display :${DISPLAY_NUM}" /tmp/xvfb.log \
         "[ -S /tmp/.X11-unix/X${DISPLAY_NUM} ]"
 
-    setsid "$window_manager" </dev/null >/tmp/window-manager.log 2>&1 &
+    if [ "$window_manager" = fluxbox ]; then
+        # Fluxbox's distro defaults try to restore a wallpaper through
+        # fbsetbg, which shows an X11 warning when no wallpaper helper is
+        # installed. SafeYolo needs only a quiet, minimal window manager.
+        # Use an isolated configuration so we do not alter the agent's own
+        # ~/.fluxbox settings; `background: unset` disables style wallpaper
+        # commands while leaving ordinary window decoration intact.
+        _configure_fluxbox
+        setsid fluxbox -rc "$FLUXBOX_CONFIG_DIR/init" \
+            </dev/null >/tmp/window-manager.log 2>&1 &
+    else
+        _configure_openbox
+        setsid openbox --config-file "$OPENBOX_CONFIG_DIR/rc.xml" \
+            </dev/null >/tmp/window-manager.log 2>&1 &
+    fi
+    printf '%s\n' "$window_manager" >"$WINDOW_MANAGER_FILE"
 
     setsid x11vnc -display ":${DISPLAY_NUM}" -nopw -listen 127.0.0.1 \
         -rfbport "$VNC_PORT" -forever -shared \
@@ -209,10 +337,7 @@ _browser() {
     _is_ready || { echo "error: start the desktop before launching a browser" >&2; return 1; }
     [ -r "$DBUS_ENV" ] && source "$DBUS_ENV"
 
-    for browser in chromium chromium-browser google-chrome; do
-        command -v "$browser" >/dev/null 2>&1 && break
-        browser=""
-    done
+    browser="$(_find_browser || true)"
     if [ -z "$browser" ]; then
         echo "browser capability unavailable; install Chromium in the agent rootfs" >&2
         return 127
@@ -268,6 +393,27 @@ _browser() {
     echo "browser ready with ${browser} (log: /tmp/chrome.log)"
 }
 
+_terminal() {
+    local terminal=""
+    _is_ready || { echo "error: start the desktop before launching a terminal" >&2; return 1; }
+    [ -r "$DBUS_ENV" ] && source "$DBUS_ENV"
+    terminal="$(_find_terminal || true)"
+    if [ -z "$terminal" ]; then
+        echo "terminal capability unavailable; install xterm in the agent rootfs" >&2
+        return 127
+    fi
+    case "$terminal" in
+        xterm)
+            setsid xterm -ls -title "SafeYolo Agent Terminal" \
+                </dev/null >/tmp/terminal.log 2>&1 &
+            ;;
+        *)
+            setsid "$terminal" </dev/null >/tmp/terminal.log 2>&1 &
+            ;;
+    esac
+    echo "terminal ready with ${terminal} (log: /tmp/terminal.log)"
+}
+
 action="${1:-start}"
 shift || true
 case "$action" in
@@ -279,8 +425,9 @@ case "$action" in
         echo "desktop stopped"
         ;;
     browser) _browser "$@" ;;
+    terminal) _terminal ;;
     *)
-        echo "usage: guest-desktop {check|start [WIDTHxHEIGHT]|status|stop|browser URL}" >&2
+        echo "usage: guest-desktop {check|start [WIDTHxHEIGHT]|status|stop|browser URL|terminal}" >&2
         exit 2
         ;;
 esac

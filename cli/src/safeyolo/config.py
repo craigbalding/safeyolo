@@ -29,6 +29,10 @@ DEFAULT_CONFIG = {
         "admin_port": 9090,
         "web_host": "127.0.0.1",
         "web_port": 8081,
+        "web_tailnet": {
+            "enabled": False,
+            "port": 443,
+        },
         "image": "safeyolo:latest",
         "container_name": "safeyolo",
         "ignore_hosts": [],

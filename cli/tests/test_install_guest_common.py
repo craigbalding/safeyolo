@@ -11,10 +11,13 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     """Custom rootfs trees must be complete before Linux uid remapping."""
     rootfs = tmp_path / "rootfs"
     (rootfs / "usr/sbin").mkdir(parents=True)
+    (rootfs / "usr/bin").mkdir(parents=True)
     (rootfs / "usr/local/bin").mkdir(parents=True)
     (rootfs / "etc").mkdir(parents=True)
     (rootfs / "usr/sbin/useradd").touch()
     (rootfs / "usr/sbin/useradd").chmod(0o755)
+    (rootfs / "usr/bin/sudo").touch()
+    (rootfs / "usr/bin/sudo").chmod(0o755)
 
     command = (
         "chroot() { return 0; }; "
@@ -42,6 +45,17 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     assert ca_target.is_file()
     assert ca_target.stat().st_mode & 0o777 == 0o644
 
+    sudo_shim = rootfs / "usr/local/bin/sudo"
+    assert sudo_shim.is_file()
+    assert sudo_shim.stat().st_mode & 0o777 == 0o755
+    assert 'REAL_SUDO=/usr/bin/sudo' in sudo_shim.read_text()
+    assert 'SETPRIV=/usr/bin/setpriv' in sudo_shim.read_text()
+
+    sudoers = rootfs / "etc/sudoers.d/safeyolo-agent"
+    assert sudoers.is_file()
+    assert sudoers.stat().st_mode & 0o777 == 0o440
+    assert "agent ALL=(ALL) NOPASSWD:ALL" in sudoers.read_text()
+
 
 def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
     """The default and custom builders must not drift again."""
@@ -49,3 +63,4 @@ def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
 
     assert 'source "$GUEST_SRC_DIR/install-guest-common.sh"' in source
     assert 'install_safeyolo_runtime_mount_targets "$ROOTFS"' in source
+    assert 'install_safeyolo_privilege_helper "$ROOTFS"' in source

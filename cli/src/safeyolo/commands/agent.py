@@ -16,7 +16,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..agents_store import load_agent as _store_load_agent
-from ..agents_store import load_all_agents, reserve_agent_tailnet_port, save_agent
+from ..agents_store import (
+    load_all_agents,
+    reserve_agent_tailnet_port_change,
+    restore_agent_tailnet_port,
+    save_agent,
+)
 from ..agents_store import remove_agent as _store_remove_agent
 from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
@@ -109,7 +114,7 @@ def _resolve_preview_tailnet_port(
     name: str,
     share: str,
     requested_port: int | None,
-) -> int | None:
+) -> tuple[int | None, int | None]:
     """Validate preview sharing and reserve a stable per-agent port."""
     normalized = share.strip().lower()
     if normalized not in {"local", "tailnet"}:
@@ -117,13 +122,31 @@ def _resolve_preview_tailnet_port(
     if normalized == "local":
         if requested_port is not None:
             raise ValueError("--tailnet-port requires --share tailnet")
-        return None
+        return None, None
 
-    from ..preview import validate_tailnet_port
+    from ..tailnet import validate_tailnet_port
 
     if requested_port is not None:
         validate_tailnet_port(requested_port)
-    return reserve_agent_tailnet_port(name, requested_port)
+    return reserve_agent_tailnet_port_change(name, requested_port)
+
+
+def _rollback_preview_tailnet_port(
+    name: str,
+    reserved_port: int | None,
+    previous_port: int | None,
+) -> None:
+    """Undo a changed provisional reservation after preview startup fails."""
+    if reserved_port is None or reserved_port == previous_port:
+        return
+    try:
+        restore_agent_tailnet_port(name, reserved_port, previous_port)
+    except Exception as exc:  # noqa: BLE001 - preserve the original failure
+        log.warning(
+            "could not restore tailnet port reservation for %s: %s",
+            name,
+            exc,
+        )
 
 
 def _resolve_host_script_path(host_script: str | None) -> Path | None:
@@ -1345,13 +1368,15 @@ def shell(
     root: bool = typer.Option(
         False,
         "--root",
-        help="Open shell as root (default: non-root agent user)",
+        help="Operator recovery shell as guest root (default: agent user)",
     ),
 ) -> None:
     """Open a shell in a running agent sandbox.
 
-    By default, opens as the non-root agent user. Use --root for root access.
-    Use -c to run a single command and return its exit code.
+    By default, opens as the non-root agent user. Agents can use the in-guest
+    sudo helper for routine package installation; --root is the
+    operator-mediated recovery path. Use -c to run a single command and
+    return its exit code.
 
     Examples:
 
@@ -1448,7 +1473,7 @@ def preview(
         raise typer.Exit(1)
 
     try:
-        resolved_tailnet_port = _resolve_preview_tailnet_port(
+        resolved_tailnet_port, previous_tailnet_port = _resolve_preview_tailnet_port(
             name, share, tailnet_port,
         )
     except ValueError as exc:
@@ -1460,6 +1485,9 @@ def preview(
         try:
             vnc_geometry, detected_display_size = resolve_vnc_geometry(vnc_size)
         except ValueError as exc:
+            _rollback_preview_tailnet_port(
+                name, resolved_tailnet_port, previous_tailnet_port,
+            )
             console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1)
         if detected_display_size:
@@ -1492,6 +1520,9 @@ def preview(
             )
         start_exit = plat.exec_in_sandbox(name, command, user="agent", interactive=False)
         if start_exit != 0:
+            _rollback_preview_tailnet_port(
+                name, resolved_tailnet_port, previous_tailnet_port,
+            )
             raise typer.Exit(start_exit)
 
     config = PreviewConfig(
@@ -1506,6 +1537,9 @@ def preview(
     try:
         exit_code = serve_agent_preview(config, plat)
     except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _rollback_preview_tailnet_port(
+            name, resolved_tailnet_port, previous_tailnet_port,
+        )
         console.print(f"[red]Preview failed:[/red] {escape(str(exc))}")
         raise typer.Exit(1)
     raise typer.Exit(exit_code)
@@ -1604,7 +1638,7 @@ def desktop(
     try:
         geometry, detected_display_size = resolve_vnc_geometry(size)
         ttl_seconds = parse_ttl(ttl)
-        resolved_tailnet_port = _resolve_preview_tailnet_port(
+        resolved_tailnet_port, previous_tailnet_port = _resolve_preview_tailnet_port(
             name, share, tailnet_port,
         )
     except ValueError as exc:
@@ -1632,6 +1666,9 @@ def desktop(
         name, command, user="agent", interactive=False,
     )
     if start_exit != 0:
+        _rollback_preview_tailnet_port(
+            name, resolved_tailnet_port, previous_tailnet_port,
+        )
         raise typer.Exit(start_exit)
 
     config = PreviewConfig(
@@ -1646,6 +1683,9 @@ def desktop(
     try:
         exit_code = serve_agent_preview(config, platform)
     except Exception as exc:  # noqa: BLE001 - CLI boundary
+        _rollback_preview_tailnet_port(
+            name, resolved_tailnet_port, previous_tailnet_port,
+        )
         console.print(f"[red]Desktop preview failed:[/red] {escape(str(exc))}")
         raise typer.Exit(1)
     raise typer.Exit(exit_code)
