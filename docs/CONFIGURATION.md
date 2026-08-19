@@ -37,6 +37,9 @@ proxy:
   container_name: safeyolo
   ignore_hosts: []      # Exact HOST or HOST:PORT TLS passthrough entries
 
+desktop:
+  size: auto           # Persistent host preference: auto or WIDTHxHEIGHT
+
 modes:
   credential_guard: block
   network_guard: block
@@ -47,6 +50,17 @@ modes:
 Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add|list|remove`.
 Changes are persisted atomically and applied to a running proxy through the
 operator-only admin API. Wildcards and regular expressions are not accepted.
+
+`desktop.size` is the default geometry for `safeyolo agent desktop` and for
+noVNC started through `safeyolo agent preview`. Set it once to match the
+operator's usual viewport, for example `1280x1246`; an explicit
+`--size WIDTHxHEIGHT` still overrides it for one invocation. With `auto`,
+SafeYolo sizes from a detectable local display and otherwise uses `1280x800`.
+Persist a preference without editing YAML:
+
+```bash
+safeyolo agent desktop <name> --size 1280x1246 --remember-size --open
+```
 
 Manage the WebMITM interface with `safeyolo proxy web`:
 

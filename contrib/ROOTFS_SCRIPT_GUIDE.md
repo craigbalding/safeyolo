@@ -45,6 +45,12 @@ and uses it for the agent. Non-zero → SafeYolo aborts `agent add`, prints
 your stderr, and does not persist agent config. Fix the script and re-run
 with `--force`.
 
+On Linux, the rootfs script stays attached to the invoking terminal. SafeYolo
+sends it `SIGTERM` after an interrupt and allows five seconds for its `EXIT`
+cleanup before killing the script. Builders should keep privileged commands in
+the foreground and use an `EXIT` trap to release any mounts they create. The
+bundled Kali builder follows that model.
+
 ## What the rootfs must contain
 
 SafeYolo boots the rootfs you produce, bypassing the distro's own init.
@@ -199,6 +205,27 @@ Rootfs scripts run on `safeyolo agent add`. Re-running with `--force`
 reruns the script. Make yours reproducible: pin image digests, tool
 versions, and git commit hashes so two builds produce byte-comparable
 rootfs.
+
+## Reusing a built custom rootfs
+
+Package installation often dominates a custom build. After one agent has a
+validated custom rootfs, clone that immutable lower layer into another agent:
+
+```sh
+safeyolo agent add second-agent /path/to/second-workspace \
+    --rootfs-from first-agent
+```
+
+The clone does not include the source agent's writable overlay, persistent
+home, workspace, credentials, or package-cache contents. The destination gets
+fresh mutable state and remains independent if either agent is later removed
+or rebuilt. On Linux, SafeYolo requests command-scoped `sudo` for an
+ownership-preserving `cp --reflink=auto`; filesystems with reflink support make
+the clone copy-on-write, while other filesystems fall back to a normal copy.
+On macOS, SafeYolo uses an APFS clone when available.
+
+Only custom per-agent rootfs images can be cloned. Agents using SafeYolo's
+shared default rootfs already reuse the same immutable base automatically.
 
 ## Using an agent to write rootfs scripts
 

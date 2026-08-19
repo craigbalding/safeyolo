@@ -16,6 +16,7 @@ from safeyolo.config import (
     get_config_dir,
     get_config_path,
     get_data_dir,
+    get_desktop_size,
     get_logs_dir,
     get_policies_dir,
     get_policy_toml_path,
@@ -61,6 +62,7 @@ class TestLoadConfig:
         config = load_config()
         assert config["proxy"]["port"] == 8080
         assert config["proxy"]["admin_port"] == 9090
+        assert config["desktop"]["size"] == "auto"
 
     def test_returns_defaults_if_missing(self, tmp_path, monkeypatch):
         """Returns DEFAULT_CONFIG if no config file."""
@@ -77,6 +79,17 @@ class TestLoadConfig:
         assert "modes" in config
         assert config["modes"]["credential_guard"] == "block"
 
+    def test_loads_persistent_desktop_size(self, tmp_config_dir):
+        """A host desktop preference overrides the portable default."""
+        (tmp_config_dir / "config.yaml").write_text(
+            "version: 1\ndesktop:\n  size: 1280x1246\n"
+        )
+
+        config = load_config()
+
+        assert config["desktop"]["size"] == "1280x1246"
+        assert config["proxy"]["port"] == 8080
+
     def test_handles_empty_file(self, tmp_config_dir):
         """Handles empty config file."""
         (tmp_config_dir / "config.yaml").write_text("")
@@ -92,6 +105,22 @@ class TestLoadConfig:
         config["proxy"]["ignore_hosts"].append("service.example.test")
 
         assert DEFAULT_CONFIG["proxy"]["ignore_hosts"] == []
+
+
+class TestDesktopSize:
+    def test_uses_persistent_host_preference(self, tmp_config_dir):
+        (tmp_config_dir / "config.yaml").write_text(
+            "desktop:\n  size: 1280x1246\n"
+        )
+
+        assert get_desktop_size() == "1280x1246"
+
+    def test_explicit_size_takes_precedence(self, tmp_config_dir):
+        (tmp_config_dir / "config.yaml").write_text(
+            "desktop:\n  size: 1280x1246\n"
+        )
+
+        assert get_desktop_size("1600x900") == "1600x900"
 
 
 class TestSaveConfig:

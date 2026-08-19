@@ -18,6 +18,23 @@ import platform as _platform
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import BinaryIO, Protocol
+
+
+class BinaryRelay(Protocol):
+    """Bidirectional byte stream with the lifecycle used by preview."""
+
+    stdin: BinaryIO | None
+    stdout: BinaryIO | None
+    returncode: int | None
+
+    def poll(self) -> int | None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
 
 
 class AgentPlatform(ABC):
@@ -114,6 +131,20 @@ class AgentPlatform(ABC):
         user: str = "agent",
     ) -> subprocess.Popen[bytes]:
         """Start a non-interactive command in a running sandbox with binary pipes."""
+
+    def popen_port_forward(
+        self,
+        name: str,
+        guest_port: int,
+        user: str = "agent",
+    ) -> BinaryRelay:
+        """Open one host byte stream to a listening guest TCP port.
+
+        Platforms may override this with a native transport. The default is
+        the existing guest-side socat relay, used by the macOS VM path.
+        """
+        command = f"exec socat - TCP:127.0.0.1:{guest_port}"
+        return self.popen_binary_in_sandbox(name, command, user=user)
 
     @abstractmethod
     def is_sandbox_running(self, name: str) -> bool:

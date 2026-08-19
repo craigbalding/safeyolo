@@ -13,12 +13,14 @@ import signal
 import subprocess
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from .config import (
     get_agent_map_path,
     get_agents_dir,
     get_config_dir,
+    get_desktop_size,
     get_share_dir,
     get_ssh_key_path,
 )
@@ -419,17 +421,14 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
             f"Scripts must write their output to ${out_key}."
         )
     if out_is_dir:
-        # Tree must be non-empty with at least /etc.
-        if not (out_path.is_dir() and (out_path / "etc").is_dir()):
+        # The platform layer owns the one complete content/ownership check.
+        # At this boundary only verify that the script produced a real tree.
+        if out_path.is_symlink() or not out_path.is_dir():
             raise VMError(
-                f"Rootfs script {script_path} produced {out_path} but it's not"
-                f" a valid rootfs tree (missing /etc)."
+                f"Rootfs script {script_path} did not produce a directory tree "
+                f"at {out_path}."
             )
-        size = sum(
-            f.stat().st_size for f in out_path.rglob("*") if f.is_file()
-        )
-        log.info("Custom rootfs tree built for '%s': %s (%d bytes)",
-                 name, out_path, size)
+        log.info("Custom rootfs tree built for '%s': %s", name, out_path)
     else:
         if out_path.stat().st_size == 0:
             raise VMError(
@@ -438,6 +437,109 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
         log.info("Custom rootfs image built for '%s': %s (%d bytes)",
                  name, out_path, out_path.stat().st_size)
     return out_path
+
+
+def clone_custom_rootfs(source_name: str, target_name: str) -> Path:
+    """Clone one agent's custom rootfs without copying runtime state.
+
+    The custom rootfs is an immutable lower layer at runtime. Only that lower
+    layer and its cache-path declarations are copied; the target's overlay,
+    persistent home, workspace, credentials, and package caches remain fresh.
+    """
+    if source_name == target_name:
+        raise VMError("rootfs source and target agents must be different")
+
+    agents_dir = get_agents_dir()
+    source_dir = agents_dir / source_name
+    target_dir = agents_dir / target_name
+    if source_dir.is_symlink() or target_dir.is_symlink():
+        raise VMError("agent directories used for rootfs cloning must not be symlinks")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    system = platform.system()
+
+    if system == "Linux":
+        source = source_dir / "rootfs"
+        target = target_dir / "rootfs"
+        if source.is_symlink() or not (
+            source.is_dir() and (source / "etc").is_dir()
+        ):
+            raise VMError(
+                f"Agent '{source_name}' has no cloneable custom rootfs tree"
+            )
+
+        temporary = target_dir / f".rootfs-clone-{uuid.uuid4().hex}"
+        try:
+            subprocess.run(
+                [
+                    "sudo", "cp", "-a", "--reflink=auto", "--",
+                    str(source), str(temporary),
+                ],
+                check=True,
+            )
+            if temporary.is_symlink() or not (
+                temporary.is_dir() and (temporary / "etc").is_dir()
+            ):
+                raise VMError("cloned rootfs tree failed validation")
+            if temporary.stat().st_uid != 100000:
+                raise VMError(
+                    "cloned rootfs tree has incorrect ownership; expected uid 100000"
+                )
+            if target.exists() or target.is_symlink():
+                subprocess.run(
+                    ["sudo", "rm", "-rf", "--", str(target)],
+                    check=True,
+                )
+            os.replace(temporary, target)
+        except FileNotFoundError as exc:
+            raise VMError(
+                "Cloning a Linux custom rootfs requires sudo and GNU cp"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            raise VMError(
+                f"Rootfs clone command exited with code {exc.returncode}"
+            ) from exc
+        finally:
+            if temporary.exists() or temporary.is_symlink():
+                subprocess.run(
+                    ["sudo", "rm", "-rf", "--", str(temporary)],
+                    check=False,
+                )
+    elif system == "Darwin":
+        source = source_dir / "rootfs.ext4"
+        target = target_dir / "rootfs.ext4"
+        if source.is_symlink() or not source.is_file() or source.stat().st_size == 0:
+            raise VMError(
+                f"Agent '{source_name}' has no cloneable custom rootfs image"
+            )
+
+        temporary = target_dir / f".rootfs-clone-{uuid.uuid4().hex}.ext4"
+        try:
+            result = subprocess.run(
+                ["cp", "-c", str(source), str(temporary)],
+                check=False,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                shutil.copy2(source, temporary)
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise VMError("cloned rootfs image failed validation")
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    else:
+        raise VMError(f"Unsupported platform for --rootfs-from: {system}")
+
+    source_cache_paths = source_dir / "cache-paths.txt"
+    target_cache_paths = target_dir / "cache-paths.txt"
+    target_cache_paths.unlink(missing_ok=True)
+    if source_cache_paths.is_symlink():
+        raise VMError("source cache-paths.txt must not be a symlink")
+    if source_cache_paths.is_file():
+        shutil.copy2(source_cache_paths, target_cache_paths)
+
+    return target
 
 
 def _run_rootfs_script_native(
@@ -473,11 +575,47 @@ def _run_rootfs_script_native(
             "SAFEYOLO_TARGET_ARCH": _host_target_arch(),
         }
         log.info("Running rootfs script: %s", script_path)
-        result = subprocess.run([str(staged_script)], env=env, check=False)
-        if result.returncode != 0:
+        process = subprocess.Popen([str(staged_script)], env=env)
+        try:
+            returncode = process.wait()
+        except KeyboardInterrupt:
+            # subprocess.run() immediately kills only its direct child when
+            # interrupted. A rootfs script can have a privileged chroot/apt
+            # tree below that child, so give the script's signal trap time to
+            # stop its descendants and unmount build filesystems first. Keep
+            # handling repeated Ctrl-C presses here so they cannot bypass the
+            # bounded escalation path.
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                # The script finished between wait() raising and termination.
+                pass
+
+            deadline = time.monotonic() + 5.0
+            while process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    break
+                try:
+                    process.wait(timeout=remaining)
+                except KeyboardInterrupt:
+                    continue
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    break
+
+            while process.poll() is None:
+                try:
+                    process.wait()
+                except KeyboardInterrupt:
+                    continue
+            raise
+
+        if returncode != 0:
             raise VMError(
                 f"Rootfs script {script_path} exited with code "
-                f"{result.returncode}."
+                f"{returncode}."
             )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -649,7 +787,11 @@ def _ensure_lima_vm(limactl: str) -> None:
 # Config share (VirtioFS directory mounted read-only in the guest)
 # ---------------------------------------------------------------------------
 
-def stage_guest_desktop_launcher(name: str) -> Path:
+def stage_guest_desktop_launcher(
+    name: str,
+    *,
+    preferred_size: str | None = None,
+) -> Path:
     """Copy the current core desktop launcher into an agent's live share.
 
     The share is mounted into running Linux and macOS guests, so this also
@@ -670,6 +812,12 @@ def stage_guest_desktop_launcher(name: str) -> Path:
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+    # Agent-side orchestrators such as browser fleets can start the same core
+    # launcher without inventing a second geometry default. The read-only
+    # share carries the host preference into the sandbox on every run and is
+    # refreshed alongside the launcher for already-running agents.
+    if preferred_size is not None:
+        (share_dir / "desktop-size").write_text(f"{preferred_size}\n")
     return destination
 
 
@@ -720,7 +868,7 @@ def prepare_config_share(
         shutil.copy2(str(src), str(dst))
         dst.chmod(0o755)
 
-    stage_guest_desktop_launcher(name)
+    stage_guest_desktop_launcher(name, preferred_size=get_desktop_size())
 
     # Pre-write the per-run gate so the orchestrator falls straight through
     # to per-run after static. CAPTURE / RESTORE callers disable this and

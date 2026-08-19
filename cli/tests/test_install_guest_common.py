@@ -14,6 +14,9 @@ def test_installer_precreates_runtime_bind_mount_targets(tmp_path: Path) -> None
     (rootfs / "usr/bin").mkdir(parents=True)
     (rootfs / "usr/local/bin").mkdir(parents=True)
     (rootfs / "etc").mkdir(parents=True)
+    (rootfs / "etc/passwd").write_text(
+        "agent:x:1000:1000::/home/agent:/bin/bash\n"
+    )
     (rootfs / "usr/sbin/useradd").touch()
     (rootfs / "usr/sbin/useradd").chmod(0o755)
     (rootfs / "usr/bin/sudo").touch()
@@ -64,3 +67,27 @@ def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
     assert 'source "$GUEST_SRC_DIR/install-guest-common.sh"' in source
     assert 'install_safeyolo_runtime_mount_targets "$ROOTFS"' in source
     assert 'install_safeyolo_privilege_helper "$ROOTFS"' in source
+
+
+def test_default_and_custom_builders_share_current_mise_pin() -> None:
+    """The default base and custom rootfs helper must use one verified pin."""
+    default_builder = (GUEST_DIR / "build-rootfs.sh").read_text()
+    custom_helper = (GUEST_DIR / "install-guest-common.sh").read_text()
+
+    for value in (
+        "2026.8.8",
+        "6e6e96d319fe274996db5aed691f5398552865e641dc4b6fb6b01d73f4853a17",
+        "58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f",
+    ):
+        assert value in default_builder
+        assert value in custom_helper
+
+
+def test_guest_installer_does_not_hide_agent_creation_failure() -> None:
+    """Idempotency must distinguish an existing account from failed useradd."""
+    source = (GUEST_DIR / "install-guest-common.sh").read_text()
+
+    assert "if ! grep -q '^agent:[^:]*:1000:'" in source
+    assert 'chroot "$rootfs" useradd -m -s /bin/bash -u 1000 agent' in source
+    assert "useradd -m -s /bin/bash -u 1000 agent 2>/dev/null || true" not in source
+    assert 'for required_dir in workspace safeyolo safeyolo-status home/agent' in source

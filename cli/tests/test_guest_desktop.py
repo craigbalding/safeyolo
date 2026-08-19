@@ -82,6 +82,13 @@ def test_ready_desktop_refreshes_discovered_applications() -> None:
     assert "legacy window-manager configuration; restarting" in ready_branch
 
 
+def test_guest_desktop_reads_staged_host_geometry_preference() -> None:
+    source = LAUNCHER.read_text()
+
+    assert "/safeyolo/desktop-size" in source
+    assert "${configured_geometry:-1280x800}" in source
+
+
 def test_guest_browser_uses_direct_chromium_contract_and_safeyolo_proxy() -> None:
     source = LAUNCHER.read_text()
 

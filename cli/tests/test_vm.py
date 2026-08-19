@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -13,6 +14,7 @@ from safeyolo.vm import (
     VMError,
     _update_agent_map,
     check_guest_images,
+    clone_custom_rootfs,
     create_agent_rootfs,
     find_vm_helper,
     get_agent_config_share_dir,
@@ -307,6 +309,14 @@ class TestPrepareConfigShare:
         assert '[ -e "/home/agent/$name" ]' in source
         assert '[ -z "$(ls -A /home/agent' not in source
 
+    def test_guest_init_maps_actual_runtime_hostname(self, tmp_config_dir):
+        """sudo resolution works when gVisor retains the OCI hostname."""
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-static").read_text()
+
+        assert "_runtime_hostname=$(hostname" in source
+        assert 'for _hostname_alias in "$_agent_name" "$_runtime_hostname"' in source
+
     def test_guest_desktop_launcher_is_staged_and_executable(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
         launcher = share / "guest-desktop"
@@ -322,6 +332,18 @@ class TestPrepareConfigShare:
             tmp_config_dir / "agents" / "agent1" / "config-share" / "guest-desktop"
         )
         assert os.access(destination, os.X_OK)
+        assert not (destination.parent / "desktop-size").exists()
+
+    def test_guest_desktop_launcher_stages_host_size_preference(
+        self, tmp_config_dir,
+    ):
+        (tmp_config_dir / "config.yaml").write_text(
+            "desktop:\n  size: 1280x1246\n"
+        )
+
+        share = prepare_config_share("agent1", "/workspace")
+
+        assert (share / "desktop-size").read_text() == "1280x1246\n"
 
     def test_per_run_go_sentinel_pre_written(self, tmp_config_dir):
         """Pre-write /safeyolo/per-run-go so the orchestrator falls straight
@@ -1403,6 +1425,83 @@ class TestGuestImageChecks:
 # ---------------------------------------------------------------------------
 
 
+class TestCloneCustomRootfs:
+    def test_linux_clones_only_rootfs_and_cache_declarations(
+        self, tmp_config_dir, monkeypatch
+    ):
+        source_dir = tmp_config_dir / "agents" / "kali-base"
+        source_rootfs = source_dir / "rootfs"
+        (source_rootfs / "etc").mkdir(parents=True)
+        (source_rootfs / "etc" / "hostname").write_text("kali")
+        (source_dir / "home").mkdir()
+        (source_dir / "home" / "credential").write_text("do-not-copy")
+        (source_dir / "cache" / "var_cache_apt").mkdir(parents=True)
+        (source_dir / "cache" / "var_cache_apt" / "package.deb").write_text("cache")
+        (source_dir / "cache-paths.txt").write_text("/var/cache/apt\n")
+
+        clone_id = MagicMock(hex="fixed")
+        temporary = tmp_config_dir / "agents" / "engagement" / ".rootfs-clone-fixed"
+        real_stat = Path.stat
+        commands = []
+
+        def fake_stat(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if path == temporary:
+                values = list(result)
+                values[4] = 100000
+                return os.stat_result(values)
+            return result
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            assert command[:5] == ["sudo", "cp", "-a", "--reflink=auto", "--"]
+            shutil.copytree(command[-2], command[-1])
+            return subprocess.CompletedProcess(command, 0)
+
+        with (
+            patch("safeyolo.vm.platform.system", return_value="Linux"),
+            patch("safeyolo.vm.uuid.uuid4", return_value=clone_id),
+            patch("safeyolo.vm.Path.stat", new=fake_stat),
+            patch("safeyolo.vm.subprocess.run", side_effect=fake_run),
+        ):
+            result = clone_custom_rootfs("kali-base", "engagement")
+
+        assert result == tmp_config_dir / "agents" / "engagement" / "rootfs"
+        assert (result / "etc" / "hostname").read_text() == "kali"
+        assert not (result.parent / "home").exists()
+        assert not (result.parent / "cache").exists()
+        assert (result.parent / "cache-paths.txt").read_text() == "/var/cache/apt\n"
+        assert len(commands) == 1
+
+    def test_linux_rejects_agent_without_custom_rootfs(self, tmp_config_dir):
+        (tmp_config_dir / "agents" / "plain").mkdir(parents=True)
+
+        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
+             pytest.raises(VMError, match="no cloneable custom rootfs tree"):
+            clone_custom_rootfs("plain", "engagement")
+
+    def test_darwin_uses_deep_copy_when_apfs_clone_is_unavailable(
+        self, tmp_config_dir
+    ):
+        source_dir = tmp_config_dir / "agents" / "kali-base"
+        source_dir.mkdir(parents=True)
+        (source_dir / "rootfs.ext4").write_bytes(b"rootfs-image")
+
+        failed_clone = subprocess.CompletedProcess(["cp", "-c"], 1)
+        with (
+            patch("safeyolo.vm.platform.system", return_value="Darwin"),
+            patch("safeyolo.vm.subprocess.run", return_value=failed_clone) as run,
+        ):
+            result = clone_custom_rootfs("kali-base", "engagement")
+
+        assert result.read_bytes() == b"rootfs-image"
+        assert run.call_args.args[0][:2] == ["cp", "-c"]
+
+    def test_rejects_same_source_and_target(self):
+        with pytest.raises(VMError, match="must be different"):
+            clone_custom_rootfs("kali", "kali")
+
+
 class TestBuildCustomRootfs:
     """Contract verification for the custom-rootfs builder.
 
@@ -1450,20 +1549,20 @@ class TestBuildCustomRootfs:
         assert out.is_dir()
         assert (out / "etc" / "hostname").read_bytes() == b"stub"
 
-    def test_linux_tree_without_etc_raises(
+    def test_linux_content_validation_is_owned_by_platform_layer(
         self, tmp_config_dir, tmp_path
     ):
-        """Script that creates the output dir but fails to populate /etc
-        fails validation -- a tree without /etc is not a valid rootfs."""
+        """The script runner only checks output type, avoiding duplicate probes."""
         from safeyolo.vm import build_custom_rootfs
 
         script = self._write_script(
             tmp_path,
             '#!/bin/sh\nmkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE"\n',
         )
-        with patch("safeyolo.vm.platform.system", return_value="Linux"), \
-             pytest.raises(VMError, match="not a valid rootfs tree"):
-            build_custom_rootfs("agent0", script)
+        with patch("safeyolo.vm.platform.system", return_value="Linux"):
+            out = build_custom_rootfs("agent0", script)
+
+        assert out.is_dir()
 
     def test_linux_missing_output_raises(
         self, tmp_config_dir, tmp_path
@@ -1486,6 +1585,61 @@ class TestBuildCustomRootfs:
         with patch("safeyolo.vm.platform.system", return_value="Linux"), \
              pytest.raises(VMError, match="exited with code 7"):
             build_custom_rootfs("agent0", script)
+
+    def test_linux_interrupt_gives_script_bounded_termination_grace(
+        self, tmp_config_dir, tmp_path
+    ):
+        """Ctrl-C terminates the staged script and waits for its cleanup."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(tmp_path, "#!/bin/sh\nexit 0\n")
+        process = MagicMock()
+
+        def wait(*, timeout=None):
+            if process.wait.call_count == 1:
+                raise KeyboardInterrupt
+            process.poll.return_value = 143
+            return 143
+
+        process.wait.side_effect = wait
+        process.poll.return_value = None
+
+        with (
+            patch("safeyolo.vm.platform.system", return_value="Linux"),
+            patch("safeyolo.vm.subprocess.Popen", return_value=process),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            build_custom_rootfs("agent0", script)
+
+        process.terminate.assert_called_once_with()
+        process.kill.assert_not_called()
+        assert process.wait.call_args_list[-1].kwargs["timeout"] <= 5.0
+
+    def test_linux_repeated_interrupts_still_escalate_to_kill(
+        self, tmp_config_dir, tmp_path
+    ):
+        """A second Ctrl-C cannot skip forced termination of the builder."""
+        from safeyolo.vm import build_custom_rootfs
+
+        script = self._write_script(tmp_path, "#!/bin/sh\nexit 0\n")
+        process = MagicMock()
+        process.wait.side_effect = [
+            KeyboardInterrupt(),
+            KeyboardInterrupt(),
+            subprocess.TimeoutExpired("builder", 4),
+            None,
+        ]
+        process.poll.side_effect = [None, None, None, 137]
+
+        with (
+            patch("safeyolo.vm.platform.system", return_value="Linux"),
+            patch("safeyolo.vm.subprocess.Popen", return_value=process),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            build_custom_rootfs("agent0", script)
+
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
 
     def test_linux_executes_staged_copy_when_source_inode_is_write_open(
         self, tmp_config_dir, tmp_path

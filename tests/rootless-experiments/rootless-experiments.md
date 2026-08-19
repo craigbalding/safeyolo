@@ -138,6 +138,48 @@ Runtime sudo: ZERO.
 
 ## Second-order testing
 
+### T48: Linux operator-preview transport
+
+Bounded comparison against an existing running agent whose managed desktop is
+already ready on guest port 6080. Neither variant builds an image, creates an
+agent, changes policy, or touches Tailscale:
+
+```sh
+tests/rootless-experiments/t48_linux_preview_transport.sh \
+  exec-socat AGENT
+
+tests/rootless-experiments/t48_linux_preview_transport.sh \
+  port-forward-stream AGENT
+```
+
+Both run the same browser-shaped workload: one held WebSocket plus 48 noVNC
+HTTP requests at concurrency 12. The first measures the current per-connection
+`runsc exec -> socat` path. The second measures gVisor's native UDS stream FD
+donation. Each process is tracked and reaped; a temporary mode-0700 directory
+contains the candidate's short-lived UDS paths.
+
+The default `--http-write half-close` reproduces the pre-fix preview handler,
+which closed relay stdin after sending a non-upgrade request. Repeat either
+transport with `--http-write keep-open` to isolate half-close behavior from the
+underlying transport.
+
+Results from the disposable Kali clone used for Linux host acceptance:
+
+| Transport | HTTP write side | Result | Elapsed |
+|---|---|---:|---:|
+| `runsc exec -> socat` | half-close | 1/49 | 17.13s |
+| `runsc port-forward --stream` | half-close | 1/49 | 0.77s |
+| `runsc exec -> socat` | keep open | 49/49 | 19.42s |
+| `runsc port-forward --stream` | keep open | 49/49 | 7.26s |
+
+Both transports established the held WebSocket. Closing the host write side
+before reading caused all 48 HTTP responses to arrive empty, isolating a
+shared relay-lifecycle defect. Keeping it open made both transports correct.
+SafeYolo therefore keeps the relay open through the response and uses native
+gVisor stream donation on Linux. Operator acceptance with an image-heavy,
+complex website confirmed that pages render correctly and promptly through a
+Tailnet desktop preview. No experiment left child processes behind.
+
 ### T1: runsc exec from outside userns
 - Direct `runsc --root <state> exec` works WITHOUT nsenter
 - runsc connects to sandbox via state dir, not namespace membership
