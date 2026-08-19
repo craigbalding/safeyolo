@@ -184,7 +184,7 @@ class TestTestContextAddon:
         assert stats["target_hosts"] == 0
 
     def test_non_target_host_passes_through(self):
-        """Requests to non-target hosts should pass without checks."""
+        """Requests without context to non-target hosts pass without checks."""
         addon = _make_addon_with_targets(["target.example.com"])
         flow = _make_mock_flow(host="api.openai.com", path="/v1/chat")
 
@@ -193,6 +193,52 @@ class TestTestContextAddon:
 
         assert flow.response is None
         assert addon.stats.checks == 0
+
+    def test_non_target_valid_header_opts_into_provenance(self):
+        addon = _make_addon_with_targets(["target.example.com"])
+        flow = _make_mock_flow(
+            host="ordinary.example.com",
+            headers={
+                "X-Test-Context": (
+                    "run=acceptance;agent=codey;role=auditor;test=CTX-001;"
+                    "intent=verify;expect=recorded"
+                )
+            },
+        )
+        flow.metadata["agent"] = "codey"
+
+        with (
+            patch.object(addon, "_maybe_reload_config"),
+            patch("test_context.write_event"),
+        ):
+            addon.request(flow)
+
+        assert flow.response is None
+        assert "X-Test-Context" not in flow.request.headers
+        assert flow.metadata["ccapt_context"]["test"] == "CTX-001"
+        assert flow.metadata["test_id"] == "CTX-001"
+        assert flow.metadata["test_agent_match"] is True
+        assert addon.stats.checks == 1
+        assert addon.stats.allowed == 1
+
+    def test_non_target_malformed_header_warns_strips_and_passes(self):
+        addon = _make_addon_with_targets(["target.example.com"])
+        flow = _make_mock_flow(
+            host="ordinary.example.com",
+            headers={"X-Test-Context": "not-valid"},
+        )
+
+        with (
+            patch.object(addon, "_maybe_reload_config"),
+            patch("test_context.write_event"),
+        ):
+            addon.request(flow)
+
+        assert flow.response is None
+        assert "X-Test-Context" not in flow.request.headers
+        assert "ccapt_context" not in flow.metadata
+        assert addon.stats.checks == 1
+        assert addon.stats.warned == 1
 
     def test_target_host_missing_header_blocks_428(self):
         """Requests to target hosts without context header get 428."""
@@ -337,8 +383,8 @@ class TestTestContextAddon:
         assert addon.stats.warned == 1
         assert addon.stats.blocked == 0
 
-    def test_no_target_hosts_passes_everything(self):
-        """With no target hosts configured, all requests pass through."""
+    def test_no_target_hosts_without_header_passes_without_checks(self):
+        """With no target hosts, unannotated requests pass through."""
         addon = _make_addon_with_targets(targets=[])
         flow = _make_mock_flow()
 
@@ -347,6 +393,27 @@ class TestTestContextAddon:
 
         assert flow.response is None
         assert addon.stats.checks == 0
+
+    def test_no_target_hosts_valid_header_opts_into_provenance(self):
+        addon = _make_addon_with_targets(targets=[])
+        flow = _make_mock_flow(
+            host="ordinary.example.com",
+            headers={
+                "X-Test-Context": "run=acceptance;agent=codey;test=CTX-001"
+            },
+        )
+        flow.metadata["agent"] = "codey"
+
+        with (
+            patch.object(addon, "_maybe_reload_config"),
+            patch("test_context.write_event"),
+        ):
+            addon.request(flow)
+
+        assert flow.response is None
+        assert "X-Test-Context" not in flow.request.headers
+        assert flow.metadata["ccapt_context"]["test"] == "CTX-001"
+        assert addon.stats.allowed == 1
 
     def test_already_blocked_flow_skipped(self):
         """Flow already blocked by another addon is skipped."""

@@ -6,7 +6,8 @@ import re
 import time
 from collections.abc import Sequence
 
-from mitmproxy import command, ctx, exceptions, flowfilter, types
+from mitmproxy import command, command_lexer, ctx, exceptions, flowfilter, types
+from mitmproxy.tools.console import signals as console_signals
 
 
 def _metadata_filter(key: str, value: str) -> str:
@@ -39,6 +40,7 @@ class TrafficScope:
         incoming = ctx.options.view_filter or ""
         if incoming == self._effective_filter:
             return
+        incoming = self._user_filter_from_effective(incoming)
         previous = self.user_filter
         self.user_filter = incoming
         try:
@@ -49,6 +51,14 @@ class TrafficScope:
             # shortcuts can replace the rejected option and recover.
             self.user_filter = previous
             raise
+
+    def _user_filter_from_effective(self, value: str) -> str:
+        """Remove our generated scope wrapper from an externally edited filter."""
+        scope = " & ".join(self._scope_parts())
+        prefix = f"{scope} & ("
+        while scope and value.startswith(prefix) and value.endswith(")"):
+            value = value[len(prefix) : -1]
+        return "" if value == scope else value
 
     def _scope_parts(self) -> list[str]:
         parts: list[str] = []
@@ -86,6 +96,28 @@ class TrafficScope:
                 ctx.options.update(view_filter=effective)
             finally:
                 self._applying = False
+
+    @command.command("safeyolo.traffic.filter.edit")
+    def edit_user_filter(self) -> None:
+        """Edit only the viewer filter, leaving pinned evidence scope intact."""
+        command_text = "safeyolo.traffic.filter.set " + command_lexer.quote(
+            self.user_filter
+        )
+        console_signals.status_prompt_command.send(
+            partial=command_text,
+            cursor=len(command_text) - 1,
+        )
+
+    @command.command("safeyolo.traffic.filter.set")
+    def set_user_filter(self, value: str) -> None:
+        """Set the viewer filter beneath the pinned SafeYolo scope."""
+        previous = self.user_filter
+        self.user_filter = value
+        try:
+            self._apply()
+        except exceptions.OptionsError:
+            self.user_filter = previous
+            raise
 
     def set_scope(
         self,
@@ -272,6 +304,20 @@ class TrafficScope:
                 "expect": expect,
             }
         return list(self._test_choices)
+
+    @command.command("safeyolo.traffic.test.choose")
+    def choose_test(self) -> None:
+        """Open the native chooser only when this scope has test contexts."""
+        if not self.test_options():
+            scope = f" for agent {self.agent}" if self.agent is not None else ""
+            console_signals.status_message.send(
+                message=f"No test contexts recorded{scope}."
+            )
+            return
+        ctx.master.commands.execute(
+            'console.choose.cmd "SafeYolo test context" '
+            "safeyolo.traffic.test.options safeyolo.traffic.test.set {choice}"
+        )
 
     @command.command("safeyolo.traffic.test.set")
     @command.argument("choice", type=types.Choice("safeyolo.traffic.test.options"))
