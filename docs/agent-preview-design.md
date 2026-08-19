@@ -70,6 +70,7 @@ safeyolo agent preview codey 8000 --open
 safeyolo agent preview codey 8000 --ttl 30m
 safeyolo agent desktop web --open
 safeyolo agent desktop web --browser https://example.com --open --ttl 15m
+safeyolo agent desktop web --share tailnet --ttl 15m
 safeyolo agent preview web 6080 --start-vnc
 safeyolo agent preview web 6080 -b https://example.com
 safeyolo agent preview web 6080 --start-vnc --vnc-size 1600x900
@@ -91,6 +92,26 @@ page opens. Rootfs images supply Xvfb, x11vnc, websockify/noVNC assets, a
 window manager, and optionally Chromium; SafeYolo never installs those
 packages at runtime.
 Ordinary HTTP preview sessions do not start guest services.
+
+### Optional Tailscale transport
+
+`--share tailnet` wraps the same loopback-only preview gateway in a foreground
+Tailscale Serve HTTPS mapping. It does not bind the gateway or guest service to
+a LAN/tailnet interface and never enables Funnel. The unlock code, session
+cookie, agent binding, audit events, and TTL remain enforced by SafeYolo.
+
+SafeYolo reserves a stable HTTPS port per configured agent in `policy.toml`,
+starting at 8443, so several agent previews can coexist on one host. An
+explicit `--tailnet-port` replaces that agent's reservation after checking it
+is not assigned to another SafeYolo agent. Before starting Serve, the CLI also
+refuses to replace an existing node-level Tailscale mapping on that port.
+
+The Tailscale process runs in foreground mode and is owned by the preview
+command. Ctrl-C, TTL shutdown, setup failure, and normal exit terminate that
+process; SafeYolo never calls `tailscale serve reset`. Requests arriving from
+the loopback reverse proxy may use Tailscale's forwarded HTTPS host/protocol
+for same-origin unlock validation and a Secure cookie. Tailscale identity and
+forwarding headers are removed before the request crosses into the guest.
 
 ## Transport model
 

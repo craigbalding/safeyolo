@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ..agents_store import load_agent as _store_load_agent
-from ..agents_store import load_all_agents, save_agent
+from ..agents_store import load_all_agents, reserve_agent_tailnet_port, save_agent
 from ..agents_store import remove_agent as _store_remove_agent
 from ..config import find_config_dir, get_agents_dir, load_config
 from ..events import EventKind, Severity, write_event
@@ -103,6 +103,27 @@ def _validate_instance_name(name: str) -> None:
 def _load_agent_metadata(name: str) -> dict:
     """Load agent metadata from policy.toml [agents] section."""
     return _store_load_agent(name)
+
+
+def _resolve_preview_tailnet_port(
+    name: str,
+    share: str,
+    requested_port: int | None,
+) -> int | None:
+    """Validate preview sharing and reserve a stable per-agent port."""
+    normalized = share.strip().lower()
+    if normalized not in {"local", "tailnet"}:
+        raise ValueError("share must be local or tailnet")
+    if normalized == "local":
+        if requested_port is not None:
+            raise ValueError("--tailnet-port requires --share tailnet")
+        return None
+
+    from ..preview import validate_tailnet_port
+
+    if requested_port is not None:
+        validate_tailnet_port(requested_port)
+    return reserve_agent_tailnet_port(name, requested_port)
 
 
 def _resolve_host_script_path(host_script: str | None) -> Path | None:
@@ -1391,6 +1412,16 @@ def preview(
         "-b",
         help="Start the guest desktop and open this URL in an available browser",
     ),
+    share: str = typer.Option(
+        "local",
+        "--share",
+        help="Preview transport: local or tailnet",
+    ),
+    tailnet_port: int | None = typer.Option(
+        None,
+        "--tailnet-port",
+        help="Tailnet HTTPS port (default: stable per-agent allocation)",
+    ),
 ) -> None:
     """Preview an agent-local HTTP service from the host browser.
 
@@ -1414,6 +1445,14 @@ def preview(
     if not plat.is_sandbox_running(name):
         console.print(f"[red]Agent '{name}' is not running.[/red]")
         console.print(f"Start it with: [bold]safeyolo agent run {name}[/bold]")
+        raise typer.Exit(1)
+
+    try:
+        resolved_tailnet_port = _resolve_preview_tailnet_port(
+            name, share, tailnet_port,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
 
     start_novnc = start_vnc or browser_url is not None
@@ -1462,6 +1501,7 @@ def preview(
         ttl_seconds=ttl_seconds,
         open_browser=open_browser,
         display_path="/vnc.html#autoconnect=true&resize=remote" if start_novnc else "/",
+        tailnet_port=resolved_tailnet_port,
     )
     try:
         exit_code = serve_agent_preview(config, plat)
@@ -1501,6 +1541,16 @@ def desktop(
         "--host-port",
         help="Host loopback port to bind (default: choose a free port)",
     ),
+    share: str = typer.Option(
+        "local",
+        "--share",
+        help="Preview transport: local or tailnet",
+    ),
+    tailnet_port: int | None = typer.Option(
+        None,
+        "--tailnet-port",
+        help="Tailnet HTTPS port (default: stable per-agent allocation)",
+    ),
     status: bool = typer.Option(
         False,
         "--status",
@@ -1523,7 +1573,8 @@ def desktop(
         raise typer.Exit(2)
     if (status or stop) and (
         open_browser or ttl is not None or browser_url is not None
-        or host_port != 0 or size != "auto"
+        or host_port != 0 or size != "auto" or share != "local"
+        or tailnet_port is not None
     ):
         console.print(
             "[red]--status and --stop cannot be combined with preview or browser options.[/red]"
@@ -1553,6 +1604,9 @@ def desktop(
     try:
         geometry, detected_display_size = resolve_vnc_geometry(size)
         ttl_seconds = parse_ttl(ttl)
+        resolved_tailnet_port = _resolve_preview_tailnet_port(
+            name, share, tailnet_port,
+        )
     except ValueError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1)
@@ -1587,6 +1641,7 @@ def desktop(
         ttl_seconds=ttl_seconds,
         open_browser=open_browser,
         display_path="/vnc.html#autoconnect=true&resize=remote",
+        tailnet_port=resolved_tailnet_port,
     )
     try:
         exit_code = serve_agent_preview(config, platform)
@@ -1770,6 +1825,11 @@ def config(
             table.add_row("Ports", "\n".join(current_ports))
         else:
             table.add_row("Ports", "[dim]none[/dim]")
+        tailnet_https_port = metadata.get("tailnet_port")
+        table.add_row(
+            "Tailnet HTTPS",
+            str(tailnet_https_port) if tailnet_https_port else "[dim]not reserved[/dim]",
+        )
         console.print(table)
         return
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import http.client
+import io
 import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from safeyolo.commands.agent import agent_app
@@ -17,6 +19,11 @@ from safeyolo.preview import (
     TOKEN_HEADER,
     UNLOCK_PATH,
     PreviewConfig,
+    PreviewError,
+    TailnetServeSession,
+    _run_tailscale_json,
+    _tailnet_mapping_ready,
+    _tailnet_port_in_use,
     build_guest_relay_command,
     normalize_display_path,
     parse_ttl,
@@ -26,8 +33,10 @@ from safeyolo.preview import (
     sanitize_request_headers,
     serve_agent_preview,
     start_preview_server,
+    start_tailnet_serve,
     strip_preview_cookie,
     validate_guest_port,
+    validate_tailnet_port,
 )
 
 
@@ -66,6 +75,29 @@ class FakePlatform:
     def exec_in_sandbox(self, name, command, user="agent", interactive=True):
         self.exec_calls.append({"name": name, "command": command, "user": user, "interactive": interactive})
         return 0
+
+
+class BlockingFakeProcess:
+    def __init__(self):
+        self.returncode = None
+        self.stdout = io.StringIO("")
+        self._done = threading.Event()
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+        self._done.set()
+
+    def kill(self):
+        self.returncode = -9
+        self._done.set()
+
+    def wait(self, timeout=None):
+        if not self._done.wait(timeout):
+            raise subprocess.TimeoutExpired("tailscale", timeout)
+        return self.returncode
 
 
 class TinyHandler(BaseHTTPRequestHandler):
@@ -175,10 +207,147 @@ def test_validate_guest_port_rejects_reserved():
             raise AssertionError("expected ValueError")
 
 
+def test_validate_tailnet_port_rejects_out_of_range():
+    for port in (0, 65536, True):
+        with pytest.raises(ValueError, match="tailnet HTTPS port"):
+            validate_tailnet_port(port)
+
+
 def test_cookie_helpers_strip_preview_token():
     cookie = f"session=abc; {TOKEN_COOKIE}=secret; theme=dark"
     assert preview_token_from_cookie(cookie) == "secret"
     assert strip_preview_cookie(cookie) == "session=abc; theme=dark"
+
+
+def test_tailnet_status_detects_node_ports_without_counting_services():
+    status = {
+        "TCP": {"443": {"HTTPS": True}},
+        "Foreground": {
+            "session-a": {"TCP": {"8443": {"HTTPS": True}}},
+        },
+        "Services": {
+            "svc:other": {"TCP": {"9443": {"HTTPS": True}}},
+        },
+    }
+
+    assert _tailnet_port_in_use(status, 443)
+    assert _tailnet_port_in_use(status, 8443)
+    assert not _tailnet_port_in_use(status, 9443)
+
+
+def test_tailnet_status_matches_exact_foreground_target():
+    target = "http://127.0.0.1:54321"
+    status = {
+        "Foreground": {
+            "session-a": {
+                "TCP": {"8443": {"HTTPS": True}},
+                "Web": {
+                    "host.example.ts.net:8443": {
+                        "Handlers": {"/": {"Proxy": target}},
+                    },
+                },
+            },
+        },
+    }
+
+    assert _tailnet_mapping_ready(status, 8443, target)
+    assert not _tailnet_mapping_ready(status, 8444, target)
+    assert not _tailnet_mapping_ready(status, 8443, "http://127.0.0.1:12345")
+    assert not _tailnet_mapping_ready(status, 8443, f"{target[:-1]}")
+
+
+def test_start_tailnet_serve_uses_foreground_mapping(monkeypatch):
+    process = BlockingFakeProcess()
+    target = "http://127.0.0.1:54321"
+    responses = iter([
+        {
+            "BackendState": "Running",
+            "Self": {"DNSName": "host.example.ts.net."},
+        },
+        {},
+        {
+            "Foreground": {
+                "owned-session": {
+                    "TCP": {"8443": {"HTTPS": True}},
+                    "Web": {
+                        "host.example.ts.net:8443": {
+                            "Handlers": {"/": {"Proxy": target}},
+                        },
+                    },
+                },
+            },
+        },
+    ])
+    monkeypatch.setattr("safeyolo.preview.shutil.which", lambda command: "/usr/bin/tailscale")
+    monkeypatch.setattr("safeyolo.preview._run_tailscale_json", lambda *args: next(responses))
+
+    with patch("safeyolo.preview.subprocess.Popen", return_value=process) as popen:
+        session = start_tailnet_serve(54321, 8443)
+
+    assert session.url("/") == "https://host.example.ts.net:8443/"
+    command = popen.call_args.args[0]
+    assert command == [
+        "tailscale",
+        "serve",
+        "--yes",
+        "--https=8443",
+        target,
+    ]
+    assert "--bg" not in command
+    assert "funnel" not in command
+    assert popen.call_args.kwargs["stdout"].seekable()
+    session.close()
+    assert process.returncode == -15
+
+
+def test_start_tailnet_serve_refuses_existing_mapping(monkeypatch):
+    responses = iter([
+        {
+            "BackendState": "Running",
+            "Self": {"DNSName": "host.example.ts.net."},
+        },
+        {"TCP": {"8443": {"HTTPS": True}}},
+    ])
+    monkeypatch.setattr("safeyolo.preview.shutil.which", lambda command: "/usr/bin/tailscale")
+    monkeypatch.setattr("safeyolo.preview._run_tailscale_json", lambda *args: next(responses))
+
+    with patch("safeyolo.preview.subprocess.Popen") as popen, \
+         pytest.raises(PreviewError, match="already has"):
+        start_tailnet_serve(54321, 8443)
+
+    popen.assert_not_called()
+
+
+def test_start_tailnet_serve_cleans_process_on_readiness_failure(monkeypatch):
+    process = BlockingFakeProcess()
+    responses = iter([
+        {
+            "BackendState": "Running",
+            "Self": {"DNSName": "host.example.ts.net."},
+        },
+        {},
+    ])
+    monkeypatch.setattr("safeyolo.preview.shutil.which", lambda command: "/usr/bin/tailscale")
+    monkeypatch.setattr("safeyolo.preview._run_tailscale_json", lambda *args: next(responses))
+    monkeypatch.setattr("safeyolo.preview.TAILSCALE_READY_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("safeyolo.preview.subprocess.Popen", lambda *args, **kwargs: process)
+
+    with pytest.raises(PreviewError, match="did not publish"):
+        start_tailnet_serve(54321, 8443)
+
+    assert process.returncode == -15
+
+
+def test_tailscale_serve_empty_status_accepts_json_null(monkeypatch):
+    completed = subprocess.CompletedProcess(
+        ["tailscale", "serve", "status", "--json"],
+        0,
+        stdout="null\n",
+        stderr="",
+    )
+    monkeypatch.setattr("safeyolo.preview.subprocess.run", lambda *args, **kwargs: completed)
+
+    assert _run_tailscale_json("serve", "status", "--json") == {}
 
 
 def test_guest_relay_command_streams_http_response():
@@ -217,6 +386,9 @@ def test_sanitize_request_headers_strips_preview_authority():
         "Cookie": f"a=b; {TOKEN_COOKIE}=secret",
         "Connection": "close",
         "Accept": "text/html",
+        "Tailscale-User-Login": "operator@example.com",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host": "preview.example.ts.net:8443",
     }
     out = dict(sanitize_request_headers(headers, 8000))
     assert out["Host"] == "127.0.0.1:8000"
@@ -224,6 +396,9 @@ def test_sanitize_request_headers_strips_preview_authority():
     assert out["Accept"] == "text/html"
     assert TOKEN_HEADER not in out
     assert out["Connection"] == "close"
+    assert "Tailscale-User-Login" not in out
+    assert "X-Forwarded-Proto" not in out
+    assert "X-Forwarded-Host" not in out
 
 
 def test_preview_server_requires_unlock(monkeypatch):
@@ -280,6 +455,38 @@ def test_preview_server_unlocks_with_one_time_code(monkeypatch):
         )
         assert resp2.status == 423
         assert b"locked" in body2
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_preview_server_unlocks_behind_tailnet_https(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        NoRelayPlatform(),
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        resp, _ = _request(
+            server,
+            UNLOCK_PATH,
+            method="POST",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Host": f"127.0.0.1:{server.server_address[1]}",
+                "Origin": "https://codey.example.ts.net:8443",
+                "X-Forwarded-Host": "codey.example.ts.net:8443",
+                "X-Forwarded-Proto": "https",
+                "Sec-Fetch-Site": "same-origin",
+            },
+            body="code=1234-5678",
+        )
+
+        assert resp.status == 303
+        assert "Secure" in resp.getheader("Set-Cookie")
     finally:
         server.shutdown()
         server.server_close()
@@ -506,11 +713,13 @@ def test_preview_command_can_start_browser_url(monkeypatch):
 def test_preview_command_requires_running_agent():
     runner = CliRunner()
 
-    with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)):
+    with patch("safeyolo.platform.get_platform", return_value=FakePlatform(running=False)), \
+         patch("safeyolo.commands.agent.reserve_agent_tailnet_port") as mock_reserve:
         result = runner.invoke(agent_app, ["preview", "codey", "8000"])
 
     assert result.exit_code == 1
     assert "is not running" in result.output
+    mock_reserve.assert_not_called()
 
 
 def test_desktop_command_starts_core_launcher_and_preview(monkeypatch):
@@ -580,6 +789,44 @@ def test_desktop_rejects_conflicting_lifecycle_options():
     assert "only one" in result.output
 
 
+def test_desktop_command_reserves_tailnet_port(monkeypatch):
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+    monkeypatch.setattr("safeyolo.preview.detect_host_display_size", lambda: None)
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform), \
+         patch("safeyolo.commands.agent.stage_guest_desktop_launcher"), \
+         patch(
+             "safeyolo.commands.agent.reserve_agent_tailnet_port",
+             return_value=8443,
+         ) as mock_reserve, \
+         patch("safeyolo.preview.serve_agent_preview", return_value=0) as mock_serve:
+        result = runner.invoke(
+            agent_app,
+            ["desktop", "codey", "--share", "tailnet"],
+        )
+
+    assert result.exit_code == 0
+    mock_reserve.assert_called_once_with("codey", None)
+    config, platform = mock_serve.call_args.args
+    assert platform is fake_platform
+    assert config.tailnet_port == 8443
+
+
+def test_desktop_rejects_tailnet_port_with_local_share():
+    runner = CliRunner()
+    fake_platform = FakePlatform(running=True)
+
+    with patch("safeyolo.platform.get_platform", return_value=fake_platform):
+        result = runner.invoke(
+            agent_app,
+            ["desktop", "codey", "--tailnet-port", "10443"],
+        )
+
+    assert result.exit_code == 1
+    assert "--tailnet-port requires --share tailnet" in result.output
+
+
 def test_serve_agent_preview_prints_clean_url(monkeypatch, capsys):
     class FakeServePlatform:
         pass
@@ -627,6 +874,51 @@ def test_serve_agent_preview_prints_display_path(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "http://127.0.0.1:54321/vnc.html#autoconnect=true&resize=remote" in out
+
+
+def test_serve_agent_preview_uses_and_cleans_tailnet_mapping(monkeypatch, capsys):
+    class FakeServePlatform:
+        pass
+
+    class FakeServer:
+        server_address = ("127.0.0.1", 54321)
+
+        def serve_forever(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    process = BlockingFakeProcess()
+    session = TailnetServeSession(
+        process=process,
+        dns_name="preview.example.ts.net",
+        exposed_port=8443,
+        target="http://127.0.0.1:54321",
+    )
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: "1234-5678")
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", lambda *args: FakeServer())
+    monkeypatch.setattr(
+        "safeyolo.preview.start_tailnet_serve",
+        lambda local_port, exposed_port: session,
+    )
+
+    config = PreviewConfig(
+        agent="web",
+        guest_port=6080,
+        display_path="/vnc.html#autoconnect=true&resize=remote",
+        tailnet_port=8443,
+    )
+    assert serve_agent_preview(config, FakeServePlatform()) == 0
+
+    out = capsys.readouterr().out
+    assert "Tailnet preview:" in out
+    assert "https://preview.example.ts.net:8443/vnc.html" in out
+    assert process.returncode == -15
 
 
 def test_unlock_redirect_uses_display_path(monkeypatch):

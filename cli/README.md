@@ -142,6 +142,9 @@ safeyolo agent desktop myproject --open
 # Optionally launch a guest browser and expire the host preview automatically
 safeyolo agent desktop myproject --browser https://example.com --open --ttl 15m
 
+# On a remote Tailscale host, publish the same gated preview to the tailnet
+safeyolo agent desktop myproject --share tailnet --ttl 15m
+
 ```
 
 **Host scripts** configure what the agent is. Ready-made examples in `contrib/`:
@@ -157,6 +160,9 @@ safeyolo agent desktop myproject --browser https://example.com --open --ttl 15m
 - Without `--host-script`, the sandbox boots to a plain bash shell
 - `agent desktop` requires an already-running agent and never installs missing
   guest packages; use `--status` or `--stop` for desktop lifecycle checks
+- `--share tailnet` keeps the guest and preview gateway loopback-only, then
+  publishes the gated gateway with foreground Tailscale Serve. SafeYolo
+  reserves a stable per-agent HTTPS port starting at 8443.
 
 ### Service Gateway
 

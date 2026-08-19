@@ -8,6 +8,7 @@ from safeyolo.agents_store import (
     load_agent,
     load_all_agents,
     remove_agent,
+    reserve_agent_tailnet_port,
     save_agent,
 )
 
@@ -140,3 +141,75 @@ class TestRemoveAgent:
         """Returns False when agent doesn't exist."""
         _write_policy(tmp_config_dir)
         assert remove_agent("ghost") is False
+
+
+class TestReserveAgentTailnetPort:
+    def test_allocates_stable_distinct_ports(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a"}, "boris": {"folder": "/b"}},
+        )
+
+        assert reserve_agent_tailnet_port("alice") == 8443
+        assert reserve_agent_tailnet_port("boris") == 8444
+        assert reserve_agent_tailnet_port("alice") == 8443
+        assert load_agent("alice")["tailnet_port"] == 8443
+
+    def test_explicit_port_cannot_collide(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a"}, "boris": {"folder": "/b"}},
+        )
+        reserve_agent_tailnet_port("alice", 10443)
+
+        with pytest.raises(ValueError, match="already assigned"):
+            reserve_agent_tailnet_port("boris", 10443)
+
+    def test_explicit_port_replaces_existing_reservation(self, tmp_config_dir):
+        _write_policy(tmp_config_dir, agents={"alice": {"folder": "/a"}})
+        reserve_agent_tailnet_port("alice")
+
+        assert reserve_agent_tailnet_port("alice", 11443) == 11443
+        assert load_agent("alice")["tailnet_port"] == 11443
+
+    def test_rejects_invalid_explicit_port(self, tmp_config_dir):
+        _write_policy(tmp_config_dir, agents={"alice": {"folder": "/a"}})
+
+        with pytest.raises(ValueError, match="1-65535"):
+            reserve_agent_tailnet_port("alice", 0)
+
+    def test_rejects_invalid_saved_port(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a", "tailnet_port": 70000}},
+        )
+
+        with pytest.raises(ValueError, match="invalid tailnet HTTPS port"):
+            reserve_agent_tailnet_port("alice")
+
+    def test_rejects_duplicate_saved_port(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={
+                "alice": {"folder": "/a", "tailnet_port": 8443},
+                "boris": {"folder": "/b", "tailnet_port": 8443},
+            },
+        )
+
+        with pytest.raises(ValueError, match="already assigned"):
+            reserve_agent_tailnet_port("alice")
+
+    def test_rejects_boolean_explicit_port(self, tmp_config_dir):
+        _write_policy(tmp_config_dir, agents={"alice": {"folder": "/a"}})
+
+        with pytest.raises(ValueError, match="1-65535"):
+            reserve_agent_tailnet_port("alice", True)
+
+    def test_rejects_invalid_saved_port_type(self, tmp_config_dir):
+        _write_policy(
+            tmp_config_dir,
+            agents={"alice": {"folder": "/a", "tailnet_port": "8443"}},
+        )
+
+        with pytest.raises(ValueError, match="invalid tailnet HTTPS port"):
+            reserve_agent_tailnet_port("alice")

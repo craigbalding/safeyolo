@@ -150,6 +150,19 @@ class TestAgentConfigPorts:
         assert result.exit_code == 0
         assert "none" in result.output
 
+    def test_show_displays_reserved_tailnet_port(self, cli_runner, tmp_config_dir):
+        """--show includes the stable per-agent Tailnet HTTPS reservation."""
+        _setup_agent(tmp_config_dir, "test-agent")
+        metadata = load_agent("test-agent")
+        metadata["tailnet_port"] = 8443
+        save_agent("test-agent", metadata)
+
+        result = cli_runner.invoke(app, ["agent", "config", "test-agent", "--show"])
+
+        assert result.exit_code == 0
+        assert "Tailnet HTTPS" in result.output
+        assert "8443" in result.output
+
 
 # ---------------------------------------------------------------------------
 
