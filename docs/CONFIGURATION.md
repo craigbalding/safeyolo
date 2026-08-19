@@ -258,10 +258,19 @@ safeyolo policy host list --agent boris
 safeyolo policy host bypass api.stripe.com circuit_breaker
 safeyolo policy host bypass api.stripe.com pattern_scanner --agent boris
 
+# Safely add/remove string values in addons.yaml lists
+safeyolo policy addon-list add test_context target_hosts target.example.com
+safeyolo policy addon-list add circuit_breaker excluded_domains dev.example.com
+safeyolo policy addon-list remove circuit_breaker excluded_domains dev.example.com
+
 # Apply a named list as a host entry
 safeyolo policy host add-list known_bad --egress deny
 safeyolo policy host add-list package_registries --rate 1200
 ```
+
+`policy addon-list` holds an exclusive lock, preserves unrelated YAML text and
+comments, validates the document before and after the narrow list mutation, and
+atomically replaces `addons.yaml`. Repeated add/remove operations are idempotent.
 
 ### Egress posture
 

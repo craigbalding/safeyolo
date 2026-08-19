@@ -238,6 +238,13 @@ Manage hosts, egress posture, and named lists in policy.toml.
 | `safeyolo policy host bypass <host>` | Bypass proxy for a host (no MITM) |
 | `safeyolo policy host add-list <host> --list <name>` | Add a host from a named list |
 
+**Addon list settings:**
+
+| Command | Description |
+|---------|-------------|
+| `safeyolo policy addon-list add <addon> <setting> <value>` | Add a unique string to an `addons.yaml` list |
+| `safeyolo policy addon-list remove <addon> <setting> <value>` | Remove a string from an `addons.yaml` list |
+
 **Egress posture:**
 
 | Command | Description |

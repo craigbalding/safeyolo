@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.syntax import Syntax
 
+from .policy_addon_list import addon_list_app
 from .policy_egress import egress_app
 from .policy_host import host_app
 from .policy_list import list_app
@@ -24,6 +25,7 @@ policy_app = typer.Typer(
 policy_app.add_typer(host_app, name="host")
 policy_app.add_typer(egress_app, name="egress")
 policy_app.add_typer(list_app, name="list")
+policy_app.add_typer(addon_list_app, name="addon-list")
 
 
 def _find_policy_path(config_dir: Path) -> Path | None:
