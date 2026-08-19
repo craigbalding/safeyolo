@@ -273,7 +273,7 @@ def _userns_pid_file(name: str) -> Path:
     return get_agents_dir() / name / "userns.pid"
 
 
-def _start_userns(name: str) -> int:
+def _start_userns(name: str, *, persist_pid: bool = True) -> int:
     """Create a user namespace with proper uid mapping and return its PID.
 
     The userns holder is a `sleep` process that keeps the namespace
@@ -325,8 +325,15 @@ def _start_userns(name: str) -> int:
         proc.kill()
         raise RuntimeError(f"newuidmap/newgidmap failed: {e.stderr}") from e
 
-    # Persist the PID
-    _userns_pid_file(name).write_text(str(upid))
+    # Runtime namespaces must survive this call, so persist their holder PID.
+    # One-shot maintenance namespaces (for example agent-dir cleanup) are
+    # killed by their caller and deliberately leave no state behind.
+    if persist_pid:
+        try:
+            _userns_pid_file(name).write_text(str(upid))
+        except OSError:
+            proc.kill()
+            raise
     log.info("userns created for %s (holder pid=%d)", name, upid)
     return upid
 
@@ -930,22 +937,46 @@ class LinuxPlatform(AgentPlatform):
     def remove_agent_dir(self, name: str) -> None:
         """Delete the agent's on-disk directory.
 
-        Known limitation: package-cache dirs (cache/*/partial and similar)
-        may be owned by the mapped root uid (100000) from inside the
-        sandbox. After stop the userns holder is dead, so the caller
-        (uid 1000) can't rmtree those. Manifests as `agent remove` raising
-        PermissionError on the first root-owned subpath. Workaround:
-        run `sudo rm -rf ~/.safeyolo/agents/<name>` before remove, or
-        re-add the agent and exec `chown -R agent:agent /var/cache/apt
-        /var/lib/apt/lists` inside the sandbox, then stop + remove.
-        Proper fix: spawn a throwaway userns-holder with the same subuid
-        mapping and rmtree from inside it so root-owned files collapse to
-        subordinate-uid-owned on the host side.
+        Custom rootfs trees and files created by sandbox root are owned by
+        host subordinate uid 100000. If ordinary deletion encounters one,
+        retry from a short-lived user namespace with the runtime's normal uid
+        map. Namespace uid 0 then owns those files, without host sudo or any
+        change to their containment-preserving ownership.
         """
         agent_dir = get_agents_dir() / name
         if not agent_dir.exists():
             return
-        shutil.rmtree(agent_dir)
+        try:
+            shutil.rmtree(agent_dir)
+            return
+        except PermissionError:
+            # rmtree may already have removed all operator-owned siblings.
+            # The exact agent path remains fixed as an argv element; rm does
+            # not traverse symlink targets during recursive deletion.
+            if not agent_dir.exists():
+                return
+
+        upid = _start_userns(name, persist_pid=False)
+        try:
+            result = _run(
+                _nsenter_cmd(upid) + [
+                    "setpriv", "--reuid=0", "--regid=0", "--clear-groups",
+                    "rm", "-rf", "--", str(agent_dir),
+                ],
+                check=False,
+            )
+            if result.returncode != 0 or agent_dir.exists():
+                detail = (result.stderr or "").strip()
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(
+                    f"Could not remove subordinate-owned agent directory "
+                    f"{agent_dir}{suffix}"
+                )
+        finally:
+            try:
+                os.kill(upid, 9)
+            except (ProcessLookupError, OSError):
+                pass
 
     # --- OCI config generation ---
 

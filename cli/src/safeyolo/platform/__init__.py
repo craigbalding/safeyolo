@@ -135,9 +135,9 @@ class AgentPlatform(ABC):
         Darwin: all artifacts are user-owned, so shutil.rmtree works.
         Linux: overlayfs leaves root-owned work/ subdirectories behind
         after unmount, and the container's writes to upper/ may also
-        be root-owned — so rmtree-as-user fails with EPERM. The Linux
-        implementation unmounts any stale overlay then sudo-removes
-        the dir.
+        be subordinate-uid-owned — so rmtree-as-user can fail with EPERM.
+        The Linux implementation retries cleanup as mapped root in a
+        short-lived rootless user namespace.
         """
 
 
