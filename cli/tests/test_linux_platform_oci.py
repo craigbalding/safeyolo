@@ -8,6 +8,8 @@ via tmp_path, and assert the spec shape and filesystem side-effects.
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -229,3 +231,50 @@ def test_runsc_command_restores_mise_after_environment_path():
 
     assert wrapped.index("/etc/environment") < wrapped.index("/etc/mise-activate.sh")
     assert wrapped.endswith("codex --version")
+
+
+def test_remove_agent_dir_retries_subuid_tree_in_temporary_userns(
+    isolated_env, monkeypatch,
+):
+    """Subordinate-owned rootfs trees are removed without host sudo."""
+    from safeyolo.platform import linux
+
+    name = "custom-rootfs"
+    agent_dir = isolated_env / "agents" / name
+    (agent_dir / "rootfs" / "etc").mkdir(parents=True)
+    original_rmtree = shutil.rmtree
+    attempts = 0
+
+    def permission_then_delete(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(13, "Permission denied", str(path / "rootfs"))
+        original_rmtree(path)
+
+    def run_cleanup(cmd, *, check):
+        assert check is False
+        assert cmd == [
+            "nsenter", "--user", "--net", "--target", "4242", "--",
+            "setpriv", "--reuid=0", "--regid=0", "--clear-groups",
+            "rm", "-rf", "--", str(agent_dir),
+        ]
+        permission_then_delete(agent_dir)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(linux.shutil, "rmtree", permission_then_delete)
+    start_userns = lambda requested_name, *, persist_pid: (  # noqa: E731
+        4242
+        if requested_name == name and persist_pid is False
+        else pytest.fail("unexpected userns arguments")
+    )
+    monkeypatch.setattr(linux, "_start_userns", start_userns)
+    monkeypatch.setattr(linux, "_run", run_cleanup)
+    killed = []
+    monkeypatch.setattr(linux.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    linux.LinuxPlatform().remove_agent_dir(name)
+
+    assert not agent_dir.exists()
+    assert attempts == 2
+    assert killed == [(4242, 9)]
