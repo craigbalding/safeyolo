@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Operate and troubleshoot from inside a SafeYolo sandbox. Use for SafeYolo proxy or TLS failures, policy and credential blocks, HTTP 403/428/429/503/508 responses, guest package installation and sudo/setpriv behavior, X-Blocked-By responses, Agent API queries, flow inspection, budgets, circuit breakers, service-gateway access, approvals through safeyolo watch, and approved agent-to-agent plumb collaboration.
+description: Operate and troubleshoot from inside a SafeYolo sandbox. Use for SafeYolo proxy or TLS failures, policy and credential blocks, HTTP 403/428/429/503/508 responses, guest package installation and sudo/setpriv behavior, optional desktop and operator preview access, X-Blocked-By responses, Agent API queries, flow inspection, budgets, circuit breakers, service-gateway access, approvals through safeyolo watch, and approved agent-to-agent plumb collaboration.
 ---
 
 # Operate inside SafeYolo
@@ -36,6 +36,9 @@ interfaces; do not try to bypass or weaken it.
 - Read [Guest tools and privilege](references/guest-tools.md) before installing
   native packages, diagnosing `sudo`, using Linux `setpriv`, or deciding
   whether an operator root shell is actually necessary.
+- Read [Desktop and operator preview](references/desktop.md) before starting a
+  graphical guest program, exposing the optional desktop to the operator, or
+  diagnosing Xvfb, VNC, noVNC, and browser startup.
 
 Read only the reference needed for the current task.
 

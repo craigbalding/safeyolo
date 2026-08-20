@@ -10,9 +10,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASELINE_SOURCE = REPO_ROOT / "docs" / "AGENTS.md"
-SKILL_SOURCE = REPO_ROOT / "contrib" / "skills" / "safeyolo"
-MANAGED_SKILL_REL = Path(".safeyolo/skills/safeyolo")
-SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
+SKILL_SOURCE = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo"
+SKILL_LINK_TARGET = "/safeyolo/skills/safeyolo"
+LEGACY_SKILL_LINK_TARGET = "../../.safeyolo/skills/safeyolo"
 
 
 def _setup_env(operator_home: Path, agent_home: Path, folder: Path) -> dict[str, str]:
@@ -48,26 +48,10 @@ def _run_setup(
 def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
     assert (agent_home / ".safeyolo/AGENTS.md").read_bytes() == BASELINE_SOURCE.read_bytes()
 
-    managed_skill = agent_home / MANAGED_SKILL_REL
-    source_files = {
-        path.relative_to(SKILL_SOURCE)
-        for path in SKILL_SOURCE.rglob("*")
-        if path.is_file()
-    }
-    managed_files = {
-        path.relative_to(managed_skill)
-        for path in managed_skill.rglob("*")
-        if path.is_file()
-    }
-    assert managed_files == source_files
-    for relative in source_files:
-        assert (managed_skill / relative).read_bytes() == (SKILL_SOURCE / relative).read_bytes()
-
     if consumer_dir is not None:
         link = agent_home / consumer_dir / "skills" / "safeyolo"
         assert link.is_symlink()
         assert os.readlink(link) == SKILL_LINK_TARGET
-        assert link.resolve() == managed_skill.resolve()
 
 
 @pytest.mark.parametrize(
@@ -262,16 +246,36 @@ def test_context_staging_is_idempotent_and_preserves_user_files(
     personal_skill.write_text("user-owned skill\n")
 
     _run_setup(script_name, operator_home, agent_home, tmp_path)
-    stale = agent_home / MANAGED_SKILL_REL / "references" / "removed.md"
-    stale.write_text("stale managed content\n")
-    (agent_home / MANAGED_SKILL_REL / "SKILL.md").write_text("old managed content\n")
-
     _run_setup(script_name, operator_home, agent_home, tmp_path)
 
     _assert_managed_context(agent_home, consumer_dir)
-    assert not stale.exists()
     assert instruction.read_text() == "user-owned instructions\n"
     assert personal_skill.read_text() == "user-owned skill\n"
+
+
+@pytest.mark.parametrize(
+    ("script_name", "consumer_dir"),
+    [
+        ("codex-host-setup.sh", ".agents"),
+        ("claude-host-setup.sh", ".claude"),
+    ],
+)
+def test_context_staging_migrates_legacy_managed_skill_link(
+    tmp_path: Path,
+    script_name: str,
+    consumer_dir: str,
+) -> None:
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+    link = agent_home / consumer_dir / "skills" / "safeyolo"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(LEGACY_SKILL_LINK_TARGET)
+
+    _run_setup(script_name, operator_home, agent_home, tmp_path)
+
+    assert link.is_symlink()
+    assert os.readlink(link) == SKILL_LINK_TARGET
 
 
 @pytest.mark.parametrize(
@@ -331,9 +335,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_safeyolo_name(
         "operator personal skill\n"
     )
     assert "reserved by SafeYolo" in result.stderr
-    assert (agent_home / ".claude/skills/safeyolo/SKILL.md").read_bytes() == (
-        SKILL_SOURCE / "SKILL.md"
-    ).read_bytes()
+    assert os.readlink(agent_home / ".claude/skills/safeyolo") == SKILL_LINK_TARGET
 
 
 def test_mise_shell_stages_vendor_neutral_context_without_agent_links(tmp_path: Path) -> None:
@@ -389,9 +391,23 @@ def test_shared_skill_has_cross_agent_frontmatter_and_direct_references() -> Non
     assert set(metadata) == {"name", "description"}
     assert metadata["name"] == "safeyolo"
     assert "SafeYolo" in metadata["description"]
-    for reference in ("agent-api.md", "troubleshooting.md", "guest-tools.md"):
+    for reference in (
+        "agent-api.md",
+        "troubleshooting.md",
+        "guest-tools.md",
+        "desktop.md",
+    ):
         assert f"references/{reference}" in body
         assert (SKILL_SOURCE / "references" / reference).is_file()
+
+    desktop = (SKILL_SOURCE / "references/desktop.md").read_text()
+    for expected in (
+        "safeyolo agent desktop AGENT --open",
+        "/safeyolo/guest-desktop status",
+        "cannot create the host preview",
+        "Do not expose guest ports 5900 or 6080 directly",
+    ):
+        assert expected in desktop
 
 
 def test_baseline_explains_guest_privilege_without_implying_host_root() -> None:

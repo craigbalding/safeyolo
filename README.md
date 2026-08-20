@@ -203,12 +203,12 @@ SafeYolo splits agent guidance by when it is needed. The compact, always-on
 baseline at [`docs/AGENTS.md`](docs/AGENTS.md) covers environment invariants,
 the correct Agent API health check, and security boundaries. Detailed Agent
 API, flow, gateway, `plumb`, block-response, and troubleshooting workflows live
-in one progressively disclosed [`safeyolo` skill](contrib/skills/safeyolo/SKILL.md).
+in one progressively disclosed [`safeyolo` skill](cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md).
 
-The bundled host scripts stage both under `~/.safeyolo/`. Claude receives the
-baseline through `--append-system-prompt` and discovers the skill as
-`/safeyolo`; Codex receives the baseline as `developer_instructions` and
-discovers the skill as `$safeyolo`. The scripts use relative symlinks into each
+The bundled host scripts stage the baseline under `~/.safeyolo/`. Claude
+receives it through `--append-system-prompt`; Codex receives it as
+`developer_instructions`. The skill itself is refreshed in the read-only
+`/safeyolo` share on every run. The scripts link that managed copy into each
 agent's native skill directory, leaving existing user instructions untouched.
 
 ## Controlling Agent Access

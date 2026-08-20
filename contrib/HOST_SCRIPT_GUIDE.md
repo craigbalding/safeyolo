@@ -69,9 +69,10 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
 ```
 
-The helper updates only `~/.safeyolo/` and a `safeyolo` symlink under the
-agent's skill directory. It refuses to overwrite a user-owned skill with the
-same name. Custom standalone scripts may instead stage their own instructions.
+The helper stages the baseline under `~/.safeyolo/` and links the read-only,
+per-run `/safeyolo/skills/safeyolo` tree under the agent's skill directory. It
+refuses to overwrite a user-owned skill with the same name. Custom standalone
+scripts may instead stage their own instructions.
 
 Sketch:
 

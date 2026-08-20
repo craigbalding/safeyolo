@@ -110,6 +110,7 @@ packages = ["cli/src/safeyolo"]
 include = [
     "cli/src/safeyolo/**/*.py",
     "cli/src/safeyolo/*.sh",
+    "cli/src/safeyolo/agent_context/**/*",
     "cli/src/safeyolo/templates/**/*.j2",
     "cli/src/safeyolo/templates/**/*.md",
     "cli/src/safeyolo/templates/**/*.yaml",

@@ -843,6 +843,39 @@ def prepare_config_share(
     share_dir = get_agent_config_share_dir(name)
     share_dir.mkdir(parents=True, exist_ok=True)
 
+    # SafeYolo-owned agent guidance is served from the read-only per-run share,
+    # not copied into the persistent, agent-writable home. Host setup installs
+    # only the native discovery symlink. This makes the skill version match the
+    # CLI that starts the sandbox without rerunning an arbitrary host script.
+    skill_source = Path(__file__).parent / "agent_context" / "skills" / "safeyolo"
+    skill_parent = share_dir / "skills"
+    skill_target = skill_parent / "safeyolo"
+    if not (skill_source / "SKILL.md").is_file():
+        raise VMError(f"Bundled SafeYolo skill is missing from {skill_source}")
+    skill_parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".safeyolo-", dir=skill_parent))
+    backup = skill_parent / f".safeyolo-old-{uuid.uuid4().hex}"
+    moved_existing = False
+    replacement_complete = False
+    try:
+        shutil.copytree(skill_source, temporary, dirs_exist_ok=True)
+        # mkdtemp creates the root as 0700. The config share is read-only in
+        # the guest, but the unprivileged agent still needs to traverse it.
+        temporary.chmod(0o755)
+        if skill_target.exists() or skill_target.is_symlink():
+            skill_target.rename(backup)
+            moved_existing = True
+        temporary.rename(skill_target)
+        replacement_complete = True
+    except Exception:
+        if moved_existing and not skill_target.exists() and backup.exists():
+            backup.rename(skill_target)
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+        if replacement_complete:
+            shutil.rmtree(backup, ignore_errors=True)
+
     # Guest init scripts -- served from config share, not baked into rootfs.
     # Changes here take effect on next agent run without rootfs rebuild.
     # Three scripts split the boot into a snapshottable static phase and
