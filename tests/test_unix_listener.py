@@ -1,4 +1,4 @@
-"""Tests for addons/unix_listener.py.
+"""Tests for SafeYolo's packaged Unix listener mode.
 
 Focus on the parts we can unit-test without a running mitmproxy:
   - `_parse_sock_path` (directory → (ip, agent)) handles valid / invalid
@@ -10,19 +10,11 @@ and are exercised by the blackbox end-to-end suite rather than here.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-# Make addons/ importable as top-level modules (mitmproxy loads addons
-# the same way via `-s <path>`).
-ADDONS_DIR = Path(__file__).parent.parent / "addons"
-sys.path.insert(0, str(ADDONS_DIR))
 
 pytest.importorskip("mitmproxy", reason="unix_listener depends on mitmproxy")
 
-import unix_listener  # noqa: E402
+from safeyolo.proxy_modes import unix_listener  # noqa: E402
 
 
 class TestParseSockPath:

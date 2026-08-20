@@ -7,7 +7,7 @@ stamped onto every accepted connection as `client.peername = (ip, 0)`.
 
 Mode spec: `unix:/absolute/path/to/<ip>_<agent>/proxy.sock`.
 
-Loaded first in the addon chain so `UnixMode` is registered via
+Imported by `safeyolo.traffic_master` so `UnixMode` is registered via
 `ProxyMode.__init_subclass__` before `Proxyserver` parses `options.mode`.
 
 Design note — SO_PEERCRED peer-UID check deferred. Socket-path ownership
@@ -18,9 +18,7 @@ expected sandbox user.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
-import re
 from contextlib import suppress
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -34,32 +32,13 @@ from mitmproxy.proxy.mode_servers import (
     ProxyConnectionHandler,
 )
 
+from ..sockets import parse as _parse_sock_path
+
 log = logging.getLogger("safeyolo.unix-listener")
 
 
 def ensure_registered() -> None:
     """Make the import-time UnixMode registration explicit to callers."""
-
-
-# Local copy of the path parser. `cli/src/safeyolo/sockets.py` has
-# the same shape; the duplication is deliberate so the addon can be
-# loaded by mitmproxy without pulling in the CLI package.
-_AGENT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-
-
-def _parse_sock_path(path: str) -> tuple[str, str]:
-    """Return `(ip, agent)` from `.../<ip>_<agent>/proxy.sock`."""
-    socket_path = Path(path)
-    if socket_path.name != "proxy.sock":
-        raise ValueError(f"expected proxy.sock filename: {path}")
-    stem = socket_path.parent.name
-    ip, sep, agent = stem.partition("_")
-    if not sep:
-        raise ValueError(f"expected '<ip>_<agent>/proxy.sock' layout: {path}")
-    ipaddress.IPv4Address(ip)  # validate
-    if not _AGENT_NAME_RE.match(agent):
-        raise ValueError(f"invalid agent name in path: {path}")
-    return ip, agent
 
 
 class UnixMode(mode_specs.ProxyMode):
@@ -193,10 +172,3 @@ class UnixInstance(AsyncioServerInstance[UnixMode]):
             handler.layer.context.client.id, handler
         ):
             await handler.handle_client()
-
-
-# No module-level addon instance needed — mitmproxy's addon loader
-# accepts modules that only register ProxyMode/ServerInstance subclasses
-# via __init_subclass__. Providing an empty `addons` list satisfies the
-# loader while clarifying intent.
-addons: list = []

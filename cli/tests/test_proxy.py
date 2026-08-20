@@ -42,13 +42,10 @@ class TestAddonChain:
         addon_paths = {
             path.name: path
             for path in addons_dir.glob("*.py")
-            # unix_listener is imported normally by traffic_master so its
-            # ProxyMode subclass is registered before argument parsing. Loading
-            # that same file again as a script in this process would correctly
-            # trip mitmproxy's duplicate mode-name assertion.
-            if path.name not in {"__init__.py", "unix_listener.py"}
+            if path.name != "__init__.py"
         }
         missing = sorted(set(ADDON_CHAIN) - addon_paths.keys())
+        unconfigured = sorted(addon_paths.keys() - set(ADDON_CHAIN))
         failures = [
             name
             for name, path in sorted(addon_paths.items())
@@ -56,6 +53,7 @@ class TestAddonChain:
         ]
 
         assert missing == []
+        assert unconfigured == []
         assert failures == []
 
     def test_addon_chain_has_expected_count(self):
