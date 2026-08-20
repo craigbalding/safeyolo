@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 from ..config import get_agents_dir
+from ..timing import enter as _profile_enter
 from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 from . import AgentPlatform, BinaryRelay
 
@@ -42,6 +43,8 @@ AA_PROFILE = "safeyolo-runsc"
 # runsc state directory -- user-writable, no sudo needed.
 RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
 PORT_FORWARD_TIMEOUT_SECONDS = 10
+GRACEFUL_STOP_TIMEOUT_SECONDS = 5.0
+STOP_POLL_INTERVAL_SECONDS = 0.05
 
 # Diagnostic-only overrides used by the archived ETXTBSY experiment. Keeping
 # these out of policy.toml makes it difficult to accidentally turn an
@@ -332,6 +335,43 @@ def _find_runsc() -> str:
 def _container_id(name: str) -> str:
     """Derive runsc container ID from agent name."""
     return f"safeyolo-{name}"
+
+
+def _runsc_container_status(
+    prefix: list[str], runsc: str, root: str, cid: str
+) -> str | None:
+    """Return the OCI status, or None once runsc has no readable state."""
+    result = _run(
+        prefix + [runsc, "--root", root, "state", cid],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        status = json.loads(result.stdout).get("status")
+    except (json.JSONDecodeError, AttributeError):
+        return "unknown"
+    return status if isinstance(status, str) else "unknown"
+
+
+def _wait_for_runsc_stop(
+    prefix: list[str],
+    runsc: str,
+    root: str,
+    cid: str,
+    *,
+    timeout: float = GRACEFUL_STOP_TIMEOUT_SECONDS,
+) -> bool:
+    """Poll until the container is stopped/absent; return False on timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status = _runsc_container_status(prefix, runsc, root, cid)
+        if status is None or status not in {"running", "unknown"}:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(STOP_POLL_INTERVAL_SECONDS, remaining))
 
 
 def has_aa_exec() -> bool:
@@ -927,6 +967,7 @@ class LinuxPlatform(AgentPlatform):
 
     def stop_sandbox(self, name: str) -> None:
         """Stop a running gVisor sandbox."""
+        _profile_enter("agent stop: resolve gVisor runtime and user namespace")
         cid = _container_id(name)
         agent_dir = get_agents_dir() / name
         runsc = _find_runsc()
@@ -948,24 +989,23 @@ class LinuxPlatform(AgentPlatform):
 
         prefix = _nsenter_cmd(upid) if upid else []
 
-        state_result = _run(
-            prefix + [runsc, "--root", root, "state", cid], check=False,
-        )
-        has_state = state_result.returncode == 0
-        is_running = False
-        if has_state:
-            try:
-                is_running = json.loads(state_result.stdout).get("status") == "running"
-            except json.JSONDecodeError:
-                # Treat malformed runtime state as not running and continue cleanup.
-                pass
+        _profile_enter("agent stop: query gVisor container state")
+        status = _runsc_container_status(prefix, runsc, root, cid)
+        has_state = status is not None
+        is_running = status == "running"
 
         if is_running:
+            _profile_enter("agent stop: SIGTERM grace period")
             _run(prefix + [runsc, "--root", root, "kill", cid, "SIGTERM"], check=False)
-            time.sleep(5)
-            _run(prefix + [runsc, "--root", root, "kill", "--all", cid, "SIGKILL"], check=False)
-            time.sleep(1)
+            if not _wait_for_runsc_stop(prefix, runsc, root, cid):
+                _profile_enter("agent stop: force remaining gVisor processes")
+                _run(
+                    prefix
+                    + [runsc, "--root", root, "kill", "--all", cid, "SIGKILL"],
+                    check=False,
+                )
 
+        _profile_enter("agent stop: delete container state and sockets")
         if has_state:
             _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
         else:
@@ -985,6 +1025,7 @@ class LinuxPlatform(AgentPlatform):
         pid_path = agent_dir / "container.pid"
         pid_path.unlink(missing_ok=True)
 
+        _profile_enter("agent stop: remove attribution mapping")
         from ..vm import _update_agent_map  # noqa: PLC0415
         _update_agent_map(name, remove=True)
 

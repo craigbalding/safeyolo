@@ -519,3 +519,74 @@ def test_remove_agent_dir_retries_subuid_tree_in_temporary_userns(
     assert not agent_dir.exists()
     assert attempts == 2
     assert killed == [(4242, 9)]
+
+
+@pytest.mark.parametrize(
+    ("graceful_stop", "expect_sigkill"),
+    [(True, False), (False, True)],
+)
+def test_stop_sandbox_escalates_only_after_grace_timeout(
+    isolated_env, monkeypatch, graceful_stop, expect_sigkill
+):
+    """A prompt OCI state transition skips SIGKILL; a timeout retains it."""
+    from safeyolo import vm
+    from safeyolo.platform import linux
+
+    name = "stop-probe"
+    agent_dir = isolated_env / "agents" / name
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "container.pid").write_text("1234")
+    commands = []
+
+    def record_run(command, *, check=False):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(linux, "_find_runsc", lambda: "/usr/bin/runsc")
+    monkeypatch.setattr(linux, "_get_userns_pid", lambda requested: 4242)
+    monkeypatch.setattr(linux, "_nsenter_cmd", lambda pid: ["nsenter", str(pid)])
+    monkeypatch.setattr(linux, "_runsc_container_status", lambda *args: "running")
+    monkeypatch.setattr(linux, "_wait_for_runsc_stop", lambda *args: graceful_stop)
+    monkeypatch.setattr(linux, "_run", record_run)
+    monkeypatch.setattr(linux, "_kill_userns", lambda requested: None)
+    monkeypatch.setattr(vm, "_update_agent_map", lambda *args, **kwargs: None)
+
+    linux.LinuxPlatform().stop_sandbox(name)
+
+    flattened = [part for command in commands for part in command]
+    assert "SIGTERM" in flattened
+    assert ("SIGKILL" in flattened) is expect_sigkill
+    assert commands[-2][-3:-1] == ["delete", "--force"]
+    assert not (agent_dir / "container.pid").exists()
+
+
+def test_wait_for_runsc_stop_returns_immediately_after_state_transition(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(
+        linux,
+        "_runsc_container_status",
+        lambda *args: "stopped",
+    )
+    monkeypatch.setattr(
+        linux.time,
+        "sleep",
+        lambda seconds: pytest.fail(f"unexpected fixed sleep: {seconds}"),
+    )
+
+    assert linux._wait_for_runsc_stop([], "runsc", "/run", "agent") is True
+
+
+def test_wait_for_runsc_stop_reports_timeout_while_still_running(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(
+        linux,
+        "_runsc_container_status",
+        lambda *args: "running",
+    )
+
+    assert (
+        linux._wait_for_runsc_stop([], "runsc", "/run", "agent", timeout=0)
+        is False
+    )
