@@ -19,7 +19,6 @@ ADDON_MODULES = [
     "admin_api",
     "admin_shield",
     "agent_api",
-    "bootstrap_mode",
     "circuit_breaker",
     "credential_guard",
     "file_logging",

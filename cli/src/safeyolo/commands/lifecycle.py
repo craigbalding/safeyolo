@@ -27,6 +27,8 @@ from ..proxy import (
     stop_proxy,
     wait_for_healthy,
 )
+from ..timing import enter as _profile_enter
+from ..timing import profiled_command
 from ..vm import check_guest_images, missing_guest_images
 from .proxy import _web_tailnet_runtime
 
@@ -85,6 +87,7 @@ def _bootstrap_config(config_dir: Path) -> None:
         shutil.copy(ADDONS_TEMPLATE_PATH, addons_path)
 
 
+@profiled_command("proxy start")
 def start(
     wait: bool = typer.Option(
         True,
@@ -107,8 +110,14 @@ def start(
         min=1,
         help="Maximum flows retained in the shared live traffic view",
     ),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Profile lifecycle phases and write a JSONL timing artifact",
+    ),
 ) -> None:
     """Start SafeYolo proxy and firewall."""
+    _profile_enter("configuration bootstrap and preflight")
     first_run = False
 
     # Check config exists, bootstrap if needed
@@ -157,6 +166,7 @@ def start(
         console.print("[bold]Starting SafeYolo...[/bold]")
 
     # Start host mitmproxy
+    _profile_enter("proxy process launch and readiness")
     try:
         start_proxy(
             proxy_port=proxy_port,
@@ -180,6 +190,7 @@ def start(
     # listeners are the moving parts; they come up with the proxy itself.
 
     if wait:
+        _profile_enter("admin API health check")
         console.print("Waiting for healthy status...", end=" ")
         if wait_for_healthy(timeout=30, admin_port=admin_port):
             console.print("[green]ready![/green]")
@@ -201,6 +212,7 @@ def start(
             raise typer.Exit(1)
 
     # Show connection info
+    _profile_enter("render startup result")
     web_tailnet = _web_tailnet_runtime(config)
     tailnet_line = ""
     if web_tailnet.get("enabled") and web_tailnet.get("url"):
@@ -225,12 +237,21 @@ def start(
         )
 
 
+@profiled_command("proxy stop")
 def stop(
     all: bool = typer.Option(False, "--all", help="Also stop all agents and tear down networking"),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Profile lifecycle phases and write a JSONL timing artifact",
+    ),
 ) -> None:
     """Stop SafeYolo proxy. Agents keep running unless --all is passed."""
 
+    _profile_enter("proxy and agent state checks")
+
     if all:
+        _profile_enter("stop all agents, networking, and proxy")
         stop_all()
         return
 
@@ -245,7 +266,9 @@ def stop(
     # Stop proxy only -- agents and bridge sockets stay intact. Agents get
     # "connection refused" on the proxy port but remain alive and accessible
     # via SSH. When the proxy restarts, connectivity resumes.
+    _profile_enter("terminate proxy traffic master")
     stop_proxy()
+    _profile_enter("render stop result")
     console.print("[green]Stopped.[/green]")
 
     # Hint if agents are still running

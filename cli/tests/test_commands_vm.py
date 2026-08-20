@@ -7,6 +7,7 @@ init, setup, doctor, sandbox, cert, and admin.
 All subprocess/vm/proxy/firewall calls are mocked. No real processes are started.
 """
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -161,6 +162,36 @@ class TestLifecycleStart:
         result = runner.invoke(app, ["start", "--flow-cache", "0"])
 
         assert result.exit_code == 2
+
+    def test_profile_emits_report_and_jsonl_artifact(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
+            patch("safeyolo.commands.lifecycle.start_proxy"),
+        ):
+            result = runner.invoke(app, ["start", "--no-wait", "--profile"])
+
+        assert result.exit_code == 0
+        assert "SAFEYOLO PROFILE: proxy start" in result.output
+        artifacts = list((config_dir.parent / ".local" / "state" / "safeyolo" / "profiles").glob("*.jsonl"))
+        assert len(artifacts) == 1
+        events = [json.loads(line) for line in artifacts[0].read_text().splitlines()]
+        assert any(event["name"] == "TOTAL PROFILED WALL TIME" for event in events)
+        assert all(event["operation"] == "proxy start" for event in events)
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            ["start", "--help"],
+            ["stop", "--help"],
+            ["agent", "run", "--help"],
+            ["agent", "stop", "--help"],
+        ],
+    )
+    def test_lifecycle_commands_expose_profile_option(self, runner, arguments):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0
+        assert "--profile" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -910,13 +941,30 @@ class TestAgentStop:
         mock_platform.is_sandbox_running.return_value = True
         with (
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.proxy.is_proxy_running", return_value=False),
+            patch("safeyolo.proxy.sync_proxy_modes") as sync_proxy_modes,
             patch("safeyolo.commands.agent.write_event"),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
         assert result.exit_code == 0
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
+        sync_proxy_modes.assert_not_called()
         assert "stopped" in result.output.lower()
+
+    def test_syncs_removed_listener_when_proxy_is_running(self, runner, config_dir):
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
+        with (
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True),
+            patch("safeyolo.proxy.sync_proxy_modes") as sync_proxy_modes,
+            patch("safeyolo.commands.agent.write_event"),
+        ):
+            result = runner.invoke(app, ["agent", "stop", "test-agent"])
+
+        assert result.exit_code == 0
+        sync_proxy_modes.assert_called_once_with(admin_port=9090)
 
 
 # ---------------------------------------------------------------------------

@@ -98,17 +98,19 @@ app.add_typer(services_app, name="services")
 @app.command(name="up")
 def up_alias(
     wait: bool = typer.Option(True, "--wait/--no-wait"),
+    profile: bool = typer.Option(False, "--profile", help="Profile lifecycle phases"),
 ):
     """Alias for 'start'."""
-    start(wait=wait)
+    start(wait=wait, profile=profile)
 
 
 @app.command(name="down")
 def down_alias(
     all: bool = typer.Option(False, "--all", help="Also stop all agents and tear down networking"),
+    profile: bool = typer.Option(False, "--profile", help="Profile lifecycle phases"),
 ):
     """Alias for 'stop'."""
-    stop(all=all)
+    stop(all=all, profile=profile)
 
 
 if __name__ == "__main__":

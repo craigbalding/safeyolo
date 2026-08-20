@@ -42,7 +42,11 @@ class TestAddonChain:
         addon_paths = {
             path.name: path
             for path in addons_dir.glob("*.py")
-            if path.name != "__init__.py"
+            # unix_listener is imported normally by traffic_master so its
+            # ProxyMode subclass is registered before argument parsing. Loading
+            # that same file again as a script in this process would correctly
+            # trip mitmproxy's duplicate mode-name assertion.
+            if path.name not in {"__init__.py", "unix_listener.py"}
         }
         missing = sorted(set(ADDON_CHAIN) - addon_paths.keys())
         failures = [
@@ -57,17 +61,16 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 26
+        assert len(ADDON_CHAIN) == 24
 
-    def test_addon_chain_starts_with_unix_listener(self):
-        """First addon loaded is unix_listener.py.
+    def test_addon_chain_starts_with_readiness_writer(self):
+        """Script addons start with the readiness writer.
 
-        Registers `UnixMode` and `UnixInstance` via `__init_subclass__`
-        so they are available by the time Proxyserver parses
-        `options.mode` at startup.
+        Unix listener registration is handled directly by TrafficMaster and
+        bootstrap_mode is obsolete now that initial modes bind in setup.
         """
         from safeyolo.proxy import ADDON_CHAIN
-        assert ADDON_CHAIN[0] == "unix_listener.py"
+        assert ADDON_CHAIN[0] == "pid_writer.py"
 
     def test_addon_chain_ends_with_admin_api(self):
         """Last addon loaded is admin_api.py (observability layer)."""
@@ -704,13 +707,11 @@ class TestBuildCommand:
         }
 
     def test_basic_command_structure(self, cmd_env):
-        """Command starts with mitmdump; no `--set mode=...` on the CLI.
+        """Command delegates initial listener binding to TrafficMaster.
 
-        Post-refactor: per-agent `unix:<path>` listeners are populated
-        by `addons/bootstrap_mode.py` in `running()`, not on the CLI
-        (mitmproxy validates `--set mode=` before addons load, so
-        `UnixMode` isn't registered yet). The transient default listener
-        is forced onto `127.0.0.1:0` so it never conflicts or leaks.
+        TrafficMaster registers UnixMode before parsing options and applies
+        host-generated modes immediately before Master.run(), so there is no
+        bootstrap addon or transient TCP listener in the command.
         """
         from safeyolo.proxy import _build_command
 
@@ -723,11 +724,9 @@ class TestBuildCommand:
 
         assert cmd[1:3] == ["-m", "safeyolo.traffic_master"]
         assert "--listen-host" not in cmd
-        # No `--set mode=...` — bootstrap_mode does the wiring.
         assert not any(a.startswith("mode=") for a in cmd)
-        # Transient default listener pinned to loopback:ephemeral.
-        assert "listen_host=127.0.0.1" in cmd
-        assert "listen_port=0" in cmd
+        assert "listen_host=127.0.0.1" not in cmd
+        assert "listen_port=0" not in cmd
         assert "flow_pruner_max=5000" in cmd
 
     def test_explicit_flow_cache_is_forwarded(self, cmd_env):
@@ -1802,6 +1801,14 @@ class TestStartProxy:
              patch("safeyolo.proxy._ensure_certs", return_value=tmp_path / "certs" / "ca.pem"), \
              patch("safeyolo.proxy._ensure_tokens", return_value=("admin", "agent")), \
              patch("safeyolo.proxy._build_command", return_value=["traffic-master"]), \
+             patch(
+                 "safeyolo.proxy._profile_child_environment",
+                 return_value={
+                     "SAFEYOLO_PROFILE_PATH": "/tmp/profile.jsonl",
+                     "SAFEYOLO_PROFILE_OPERATION": "proxy start",
+                     "SAFEYOLO_PROFILE_PROCESS": "traffic-master",
+                 },
+             ), \
              patch("safeyolo.proxy.start_session", side_effect=_start_simulate_addon):
             start_proxy()
 
@@ -1812,6 +1819,8 @@ class TestStartProxy:
         assert launched["env"]["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] == str(
             data_dir / "web-tailnet-status.json"
         )
+        assert json.loads(launched["env"]["SAFEYOLO_INITIAL_MODES"]) == []
+        assert launched["env"]["SAFEYOLO_PROFILE_PROCESS"] == "traffic-master"
 
     def test_raises_when_mitmdump_dies_during_startup(self, tmp_path, monkeypatch):
         """start_proxy surfaces exit code + log tail when mitmdump dies early."""

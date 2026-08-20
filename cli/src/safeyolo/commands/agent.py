@@ -43,6 +43,7 @@ from ..snapshot import (
 )
 from ..timing import emit as _timing_emit
 from ..timing import enter as _t
+from ..timing import profiled_command
 from ..vm import (
     _update_agent_map,
     build_custom_rootfs,
@@ -440,6 +441,7 @@ def _run_agent(
         console.print(f"[red]Invalid agent socket path:[/red] {exc}")
         raise typer.Exit(1)
     sock_path = str(sock_path_p)
+    _t("write agent attribution map")
     _update_agent_map(name, ip=attribution_ip, socket=sock_path)
 
     if fw_alloc.get("needs_bridge_socket"):
@@ -449,6 +451,7 @@ def _run_agent(
         # the socket will be bound on next proxy start via
         # `_initial_mode_specs`.
         from ..proxy import sync_proxy_modes
+        _t("synchronize proxy listener modes")
         sync_proxy_modes(admin_port=admin_port)
 
         # Wait up to 5s for mitmproxy's UnixInstance to bind the
@@ -456,6 +459,7 @@ def _run_agent(
         # exist and gVisor's gofer caches a ghost inode (same gotcha
         # as the earlier restart-cycle bug).
         import time as _time_wait
+        _t("wait for per-agent proxy socket")
         _deadline = _time_wait.time() + 5.0
         while _time_wait.time() < _deadline:
             if sock_path_p.is_socket():
@@ -719,6 +723,10 @@ def _run_agent(
                 _timing_emit()
                 return 0
 
+            # `agent run --profile` measures launch-to-ready, not how long the
+            # operator subsequently keeps an interactive agent session open.
+            _t("agent ready; hand off interactive session")
+            _timing_emit()
             _t("interactive session")
             if _sys.platform == "linux":
                 # Linux: launch the agent via runsc exec. The guest runs
@@ -1336,6 +1344,7 @@ def remove(
 
 
 @agent_app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@profiled_command("agent run")
 def run(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
@@ -1370,6 +1379,11 @@ def run(
         help="Enable warm-boot snapshot capture/restore (currently disabled by "
              "default while we investigate a VZ save incompatibility with the "
              "new vsock proxy relay).",
+    ),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Profile lifecycle phases and write a JSONL timing artifact",
     ),
 ) -> None:
     """Run an existing agent container.
@@ -1410,6 +1424,7 @@ def run(
         safeyolo agent run myproject -- --continue
         safeyolo agent run myproject --fresh
     """
+    _t("agent command validation and host setup")
     # ctx.args contains everything after '--'
     agent_args = ctx.args if ctx.args else None
 
@@ -1854,8 +1869,14 @@ def diag(
 
 
 @agent_app.command()
+@profiled_command("agent stop")
 def stop(
     name: str = typer.Argument(..., help="Agent instance name to stop"),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Profile lifecycle phases and write a JSONL timing artifact",
+    ),
 ) -> None:
     """Stop a running agent sandbox.
 
@@ -1863,6 +1884,7 @@ def stop(
 
         safeyolo agent stop myproject
     """
+    _t("validate agent and inspect sandbox state")
     _validate_instance_name(name)
 
     from ..platform import get_platform
@@ -1873,13 +1895,21 @@ def stop(
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")
+    _t("platform sandbox shutdown and cleanup")
     plat.stop_sandbox(name)
     # Drop the per-agent UnixInstance. `stop_sandbox` already removed
     # the agent from agent_map.json, so this push reflects its absence.
-    config = load_config()
-    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    # If the proxy is down, its next start reads the already-updated map. Avoid
+    # a guaranteed refused admin connection (and noisy warning) in that case.
+    from ..proxy import is_proxy_running as _proxy_is_running
     from ..proxy import sync_proxy_modes
-    sync_proxy_modes(admin_port=admin_port)
+    _t("check proxy before listener reconciliation")
+    if _proxy_is_running():
+        config = load_config()
+        admin_port = config.get("proxy", {}).get("admin_port", 9090)
+        _t("remove proxy listener for stopped agent")
+        sync_proxy_modes(admin_port=admin_port)
+    _t("record and render stop result")
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 

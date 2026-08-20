@@ -147,7 +147,7 @@ def proxy_uds_path(admin_client, wait_for_safeyolo):
 
     Side-steps `safeyolo agent add`, which would try to boot a VM.
     The test instance's mitmproxy creates the socket file as soon as
-    `options.mode` gets an entry referring to it (bootstrap_mode /
+    `options.mode` gets an entry referring to it (initial mode setup /
     admin PUT both take this path).
 
     The listener is torn down in teardown so nothing lingers between
@@ -170,9 +170,8 @@ def proxy_uds_path(admin_client, wait_for_safeyolo):
     resp = admin_client.put("/admin/proxy/mode", json={"modes": modes})
     assert resp.status_code == 200, f"PUT /admin/proxy/mode failed: {resp.text}"
 
-    # Wait for the Servers addon to actually bind the socket. The PUT
-    # handler already sleeps 0.5s to let reconcile finish; the poll
-    # here absorbs slow CI hosts without flaking.
+    # The PUT awaits Servers.update, while this independent poll verifies the
+    # externally visible socket and absorbs filesystem propagation on slow CI.
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         if uds_path.is_socket():

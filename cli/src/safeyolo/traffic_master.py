@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 import os
 import socket
@@ -26,14 +27,42 @@ from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
 from .events import EventKind, Severity, write_event
+from .mitm_addons import unix_listener as _unix_listener  # noqa: F401
 from .tailnet import (
     TailnetServeSession,
     start_tailnet_serve,
     validate_tailnet_port,
     write_tailnet_state,
 )
+from .timing import flush_addon_profile as _flush_addon_profile
+from .timing import install_mitmproxy_addon_profiling as _install_addon_profiling
+from .timing import phase as _profile_phase
+from .timing import record_process_imports as _record_process_imports
+from .timing import uninstall_mitmproxy_addon_profiling as _uninstall_addon_profiling
 
 log = logging.getLogger("safeyolo.traffic-master")
+
+
+def _initial_proxy_modes() -> list[str]:
+    """Return trusted host-generated UDS modes for mitmproxy startup."""
+    raw = os.environ.get("SAFEYOLO_INITIAL_MODES", "[]")
+    try:
+        modes = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("SAFEYOLO_INITIAL_MODES must be valid JSON") from exc
+    if not isinstance(modes, list) or not all(isinstance(mode, str) for mode in modes):
+        raise ValueError("SAFEYOLO_INITIAL_MODES must be a JSON list of strings")
+    return modes
+
+
+def _make_parser(opts: options.Options):
+    """Build mitmproxy's parser with SafeYolo's initial modes as defaults."""
+    with _profile_phase("traffic-master: construct option parser"):
+        parser = cmdline.mitmproxy(opts)
+    # argparse values are applied after mitmproxy's config files, keeping the
+    # host-generated agent map authoritative even when it is an empty list.
+    parser.set_defaults(mode=_initial_proxy_modes())
+    return parser
 
 
 class SafeYoloStatusBar(statusbar.StatusBar):
@@ -530,7 +559,8 @@ class TrafficMaster(ConsoleMaster):
     """One canonical flow store with native console and web frontends."""
 
     def __init__(self, opts: options.Options) -> None:
-        super().__init__(opts)
+        with _profile_phase("traffic-master: ConsoleMaster initialization"):
+            super().__init__(opts)
         # Establish SafeYolo's live-traffic defaults before mitmproxy loads
         # config files and CLI options, which remain authoritative overrides.
         opts.update(
@@ -543,11 +573,12 @@ class TrafficMaster(ConsoleMaster):
         # lifecycle action so a viewer cannot accidentally stop the proxy.
         self.keymap.remove("Q", ["global"])
         self.proxyserver = self.addons.get("proxyserver")
-        self.addons.add(
-            webaddons.WebAddon(),
-            webaddons.WebAuth(),
-            static_viewer.StaticViewer(),
-        )
+        with _profile_phase("traffic-master: register WebMITM addons"):
+            self.addons.add(
+                webaddons.WebAddon(),
+                webaddons.WebAuth(),
+                static_viewer.StaticViewer(),
+            )
         # Give the web flow list the same chronological reading order as the
         # native table while retaining mitmweb's TLS and resource icons.
         opts.update(
@@ -573,18 +604,20 @@ class TrafficMaster(ConsoleMaster):
                 raise RuntimeError("web password file is empty")
             # Mitmweb verifies Argon2 hashes against the password entered by
             # the operator. Keep plaintext out of its option state.
-            opts.update(web_password=PasswordHasher().hash(password))
-        self.web_app = app.Application(self, self.options.web_debug)
-        self.web_app.add_handlers(
-            r".*$",
-            [
-                (r"/safeyolo/scope", ScopeAPIHandler),
-                (r"/safeyolo/scope.js", ScopeScriptHandler),
-                (r"/safeyolo/scope.css", ScopeStyleHandler),
-                (r"/", SafeYoloIndexHandler),
-            ],
-        )
-        self.addons.add(WebFrontend(self), WebTailnetShare(self))
+            with _profile_phase("traffic-master: hash WebMITM password"):
+                opts.update(web_password=PasswordHasher().hash(password))
+        with _profile_phase("traffic-master: build WebMITM application"):
+            self.web_app = app.Application(self, self.options.web_debug)
+            self.web_app.add_handlers(
+                r".*$",
+                [
+                    (r"/safeyolo/scope", ScopeAPIHandler),
+                    (r"/safeyolo/scope.js", ScopeScriptHandler),
+                    (r"/safeyolo/scope.css", ScopeStyleHandler),
+                    (r"/", SafeYoloIndexHandler),
+                ],
+            )
+            self.addons.add(WebFrontend(self), WebTailnetShare(self))
         self._add_scope_keys()
 
     def _add_scope_keys(self) -> None:
@@ -612,7 +645,8 @@ class TrafficMaster(ConsoleMaster):
                 self.keymap.add(key, command_text, ["global"], help_text)
 
     async def running(self) -> None:
-        await super().running()
+        with _profile_phase("traffic-master: listeners and running hooks"):
+            await super().running()
         if self.window is not None:
             native_status = SafeYoloStatusBar(self)
             self.window.statusbar = native_status
@@ -621,6 +655,8 @@ class TrafficMaster(ConsoleMaster):
         # WebFrontend may therefore fail after pid_writer has run. Publish the
         # PID only here, once every addon (including the web listener) is live.
         pid_writer = self.addons.get("pid-writer")
+        _flush_addon_profile("startup")
+        _uninstall_addon_profiling()
         if pid_writer is not None:
             pid_writer.signal_ready()
 
@@ -634,7 +670,13 @@ class TrafficMaster(ConsoleMaster):
 
 def main_entry(arguments: list[str] | None = None) -> None:
     """Run the hybrid master using mitmproxy's native CLI processing."""
-    main.run(TrafficMaster, cmdline.mitmproxy, sys.argv[1:] if arguments is None else arguments)
+    _record_process_imports("traffic-master: Python and module imports")
+    _install_addon_profiling()
+    main.run(
+        TrafficMaster,
+        _make_parser,
+        sys.argv[1:] if arguments is None else arguments,
+    )
 
 
 if __name__ == "__main__":

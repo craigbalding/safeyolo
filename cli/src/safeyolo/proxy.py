@@ -21,6 +21,8 @@ from .ignore_hosts import (
     normalize_ignore_hosts,
 )
 from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
+from .timing import child_environment as _profile_child_environment
+from .timing import enter as _profile_enter
 from .traffic_session import (
     session_process_alive,
     start_session,
@@ -33,15 +35,9 @@ DEFAULT_FLOW_CACHE = 5_000
 
 # Addon load order — mirrors scripts/start-safeyolo.sh exactly
 ADDON_CHAIN = [
-    # Layer -1: UDS ingress — must be first. Defines UnixMode /
-    # UnixInstance which auto-register via __init_subclass__. The
-    # bootstrap addon below then populates options.mode from
-    # agent_map.json in `running()` (by which time UnixMode is live).
-    "unix_listener.py",
-    "bootstrap_mode.py", # replaces the transient default listener with
-                         # per-agent unix: listeners; must run before
-                         # pid_writer so the CLI's "ready" signal only
-                         # fires once UDS listeners are bound.
+    # UDS ingress is imported by traffic_master before mitmproxy parses its
+    # options. Initial modes are supplied by the custom entry point, so no
+    # bootstrap addon or transient TCP listener is needed here.
     # Layer 0: Infrastructure
     "pid_writer.py",     # writes SAFEYOLO_PROXY_PID_FILE on `running`
     "file_logging.py",
@@ -455,22 +451,13 @@ def _build_command(
     # canonical View/Proxyserver. It must run inside the private tmux PTY.
     cmd = [sys.executable, "-m", "safeyolo.traffic_master"]
 
-    # Load addons before any `--set mode=...` so UnixMode is registered
-    # (via __init_subclass__) by the time Proxyserver parses the spec.
+    # UnixMode is registered directly by safeyolo.traffic_master before
+    # mitmproxy parses options. The remaining script addons provide policy,
+    # observability, and administrative behavior.
     for addon_file in ADDON_CHAIN:
         addon_path = addons_dir / addon_file
         if addon_path.exists():
             cmd.extend(["-s", str(addon_path)])
-
-    # Listener wiring is done by addons/bootstrap_mode.py in `running()`,
-    # after all addons load (so UnixMode is registered). Mitmproxy's CLI
-    # parses `--set mode=...` *before* addons, so `unix:` specs cannot
-    # go here. Force the transient default `regular` listener onto an
-    # ephemeral loopback port — bootstrap_mode immediately replaces it
-    # with the per-agent `unix:` set, so 127.0.0.1:<ephemeral> is held
-    # for <500 ms and never reachable off-host.
-    cmd.extend(["--set", "listen_host=127.0.0.1"])
-    cmd.extend(["--set", "listen_port=0"])
 
     # Core options
     cmd.extend(["--set", f"confdir={cert_dir}"])
@@ -684,6 +671,7 @@ def start_proxy(
         log.info("Proxy already running")
         return
 
+    _profile_enter("proxy: resolve runtime paths and addons")
     config_dir = get_config_dir()
     data_dir = get_data_dir()
     logs_dir = get_logs_dir()
@@ -708,14 +696,17 @@ def start_proxy(
     pdp_dir = _find_pdp_dir()
 
     # Ensure certs, tokens, log dirs
+    _profile_enter("proxy: ensure certificates, tokens, and logs")
     _ensure_certs(cert_dir)
     admin_token, _agent_token = _ensure_tokens(data_dir)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     # Merge system CAs into certifi so mitmproxy can verify all upstream chains
+    _profile_enter("proxy: merge host CA trust")
     _merge_system_cas_into_certifi()
 
     # Load test config if enabled
+    _profile_enter("proxy: load configuration and build child command")
     full_config = load_config()
     test_config = full_config.get("test", {})
     if not test_config.get("enabled"):
@@ -741,7 +732,9 @@ def start_proxy(
     )
 
     # Environment: set PYTHONPATH so addons can import pdp, models, etc.
+    _profile_enter("proxy: construct child environment")
     env = os.environ.copy()
+    env.update(_profile_child_environment("traffic-master"))
     python_paths = [str(addons_dir)]
     if pdp_dir:
         python_paths.append(str(pdp_dir.parent))  # Parent so `from pdp import ...` works
@@ -763,6 +756,10 @@ def start_proxy(
     # the poll window tells us mitmdump crashed.
     env["SAFEYOLO_PROXY_PID_FILE"] = str(_pid_file())
     env["SAFEYOLO_DEFER_PROXY_READY"] = "1"
+    # The custom traffic-master entry point applies these modes after parsing
+    # command/config options but before Master.run() binds listeners. This
+    # avoids a temporary TCP listener and the old fixed bootstrap delay.
+    env["SAFEYOLO_INITIAL_MODES"] = json.dumps(_initial_mode_specs(data_dir))
     env["SAFEYOLO_WEB_PASSWORD_FILE"] = str(data_dir / "admin_token")
     web_tailnet = full_config.get("proxy", {}).get("web_tailnet", {})
     if not isinstance(web_tailnet, dict):
@@ -784,6 +781,7 @@ def start_proxy(
         env["SAFEYOLO_SINKHOLE_HTTP_PORT"] = str(test_config.get("sinkhole_http_port", 18080))
         env["SAFEYOLO_SINKHOLE_HTTPS_PORT"] = str(test_config.get("sinkhole_https_port", 18443))
 
+    _profile_enter("proxy: remove stale readiness and socket state")
     # Clear any stale pid file from a previous crashed run so the poll
     # below doesn't mistake it for "ready". addons/pid_writer.py will
     # recreate it on `running`.
@@ -805,6 +803,7 @@ def start_proxy(
     except OSError:
         event_offset = 0
     try:
+        _profile_enter("proxy: create private traffic session")
         start_session(cmd, env=env)
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError(f"failed to start private traffic session: {exc}") from exc
@@ -814,6 +813,7 @@ def start_proxy(
     # in 150-300ms; poll interval 50ms = sub-tick on success. On failure
     # proc.poll() surfaces the exit code immediately.
     try:
+        _profile_enter("proxy: wait for traffic-master readiness")
         startup_timeout = TAILSCALE_OPERATION_TIMEOUT_SECONDS if web_tailnet_enabled else 10.0
         deadline = time.monotonic() + startup_timeout
         while time.monotonic() < deadline:
@@ -857,6 +857,7 @@ def stop_proxy() -> None:
     HTTP-layer failure — provided mitmproxy recovers within the retry
     window.
     """
+    _profile_enter("proxy: resolve traffic-master state")
     pid_file = _pid_file()
     if not pid_file.exists():
         stop_session()
@@ -864,6 +865,7 @@ def stop_proxy() -> None:
 
     pid = int(pid_file.read_text().strip())
 
+    _profile_enter("proxy: send graceful termination")
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -872,6 +874,7 @@ def stop_proxy() -> None:
         return
 
     # Wait up to 5 seconds for clean exit
+    _profile_enter("proxy: wait for graceful traffic-master exit")
     for _ in range(50):
         try:
             os.kill(pid, 0)  # Check if alive
@@ -886,6 +889,7 @@ def stop_proxy() -> None:
             # Process died during the SIGTERM wait loop — fine.
             pass
 
+    _profile_enter("proxy: clean private traffic session")
     pid_file.unlink(missing_ok=True)
     stop_session()
     log.info("Proxy stopped")
