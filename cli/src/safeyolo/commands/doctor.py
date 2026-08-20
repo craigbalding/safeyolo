@@ -1117,8 +1117,10 @@ def _build_bundle(results: list[DiagResult]) -> dict:
         )
         if result.returncode == 0:
             docker_version = result.stdout.strip()
-    except Exception:
-        pass  # docker may not be installed or accessible; fall back to "unknown"
+    except (OSError, subprocess.SubprocessError):
+        # Docker may not be installed or accessible; retain the initialized
+        # "unknown" value in the diagnostic bundle.
+        docker_version = "unknown"
 
     import platform
 

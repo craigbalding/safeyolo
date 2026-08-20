@@ -48,7 +48,7 @@ def test_analyze_headers(data: bytes):
         )
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -85,7 +85,7 @@ def test_analyze_arbitrary_headers(data: bytes):
         )
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -100,7 +100,7 @@ def test_extract_bearer_token(data: bytes):
         extract_bearer_token(text)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 def main():

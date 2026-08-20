@@ -103,7 +103,7 @@ class _SocketWriter:
         try:
             self._stream.shutdown(socket.SHUT_WR)
         except OSError:
-            pass
+            pass  # The peer may already have closed during relay teardown.
 
 
 class _SocketRelay:
@@ -138,7 +138,7 @@ class _SocketRelay:
             try:
                 self._stream.shutdown(socket.SHUT_RDWR)
             except OSError:
-                pass
+                pass  # The socket may already be disconnected or shut down.
             self._stream.close()
             self.returncode = 0
 
@@ -504,7 +504,7 @@ def _wait_for_userns_ready(
             try:
                 proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                pass
+                pass  # Best effort after kill; later cleanup handles a lingering holder.
             raise RuntimeError(
                 "userns holder did not enter its user and network namespaces "
                 f"within {timeout:g}s (user={user_ready}, net={net_ready})"
@@ -1482,7 +1482,7 @@ class LinuxPlatform(AgentPlatform):
                     # finds it when consuming the spec.
                     (agent_home / rel).mkdir(parents=True, exist_ok=True)
                 except ValueError:
-                    pass
+                    pass  # Only nested /home/agent shares need host mount points.
                 options = [
                     "rbind",
                     "ro" if read_only else "rw",

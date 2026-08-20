@@ -27,7 +27,7 @@ from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
 from .events import EventKind, Severity, write_event
-from .mitm_addons import unix_listener as _unix_listener  # noqa: F401
+from .mitm_addons.unix_listener import ensure_registered as _ensure_unix_listener_registered
 from .tailnet import (
     TailnetServeSession,
     start_tailnet_serve,
@@ -41,6 +41,10 @@ from .timing import record_process_imports as _record_process_imports
 from .timing import uninstall_mitmproxy_addon_profiling as _uninstall_addon_profiling
 
 log = logging.getLogger("safeyolo.traffic-master")
+
+# Importing unix_listener registers UnixMode via ProxyMode.__init_subclass__.
+# Keep an explicit call so static analysis and future readers see the dependency.
+_ensure_unix_listener_registered()
 
 
 def _initial_proxy_modes() -> list[str]:

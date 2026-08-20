@@ -99,8 +99,8 @@ def show() -> None:
             content = ca_cert.read_bytes()
             sha256 = hashlib.sha256(content).hexdigest()[:16]
             console.print(f"  SHA256:    {sha256}...")
-        except Exception:
-            pass  # Skip fingerprint display on any error
+        except OSError:
+            console.print("  SHA256:    [dim]unavailable[/dim]")
 
         console.print("\n[dim]Agents receive the CA via the VirtioFS config share.[/dim]")
         console.print("\nTo use on the host: [bold]eval $(safeyolo cert env)[/bold]")

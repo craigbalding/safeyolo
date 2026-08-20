@@ -42,6 +42,7 @@ _addon_totals: dict[tuple[str, str], list[float | int]] = defaultdict(
     lambda: [0.0, 0, 0.0]
 )
 _addon_profiler_installed = False
+# This mutable test seam is read and restored across separate startup hooks.
 _original_addon_invoke: Callable[..., Any] | None = None
 
 
@@ -206,7 +207,7 @@ def install_mitmproxy_addon_profiling() -> None:
             try:
                 result = func(*event.args())
                 if result is not None and inspect.isawaitable(result):
-                    await result
+                    _ = await result
             finally:
                 if tracked:
                     duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
@@ -228,6 +229,8 @@ def uninstall_mitmproxy_addon_profiling() -> None:
     from mitmproxy import addonmanager
 
     addonmanager.AddonManager.invoke_addon = _original_addon_invoke
+    # The global is deliberately reset after restoring mitmproxy's dispatcher.
+    # codeql[py/unused-global-variable]
     _original_addon_invoke = None
     _addon_profiler_installed = False
 
@@ -268,7 +271,7 @@ def _read_events() -> list[dict[str, Any]]:
             if event.get("operation") == _operation:
                 events.append(event)
     except OSError:
-        pass
+        pass  # A missing/unreadable profile artifact is equivalent to no events.
     return events
 
 

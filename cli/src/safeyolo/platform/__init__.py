@@ -28,13 +28,17 @@ class BinaryRelay(Protocol):
     stdout: BinaryIO | None
     returncode: int | None
 
-    def poll(self) -> int | None: ...
+    def poll(self) -> int | None:
+        raise NotImplementedError
 
-    def wait(self, timeout: float | None = None) -> int: ...
+    def wait(self, timeout: float | None = None) -> int:
+        raise NotImplementedError
 
-    def terminate(self) -> None: ...
+    def terminate(self) -> None:
+        raise NotImplementedError
 
-    def kill(self) -> None: ...
+    def kill(self) -> None:
+        raise NotImplementedError
 
 
 class AgentPlatform(ABC):

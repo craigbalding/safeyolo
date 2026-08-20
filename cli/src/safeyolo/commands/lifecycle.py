@@ -310,15 +310,19 @@ def stop_all() -> None:
     # Clean up all networking for this instance
     try:
         plat.cleanup_all(agents_dir)
-    except Exception:
+    except Exception as error:
         # Best-effort teardown -- partial state is better than aborting stop.
-        pass
+        console.print(
+            f"  [yellow]Platform cleanup incomplete ({type(error).__name__})[/yellow]"
+        )
 
     # Unload host firewall rules (Linux: iptables. macOS: no-op).
     try:
         plat.unload_firewall_rules()
-    except Exception:
-        pass  # Non-fatal
+    except Exception as error:
+        console.print(
+            f"  [yellow]Firewall cleanup incomplete ({type(error).__name__})[/yellow]"
+        )
 
     # Stop proxy. Per-agent UDS listeners are owned by mitmproxy
     # (UnixInstance per agent) — stopping the process tears them down

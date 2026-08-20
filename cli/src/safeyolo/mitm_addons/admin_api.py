@@ -116,7 +116,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 if addon is not None:
                     return addon
             except Exception:  # noqa: BLE001
-                pass  # mitmproxy internals may raise; fall through to static cache
+                # mitmproxy internals may raise; fall through to static cache.
+                return self.addons_with_stats.get(addon_name)
         # Fall back to static cache
         return self.addons_with_stats.get(addon_name)
 

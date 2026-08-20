@@ -279,8 +279,6 @@ def _initial_mode_specs(data_dir: Path) -> list[str]:
     added/removed. Empty list is valid — mitmproxy starts with no
     listeners until the first agent is added.
     """
-    import json
-
     from .sockets import path_for
 
     map_path = data_dir / "agent_map.json"
