@@ -1073,6 +1073,13 @@ def add(
             console.print(f"  Fix: chmod +x {rootfs_script_path}")
             raise typer.Exit(1)
 
+    # Validate and normalize every declarative input before rootfs builders,
+    # cloning, platform preparation, or host setup can change host state.
+    # These values are also the exact normalized values persisted below.
+    parsed_mounts = [_parse_mount(m) for m in mount]
+    parsed_ports = [_parse_port(p) for p in port]
+    parsed_args = _parse_user_default_args(user_default_args)
+
     # Instance directory = instance name
     agent_dir = get_agents_dir() / name
 
@@ -1170,14 +1177,11 @@ def add(
         try:
             _run_host_script_for_agent(name=name, host_script_path=host_script_path, folder_str=folder_str)
         except typer.Exit as exc:
-            console.print(f"  Agent '{name}' config persisted; re-run with --force after fixing the script.")
+            console.print(
+                f"  Agent '{name}' setup is incomplete; its rootfs and home were retained. "
+                "Re-run with --force after fixing the script."
+            )
             raise exc
-
-    # Validate and normalize mount specs
-    parsed_mounts = [_parse_mount(m) for m in mount]
-
-    # Validate and normalize port specs
-    parsed_ports = [_parse_port(p) for p in port]
 
     # Write metadata to policy.toml [agents]
     metadata: dict = {"folder": folder_str}
@@ -1193,7 +1197,6 @@ def add(
         # "copy-on-write-clone") slot in without another toml-level
         # migration. "memory" = gVisor tmpfs / VZ safeyolo.ephemeral_upper=1.
         metadata["rootfs_overlay"] = "memory"
-    parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
     if parsed_mounts:

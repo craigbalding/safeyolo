@@ -543,6 +543,58 @@ class TestAgentAdd:
         assert "not executable" in result.output.lower()
         assert "chmod +x" in result.output
 
+    @pytest.mark.parametrize(
+        ("option", "value", "expected_error"),
+        [
+            ("--mount", "{missing}:/proj/toolage:ro", "host path not found"),
+            ("--port", "not-a-port", "invalid port format"),
+        ],
+    )
+    def test_declarative_inputs_are_validated_before_setup_side_effects(
+        self,
+        runner,
+        config_dir,
+        tmp_path,
+        option,
+        value,
+        expected_error,
+    ):
+        """Invalid mounts or ports must fail before costly host setup starts."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs_script = tmp_path / "builder.sh"
+        rootfs_script.write_text("#!/bin/sh\nexit 0\n")
+        rootfs_script.chmod(0o755)
+        host_script = tmp_path / "host-setup.sh"
+        host_script.write_text("#!/bin/sh\nexit 0\n")
+        host_script.chmod(0o755)
+        value = value.format(missing=tmp_path / "missing")
+
+        with (
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.build_custom_rootfs") as build_rootfs,
+            patch("safeyolo.platform.get_platform") as get_platform,
+            patch("safeyolo.vm.ensure_agent_persistent_dirs") as ensure_dirs,
+            patch("safeyolo.commands.agent._run_host_script_for_agent") as run_host_script,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent", "add", "test", str(folder),
+                    "--rootfs-script", str(rootfs_script),
+                    "--host-script", str(host_script),
+                    option, value,
+                    "--no-run",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert expected_error in result.output.lower()
+        build_rootfs.assert_not_called()
+        get_platform.assert_not_called()
+        ensure_dirs.assert_not_called()
+        run_host_script.assert_not_called()
+
     def test_rootfs_script_invoked_and_metadata_saved(
         self, runner, config_dir, tmp_path
     ):
