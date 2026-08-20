@@ -223,15 +223,12 @@ def install_mitmproxy_addon_profiling() -> None:
 
 def uninstall_mitmproxy_addon_profiling() -> None:
     """Restore mitmproxy's dispatcher after startup reaches readiness."""
-    global _addon_profiler_installed, _original_addon_invoke
+    global _addon_profiler_installed
     if not _addon_profiler_installed or _original_addon_invoke is None:
         return
     from mitmproxy import addonmanager
 
     addonmanager.AddonManager.invoke_addon = _original_addon_invoke
-    # The global is deliberately reset after restoring mitmproxy's dispatcher.
-    # codeql[py/unused-global-variable]
-    _original_addon_invoke = None
     _addon_profiler_installed = False
 
 
