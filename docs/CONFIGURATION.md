@@ -36,6 +36,7 @@ proxy:
   image: safeyolo:latest
   container_name: safeyolo
   ignore_hosts: []      # Exact HOST or HOST:PORT TLS passthrough entries
+  upstream_ca_cert: ""  # Optional PEM bundle for additional upstream trust
 
 desktop:
   size: auto           # Persistent host preference: auto or WIDTHxHEIGHT
@@ -50,6 +51,24 @@ modes:
 Manage `proxy.ignore_hosts` with `safeyolo proxy ignore-host add|list|remove`.
 Changes are persisted atomically and applied to a running proxy through the
 operator-only admin API. Wildcards and regular expressions are not accepted.
+
+When an upstream server uses a private CA or omits an otherwise trusted
+intermediate certificate, persist an additional PEM bundle without disabling
+TLS verification:
+
+```bash
+safeyolo proxy upstream-ca set /path/to/additional-ca-bundle.pem
+safeyolo stop
+safeyolo start
+```
+
+Use `safeyolo proxy upstream-ca show` to inspect the setting and
+`safeyolo proxy upstream-ca remove` to restore the default system and certifi
+trust stores. `SAFEYOLO_CA_CERT` remains available as a temporary environment
+override and takes precedence over the persistent setting; `safeyolo doctor`
+warns when that non-persistent form is active. Bundles add trust and continue
+to enforce certificate signatures, validity periods, and hostnames. SafeYolo
+does not enable mitmproxy's global `ssl_insecure` option.
 
 `desktop.size` is the default geometry for `safeyolo agent desktop` and for
 noVNC started through `safeyolo agent preview`. Set it once to match the

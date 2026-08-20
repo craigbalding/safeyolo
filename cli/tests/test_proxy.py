@@ -1385,7 +1385,7 @@ class TestRateLimitConfig:
 # ---------------------------------------------------------------------------
 
 class TestSafeyoloCaCert:
-    """Tests for SAFEYOLO_CA_CERT env var handling in _build_command()."""
+    """Tests for additional upstream CA handling in _build_command()."""
 
     @pytest.fixture
     def cmd_env(self, tmp_path):
@@ -1435,6 +1435,66 @@ class TestSafeyoloCaCert:
 
         with pytest.raises(RuntimeError, match="CA cert not found"):
             _build_command(admin_token="tok", **cmd_env)
+
+    def test_upstream_ca_set_from_persistent_proxy_config(
+        self, cmd_env, tmp_path, monkeypatch
+    ):
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_CA_CERT", raising=False)
+        ca_file = tmp_path / "persistent-ca.pem"
+        ca_file.write_text("PERSISTENT CA CERT")
+
+        cmd = _build_command(
+            admin_token="tok",
+            proxy_config={"upstream_ca_cert": str(ca_file)},
+            **cmd_env,
+        )
+
+        bundle_arg = next(
+            arg for arg in cmd if arg.startswith("ssl_verify_upstream_trusted_ca=")
+        )
+        bundle_path = Path(bundle_arg.split("=", 1)[1])
+        assert "PERSISTENT CA CERT" in bundle_path.read_text()
+
+    def test_environment_ca_overrides_persistent_config(
+        self, cmd_env, tmp_path, monkeypatch
+    ):
+        from safeyolo.proxy import _build_command
+
+        environment_ca = tmp_path / "environment-ca.pem"
+        environment_ca.write_text("ENVIRONMENT CA CERT")
+        persistent_ca = tmp_path / "persistent-ca.pem"
+        persistent_ca.write_text("PERSISTENT CA CERT")
+        monkeypatch.setenv("SAFEYOLO_CA_CERT", str(environment_ca))
+
+        cmd = _build_command(
+            admin_token="tok",
+            proxy_config={"upstream_ca_cert": str(persistent_ca)},
+            **cmd_env,
+        )
+
+        bundle_arg = next(
+            arg for arg in cmd if arg.startswith("ssl_verify_upstream_trusted_ca=")
+        )
+        bundle = Path(bundle_arg.split("=", 1)[1]).read_text()
+        assert "ENVIRONMENT CA CERT" in bundle
+        assert "PERSISTENT CA CERT" not in bundle
+
+    def test_raises_when_persistent_ca_file_missing(
+        self, cmd_env, tmp_path, monkeypatch
+    ):
+        from safeyolo.proxy import _build_command
+
+        monkeypatch.delenv("SAFEYOLO_CA_CERT", raising=False)
+        nonexistent = tmp_path / "missing-persistent.pem"
+
+        with pytest.raises(RuntimeError, match="CA cert not found"):
+            _build_command(
+                admin_token="tok",
+                proxy_config={"upstream_ca_cert": str(nonexistent)},
+                **cmd_env,
+            )
 
     def test_no_upstream_ca_when_env_var_unset(self, cmd_env, monkeypatch):
         """No SAFEYOLO_CA_CERT env var -> ssl_verify_upstream_trusted_ca not in command."""

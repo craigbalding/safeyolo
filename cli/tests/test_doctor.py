@@ -23,6 +23,7 @@ from safeyolo.commands.doctor import (
     _check_log_health,
     _check_pipeline_probe,
     _check_tokens,
+    _check_upstream_ca_cert,
     _check_vault,
     _check_vsock_term,
     _run_checks,
@@ -245,6 +246,48 @@ class TestCheckCaCert:
         cert_path.write_text("not a valid cert")
         result = _check_ca_cert()
         assert result.status == "fail"
+
+
+class TestCheckUpstreamCaCert:
+    def test_default_trust_is_healthy(self, tmp_config_dir, monkeypatch):
+        monkeypatch.delenv("SAFEYOLO_CA_CERT", raising=False)
+
+        result = _check_upstream_ca_cert()
+
+        assert result.status == "pass"
+        assert "system and certifi" in result.message
+
+    def test_missing_persistent_bundle_fails(self, tmp_config_dir, tmp_path):
+        config_path = tmp_config_dir / "config.yaml"
+        config = yaml.safe_load(config_path.read_text())
+        config["proxy"]["upstream_ca_cert"] = str(tmp_path / "missing.pem")
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+        result = _check_upstream_ca_cert()
+
+        assert result.status == "fail"
+        assert "CA cert not found" in result.message
+
+    def test_environment_override_warns_that_it_is_transient(
+        self, tmp_config_dir, tmp_path, monkeypatch
+    ):
+        bundle = tmp_path / "environment-ca.pem"
+        bundle.write_text("test fixture")
+        context = MagicMock()
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.resolve_upstream_ca_cert",
+            lambda _test, _proxy: (bundle, "SAFEYOLO_CA_CERT"),
+        )
+        monkeypatch.setattr(
+            "safeyolo.commands.doctor.ssl.SSLContext",
+            MagicMock(return_value=context),
+        )
+
+        result = _check_upstream_ca_cert()
+
+        assert result.status == "warn"
+        assert "not restart-persistent" in result.message
+        assert "proxy upstream-ca set" in result.remediation
 
 
 class TestCheckTokens:
