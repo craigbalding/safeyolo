@@ -1,0 +1,575 @@
+SafeYolo ETXTBSY host diagnostic
+target: /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+host:   Linux v2202504247609334314 7.0.12+kali-amd64 #1 SMP PREEMPT_DYNAMIC Kali 7.0.12-2kali1 (2026-06-18) x86_64 GNU/Linux
+user:   uid=0 gid=0
+stat:   device=64769 inode=41159028 mode=-rwxr-xr-x uid=1000 gid=1000 size=10499 mtime=2026-08-20 08:35:07.230464212 +0200
+
+Filesystem containing target:
+TARGET SOURCE                                    FSTYPE OPTIONS
+/      /dev/mapper/v2202504247609334314--vg-root ext4   rw,relatime,errors=remount-ro
+
+Visible gVisor runtime processes:
+  PID     PPID USER         STAT COMMAND
+ 131125       1 100000   Ssl  gvisor_sentry
+ 131154  131125 100000   Ss   gvisor_sentry
+ 131168  131125 100000   S    gvisor_sentry
+ 131169  131168 100000   SN   gvisor_sentry
+ 131186  131125 100000   S    gvisor_sentry
+ 131187  131186 100000   SN   gvisor_sentry
+ 131188  131125 100000   S    gvisor_sentry
+ 131189  131188 100000   SN   gvisor_sentry
+ 131196  131125 100000   S    gvisor_sentry
+ 131197  131196 100000   SN   gvisor_sentry
+ 131203  131125 100000   S    gvisor_sentry
+ 131204  131203 100000   SN   gvisor_sentry
+ 131325  131125 100000   S    gvisor_sentry
+ 131326  131325 100000   SN   gvisor_sentry
+ 131327  131125 100000   S    gvisor_sentry
+ 131328  131327 100000   SN   gvisor_sentry
+ 131334  131125 100000   S    gvisor_sentry
+ 131335  131334 100000   SN   gvisor_sentry
+ 131341  131125 100000   S    gvisor_sentry
+ 131342  131341 100000   SN   gvisor_sentry
+ 131343  131125 100000   S    gvisor_sentry
+ 131344  131343 100000   SN   gvisor_sentry
+ 131345  131341 100000   SN   gvisor_sentry
+ 131346  131341 100000   SN   gvisor_sentry
+ 131347  131341 100000   SN   gvisor_sentry
+ 131348  131341 100000   SN   gvisor_sentry
+ 131349  131341 100000   SN   gvisor_sentry
+ 131350  131341 100000   SN   gvisor_sentry
+ 131351  131341 100000   SN   gvisor_sentry
+ 131352  131334 100000   SN   gvisor_sentry
+ 131353  131334 100000   SN   gvisor_sentry
+ 131354  131334 100000   SN   gvisor_sentry
+ 131355  131334 100000   SN   gvisor_sentry
+ 131365  131325 100000   SN   gvisor_sentry
+ 131366  131325 100000   SN   gvisor_sentry
+ 131367  131325 100000   SN   gvisor_sentry
+ 131368  131325 100000   SN   gvisor_sentry
+ 131369  131325 100000   SN   gvisor_sentry
+ 131370  131325 100000   SN   gvisor_sentry
+ 131376  131325 100000   SN   gvisor_sentry
+ 131381  131125 100000   S    gvisor_sentry
+ 131382  131381 100000   SN   gvisor_sentry
+ 131383  131125 100000   S    gvisor_sentry
+ 131384  131383 100000   SN   gvisor_sentry
+ 131385  131125 100000   S    gvisor_sentry
+ 131386  131125 100000   S    gvisor_sentry
+ 131387  131385 100000   SN   gvisor_sentry
+ 131388  131386 100000   SN   gvisor_sentry
+ 131389  131125 100000   S    gvisor_sentry
+ 131390  131389 100000   SN   gvisor_sentry
+ 131391  131125 100000   S    gvisor_sentry
+ 131392  131391 100000   SN   gvisor_sentry
+ 131393  131125 100000   S    gvisor_sentry
+ 131394  131393 100000   SN   gvisor_sentry
+ 131395  131125 100000   S    gvisor_sentry
+ 131396  131395 100000   SN   gvisor_sentry
+ 131397  131125 100000   S    gvisor_sentry
+ 131398  131397 100000   SN   gvisor_sentry
+ 131402  131386 100000   SN   gvisor_sentry
+ 131403  131386 100000   SN   gvisor_sentry
+ 131404  131386 100000   SN   gvisor_sentry
+ 131405  131386 100000   SN   gvisor_sentry
+ 131406  131386 100000   SN   gvisor_sentry
+ 131407  131386 100000   SN   gvisor_sentry
+ 131408  131397 100000   SN   gvisor_sentry
+ 131409  131397 100000   SN   gvisor_sentry
+ 131410  131397 100000   SN   gvisor_sentry
+ 131411  131397 100000   SN   gvisor_sentry
+ 131412  131395 100000   SN   gvisor_sentry
+ 131416  131395 100000   SN   gvisor_sentry
+ 131417  131395 100000   SN   gvisor_sentry
+ 131418  131395 100000   SN   gvisor_sentry
+ 131419  131395 100000   SN   gvisor_sentry
+ 131420  131395 100000   SN   gvisor_sentry
+ 131424  131395 100000   SN   gvisor_sentry
+ 137159  131168 100000   SN   gvisor_sentry
+ 137160  131168 100000   SN   gvisor_sentry
+ 137161  131168 100000   SN   gvisor_sentry
+ 137162  131168 100000   SN   gvisor_sentry
+ 137167  131381 100000   SN   gvisor_sentry
+ 137168  131381 100000   SN   gvisor_sentry
+ 137173  131381 100000   SN   gvisor_sentry
+ 137174  131381 100000   SN   gvisor_sentry
+ 137180  131381 100000   SN   gvisor_sentry
+ 137181  131381 100000   SN   gvisor_sentry
+ 137213  131327 100000   SN   gvisor_sentry
+ 137214  131327 100000   SN   gvisor_sentry
+ 137215  131327 100000   SN   gvisor_sentry
+ 139792  131385 100000   SN   gvisor_sentry
+ 139793  131385 100000   SN   gvisor_sentry
+ 139794  131385 100000   SN   gvisor_sentry
+ 139795  131385 100000   SN   gvisor_sentry
+ 139796  131385 100000   SN   gvisor_sentry
+ 139820  131188 100000   SN   gvisor_sentry
+ 139821  131188 100000   SN   gvisor_sentry
+ 139822  131188 100000   SN   gvisor_sentry
+ 139823  131188 100000   SN   gvisor_sentry
+ 139824  131188 100000   SN   gvisor_sentry
+ 141958  131168 100000   SN   gvisor_sentry
+ 141959  131168 100000   SN   gvisor_sentry
+ 141967  131168 100000   SN   gvisor_sentry
+ 146240  131386 100000   SN   gvisor_sentry
+ 150541  131383 100000   SN   gvisor_sentry
+ 150542  131383 100000   SN   gvisor_sentry
+ 150543  131383 100000   SN   gvisor_sentry
+ 150544  131383 100000   SN   gvisor_sentry
+ 150547  131383 100000   SN   gvisor_sentry
+ 150552  131397 100000   SN   gvisor_sentry
+ 152684  131397 100000   SN   gvisor_sentry
+ 154815  131343 100000   SN   gvisor_sentry
+ 154816  131343 100000   SN   gvisor_sentry
+ 154817  131343 100000   SN   gvisor_sentry
+ 154818  131343 100000   SN   gvisor_sentry
+ 154821  131343 100000   SN   gvisor_sentry
+ 154825  131343 100000   SN   gvisor_sentry
+ 154828  131343 100000   SN   gvisor_sentry
+ 157011  131327 100000   SN   gvisor_sentry
+ 159161  131381 100000   SN   gvisor_sentry
+ 159178  131383 100000   SN   gvisor_sentry
+ 165675  131334 100000   SN   gvisor_sentry
+ 165678  131334 100000   SN   gvisor_sentry
+ 172210  131327 100000   SN   gvisor_sentry
+ 172211  131327 100000   SN   gvisor_sentry
+ 174430  131385 100000   SN   gvisor_sentry
+ 174436  131385 100000   SN   gvisor_sentry
+ 189441  131334 100000   SN   gvisor_sentry
+ 339044  131188 100000   SN   gvisor_sentry
+ 357537       1 100000   Ssl  gvisor_sentry
+ 357564  357537 100000   Ss   gvisor_sentry
+ 357582  357537 100000   S    gvisor_sentry
+ 357583  357582 100000   SN   gvisor_sentry
+ 357591  357537 100000   S    gvisor_sentry
+ 357592  357591 100000   SN   gvisor_sentry
+ 357598  357537 100000   S    gvisor_sentry
+ 357599  357598 100000   SN   gvisor_sentry
+ 357605  357537 100000   S    gvisor_sentry
+ 357606  357605 100000   SN   gvisor_sentry
+ 357610  357537 100000   S    gvisor_sentry
+ 357611  357610 100000   SN   gvisor_sentry
+ 357713  357501 100000   Sl+  runsc
+ 357718  357537 100000   S    gvisor_sentry
+ 357719  357718 100000   SN   gvisor_sentry
+ 357723  357537 100000   S    gvisor_sentry
+ 357724  357537 100000   S    gvisor_sentry
+ 357725  357723 100000   SN   gvisor_sentry
+ 357726  357724 100000   SN   gvisor_sentry
+ 357728  357537 100000   S    gvisor_sentry
+ 357729  357728 100000   SN   gvisor_sentry
+ 357730  357537 100000   S    gvisor_sentry
+ 357731  357730 100000   SN   gvisor_sentry
+ 357733  357537 100000   S    gvisor_sentry
+ 357734  357537 100000   S    gvisor_sentry
+ 357735  357733 100000   SN   gvisor_sentry
+ 357736  357734 100000   SN   gvisor_sentry
+ 357737  357724 100000   SN   gvisor_sentry
+ 357738  357724 100000   SN   gvisor_sentry
+ 357739  357724 100000   SN   gvisor_sentry
+ 357740  357724 100000   SN   gvisor_sentry
+ 357741  357724 100000   SN   gvisor_sentry
+ 357742  357723 100000   SN   gvisor_sentry
+ 357743  357723 100000   SN   gvisor_sentry
+ 357744  357723 100000   SN   gvisor_sentry
+ 357745  357723 100000   SN   gvisor_sentry
+ 357746  357718 100000   SN   gvisor_sentry
+ 357747  357718 100000   SN   gvisor_sentry
+ 357748  357718 100000   SN   gvisor_sentry
+ 357749  357718 100000   SN   gvisor_sentry
+ 357750  357718 100000   SN   gvisor_sentry
+ 357751  357718 100000   SN   gvisor_sentry
+ 357752  357718 100000   SN   gvisor_sentry
+ 357765  357537 100000   S    gvisor_sentry
+ 357766  357765 100000   SN   gvisor_sentry
+ 357767  357537 100000   S    gvisor_sentry
+ 357768  357767 100000   SN   gvisor_sentry
+ 357781  357537 100000   S    gvisor_sentry
+ 357782  357537 100000   S    gvisor_sentry
+ 357783  357781 100000   SN   gvisor_sentry
+ 357784  357782 100000   SN   gvisor_sentry
+ 358071  357605 100000   SN   gvisor_sentry
+ 358072  357605 100000   SN   gvisor_sentry
+ 358073  357605 100000   SN   gvisor_sentry
+ 358364       1 100000   Ssl  gvisor_sentry
+ 358396  358364 100000   Ss   gvisor_sentry
+ 358410  358364 100000   S    gvisor_sentry
+ 358411  358410 100000   SN   gvisor_sentry
+ 358421  358364 100000   S    gvisor_sentry
+ 358422  358421 100000   SN   gvisor_sentry
+ 358424  358364 100000   S    gvisor_sentry
+ 358429  358424 100000   SN   gvisor_sentry
+ 358439  358364 100000   S    gvisor_sentry
+ 358440  358439 100000   SN   gvisor_sentry
+ 358441  358364 100000   S    gvisor_sentry
+ 358442  358441 100000   SN   gvisor_sentry
+ 358458  358364 100000   S    gvisor_sentry
+ 358459  358458 100000   SN   gvisor_sentry
+ 358499  358441 100000   SN   gvisor_sentry
+ 358500  358441 100000   SN   gvisor_sentry
+ 358501  358441 100000   SN   gvisor_sentry
+ 358503  358441 100000   SN   gvisor_sentry
+ 358513  358424 100000   SN   gvisor_sentry
+ 358514  358424 100000   SN   gvisor_sentry
+ 358515  358424 100000   SN   gvisor_sentry
+ 358593  358333 100000   Sl+  runsc
+ 358600  358364 100000   S    gvisor_sentry
+ 358603  358364 100000   S    gvisor_sentry
+ 358604  358603 100000   SN   gvisor_sentry
+ 358605  358600 100000   SN   gvisor_sentry
+ 358606  358364 100000   S    gvisor_sentry
+ 358607  358606 100000   SN   gvisor_sentry
+ 358608  358364 100000   S    gvisor_sentry
+ 358609  358608 100000   SN   gvisor_sentry
+ 358612  358364 100000   S    gvisor_sentry
+ 358613  358612 100000   SN   gvisor_sentry
+ 358614  358364 100000   S    gvisor_sentry
+ 358615  358614 100000   SN   gvisor_sentry
+ 358616  358458 100000   SN   gvisor_sentry
+ 358617  358458 100000   SN   gvisor_sentry
+ 358618  358458 100000   SN   gvisor_sentry
+ 358619  358458 100000   SN   gvisor_sentry
+ 358620  358606 100000   SN   gvisor_sentry
+ 358621  358606 100000   SN   gvisor_sentry
+ 358622  358606 100000   SN   gvisor_sentry
+ 358623  358458 100000   SN   gvisor_sentry
+ 358624  358606 100000   SN   gvisor_sentry
+ 358625  358439 100000   SN   gvisor_sentry
+ 358626  358439 100000   SN   gvisor_sentry
+ 358627  358439 100000   SN   gvisor_sentry
+ 358628  358439 100000   SN   gvisor_sentry
+ 358631  358458 100000   SN   gvisor_sentry
+ 358632  358458 100000   SN   gvisor_sentry
+ 358634  358439 100000   SN   gvisor_sentry
+ 358635  358439 100000   SN   gvisor_sentry
+ 358636  358439 100000   SN   gvisor_sentry
+ 358641  358612 100000   SN   gvisor_sentry
+ 358643  358614 100000   SN   gvisor_sentry
+ 358644  358614 100000   SN   gvisor_sentry
+ 358645  358614 100000   SN   gvisor_sentry
+ 358646  358614 100000   SN   gvisor_sentry
+ 358647  358614 100000   SN   gvisor_sentry
+ 358648  358614 100000   SN   gvisor_sentry
+ 358651  358364 100000   S    gvisor_sentry
+ 358652  358651 100000   SN   gvisor_sentry
+ 358654  358364 100000   S    gvisor_sentry
+ 358655  358654 100000   SN   gvisor_sentry
+ 358656  358364 100000   S    gvisor_sentry
+ 358657  358656 100000   SN   gvisor_sentry
+ 358658  358364 100000   S    gvisor_sentry
+ 358659  358658 100000   SN   gvisor_sentry
+ 358660  358364 100000   S    gvisor_sentry
+ 358661  358660 100000   SN   gvisor_sentry
+ 358662  358364 100000   S    gvisor_sentry
+ 358663  358662 100000   SN   gvisor_sentry
+ 358664  358364 100000   S    gvisor_sentry
+ 358665  358664 100000   SN   gvisor_sentry
+ 358780  358612 100000   SN   gvisor_sentry
+ 358783  358612 100000   SN   gvisor_sentry
+ 358786  358612 100000   SN   gvisor_sentry
+ 358979  358608 100000   SN   gvisor_sentry
+ 358980  358608 100000   SN   gvisor_sentry
+ 358981  358608 100000   SN   gvisor_sentry
+ 358982  358612 100000   SN   gvisor_sentry
+ 358983  358612 100000   SN   gvisor_sentry
+ 358984  358612 100000   SN   gvisor_sentry
+ 358989  358603 100000   SN   gvisor_sentry
+ 358990  358603 100000   SN   gvisor_sentry
+ 358991  358603 100000   SN   gvisor_sentry
+ 358992  358603 100000   SN   gvisor_sentry
+ 358993  358603 100000   SN   gvisor_sentry
+ 359005  358603 100000   SN   gvisor_sentry
+ 359006  358603 100000   SN   gvisor_sentry
+ 359021  358608 100000   SN   gvisor_sentry
+ 360588  357605 100000   SN   gvisor_sentry
+
+Writable descriptors for target inode (64769:41159028):
+  PID      FD    FLAGS      COMMAND      EXE
+  357537   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357564   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357582   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357583   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357591   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357592   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357598   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357599   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357605   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357606   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357610   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357611   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357718   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357719   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357723   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357724   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357725   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357726   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357728   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357729   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357730   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357731   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357733   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357734   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357735   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357736   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357737   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357738   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357739   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357740   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357741   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357742   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357743   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357744   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357745   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357746   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357747   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357748   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357749   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357750   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357751   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357752   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357765   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357766   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357767   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357768   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357781   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357782   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357783   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357784   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  358071   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  358072   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  358073   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  360588   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+
+lsof output:
+COMMAND      PID     USER   FD   TYPE DEVICE SIZE/OFF     NODE NAME
+gvisor_se 357537   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357537   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357564   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357564   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357582   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357582   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357583   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357583   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357591   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357591   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357592   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357592   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357598   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357598   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357599   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357599   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357605   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357605   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357606   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357606   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357610   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357610   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357611   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357611   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357718   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357718   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357719   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357719   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357723   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357723   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357724   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357724   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357725   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357725   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357726   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357726   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357728   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357728   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357729   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357729   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357730   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357730   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357731   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357731   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357733   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357733   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357734   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357734   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357735   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357735   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357736   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357736   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357737   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357737   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357738   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357738   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357739   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357739   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357740   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357740   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357741   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357741   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357742   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357742   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357743   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357743   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357744   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357744   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357745   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357745   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357746   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357746   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357747   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357747   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357748   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357748   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357749   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357749   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357750   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357750   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357751   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357751   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357752   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357752   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357765   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357765   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357766   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357766   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357767   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357767   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357768   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357768   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357781   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357781   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357782   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357782   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357783   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357783   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357784   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 357784   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 358071   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 358071   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 358072   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 358072   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 358073   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 358073   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 360588   100000 1218u   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+gvisor_se 360588   100000 1295r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+bash      360749     root  255r   REG  253,1    10499 41159028 /home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh
+
+fuser output:
+                     USER        PID ACCESS COMMAND
+/home/craigb/proj/safeyolo/scripts/diagnose-etxtbsy.sh:
+                     (unknown)  357537 F.... gvisor_sentry
+                     (unknown)  357564 F.... gvisor_sentry
+                     (unknown)  357582 F.... gvisor_sentry
+                     (unknown)  357583 F.... gvisor_sentry
+                     (unknown)  357591 F.... gvisor_sentry
+                     (unknown)  357592 F.... gvisor_sentry
+                     (unknown)  357598 F.... gvisor_sentry
+                     (unknown)  357599 F.... gvisor_sentry
+                     (unknown)  357605 F.... gvisor_sentry
+                     (unknown)  357606 F.... gvisor_sentry
+                     (unknown)  357610 F.... gvisor_sentry
+                     (unknown)  357611 F.... gvisor_sentry
+                     (unknown)  357718 F.... gvisor_sentry
+                     (unknown)  357719 F.... gvisor_sentry
+                     (unknown)  357723 F.... gvisor_sentry
+                     (unknown)  357724 F.... gvisor_sentry
+                     (unknown)  357725 F.... gvisor_sentry
+                     (unknown)  357726 F.... gvisor_sentry
+                     (unknown)  357728 F.... gvisor_sentry
+                     (unknown)  357729 F.... gvisor_sentry
+                     (unknown)  357730 F.... gvisor_sentry
+                     (unknown)  357731 F.... gvisor_sentry
+                     (unknown)  357733 F.... gvisor_sentry
+                     (unknown)  357734 F.... gvisor_sentry
+                     (unknown)  357735 F.... gvisor_sentry
+                     (unknown)  357736 F.... gvisor_sentry
+                     (unknown)  357737 F.... gvisor_sentry
+                     (unknown)  357738 F.... gvisor_sentry
+                     (unknown)  357739 F.... gvisor_sentry
+                     (unknown)  357740 F.... gvisor_sentry
+                     (unknown)  357741 F.... gvisor_sentry
+                     (unknown)  357742 F.... gvisor_sentry
+                     (unknown)  357743 F.... gvisor_sentry
+                     (unknown)  357744 F.... gvisor_sentry
+                     (unknown)  357745 F.... gvisor_sentry
+                     (unknown)  357746 F.... gvisor_sentry
+                     (unknown)  357747 F.... gvisor_sentry
+                     (unknown)  357748 F.... gvisor_sentry
+                     (unknown)  357749 F.... gvisor_sentry
+                     (unknown)  357750 F.... gvisor_sentry
+                     (unknown)  357751 F.... gvisor_sentry
+                     (unknown)  357752 F.... gvisor_sentry
+                     (unknown)  357765 F.... gvisor_sentry
+                     (unknown)  357766 F.... gvisor_sentry
+                     (unknown)  357767 F.... gvisor_sentry
+                     (unknown)  357768 F.... gvisor_sentry
+                     (unknown)  357781 F.... gvisor_sentry
+                     (unknown)  357782 F.... gvisor_sentry
+                     (unknown)  357783 F.... gvisor_sentry
+                     (unknown)  357784 F.... gvisor_sentry
+                     (unknown)  358071 F.... gvisor_sentry
+                     (unknown)  358072 F.... gvisor_sentry
+                     (unknown)  358073 F.... gvisor_sentry
+                     (unknown)  360588 F.... gvisor_sentry
+                     root      360749 f.... bash
+
+Verdict: ETXTBSY reproduced by a direct host execve().
+A visible gVisor runtime process holds the inode writable; this implicates sandbox FD lifetime.
+
+Watching up to 30s for ETXTBSY to clear...
+ETXTBSY remained active for the full 30s watch interval.
+
+Writable descriptors for target inode (64769:41159028):
+  PID      FD    FLAGS      COMMAND      EXE
+  357537   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357564   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357582   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357583   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357591   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357592   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357598   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357599   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357605   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357606   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357610   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357611   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357718   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357719   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357723   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357724   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357725   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357726   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357728   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357729   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357730   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357731   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357733   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357734   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357735   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357736   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357737   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357738   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357739   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357740   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357741   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357742   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357743   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357744   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357745   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357746   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357747   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357748   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357749   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357750   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357751   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357752   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357765   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357766   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357767   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357768   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357781   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357782   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357783   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  357784   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  358071   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  358072   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  358073   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry
+  360588   1218  02500002   gvisor_sentry /usr/bin/gvisor-bin/gvisor_sentry

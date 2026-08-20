@@ -1,0 +1,8 @@
+[2026-08-20T07:37:58.181069+00:00] deep experiment started
+[2026-08-20T07:37:58.190914+00:00] stopping stale/running sandbox
+[2026-08-20T07:37:58.791512+00:00] booting deep variant baseline
+[2026-08-20T07:38:03.805457+00:00] deep round 1/1 starting
+[2026-08-20T07:38:25.654568+00:00] deep round 1: execution_failures=4 writable_holders=128
+[2026-08-20T07:38:44.420827+00:00] deep workloads complete
+[2026-08-20T07:38:44.430439+00:00] stopping sandbox
+[2026-08-20T07:38:51.770210+00:00] deep experiment finished; agent left stopped

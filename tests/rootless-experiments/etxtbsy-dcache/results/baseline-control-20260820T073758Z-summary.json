@@ -1,0 +1,2107 @@
+{
+  "agent": "kali-template-v2",
+  "agent_left_stopped": true,
+  "artifact_root": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z",
+  "artifact_root_removed": true,
+  "boot": {
+    "elapsed_ms": 4737.582541,
+    "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+    "returncode": 0
+  },
+  "finished_at": "2026-08-20T07:38:51.763117+00:00",
+  "mode": "deep",
+  "output_dir": "/home/craigb/proj/safeyolo/.git/etxtbsy-deep/20260820T073758Z",
+  "rounds": [
+    {
+      "executions": {
+        "atomic": {
+          "attempts": 2,
+          "bad_output": [
+            {
+              "expected": "deep-r0-atomic-0-c0\n",
+              "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+              "result": {
+                "elapsed_ns": 667788,
+                "errno": 26,
+                "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh'",
+                "ok": false,
+                "returncode": null,
+                "stdout": ""
+              }
+            },
+            {
+              "expected": "deep-r0-atomic-1-c0\n",
+              "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+              "result": {
+                "elapsed_ns": 446654,
+                "errno": 26,
+                "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh'",
+                "ok": false,
+                "returncode": null,
+                "stdout": ""
+              }
+            }
+          ],
+          "errno_counts": {
+            "26": 2
+          },
+          "failures": 2,
+          "latency_ms": {
+            "max": 0.667788,
+            "p50": 0.446654,
+            "p95": 0.446654
+          },
+          "successes": 0
+        },
+        "in-place": {
+          "attempts": 2,
+          "bad_output": [
+            {
+              "expected": "deep-r0-in-place-0-c0\n",
+              "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+              "result": {
+                "elapsed_ns": 818215,
+                "errno": 26,
+                "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh'",
+                "ok": false,
+                "returncode": null,
+                "stdout": ""
+              }
+            },
+            {
+              "expected": "deep-r0-in-place-1-c0\n",
+              "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+              "result": {
+                "elapsed_ns": 724495,
+                "errno": 26,
+                "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh'",
+                "ok": false,
+                "returncode": null,
+                "stdout": ""
+              }
+            }
+          ],
+          "errno_counts": {
+            "26": 2
+          },
+          "failures": 2,
+          "latency_ms": {
+            "max": 0.818215,
+            "p50": 0.724495,
+            "p95": 0.724495
+          },
+          "successes": 0
+        }
+      },
+      "guest": {
+        "handoff_elapsed_ns": 25726082,
+        "handoff_write_operations": 4,
+        "lock_blocked": false,
+        "manifest": {
+          "entries": {
+            "append.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485464663872,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "binary.bin": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485466283727,
+              "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193",
+              "size": 4096,
+              "type": "file",
+              "uid": 1000
+            },
+            "empty": {
+              "blocks": 0,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485466283727,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "type": "file",
+              "uid": 1000
+            },
+            "executable.sh": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211485467390107,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-a": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485471530169,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-b": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485471530169,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "large.bin": {
+              "blocks": 16384,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485488497927,
+              "sha256": "ca55da434fbf886954cb1801407901c6444b0be2bd97ad1db85c5e9ec0a3fc5e",
+              "size": 8388608,
+              "type": "file",
+              "uid": 1000
+            },
+            "nested": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211485468492932,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211485468762739,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper/spaces and \u00fcnicode.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485469101982,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "plain.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485463410169,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "relative-link": {
+              "gid": 1000,
+              "mode": 511,
+              "mtime_ns": 1787211485472039428,
+              "target": "plain.txt",
+              "type": "symlink",
+              "uid": 1000
+            },
+            "renamed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485469693025,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "sparse.bin": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485472897893,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "truncate.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211485465681969,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hardlinks": [
+            [
+              "hard-a",
+              "hard-b"
+            ]
+          ]
+        },
+        "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs"
+      },
+      "guest_lock_blocked_by_host": false,
+      "guest_to_host_manifest": {
+        "allocation_differences": {
+          "append.txt": {
+            "expected": 1,
+            "observed": 8
+          },
+          "executable.sh": {
+            "expected": 1,
+            "observed": 8
+          },
+          "hard-a": {
+            "expected": 1,
+            "observed": 8
+          },
+          "hard-b": {
+            "expected": 1,
+            "observed": 8
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": 1,
+            "observed": 8
+          },
+          "plain.txt": {
+            "expected": 1,
+            "observed": 8
+          },
+          "renamed": {
+            "expected": 1,
+            "observed": 8
+          },
+          "sparse.bin": {
+            "expected": 16385,
+            "observed": 8
+          },
+          "truncate.txt": {
+            "expected": 1,
+            "observed": 8
+          }
+        },
+        "changed": {},
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": true,
+        "unexpected": []
+      },
+      "handle_semantics": {
+        "atomic_new_inode": true,
+        "atomic_old_handle_retained_original": true,
+        "atomic_old_mapping_retained_original": true,
+        "in_place_old_handle_saw_new_payload": true,
+        "in_place_same_inode": true
+      },
+      "host_to_guest_manifest": {
+        "allocation_differences": {
+          "append.txt": {
+            "expected": 8,
+            "observed": 1
+          },
+          "executable.sh": {
+            "expected": 8,
+            "observed": 1
+          },
+          "hard-a": {
+            "expected": 8,
+            "observed": 1
+          },
+          "hard-b": {
+            "expected": 8,
+            "observed": 1
+          },
+          "host-created.txt": {
+            "expected": 8,
+            "observed": 1
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": 8,
+            "observed": 1
+          },
+          "plain.txt": {
+            "expected": 8,
+            "observed": 1
+          },
+          "renamed-by-host": {
+            "expected": 8,
+            "observed": 1
+          },
+          "sparse.bin": {
+            "expected": 8,
+            "observed": 16385
+          },
+          "truncate.txt": {
+            "expected": 8,
+            "observed": 1
+          }
+        },
+        "changed": {},
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": true,
+        "unexpected": []
+      },
+      "round": 0,
+      "runtime": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --ignore-cgroups=true --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "fd_count": 46,
+            "pid": 373115,
+            "ppid": 1,
+            "threads": "12",
+            "vm_rss": "31432 kB"
+          },
+          {
+            "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "fd_count": 875,
+            "pid": 373116,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "58128 kB"
+          }
+        ]
+      },
+      "writable_holders": {
+        "holders": [
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373116,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373116,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373116,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373116,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373145,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373145,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373145,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373145,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373163,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373163,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373163,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373163,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373164,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373164,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373164,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373164,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373174,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373174,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373174,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373174,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373175,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373175,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373175,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373175,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373177,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373177,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373177,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373177,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373178,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373178,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373178,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373178,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373184,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373184,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373184,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373184,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373186,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373186,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373186,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373186,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373191,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373191,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373191,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373191,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373192,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373192,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373192,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373192,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373240,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373240,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373240,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373240,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373241,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373241,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373241,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373241,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373242,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373242,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373242,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373242,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373243,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373243,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373243,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373243,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373244,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373244,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373244,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373244,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373245,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373245,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373245,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373245,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373256,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373256,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373256,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373256,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373257,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373257,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373257,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373257,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373258,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373258,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373258,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373258,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373267,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373267,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373267,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373267,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373347,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373347,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373347,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373347,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373348,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373348,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373348,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373348,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 840,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+            "pid": 373349,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 842,
+            "flags_octal": "02500001",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+            "pid": 373349,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 843,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+            "pid": 373349,
+            "root_pid": 373116
+          },
+          {
+            "command": "gvisor_sentry",
+            "fd": 845,
+            "flags_octal": "02500002",
+            "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+            "pid": 373349,
+            "root_pid": 373116
+          }
+        ],
+        "holders_truncated": true,
+        "permission_denied": 0,
+        "regular_file_inodes": 4,
+        "runtime_roots": [
+          {
+            "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "fd_count": 873,
+            "pid": 373116,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "55540 kB"
+          }
+        ],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs",
+        "writable_holder_inodes": 4,
+        "writable_holder_tasks": 128
+      }
+    }
+  ],
+  "runtime_after_rounds": {
+    "agent": "kali-template-v2",
+    "processes": [
+      {
+        "command": "runsc-gofer --ignore-cgroups=true --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+        "fd_count": 46,
+        "pid": 373115,
+        "ppid": 1,
+        "threads": "12",
+        "vm_rss": "31432 kB"
+      },
+      {
+        "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "fd_count": 875,
+        "pid": 373116,
+        "ppid": 1,
+        "threads": "25",
+        "vm_rss": "58128 kB"
+      }
+    ]
+  },
+  "runtime_before": {
+    "agent": "kali-template-v2",
+    "processes": [
+      {
+        "command": "runsc-gofer --ignore-cgroups=true --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+        "fd_count": 46,
+        "pid": 373115,
+        "ppid": 1,
+        "threads": "12",
+        "vm_rss": "31432 kB"
+      },
+      {
+        "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "fd_count": 493,
+        "pid": 373116,
+        "ppid": 1,
+        "threads": "24",
+        "vm_rss": "55436 kB"
+      }
+    ]
+  },
+  "schema": 1,
+  "settings": {
+    "benchmark_files": 1,
+    "benchmark_repetitions": 1,
+    "handoffs_per_method_per_round": 2,
+    "overrides": {},
+    "rounds": 1,
+    "skip_workloads": true,
+    "total_guest_write_closes": 4,
+    "total_host_executions": 4,
+    "variant": "baseline",
+    "write_cycles_per_handoff": 1
+  },
+  "started_at": "2026-08-20T07:37:58.181050+00:00",
+  "stop": {
+    "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+    "returncode": 0
+  },
+  "tree_holders_after_rounds": {
+    "holders": [
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373116,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373145,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373163,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373164,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373174,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373175,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 843,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00000.sh",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 845,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/atomic-00001.sh",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 849,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/lock-target",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 850,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/renamed-by-host",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 858,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/executable.sh",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 860,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/hard-b",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 864,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/plain.txt",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 866,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/sparse.bin",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 868,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/large.bin",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 871,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/truncate.txt",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 873,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/nested/deeper/spaces and \u00fcnicode.txt",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 878,
+        "flags_octal": "02500002",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/semantics/append.txt",
+        "pid": 373177,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 840,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00000.sh",
+        "pid": 373178,
+        "root_pid": 373116
+      },
+      {
+        "command": "gvisor_sentry",
+        "fd": 842,
+        "flags_octal": "02500001",
+        "path": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z/round-00/handoffs/in-place-00001.sh",
+        "pid": 373178,
+        "root_pid": 373116
+      }
+    ],
+    "holders_truncated": true,
+    "permission_denied": 0,
+    "regular_file_inodes": 16,
+    "runtime_roots": [
+      {
+        "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "fd_count": 875,
+        "pid": 373116,
+        "ppid": 1,
+        "threads": "25",
+        "vm_rss": "58128 kB"
+      }
+    ],
+    "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073758Z",
+    "writable_holder_inodes": 14,
+    "writable_holder_tasks": 462
+  },
+  "verdict": {
+    "all_correctness_checks_passed": false,
+    "baseline_control_completed": true,
+    "rounds": [
+      {
+        "executions": false,
+        "guest_to_host_manifest": true,
+        "handle_semantics": true,
+        "host_to_guest_manifest": true,
+        "lock_semantics": false,
+        "no_writable_holders": false
+      }
+    ],
+    "variant_mount_matches": true
+  },
+  "workspace": "/home/craigb/proj/kali-template-v2",
+  "workspace_mount": {
+    "destination": "/workspace",
+    "options": [
+      "rbind",
+      "rw",
+      "nosuid",
+      "nodev"
+    ],
+    "source": "/home/craigb/proj/kali-template-v2",
+    "type": "bind"
+  }
+}

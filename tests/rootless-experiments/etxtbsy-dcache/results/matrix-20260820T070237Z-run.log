@@ -1,0 +1,37 @@
+[2026-08-20T07:02:37.471610+00:00] experiment started
+[2026-08-20T07:02:37.481582+00:00] baseline: stopping stale/running sandbox
+[2026-08-20T07:02:38.132309+00:00] baseline: booting detached
+[2026-08-20T07:03:19.253054+00:00] baseline/in-place: exec errno=26 writers=29
+[2026-08-20T07:03:55.252770+00:00] baseline/atomic: exec errno=26 writers=37
+[2026-08-20T07:04:25.694650+00:00] baseline: churn complete; exec errno=None
+[2026-08-20T07:04:29.260413+00:00] baseline: stopping sandbox
+[2026-08-20T07:05:08.644854+00:00] baseline: stopped
+[2026-08-20T07:05:08.651964+00:00] workspace-dcache-0: stopping stale/running sandbox
+[2026-08-20T07:05:09.278586+00:00] workspace-dcache-0: booting detached
+[2026-08-20T07:05:48.339375+00:00] workspace-dcache-0/in-place: exec errno=None writers=0
+[2026-08-20T07:06:23.047132+00:00] workspace-dcache-0/atomic: exec errno=None writers=0
+[2026-08-20T07:06:52.133487+00:00] workspace-dcache-0: churn complete; exec errno=None
+[2026-08-20T07:06:55.764558+00:00] workspace-dcache-0: stopping sandbox
+[2026-08-20T07:07:35.284029+00:00] workspace-dcache-0: stopped
+[2026-08-20T07:07:35.294061+00:00] global-dcache-0: stopping stale/running sandbox
+[2026-08-20T07:07:35.913597+00:00] global-dcache-0: booting detached
+[2026-08-20T07:08:14.221194+00:00] global-dcache-0/in-place: exec errno=None writers=0
+[2026-08-20T07:08:48.252688+00:00] global-dcache-0/atomic: exec errno=None writers=0
+[2026-08-20T07:09:17.064166+00:00] global-dcache-0: churn complete; exec errno=None
+[2026-08-20T07:09:20.745662+00:00] global-dcache-0: stopping sandbox
+[2026-08-20T07:10:00.506806+00:00] global-dcache-0: stopped
+[2026-08-20T07:10:00.516550+00:00] directfs-false: stopping stale/running sandbox
+[2026-08-20T07:10:01.145665+00:00] directfs-false: booting detached
+[2026-08-20T07:10:42.679616+00:00] directfs-false/in-place: exec errno=26 writers=38
+[2026-08-20T07:11:19.370936+00:00] directfs-false/atomic: exec errno=26 writers=48
+[2026-08-20T07:11:52.679020+00:00] directfs-false: churn complete; exec errno=None
+[2026-08-20T07:11:57.110938+00:00] directfs-false: stopping sandbox
+[2026-08-20T07:12:36.753438+00:00] directfs-false: stopped
+[2026-08-20T07:12:36.762951+00:00] workspace-dcache-0-directfs-false: stopping stale/running sandbox
+[2026-08-20T07:12:37.347333+00:00] workspace-dcache-0-directfs-false: booting detached
+[2026-08-20T07:13:16.078522+00:00] workspace-dcache-0-directfs-false/in-place: exec errno=None writers=0
+[2026-08-20T07:13:50.220653+00:00] workspace-dcache-0-directfs-false/atomic: exec errno=None writers=0
+[2026-08-20T07:14:23.886496+00:00] workspace-dcache-0-directfs-false: churn complete; exec errno=None
+[2026-08-20T07:14:27.904040+00:00] workspace-dcache-0-directfs-false: stopping sandbox
+[2026-08-20T07:15:07.379089+00:00] workspace-dcache-0-directfs-false: stopped
+[2026-08-20T07:15:08.003777+00:00] experiment finished; agent left stopped

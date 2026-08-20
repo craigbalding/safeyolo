@@ -1,0 +1,3666 @@
+{
+  "agent": "kali-template-v2",
+  "agent_left_stopped": true,
+  "artifact_root": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z",
+  "artifact_root_removed": true,
+  "finished_at": "2026-08-20T07:15:07.999443+00:00",
+  "notes": [
+    "Normal SafeYolo settings are unchanged; overrides exist only in each start command environment.",
+    "The selected agent is left stopped so an interactive session is never silently started."
+  ],
+  "output_dir": "/home/craigb/proj/safeyolo/.git/etxtbsy-experiment/20260820T070237Z",
+  "repo_root": "/home/craigb/proj/safeyolo",
+  "schema": 1,
+  "started_at": "2026-08-20T07:02:37.471584+00:00",
+  "variants": {
+    "baseline": {
+      "after_churn": {
+        "exec": {
+          "elapsed_ns": 2714658,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131732
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 750624,
+          "errno": 26,
+          "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-atomic.sh'",
+          "ok": false,
+          "returncode": null
+        },
+        "exec_release_poll": {
+          "attempts": 77,
+          "last": {
+            "elapsed_ns": 705024,
+            "errno": 26,
+            "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-atomic.sh'",
+            "ok": false,
+            "returncode": null
+          },
+          "latency_ms": 2006.029886,
+          "released": false
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 11,
+            "mode": 493,
+            "mtime_ns": 1787209417195244405,
+            "size": 52,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 10,
+            "mode": 493,
+            "mtime_ns": 1787209399262335660,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209417202901327\n",
+          "method": "atomic",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs",
+          "observed_host_marker": "host-visible-1787209362370275949\n",
+          "sha256": "86e6a91d99cf68e9c3f0b8b7f2f339007e35e4599b08f31c6390cb8c3dc994f5"
+        },
+        "guest_marker_content": "guest-visible-1787209417202901327\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131741,
+          "mode": 493,
+          "mtime_ns": 1787209417195244405,
+          "size": 52,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131740,
+          "mode": 493,
+          "mtime_ns": 1787209399262335660,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 256,
+              "name": ".probe-atomic.sh.lpdd82v1",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.lpdd82v1",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": ".probe-atomic.sh.lpdd82v1",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.lpdd82v1",
+              "wd": 1
+            },
+            {
+              "cookie": 309578,
+              "mask": 64,
+              "name": ".probe-atomic.sh.lpdd82v1",
+              "wd": 1
+            },
+            {
+              "cookie": 309578,
+              "mask": 128,
+              "name": "probe-atomic.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "86e6a91d99cf68e9c3f0b8b7f2f339007e35e4599b08f31c6390cb8c3dc994f5",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131740
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [
+            {
+              "access_mode": 2,
+              "command": "gvisor_sentry",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 498,
+              "flags_octal": "02500002",
+              "pids": [
+                364369,
+                364399,
+                364417,
+                364418,
+                364432,
+                364433,
+                364435,
+                364438,
+                364440,
+                364441,
+                364446,
+                364447,
+                364493,
+                364494,
+                364500,
+                364501,
+                364502,
+                364503,
+                364509,
+                364510,
+                364511,
+                364601,
+                364602,
+                364603,
+                364604,
+                364657,
+                364658,
+                364659,
+                364661,
+                364839,
+                364840,
+                364841,
+                364842,
+                364843,
+                364844,
+                364845,
+                364846
+              ],
+              "root_pid": 364369,
+              "task_count": 37
+            }
+          ],
+          "identity": {
+            "device": 64769,
+            "inode": 43131741
+          },
+          "permission_denied": 0,
+          "runtime_roots": [
+            {
+              "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+              "fd_count": 838,
+              "pid": 364369,
+              "ppid": 1,
+              "threads": "25",
+              "vm_rss": "55980 kB"
+            }
+          ],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-atomic.sh",
+          "writable_holder_tasks": 37
+        }
+      },
+      "atomic_after_stop": {
+        "exec": {
+          "elapsed_ns": 2165210,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131741
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "boot": {
+        "elapsed_ms": 4230.603483,
+        "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+        "returncode": 0
+      },
+      "cleanup": {
+        "home": {
+          "exists": false,
+          "removed": "/home/agent/.safeyolo-etxtbsy-bench-baseline"
+        },
+        "workspace": {
+          "exists": false,
+          "removed": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/.safeyolo-etxtbsy-bench-baseline"
+        }
+      },
+      "guest_inotify_from_host": {
+        "events": [],
+        "observed": false,
+        "path": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/host-notify.txt",
+        "ready": true,
+        "returncode": 0
+      },
+      "home_benchmark": {
+        "create_ns_per_file": 526523.8966666666,
+        "directory": "/home/agent/.safeyolo-etxtbsy-bench-baseline",
+        "files": 300,
+        "misses": 300,
+        "negative_stat_ns_per_call": 138637.15,
+        "open_read_ns_per_file": 200710.77333333335,
+        "stat_ns_per_call": 37900.94666666666,
+        "total_read": 300,
+        "total_size": 115200
+      },
+      "in-place": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 603312,
+          "errno": 26,
+          "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-in-place.sh'",
+          "ok": false,
+          "returncode": null
+        },
+        "exec_release_poll": {
+          "attempts": 77,
+          "last": {
+            "elapsed_ns": 1025920,
+            "errno": 26,
+            "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-in-place.sh'",
+            "ok": false,
+            "returncode": null
+          },
+          "latency_ms": 2008.298383,
+          "released": false
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209380583481427,
+            "size": 54,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209362370618857,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209380588769012\n",
+          "method": "in-place",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs",
+          "observed_host_marker": "host-visible-1787209362370275949\n",
+          "sha256": "a3aad442da4f33812db4a3556a290790692eccaf3c39e188e4c44cbeb918330d"
+        },
+        "guest_marker_content": "guest-visible-1787209380588769012\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131732,
+          "mode": 493,
+          "mtime_ns": 1787209380583481427,
+          "size": 54,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131732,
+          "mode": 493,
+          "mtime_ns": 1787209362370618857,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": "probe-in-place.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "a3aad442da4f33812db4a3556a290790692eccaf3c39e188e4c44cbeb918330d",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131732
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [
+            {
+              "access_mode": 2,
+              "command": "gvisor_sentry",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 840,
+              "flags_octal": "02500002",
+              "pids": [
+                364369,
+                364399,
+                364417,
+                364418,
+                364432,
+                364433,
+                364435,
+                364438,
+                364440,
+                364441,
+                364446,
+                364447,
+                364493,
+                364494,
+                364500,
+                364501,
+                364502,
+                364503,
+                364509,
+                364510,
+                364511,
+                364601,
+                364602,
+                364603,
+                364604,
+                364657,
+                364658,
+                364659,
+                364661
+              ],
+              "root_pid": 364369,
+              "task_count": 29
+            }
+          ],
+          "identity": {
+            "device": 64769,
+            "inode": 43131732
+          },
+          "permission_denied": 0,
+          "runtime_roots": [
+            {
+              "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+              "fd_count": 835,
+              "pid": 364369,
+              "ppid": 1,
+              "threads": "25",
+              "vm_rss": "55808 kB"
+            }
+          ],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-in-place.sh",
+          "writable_holder_tasks": 29
+        }
+      },
+      "in-place_after_stop": {
+        "exec": {
+          "elapsed_ns": 2156336,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131732
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "name": "baseline",
+      "overrides": {},
+      "stop": {
+        "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+        "returncode": 0
+      },
+      "workspace_benchmark": {
+        "create_ns_per_file": 692934.3483333334,
+        "directory": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/baseline/.safeyolo-etxtbsy-bench-baseline",
+        "files": 1200,
+        "misses": 1200,
+        "negative_stat_ns_per_call": 234356.9175,
+        "open_read_ns_per_file": 405925.36833333335,
+        "stat_ns_per_call": 159764.98138888887,
+        "total_read": 1200,
+        "total_size": 460800
+      },
+      "workspace_mount": {
+        "destination": "/workspace",
+        "options": [
+          "rbind",
+          "rw",
+          "nosuid",
+          "nodev"
+        ],
+        "source": "/home/craigb/proj/kali-template-v2",
+        "type": "bind"
+      }
+    },
+    "directfs-false": {
+      "after_churn": {
+        "exec": {
+          "elapsed_ns": 2413814,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131755
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 586696,
+          "errno": 26,
+          "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-atomic.sh'",
+          "ok": false,
+          "returncode": null
+        },
+        "exec_release_poll": {
+          "attempts": 77,
+          "last": {
+            "elapsed_ns": 805476,
+            "errno": 26,
+            "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-atomic.sh'",
+            "ok": false,
+            "returncode": null
+          },
+          "latency_ms": 2000.781882,
+          "released": false
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 11,
+            "mode": 493,
+            "mtime_ns": 1787209860619115085,
+            "size": 52,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 10,
+            "mode": 493,
+            "mtime_ns": 1787209842691709698,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209860630992587\n",
+          "method": "atomic",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open",
+          "observed_host_marker": "host-visible-1787209805948777562\n",
+          "sha256": "e7cc9b5ed2b12d35173df39bb095dae981cbfcd29db3aea15d99f52cd365fc8e"
+        },
+        "guest_marker_content": "guest-visible-1787209860630992587\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131759,
+          "mode": 493,
+          "mtime_ns": 1787209860619115085,
+          "size": 52,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131758,
+          "mode": 493,
+          "mtime_ns": 1787209842691709698,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 256,
+              "name": ".probe-atomic.sh.zn3zltzj",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.zn3zltzj",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": ".probe-atomic.sh.zn3zltzj",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.zn3zltzj",
+              "wd": 1
+            },
+            {
+              "cookie": 309642,
+              "mask": 64,
+              "name": ".probe-atomic.sh.zn3zltzj",
+              "wd": 1
+            },
+            {
+              "cookie": 309642,
+              "mask": 128,
+              "name": "probe-atomic.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "e7cc9b5ed2b12d35173df39bb095dae981cbfcd29db3aea15d99f52cd365fc8e",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131758
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/runsc",
+              "fd": 875,
+              "flags_octal": "02104002",
+              "pids": [
+                366848
+              ],
+              "root_pid": 366848,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366849
+              ],
+              "root_pid": 366849,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366884
+              ],
+              "root_pid": 366884,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366939
+              ],
+              "root_pid": 366939,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366940
+              ],
+              "root_pid": 366940,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366956
+              ],
+              "root_pid": 366956,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366957
+              ],
+              "root_pid": 366957,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366958
+              ],
+              "root_pid": 366958,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366959
+              ],
+              "root_pid": 366959,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366967
+              ],
+              "root_pid": 366967,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366968
+              ],
+              "root_pid": 366968,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366974
+              ],
+              "root_pid": 366974,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                366975
+              ],
+              "root_pid": 366975,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367029
+              ],
+              "root_pid": 367029,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367030
+              ],
+              "root_pid": 367030,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367036
+              ],
+              "root_pid": 367036,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367037
+              ],
+              "root_pid": 367037,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367038
+              ],
+              "root_pid": 367038,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367049
+              ],
+              "root_pid": 367049,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367050
+              ],
+              "root_pid": 367050,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367051
+              ],
+              "root_pid": 367051,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367052
+              ],
+              "root_pid": 367052,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367053
+              ],
+              "root_pid": 367053,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367064
+              ],
+              "root_pid": 367064,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367138
+              ],
+              "root_pid": 367138,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367139
+              ],
+              "root_pid": 367139,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367140
+              ],
+              "root_pid": 367140,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367141
+              ],
+              "root_pid": 367141,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367142
+              ],
+              "root_pid": 367142,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367143
+              ],
+              "root_pid": 367143,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367193
+              ],
+              "root_pid": 367193,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367194
+              ],
+              "root_pid": 367194,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367195
+              ],
+              "root_pid": 367195,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367198
+              ],
+              "root_pid": 367198,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367199
+              ],
+              "root_pid": 367199,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367200
+              ],
+              "root_pid": 367200,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367201
+              ],
+              "root_pid": 367201,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367375
+              ],
+              "root_pid": 367375,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367376
+              ],
+              "root_pid": 367376,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367377
+              ],
+              "root_pid": 367377,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367378
+              ],
+              "root_pid": 367378,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367379
+              ],
+              "root_pid": 367379,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367380
+              ],
+              "root_pid": 367380,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367381
+              ],
+              "root_pid": 367381,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367382
+              ],
+              "root_pid": 367382,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367383
+              ],
+              "root_pid": 367383,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367384
+              ],
+              "root_pid": 367384,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 209,
+              "flags_octal": "0104002",
+              "pids": [
+                367385
+              ],
+              "root_pid": 367385,
+              "task_count": 1
+            }
+          ],
+          "identity": {
+            "device": 64769,
+            "inode": 43131759
+          },
+          "permission_denied": 0,
+          "runtime_roots": [
+            {
+              "command": "runsc-gofer --ignore-cgroups=true --directfs=false --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+              "fd_count": 876,
+              "pid": 366848,
+              "ppid": 1,
+              "threads": "51",
+              "vm_rss": "34004 kB"
+            },
+            {
+              "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --directfs=false boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --controller-fd=15 --dev-io-fd=-1 --gofer-filestore-fds=12 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --io-fds=3,4,5,6,7,8,9,10,11 --mounts-fd=13 --setup-root=false --spec-fd=16 --start-sync-fd=14 --stdio-fds=17,18,19 --total-host-memory=16768610304 --total-memory=16768610304 --product-name=KVM Server --host-thp-shmem-enabled=never --host-thp-defrag=madvise --proc-mount-sync-fd=26 safeyolo-kali-template-v2",
+              "fd_count": 309,
+              "pid": 366849,
+              "ppid": 1,
+              "threads": "25",
+              "vm_rss": "58428 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366884,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "28 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366939,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366940,
+              "ppid": 366939,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366956,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "4704 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366957,
+              "ppid": 366956,
+              "threads": "1",
+              "vm_rss": "4704 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366958,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366959,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366967,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "88 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366968,
+              "ppid": 366967,
+              "threads": "1",
+              "vm_rss": "88 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366974,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "2292 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 366975,
+              "ppid": 366974,
+              "threads": "1",
+              "vm_rss": "2292 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367029,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367030,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367036,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367037,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367038,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367049,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367050,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367051,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367052,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367053,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367064,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367138,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367139,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367140,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367141,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367142,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367143,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367193,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367194,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367195,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367198,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367199,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367200,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367201,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367375,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367376,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367377,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367378,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367379,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367380,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367381,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "232 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367382,
+              "ppid": 366939,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367383,
+              "ppid": 366939,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367384,
+              "ppid": 366939,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 309,
+              "pid": 367385,
+              "ppid": 366939,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            }
+          ],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-atomic.sh",
+          "writable_holder_tasks": 48
+        }
+      },
+      "atomic_after_stop": {
+        "exec": {
+          "elapsed_ns": 1936684,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131759
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "boot": {
+        "elapsed_ms": 4795.166813,
+        "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+        "returncode": 0
+      },
+      "cleanup": {
+        "home": {
+          "exists": false,
+          "removed": "/home/agent/.safeyolo-etxtbsy-bench-directfs-false"
+        },
+        "workspace": {
+          "exists": false,
+          "removed": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/.safeyolo-etxtbsy-bench-directfs-false"
+        }
+      },
+      "guest_inotify_from_host": {
+        "events": [],
+        "observed": false,
+        "path": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/host-notify.txt",
+        "ready": true,
+        "returncode": 0
+      },
+      "home_benchmark": {
+        "create_ns_per_file": 1124080.7033333334,
+        "directory": "/home/agent/.safeyolo-etxtbsy-bench-directfs-false",
+        "files": 300,
+        "misses": 300,
+        "negative_stat_ns_per_call": 396152.91333333333,
+        "open_read_ns_per_file": 856915.27,
+        "stat_ns_per_call": 226837.9911111111,
+        "total_read": 300,
+        "total_size": 115200
+      },
+      "in-place": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 768120,
+          "errno": 26,
+          "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-in-place.sh'",
+          "ok": false,
+          "returncode": null
+        },
+        "exec_release_poll": {
+          "attempts": 77,
+          "last": {
+            "elapsed_ns": 877575,
+            "errno": 26,
+            "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-in-place.sh'",
+            "ok": false,
+            "returncode": null
+          },
+          "latency_ms": 2001.687065,
+          "released": false
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209824121647700,
+            "size": 54,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209805949168121,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209824132663651\n",
+          "method": "in-place",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open",
+          "observed_host_marker": "host-visible-1787209805948777562\n",
+          "sha256": "13e21306ca599abae77f7dc8642162252e523ecc6955d8a42967bccdff9218cc"
+        },
+        "guest_marker_content": "guest-visible-1787209824132663651\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131755,
+          "mode": 493,
+          "mtime_ns": 1787209824121647700,
+          "size": 54,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131755,
+          "mode": 493,
+          "mtime_ns": 1787209805949168121,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": "probe-in-place.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "13e21306ca599abae77f7dc8642162252e523ecc6955d8a42967bccdff9218cc",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131755
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [
+            {
+              "access_mode": 1,
+              "command": "exe",
+              "executable": "/usr/bin/runsc",
+              "fd": 867,
+              "flags_octal": "02104001",
+              "pids": [
+                366848
+              ],
+              "root_pid": 366848,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/runsc",
+              "fd": 872,
+              "flags_octal": "02104002",
+              "pids": [
+                366848
+              ],
+              "root_pid": 366848,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366849
+              ],
+              "root_pid": 366849,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366884
+              ],
+              "root_pid": 366884,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366939
+              ],
+              "root_pid": 366939,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366940
+              ],
+              "root_pid": 366940,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366956
+              ],
+              "root_pid": 366956,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366957
+              ],
+              "root_pid": 366957,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366958
+              ],
+              "root_pid": 366958,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366959
+              ],
+              "root_pid": 366959,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366967
+              ],
+              "root_pid": 366967,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366968
+              ],
+              "root_pid": 366968,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366974
+              ],
+              "root_pid": 366974,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                366975
+              ],
+              "root_pid": 366975,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367029
+              ],
+              "root_pid": 367029,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367030
+              ],
+              "root_pid": 367030,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367036
+              ],
+              "root_pid": 367036,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367037
+              ],
+              "root_pid": 367037,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367038
+              ],
+              "root_pid": 367038,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367049
+              ],
+              "root_pid": 367049,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367050
+              ],
+              "root_pid": 367050,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367051
+              ],
+              "root_pid": 367051,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367052
+              ],
+              "root_pid": 367052,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367053
+              ],
+              "root_pid": 367053,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367064
+              ],
+              "root_pid": 367064,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367138
+              ],
+              "root_pid": 367138,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367139
+              ],
+              "root_pid": 367139,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367140
+              ],
+              "root_pid": 367140,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367141
+              ],
+              "root_pid": 367141,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367142
+              ],
+              "root_pid": 367142,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367143
+              ],
+              "root_pid": 367143,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367193
+              ],
+              "root_pid": 367193,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367194
+              ],
+              "root_pid": 367194,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367195
+              ],
+              "root_pid": 367195,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367198
+              ],
+              "root_pid": 367198,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367199
+              ],
+              "root_pid": 367199,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367200
+              ],
+              "root_pid": 367200,
+              "task_count": 1
+            },
+            {
+              "access_mode": 2,
+              "command": "exe",
+              "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+              "fd": 313,
+              "flags_octal": "0104002",
+              "pids": [
+                367201
+              ],
+              "root_pid": 367201,
+              "task_count": 1
+            }
+          ],
+          "identity": {
+            "device": 64769,
+            "inode": 43131755
+          },
+          "permission_denied": 0,
+          "runtime_roots": [
+            {
+              "command": "runsc-gofer --ignore-cgroups=true --directfs=false --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+              "fd_count": 873,
+              "pid": 366848,
+              "ppid": 1,
+              "threads": "51",
+              "vm_rss": "33984 kB"
+            },
+            {
+              "command": "runsc-sandbox --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --directfs=false boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --controller-fd=15 --dev-io-fd=-1 --gofer-filestore-fds=12 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --io-fds=3,4,5,6,7,8,9,10,11 --mounts-fd=13 --setup-root=false --spec-fd=16 --start-sync-fd=14 --stdio-fds=17,18,19 --total-host-memory=16768610304 --total-memory=16768610304 --product-name=KVM Server --host-thp-shmem-enabled=never --host-thp-defrag=madvise --proc-mount-sync-fd=26 safeyolo-kali-template-v2",
+              "fd_count": 308,
+              "pid": 366849,
+              "ppid": 1,
+              "threads": "25",
+              "vm_rss": "57696 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366884,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "28 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366939,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "88 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366940,
+              "ppid": 366939,
+              "threads": "1",
+              "vm_rss": "88 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366956,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "4704 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366957,
+              "ppid": 366956,
+              "threads": "1",
+              "vm_rss": "4704 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366958,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366959,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366967,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "88 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366968,
+              "ppid": 366967,
+              "threads": "1",
+              "vm_rss": "88 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366974,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "2292 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 366975,
+              "ppid": 366974,
+              "threads": "1",
+              "vm_rss": "2292 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367029,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367030,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367036,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367037,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367038,
+              "ppid": 367029,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367049,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367050,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367051,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367052,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367053,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367064,
+              "ppid": 366958,
+              "threads": "1",
+              "vm_rss": "9088 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367138,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367139,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367140,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "72 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367141,
+              "ppid": 367140,
+              "threads": "1",
+              "vm_rss": "72 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367142,
+              "ppid": 366849,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367143,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367193,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367194,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367195,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367198,
+              "ppid": 367142,
+              "threads": "1",
+              "vm_rss": "184 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367199,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367200,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            },
+            {
+              "command": "",
+              "fd_count": 308,
+              "pid": 367201,
+              "ppid": 367138,
+              "threads": "1",
+              "vm_rss": "168 kB"
+            }
+          ],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 38
+        }
+      },
+      "in-place_after_stop": {
+        "exec": {
+          "elapsed_ns": 2150717,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131755
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "name": "directfs-false",
+      "overrides": {
+        "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS": "false"
+      },
+      "stop": {
+        "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+        "returncode": 0
+      },
+      "workspace_benchmark": {
+        "create_ns_per_file": 1099156.3583333334,
+        "directory": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/directfs-false/.safeyolo-etxtbsy-bench-directfs-false",
+        "files": 1200,
+        "misses": 1200,
+        "negative_stat_ns_per_call": 331831.265,
+        "open_read_ns_per_file": 1007855.39,
+        "stat_ns_per_call": 360914.5538888889,
+        "total_read": 1200,
+        "total_size": 460800
+      },
+      "workspace_mount": {
+        "destination": "/workspace",
+        "options": [
+          "rbind",
+          "rw",
+          "nosuid",
+          "nodev"
+        ],
+        "source": "/home/craigb/proj/kali-template-v2",
+        "type": "bind"
+      }
+    },
+    "global-dcache-0": {
+      "after_churn": {
+        "exec": {
+          "elapsed_ns": 2286042,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131749
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 2078369,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "exec_release_poll": {
+          "attempts": 1,
+          "last": {
+            "elapsed_ns": 1917446,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0
+          },
+          "latency_ms": 1.92703,
+          "released": true
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 11,
+            "mode": 493,
+            "mtime_ns": 1787209711624077103,
+            "size": 52,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 10,
+            "mode": 493,
+            "mtime_ns": 1787209694227522809,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209711634066908\n",
+          "method": "atomic",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0-global,cache=remote_revalidating,disable_fifo_open,directfs",
+          "observed_host_marker": "host-visible-1787209660553325033\n",
+          "sha256": "87814d1bab1210d0a9d864ef3e86eee36405fc5a8c893552b3e193d0c9ee3a68"
+        },
+        "guest_marker_content": "guest-visible-1787209711634066908\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131753,
+          "mode": 493,
+          "mtime_ns": 1787209711624077103,
+          "size": 52,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131752,
+          "mode": 493,
+          "mtime_ns": 1787209694227522809,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 256,
+              "name": ".probe-atomic.sh.h1a0amb0",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.h1a0amb0",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": ".probe-atomic.sh.h1a0amb0",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 8,
+              "name": ".probe-atomic.sh.h1a0amb0",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.h1a0amb0",
+              "wd": 1
+            },
+            {
+              "cookie": 309620,
+              "mask": 64,
+              "name": ".probe-atomic.sh.h1a0amb0",
+              "wd": 1
+            },
+            {
+              "cookie": 309620,
+              "mask": 128,
+              "name": "probe-atomic.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "87814d1bab1210d0a9d864ef3e86eee36405fc5a8c893552b3e193d0c9ee3a68",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131752
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131753
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic_after_stop": {
+        "exec": {
+          "elapsed_ns": 2387826,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131753
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "boot": {
+        "elapsed_ms": 4634.20417,
+        "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+        "returncode": 0
+      },
+      "cleanup": {
+        "home": {
+          "exists": false,
+          "removed": "/home/agent/.safeyolo-etxtbsy-bench-global-dcache-0"
+        },
+        "workspace": {
+          "exists": false,
+          "removed": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/.safeyolo-etxtbsy-bench-global-dcache-0"
+        }
+      },
+      "guest_inotify_from_host": {
+        "events": [],
+        "observed": false,
+        "path": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/host-notify.txt",
+        "ready": true,
+        "returncode": 0
+      },
+      "home_benchmark": {
+        "create_ns_per_file": 641745.7066666667,
+        "directory": "/home/agent/.safeyolo-etxtbsy-bench-global-dcache-0",
+        "files": 300,
+        "misses": 300,
+        "negative_stat_ns_per_call": 181514.52666666667,
+        "open_read_ns_per_file": 172203.27,
+        "stat_ns_per_call": 110062.6,
+        "total_read": 300,
+        "total_size": 115200
+      },
+      "in-place": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 2000190,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "exec_release_poll": {
+          "attempts": 1,
+          "last": {
+            "elapsed_ns": 1854590,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0
+          },
+          "latency_ms": 1.865066,
+          "released": true
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209678060338873,
+            "size": 54,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209660553957849,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209678067121648\n",
+          "method": "in-place",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0-global,cache=remote_revalidating,disable_fifo_open,directfs",
+          "observed_host_marker": "host-visible-1787209660553325033\n",
+          "sha256": "4f848a8b124f29fdbdac62b3e15ae38f481bad4606bda2d94d06ff3eea82d434"
+        },
+        "guest_marker_content": "guest-visible-1787209678067121648\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131749,
+          "mode": 493,
+          "mtime_ns": 1787209678060338873,
+          "size": 54,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131749,
+          "mode": 493,
+          "mtime_ns": 1787209660553957849,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": "probe-in-place.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "4f848a8b124f29fdbdac62b3e15ae38f481bad4606bda2d94d06ff3eea82d434",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131749
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131749
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "in-place_after_stop": {
+        "exec": {
+          "elapsed_ns": 3009584,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131749
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "name": "global-dcache-0",
+      "overrides": {
+        "SAFEYOLO_EXPERIMENT_RUNSC_DCACHE": "0"
+      },
+      "stop": {
+        "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+        "returncode": 0
+      },
+      "workspace_benchmark": {
+        "create_ns_per_file": 617074.6566666666,
+        "directory": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/global-dcache-0/.safeyolo-etxtbsy-bench-global-dcache-0",
+        "files": 1200,
+        "misses": 1200,
+        "negative_stat_ns_per_call": 216380.875,
+        "open_read_ns_per_file": 305805.68333333335,
+        "stat_ns_per_call": 161443.84277777778,
+        "total_read": 1200,
+        "total_size": 460800
+      },
+      "workspace_mount": {
+        "destination": "/workspace",
+        "options": [
+          "rbind",
+          "rw",
+          "nosuid",
+          "nodev"
+        ],
+        "source": "/home/craigb/proj/kali-template-v2",
+        "type": "bind"
+      }
+    },
+    "workspace-dcache-0": {
+      "after_churn": {
+        "exec": {
+          "elapsed_ns": 2299222,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131743
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 2845456,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "exec_release_poll": {
+          "attempts": 1,
+          "last": {
+            "elapsed_ns": 2160222,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0
+          },
+          "latency_ms": 2.172351,
+          "released": true
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 11,
+            "mode": 493,
+            "mtime_ns": 1787209566359945374,
+            "size": 52,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 10,
+            "mode": 493,
+            "mtime_ns": 1787209548347077256,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209566368545170\n",
+          "method": "atomic",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open,directfs",
+          "observed_host_marker": "host-visible-1787209513971759443\n",
+          "sha256": "f8cf6ff9671d095150b7c12380ef8c0d6b50cb5f605e97dafa5257725dc6f34f"
+        },
+        "guest_marker_content": "guest-visible-1787209566368545170\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131747,
+          "mode": 493,
+          "mtime_ns": 1787209566359945374,
+          "size": 52,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131746,
+          "mode": 493,
+          "mtime_ns": 1787209548347077256,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 256,
+              "name": ".probe-atomic.sh.d8v3vk4x",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.d8v3vk4x",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": ".probe-atomic.sh.d8v3vk4x",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 8,
+              "name": ".probe-atomic.sh.d8v3vk4x",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.d8v3vk4x",
+              "wd": 1
+            },
+            {
+              "cookie": 309601,
+              "mask": 64,
+              "name": ".probe-atomic.sh.d8v3vk4x",
+              "wd": 1
+            },
+            {
+              "cookie": 309601,
+              "mask": 128,
+              "name": "probe-atomic.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "f8cf6ff9671d095150b7c12380ef8c0d6b50cb5f605e97dafa5257725dc6f34f",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131746
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131747
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic_after_stop": {
+        "exec": {
+          "elapsed_ns": 2076997,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131747
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "boot": {
+        "elapsed_ms": 4685.321467,
+        "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+        "returncode": 0
+      },
+      "cleanup": {
+        "home": {
+          "exists": false,
+          "removed": "/home/agent/.safeyolo-etxtbsy-bench-workspace-dcache-0"
+        },
+        "workspace": {
+          "exists": false,
+          "removed": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/.safeyolo-etxtbsy-bench-workspace-dcache-0"
+        }
+      },
+      "guest_inotify_from_host": {
+        "events": [],
+        "observed": false,
+        "path": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/host-notify.txt",
+        "ready": true,
+        "returncode": 0
+      },
+      "home_benchmark": {
+        "create_ns_per_file": 551637.2166666667,
+        "directory": "/home/agent/.safeyolo-etxtbsy-bench-workspace-dcache-0",
+        "files": 300,
+        "misses": 300,
+        "negative_stat_ns_per_call": 150569.23666666666,
+        "open_read_ns_per_file": 235761.32666666666,
+        "stat_ns_per_call": 42069.362222222226,
+        "total_read": 300,
+        "total_size": 115200
+      },
+      "in-place": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 2794438,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "exec_release_poll": {
+          "attempts": 1,
+          "last": {
+            "elapsed_ns": 2688359,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0
+          },
+          "latency_ms": 2.699566,
+          "released": true
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209531574932675,
+            "size": 54,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209513972208331,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209531579852793\n",
+          "method": "in-place",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open,directfs",
+          "observed_host_marker": "host-visible-1787209513971759443\n",
+          "sha256": "a295b8b59ec952464186c7b53c89f32e7d2b55b37a3189007e18144e5e3ada46"
+        },
+        "guest_marker_content": "guest-visible-1787209531579852793\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131743,
+          "mode": 493,
+          "mtime_ns": 1787209531574932675,
+          "size": 54,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131743,
+          "mode": 493,
+          "mtime_ns": 1787209513972208331,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": "probe-in-place.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "a295b8b59ec952464186c7b53c89f32e7d2b55b37a3189007e18144e5e3ada46",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131743
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131743
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "in-place_after_stop": {
+        "exec": {
+          "elapsed_ns": 2290478,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131743
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "name": "workspace-dcache-0",
+      "overrides": {
+        "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE": "0"
+      },
+      "stop": {
+        "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+        "returncode": 0
+      },
+      "workspace_benchmark": {
+        "create_ns_per_file": 675770.2641666667,
+        "directory": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0/.safeyolo-etxtbsy-bench-workspace-dcache-0",
+        "files": 1200,
+        "misses": 1200,
+        "negative_stat_ns_per_call": 247140.31833333333,
+        "open_read_ns_per_file": 311932.50166666665,
+        "stat_ns_per_call": 170549.17416666666,
+        "total_read": 1200,
+        "total_size": 460800
+      },
+      "workspace_mount": {
+        "destination": "/workspace",
+        "options": [
+          "rbind",
+          "rw",
+          "nosuid",
+          "nodev",
+          "dcache=0"
+        ],
+        "source": "/home/craigb/proj/kali-template-v2",
+        "type": "bind"
+      }
+    },
+    "workspace-dcache-0-directfs-false": {
+      "after_churn": {
+        "exec": {
+          "elapsed_ns": 2437721,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131761
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 1897915,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "exec_release_poll": {
+          "attempts": 1,
+          "last": {
+            "elapsed_ns": 2222685,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0
+          },
+          "latency_ms": 2.23189,
+          "released": true
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 11,
+            "mode": 493,
+            "mtime_ns": 1787210013918875039,
+            "size": 52,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 10,
+            "mode": 493,
+            "mtime_ns": 1787209996087990836,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787210013931644085\n",
+          "method": "atomic",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open",
+          "observed_host_marker": "host-visible-1787209962019409871\n",
+          "sha256": "d6067b7294cd5d76ad39d145fbe5b0e3baf8705818c703b3f9b4e1c47ac02ecf"
+        },
+        "guest_marker_content": "guest-visible-1787210013931644085\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131765,
+          "mode": 493,
+          "mtime_ns": 1787210013918875039,
+          "size": 52,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131764,
+          "mode": 493,
+          "mtime_ns": 1787209996087990836,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 256,
+              "name": ".probe-atomic.sh.gznzauix",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.gznzauix",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": ".probe-atomic.sh.gznzauix",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 8,
+              "name": ".probe-atomic.sh.gznzauix",
+              "wd": 1
+            },
+            {
+              "cookie": 0,
+              "mask": 4,
+              "name": ".probe-atomic.sh.gznzauix",
+              "wd": 1
+            },
+            {
+              "cookie": 309663,
+              "mask": 64,
+              "name": ".probe-atomic.sh.gznzauix",
+              "wd": 1
+            },
+            {
+              "cookie": 309663,
+              "mask": 128,
+              "name": "probe-atomic.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "d6067b7294cd5d76ad39d145fbe5b0e3baf8705818c703b3f9b4e1c47ac02ecf",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131764
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131765
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "atomic_after_stop": {
+        "exec": {
+          "elapsed_ns": 2429649,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131765
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-atomic.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "boot": {
+        "elapsed_ms": 4665.783218,
+        "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+        "returncode": 0
+      },
+      "cleanup": {
+        "home": {
+          "exists": false,
+          "removed": "/home/agent/.safeyolo-etxtbsy-bench-workspace-dcache-0-directfs-false"
+        },
+        "workspace": {
+          "exists": false,
+          "removed": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/.safeyolo-etxtbsy-bench-workspace-dcache-0-directfs-false"
+        }
+      },
+      "guest_inotify_from_host": {
+        "events": [],
+        "observed": false,
+        "path": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/host-notify.txt",
+        "ready": true,
+        "returncode": 0
+      },
+      "home_benchmark": {
+        "create_ns_per_file": 1091714.3433333333,
+        "directory": "/home/agent/.safeyolo-etxtbsy-bench-workspace-dcache-0-directfs-false",
+        "files": 300,
+        "misses": 300,
+        "negative_stat_ns_per_call": 352588.57,
+        "open_read_ns_per_file": 880885.82,
+        "stat_ns_per_call": 186017.77222222224,
+        "total_read": 300,
+        "total_size": 115200
+      },
+      "in-place": {
+        "bash_interpreter": {
+          "output": "",
+          "returncode": 0
+        },
+        "exec_immediate": {
+          "elapsed_ns": 2185398,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "exec_release_poll": {
+          "attempts": 1,
+          "last": {
+            "elapsed_ns": 1995985,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0
+          },
+          "latency_ms": 2.005409,
+          "released": true
+        },
+        "guest": {
+          "after": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209979639303827,
+            "size": 54,
+            "uid": 1000
+          },
+          "before": {
+            "device": 27,
+            "gid": 1000,
+            "inode": 7,
+            "mode": 493,
+            "mtime_ns": 1787209962019941834,
+            "size": 17,
+            "uid": 1000
+          },
+          "guest_marker": "guest-visible-1787209979646396624\n",
+          "method": "in-place",
+          "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open",
+          "observed_host_marker": "host-visible-1787209962019409871\n",
+          "sha256": "7c6fc323ca41ad5e373e5dab8f1f8c94f5844c5352b4c5d782989ecd505b8547"
+        },
+        "guest_marker_content": "guest-visible-1787209979646396624\n",
+        "host_after": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131761,
+          "mode": 493,
+          "mtime_ns": 1787209979639303827,
+          "size": 54,
+          "uid": 1000
+        },
+        "host_before": {
+          "device": 64769,
+          "gid": 1000,
+          "inode": 43131761,
+          "mode": 493,
+          "mtime_ns": 1787209962019941834,
+          "size": 17,
+          "uid": 1000
+        },
+        "host_inotify": {
+          "events": [
+            {
+              "cookie": 0,
+              "mask": 2,
+              "name": "probe-in-place.sh",
+              "wd": 1
+            }
+          ],
+          "observed": true
+        },
+        "host_sha256": "7c6fc323ca41ad5e373e5dab8f1f8c94f5844c5352b4c5d782989ecd505b8547",
+        "writers_before": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131761
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        },
+        "writers_immediate": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131761
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "in-place_after_stop": {
+        "exec": {
+          "elapsed_ns": 1898336,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0
+        },
+        "writers": {
+          "groups": [],
+          "identity": {
+            "device": 64769,
+            "inode": 43131761
+          },
+          "permission_denied": 0,
+          "runtime_roots": [],
+          "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/probe-in-place.sh",
+          "writable_holder_tasks": 0
+        }
+      },
+      "name": "workspace-dcache-0-directfs-false",
+      "overrides": {
+        "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS": "false",
+        "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE": "0"
+      },
+      "stop": {
+        "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+        "returncode": 0
+      },
+      "workspace_benchmark": {
+        "create_ns_per_file": 1416304.7841666667,
+        "directory": "/workspace/.safeyolo-etxtbsy-experiment-20260820T070237Z/workspace-dcache-0-directfs-false/.safeyolo-etxtbsy-bench-workspace-dcache-0-directfs-false",
+        "files": 1200,
+        "misses": 1200,
+        "negative_stat_ns_per_call": 656622.47,
+        "open_read_ns_per_file": 1140477.8875,
+        "stat_ns_per_call": 569988.526388889,
+        "total_read": 1200,
+        "total_size": 460800
+      },
+      "workspace_mount": {
+        "destination": "/workspace",
+        "options": [
+          "rbind",
+          "rw",
+          "nosuid",
+          "nodev",
+          "dcache=0"
+        ],
+        "source": "/home/craigb/proj/kali-template-v2",
+        "type": "bind"
+      }
+    }
+  },
+  "workspace": "/home/craigb/proj/kali-template-v2"
+}

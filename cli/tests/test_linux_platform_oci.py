@@ -180,6 +180,159 @@ def test_home_agent_is_bind_mounted(isolated_env):
     assert "nodev" in m["options"]
 
 
+def test_workspace_dcache_zero_is_mount_local(isolated_env, monkeypatch):
+    """Normal startup disables idle dentry retention only for /workspace."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-workspace-dcache"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.delenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, raising=False)
+
+    spec = linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.9"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    workspace = next(
+        mount for mount in spec["mounts"]
+        if mount["destination"] == "/workspace"
+    )
+    assert "dcache=0" in workspace["options"]
+    assert all(
+        not any(option.startswith("dcache=") for option in mount.get("options", []))
+        for mount in spec["mounts"]
+        if mount["destination"] != "/workspace"
+    )
+
+
+def test_etxtbsy_experiment_can_restore_cached_workspace_baseline(
+    isolated_env, monkeypatch,
+):
+    """The archived experiment can still reproduce the pre-fix default."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-workspace-baseline"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.setenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, "default")
+
+    spec = linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.11"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    workspace = next(
+        mount for mount in spec["mounts"]
+        if mount["destination"] == "/workspace"
+    )
+    assert not any(option.startswith("dcache=") for option in workspace["options"])
+
+
+def test_workspace_dcache_policy_does_not_spill_into_extra_shares(
+    isolated_env, monkeypatch,
+):
+    """Extra shares retain their own cache policy until explicitly designed."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-extra-share-scope"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.delenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, raising=False)
+    writable = isolated_env / "writable-share"
+    readonly = isolated_env / "readonly-share"
+    writable.mkdir()
+    readonly.mkdir()
+
+    spec = linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.12"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=[
+            (str(writable), "writable", False),
+            (str(readonly), "readonly", True),
+        ],
+    )
+
+    workspace = next(m for m in spec["mounts"] if m["destination"] == "/workspace")
+    extras = [
+        m for m in spec["mounts"]
+        if m["source"] in {str(writable), str(readonly)}
+    ]
+    assert "dcache=0" in workspace["options"]
+    assert len(extras) == 2
+    assert all(
+        not any(option.startswith("dcache=") for option in mount["options"])
+        for mount in extras
+    )
+
+
+def test_etxtbsy_experiment_runsc_flags_are_validated(monkeypatch):
+    """Diagnostic values cannot inject text into the runsc shell command."""
+    from safeyolo.platform import linux
+
+    monkeypatch.setenv(linux.EXPERIMENT_RUNSC_DCACHE_ENV, "0")
+    monkeypatch.setenv(linux.EXPERIMENT_RUNSC_DIRECTFS_ENV, "false")
+    assert linux._experiment_runsc_flags() == [  # noqa: SLF001
+        "--dcache=0",
+        "--directfs=false",
+    ]
+
+    monkeypatch.setenv(linux.EXPERIMENT_RUNSC_DCACHE_ENV, "0; touch /tmp/oops")
+    with pytest.raises(RuntimeError, match="non-negative integer"):
+        linux._experiment_runsc_flags()  # noqa: SLF001
+
+
+def test_etxtbsy_normal_startup_leaves_global_dcache_unset(monkeypatch):
+    """Normal startup must preserve gVisor's per-mount dcache selection."""
+    from safeyolo.platform import linux
+
+    monkeypatch.delenv(linux.EXPERIMENT_RUNSC_DCACHE_ENV, raising=False)
+    monkeypatch.delenv(linux.EXPERIMENT_RUNSC_DIRECTFS_ENV, raising=False)
+
+    assert linux._experiment_runsc_flags() == []  # noqa: SLF001
+
+
+def test_etxtbsy_experiment_workspace_dcache_rejects_invalid_value(
+    isolated_env, monkeypatch,
+):
+    """An invalid mount option is rejected before an OCI spec is written."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-invalid-dcache"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.setenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, "-1")
+
+    with pytest.raises(RuntimeError, match="non-negative integer"):
+        linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+            name=name,
+            rootfs_path=isolated_env / "rootfs",
+            workspace_path=str(isolated_env),
+            config_share=isolated_env / "config-share",
+            fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.10"},
+            cpus=1,
+            memory_mb=1024,
+            extra_shares=None,
+        )
+
+
 def test_oci_environment_pins_persistent_mise_paths(isolated_env):
     """The base sandbox environment points mise and PATH at agent home."""
     from safeyolo.platform.linux import LinuxPlatform

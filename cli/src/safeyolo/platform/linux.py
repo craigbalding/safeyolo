@@ -43,6 +43,14 @@ AA_PROFILE = "safeyolo-runsc"
 RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
 PORT_FORWARD_TIMEOUT_SECONDS = 10
 
+# Diagnostic-only overrides used by the archived ETXTBSY experiment. Keeping
+# these out of policy.toml makes it difficult to accidentally turn an
+# experiment into a persistent security/performance setting. The workspace
+# override also accepts "default" to reproduce gVisor's pre-fix mount default.
+EXPERIMENT_WORKSPACE_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE"
+EXPERIMENT_RUNSC_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DCACHE"
+EXPERIMENT_RUNSC_DIRECTFS_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS"
+
 
 class _SocketReader:
     """Minimal binary reader over one native runsc port-forward socket."""
@@ -144,6 +152,50 @@ def _runsc_root() -> str:
         root = str(Path(config_dir) / "run")
     os.makedirs(root, exist_ok=True)
     return root
+
+
+def _experiment_nonnegative_int(name: str) -> int | None:
+    """Read a diagnostic non-negative integer without shell metacharacters."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    if not raw or not raw.isascii() or not raw.isdecimal():
+        raise RuntimeError(f"{name} must be a non-negative integer, got {raw!r}")
+    return int(raw)
+
+
+def _experiment_bool(name: str) -> bool | None:
+    """Read a diagnostic boolean using a deliberately narrow vocabulary."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true"}:
+        return True
+    if normalized in {"0", "false"}:
+        return False
+    raise RuntimeError(f"{name} must be true/false or 1/0, got {raw!r}")
+
+
+def _workspace_dcache_option() -> str | None:
+    """Return the production workspace cache option or a diagnostic override."""
+    raw = os.environ.get(EXPERIMENT_WORKSPACE_DCACHE_ENV)
+    if raw == "default":
+        return None
+    value = _experiment_nonnegative_int(EXPERIMENT_WORKSPACE_DCACHE_ENV)
+    return f"dcache={0 if value is None else value}"
+
+
+def _experiment_runsc_flags() -> list[str]:
+    """Return validated runsc flags for the ETXTBSY experiment harness."""
+    flags: list[str] = []
+    dcache = _experiment_nonnegative_int(EXPERIMENT_RUNSC_DCACHE_ENV)
+    if dcache is not None:
+        flags.append(f"--dcache={dcache}")
+    directfs = _experiment_bool(EXPERIMENT_RUNSC_DIRECTFS_ENV)
+    if directfs is not None:
+        flags.append(f"--directfs={'true' if directfs else 'false'}")
+    return flags
 
 
 def _wrap_runsc_command(command: str) -> str:
@@ -817,9 +869,13 @@ class LinuxPlatform(AgentPlatform):
         else:
             debug_flags = ""
 
+        experiment_flags = " ".join(_experiment_runsc_flags())
+        if experiment_flags:
+            experiment_flags += " "
+
         inner = (
             f"{setup} && "
-            f"{runsc} {debug_flags}--root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
+            f"{runsc} {debug_flags}{experiment_flags}--root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "
@@ -1229,6 +1285,11 @@ class LinuxPlatform(AgentPlatform):
         # Mounts
         proxy_mountpoint = config_share / "proxy"
         proxy_mountpoint.mkdir(parents=True, exist_ok=True)
+        workspace_options = ["rbind", "rw", "nosuid", "nodev"]
+        workspace_dcache = _workspace_dcache_option()
+        if workspace_dcache is not None:
+            workspace_options.append(workspace_dcache)
+
         mounts = [
             {"destination": "/proc", "type": "proc", "source": "proc"},
             {"destination": "/dev", "type": "tmpfs", "source": "tmpfs",
@@ -1239,7 +1300,7 @@ class LinuxPlatform(AgentPlatform):
              "options": ["nosuid", "nodev", "mode=1777"]},
             {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
-             "options": ["rbind", "rw", "nosuid", "nodev"]},
+             "options": workspace_options},
             {"destination": "/safeyolo", "type": "bind",
              "source": str(config_share),
              "options": ["rbind", "ro"]},

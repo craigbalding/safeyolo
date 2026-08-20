@@ -1,0 +1,2285 @@
+{
+  "agent": "kali-template-v2",
+  "agent_left_stopped": true,
+  "artifact_root": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073129Z",
+  "artifact_root_removed": true,
+  "boot": {
+    "elapsed_ms": 4711.694739,
+    "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+    "returncode": 0
+  },
+  "finished_at": "2026-08-20T07:34:10.516209+00:00",
+  "git_benchmark": {
+    "clean_status_ns": [
+      157087284,
+      140953364,
+      148445126,
+      161692506,
+      176823691
+    ],
+    "directory": "/workspace/.safeyolo-etxtbsy-deep-20260820T073129Z/.safeyolo-etxtbsy-bench-deep-git",
+    "dirty_entries": [
+      100,
+      100,
+      100,
+      100,
+      100
+    ],
+    "dirty_status_ns": [
+      232160501,
+      199213747,
+      191083702,
+      193441371,
+      193029008
+    ],
+    "files": 2000,
+    "repetitions": 5
+  },
+  "guest_cleanup": {
+    "git": {
+      "exists": false,
+      "removed": "/workspace/.safeyolo-etxtbsy-deep-20260820T073129Z/.safeyolo-etxtbsy-bench-deep-git"
+    },
+    "home": {
+      "exists": false,
+      "removed": "/home/agent/.safeyolo-etxtbsy-bench-deep-home-20260820T073129Z"
+    },
+    "workspace": {
+      "exists": false,
+      "removed": "/workspace/.safeyolo-etxtbsy-deep-20260820T073129Z/.safeyolo-etxtbsy-bench-deep-workspace"
+    }
+  },
+  "home_control_benchmark": {
+    "create_ns_per_file": 576315.679,
+    "directory": "/home/agent/.safeyolo-etxtbsy-bench-deep-home-20260820T073129Z",
+    "files": 1000,
+    "repetitions": 5,
+    "samples": [
+      {
+        "entries": 1000,
+        "misses": 1000,
+        "negative_ns_per_file": 151138.64,
+        "read_ns_per_file": 305644.415,
+        "readdir_ns_per_file": 5144.768,
+        "rename_ns_per_operation": 248065.66,
+        "repetition": 0,
+        "stat_ns_per_file": 84354.138,
+        "total_read": 1000,
+        "total_size": 128000
+      },
+      {
+        "entries": 1000,
+        "misses": 1000,
+        "negative_ns_per_file": 207369.242,
+        "read_ns_per_file": 199788.056,
+        "readdir_ns_per_file": 6834.829,
+        "rename_ns_per_operation": 243316.9175,
+        "repetition": 1,
+        "stat_ns_per_file": 71849.4,
+        "total_read": 1000,
+        "total_size": 128000
+      },
+      {
+        "entries": 1000,
+        "misses": 1000,
+        "negative_ns_per_file": 156189.178,
+        "read_ns_per_file": 198209.042,
+        "readdir_ns_per_file": 5443.739,
+        "rename_ns_per_operation": 228117.165,
+        "repetition": 2,
+        "stat_ns_per_file": 75720.485,
+        "total_read": 1000,
+        "total_size": 128000
+      },
+      {
+        "entries": 1000,
+        "misses": 1000,
+        "negative_ns_per_file": 157992.921,
+        "read_ns_per_file": 189712.512,
+        "readdir_ns_per_file": 4743.202,
+        "rename_ns_per_operation": 269103.8975,
+        "repetition": 3,
+        "stat_ns_per_file": 43262.218,
+        "total_read": 1000,
+        "total_size": 128000
+      },
+      {
+        "entries": 1000,
+        "misses": 1000,
+        "negative_ns_per_file": 183126.238,
+        "read_ns_per_file": 141051.112,
+        "readdir_ns_per_file": 4842.02,
+        "rename_ns_per_operation": 259642.59,
+        "repetition": 4,
+        "stat_ns_per_file": 54055.484,
+        "total_read": 1000,
+        "total_size": 128000
+      }
+    ]
+  },
+  "mode": "deep",
+  "output_dir": "/home/craigb/proj/safeyolo/.git/etxtbsy-deep/20260820T073129Z",
+  "rounds": [
+    {
+      "executions": {
+        "atomic": {
+          "attempts": 250,
+          "bad_output": [],
+          "errno_counts": {},
+          "failures": 0,
+          "latency_ms": {
+            "max": 4.937564,
+            "p50": 1.972768,
+            "p95": 3.010796
+          },
+          "successes": 250
+        },
+        "in-place": {
+          "attempts": 250,
+          "bad_output": [],
+          "errno_counts": {},
+          "failures": 0,
+          "latency_ms": {
+            "max": 4.906488,
+            "p50": 1.95426,
+            "p95": 2.810003
+          },
+          "successes": 250
+        }
+      },
+      "guest": {
+        "handoff_elapsed_ns": 4478091810,
+        "handoff_write_operations": 2000,
+        "lock_blocked": false,
+        "manifest": {
+          "entries": {
+            "append.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101040333769,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "binary.bin": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101042191214,
+              "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193",
+              "size": 4096,
+              "type": "file",
+              "uid": 1000
+            },
+            "empty": {
+              "blocks": 0,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101042191214,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "type": "file",
+              "uid": 1000
+            },
+            "executable.sh": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211101043400339,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-a": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-b": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "large.bin": {
+              "blocks": 16384,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101064088415,
+              "sha256": "ca55da434fbf886954cb1801407901c6444b0be2bd97ad1db85c5e9ec0a3fc5e",
+              "size": 8388608,
+              "type": "file",
+              "uid": 1000
+            },
+            "nested": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211101044589404,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211101044940135,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper/spaces and \u00fcnicode.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045203973,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "plain.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101039052155,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "relative-link": {
+              "gid": 1000,
+              "mode": 511,
+              "mtime_ns": 1787211101047918200,
+              "target": "plain.txt",
+              "type": "symlink",
+              "uid": 1000
+            },
+            "renamed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045797859,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "sparse.bin": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101048645599,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "truncate.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101041430645,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hardlinks": [
+            [
+              "hard-a",
+              "hard-b"
+            ]
+          ]
+        },
+        "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open,directfs"
+      },
+      "guest_lock_blocked_by_host": false,
+      "guest_to_host_manifest": {
+        "changed": {
+          "append.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101040333769,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101040333769,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "executable.sh": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211101043400339,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211101043400339,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-a": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-b": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045203973,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045203973,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "plain.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101039052155,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101039052155,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "renamed": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045797859,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045797859,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "sparse.bin": {
+            "expected": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101048645599,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101048645599,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "truncate.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101041430645,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101041430645,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          }
+        },
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": false,
+        "unexpected": []
+      },
+      "handle_semantics": {
+        "atomic_new_inode": true,
+        "atomic_old_handle_retained_original": true,
+        "atomic_old_mapping_retained_original": true,
+        "in_place_old_handle_saw_new_payload": true,
+        "in_place_same_inode": true
+      },
+      "host_to_guest_manifest": {
+        "changed": {
+          "append.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101040333769,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101040333769,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "executable.sh": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 453,
+              "mtime_ns": 1787211101043400339,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 453,
+              "mtime_ns": 1787211101043400339,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-a": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-b": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101047481861,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "host-created.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 436,
+              "mtime_ns": 1787211120427565003,
+              "sha256": "98130780c87cd0fd0d47ba5dac51317470ba20494709160d5bc1921c6748dada",
+              "size": 15,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 436,
+              "mtime_ns": 1787211120427565003,
+              "sha256": "98130780c87cd0fd0d47ba5dac51317470ba20494709160d5bc1921c6748dada",
+              "size": 15,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045203973,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045203973,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "plain.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211120421232412,
+              "sha256": "55191e28e4875130bde6c403446ed9fa9a473972eb163357647725fac878c2c2",
+              "size": 31,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211120421232412,
+              "sha256": "55191e28e4875130bde6c403446ed9fa9a473972eb163357647725fac878c2c2",
+              "size": 31,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "renamed-by-host": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045797859,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101045797859,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "sparse.bin": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101048645599,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101048645599,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "truncate.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101041430645,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211101041430645,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          }
+        },
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": false,
+        "unexpected": []
+      },
+      "round": 0,
+      "runtime": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "fd_count": 46,
+            "pid": 370319,
+            "ppid": 1,
+            "threads": "12",
+            "vm_rss": "30672 kB"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "fd_count": 830,
+            "pid": 370320,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "57572 kB"
+          }
+        ]
+      },
+      "writable_holders": {
+        "holders": [],
+        "holders_truncated": false,
+        "permission_denied": 0,
+        "regular_file_inodes": 500,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073129Z/round-00/handoffs",
+        "writable_holder_inodes": 0,
+        "writable_holder_tasks": 0
+      }
+    },
+    {
+      "executions": {
+        "atomic": {
+          "attempts": 250,
+          "bad_output": [],
+          "errno_counts": {},
+          "failures": 0,
+          "latency_ms": {
+            "max": 4.462637,
+            "p50": 1.788731,
+            "p95": 2.97437
+          },
+          "successes": 250
+        },
+        "in-place": {
+          "attempts": 250,
+          "bad_output": [],
+          "errno_counts": {},
+          "failures": 0,
+          "latency_ms": {
+            "max": 5.150977,
+            "p50": 1.911236,
+            "p95": 3.105407
+          },
+          "successes": 250
+        }
+      },
+      "guest": {
+        "handoff_elapsed_ns": 4374599919,
+        "handoff_write_operations": 2000,
+        "lock_blocked": false,
+        "manifest": {
+          "entries": {
+            "append.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128606445708,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "binary.bin": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128608721704,
+              "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193",
+              "size": 4096,
+              "type": "file",
+              "uid": 1000
+            },
+            "empty": {
+              "blocks": 0,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128608721704,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "type": "file",
+              "uid": 1000
+            },
+            "executable.sh": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211128609664427,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-a": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-b": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "large.bin": {
+              "blocks": 16384,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128630608338,
+              "sha256": "888532e23f1d0228128545bcef8cef13ef225a0b3540bd07089f8f87fa4d6646",
+              "size": 8388608,
+              "type": "file",
+              "uid": 1000
+            },
+            "nested": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211128610681533,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211128611087064,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper/spaces and \u00fcnicode.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611297542,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "plain.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128605305613,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "relative-link": {
+              "gid": 1000,
+              "mode": 511,
+              "mtime_ns": 1787211128614343522,
+              "target": "plain.txt",
+              "type": "symlink",
+              "uid": 1000
+            },
+            "renamed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611883398,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "sparse.bin": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128615364774,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "truncate.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128607724608,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hardlinks": [
+            [
+              "hard-a",
+              "hard-b"
+            ]
+          ]
+        },
+        "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open,directfs"
+      },
+      "guest_lock_blocked_by_host": false,
+      "guest_to_host_manifest": {
+        "changed": {
+          "append.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128606445708,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128606445708,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "executable.sh": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211128609664427,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211128609664427,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-a": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-b": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611297542,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611297542,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "plain.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128605305613,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128605305613,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "renamed": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611883398,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611883398,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "sparse.bin": {
+            "expected": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128615364774,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128615364774,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "truncate.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128607724608,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128607724608,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          }
+        },
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": false,
+        "unexpected": []
+      },
+      "handle_semantics": {
+        "atomic_new_inode": true,
+        "atomic_old_handle_retained_original": true,
+        "atomic_old_mapping_retained_original": true,
+        "in_place_old_handle_saw_new_payload": true,
+        "in_place_same_inode": true
+      },
+      "host_to_guest_manifest": {
+        "changed": {
+          "append.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128606445708,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128606445708,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "executable.sh": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 453,
+              "mtime_ns": 1787211128609664427,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 453,
+              "mtime_ns": 1787211128609664427,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-a": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-b": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128613833762,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "host-created.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 436,
+              "mtime_ns": 1787211148732290857,
+              "sha256": "86c59313a71c63a12ccf44fd4d95c33b00aba3a49b9134e44cdcc356dd762b81",
+              "size": 15,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 436,
+              "mtime_ns": 1787211148732290857,
+              "sha256": "86c59313a71c63a12ccf44fd4d95c33b00aba3a49b9134e44cdcc356dd762b81",
+              "size": 15,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611297542,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611297542,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "plain.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211148721485541,
+              "sha256": "f26f2641eaa04560149427ba3b0ff4454cacfb12c698cd0ba45f6314e797fe0e",
+              "size": 31,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211148721485541,
+              "sha256": "f26f2641eaa04560149427ba3b0ff4454cacfb12c698cd0ba45f6314e797fe0e",
+              "size": 31,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "renamed-by-host": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611883398,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128611883398,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "sparse.bin": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128615364774,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128615364774,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "truncate.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128607724608,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211128607724608,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          }
+        },
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": false,
+        "unexpected": []
+      },
+      "round": 1,
+      "runtime": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "fd_count": 46,
+            "pid": 370319,
+            "ppid": 1,
+            "threads": "12",
+            "vm_rss": "30672 kB"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "fd_count": 830,
+            "pid": 370320,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "58948 kB"
+          }
+        ]
+      },
+      "writable_holders": {
+        "holders": [],
+        "holders_truncated": false,
+        "permission_denied": 0,
+        "regular_file_inodes": 500,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073129Z/round-01/handoffs",
+        "writable_holder_inodes": 0,
+        "writable_holder_tasks": 0
+      }
+    },
+    {
+      "executions": {
+        "atomic": {
+          "attempts": 250,
+          "bad_output": [],
+          "errno_counts": {},
+          "failures": 0,
+          "latency_ms": {
+            "max": 5.161243,
+            "p50": 1.915974,
+            "p95": 2.679276
+          },
+          "successes": 250
+        },
+        "in-place": {
+          "attempts": 250,
+          "bad_output": [],
+          "errno_counts": {},
+          "failures": 0,
+          "latency_ms": {
+            "max": 4.410278,
+            "p50": 1.956804,
+            "p95": 2.965097
+          },
+          "successes": 250
+        }
+      },
+      "guest": {
+        "handoff_elapsed_ns": 4584773588,
+        "handoff_write_operations": 2000,
+        "lock_blocked": false,
+        "manifest": {
+          "entries": {
+            "append.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157102812127,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "binary.bin": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157104566916,
+              "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193",
+              "size": 4096,
+              "type": "file",
+              "uid": 1000
+            },
+            "empty": {
+              "blocks": 0,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157104566916,
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "size": 0,
+              "type": "file",
+              "uid": 1000
+            },
+            "executable.sh": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211157105590402,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-a": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "hard-b": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "large.bin": {
+              "blocks": 16384,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157126581594,
+              "sha256": "1c9fb8f803546e7cbd0ceb5efc36d6a9f922afb7c7c85756b75051db4496f35f",
+              "size": 8388608,
+              "type": "file",
+              "uid": 1000
+            },
+            "nested": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211157106713878,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper": {
+              "gid": 1000,
+              "mode": 493,
+              "mtime_ns": 1787211157107095915,
+              "type": "directory",
+              "uid": 1000
+            },
+            "nested/deeper/spaces and \u00fcnicode.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107337039,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "plain.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157097560460,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "relative-link": {
+              "gid": 1000,
+              "mode": 511,
+              "mtime_ns": 1787211157110043795,
+              "target": "plain.txt",
+              "type": "symlink",
+              "uid": 1000
+            },
+            "renamed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107896913,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "sparse.bin": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157111019679,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "truncate.txt": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157103998768,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hardlinks": [
+            [
+              "hard-a",
+              "hard-b"
+            ]
+          ]
+        },
+        "mountinfo": "26 18 0:27 / /workspace rw,nosuid - 9p none rw,trans=fd,rfdno=4,wfdno=4,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=0,cache=remote_revalidating,disable_fifo_open,directfs"
+      },
+      "guest_lock_blocked_by_host": false,
+      "guest_to_host_manifest": {
+        "changed": {
+          "append.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157102812127,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157102812127,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "executable.sh": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211157105590402,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 489,
+              "mtime_ns": 1787211157105590402,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-a": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-b": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107337039,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107337039,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "plain.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157097560460,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157097560460,
+              "sha256": "3edcacffa306fcd32ef4278f3caceb220cfe1be53aa9154fb40201a5a0301c19",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "renamed": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107896913,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107896913,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "sparse.bin": {
+            "expected": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157111019679,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157111019679,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "truncate.txt": {
+            "expected": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157103998768,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157103998768,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          }
+        },
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": false,
+        "unexpected": []
+      },
+      "handle_semantics": {
+        "atomic_new_inode": true,
+        "atomic_old_handle_retained_original": true,
+        "atomic_old_mapping_retained_original": true,
+        "in_place_old_handle_saw_new_payload": true,
+        "in_place_same_inode": true
+      },
+      "host_to_guest_manifest": {
+        "changed": {
+          "append.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157102812127,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157102812127,
+              "sha256": "dbea9325179efe46ea2add94f7b6b745ca983fabb208dc6d34aa064623d7ee23",
+              "size": 13,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "executable.sh": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 453,
+              "mtime_ns": 1787211157105590402,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 453,
+              "mtime_ns": 1787211157105590402,
+              "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb",
+              "size": 17,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-a": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "hard-b": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157109588358,
+              "sha256": "028d1d55eece761b070d497008da1ef8e0adcd40b26dfae326849aa811605df2",
+              "size": 11,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "host-created.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 436,
+              "mtime_ns": 1787211176653418151,
+              "sha256": "2fd4f856b2239617d0b068c858a814cd238b04633e1fed864a9cb7b47cc6f7dd",
+              "size": 15,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 436,
+              "mtime_ns": 1787211176653418151,
+              "sha256": "2fd4f856b2239617d0b068c858a814cd238b04633e1fed864a9cb7b47cc6f7dd",
+              "size": 15,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "nested/deeper/spaces and \u00fcnicode.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107337039,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107337039,
+              "sha256": "765696263e393532b6c7f6216b2e64f60d7384433173473862308388ff19d16d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "plain.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211176641735273,
+              "sha256": "1e820a69433c8fbeb99da2268bee795ed4ea0405cd601e495fc01ad9ad44b6f1",
+              "size": 31,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211176641735273,
+              "sha256": "1e820a69433c8fbeb99da2268bee795ed4ea0405cd601e495fc01ad9ad44b6f1",
+              "size": 31,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "renamed-by-host": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107896913,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157107896913,
+              "sha256": "9841f7cf70d5e5b5ad1f5fab17bf790857a7f03f366deba825e3daa32eebc81d",
+              "size": 8,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "sparse.bin": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157111019679,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 16385,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157111019679,
+              "sha256": "077170f9ed2213d7ecd9f9cdb13161d1eee84442a425ab069cc6e1383c273ed2",
+              "size": 8388609,
+              "type": "file",
+              "uid": 1000
+            }
+          },
+          "truncate.txt": {
+            "expected": {
+              "blocks": 8,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157103998768,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            },
+            "observed": {
+              "blocks": 1,
+              "gid": 1000,
+              "mode": 420,
+              "mtime_ns": 1787211157103998768,
+              "sha256": "c962fa1be311981f0f965857e89b000707f9cea07a069d073461308f3019200f",
+              "size": 6,
+              "type": "file",
+              "uid": 1000
+            }
+          }
+        },
+        "hardlinks_match": true,
+        "missing": [],
+        "ok": false,
+        "unexpected": []
+      },
+      "round": 2,
+      "runtime": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "fd_count": 46,
+            "pid": 370319,
+            "ppid": 1,
+            "threads": "12",
+            "vm_rss": "30672 kB"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "fd_count": 830,
+            "pid": 370320,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "59644 kB"
+          }
+        ]
+      },
+      "writable_holders": {
+        "holders": [],
+        "holders_truncated": false,
+        "permission_denied": 0,
+        "regular_file_inodes": 500,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073129Z/round-02/handoffs",
+        "writable_holder_inodes": 0,
+        "writable_holder_tasks": 0
+      }
+    }
+  ],
+  "runtime_after_workload": {
+    "agent": "kali-template-v2",
+    "processes": [
+      {
+        "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+        "fd_count": 46,
+        "pid": 370319,
+        "ppid": 1,
+        "threads": "12",
+        "vm_rss": "30672 kB"
+      },
+      {
+        "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "fd_count": 2819,
+        "pid": 370320,
+        "ppid": 1,
+        "threads": "26",
+        "vm_rss": "67328 kB"
+      }
+    ]
+  },
+  "runtime_before": {
+    "agent": "kali-template-v2",
+    "processes": [
+      {
+        "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+        "fd_count": 46,
+        "pid": 370319,
+        "ppid": 1,
+        "threads": "12",
+        "vm_rss": "30672 kB"
+      },
+      {
+        "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "fd_count": 490,
+        "pid": 370320,
+        "ppid": 1,
+        "threads": "24",
+        "vm_rss": "57488 kB"
+      }
+    ]
+  },
+  "schema": 1,
+  "settings": {
+    "benchmark_files": 4000,
+    "benchmark_repetitions": 5,
+    "handoffs_per_method_per_round": 250,
+    "overrides": {
+      "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE": "0"
+    },
+    "rounds": 3,
+    "total_guest_write_closes": 6000,
+    "total_host_executions": 1500,
+    "write_cycles_per_handoff": 4
+  },
+  "started_at": "2026-08-20T07:31:29.163457+00:00",
+  "stop": {
+    "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+    "returncode": 0
+  },
+  "tree_holders_after_workload": {
+    "holders": [],
+    "holders_truncated": false,
+    "permission_denied": 0,
+    "regular_file_inodes": 9581,
+    "runtime_roots": [],
+    "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-deep-20260820T073129Z",
+    "writable_holder_inodes": 0,
+    "writable_holder_tasks": 0
+  },
+  "verdict": {
+    "all_correctness_checks_passed": false,
+    "mount_has_workspace_dcache_0": true,
+    "rounds": [
+      {
+        "executions": true,
+        "guest_to_host_manifest": false,
+        "handle_semantics": true,
+        "host_to_guest_manifest": false,
+        "lock_semantics": false,
+        "no_writable_holders": true
+      },
+      {
+        "executions": true,
+        "guest_to_host_manifest": false,
+        "handle_semantics": true,
+        "host_to_guest_manifest": false,
+        "lock_semantics": false,
+        "no_writable_holders": true
+      },
+      {
+        "executions": true,
+        "guest_to_host_manifest": false,
+        "handle_semantics": true,
+        "host_to_guest_manifest": false,
+        "lock_semantics": false,
+        "no_writable_holders": true
+      }
+    ]
+  },
+  "workspace": "/home/craigb/proj/kali-template-v2",
+  "workspace_benchmark": {
+    "create_ns_per_file": 667925.00425,
+    "directory": "/workspace/.safeyolo-etxtbsy-deep-20260820T073129Z/.safeyolo-etxtbsy-bench-deep-workspace",
+    "files": 4000,
+    "repetitions": 5,
+    "samples": [
+      {
+        "entries": 4000,
+        "misses": 4000,
+        "negative_ns_per_file": 224197.891,
+        "read_ns_per_file": 327955.5965,
+        "readdir_ns_per_file": 4474.125,
+        "rename_ns_per_operation": 279586.125,
+        "repetition": 0,
+        "stat_ns_per_file": 180540.4785,
+        "total_read": 4000,
+        "total_size": 512000
+      },
+      {
+        "entries": 4000,
+        "misses": 4000,
+        "negative_ns_per_file": 208029.39675,
+        "read_ns_per_file": 361727.75625,
+        "readdir_ns_per_file": 5687.382,
+        "rename_ns_per_operation": 312292.18,
+        "repetition": 1,
+        "stat_ns_per_file": 156524.2385,
+        "total_read": 4000,
+        "total_size": 512000
+      },
+      {
+        "entries": 4000,
+        "misses": 4000,
+        "negative_ns_per_file": 228191.1705,
+        "read_ns_per_file": 345278.8965,
+        "readdir_ns_per_file": 5687.90525,
+        "rename_ns_per_operation": 299570.6475,
+        "repetition": 2,
+        "stat_ns_per_file": 153202.83575,
+        "total_read": 4000,
+        "total_size": 512000
+      },
+      {
+        "entries": 4000,
+        "misses": 4000,
+        "negative_ns_per_file": 227769.86875,
+        "read_ns_per_file": 360293.7,
+        "readdir_ns_per_file": 4566.89,
+        "rename_ns_per_operation": 331067.775,
+        "repetition": 3,
+        "stat_ns_per_file": 162336.167,
+        "total_read": 4000,
+        "total_size": 512000
+      },
+      {
+        "entries": 4000,
+        "misses": 4000,
+        "negative_ns_per_file": 196481.03825,
+        "read_ns_per_file": 393089.926,
+        "readdir_ns_per_file": 7060.6955,
+        "rename_ns_per_operation": 313136.505,
+        "repetition": 4,
+        "stat_ns_per_file": 164913.109,
+        "total_read": 4000,
+        "total_size": 512000
+      }
+    ]
+  },
+  "workspace_mount": {
+    "destination": "/workspace",
+    "options": [
+      "rbind",
+      "rw",
+      "nosuid",
+      "nodev",
+      "dcache=0"
+    ],
+    "source": "/home/craigb/proj/kali-template-v2",
+    "type": "bind"
+  }
+}
