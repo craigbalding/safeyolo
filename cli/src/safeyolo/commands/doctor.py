@@ -25,7 +25,7 @@ from ..config import (
     get_logs_dir,
     load_config,
 )
-from ..proxy import is_proxy_running
+from ..proxy import is_proxy_running, resolve_upstream_ca_cert
 
 console = Console()
 
@@ -381,6 +381,55 @@ def _check_ca_cert() -> DiagResult:
             message=f"Invalid: {type(exc).__name__}: {exc}",
             remediation="safeyolo stop && safeyolo start (regenerates cert)",
         )
+
+
+def _check_upstream_ca_cert() -> DiagResult:
+    """Validate additional upstream CA trust and flag transient overrides."""
+    config = load_config()
+    test_config = config.get("test", {})
+    if not isinstance(test_config, dict) or not test_config.get("enabled"):
+        test_config = None
+    proxy_config = config.get("proxy", {})
+    try:
+        path, source = resolve_upstream_ca_cert(test_config, proxy_config)
+    except RuntimeError as exc:
+        return DiagResult(
+            name="Upstream CA trust",
+            status="fail",
+            message=str(exc),
+            remediation="safeyolo proxy upstream-ca set /path/to/ca-bundle.pem",
+        )
+    if path is None:
+        return DiagResult(
+            name="Upstream CA trust",
+            status="pass",
+            message="Using system and certifi trust stores",
+        )
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.load_verify_locations(cafile=str(path))
+    except OSError as exc:
+        return DiagResult(
+            name="Upstream CA trust",
+            status="fail",
+            message=f"Invalid bundle from {source}: {exc}",
+            detail=str(path),
+            remediation="safeyolo proxy upstream-ca set /path/to/ca-bundle.pem",
+        )
+    if source == "SAFEYOLO_CA_CERT":
+        return DiagResult(
+            name="Upstream CA trust",
+            status="warn",
+            message="Valid environment override is not restart-persistent",
+            detail=str(path),
+            remediation=f"safeyolo proxy upstream-ca set {path}",
+        )
+    return DiagResult(
+        name="Upstream CA trust",
+        status="pass",
+        message=f"Valid additional bundle from {source}",
+        detail=str(path),
+    )
 
 
 def _check_baseline() -> DiagResult:
@@ -1024,6 +1073,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Addon loading", _check_addon_loading),
             ("Pipeline probe", _check_pipeline_probe),
             ("CA certificate", _check_ca_cert),
+            ("Upstream CA trust", _check_upstream_ca_cert),
             ("Baseline policy", _check_baseline),
             ("Egress enforcement", _check_firewall),
             ("Tokens", _check_tokens),

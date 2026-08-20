@@ -34,7 +34,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 |--------|----------------|-------|
 | No external interface | Sandbox netns has only loopback (Linux); VM has no virtio-net (macOS) | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py), [cli/src/safeyolo/platform/darwin.py](../cli/src/safeyolo/platform/darwin.py) |
 | Only egress = proxy UDS | Private per-agent directory mounted read-only at `/safeyolo/proxy`, containing `proxy.sock` | [cli/src/safeyolo/sockets.py](../cli/src/safeyolo/sockets.py) |
-| Identity on every flow | Mitmproxy's per-agent `UnixInstance` parses `<ip>_<agent>/proxy.sock` and stamps `client.peername = (ip, 0)` | [addons/unix_listener.py](../addons/unix_listener.py) |
+| Identity on every flow | Mitmproxy's per-agent `UnixInstance` parses `<ip>_<agent>/proxy.sock` and stamps `client.peername = (ip, 0)` | [`proxy_modes/unix_listener.py`](../cli/src/safeyolo/proxy_modes/unix_listener.py) |
 | Rootless on Linux | `runsc` runs inside an unprivileged userns (`newuidmap`/`newgidmap`); zero sudo at agent-run time | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import ssl
 import webbrowser
 from copy import deepcopy
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -48,8 +51,92 @@ web_app = typer.Typer(
     help="Manage the operator WebMITM interface.",
     no_args_is_help=True,
 )
+upstream_ca_app = typer.Typer(
+    name="upstream-ca",
+    help="Manage additional CA trust for upstream TLS verification.",
+    no_args_is_help=True,
+)
 proxy_app.add_typer(ignore_host_app, name="ignore-host")
 proxy_app.add_typer(web_app, name="web")
+proxy_app.add_typer(upstream_ca_app, name="upstream-ca")
+
+
+def _validate_upstream_ca_file(path: Path) -> None:
+    """Reject missing, malformed, or key-bearing upstream CA bundles."""
+    if not path.is_file():
+        raise ValueError(f"CA bundle not found: {path}")
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"cannot read CA bundle: {exc}") from exc
+    if b"PRIVATE KEY" in content:
+        raise ValueError("CA bundle must not contain a private key")
+    if b"-----BEGIN CERTIFICATE-----" not in content:
+        raise ValueError("CA bundle contains no PEM certificates")
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.load_verify_locations(cafile=str(path))
+    except OSError as exc:
+        raise ValueError(f"invalid CA bundle: {exc}") from exc
+
+
+def _upstream_ca_restart_note() -> None:
+    if is_proxy_running():
+        console.print(
+            "[yellow]Restart SafeYolo to apply this upstream trust change.[/yellow]"
+        )
+    else:
+        console.print("[dim]Applies on next SafeYolo start.[/dim]")
+
+
+@upstream_ca_app.command("set")
+def upstream_ca_set(
+    bundle: Path = typer.Argument(..., help="PEM certificate or CA bundle path"),
+) -> None:
+    """Persist an additional CA bundle for verified upstream TLS."""
+    path = bundle.expanduser().resolve()
+    try:
+        _validate_upstream_ca_file(path)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/red] {escape(str(exc))}")
+        raise typer.Exit(2) from exc
+
+    config = load_config()
+    config.setdefault("proxy", {})["upstream_ca_cert"] = str(path)
+    save_config(config)
+    console.print(f"[green]Configured upstream CA bundle:[/green] {escape(str(path))}")
+    _upstream_ca_restart_note()
+
+
+@upstream_ca_app.command("remove")
+def upstream_ca_remove() -> None:
+    """Remove the persistent additional upstream CA bundle."""
+    config = load_config()
+    proxy_config = config.setdefault("proxy", {})
+    if not proxy_config.get("upstream_ca_cert"):
+        console.print("[yellow]No persistent upstream CA bundle is configured.[/yellow]")
+        return
+    proxy_config["upstream_ca_cert"] = ""
+    save_config(config)
+    console.print("[green]Removed persistent upstream CA bundle.[/green]")
+    _upstream_ca_restart_note()
+
+
+@upstream_ca_app.command("show")
+def upstream_ca_show() -> None:
+    """Show persistent and environment-provided upstream CA trust."""
+    configured = load_config().get("proxy", {}).get("upstream_ca_cert", "")
+    environment = os.environ.get("SAFEYOLO_CA_CERT", "")
+    console.print(
+        f"Persistent upstream CA: {escape(str(configured))}"
+        if configured
+        else "Persistent upstream CA: [dim]not configured[/dim]"
+    )
+    if environment:
+        console.print(
+            f"Environment override: {escape(environment)} "
+            "[yellow](not persistent)[/yellow]"
+        )
 
 
 def _web_tailnet_config(config: dict) -> dict:

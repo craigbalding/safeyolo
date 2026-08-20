@@ -45,7 +45,9 @@ def _read_proc_memory() -> tuple[int, int]:
                     hwm_kb = int(line.split()[1])
     except (OSError, ValueError) as exc:
         log.debug(f"Failed to read /proc/self/status: {type(exc).__name__}: {exc}")
-    return rss_kb, hwm_kb
+    # Some procfs implementations (including gVisor) omit VmHWM. Current RSS
+    # is still a valid lower bound for peak resident memory in that case.
+    return rss_kb, max(rss_kb, hwm_kb)
 
 
 @dataclass

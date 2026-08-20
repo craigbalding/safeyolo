@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         "image": "safeyolo:latest",
         "container_name": "safeyolo",
         "ignore_hosts": [],
+        "upstream_ca_cert": "",
     },
     "modes": {
         "credential_guard": "block",

@@ -30,8 +30,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=lib/stage-safeyolo-context.sh
 . "$SCRIPT_DIR/lib/stage-safeyolo-context.sh"
 
-# Stage the vendor-neutral baseline and skill. A BYO agent can link the skill
-# from ~/.safeyolo/skills/safeyolo into its own discovery directory.
+# Stage the vendor-neutral baseline. A BYO agent can link the per-run skill at
+# /safeyolo/skills/safeyolo into its own discovery directory.
 stage_safeyolo_context "$AGENT_HOME" none
 
 # Welcome MOTD -- shown once when the shell starts. Lists the tools
@@ -58,7 +58,7 @@ List available:
 
 Docs: https://mise.jdx.dev
 SafeYolo agent guide: ~/.safeyolo/AGENTS.md
-SafeYolo skill:       ~/.safeyolo/skills/safeyolo/
+SafeYolo skill:       /safeyolo/skills/safeyolo/
 =========================================================
 EOF
 

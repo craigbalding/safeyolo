@@ -5,18 +5,17 @@
 stage_safeyolo_context() {
     local agent_home="$1"
     local consumer="${2:-none}"
-    local helper_dir repo_root guide_src skill_src managed_root skill_root
-    local link_dir link_path link_target current_target skill_tmp
+    local helper_dir repo_root guide_src managed_root
+    local link_dir link_path link_target legacy_link_target current_target
 
     helper_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     repo_root="$(cd "$helper_dir/../.." && pwd)"
     guide_src="$repo_root/docs/AGENTS.md"
-    skill_src="$repo_root/contrib/skills/safeyolo"
     managed_root="$agent_home/.safeyolo"
-    skill_root="$managed_root/skills"
-    link_target="../../.safeyolo/skills/safeyolo"
+    link_target="/safeyolo/skills/safeyolo"
+    legacy_link_target="../../.safeyolo/skills/safeyolo"
 
-    if [ ! -f "$guide_src" ] || [ ! -f "$skill_src/SKILL.md" ]; then
+    if [ ! -f "$guide_src" ]; then
         echo "SafeYolo agent context sources are missing from $repo_root" >&2
         return 1
     fi
@@ -36,7 +35,8 @@ stage_safeyolo_context() {
         link_path="$link_dir/safeyolo"
         if [ -L "$link_path" ]; then
             current_target="$(readlink "$link_path")"
-            if [ "$current_target" != "$link_target" ]; then
+            if [ "$current_target" != "$link_target" ] && \
+               [ "$current_target" != "$legacy_link_target" ]; then
                 echo "Refusing to replace existing $link_path -> $current_target" >&2
                 return 1
             fi
@@ -46,22 +46,15 @@ stage_safeyolo_context() {
         fi
     fi
 
-    mkdir -p "$managed_root" "$skill_root"
+    mkdir -p "$managed_root"
     cp "$guide_src" "$managed_root/AGENTS.md"
-
-    # Refresh the exact SafeYolo-owned tree so removed references do not linger
-    # across repeated host-script runs.
-    skill_tmp="$(mktemp -d "$skill_root/.safeyolo.XXXXXX")"
-    if ! cp -R "$skill_src/." "$skill_tmp/"; then
-        rm -rf -- "$skill_tmp"
-        return 1
-    fi
-    rm -rf -- "$skill_root/safeyolo"
-    mv "$skill_tmp" "$skill_root/safeyolo"
 
     if [ -n "$link_dir" ]; then
         mkdir -p "$link_dir"
-        if [ ! -L "$link_path" ]; then
+        if [ -L "$link_path" ] && [ "$(readlink "$link_path")" = "$legacy_link_target" ]; then
+            rm -- "$link_path"
+        fi
+        if [ ! -e "$link_path" ] && [ ! -L "$link_path" ]; then
             ln -s "$link_target" "$link_path"
         fi
     fi

@@ -303,6 +303,24 @@ def _capture_snapshot_blocking(
     return True
 
 
+def _linux_interactive_command(
+    command_host: Path,
+    effective_agent_args: list[str],
+    explicit_agent_args: list[str] | None,
+) -> str | None:
+    """Build the Linux runsc-exec command without losing agent arguments."""
+    if command_host.exists() and os.access(command_host, os.X_OK):
+        return shlex.join([
+            "/home/agent/.safeyolo-command",
+            *effective_agent_args,
+        ])
+    if explicit_agent_args:
+        # A plain-shell agent has no host-script command to receive appended
+        # arguments, so preserve the existing explicit command override.
+        return shlex.join(explicit_agent_args)
+    return None
+
+
 def _run_agent(
     name: str,
     folder_override: str | None = None,
@@ -379,11 +397,12 @@ def _run_agent(
     extra_shares = _resolve_extra_shares(metadata, extra_mounts)
 
     # Build agent args string for guest env
-    agent_args_str = ""
+    effective_agent_args: list[str] = []
     if agent_args:
-        agent_args_str = " ".join(agent_args)
+        effective_agent_args = list(agent_args)
     elif not skip_default_args and metadata.get("user_default_args"):
-        agent_args_str = " ".join(metadata["user_default_args"])
+        effective_agent_args = list(metadata["user_default_args"])
+    agent_args_str = " ".join(effective_agent_args)
 
     # Extra env for yolo mode
     extra_env = {}
@@ -739,13 +758,11 @@ def _run_agent(
                 # to an interactive bash login.
                 from ..vm import get_agent_home_dir
                 command_host = get_agent_home_dir(name) / ".safeyolo-command"
-                if agent_args:
-                    # Explicit override from caller (`agent run -- cmd args`).
-                    full_cmd = " ".join(agent_args)
-                elif command_host.exists() and os.access(command_host, os.X_OK):
-                    full_cmd = "/home/agent/.safeyolo-command"
-                else:
-                    full_cmd = None
+                full_cmd = _linux_interactive_command(
+                    command_host,
+                    effective_agent_args,
+                    agent_args,
+                )
                 exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
                 plat.stop_sandbox(name)
             else:
@@ -1073,6 +1090,13 @@ def add(
             console.print(f"  Fix: chmod +x {rootfs_script_path}")
             raise typer.Exit(1)
 
+    # Validate and normalize every declarative input before rootfs builders,
+    # cloning, platform preparation, or host setup can change host state.
+    # These values are also the exact normalized values persisted below.
+    parsed_mounts = [_parse_mount(m) for m in mount]
+    parsed_ports = [_parse_port(p) for p in port]
+    parsed_args = _parse_user_default_args(user_default_args)
+
     # Instance directory = instance name
     agent_dir = get_agents_dir() / name
 
@@ -1170,14 +1194,11 @@ def add(
         try:
             _run_host_script_for_agent(name=name, host_script_path=host_script_path, folder_str=folder_str)
         except typer.Exit as exc:
-            console.print(f"  Agent '{name}' config persisted; re-run with --force after fixing the script.")
+            console.print(
+                f"  Agent '{name}' setup is incomplete; its rootfs and home were retained. "
+                "Re-run with --force after fixing the script."
+            )
             raise exc
-
-    # Validate and normalize mount specs
-    parsed_mounts = [_parse_mount(m) for m in mount]
-
-    # Validate and normalize port specs
-    parsed_ports = [_parse_port(p) for p in port]
 
     # Write metadata to policy.toml [agents]
     metadata: dict = {"folder": folder_str}
@@ -1193,7 +1214,6 @@ def add(
         # "copy-on-write-clone") slot in without another toml-level
         # migration. "memory" = gVisor tmpfs / VZ safeyolo.ephemeral_upper=1.
         metadata["rootfs_overlay"] = "memory"
-    parsed_args = _parse_user_default_args(user_default_args)
     if parsed_args:
         metadata["user_default_args"] = parsed_args
     if parsed_mounts:

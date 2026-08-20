@@ -284,6 +284,30 @@ class TestPrepareConfigShare:
         result = prepare_config_share("agent1", "/workspace")
         assert result.is_dir()
 
+    def test_bundled_skill_is_refreshed_exactly_on_each_run(self, tmp_config_dir):
+        import safeyolo.vm as vm_mod
+
+        source = Path(vm_mod.__file__).parent / "agent_context/skills/safeyolo"
+        share = prepare_config_share("agent1", "/workspace")
+        staged = share / "skills/safeyolo"
+        stale = staged / "references/removed.md"
+        stale.write_text("stale\n")
+        (staged / "SKILL.md").write_text("old\n")
+
+        prepare_config_share("agent1", "/workspace")
+
+        source_files = {
+            path.relative_to(source) for path in source.rglob("*") if path.is_file()
+        }
+        staged_files = {
+            path.relative_to(staged) for path in staged.rglob("*") if path.is_file()
+        }
+        assert staged_files == source_files
+        for relative in source_files:
+            assert (staged / relative).read_bytes() == (source / relative).read_bytes()
+        assert staged.stat().st_mode & 0o005 == 0o005
+        assert (staged / "SKILL.md").stat().st_mode & 0o004 == 0o004
+
     def test_guest_init_is_executable(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
         guest_init = share / "guest-init"

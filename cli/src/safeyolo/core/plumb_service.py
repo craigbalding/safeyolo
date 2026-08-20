@@ -48,7 +48,7 @@ from safeyolo.core.audit_schema import (
 from safeyolo.core.utils import sanitize_for_log, write_event
 
 # RFC1123 label — the canonical agent-name pattern used across the codebase
-# (mitm_addons/unix_listener.py, commands/agent.py, sockets.py). Participant
+# (proxy_modes/unix_listener.py, commands/agent.py, sockets.py). Participant
 # names become approval targets, grant principals, and operator-rendered text,
 # so they must be validated against exactly this.
 _AGENT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")

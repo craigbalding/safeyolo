@@ -549,24 +549,22 @@ def _build_command(
     cmd.extend(["--set", f"agent_map_file={agent_map}"])
 
     # Custom upstream CA trust
-    # Sources: test config (test.ca_cert) > env var (SAFEYOLO_CA_CERT)
+    # Sources: test config > environment override > persistent proxy config.
     # Used for: blackbox tests (test CA), corporate environments (internal CA)
     #
     # Creates a combined CA bundle (certifi CAs + custom CA) and passes it
     # to mitmproxy via ssl_verify_upstream_trusted_ca. This is deterministic
     # — no mutating the certifi package, survives uv sync/pip install.
-    ca_cert = None
-    if test_config and test_config.get("ca_cert"):
-        ca_cert = test_config["ca_cert"]
-    elif os.environ.get("SAFEYOLO_CA_CERT"):
-        ca_cert = os.environ["SAFEYOLO_CA_CERT"]
-    if ca_cert:
-        ca_path = Path(ca_cert)
-        if not ca_path.exists():
-            raise RuntimeError(f"CA cert not found: {ca_cert}")
+    ca_path, ca_source = resolve_upstream_ca_cert(test_config, proxy_config)
+    if ca_path is not None:
         combined_bundle = _build_combined_ca_bundle(ca_path, data_dir)
         cmd.extend(["--set", f"ssl_verify_upstream_trusted_ca={combined_bundle}"])
-        log.info("Trusting upstream CA: %s (combined bundle at %s)", ca_cert, combined_bundle)
+        log.info(
+            "Trusting upstream CA from %s: %s (combined bundle at %s)",
+            ca_source,
+            ca_path,
+            combined_bundle,
+        )
 
     # Blackbox test sinkhole routing
     # Sources: test config (test.sinkhole_router) > env var (SAFEYOLO_SINKHOLE_ROUTER)
@@ -657,6 +655,28 @@ def _build_combined_ca_bundle(custom_ca: Path, data_dir: Path) -> Path:
         certifi_bundle.read_text() + "\n" + custom_ca.read_text()
     )
     return combined
+
+
+def resolve_upstream_ca_cert(
+    test_config: dict | None,
+    proxy_config: dict | None,
+) -> tuple[Path | None, str | None]:
+    """Resolve additional upstream trust with explicit override precedence."""
+    candidates = (
+        ("test.ca_cert", (test_config or {}).get("ca_cert")),
+        ("SAFEYOLO_CA_CERT", os.environ.get("SAFEYOLO_CA_CERT")),
+        ("proxy.upstream_ca_cert", (proxy_config or {}).get("upstream_ca_cert")),
+    )
+    for source, value in candidates:
+        if value in (None, ""):
+            continue
+        if not isinstance(value, str):
+            raise RuntimeError(f"{source} must be a filesystem path")
+        path = Path(value).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"CA cert not found: {path}")
+        return path, source
+    return None, None
 
 
 def start_proxy(

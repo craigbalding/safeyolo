@@ -152,7 +152,7 @@ The `service_discovery` addon reads this file (mtime-cached) to resolve the attr
 | `guest-proxy-forwarder.sh` | Shell + socat (in guest) | `127.0.0.1:8080` → vsock:1080 / UDS |
 | `guest-shell-bridge.py` | Python (in guest) | vsock:2220 → sshd on `127.0.0.1:22` |
 | `proxy.py` | Python | Host mitmproxy process management |
-| `unix_listener.py` (addon) | Python | `UnixMode`/`UnixInstance` — per-agent UDS ingress |
+| `proxy_modes/unix_listener.py` | Python | `UnixMode`/`UnixInstance` — per-agent UDS ingress |
 | `sockets.py` | Python | Socket-path helpers; `<ip>_<agent>/proxy.sock` is identity |
 | `vm.py` | Python | VM lifecycle, config share, agent map |
 | `guest-init.sh` | Bash | Guest init (on config share, not rootfs) |

@@ -543,6 +543,58 @@ class TestAgentAdd:
         assert "not executable" in result.output.lower()
         assert "chmod +x" in result.output
 
+    @pytest.mark.parametrize(
+        ("option", "value", "expected_error"),
+        [
+            ("--mount", "{missing}:/proj/toolage:ro", "host path not found"),
+            ("--port", "not-a-port", "invalid port format"),
+        ],
+    )
+    def test_declarative_inputs_are_validated_before_setup_side_effects(
+        self,
+        runner,
+        config_dir,
+        tmp_path,
+        option,
+        value,
+        expected_error,
+    ):
+        """Invalid mounts or ports must fail before costly host setup starts."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs_script = tmp_path / "builder.sh"
+        rootfs_script.write_text("#!/bin/sh\nexit 0\n")
+        rootfs_script.chmod(0o755)
+        host_script = tmp_path / "host-setup.sh"
+        host_script.write_text("#!/bin/sh\nexit 0\n")
+        host_script.chmod(0o755)
+        value = value.format(missing=tmp_path / "missing")
+
+        with (
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.build_custom_rootfs") as build_rootfs,
+            patch("safeyolo.platform.get_platform") as get_platform,
+            patch("safeyolo.vm.ensure_agent_persistent_dirs") as ensure_dirs,
+            patch("safeyolo.commands.agent._run_host_script_for_agent") as run_host_script,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "agent", "add", "test", str(folder),
+                    "--rootfs-script", str(rootfs_script),
+                    "--host-script", str(host_script),
+                    option, value,
+                    "--no-run",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert expected_error in result.output.lower()
+        build_rootfs.assert_not_called()
+        get_platform.assert_not_called()
+        ensure_dirs.assert_not_called()
+        run_host_script.assert_not_called()
+
     def test_rootfs_script_invoked_and_metadata_saved(
         self, runner, config_dir, tmp_path
     ):
@@ -974,6 +1026,36 @@ class TestAgentStop:
 
 
 class TestRunAgent:
+
+    def test_linux_host_script_command_receives_effective_agent_args(self, tmp_path):
+        """Every host-script command receives its resolved persistent/run args."""
+        from safeyolo.commands.agent import _linux_interactive_command
+
+        command_host = tmp_path / ".safeyolo-command"
+        command_host.write_text("#!/bin/sh\n")
+        command_host.chmod(0o755)
+
+        command = _linux_interactive_command(
+            command_host,
+            ["--add-dir", "/proj/toolage", "--prompt", "hello world"],
+            None,
+        )
+
+        assert command == (
+            "/home/agent/.safeyolo-command --add-dir /proj/toolage "
+            "--prompt 'hello world'"
+        )
+
+    def test_linux_plain_shell_preserves_explicit_command_override(self, tmp_path):
+        from safeyolo.commands.agent import _linux_interactive_command
+
+        command = _linux_interactive_command(
+            tmp_path / "missing-command",
+            ["python3", "script with spaces.py"],
+            ["python3", "script with spaces.py"],
+        )
+
+        assert command == "python3 'script with spaces.py'"
 
     def test_run_associates_current_tmux_pane(self, runner, config_dir):
         with (

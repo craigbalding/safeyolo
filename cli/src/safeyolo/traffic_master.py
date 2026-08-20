@@ -27,7 +27,7 @@ from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
 from .events import EventKind, Severity, write_event
-from .mitm_addons.unix_listener import ensure_registered as _ensure_unix_listener_registered
+from .proxy_modes.unix_listener import ensure_registered as _ensure_unix_listener_registered
 from .tailnet import (
     TailnetServeSession,
     start_tailnet_serve,

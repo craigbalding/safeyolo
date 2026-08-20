@@ -260,4 +260,4 @@ hop to see one specific connection's accept + done pair.
 
 - `docs/microvm-architecture.md` — how the VM boots, snapshots, mounts
 - `docs/SERVICE_DISCOVERY.md` — how the `service_discovery` addon maps IP→agent
-- Source: `cli/src/safeyolo/sockets.py`, `addons/unix_listener.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`
+- Source: `cli/src/safeyolo/sockets.py`, `cli/src/safeyolo/proxy_modes/unix_listener.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`
