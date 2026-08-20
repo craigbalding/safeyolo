@@ -1057,7 +1057,7 @@ class TestRunAgent:
         assert "already running" in result.output.lower()
 
     def test_run_forwards_persistent_and_transient_mounts_to_boot(
-        self, config_dir, tmp_path,
+        self, config_dir, tmp_path, capsys,
     ):
         """Public mount settings must reach both config staging and runtime."""
         from safeyolo.commands.agent import _run_agent
@@ -1129,6 +1129,10 @@ class TestRunAgent:
             )
 
         assert result == 0
+        output = capsys.readouterr().out
+        assert "Starting agent... ready" in output
+        assert "Agent running (detached)" in output
+        assert "10.200.0.2" not in output
         assert prepare.call_args.kwargs["host_mounts"] == expected
         assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
 

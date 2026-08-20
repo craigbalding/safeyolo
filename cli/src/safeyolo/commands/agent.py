@@ -556,7 +556,7 @@ def _run_agent(
         # through to the cold-boot path below. The user's agent always
         # comes up; a broken snapshot never blocks startup.
         if snapshot_mode == "restore":
-            console.print("  Restoring snapshot...", end="")
+            console.print("  Restoring agent...", end="")
             restore_src = snapshot_path(name)
             # Capture helper_pid so the post-session os.waitpid() call
             # on macOS can block on the actual child instead of polling.
@@ -617,7 +617,7 @@ def _run_agent(
                     _time.sleep(0.05)
 
             if restore_ok:
-                console.print(f" {guest_ip}")
+                console.print(" [green]ready[/green]")
             else:
                 console.print(" [yellow]failed[/yellow]")
                 console.print("  [yellow]Snapshot invalidated; cold-booting.[/yellow]")
@@ -636,8 +636,12 @@ def _run_agent(
 
         # --- Cold boot (capture or passthrough) ----------------------------
         if snapshot_mode != "restore":
-            boot_label = "Booting VM (first-time snapshot)" if snapshot_mode == "capture" else "Booting VM"
-            console.print(f"  {boot_label}...", end="")
+            start_label = (
+                "Starting agent (first-time snapshot)"
+                if snapshot_mode == "capture"
+                else "Starting agent"
+            )
+            console.print(f"  {start_label}...", end="")
             capture_path = snapshot_path(name) if snapshot_mode == "capture" else None
             _t(f"start_sandbox ({snapshot_mode}: spawn helper + guest boot)")
             helper_pid = plat.start_sandbox(
@@ -711,12 +715,12 @@ def _run_agent(
                     )
                 exit_code = 1
             else:
-                console.print(f" {guest_ip}")
+                console.print(" [green]ready[/green]")
 
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
-                console.print("  VM running (detached)")
+                console.print("  Agent running (detached)")
                 console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
                 console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
                 _t("detach return")
