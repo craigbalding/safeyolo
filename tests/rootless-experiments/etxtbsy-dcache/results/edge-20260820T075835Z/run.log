@@ -1,0 +1,18 @@
+[2026-08-20T07:58:35.336492+00:00] edge experiment started
+[2026-08-20T07:58:35.343433+00:00] stopping stale/running sandbox
+[2026-08-20T07:58:35.942511+00:00] booting edge variant workspace-dcache-0
+[2026-08-20T07:58:40.326514+00:00] edge scenario idle-closed starting
+[2026-08-20T07:59:19.710309+00:00] edge scenario idle-closed complete
+[2026-08-20T07:59:19.718360+00:00] edge scenario parent-watch starting
+[2026-08-20T07:59:58.755169+00:00] edge scenario parent-watch complete
+[2026-08-20T07:59:58.765691+00:00] edge scenario direct-watch starting
+[2026-08-20T08:00:39.063076+00:00] edge scenario direct-watch complete
+[2026-08-20T08:00:39.072318+00:00] edge scenario open-writer starting
+[2026-08-20T08:01:19.025760+00:00] edge scenario open-writer complete
+[2026-08-20T08:01:19.041477+00:00] edge scenario writable-mmap starting
+[2026-08-20T08:01:58.426744+00:00] edge scenario writable-mmap complete
+[2026-08-20T08:01:58.434392+00:00] edge scenario live-hardlink-alias starting
+[2026-08-20T08:02:38.263566+00:00] edge scenario live-hardlink-alias complete
+[2026-08-20T08:02:38.505846+00:00] edge experiment complete
+[2026-08-20T08:02:38.513474+00:00] stopping sandbox
+[2026-08-20T08:02:45.911126+00:00] edge experiment finished; agent left stopped

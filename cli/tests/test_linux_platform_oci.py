@@ -1,10 +1,8 @@
 """Unit tests for the Linux gVisor OCI spec builder.
 
-Exercises behavior on the `_generate_oci_config` path that isn't
-reachable via the blackbox suite because the CLI doesn't currently
-wire `extra_shares` to any public flag. These tests instantiate
-`LinuxPlatform` directly, hermetically scope the config dir + HOME
-via tmp_path, and assert the spec shape and filesystem side-effects.
+Exercises behavior on the `_generate_oci_config` path. These tests instantiate
+`LinuxPlatform` directly, hermetically scope the config dir + HOME via
+tmp_path, and assert the spec shape and filesystem side-effects.
 """
 from __future__ import annotations
 
@@ -73,7 +71,7 @@ def test_extra_shares_under_home_precreate_destinations(isolated_env):
         fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.1"},
         cpus=1,
         memory_mb=1024,
-        extra_shares=[(str(fake_claude), "claude", True)],
+        extra_shares=[(str(fake_claude), "/home/agent/.claude", True)],
     )
 
     # Side effect: the destination dir now exists under host-side agent_home.
@@ -178,6 +176,165 @@ def test_home_agent_is_bind_mounted(isolated_env):
     assert "rw" in m["options"]
     assert "nosuid" in m["options"]
     assert "nodev" in m["options"]
+
+
+def test_workspace_dcache_zero_is_mount_local(isolated_env, monkeypatch):
+    """Normal startup disables idle dentry retention only for /workspace."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-workspace-dcache"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.delenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, raising=False)
+
+    spec = linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.9"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    workspace = next(
+        mount for mount in spec["mounts"]
+        if mount["destination"] == "/workspace"
+    )
+    assert "dcache=0" in workspace["options"]
+    assert all(
+        not any(option.startswith("dcache=") for option in mount.get("options", []))
+        for mount in spec["mounts"]
+        if mount["destination"] != "/workspace"
+    )
+
+
+def test_etxtbsy_experiment_can_restore_cached_workspace_baseline(
+    isolated_env, monkeypatch,
+):
+    """The archived experiment can still reproduce the pre-fix default."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-workspace-baseline"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.setenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, "default")
+
+    spec = linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.11"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=None,
+    )
+
+    workspace = next(
+        mount for mount in spec["mounts"]
+        if mount["destination"] == "/workspace"
+    )
+    assert not any(option.startswith("dcache=") for option in workspace["options"])
+
+
+def test_writable_extra_shares_get_dcache_zero_but_readonly_shares_do_not(
+    isolated_env, monkeypatch,
+):
+    """Writable operator shares get host-exec semantics without global scope."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-extra-share-scope"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.delenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, raising=False)
+    writable = isolated_env / "writable-share"
+    readonly = isolated_env / "readonly-share"
+    writable.mkdir()
+    readonly.mkdir()
+
+    spec = linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+        name=name,
+        rootfs_path=isolated_env / "rootfs",
+        workspace_path=str(isolated_env),
+        config_share=isolated_env / "config-share",
+        fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.12"},
+        cpus=1,
+        memory_mb=1024,
+        extra_shares=[
+            (str(writable), "/mnt/writable", False),
+            (str(readonly), "/mnt/readonly", True),
+        ],
+    )
+
+    workspace = next(m for m in spec["mounts"] if m["destination"] == "/workspace")
+    extras = [
+        m for m in spec["mounts"]
+        if m["source"] in {str(writable), str(readonly)}
+    ]
+    assert "dcache=0" in workspace["options"]
+    assert len(extras) == 2
+    writable_mount = next(m for m in extras if m["source"] == str(writable))
+    readonly_mount = next(m for m in extras if m["source"] == str(readonly))
+    assert "rw" in writable_mount["options"]
+    assert "dcache=0" in writable_mount["options"]
+    assert "ro" in readonly_mount["options"]
+    assert not any(option.startswith("dcache=") for option in readonly_mount["options"])
+    assert all(
+        {"nosuid", "nodev"}.issubset(mount["options"])
+        for mount in (writable_mount, readonly_mount)
+    )
+
+
+def test_etxtbsy_experiment_runsc_flags_are_validated(monkeypatch):
+    """Diagnostic values cannot inject text into the runsc shell command."""
+    from safeyolo.platform import linux
+
+    monkeypatch.setenv(linux.EXPERIMENT_RUNSC_DCACHE_ENV, "0")
+    monkeypatch.setenv(linux.EXPERIMENT_RUNSC_DIRECTFS_ENV, "false")
+    assert linux._experiment_runsc_flags() == [  # noqa: SLF001
+        "--dcache=0",
+        "--directfs=false",
+    ]
+
+    monkeypatch.setenv(linux.EXPERIMENT_RUNSC_DCACHE_ENV, "0; touch /tmp/oops")
+    with pytest.raises(RuntimeError, match="non-negative integer"):
+        linux._experiment_runsc_flags()  # noqa: SLF001
+
+
+def test_etxtbsy_normal_startup_leaves_global_dcache_unset(monkeypatch):
+    """Normal startup must preserve gVisor's per-mount dcache selection."""
+    from safeyolo.platform import linux
+
+    monkeypatch.delenv(linux.EXPERIMENT_RUNSC_DCACHE_ENV, raising=False)
+    monkeypatch.delenv(linux.EXPERIMENT_RUNSC_DIRECTFS_ENV, raising=False)
+
+    assert linux._experiment_runsc_flags() == []  # noqa: SLF001
+
+
+def test_etxtbsy_experiment_workspace_dcache_rejects_invalid_value(
+    isolated_env, monkeypatch,
+):
+    """An invalid mount option is rejected before an OCI spec is written."""
+    from safeyolo.platform import linux
+    from safeyolo.vm import ensure_agent_persistent_dirs
+
+    name = "etxtbsy-invalid-dcache"
+    ensure_agent_persistent_dirs(name)
+    monkeypatch.setenv(linux.EXPERIMENT_WORKSPACE_DCACHE_ENV, "-1")
+
+    with pytest.raises(RuntimeError, match="non-negative integer"):
+        linux.LinuxPlatform()._generate_oci_config(  # noqa: SLF001
+            name=name,
+            rootfs_path=isolated_env / "rootfs",
+            workspace_path=str(isolated_env),
+            config_share=isolated_env / "config-share",
+            fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.10"},
+            cpus=1,
+            memory_mb=1024,
+            extra_shares=None,
+        )
 
 
 def test_oci_environment_pins_persistent_mise_paths(isolated_env):
@@ -362,3 +519,176 @@ def test_remove_agent_dir_retries_subuid_tree_in_temporary_userns(
     assert not agent_dir.exists()
     assert attempts == 2
     assert killed == [(4242, 9)]
+
+
+@pytest.mark.parametrize(
+    ("graceful_stop", "expect_sigkill"),
+    [(True, False), (False, True)],
+)
+def test_stop_sandbox_escalates_only_after_grace_timeout(
+    isolated_env, monkeypatch, graceful_stop, expect_sigkill
+):
+    """A prompt OCI state transition skips SIGKILL; a timeout retains it."""
+    from safeyolo import vm
+    from safeyolo.platform import linux
+
+    name = "stop-probe"
+    agent_dir = isolated_env / "agents" / name
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "container.pid").write_text("1234")
+    commands = []
+
+    def record_run(command, *, check=False):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(linux, "_find_runsc", lambda: "/usr/bin/runsc")
+    monkeypatch.setattr(linux, "_get_userns_pid", lambda requested: 4242)
+    monkeypatch.setattr(linux, "_nsenter_cmd", lambda pid: ["nsenter", str(pid)])
+    monkeypatch.setattr(linux, "_runsc_container_status", lambda *args: "running")
+    monkeypatch.setattr(linux, "_wait_for_runsc_stop", lambda *args: graceful_stop)
+    monkeypatch.setattr(linux, "_run", record_run)
+    monkeypatch.setattr(linux, "_kill_userns", lambda requested: None)
+    monkeypatch.setattr(vm, "_update_agent_map", lambda *args, **kwargs: None)
+
+    linux.LinuxPlatform().stop_sandbox(name)
+
+    flattened = [part for command in commands for part in command]
+    assert "SIGTERM" in flattened
+    assert ("SIGKILL" in flattened) is expect_sigkill
+    assert commands[-2][-3:-1] == ["delete", "--force"]
+    assert not (agent_dir / "container.pid").exists()
+
+
+def test_wait_for_runsc_stop_returns_immediately_after_state_transition(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(
+        linux,
+        "_runsc_container_status",
+        lambda *args: "stopped",
+    )
+    monkeypatch.setattr(
+        linux.time,
+        "sleep",
+        lambda seconds: pytest.fail(f"unexpected fixed sleep: {seconds}"),
+    )
+
+    assert linux._wait_for_runsc_stop([], "runsc", "/run", "agent") is True
+
+
+def test_wait_for_runsc_stop_reports_timeout_while_still_running(monkeypatch):
+    from safeyolo.platform import linux
+
+    monkeypatch.setattr(
+        linux,
+        "_runsc_container_status",
+        lambda *args: "running",
+    )
+
+    assert (
+        linux._wait_for_runsc_stop([], "runsc", "/run", "agent", timeout=0)
+        is False
+    )
+
+
+def test_wait_for_userns_ready_returns_on_namespace_inode_transition(monkeypatch):
+    from safeyolo.platform import linux
+
+    proc = SimpleNamespace(pid=4242, poll=lambda: None)
+    inodes = {
+        "/proc/self/ns/user": 10,
+        "/proc/self/ns/net": 20,
+        "/proc/4242/ns/user": 11,
+        "/proc/4242/ns/net": 21,
+    }
+    monkeypatch.setattr(
+        linux.os,
+        "stat",
+        lambda path: SimpleNamespace(st_ino=inodes[path]),
+    )
+    monkeypatch.setattr(
+        linux.time,
+        "sleep",
+        lambda seconds: pytest.fail(f"unexpected readiness sleep: {seconds}"),
+    )
+
+    linux._wait_for_userns_ready(proc)
+
+
+def test_wait_for_userns_ready_polls_until_both_namespaces_change(monkeypatch):
+    from safeyolo.platform import linux
+
+    proc = SimpleNamespace(pid=4242, poll=lambda: None)
+    child_net_reads = 0
+    sleeps = []
+
+    def namespace_stat(path):
+        nonlocal child_net_reads
+        if path == "/proc/self/ns/user":
+            return SimpleNamespace(st_ino=10)
+        if path == "/proc/self/ns/net":
+            return SimpleNamespace(st_ino=20)
+        if path == "/proc/4242/ns/user":
+            return SimpleNamespace(st_ino=11 if child_net_reads else 10)
+        if path == "/proc/4242/ns/net":
+            inode = 21 if child_net_reads else 20
+            child_net_reads += 1
+            return SimpleNamespace(st_ino=inode)
+        raise AssertionError(f"unexpected stat path: {path}")
+
+    monkeypatch.setattr(linux.os, "stat", namespace_stat)
+    monkeypatch.setattr(linux.time, "sleep", sleeps.append)
+
+    linux._wait_for_userns_ready(proc)
+
+    assert len(sleeps) == 1
+    assert 0 < sleeps[0] <= linux.USERNS_POLL_INTERVAL_SECONDS
+
+
+def test_wait_for_userns_ready_reports_early_child_exit(monkeypatch):
+    from safeyolo.platform import linux
+
+    proc = SimpleNamespace(pid=4242, poll=lambda: 7)
+
+    with pytest.raises(RuntimeError, match=r"namespace setup \(status 7\)"):
+        linux._wait_for_userns_ready(proc)
+
+
+def test_wait_for_userns_ready_kills_holder_on_timeout(monkeypatch):
+    from safeyolo.platform import linux
+
+    class Holder:
+        pid = 4242
+        killed = False
+        waited = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, *, timeout):
+            assert timeout == 1
+            self.waited = True
+            return -9
+
+    proc = Holder()
+    inodes = {
+        "/proc/self/ns/user": 10,
+        "/proc/self/ns/net": 20,
+        "/proc/4242/ns/user": 10,
+        "/proc/4242/ns/net": 20,
+    }
+    monkeypatch.setattr(
+        linux.os,
+        "stat",
+        lambda path: SimpleNamespace(st_ino=inodes[path]),
+    )
+
+    with pytest.raises(RuntimeError, match="within 0s"):
+        linux._wait_for_userns_ready(proc, timeout=0)
+
+    assert proc.killed is True
+    assert proc.waited is True

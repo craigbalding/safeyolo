@@ -45,7 +45,7 @@ def test_scan_text(data: bytes):
         scan_text(text, "output", rules)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -85,7 +85,7 @@ def test_pattern_rule_matches(data: bytes):
         pass
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 def main():

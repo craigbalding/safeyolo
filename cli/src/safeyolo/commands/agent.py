@@ -6,7 +6,7 @@ import os
 import re
 import shlex
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import typer
 import yaml
@@ -43,6 +43,7 @@ from ..snapshot import (
 )
 from ..timing import emit as _timing_emit
 from ..timing import enter as _t
+from ..timing import profiled_command
 from ..vm import (
     _update_agent_map,
     build_custom_rootfs,
@@ -372,6 +373,11 @@ def _run_agent(
         raise typer.Exit(1)
     _check_project_ownership(workspace_path, dangerously_allow_unowned)
 
+    # Revalidate persistent metadata on every run, merge one-off mounts, and
+    # resolve the public CLI syntax to the platform contract. Transient mounts
+    # override a persistent mount at the same guest destination for this run.
+    extra_shares = _resolve_extra_shares(metadata, extra_mounts)
+
     # Build agent args string for guest env
     agent_args_str = ""
     if agent_args:
@@ -435,6 +441,7 @@ def _run_agent(
         console.print(f"[red]Invalid agent socket path:[/red] {exc}")
         raise typer.Exit(1)
     sock_path = str(sock_path_p)
+    _t("write agent attribution map")
     _update_agent_map(name, ip=attribution_ip, socket=sock_path)
 
     if fw_alloc.get("needs_bridge_socket"):
@@ -444,6 +451,7 @@ def _run_agent(
         # the socket will be bound on next proxy start via
         # `_initial_mode_specs`.
         from ..proxy import sync_proxy_modes
+        _t("synchronize proxy listener modes")
         sync_proxy_modes(admin_port=admin_port)
 
         # Wait up to 5s for mitmproxy's UnixInstance to bind the
@@ -451,6 +459,7 @@ def _run_agent(
         # exist and gVisor's gofer caches a ghost inode (same gotcha
         # as the earlier restart-cycle bug).
         import time as _time_wait
+        _t("wait for per-agent proxy socket")
         _deadline = _time_wait.time() + 5.0
         while _time_wait.time() < _deadline:
             if sock_path_p.is_socket():
@@ -487,6 +496,7 @@ def _run_agent(
             cpus=cpus_for_run,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            extra_shares=extra_shares,
         )
         if is_snapshot_valid(name, snapshot_version):
             snapshot_mode = "restore"
@@ -516,6 +526,7 @@ def _run_agent(
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
             attribution_ip=attribution_ip,
+            host_mounts=extra_shares,
             pre_write_per_run_go=(for_mode != "capture"),
             debug_mode=_debug_mode,
         )
@@ -545,7 +556,7 @@ def _run_agent(
         # through to the cold-boot path below. The user's agent always
         # comes up; a broken snapshot never blocks startup.
         if snapshot_mode == "restore":
-            console.print("  Restoring snapshot...", end="")
+            console.print("  Restoring agent...", end="")
             restore_src = snapshot_path(name)
             # Capture helper_pid so the post-session os.waitpid() call
             # on macOS can block on the actual child instead of polling.
@@ -559,7 +570,7 @@ def _run_agent(
                 fw_alloc=fw_alloc,
                 cpus=cpus_for_run,
                 memory_mb=memory_for_run,
-                extra_shares=None,
+                extra_shares=extra_shares,
                 background=run_background,
                 restore_from_path=restore_src,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
@@ -606,7 +617,7 @@ def _run_agent(
                     _time.sleep(0.05)
 
             if restore_ok:
-                console.print(f" {guest_ip}")
+                console.print(" [green]ready[/green]")
             else:
                 console.print(" [yellow]failed[/yellow]")
                 console.print("  [yellow]Snapshot invalidated; cold-booting.[/yellow]")
@@ -625,8 +636,12 @@ def _run_agent(
 
         # --- Cold boot (capture or passthrough) ----------------------------
         if snapshot_mode != "restore":
-            boot_label = "Booting VM (first-time snapshot)" if snapshot_mode == "capture" else "Booting VM"
-            console.print(f"  {boot_label}...", end="")
+            start_label = (
+                "Starting agent (first-time snapshot)"
+                if snapshot_mode == "capture"
+                else "Starting agent"
+            )
+            console.print(f"  {start_label}...", end="")
             capture_path = snapshot_path(name) if snapshot_mode == "capture" else None
             _t(f"start_sandbox ({snapshot_mode}: spawn helper + guest boot)")
             helper_pid = plat.start_sandbox(
@@ -636,7 +651,7 @@ def _run_agent(
                 fw_alloc=fw_alloc,
                 cpus=cpus_for_run,
                 memory_mb=memory_for_run,
-                extra_shares=None,
+                extra_shares=extra_shares,
                 background=run_background,
                 snapshot_capture_path=capture_path,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
@@ -700,18 +715,22 @@ def _run_agent(
                     )
                 exit_code = 1
             else:
-                console.print(f" {guest_ip}")
+                console.print(" [green]ready[/green]")
 
         # --- Post-boot (shared by restore and cold-boot success paths) ----
         if plat.is_sandbox_running(name):
             if detach:
-                console.print("  VM running (detached)")
+                console.print("  Agent running (detached)")
                 console.print(f"  Connect: [bold]safeyolo agent shell {name}[/bold]")
                 console.print(f"  Stop:    [bold]safeyolo agent stop {name}[/bold]")
                 _t("detach return")
                 _timing_emit()
                 return 0
 
+            # `agent run --profile` measures launch-to-ready, not how long the
+            # operator subsequently keeps an interactive agent session open.
+            _t("agent ready; hand off interactive session")
+            _timing_emit()
             _t("interactive session")
             if _sys.platform == "linux":
                 # Linux: launch the agent via runsc exec. The guest runs
@@ -796,6 +815,25 @@ def _parse_mount(mount_spec: str) -> str:
     if not container_path.startswith("/"):
         console.print(f"[red]Container path must be absolute:[/red] {escape(container_path)}")
         raise typer.Exit(1)
+    if ".." in PurePosixPath(container_path).parts:
+        console.print(f"[red]Container path cannot contain '..':[/red] {escape(container_path)}")
+        raise typer.Exit(1)
+    container_path = str(PurePosixPath(container_path))
+    protected_destinations = {
+        "/",
+        "/home/agent",
+        "/workspace",
+    }
+    protected_trees = ("/dev", "/proc", "/safeyolo", "/safeyolo-status", "/sys")
+    if container_path in protected_destinations or any(
+        container_path == root or container_path.startswith(f"{root}/")
+        for root in protected_trees
+    ):
+        console.print(
+            f"[red]Container mount destination is reserved:[/red] "
+            f"{escape(container_path)}"
+        )
+        raise typer.Exit(1)
 
     if not host_path.exists():
         console.print(f"[red]Host path not found:[/red] {host_path}")
@@ -821,6 +859,34 @@ def _parse_mount(mount_spec: str) -> str:
         return f"{host_path}:{container_path}:ro"
 
     return f"{host_path}:{container_path}"
+
+
+def _mount_spec_to_share(mount_spec: str) -> tuple[str, str, bool]:
+    """Convert a validated mount string to (host, guest destination, read-only)."""
+    parts = mount_spec.split(":")
+    return parts[0], parts[1], len(parts) == 3
+
+
+def _resolve_extra_shares(
+    metadata: dict,
+    transient_mounts: list[str] | None,
+) -> list[tuple[str, str, bool]]:
+    """Merge persistent and one-off mounts, with one-off destinations winning."""
+    persistent = metadata.get("mounts", []) or []
+    if not isinstance(persistent, list) or not all(
+        isinstance(item, str) for item in persistent
+    ):
+        console.print("[red]Agent mount metadata is invalid; expected a list of strings.[/red]")
+        raise typer.Exit(1)
+
+    by_destination: dict[str, tuple[str, str, bool]] = {}
+    for spec in [*persistent, *(transient_mounts or [])]:
+        normalized = _parse_mount(spec)
+        share = _mount_spec_to_share(normalized)
+        # Reinsert so a transient override also takes the later mount's order.
+        by_destination.pop(share[1], None)
+        by_destination[share[1]] = share
+    return list(by_destination.values())
 
 
 _RESERVED_PORTS = {8080, 9090}
@@ -1282,6 +1348,7 @@ def remove(
 
 
 @agent_app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@profiled_command("agent run")
 def run(
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
@@ -1316,6 +1383,11 @@ def run(
         help="Enable warm-boot snapshot capture/restore (currently disabled by "
              "default while we investigate a VZ save incompatibility with the "
              "new vsock proxy relay).",
+    ),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Profile lifecycle phases and write a JSONL timing artifact",
     ),
 ) -> None:
     """Run an existing agent container.
@@ -1356,6 +1428,7 @@ def run(
         safeyolo agent run myproject -- --continue
         safeyolo agent run myproject --fresh
     """
+    _t("agent command validation and host setup")
     # ctx.args contains everything after '--'
     agent_args = ctx.args if ctx.args else None
 
@@ -1800,8 +1873,14 @@ def diag(
 
 
 @agent_app.command()
+@profiled_command("agent stop")
 def stop(
     name: str = typer.Argument(..., help="Agent instance name to stop"),
+    profile: bool = typer.Option(
+        False,
+        "--profile",
+        help="Profile lifecycle phases and write a JSONL timing artifact",
+    ),
 ) -> None:
     """Stop a running agent sandbox.
 
@@ -1809,6 +1888,7 @@ def stop(
 
         safeyolo agent stop myproject
     """
+    _t("validate agent and inspect sandbox state")
     _validate_instance_name(name)
 
     from ..platform import get_platform
@@ -1819,13 +1899,21 @@ def stop(
         raise typer.Exit(0)
 
     console.print(f"Stopping {name}...")
+    _t("platform sandbox shutdown and cleanup")
     plat.stop_sandbox(name)
     # Drop the per-agent UnixInstance. `stop_sandbox` already removed
     # the agent from agent_map.json, so this push reflects its absence.
-    config = load_config()
-    admin_port = config.get("proxy", {}).get("admin_port", 9090)
+    # If the proxy is down, its next start reads the already-updated map. Avoid
+    # a guaranteed refused admin connection (and noisy warning) in that case.
+    from ..proxy import is_proxy_running as _proxy_is_running
     from ..proxy import sync_proxy_modes
-    sync_proxy_modes(admin_port=admin_port)
+    _t("check proxy before listener reconciliation")
+    if _proxy_is_running():
+        config = load_config()
+        admin_port = config.get("proxy", {}).get("admin_port", 9090)
+        _t("remove proxy listener for stopped agent")
+        sync_proxy_modes(admin_port=admin_port)
+    _t("record and render stop result")
     write_event("agent.stopped", kind=EventKind.AGENT, severity=Severity.LOW, summary=f"Agent {name} stopped by user", agent=name, details={"reason": "user_request"})
     console.print(f"[green]Stopped {name}.[/green]")
 

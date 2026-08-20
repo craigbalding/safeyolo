@@ -5,9 +5,10 @@ Tests HTTP endpoints for runtime control and stats.
 Uses mock handler to simulate HTTP requests without a real server.
 """
 
+import asyncio
 import json
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1184,6 +1185,70 @@ class TestAgentServiceEndpoints:
 # ---------------------------------------------------------------------------
 # Authentication tests
 # ---------------------------------------------------------------------------
+
+
+class TestPutProxyMode:
+    def test_awaits_listener_reconciliation_instead_of_sleeping(self, handler_class):
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/mode",
+            body=json.dumps({"modes": []}),
+        )
+        servers = MagicMock()
+        servers.update = AsyncMock(return_value=True)
+        proxyserver = MagicMock(servers=servers)
+        future = MagicMock()
+
+        def submit(coroutine, _loop):
+            result = asyncio.run(coroutine)
+            future.result.return_value = result
+            return future
+
+        with (
+            patch("admin_api.ctx") as mock_ctx,
+            patch("admin_api.asyncio.run_coroutine_threadsafe", side_effect=submit),
+            patch("admin_api.write_event"),
+        ):
+            mock_ctx.master.addons.get.return_value = proxyserver
+            handler.do_PUT()
+
+        assert handler._status == 200
+        mock_ctx.options.update.assert_called_once_with(mode=[])
+        servers.update.assert_awaited_once_with([])
+        future.result.assert_called_once_with(timeout=2.0)
+
+    def test_reports_listener_reconciliation_failure(self, handler_class):
+        handler = _make_handler(
+            handler_class,
+            "PUT",
+            "/admin/proxy/mode",
+            body=json.dumps({"modes": []}),
+        )
+        servers = MagicMock()
+        servers.update = AsyncMock(return_value=False)
+        proxyserver = MagicMock(servers=servers)
+
+        def submit(coroutine, _loop):
+            try:
+                result = asyncio.run(coroutine)
+            except Exception as exc:
+                future = MagicMock()
+                future.result.side_effect = exc
+                return future
+            future = MagicMock()
+            future.result.return_value = result
+            return future
+
+        with (
+            patch("admin_api.ctx") as mock_ctx,
+            patch("admin_api.asyncio.run_coroutine_threadsafe", side_effect=submit),
+        ):
+            mock_ctx.master.addons.get.return_value = proxyserver
+            handler.do_PUT()
+
+        assert handler._status == 400
+        assert "failed to reconcile" in _parse_response(handler)["error"]
 
 
 class TestPutProxyIgnoreHosts:

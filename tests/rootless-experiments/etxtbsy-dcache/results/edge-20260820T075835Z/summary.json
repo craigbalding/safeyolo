@@ -1,0 +1,1542 @@
+{
+  "agent": "kali-template-v2",
+  "agent_left_stopped": true,
+  "artifact_root": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z",
+  "artifact_root_removed": true,
+  "boot": {
+    "output": "  Booting VM... 127.0.0.1\n  VM running (detached)\n  Connect: safeyolo agent shell kali-template-v2\n  Stop:    safeyolo agent stop kali-template-v2\n",
+    "returncode": 0
+  },
+  "finished_at": "2026-08-20T08:02:45.908391+00:00",
+  "instrumentation_note": "CPU ticks, process I/O counters, FD counts, and exact target holders are sampled. Syscall tracing is intentionally excluded because ptrace/strace can pause the sentry and perturb the close-to-exec race being measured.",
+  "mode": "edge",
+  "output_dir": "/home/craigb/proj/safeyolo/tests/rootless-experiments/etxtbsy-dcache/results/edge-20260820T075835Z",
+  "runtime_after": {
+    "agent": "kali-template-v2",
+    "processes": [
+      {
+        "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+        "cpu": {
+          "system_seconds": 0.02,
+          "system_ticks": 2,
+          "user_seconds": 0.03,
+          "user_ticks": 3
+        },
+        "fd_count": 46,
+        "io": {
+          "cancelled_write_bytes": 0,
+          "rchar": 21808,
+          "read_bytes": 0,
+          "syscr": 46,
+          "syscw": 4,
+          "wchar": 4165,
+          "write_bytes": 0
+        },
+        "nonvoluntary_context_switches": "0",
+        "pid": 375699,
+        "ppid": 1,
+        "threads": "14",
+        "vm_rss": "30556 kB",
+        "voluntary_context_switches": "59"
+      },
+      {
+        "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "cpu": {
+          "system_seconds": 12.88,
+          "system_ticks": 1288,
+          "user_seconds": 10.97,
+          "user_ticks": 1097
+        },
+        "fd_count": 864,
+        "io": {
+          "cancelled_write_bytes": 16384,
+          "rchar": 15265891,
+          "read_bytes": 0,
+          "syscr": 19057,
+          "syscw": 15795,
+          "wchar": 158621,
+          "write_bytes": 114688
+        },
+        "nonvoluntary_context_switches": "2573",
+        "pid": 375703,
+        "ppid": 1,
+        "threads": "25",
+        "vm_rss": "58176 kB",
+        "voluntary_context_switches": "34250"
+      }
+    ]
+  },
+  "runtime_before": {
+    "agent": "kali-template-v2",
+    "processes": [
+      {
+        "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+        "cpu": {
+          "system_seconds": 0.02,
+          "system_ticks": 2,
+          "user_seconds": 0.02,
+          "user_ticks": 2
+        },
+        "fd_count": 46,
+        "io": {
+          "cancelled_write_bytes": 0,
+          "rchar": 21738,
+          "read_bytes": 0,
+          "syscr": 41,
+          "syscw": 4,
+          "wchar": 4165,
+          "write_bytes": 0
+        },
+        "nonvoluntary_context_switches": "0",
+        "pid": 375699,
+        "ppid": 1,
+        "threads": "14",
+        "vm_rss": "31384 kB",
+        "voluntary_context_switches": "59"
+      },
+      {
+        "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+        "cpu": {
+          "system_seconds": 0.94,
+          "system_ticks": 94,
+          "user_seconds": 0.9,
+          "user_ticks": 90
+        },
+        "fd_count": 490,
+        "io": {
+          "cancelled_write_bytes": 12288,
+          "rchar": 849311,
+          "read_bytes": 0,
+          "syscr": 1582,
+          "syscw": 306,
+          "wchar": 28411,
+          "write_bytes": 98304
+        },
+        "nonvoluntary_context_switches": "615",
+        "pid": 375703,
+        "ppid": 1,
+        "threads": "25",
+        "vm_rss": "55124 kB",
+        "voluntary_context_switches": "2683"
+      }
+    ]
+  },
+  "scenarios": {
+    "direct-watch": {
+      "exec_after_release": {
+        "attempts": 1,
+        "last": {
+          "elapsed_ns": 1914660,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0,
+          "stdout": "edge-direct-watch\n"
+        },
+        "latency_ms": 1.923925,
+        "released": true
+      },
+      "exec_while_held": {
+        "elapsed_ns": 1023616,
+        "errno": 26,
+        "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.sh'",
+        "ok": false,
+        "returncode": null,
+        "stdout": ""
+      },
+      "exec_while_held_matches_payload": false,
+      "guest": {
+        "alias": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.alias",
+        "expected_stdout": "edge-direct-watch\n",
+        "released": true,
+        "scenario": "direct-watch",
+        "target": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.sh"
+      },
+      "guest_process_output": "SAFEYOLO_EXPERIMENT_READY=direct-watch\nSAFEYOLO_EXPERIMENT_JSON={\"alias\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.alias\", \"expected_stdout\": \"edge-direct-watch\\n\", \"released\": true, \"scenario\": \"direct-watch\", \"target\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.sh\"}\n",
+      "guest_process_returncode": 0,
+      "held_writable_descriptors": {
+        "groups": [
+          {
+            "access_mode": 2,
+            "command": "gvisor_sentry",
+            "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+            "fd": 872,
+            "flags_octal": "02500002",
+            "pids": [
+              375703,
+              375732,
+              375744,
+              375748,
+              375759,
+              375761,
+              375767,
+              375768,
+              375774,
+              375775,
+              375776,
+              375777,
+              375825,
+              375826,
+              375827,
+              375828,
+              375830,
+              375835,
+              375841,
+              375842,
+              375843,
+              375844,
+              375934,
+              375935,
+              375936,
+              375937,
+              375938,
+              375939,
+              375940,
+              375941,
+              375959,
+              375961,
+              375963,
+              375964,
+              375967,
+              375968,
+              375969,
+              375970,
+              376119,
+              376120,
+              376121,
+              376122,
+              376123,
+              376126,
+              376230,
+              376231
+            ],
+            "root_pid": 375703,
+            "task_count": 46
+          }
+        ],
+        "identity": {
+          "device": 64769,
+          "inode": 43131757
+        },
+        "permission_denied": 0,
+        "runtime_roots": [
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 6.88,
+              "system_ticks": 688,
+              "user_seconds": 5.97,
+              "user_ticks": 597
+            },
+            "fd_count": 873,
+            "io": {
+              "cancelled_write_bytes": 12288,
+              "rchar": 8068589,
+              "read_bytes": 0,
+              "syscr": 10161,
+              "syscw": 7860,
+              "wchar": 89695,
+              "write_bytes": 110592
+            },
+            "nonvoluntary_context_switches": "1341",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "67940 kB",
+            "voluntary_context_switches": "16405"
+          }
+        ],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.sh",
+        "writable_holder_tasks": 46
+      },
+      "parallel_exec_while_guest_alive": null,
+      "post_release_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131757
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/direct-watch.sh",
+        "writable_holder_tasks": 0
+      },
+      "ready": true,
+      "ready_to_held_checks_ms": 18733.672985,
+      "runtime_after": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 0.02,
+              "system_ticks": 2,
+              "user_seconds": 0.02,
+              "user_ticks": 2
+            },
+            "fd_count": 46,
+            "io": {
+              "cancelled_write_bytes": 0,
+              "rchar": 21766,
+              "read_bytes": 0,
+              "syscr": 43,
+              "syscw": 4,
+              "wchar": 4165,
+              "write_bytes": 0
+            },
+            "nonvoluntary_context_switches": "0",
+            "pid": 375699,
+            "ppid": 1,
+            "threads": "14",
+            "vm_rss": "31384 kB",
+            "voluntary_context_switches": "59"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 6.9,
+              "system_ticks": 690,
+              "user_seconds": 5.98,
+              "user_ticks": 598
+            },
+            "fd_count": 864,
+            "io": {
+              "cancelled_write_bytes": 12288,
+              "rchar": 8068621,
+              "read_bytes": 0,
+              "syscr": 10165,
+              "syscw": 7866,
+              "wchar": 90031,
+              "write_bytes": 110592
+            },
+            "nonvoluntary_context_switches": "1341",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "57960 kB",
+            "voluntary_context_switches": "16405"
+          }
+        ]
+      },
+      "scenario": "direct-watch",
+      "target_stat": {
+        "device": 64769,
+        "gid": 1000,
+        "inode": 43131757,
+        "mode": 493,
+        "mtime_ns": 1787212800475861122,
+        "size": 44,
+        "uid": 1000
+      }
+    },
+    "idle-closed": {
+      "exec_after_release": {
+        "attempts": 1,
+        "last": {
+          "elapsed_ns": 2014602,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0,
+          "stdout": "edge-idle-closed\n"
+        },
+        "latency_ms": 2.027832,
+        "released": true
+      },
+      "exec_while_held": {
+        "elapsed_ns": 2021130,
+        "errno": null,
+        "message": "",
+        "ok": true,
+        "returncode": 0,
+        "stdout": "edge-idle-closed\n"
+      },
+      "exec_while_held_matches_payload": true,
+      "guest": {
+        "alias": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/idle-closed.alias",
+        "expected_stdout": "edge-idle-closed\n",
+        "released": true,
+        "scenario": "idle-closed",
+        "target": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/idle-closed.sh"
+      },
+      "guest_process_output": "SAFEYOLO_EXPERIMENT_READY=idle-closed\nSAFEYOLO_EXPERIMENT_JSON={\"alias\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/idle-closed.alias\", \"expected_stdout\": \"edge-idle-closed\\n\", \"released\": true, \"scenario\": \"idle-closed\", \"target\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/idle-closed.sh\"}\n",
+      "guest_process_returncode": 0,
+      "held_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131751
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/idle-closed.sh",
+        "writable_holder_tasks": 0
+      },
+      "parallel_exec_while_guest_alive": {
+        "attempts": 32,
+        "etxtbsy": 0,
+        "other_failures": 0,
+        "results": [
+          {
+            "elapsed_ns": 3268795,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 5004504,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 13010861,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 7172046,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 8059616,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 9165396,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 12290523,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 9593401,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 10287690,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 9444016,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 29358239,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 29772084,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 2392942,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 9430827,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 9463256,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 8291666,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 21557884,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 8773584,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 12260279,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 12293558,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 21695111,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 16942526,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 15152294,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 14480050,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 14960225,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 12340017,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 6639314,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 13535823,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 11434582,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 8058044,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 3461926,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          },
+          {
+            "elapsed_ns": 4089864,
+            "errno": null,
+            "message": "",
+            "ok": true,
+            "returncode": 0,
+            "stdout": "edge-idle-closed\n"
+          }
+        ],
+        "successes": 32
+      },
+      "post_release_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131751
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/idle-closed.sh",
+        "writable_holder_tasks": 0
+      },
+      "ready": true,
+      "ready_to_held_checks_ms": 18868.123559,
+      "runtime_after": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 0.02,
+              "system_ticks": 2,
+              "user_seconds": 0.02,
+              "user_ticks": 2
+            },
+            "fd_count": 46,
+            "io": {
+              "cancelled_write_bytes": 0,
+              "rchar": 21752,
+              "read_bytes": 0,
+              "syscr": 42,
+              "syscw": 4,
+              "wchar": 4165,
+              "write_bytes": 0
+            },
+            "nonvoluntary_context_switches": "0",
+            "pid": 375699,
+            "ppid": 1,
+            "threads": "14",
+            "vm_rss": "31384 kB",
+            "voluntary_context_switches": "59"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 2.99,
+              "system_ticks": 299,
+              "user_seconds": 2.7,
+              "user_ticks": 270
+            },
+            "fd_count": 864,
+            "io": {
+              "cancelled_write_bytes": 12288,
+              "rchar": 3272225,
+              "read_bytes": 0,
+              "syscr": 4460,
+              "syscw": 2803,
+              "wchar": 48817,
+              "write_bytes": 110592
+            },
+            "nonvoluntary_context_switches": "956",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "58216 kB",
+            "voluntary_context_switches": "11237"
+          }
+        ]
+      },
+      "scenario": "idle-closed",
+      "target_stat": {
+        "device": 64769,
+        "gid": 1000,
+        "inode": 43131751,
+        "mode": 493,
+        "mtime_ns": 1787212722055177697,
+        "size": 43,
+        "uid": 1000
+      }
+    },
+    "live-hardlink-alias": {
+      "exec_after_release": {
+        "attempts": 1,
+        "last": {
+          "elapsed_ns": 2667806,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0,
+          "stdout": "edge-live-hardlink-alias\n"
+        },
+        "latency_ms": 2.678934,
+        "released": true
+      },
+      "exec_while_held": {
+        "elapsed_ns": 610491,
+        "errno": 26,
+        "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.sh'",
+        "ok": false,
+        "returncode": null,
+        "stdout": ""
+      },
+      "exec_while_held_matches_payload": false,
+      "guest": {
+        "alias": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.alias",
+        "expected_stdout": "edge-live-hardlink-alias\n",
+        "released": true,
+        "scenario": "live-hardlink-alias",
+        "target": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.sh"
+      },
+      "guest_process_output": "SAFEYOLO_EXPERIMENT_READY=live-hardlink-alias\nSAFEYOLO_EXPERIMENT_JSON={\"alias\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.alias\", \"expected_stdout\": \"edge-live-hardlink-alias\\n\", \"released\": true, \"scenario\": \"live-hardlink-alias\", \"target\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.sh\"}\n",
+      "guest_process_returncode": 0,
+      "held_writable_descriptors": {
+        "groups": [
+          {
+            "access_mode": 2,
+            "command": "gvisor_sentry",
+            "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+            "fd": 872,
+            "flags_octal": "02500002",
+            "pids": [
+              375703,
+              375732,
+              375744,
+              375748,
+              375759,
+              375761,
+              375767,
+              375768,
+              375774,
+              375775,
+              375776,
+              375777,
+              375825,
+              375826,
+              375827,
+              375828,
+              375830,
+              375835,
+              375841,
+              375842,
+              375843,
+              375844,
+              375934,
+              375935,
+              375936,
+              375937,
+              375938,
+              375939,
+              375940,
+              375941,
+              375959,
+              375961,
+              375963,
+              375964,
+              375967,
+              375968,
+              375969,
+              375970,
+              376119,
+              376120,
+              376121,
+              376122,
+              376123,
+              376126,
+              376230,
+              376231,
+              376577
+            ],
+            "root_pid": 375703,
+            "task_count": 47
+          }
+        ],
+        "identity": {
+          "device": 64769,
+          "inode": 43131763
+        },
+        "permission_denied": 0,
+        "runtime_roots": [
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 12.87,
+              "system_ticks": 1287,
+              "user_seconds": 10.96,
+              "user_ticks": 1096
+            },
+            "fd_count": 873,
+            "io": {
+              "cancelled_write_bytes": 16384,
+              "rchar": 15265851,
+              "read_bytes": 0,
+              "syscr": 19052,
+              "syscw": 15788,
+              "wchar": 158249,
+              "write_bytes": 114688
+            },
+            "nonvoluntary_context_switches": "2567",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "68288 kB",
+            "voluntary_context_switches": "34203"
+          }
+        ],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.sh",
+        "writable_holder_tasks": 47
+      },
+      "parallel_exec_while_guest_alive": null,
+      "post_release_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131763
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/live-hardlink-alias.sh",
+        "writable_holder_tasks": 0
+      },
+      "ready": true,
+      "ready_to_held_checks_ms": 18782.385502,
+      "runtime_after": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 0.02,
+              "system_ticks": 2,
+              "user_seconds": 0.03,
+              "user_ticks": 3
+            },
+            "fd_count": 46,
+            "io": {
+              "cancelled_write_bytes": 0,
+              "rchar": 21808,
+              "read_bytes": 0,
+              "syscr": 46,
+              "syscw": 4,
+              "wchar": 4165,
+              "write_bytes": 0
+            },
+            "nonvoluntary_context_switches": "0",
+            "pid": 375699,
+            "ppid": 1,
+            "threads": "14",
+            "vm_rss": "30556 kB",
+            "voluntary_context_switches": "59"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 12.88,
+              "system_ticks": 1288,
+              "user_seconds": 10.97,
+              "user_ticks": 1097
+            },
+            "fd_count": 864,
+            "io": {
+              "cancelled_write_bytes": 16384,
+              "rchar": 15265891,
+              "read_bytes": 0,
+              "syscr": 19057,
+              "syscw": 15795,
+              "wchar": 158621,
+              "write_bytes": 114688
+            },
+            "nonvoluntary_context_switches": "2573",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "58176 kB",
+            "voluntary_context_switches": "34250"
+          }
+        ]
+      },
+      "scenario": "live-hardlink-alias",
+      "target_stat": {
+        "device": 64769,
+        "gid": 1000,
+        "inode": 43131763,
+        "mode": 493,
+        "mtime_ns": 1787212920184403101,
+        "size": 51,
+        "uid": 1000
+      }
+    },
+    "open-writer": {
+      "exec_after_release": {
+        "attempts": 1,
+        "last": {
+          "elapsed_ns": 2981251,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0,
+          "stdout": "edge-open-writer\n"
+        },
+        "latency_ms": 2.991005,
+        "released": true
+      },
+      "exec_while_held": {
+        "elapsed_ns": 1979418,
+        "errno": 26,
+        "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.sh'",
+        "ok": false,
+        "returncode": null,
+        "stdout": ""
+      },
+      "exec_while_held_matches_payload": false,
+      "guest": {
+        "alias": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.alias",
+        "expected_stdout": "edge-open-writer\n",
+        "released": true,
+        "scenario": "open-writer",
+        "target": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.sh"
+      },
+      "guest_process_output": "SAFEYOLO_EXPERIMENT_READY=open-writer\nSAFEYOLO_EXPERIMENT_JSON={\"alias\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.alias\", \"expected_stdout\": \"edge-open-writer\\n\", \"released\": true, \"scenario\": \"open-writer\", \"target\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.sh\"}\n",
+      "guest_process_returncode": 0,
+      "held_writable_descriptors": {
+        "groups": [
+          {
+            "access_mode": 2,
+            "command": "gvisor_sentry",
+            "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+            "fd": 872,
+            "flags_octal": "02500002",
+            "pids": [
+              375703,
+              375732,
+              375744,
+              375748,
+              375759,
+              375761,
+              375767,
+              375768,
+              375774,
+              375775,
+              375776,
+              375777,
+              375825,
+              375826,
+              375827,
+              375828,
+              375830,
+              375835,
+              375841,
+              375842,
+              375843,
+              375844,
+              375934,
+              375935,
+              375936,
+              375937,
+              375938,
+              375939,
+              375940,
+              375941,
+              375959,
+              375961,
+              375963,
+              375964,
+              375967,
+              375968,
+              375969,
+              375970,
+              376119,
+              376120,
+              376121,
+              376122,
+              376123,
+              376126,
+              376230,
+              376231
+            ],
+            "root_pid": 375703,
+            "task_count": 46
+          }
+        ],
+        "identity": {
+          "device": 64769,
+          "inode": 43131759
+        },
+        "permission_denied": 0,
+        "runtime_roots": [
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 8.92,
+              "system_ticks": 892,
+              "user_seconds": 7.7,
+              "user_ticks": 770
+            },
+            "fd_count": 873,
+            "io": {
+              "cancelled_write_bytes": 16384,
+              "rchar": 10471271,
+              "read_bytes": 0,
+              "syscr": 13574,
+              "syscw": 10952,
+              "wchar": 114784,
+              "write_bytes": 114688
+            },
+            "nonvoluntary_context_switches": "1541",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "69212 kB",
+            "voluntary_context_switches": "17565"
+          }
+        ],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.sh",
+        "writable_holder_tasks": 46
+      },
+      "parallel_exec_while_guest_alive": null,
+      "post_release_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131759
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/open-writer.sh",
+        "writable_holder_tasks": 0
+      },
+      "ready": true,
+      "ready_to_held_checks_ms": 18998.498266,
+      "runtime_after": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 0.02,
+              "system_ticks": 2,
+              "user_seconds": 0.03,
+              "user_ticks": 3
+            },
+            "fd_count": 46,
+            "io": {
+              "cancelled_write_bytes": 0,
+              "rchar": 21780,
+              "read_bytes": 0,
+              "syscr": 44,
+              "syscw": 4,
+              "wchar": 4165,
+              "write_bytes": 0
+            },
+            "nonvoluntary_context_switches": "0",
+            "pid": 375699,
+            "ppid": 1,
+            "threads": "14",
+            "vm_rss": "31772 kB",
+            "voluntary_context_switches": "59"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 8.93,
+              "system_ticks": 893,
+              "user_seconds": 7.71,
+              "user_ticks": 771
+            },
+            "fd_count": 864,
+            "io": {
+              "cancelled_write_bytes": 16384,
+              "rchar": 10471343,
+              "read_bytes": 0,
+              "syscr": 13583,
+              "syscw": 10963,
+              "wchar": 115156,
+              "write_bytes": 114688
+            },
+            "nonvoluntary_context_switches": "1541",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "58088 kB",
+            "voluntary_context_switches": "17566"
+          }
+        ]
+      },
+      "scenario": "open-writer",
+      "target_stat": {
+        "device": 64769,
+        "gid": 1000,
+        "inode": 43131759,
+        "mode": 493,
+        "mtime_ns": 1787212840876213822,
+        "size": 43,
+        "uid": 1000
+      }
+    },
+    "parent-watch": {
+      "exec_after_release": {
+        "attempts": 1,
+        "last": {
+          "elapsed_ns": 2080771,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0,
+          "stdout": "edge-parent-watch\n"
+        },
+        "latency_ms": 2.09414,
+        "released": true
+      },
+      "exec_while_held": {
+        "elapsed_ns": 2737002,
+        "errno": null,
+        "message": "",
+        "ok": true,
+        "returncode": 0,
+        "stdout": "edge-parent-watch\n"
+      },
+      "exec_while_held_matches_payload": true,
+      "guest": {
+        "alias": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/parent-watch.alias",
+        "expected_stdout": "edge-parent-watch\n",
+        "released": true,
+        "scenario": "parent-watch",
+        "target": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/parent-watch.sh"
+      },
+      "guest_process_output": "SAFEYOLO_EXPERIMENT_READY=parent-watch\nSAFEYOLO_EXPERIMENT_JSON={\"alias\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/parent-watch.alias\", \"expected_stdout\": \"edge-parent-watch\\n\", \"released\": true, \"scenario\": \"parent-watch\", \"target\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/parent-watch.sh\"}\n",
+      "guest_process_returncode": 0,
+      "held_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131755
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/parent-watch.sh",
+        "writable_holder_tasks": 0
+      },
+      "parallel_exec_while_guest_alive": null,
+      "post_release_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131755
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/parent-watch.sh",
+        "writable_holder_tasks": 0
+      },
+      "ready": true,
+      "ready_to_held_checks_ms": 18234.437935,
+      "runtime_after": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 0.02,
+              "system_ticks": 2,
+              "user_seconds": 0.02,
+              "user_ticks": 2
+            },
+            "fd_count": 46,
+            "io": {
+              "cancelled_write_bytes": 0,
+              "rchar": 21766,
+              "read_bytes": 0,
+              "syscr": 43,
+              "syscw": 4,
+              "wchar": 4165,
+              "write_bytes": 0
+            },
+            "nonvoluntary_context_switches": "0",
+            "pid": 375699,
+            "ppid": 1,
+            "threads": "14",
+            "vm_rss": "31384 kB",
+            "voluntary_context_switches": "59"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 4.9,
+              "system_ticks": 490,
+              "user_seconds": 4.32,
+              "user_ticks": 432
+            },
+            "fd_count": 864,
+            "io": {
+              "cancelled_write_bytes": 12288,
+              "rchar": 5667595,
+              "read_bytes": 0,
+              "syscr": 6959,
+              "syscw": 4981,
+              "wchar": 66596,
+              "write_bytes": 110592
+            },
+            "nonvoluntary_context_switches": "961",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "58556 kB",
+            "voluntary_context_switches": "11281"
+          }
+        ]
+      },
+      "scenario": "parent-watch",
+      "target_stat": {
+        "device": 64769,
+        "gid": 1000,
+        "inode": 43131755,
+        "mode": 493,
+        "mtime_ns": 1787212761567521834,
+        "size": 44,
+        "uid": 1000
+      }
+    },
+    "writable-mmap": {
+      "exec_after_release": {
+        "attempts": 1,
+        "last": {
+          "elapsed_ns": 2133741,
+          "errno": null,
+          "message": "",
+          "ok": true,
+          "returncode": 0,
+          "stdout": "edge-writable-mmap\n"
+        },
+        "latency_ms": 2.143425,
+        "released": true
+      },
+      "exec_while_held": {
+        "elapsed_ns": 719646,
+        "errno": 26,
+        "message": "[Errno 26] Text file busy: '/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.sh'",
+        "ok": false,
+        "returncode": null,
+        "stdout": ""
+      },
+      "exec_while_held_matches_payload": false,
+      "guest": {
+        "alias": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.alias",
+        "expected_stdout": "edge-writable-mmap\n",
+        "released": true,
+        "scenario": "writable-mmap",
+        "target": "/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.sh"
+      },
+      "guest_process_output": "SAFEYOLO_EXPERIMENT_READY=writable-mmap\nSAFEYOLO_EXPERIMENT_JSON={\"alias\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.alias\", \"expected_stdout\": \"edge-writable-mmap\\n\", \"released\": true, \"scenario\": \"writable-mmap\", \"target\": \"/workspace/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.sh\"}\n",
+      "guest_process_returncode": 0,
+      "held_writable_descriptors": {
+        "groups": [
+          {
+            "access_mode": 2,
+            "command": "gvisor_sentry",
+            "executable": "/usr/bin/gvisor-bin/gvisor_sentry",
+            "fd": 872,
+            "flags_octal": "02500002",
+            "pids": [
+              375703,
+              375732,
+              375744,
+              375748,
+              375759,
+              375761,
+              375767,
+              375768,
+              375774,
+              375775,
+              375776,
+              375777,
+              375825,
+              375826,
+              375827,
+              375828,
+              375830,
+              375835,
+              375841,
+              375842,
+              375843,
+              375844,
+              375934,
+              375935,
+              375936,
+              375937,
+              375938,
+              375939,
+              375940,
+              375941,
+              375959,
+              375961,
+              375963,
+              375964,
+              375967,
+              375968,
+              375969,
+              375970,
+              376119,
+              376120,
+              376121,
+              376122,
+              376123,
+              376126,
+              376230,
+              376231
+            ],
+            "root_pid": 375703,
+            "task_count": 46
+          }
+        ],
+        "identity": {
+          "device": 64769,
+          "inode": 43131761
+        },
+        "permission_denied": 0,
+        "runtime_roots": [
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 10.93,
+              "system_ticks": 1093,
+              "user_seconds": 9.27,
+              "user_ticks": 927
+            },
+            "fd_count": 873,
+            "io": {
+              "cancelled_write_bytes": 16384,
+              "rchar": 12868993,
+              "read_bytes": 0,
+              "syscr": 16367,
+              "syscw": 13424,
+              "wchar": 138964,
+              "write_bytes": 114688
+            },
+            "nonvoluntary_context_switches": "1937",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "68308 kB",
+            "voluntary_context_switches": "25664"
+          }
+        ],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.sh",
+        "writable_holder_tasks": 46
+      },
+      "parallel_exec_while_guest_alive": null,
+      "post_release_writable_descriptors": {
+        "groups": [],
+        "identity": {
+          "device": 64769,
+          "inode": 43131761
+        },
+        "permission_denied": 0,
+        "runtime_roots": [],
+        "target": "/home/craigb/proj/kali-template-v2/.safeyolo-etxtbsy-edge-20260820T075835Z/scenarios/writable-mmap.sh",
+        "writable_holder_tasks": 0
+      },
+      "ready": true,
+      "ready_to_held_checks_ms": 18581.45234,
+      "runtime_after": {
+        "agent": "kali-template-v2",
+        "processes": [
+          {
+            "command": "runsc-gofer --root=/home/craigb/.safeyolo/run --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true gofer --bundle /home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --spec-fd=3 --mounts-fd=4 --rpc-fd=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --io-fds=12 --io-fds=13 --io-fds=14 --sync-chroot-fd=15 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 0.02,
+              "system_ticks": 2,
+              "user_seconds": 0.03,
+              "user_ticks": 3
+            },
+            "fd_count": 46,
+            "io": {
+              "cancelled_write_bytes": 0,
+              "rchar": 21808,
+              "read_bytes": 0,
+              "syscr": 46,
+              "syscw": 4,
+              "wchar": 4165,
+              "write_bytes": 0
+            },
+            "nonvoluntary_context_switches": "0",
+            "pid": 375699,
+            "ppid": 1,
+            "threads": "14",
+            "vm_rss": "30556 kB",
+            "voluntary_context_switches": "59"
+          },
+          {
+            "command": "runsc-sandbox --overlay2=root:dir=/home/craigb/.safeyolo/agents/kali-template-v2/overlay --host-uds=open --network=sandbox --platform=systrap --ignore-cgroups=true --root=/home/craigb/.safeyolo/run boot --bundle=/home/craigb/.safeyolo/agents/kali-template-v2 --gofer-mount-confs=lisafs:anon,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none,lisafs:none --apply-caps=true --setup-root --total-host-memory 16768610304 --total-memory 16768610304 --io-fds=3 --io-fds=4 --io-fds=5 --io-fds=6 --io-fds=7 --io-fds=8 --io-fds=9 --io-fds=10 --io-fds=11 --dev-io-fd=-1 --gofer-filestore-fds=12 --mounts-fd=13 --start-sync-fd=14 --controller-fd=15 --spec-fd=16 --stdio-fds=17 --stdio-fds=18 --stdio-fds=19 safeyolo-kali-template-v2",
+            "cpu": {
+              "system_seconds": 10.94,
+              "system_ticks": 1094,
+              "user_seconds": 9.28,
+              "user_ticks": 928
+            },
+            "fd_count": 864,
+            "io": {
+              "cancelled_write_bytes": 16384,
+              "rchar": 12869009,
+              "read_bytes": 0,
+              "syscr": 16369,
+              "syscw": 13428,
+              "wchar": 139288,
+              "write_bytes": 114688
+            },
+            "nonvoluntary_context_switches": "1937",
+            "pid": 375703,
+            "ppid": 1,
+            "threads": "25",
+            "vm_rss": "57848 kB",
+            "voluntary_context_switches": "25665"
+          }
+        ]
+      },
+      "scenario": "writable-mmap",
+      "target_stat": {
+        "device": 64769,
+        "gid": 1000,
+        "inode": 43131761,
+        "mode": 493,
+        "mtime_ns": 1787212880912563717,
+        "size": 4096,
+        "uid": 1000
+      }
+    }
+  },
+  "schema": 1,
+  "settings": {
+    "hold_timeout": 30.0,
+    "overrides": {
+      "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE": "0"
+    },
+    "parallel_attempts": 32,
+    "scenarios": [
+      "idle-closed",
+      "parent-watch",
+      "direct-watch",
+      "open-writer",
+      "writable-mmap",
+      "live-hardlink-alias"
+    ],
+    "variant": "workspace-dcache-0"
+  },
+  "started_at": "2026-08-20T07:58:35.336464+00:00",
+  "stop": {
+    "output": "Stopping kali-template-v2...\nStopped kali-template-v2.\n",
+    "returncode": 0
+  },
+  "verdict": {
+    "characterization": {
+      "direct-watch": {
+        "exec_while_held_errno": 26,
+        "exec_while_held_ok": false,
+        "writable_holder_tasks": 46
+      },
+      "idle-closed": {
+        "exec_while_held_errno": null,
+        "exec_while_held_ok": true,
+        "writable_holder_tasks": 0
+      },
+      "live-hardlink-alias": {
+        "exec_while_held_errno": 26,
+        "exec_while_held_ok": false,
+        "writable_holder_tasks": 47
+      },
+      "open-writer": {
+        "exec_while_held_errno": 26,
+        "exec_while_held_ok": false,
+        "writable_holder_tasks": 46
+      },
+      "parent-watch": {
+        "exec_while_held_errno": null,
+        "exec_while_held_ok": true,
+        "writable_holder_tasks": 0
+      },
+      "writable-mmap": {
+        "exec_while_held_errno": 26,
+        "exec_while_held_ok": false,
+        "writable_holder_tasks": 46
+      }
+    },
+    "normative_checks": {
+      "active_writer_returns_etxtbsy": true,
+      "all_guest_sessions_clean": true,
+      "all_targets_execute_after_release": true,
+      "idle_closed_executes_while_guest_alive": true,
+      "idle_closed_parallel_executes": true,
+      "workspace_mount_matches_variant": true
+    },
+    "passed": true
+  },
+  "workspace": "/home/craigb/proj/kali-template-v2",
+  "workspace_mount": {
+    "destination": "/workspace",
+    "options": [
+      "rbind",
+      "rw",
+      "nosuid",
+      "nodev",
+      "dcache=0"
+    ],
+    "source": "/home/craigb/proj/kali-template-v2",
+    "type": "bind"
+  }
+}

@@ -31,6 +31,8 @@ import time
 from pathlib import Path
 
 from ..config import get_agents_dir
+from ..timing import enter as _profile_enter
+from ..timing import phase as _profile_phase
 from ..vm import ensure_agent_persistent_dirs, get_agent_home_dir
 from . import AgentPlatform, BinaryRelay
 
@@ -42,6 +44,18 @@ AA_PROFILE = "safeyolo-runsc"
 # runsc state directory -- user-writable, no sudo needed.
 RUNSC_ROOT_DEFAULT = str(Path.home() / ".safeyolo" / "run")
 PORT_FORWARD_TIMEOUT_SECONDS = 10
+GRACEFUL_STOP_TIMEOUT_SECONDS = 5.0
+STOP_POLL_INTERVAL_SECONDS = 0.05
+USERNS_START_TIMEOUT_SECONDS = 2.0
+USERNS_POLL_INTERVAL_SECONDS = 0.005
+
+# Diagnostic-only overrides used by the archived ETXTBSY experiment. Keeping
+# these out of policy.toml makes it difficult to accidentally turn an
+# experiment into a persistent security/performance setting. The workspace
+# override also accepts "default" to reproduce gVisor's pre-fix mount default.
+EXPERIMENT_WORKSPACE_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE"
+EXPERIMENT_RUNSC_DCACHE_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DCACHE"
+EXPERIMENT_RUNSC_DIRECTFS_ENV = "SAFEYOLO_EXPERIMENT_RUNSC_DIRECTFS"
 
 
 class _SocketReader:
@@ -89,7 +103,7 @@ class _SocketWriter:
         try:
             self._stream.shutdown(socket.SHUT_WR)
         except OSError:
-            pass
+            pass  # The peer may already have closed during relay teardown.
 
 
 class _SocketRelay:
@@ -124,7 +138,7 @@ class _SocketRelay:
             try:
                 self._stream.shutdown(socket.SHUT_RDWR)
             except OSError:
-                pass
+                pass  # The socket may already be disconnected or shut down.
             self._stream.close()
             self.returncode = 0
 
@@ -144,6 +158,50 @@ def _runsc_root() -> str:
         root = str(Path(config_dir) / "run")
     os.makedirs(root, exist_ok=True)
     return root
+
+
+def _experiment_nonnegative_int(name: str) -> int | None:
+    """Read a diagnostic non-negative integer without shell metacharacters."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    if not raw or not raw.isascii() or not raw.isdecimal():
+        raise RuntimeError(f"{name} must be a non-negative integer, got {raw!r}")
+    return int(raw)
+
+
+def _experiment_bool(name: str) -> bool | None:
+    """Read a diagnostic boolean using a deliberately narrow vocabulary."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true"}:
+        return True
+    if normalized in {"0", "false"}:
+        return False
+    raise RuntimeError(f"{name} must be true/false or 1/0, got {raw!r}")
+
+
+def _workspace_dcache_option() -> str | None:
+    """Return the production workspace cache option or a diagnostic override."""
+    raw = os.environ.get(EXPERIMENT_WORKSPACE_DCACHE_ENV)
+    if raw == "default":
+        return None
+    value = _experiment_nonnegative_int(EXPERIMENT_WORKSPACE_DCACHE_ENV)
+    return f"dcache={0 if value is None else value}"
+
+
+def _experiment_runsc_flags() -> list[str]:
+    """Return validated runsc flags for the ETXTBSY experiment harness."""
+    flags: list[str] = []
+    dcache = _experiment_nonnegative_int(EXPERIMENT_RUNSC_DCACHE_ENV)
+    if dcache is not None:
+        flags.append(f"--dcache={dcache}")
+    directfs = _experiment_bool(EXPERIMENT_RUNSC_DIRECTFS_ENV)
+    if directfs is not None:
+        flags.append(f"--directfs={'true' if directfs else 'false'}")
+    return flags
 
 
 def _wrap_runsc_command(command: str) -> str:
@@ -282,6 +340,43 @@ def _container_id(name: str) -> str:
     return f"safeyolo-{name}"
 
 
+def _runsc_container_status(
+    prefix: list[str], runsc: str, root: str, cid: str
+) -> str | None:
+    """Return the OCI status, or None once runsc has no readable state."""
+    result = _run(
+        prefix + [runsc, "--root", root, "state", cid],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        status = json.loads(result.stdout).get("status")
+    except (json.JSONDecodeError, AttributeError):
+        return "unknown"
+    return status if isinstance(status, str) else "unknown"
+
+
+def _wait_for_runsc_stop(
+    prefix: list[str],
+    runsc: str,
+    root: str,
+    cid: str,
+    *,
+    timeout: float = GRACEFUL_STOP_TIMEOUT_SECONDS,
+) -> bool:
+    """Poll until the container is stopped/absent; return False on timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        status = _runsc_container_status(prefix, runsc, root, cid)
+        if status is None or status not in {"running", "unknown"}:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(STOP_POLL_INTERVAL_SECONDS, remaining))
+
+
 def has_aa_exec() -> bool:
     """Check if aa-exec is available."""
     return shutil.which("aa-exec") is not None
@@ -362,6 +457,61 @@ def _userns_pid_file(name: str) -> Path:
     return get_agents_dir() / name / "userns.pid"
 
 
+def _wait_for_userns_ready(
+    proc: subprocess.Popen,
+    *,
+    timeout: float = USERNS_START_TIMEOUT_SECONDS,
+) -> None:
+    """Wait until ``unshare`` has entered both requested namespaces.
+
+    ``Popen`` returning only proves that the child was forked; calling
+    ``newuidmap`` before the child completes ``unshare(CLONE_NEWUSER)`` races
+    against the child and can target its original namespace. Namespace inode
+    transitions are the kernel-visible readiness condition we actually need.
+    """
+    parent_userns = os.stat("/proc/self/ns/user").st_ino
+    parent_netns = os.stat("/proc/self/ns/net").st_ino
+    deadline = time.monotonic() + timeout
+    user_ready = False
+    net_ready = False
+
+    while True:
+        returncode = proc.poll()
+        if returncode is not None:
+            raise RuntimeError(
+                f"userns holder exited before namespace setup (status {returncode})"
+            )
+
+        try:
+            user_ready = (
+                os.stat(f"/proc/{proc.pid}/ns/user").st_ino != parent_userns
+            )
+            net_ready = (
+                os.stat(f"/proc/{proc.pid}/ns/net").st_ino != parent_netns
+            )
+        except OSError:
+            # The process may be between fork and its /proc entries becoming
+            # visible. Liveness and the deadline below decide whether to retry.
+            user_ready = False
+            net_ready = False
+
+        if user_ready and net_ready:
+            return
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            proc.kill()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass  # Best effort after kill; later cleanup handles a lingering holder.
+            raise RuntimeError(
+                "userns holder did not enter its user and network namespaces "
+                f"within {timeout:g}s (user={user_ready}, net={net_ready})"
+            )
+        time.sleep(min(USERNS_POLL_INTERVAL_SECONDS, remaining))
+
+
 def _start_userns(name: str, *, persist_pid: bool = True) -> int:
     """Create a user namespace with proper uid mapping and return its PID.
 
@@ -385,10 +535,7 @@ def _start_userns(name: str, *, persist_pid: bool = True) -> int:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    time.sleep(0.5)
-
-    if proc.poll() is not None:
-        raise RuntimeError("userns holder exited immediately")
+    _wait_for_userns_ready(proc)
 
     upid = proc.pid
 
@@ -701,85 +848,88 @@ class LinuxPlatform(AgentPlatform):
         skipped filestore creation for EROFS-sourced rootfs; tree-
         sourced has no such restriction).
         """
-        runsc = _find_runsc()
-        platform = _detect_runsc_platform()
-        root = _runsc_root()
+        with _profile_phase("start_sandbox: resolve runtime and validate rootfs"):
+            runsc = _find_runsc()
+            platform = _detect_runsc_platform()
+            root = _runsc_root()
 
-        agent_dir = get_agents_dir() / name
-        cid = _container_id(name)
-        agent_ip = fw_alloc.get("attribution_ip", "")
+            agent_dir = get_agents_dir() / name
+            cid = _container_id(name)
+            agent_ip = fw_alloc.get("attribution_ip", "")
 
-        # prepare_rootfs returns the actual directory gVisor should use
-        # as OCI root.path — shared base tree, or a per-agent tree from
-        # --rootfs-script. The older hardcoded `agent_dir / "rootfs"`
-        # placeholder (empty dir) was only correct when gVisor got its
-        # rootfs from the EROFS annotation, not from root.path.
-        rootfs = self.prepare_rootfs(name)
+            # prepare_rootfs returns the actual directory gVisor should use
+            # as OCI root.path — shared base tree, or a per-agent tree from
+            # --rootfs-script. The older hardcoded `agent_dir / "rootfs"`
+            # placeholder (empty dir) was only correct when gVisor got its
+            # rootfs from the EROFS annotation, not from root.path.
+            rootfs = self.prepare_rootfs(name)
 
-        # Backfill the per-agent host-side /home/agent source for
-        # agents created before the persistent-home feature. `agent
-        # add` already runs this, but an existing agent created on an
-        # older build won't have it until first run after upgrade.
-        # Idempotent; matches the Darwin pattern at vm.py:start_vm.
-        ensure_agent_persistent_dirs(name)
+            # Backfill the per-agent host-side /home/agent source for
+            # agents created before the persistent-home feature. `agent
+            # add` already runs this, but an existing agent created on an
+            # older build won't have it until first run after upgrade.
+            # Idempotent; matches the Darwin pattern at vm.py:start_vm.
+            ensure_agent_persistent_dirs(name)
 
-        # runsc inside the userns operates as subordinate uid 100000
-        # on the host filesystem and needs rwx on its state dir.
-        # Scope the grant tightly via ACL to that single uid rather
-        # than widening the mode bits. setfacl ships in the same
-        # `acl` package as getfacl, which we already depend on.
-        try:
-            subprocess.run(
-                ["setfacl", "-m", "u:100000:rwx", str(root)],
-                check=True, capture_output=True,
-            )
-        except FileNotFoundError as err:
-            raise RuntimeError(
-                "setfacl not found. Install the `acl` package "
-                "(Debian/Ubuntu: `sudo apt-get install acl`)."
-            ) from err
-        except subprocess.CalledProcessError as err:
-            raise RuntimeError(
-                f"setfacl failed on {root}: {err.stderr.decode(errors='replace')}"
-            ) from err
+            # runsc inside the userns operates as subordinate uid 100000
+            # on the host filesystem and needs rwx on its state dir.
+            # Scope the grant tightly via ACL to that single uid rather
+            # than widening the mode bits. setfacl ships in the same
+            # `acl` package as getfacl, which we already depend on.
+            try:
+                subprocess.run(
+                    ["setfacl", "-m", "u:100000:rwx", str(root)],
+                    check=True, capture_output=True,
+                )
+            except FileNotFoundError as err:
+                raise RuntimeError(
+                    "setfacl not found. Install the `acl` package "
+                    "(Debian/Ubuntu: `sudo apt-get install acl`)."
+                ) from err
+            except subprocess.CalledProcessError as err:
+                raise RuntimeError(
+                    f"setfacl failed on {root}: {err.stderr.decode(errors='replace')}"
+                ) from err
 
-        # Clean stale state from previous run. Create a temporary
-        # userns if needed -- runsc state is owned by uid 100000.
-        old_upid = _get_userns_pid(name)
-        if old_upid:
-            _run(_nsenter_cmd(old_upid) +
+        with _profile_phase("start_sandbox: clean state and create user namespace"):
+            # Clean stale state from previous run. Create a temporary
+            # userns if needed -- runsc state is owned by uid 100000.
+            old_upid = _get_userns_pid(name)
+            if old_upid:
+                _run(_nsenter_cmd(old_upid) +
+                     [runsc, "--root", root, "delete", "--force", cid],
+                     check=False)
+                _kill_userns(name)
+
+            # Create user namespace -- we need the PID for the OCI
+            # spec's network namespace path.
+            upid = _start_userns(name)
+
+            # Force-delete any stale state using the new userns (covers
+            # the case where the old userns holder was already dead).
+            _run(_nsenter_cmd(upid) +
                  [runsc, "--root", root, "delete", "--force", cid],
                  check=False)
-            _kill_userns(name)
+            _run(_nsenter_cmd(upid) +
+                 ["rm", "-f", f"/tmp/runsc-{cid}.sock"],
+                 check=False)
 
-        # Create user namespace -- we need the PID for the OCI
-        # spec's network namespace path.
-        upid = _start_userns(name)
+        with _profile_phase("start_sandbox: generate and write OCI config"):
+            config = self._generate_oci_config(
+                name=name,
+                rootfs_path=rootfs,
+                workspace_path=workspace_path,
+                config_share=config_share,
+                fw_alloc=fw_alloc,
+                cpus=cpus,
+                memory_mb=memory_mb,
+                extra_shares=extra_shares,
+                userns_pid=upid,
+                ephemeral=ephemeral,
+            )
 
-        # Force-delete any stale state using the new userns (covers
-        # the case where the old userns holder was already dead).
-        _run(_nsenter_cmd(upid) +
-             [runsc, "--root", root, "delete", "--force", cid],
-             check=False)
-        _run(_nsenter_cmd(upid) +
-             ["rm", "-f", f"/tmp/runsc-{cid}.sock"],
-             check=False)
-
-        config = self._generate_oci_config(
-            name=name,
-            rootfs_path=rootfs,
-            workspace_path=workspace_path,
-            config_share=config_share,
-            fw_alloc=fw_alloc,
-            cpus=cpus,
-            memory_mb=memory_mb,
-            extra_shares=extra_shares,
-            userns_pid=upid,
-            ephemeral=ephemeral,
-        )
-
-        config_path = agent_dir / "config.json"
-        config_path.write_text(json.dumps(config, indent=2))
+            config_path = agent_dir / "config.json"
+            config_path.write_text(json.dumps(config, indent=2))
 
         # Configure networking inside the userns. lo gets configured
         # in the userns's netns; the OCI spec points gVisor at this
@@ -817,9 +967,13 @@ class LinuxPlatform(AgentPlatform):
         else:
             debug_flags = ""
 
+        experiment_flags = " ".join(_experiment_runsc_flags())
+        if experiment_flags:
+            experiment_flags += " "
+
         inner = (
             f"{setup} && "
-            f"{runsc} {debug_flags}--root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
+            f"{runsc} {debug_flags}{experiment_flags}--root {root} {overlay2_flag} --host-uds=open --ignore-cgroups "
             f"--network=sandbox --platform={platform} "
             f"create --bundle {agent_dir} {cid} && "
             f"{runsc} --ignore-cgroups --root {root} "
@@ -831,16 +985,17 @@ class LinuxPlatform(AgentPlatform):
             name, memory_mb, cpus,
         )
 
-        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
-            result = subprocess.run(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-                check=False,
-            )
-            stderr_file.seek(0)
-            err_text = stderr_file.read().decode(errors="replace")
+        with _profile_phase("start_sandbox: runsc create and start"):
+            with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+                result = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                    check=False,
+                )
+                stderr_file.seek(0)
+                err_text = stderr_file.read().decode(errors="replace")
 
         if result.returncode != 0:
             _kill_userns(name)
@@ -848,22 +1003,23 @@ class LinuxPlatform(AgentPlatform):
                       result.returncode, err_text)
             raise RuntimeError(f"Failed to start container {cid}: {err_text}")
 
-        # Get PID -- nsenter into userns for state query
-        state_result = _run(
-            _nsenter_cmd(upid) + [runsc, "--root", root, "state", cid],
-            check=False,
-        )
-        pid = 0
-        if state_result.returncode == 0:
-            try:
-                pid = json.loads(state_result.stdout).get("pid", 0)
-            except json.JSONDecodeError:
-                # runsc state returned non-JSON (shouldn't happen
-                # on a healthy runsc) -- leave pid=0 and move on.
-                pass
+        with _profile_phase("start_sandbox: query state and record container PID"):
+            # Get PID -- nsenter into userns for state query
+            state_result = _run(
+                _nsenter_cmd(upid) + [runsc, "--root", root, "state", cid],
+                check=False,
+            )
+            pid = 0
+            if state_result.returncode == 0:
+                try:
+                    pid = json.loads(state_result.stdout).get("pid", 0)
+                except json.JSONDecodeError:
+                    # runsc state returned non-JSON (shouldn't happen
+                    # on a healthy runsc) -- leave pid=0 and move on.
+                    pass
 
-        pid_path = agent_dir / "container.pid"
-        pid_path.write_text(str(pid))
+            pid_path = agent_dir / "container.pid"
+            pid_path.write_text(str(pid))
 
         log.info("Container %s started (pid=%d, platform=%s, rootless=true)",
                  cid, pid, platform)
@@ -871,6 +1027,7 @@ class LinuxPlatform(AgentPlatform):
 
     def stop_sandbox(self, name: str) -> None:
         """Stop a running gVisor sandbox."""
+        _profile_enter("agent stop: resolve gVisor runtime and user namespace")
         cid = _container_id(name)
         agent_dir = get_agents_dir() / name
         runsc = _find_runsc()
@@ -892,24 +1049,23 @@ class LinuxPlatform(AgentPlatform):
 
         prefix = _nsenter_cmd(upid) if upid else []
 
-        state_result = _run(
-            prefix + [runsc, "--root", root, "state", cid], check=False,
-        )
-        has_state = state_result.returncode == 0
-        is_running = False
-        if has_state:
-            try:
-                is_running = json.loads(state_result.stdout).get("status") == "running"
-            except json.JSONDecodeError:
-                # Treat malformed runtime state as not running and continue cleanup.
-                pass
+        _profile_enter("agent stop: query gVisor container state")
+        status = _runsc_container_status(prefix, runsc, root, cid)
+        has_state = status is not None
+        is_running = status == "running"
 
         if is_running:
+            _profile_enter("agent stop: SIGTERM grace period")
             _run(prefix + [runsc, "--root", root, "kill", cid, "SIGTERM"], check=False)
-            time.sleep(5)
-            _run(prefix + [runsc, "--root", root, "kill", "--all", cid, "SIGKILL"], check=False)
-            time.sleep(1)
+            if not _wait_for_runsc_stop(prefix, runsc, root, cid):
+                _profile_enter("agent stop: force remaining gVisor processes")
+                _run(
+                    prefix
+                    + [runsc, "--root", root, "kill", "--all", cid, "SIGKILL"],
+                    check=False,
+                )
 
+        _profile_enter("agent stop: delete container state and sockets")
         if has_state:
             _run(prefix + [runsc, "--root", root, "delete", "--force", cid], check=False)
         else:
@@ -929,6 +1085,7 @@ class LinuxPlatform(AgentPlatform):
         pid_path = agent_dir / "container.pid"
         pid_path.unlink(missing_ok=True)
 
+        _profile_enter("agent stop: remove attribution mapping")
         from ..vm import _update_agent_map  # noqa: PLC0415
         _update_agent_map(name, remove=True)
 
@@ -1229,6 +1386,11 @@ class LinuxPlatform(AgentPlatform):
         # Mounts
         proxy_mountpoint = config_share / "proxy"
         proxy_mountpoint.mkdir(parents=True, exist_ok=True)
+        workspace_options = ["rbind", "rw", "nosuid", "nodev"]
+        workspace_dcache = _workspace_dcache_option()
+        if workspace_dcache is not None:
+            workspace_options.append(workspace_dcache)
+
         mounts = [
             {"destination": "/proc", "type": "proc", "source": "proc"},
             {"destination": "/dev", "type": "tmpfs", "source": "tmpfs",
@@ -1239,7 +1401,7 @@ class LinuxPlatform(AgentPlatform):
              "options": ["nosuid", "nodev", "mode=1777"]},
             {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
-             "options": ["rbind", "rw", "nosuid", "nodev"]},
+             "options": workspace_options},
             {"destination": "/safeyolo", "type": "bind",
              "source": str(config_share),
              "options": ["rbind", "ro"]},
@@ -1310,11 +1472,9 @@ class LinuxPlatform(AgentPlatform):
         # Extra shares (host config dirs)
         if extra_shares:
             agent_home = get_agent_home_dir(name)
-            for host_path, tag, read_only in extra_shares:
-                home = Path.home()
+            for host_path, guest_path, read_only in extra_shares:
                 try:
-                    rel = Path(host_path).relative_to(home)
-                    guest_path = f"/home/agent/{rel}"
+                    rel = Path(guest_path).relative_to("/home/agent")
                     # /home/agent is an OCI bind to the host-side agent
                     # home dir (possibly empty on first boot). gVisor
                     # requires nested bind destinations to pre-exist on
@@ -1322,12 +1482,23 @@ class LinuxPlatform(AgentPlatform):
                     # finds it when consuming the spec.
                     (agent_home / rel).mkdir(parents=True, exist_ok=True)
                 except ValueError:
-                    guest_path = f"/mnt/{tag}"
+                    pass  # Only nested /home/agent shares need host mount points.
+                options = [
+                    "rbind",
+                    "ro" if read_only else "rw",
+                    "nosuid",
+                    "nodev",
+                ]
+                if not read_only:
+                    # Writable operator shares have the same guest-edit/host-
+                    # execute contract as /workspace. Release gVisor's idle
+                    # writable host FD immediately after the guest closes it.
+                    options.append("dcache=0")
                 mounts.append({
                     "destination": guest_path,
                     "type": "bind",
                     "source": os.path.abspath(host_path),
-                    "options": ["rbind", "ro" if read_only else "rw"],
+                    "options": options,
                 })
 
         namespaces = [

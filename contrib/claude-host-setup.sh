@@ -154,8 +154,8 @@ fi
 stage_safeyolo_context "$AGENT_HOME" claude
 
 # --- 5. Write the foreground command -----------------------------------------
-# Installs claude-code on first run (idempotent: command -v short-circuits on
-# subsequent runs). On Alpine, Node comes from apk because mise may build Node
+# Installs claude-code on first run and repairs an incomplete native install on
+# subsequent runs. On Alpine, Node comes from apk because mise may build Node
 # from source against musl; elsewhere we use mise. Appends the SafeYolo agent
 # baseline as system context. Detailed operations remain in the on-demand
 # safeyolo skill. Any args after `safeyolo agent run <name> -- ...`
@@ -177,8 +177,12 @@ export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.mise}"
 export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.mise/cache}"
 export PATH="$HOME/.local/bin:$MISE_DATA_DIR/shims:${PATH}"
 
-# First-boot install. Tool installs live under persistent /home/agent.
-if ! command -v claude >/dev/null 2>&1; then
+# First-boot install. Tool installs live under persistent /home/agent. Validate
+# an existing command as well: mise 2026.7.12+ downloads npm optional
+# dependencies but denies lifecycle scripts by default, so Claude's placeholder
+# launcher can exist even though its postinstall did not place the native
+# binary.
+if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; then
     if [ -f /etc/alpine-release ]; then
         if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
             sudo -n apk add nodejs npm >&2
@@ -187,7 +191,39 @@ if ! command -v claude >/dev/null 2>&1; then
     else
         mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" >&2
         mise use -g "$SAFEYOLO_CLAUDE_NPM_SPEC" >&2
+
+        # Claude Code 2.1.235+ ships a small npm wrapper and a platform-native
+        # optional dependency. New mise releases intentionally skip npm
+        # lifecycle scripts unless approved. Run only Claude's reviewed
+        # postinstall explicitly, and only when the installed launcher is still
+        # the placeholder. This also repairs installs left broken by an earlier
+        # SafeYolo run.
+        if ! claude --version >/dev/null 2>&1; then
+            claude_install_dir="$(mise where "$SAFEYOLO_CLAUDE_NPM_SPEC")"
+            claude_package="${SAFEYOLO_CLAUDE_NPM_PACKAGE%@*}"
+            claude_postinstall=""
+            for candidate in \
+                "$claude_install_dir/node_modules/$claude_package/install.cjs" \
+                "$claude_install_dir/lib/node_modules/$claude_package/install.cjs"
+            do
+                if [ -f "$candidate" ]; then
+                    claude_postinstall="$candidate"
+                    break
+                fi
+            done
+            if [ -n "$claude_postinstall" ]; then
+                mise exec "$SAFEYOLO_CLAUDE_NODE_SPEC" -- node "$claude_postinstall" >&2
+                mise reshim >&2
+            else
+                echo "claude-host-setup: could not locate Claude Code postinstall under $claude_install_dir" >&2
+            fi
+        fi
     fi
+fi
+
+if ! command -v claude >/dev/null 2>&1 || ! claude --version >/dev/null 2>&1; then
+    echo "claude-host-setup: Claude Code installation is incomplete" >&2
+    exit 1
 fi
 
 # Inject SafeYolo agent guide as system context (non-fatal if missing).

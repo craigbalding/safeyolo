@@ -48,6 +48,8 @@ def get_hmac_secret() -> bytes:
 
 def generate_fingerprint(value: str, secret: bytes) -> str:
     """Generate HMAC-SHA256 fingerprint matching SafeYolo's format."""
+    # This is a keyed, non-authentication identifier, not password storage.
+    # codeql[py/weak-sensitive-data-hashing]
     h = hmac.new(secret, value.encode(), hashlib.sha256)
     return h.hexdigest()[:16]
 

@@ -40,7 +40,7 @@ def test_shannon_entropy(data: bytes):
         calculate_shannon_entropy(text)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -55,7 +55,7 @@ def test_looks_like_secret(data: bytes):
         looks_like_secret(text, ENTROPY_CONFIG)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -79,7 +79,7 @@ def test_host_matching(data: bytes):
         matches_host_pattern(host, pattern)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -103,7 +103,7 @@ def test_path_matching(data: bytes):
         matches_resource_pattern(path, pattern)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 @atheris.instrument_func
@@ -129,7 +129,7 @@ def test_hmac_fingerprint(data: bytes):
         hmac_fingerprint(credential, secret)
     except Exception:
         # Intentional: fuzzer continues on exceptions to find crashes
-        pass
+        return
 
 
 def main():

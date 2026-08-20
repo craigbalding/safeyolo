@@ -37,6 +37,10 @@ from mitmproxy.proxy.mode_servers import (
 log = logging.getLogger("safeyolo.unix-listener")
 
 
+def ensure_registered() -> None:
+    """Make the import-time UnixMode registration explicit to callers."""
+
+
 # Local copy of the path parser. `cli/src/safeyolo/sockets.py` has
 # the same shape; the duplication is deliberate so the addon can be
 # loaded by mitmproxy without pulling in the CLI package.

@@ -109,6 +109,27 @@ class TestComputeSnapshotVersion:
         v2 = compute_snapshot_version(memory_mb=4096, cpus=4, gateway_ip="10.0.0.99", guest_ip="10.0.0.2")
         assert v1 != v2
 
+    def test_extra_share_change_invalidates(self, snapshot_inputs):
+        base = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            extra_shares=[("/host/toolage", "/proj/toolage", False)],
+        )
+        changed = compute_snapshot_version(
+            memory_mb=4096,
+            cpus=4,
+            gateway_ip="x",
+            guest_ip="y",
+            extra_shares=[("/host/toolage", "/proj/toolage", True)],
+        )
+
+        assert base != changed
+        assert base["extra_shares"] == [
+            ["/host/toolage", "/proj/toolage", False]
+        ]
+
     def test_static_script_content_change_invalidates(self, snapshot_inputs, monkeypatch, tmp_path):
         """Changing guest-init-static.sh on disk must yield a different
         fingerprint -- the script runs inside the snapshot, so stale

@@ -28,13 +28,17 @@ class BinaryRelay(Protocol):
     stdout: BinaryIO | None
     returncode: int | None
 
-    def poll(self) -> int | None: ...
+    def poll(self) -> int | None:
+        raise NotImplementedError
 
-    def wait(self, timeout: float | None = None) -> int: ...
+    def wait(self, timeout: float | None = None) -> int:
+        raise NotImplementedError
 
-    def terminate(self) -> None: ...
+    def terminate(self) -> None:
+        raise NotImplementedError
 
-    def kill(self) -> None: ...
+    def kill(self) -> None:
+        raise NotImplementedError
 
 
 class AgentPlatform(ABC):
@@ -91,6 +95,9 @@ class AgentPlatform(ABC):
         ephemeral: bool = False,
     ) -> int:
         """Start an agent sandbox. Returns PID.
+
+        extra_shares entries are (host_path, guest_destination, read_only).
+        Guest destinations are absolute paths validated by the CLI.
 
         snapshot_capture_path / restore_from_path are macOS-only (VZ
         save/restore). Linux ignores them until PR 5 adds gVisor

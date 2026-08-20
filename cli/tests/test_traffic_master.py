@@ -17,6 +17,7 @@ from safeyolo.traffic_master import (
     TrafficMaster,
     WebFrontend,
     WebTailnetShare,
+    _initial_proxy_modes,
     _scope_toolbar,
 )
 
@@ -26,6 +27,16 @@ def make_master() -> TrafficMaster:
         return TrafficMaster(options.Options())
 
     return asyncio.run(construct())
+
+
+def test_initial_proxy_options_accepts_only_a_json_string_list(monkeypatch):
+    modes = ["unix:/tmp/10.200.0.1_alice/proxy.sock"]
+    monkeypatch.setenv("SAFEYOLO_INITIAL_MODES", '["unix:/tmp/10.200.0.1_alice/proxy.sock"]')
+    assert _initial_proxy_modes() == modes
+
+    monkeypatch.setenv("SAFEYOLO_INITIAL_MODES", '{"mode": []}')
+    with pytest.raises(ValueError, match="JSON list of strings"):
+        _initial_proxy_modes()
 
 
 def test_hybrid_master_has_one_canonical_view_and_proxyserver(monkeypatch):

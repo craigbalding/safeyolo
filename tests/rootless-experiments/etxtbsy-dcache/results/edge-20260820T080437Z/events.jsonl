@@ -1,0 +1,18 @@
+{"message": "edge experiment started", "output_dir": "/home/craigb/proj/safeyolo/tests/rootless-experiments/etxtbsy-dcache/results/edge-20260820T080437Z", "settings": {"hold_timeout": 30.0, "overrides": {"SAFEYOLO_EXPERIMENT_WORKSPACE_DCACHE": "0"}, "parallel_attempts": 32, "scenarios": ["idle-closed", "parent-watch", "direct-watch", "open-writer", "writable-mmap", "live-hardlink-alias"], "variant": "workspace-dcache-0"}, "time": "2026-08-20T08:04:37.493853+00:00"}
+{"message": "stopping stale/running sandbox", "time": "2026-08-20T08:04:37.503172+00:00"}
+{"message": "booting edge variant workspace-dcache-0", "time": "2026-08-20T08:04:38.115044+00:00"}
+{"message": "edge scenario idle-closed starting", "time": "2026-08-20T08:04:43.080008+00:00"}
+{"held_exec_errno": null, "held_exec_ok": true, "message": "edge scenario idle-closed complete", "post_release_ok": true, "time": "2026-08-20T08:05:21.992261+00:00"}
+{"message": "edge scenario parent-watch starting", "time": "2026-08-20T08:05:22.000006+00:00"}
+{"held_exec_errno": null, "held_exec_ok": true, "message": "edge scenario parent-watch complete", "post_release_ok": true, "time": "2026-08-20T08:06:02.072105+00:00"}
+{"message": "edge scenario direct-watch starting", "time": "2026-08-20T08:06:02.082325+00:00"}
+{"held_exec_errno": 26, "held_exec_ok": false, "message": "edge scenario direct-watch complete", "post_release_ok": true, "time": "2026-08-20T08:06:40.873690+00:00"}
+{"message": "edge scenario open-writer starting", "time": "2026-08-20T08:06:40.882279+00:00"}
+{"held_exec_errno": 26, "held_exec_ok": false, "message": "edge scenario open-writer complete", "post_release_ok": true, "time": "2026-08-20T08:07:19.834095+00:00"}
+{"message": "edge scenario writable-mmap starting", "time": "2026-08-20T08:07:19.840855+00:00"}
+{"held_exec_errno": 26, "held_exec_ok": false, "message": "edge scenario writable-mmap complete", "post_release_ok": true, "time": "2026-08-20T08:07:58.472562+00:00"}
+{"message": "edge scenario live-hardlink-alias starting", "time": "2026-08-20T08:07:58.481320+00:00"}
+{"held_exec_errno": 26, "held_exec_ok": false, "message": "edge scenario live-hardlink-alias complete", "post_release_ok": true, "time": "2026-08-20T08:08:37.887994+00:00"}
+{"message": "edge experiment complete", "time": "2026-08-20T08:08:38.194379+00:00", "verdict": {"characterization": {"direct-watch": {"exec_while_held_errno": 26, "exec_while_held_ok": false, "writable_holder_tasks": 43}, "idle-closed": {"exec_while_held_errno": null, "exec_while_held_ok": true, "writable_holder_tasks": 0}, "live-hardlink-alias": {"exec_while_held_errno": 26, "exec_while_held_ok": false, "writable_holder_tasks": 44}, "open-writer": {"exec_while_held_errno": 26, "exec_while_held_ok": false, "writable_holder_tasks": 43}, "parent-watch": {"exec_while_held_errno": null, "exec_while_held_ok": true, "writable_holder_tasks": 0}, "writable-mmap": {"exec_while_held_errno": 26, "exec_while_held_ok": false, "writable_holder_tasks": 43}}, "normative_checks": {"active_writer_returns_etxtbsy": true, "all_guest_sessions_clean": true, "all_targets_execute_after_release": true, "idle_closed_executes_while_guest_alive": true, "idle_closed_parallel_executes": true, "workspace_mount_matches_variant": true}, "passed": true}}
+{"message": "stopping sandbox", "time": "2026-08-20T08:08:38.203917+00:00"}
+{"exit_code": 0, "message": "edge experiment finished; agent left stopped", "time": "2026-08-20T08:08:45.584708+00:00"}

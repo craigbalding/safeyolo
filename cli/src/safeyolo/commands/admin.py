@@ -273,8 +273,8 @@ def mode(
                 available = list(modes_result.get("modes", {}).keys())
                 if available:
                     console.print(f"[dim]Available: {', '.join(available)}[/dim]")
-            except Exception:
-                pass  # Best-effort hint, ok to fail silently
+            except APIError:
+                console.print("[dim]Available addon list unavailable[/dim]")
         else:
             console.print(f"[red]API Error:[/red] {e}")
         raise typer.Exit(1)
@@ -443,8 +443,8 @@ def test(
                     console.print(f"[yellow]Credential:[/yellow] {body.get('credential_type')}")
                 if "reflection" in body:
                     console.print(f"\n[dim]{body.get('reflection')}[/dim]")
-            except Exception:
-                pass  # JSON parsing failed, skip body display
+            except ValueError:
+                console.print("[dim]Blocked response body was not JSON[/dim]")
 
         # Show headers if requested
         if show_headers:
@@ -462,8 +462,8 @@ def test(
                     if len(str(body)) > 200:
                         preview += "..."
                     console.print(f"\n[dim]{preview}[/dim]")
-                except Exception:
-                    pass  # JSON parsing failed, skip preview
+                except ValueError:
+                    console.print("[dim]Response body was not valid JSON[/dim]")
 
     except httpx.ProxyError as e:
         console.print(f"[red]Proxy error:[/red] {e}")

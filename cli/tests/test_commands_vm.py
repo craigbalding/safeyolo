@@ -7,11 +7,13 @@ init, setup, doctor, sandbox, cert, and admin.
 All subprocess/vm/proxy/firewall calls are mocked. No real processes are started.
 """
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from safeyolo.cli import app
@@ -161,6 +163,36 @@ class TestLifecycleStart:
         result = runner.invoke(app, ["start", "--flow-cache", "0"])
 
         assert result.exit_code == 2
+
+    def test_profile_emits_report_and_jsonl_artifact(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True),
+            patch("safeyolo.commands.lifecycle.start_proxy"),
+        ):
+            result = runner.invoke(app, ["start", "--no-wait", "--profile"])
+
+        assert result.exit_code == 0
+        assert "SAFEYOLO PROFILE: proxy start" in result.output
+        artifacts = list((config_dir.parent / ".local" / "state" / "safeyolo" / "profiles").glob("*.jsonl"))
+        assert len(artifacts) == 1
+        events = [json.loads(line) for line in artifacts[0].read_text().splitlines()]
+        assert any(event["name"] == "TOTAL PROFILED WALL TIME" for event in events)
+        assert all(event["operation"] == "proxy start" for event in events)
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            ["start", "--help"],
+            ["stop", "--help"],
+            ["agent", "run", "--help"],
+            ["agent", "stop", "--help"],
+        ],
+    )
+    def test_lifecycle_commands_expose_profile_option(self, runner, arguments):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == 0
+        assert "--profile" in unstyle(result.output)
 
 
 # ---------------------------------------------------------------------------
@@ -910,13 +942,30 @@ class TestAgentStop:
         mock_platform.is_sandbox_running.return_value = True
         with (
             patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.proxy.is_proxy_running", return_value=False),
+            patch("safeyolo.proxy.sync_proxy_modes") as sync_proxy_modes,
             patch("safeyolo.commands.agent.write_event"),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
         assert result.exit_code == 0
         mock_platform.stop_sandbox.assert_called_once_with("test-agent")
+        sync_proxy_modes.assert_not_called()
         assert "stopped" in result.output.lower()
+
+    def test_syncs_removed_listener_when_proxy_is_running(self, runner, config_dir):
+        mock_platform = MagicMock()
+        mock_platform.is_sandbox_running.return_value = True
+        with (
+            patch("safeyolo.platform.get_platform", return_value=mock_platform),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True),
+            patch("safeyolo.proxy.sync_proxy_modes") as sync_proxy_modes,
+            patch("safeyolo.commands.agent.write_event"),
+        ):
+            result = runner.invoke(app, ["agent", "stop", "test-agent"])
+
+        assert result.exit_code == 0
+        sync_proxy_modes.assert_called_once_with(admin_port=9090)
 
 
 # ---------------------------------------------------------------------------
@@ -1006,6 +1055,86 @@ class TestRunAgent:
 
         assert result.exit_code == 1
         assert "already running" in result.output.lower()
+
+    def test_run_forwards_persistent_and_transient_mounts_to_boot(
+        self, config_dir, tmp_path, capsys,
+    ):
+        """Public mount settings must reach both config staging and runtime."""
+        from safeyolo.commands.agent import _run_agent
+
+        project = tmp_path / "project"
+        persistent = tmp_path / "persistent-toolage"
+        transient = tmp_path / "transient-toolage"
+        readonly = tmp_path / "readonly-refs"
+        for path in (project, persistent, transient, readonly):
+            path.mkdir()
+
+        agent_dir = config_dir / "agents" / "mount-agent"
+        status_dir = agent_dir / "status"
+        config_share = agent_dir / "config-share"
+        status_dir.mkdir(parents=True)
+        config_share.mkdir()
+        rootfs = agent_dir / "rootfs"
+        rootfs.mkdir()
+
+        metadata = {
+            "folder": str(project),
+            "mounts": [
+                f"{persistent}:/proj/toolage",
+                f"{readonly}:/refs:ro",
+            ],
+        }
+        expected = [
+            (str(readonly), "/refs", True),
+            (str(transient), "/proj/toolage", False),
+        ]
+        running = False
+        platform = MagicMock()
+        platform.agent_rootfs_path.return_value = rootfs
+
+        def is_running(_name):
+            return running
+
+        def start_sandbox(**_kwargs):
+            nonlocal running
+            running = True
+            (status_dir / "per-run-started").write_text("")
+            return 1234
+
+        platform.is_sandbox_running.side_effect = is_running
+        platform.start_sandbox.side_effect = start_sandbox
+        platform.setup_networking.return_value = {
+            "host_ip": "127.0.0.1",
+            "guest_ip": "10.200.0.2",
+            "attribution_ip": "10.200.0.2",
+            "subnet": None,
+            "needs_bridge_socket": False,
+        }
+
+        with (
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value=metadata),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0),
+            patch("safeyolo.commands.agent._update_agent_map"),
+            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.commands.agent.prepare_config_share") as prepare,
+            patch("safeyolo.platform.get_platform", return_value=platform),
+            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock"),
+        ):
+            result = _run_agent(
+                "mount-agent",
+                extra_mounts=[f"{transient}:/proj/toolage"],
+                detach=True,
+                no_snapshot=True,
+            )
+
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Starting agent... ready" in output
+        assert "Agent running (detached)" in output
+        assert "10.200.0.2" not in output
+        assert prepare.call_args.kwargs["host_mounts"] == expected
+        assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1776,6 +1905,39 @@ class TestParseMount:
         host_dir.mkdir()
         with pytest.raises(Exit):
             _parse_mount(f"{host_dir}:data")
+
+    def test_container_path_cannot_traverse_or_replace_runtime_mounts(self, tmp_path):
+        from typer import Exit
+
+        from safeyolo.commands.agent import _parse_mount
+
+        host_dir = tmp_path / "data"
+        host_dir.mkdir()
+        with pytest.raises(Exit):
+            _parse_mount(f"{host_dir}:/proj/../safeyolo")
+        with pytest.raises(Exit):
+            _parse_mount(f"{host_dir}:/workspace")
+
+    def test_persistent_and_transient_mounts_resolve_with_transient_override(
+        self, tmp_path,
+    ):
+        from safeyolo.commands.agent import _resolve_extra_shares
+
+        persistent = tmp_path / "persistent"
+        replacement = tmp_path / "replacement"
+        readonly = tmp_path / "readonly"
+        for path in (persistent, replacement, readonly):
+            path.mkdir()
+
+        shares = _resolve_extra_shares(
+            {"mounts": [f"{persistent}:/proj/toolage", f"{readonly}:/refs:ro"]},
+            [f"{replacement}:/proj/toolage"],
+        )
+
+        assert shares == [
+            (str(readonly), "/refs", True),
+            (str(replacement), "/proj/toolage", False),
+        ]
 
 
 # ---------------------------------------------------------------------------

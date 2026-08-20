@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 from mitmproxy import ctx
+from mitmproxy.proxy import mode_specs
 
 from pdp import get_policy_client, is_policy_client_configured
 from safeyolo.core.audit_schema import EventKind, Severity
@@ -115,7 +116,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
                 if addon is not None:
                     return addon
             except Exception:  # noqa: BLE001
-                pass  # mitmproxy internals may raise; fall through to static cache
+                # mitmproxy internals may raise; fall through to static cache.
+                return self.addons_with_stats.get(addon_name)
         # Fall back to static cache
         return self.addons_with_stats.get(addon_name)
 
@@ -1188,11 +1190,19 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         # run_coroutine_threadsafe and wait for the reconcile to complete
         # so the PUT response reflects the real listener state.
         async def _apply() -> None:
+            proxyserver = ctx.master.addons.get("proxyserver")
+            if proxyserver is None:
+                raise RuntimeError("proxyserver addon is unavailable")
+            parsed_modes = [mode_specs.ProxyMode.parse(mode) for mode in modes]
             ctx.options.update(mode=modes)
-            # Let Servers.update run to completion before we return.
-            # Empirically ~300 ms per listener create on local UDS;
-            # 2 s is generous for the handful of agents we expect.
-            await asyncio.sleep(0.5)
+            # Proxyserver.configure schedules the same update when the option
+            # changes. Awaiting it directly is safe because Servers.update is
+            # lock-serialized and idempotent: whichever call acquires the lock
+            # performs the reconcile and the other confirms the final set.
+            # This is a real completion boundary, unlike the former fixed
+            # 500ms sleep.
+            if not await proxyserver.servers.update(parsed_modes):
+                raise RuntimeError("one or more proxy listeners failed to reconcile")
 
         try:
             fut = asyncio.run_coroutine_threadsafe(_apply(), ctx.master.event_loop)

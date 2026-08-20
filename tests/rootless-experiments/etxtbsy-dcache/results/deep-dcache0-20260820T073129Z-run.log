@@ -1,0 +1,13 @@
+[2026-08-20T07:31:29.163490+00:00] deep experiment started
+[2026-08-20T07:31:29.173236+00:00] stopping stale/running sandbox
+[2026-08-20T07:31:29.797875+00:00] booting with workspace dcache=0
+[2026-08-20T07:31:34.761902+00:00] deep round 1/3 starting
+[2026-08-20T07:32:02.618556+00:00] deep round 1: execution_failures=0 writable_holders=0
+[2026-08-20T07:32:02.626728+00:00] deep round 2/3 starting
+[2026-08-20T07:32:30.760064+00:00] deep round 2: execution_failures=0 writable_holders=0
+[2026-08-20T07:32:30.777221+00:00] deep round 3/3 starting
+[2026-08-20T07:32:58.667597+00:00] deep round 3: execution_failures=0 writable_holders=0
+[2026-08-20T07:32:58.677350+00:00] deep metadata and git workloads starting
+[2026-08-20T07:34:03.113555+00:00] deep workloads complete
+[2026-08-20T07:34:03.129354+00:00] stopping sandbox
+[2026-08-20T07:34:10.604172+00:00] deep experiment finished; agent left stopped

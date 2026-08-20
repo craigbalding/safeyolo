@@ -336,18 +336,49 @@ safeyolo start --dev --build
 # Install dev dependencies (using uv)
 uv sync --group dev
 
-# Install pre-commit hooks (runs linting before each commit)
-pre-commit install
+# Install fast commit hooks and the deeper CodeQL pre-push hook
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 
-# Run hooks manually on all files
-pre-commit run --all-files
+# Run the fast hooks manually on all files
+uv run pre-commit run --all-files
+
+# Run the same Python security-and-quality CodeQL suite used in CI
+uv run python scripts/check_codeql.py
 ```
 
-Pre-commit runs the same checks as CI:
+The commit hooks mirror CI's fast static checks:
 - **ruff** - linting and import sorting
 - **py_compile** - Python syntax validation
+- **blackbox schema/docs** - validate test documentation and generated coverage
 - **check-yaml/json/toml** - config file validation
 - **detect-private-key** - prevent accidental key commits
+
+The pre-push hook additionally runs the same CodeQL Python
+`security-and-quality` suite as `.github/workflows/codeql.yml`. Its first run
+downloads the checksum-pinned bundle used by the workflow action (about
+600–850 MB on Linux, depending on whether `zstd` is available) and caches it
+under `~/.cache/safeyolo/codeql`. Set
+`SAFEYOLO_CODEQL_CACHE` to relocate the cache or `SAFEYOLO_CODEQL_BIN` to use an
+already-installed matching CLI. Temporary databases and SARIF files are
+deleted after each analysis.
+
+Treat CodeQL findings as defects by default. When a finding is a verified
+false positive, put a rationale and a query-specific `# codeql[query-id]`
+comment immediately before the reported line. The local runner includes
+CodeQL's alert-suppression query, so the annotation behaves the same locally
+and in GitHub; broad or unexplained suppressions are not appropriate.
+
+`.github/codeql/local-bundle.json` is the single source of truth for the
+CodeQL version. CI compares the version selected from GitHub's hosted tool
+cache with that manifest and fails clearly on drift. Refresh the manifest and
+official release digests with:
+
+```bash
+uv run python scripts/check_codeql.py --update-bundle VERSION_FROM_CI
+```
+
+Local analysis uses `--no-download`, so after the initial bundle installation
+a missing query pack fails instead of contacting a package registry.
 
 ## CLI Development
 

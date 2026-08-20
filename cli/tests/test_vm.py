@@ -530,42 +530,41 @@ class TestPrepareConfigShare:
         share = prepare_config_share("agent1", "/workspace")
         assert not (share / "vsock-term").exists()
 
-    def test_host_mounts_manifest_under_home(self, tmp_config_dir, monkeypatch):
-        """Paths under $HOME are mapped to /home/agent/..."""
-        home = Path.home()
+    def test_host_mounts_manifest_preserves_guest_destination(self, tmp_config_dir):
         share = prepare_config_share(
             "agent1", "/workspace",
-            host_mounts=[(str(home / ".claude"), "dotclaude", True)],
+            host_mounts=[("/host/toolage", "/proj/toolage", True)],
         )
         manifest = (share / "host-mounts").read_text()
-        assert manifest == "dotclaude:/home/agent/.claude\n"
-
-    def test_host_mounts_manifest_outside_home(self, tmp_config_dir):
-        """Paths outside $HOME are mapped to /mnt/{tag}."""
-        share = prepare_config_share(
-            "agent1", "/workspace",
-            host_mounts=[("/opt/data", "optdata", False)],
-        )
-        manifest = (share / "host-mounts").read_text()
-        assert manifest == "optdata:/mnt/optdata\n"
+        assert manifest == "extra0:/proj/toolage\n"
 
     def test_host_mounts_multiple_entries(self, tmp_config_dir):
-        home = Path.home()
         share = prepare_config_share(
             "agent1", "/workspace",
             host_mounts=[
-                (str(home / ".config"), "dotconfig", True),
-                ("/opt/tools", "tools", False),
+                ("/host/config", "/home/agent/.config", True),
+                ("/opt/tools", "/mnt/tools", False),
             ],
         )
         manifest = (share / "host-mounts").read_text()
         lines = manifest.strip().split("\n")
         assert len(lines) == 2
-        assert lines[0] == "dotconfig:/home/agent/.config"
-        assert lines[1] == "tools:/mnt/tools"
+        assert lines[0] == "extra0:/home/agent/.config"
+        assert lines[1] == "extra1:/mnt/tools"
 
     def test_host_mounts_not_written_when_none(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
+        assert not (share / "host-mounts").exists()
+
+    def test_one_off_host_mount_manifest_is_removed_on_next_run(self, tmp_config_dir):
+        share = prepare_config_share(
+            "agent1", "/workspace",
+            host_mounts=[("/host/data", "/data", False)],
+        )
+        assert (share / "host-mounts").exists()
+
+        prepare_config_share("agent1", "/workspace", host_mounts=None)
+
         assert not (share / "host-mounts").exists()
 
 
@@ -803,8 +802,8 @@ class TestStartVm:
         start_vm(
             "agent1", "/workspace",
             extra_shares=[
-                ("/data", "data", False),
-                ("/secrets", "secrets", True),
+                ("/data", "/mnt/data", False),
+                ("/secrets", "/mnt/secrets", True),
             ],
         )
 
@@ -813,8 +812,8 @@ class TestStartVm:
             if arg == "--share":
                 share_args.append(captured_cmd[i + 1])
 
-        assert "/data:data:rw" in share_args
-        assert "/secrets:secrets:ro" in share_args
+        assert "/data:extra0:rw" in share_args
+        assert "/secrets:extra1:ro" in share_args
 
     def test_background_mode_redirects_to_serial_log(self, tmp_config_dir, monkeypatch):
         captured_kwargs = {}

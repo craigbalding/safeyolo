@@ -204,7 +204,7 @@ def demo(
     if not auto:
         _wait_for_enter("Press Enter to send request...")
 
-    status, _, body = _make_request(
+    status, _, _body = _make_request(
         "POST",
         "https://api.anthropic.com/v1/messages",
         {"Authorization": f"Bearer {demo_anthropic_key}", "Content-Type": "application/json"},
@@ -231,7 +231,7 @@ def demo(
     if not auto:
         _wait_for_enter("Press Enter to send request (will be blocked)...")
 
-    status, _, body = _make_request(
+    status, _, _body = _make_request(
         "GET",
         "https://httpbin.org/headers",
         {"Authorization": f"Bearer {demo_anthropic_key}"},
@@ -266,7 +266,7 @@ def demo(
     console.print("\nRetrying the same request...")
     _show_request("GET", "https://httpbin.org/headers", {"Authorization": f"Bearer {demo_anthropic_key}"})
 
-    status, _, body = _make_request(
+    status, _, _body = _make_request(
         "GET",
         "https://httpbin.org/headers",
         {"Authorization": f"Bearer {demo_anthropic_key}"},

@@ -582,8 +582,14 @@ class ServiceRegistry:
                                     "error": sanitize_for_log(str(e)),
                                 },
                             )
-                        except Exception:
-                            pass  # Don't let audit event failure break the registry load
+                        except Exception as audit_error:
+                            # Do not let audit-event failure break registry load, and
+                            # do not log the exception message because it may contain
+                            # untrusted service-definition content.
+                            log.debug(
+                                "Config-error audit event failed (%s)",
+                                type(audit_error).__name__,
+                            )
 
             log.info(f"Service registry: {len(self._services)} services loaded")
 
