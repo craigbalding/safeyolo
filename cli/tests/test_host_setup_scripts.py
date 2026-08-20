@@ -348,6 +348,39 @@ def test_mise_shell_stages_vendor_neutral_context_without_agent_links(tmp_path: 
     assert not (agent_home / ".claude").exists()
 
 
+def test_mise_shell_command_forwards_runtime_args(tmp_path: Path) -> None:
+    """The vendor-neutral shell adapter preserves SafeYolo run arguments."""
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    operator_home.mkdir()
+
+    _run_setup("mise-shell-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    exec_log = tmp_path / "exec-arg.txt"
+    command_env = os.environ.copy()
+    command_env.update(
+        {
+            "HOME": str(agent_home),
+            "TEST_EXEC_LOG": str(exec_log),
+        }
+    )
+    result = subprocess.run(
+        [
+            str(agent_home / ".safeyolo-command"),
+            "-c",
+            'printf "%s" "$1" > "$TEST_EXEC_LOG"',
+            "safeyolo-probe",
+            "runtime argument",
+        ],
+        env=command_env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert exec_log.read_text() == "runtime argument"
+
+
 def test_shared_skill_has_cross_agent_frontmatter_and_direct_references() -> None:
     content = (SKILL_SOURCE / "SKILL.md").read_text()
     _, frontmatter, body = content.split("---", 2)

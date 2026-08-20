@@ -1027,6 +1027,36 @@ class TestAgentStop:
 
 class TestRunAgent:
 
+    def test_linux_host_script_command_receives_effective_agent_args(self, tmp_path):
+        """Every host-script command receives its resolved persistent/run args."""
+        from safeyolo.commands.agent import _linux_interactive_command
+
+        command_host = tmp_path / ".safeyolo-command"
+        command_host.write_text("#!/bin/sh\n")
+        command_host.chmod(0o755)
+
+        command = _linux_interactive_command(
+            command_host,
+            ["--add-dir", "/proj/toolage", "--prompt", "hello world"],
+            None,
+        )
+
+        assert command == (
+            "/home/agent/.safeyolo-command --add-dir /proj/toolage "
+            "--prompt 'hello world'"
+        )
+
+    def test_linux_plain_shell_preserves_explicit_command_override(self, tmp_path):
+        from safeyolo.commands.agent import _linux_interactive_command
+
+        command = _linux_interactive_command(
+            tmp_path / "missing-command",
+            ["python3", "script with spaces.py"],
+            ["python3", "script with spaces.py"],
+        )
+
+        assert command == "python3 'script with spaces.py'"
+
     def test_run_associates_current_tmux_pane(self, runner, config_dir):
         with (
             patch("safeyolo.commands.agent._run_agent", return_value=0),

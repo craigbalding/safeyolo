@@ -303,6 +303,24 @@ def _capture_snapshot_blocking(
     return True
 
 
+def _linux_interactive_command(
+    command_host: Path,
+    effective_agent_args: list[str],
+    explicit_agent_args: list[str] | None,
+) -> str | None:
+    """Build the Linux runsc-exec command without losing agent arguments."""
+    if command_host.exists() and os.access(command_host, os.X_OK):
+        return shlex.join([
+            "/home/agent/.safeyolo-command",
+            *effective_agent_args,
+        ])
+    if explicit_agent_args:
+        # A plain-shell agent has no host-script command to receive appended
+        # arguments, so preserve the existing explicit command override.
+        return shlex.join(explicit_agent_args)
+    return None
+
+
 def _run_agent(
     name: str,
     folder_override: str | None = None,
@@ -379,11 +397,12 @@ def _run_agent(
     extra_shares = _resolve_extra_shares(metadata, extra_mounts)
 
     # Build agent args string for guest env
-    agent_args_str = ""
+    effective_agent_args: list[str] = []
     if agent_args:
-        agent_args_str = " ".join(agent_args)
+        effective_agent_args = list(agent_args)
     elif not skip_default_args and metadata.get("user_default_args"):
-        agent_args_str = " ".join(metadata["user_default_args"])
+        effective_agent_args = list(metadata["user_default_args"])
+    agent_args_str = " ".join(effective_agent_args)
 
     # Extra env for yolo mode
     extra_env = {}
@@ -739,13 +758,11 @@ def _run_agent(
                 # to an interactive bash login.
                 from ..vm import get_agent_home_dir
                 command_host = get_agent_home_dir(name) / ".safeyolo-command"
-                if agent_args:
-                    # Explicit override from caller (`agent run -- cmd args`).
-                    full_cmd = " ".join(agent_args)
-                elif command_host.exists() and os.access(command_host, os.X_OK):
-                    full_cmd = "/home/agent/.safeyolo-command"
-                else:
-                    full_cmd = None
+                full_cmd = _linux_interactive_command(
+                    command_host,
+                    effective_agent_args,
+                    agent_args,
+                )
                 exit_code = plat.exec_in_sandbox(name, command=full_cmd, user="agent")
                 plat.stop_sandbox(name)
             else:
