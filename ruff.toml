@@ -13,6 +13,9 @@ select = [
     "I",      # isort
     "B",      # flake8-bugbear
     "C4",     # flake8-comprehensions
+    "ISC001", # suspicious single-line implicit string concatenation
+    "RUF059", # unused values in unpacking assignments
+    "S110",   # broad try/except/pass handlers
     "UP",     # pyupgrade
 ]
 
@@ -26,9 +29,11 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
-"tests/*" = ["B", "E501"]  # Relax rules for tests
+# CodeQL excludes tests, and fixture unpacking / deliberate exception probes
+# make these production-quality rules noisy rather than useful there.
+"tests/*" = ["B", "E501", "RUF059", "S110"]
 "tests/test_oauth2_flow.py" = ["B", "E402", "E501"]  # sys.path hack before CLI imports
-"cli/tests/*" = ["B", "E501"]
+"cli/tests/*" = ["B", "E501", "RUF059", "S110"]
 
 [lint.isort]
 known-first-party = ["safeyolo"]

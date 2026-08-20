@@ -1,0 +1,28 @@
+{
+  "action_sha": "5d4e8d1aca955e8d8589aabd499c5cae939e33c7",
+  "bundle_version": "2.26.3",
+  "assets": {
+    "linux-x86_64": [
+      {
+        "archive": "codeql-bundle-linux64.tar.zst",
+        "sha256": "b34d6ffc08246e3031b06225593f382c9029c21bfccfd16250266cdc02d9947c",
+        "requires": "zstd"
+      },
+      {
+        "archive": "codeql-bundle-linux64.tar.gz",
+        "sha256": "77e5be1b550d66662e600e795b6cf2ea1729e853e3dc79e02594f767039d2a29"
+      }
+    ],
+    "macos-x86_64": [
+      {
+        "archive": "codeql-bundle-osx64.tar.zst",
+        "sha256": "378b0f9c63c5e970b552dec418942ba4cd267baddc8345dd0d3b959ce3e77536",
+        "requires": "zstd"
+      },
+      {
+        "archive": "codeql-bundle-osx64.tar.gz",
+        "sha256": "881a12bfd567e3ca9bae42fa92dfaa8b3f3102d5b8d40aa236545219fbb0ee41"
+      }
+    ]
+  }
+}
