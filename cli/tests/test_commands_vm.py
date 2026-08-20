@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from safeyolo.cli import app
@@ -191,7 +192,7 @@ class TestLifecycleStart:
     def test_lifecycle_commands_expose_profile_option(self, runner, arguments):
         result = runner.invoke(app, arguments)
         assert result.exit_code == 0
-        assert "--profile" in result.output
+        assert "--profile" in unstyle(result.output)
 
 
 # ---------------------------------------------------------------------------
