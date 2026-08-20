@@ -1196,11 +1196,7 @@ permissions:
             assert len(loader.baseline.permissions) == 0
 
     def test_permission_denied_creates_empty_baseline(self):
-        import os
-
         from safeyolo.policy.loader import PolicyLoader
-
-        assert os.geteuid() != 0, "Container running as root - security risk"
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "policy.yaml"
@@ -1210,12 +1206,12 @@ permissions:
     resource: "*"
     effect: allow
 """)
-            os.chmod(path, 0o000)
-            try:
+            # Inject the filesystem error directly. Mode-000 is not a portable
+            # proxy for read failure: gVisor DirectFS can permit the open even
+            # when os.access() correctly reports it as unreadable.
+            with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
                 loader = PolicyLoader(baseline_path=path)
                 assert len(loader.baseline.permissions) == 0
-            finally:
-                os.chmod(path, 0o644)
 
     def test_directory_as_policy_file_creates_empty_baseline(self):
         from safeyolo.policy.loader import PolicyLoader

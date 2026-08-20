@@ -121,7 +121,7 @@ include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "cli/tests"]
 # uds-networking/ holds standalone proof-of-concept runners (sys.exit at
 # module top, not pytest tests). They're invoked directly by the VPS
 # smoke-test scripts. Excluded from collection so pytest doesn't import
