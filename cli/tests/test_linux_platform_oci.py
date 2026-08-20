@@ -590,3 +590,105 @@ def test_wait_for_runsc_stop_reports_timeout_while_still_running(monkeypatch):
         linux._wait_for_runsc_stop([], "runsc", "/run", "agent", timeout=0)
         is False
     )
+
+
+def test_wait_for_userns_ready_returns_on_namespace_inode_transition(monkeypatch):
+    from safeyolo.platform import linux
+
+    proc = SimpleNamespace(pid=4242, poll=lambda: None)
+    inodes = {
+        "/proc/self/ns/user": 10,
+        "/proc/self/ns/net": 20,
+        "/proc/4242/ns/user": 11,
+        "/proc/4242/ns/net": 21,
+    }
+    monkeypatch.setattr(
+        linux.os,
+        "stat",
+        lambda path: SimpleNamespace(st_ino=inodes[path]),
+    )
+    monkeypatch.setattr(
+        linux.time,
+        "sleep",
+        lambda seconds: pytest.fail(f"unexpected readiness sleep: {seconds}"),
+    )
+
+    linux._wait_for_userns_ready(proc)
+
+
+def test_wait_for_userns_ready_polls_until_both_namespaces_change(monkeypatch):
+    from safeyolo.platform import linux
+
+    proc = SimpleNamespace(pid=4242, poll=lambda: None)
+    child_net_reads = 0
+    sleeps = []
+
+    def namespace_stat(path):
+        nonlocal child_net_reads
+        if path == "/proc/self/ns/user":
+            return SimpleNamespace(st_ino=10)
+        if path == "/proc/self/ns/net":
+            return SimpleNamespace(st_ino=20)
+        if path == "/proc/4242/ns/user":
+            return SimpleNamespace(st_ino=11 if child_net_reads else 10)
+        if path == "/proc/4242/ns/net":
+            inode = 21 if child_net_reads else 20
+            child_net_reads += 1
+            return SimpleNamespace(st_ino=inode)
+        raise AssertionError(f"unexpected stat path: {path}")
+
+    monkeypatch.setattr(linux.os, "stat", namespace_stat)
+    monkeypatch.setattr(linux.time, "sleep", sleeps.append)
+
+    linux._wait_for_userns_ready(proc)
+
+    assert len(sleeps) == 1
+    assert 0 < sleeps[0] <= linux.USERNS_POLL_INTERVAL_SECONDS
+
+
+def test_wait_for_userns_ready_reports_early_child_exit(monkeypatch):
+    from safeyolo.platform import linux
+
+    proc = SimpleNamespace(pid=4242, poll=lambda: 7)
+
+    with pytest.raises(RuntimeError, match=r"namespace setup \(status 7\)"):
+        linux._wait_for_userns_ready(proc)
+
+
+def test_wait_for_userns_ready_kills_holder_on_timeout(monkeypatch):
+    from safeyolo.platform import linux
+
+    class Holder:
+        pid = 4242
+        killed = False
+        waited = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, *, timeout):
+            assert timeout == 1
+            self.waited = True
+            return -9
+
+    proc = Holder()
+    inodes = {
+        "/proc/self/ns/user": 10,
+        "/proc/self/ns/net": 20,
+        "/proc/4242/ns/user": 10,
+        "/proc/4242/ns/net": 20,
+    }
+    monkeypatch.setattr(
+        linux.os,
+        "stat",
+        lambda path: SimpleNamespace(st_ino=inodes[path]),
+    )
+
+    with pytest.raises(RuntimeError, match="within 0s"):
+        linux._wait_for_userns_ready(proc, timeout=0)
+
+    assert proc.killed is True
+    assert proc.waited is True
