@@ -160,6 +160,85 @@ def test_mise_installed_agent_is_immediately_executable_with_context(
 
 
 @pytest.mark.parametrize(
+    "package_root",
+    (
+        "node_modules/@anthropic-ai/claude-code",
+        "lib/node_modules/@anthropic-ai/claude-code",
+    ),
+)
+def test_claude_bootstrap_repairs_mise_install_with_skipped_postinstall(
+    tmp_path: Path,
+    package_root: str,
+) -> None:
+    """Modern and legacy mise Claude placeholders are repaired before launch."""
+    operator_home = tmp_path / "operator"
+    agent_home = tmp_path / "agent"
+    fake_bin = tmp_path / "bin"
+    operator_home.mkdir()
+    fake_bin.mkdir()
+
+    _run_setup("claude-host-setup.sh", operator_home, agent_home, tmp_path)
+
+    shim = agent_home / ".mise/shims/claude"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/bin/sh\nexit 1\n")
+    shim.chmod(0o755)
+
+    install_dir = agent_home / ".mise/installs/npm-anthropic-ai-claude-code/2.1.235"
+    postinstall = install_dir / package_root / "install.cjs"
+    postinstall.parent.mkdir(parents=True)
+    postinstall.write_text("// test fixture\n")
+
+    fake_mise = fake_bin / "mise"
+    fake_mise.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "with Path(os.environ['TEST_MISE_LOG']).open('a') as f:\n"
+        "    f.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1] == 'where':\n"
+        "    print(os.environ['TEST_CLAUDE_INSTALL_DIR'])\n"
+        "elif sys.argv[1] == 'exec':\n"
+        "    shim = Path(os.environ['TEST_CLAUDE_SHIM'])\n"
+        "    shim.write_text(\"#!/bin/sh\\n\"\n"
+        "                    \"if [ \\\"$1\\\" = --version ]; then exit 0; fi\\n\"\n"
+        "                    \"printf '%s\\\\0' \\\"$@\\\" > \\\"$TEST_EXEC_LOG\\\"\\n\")\n"
+        "    shim.chmod(0o755)\n"
+    )
+    fake_mise.chmod(0o755)
+
+    exec_log = tmp_path / "exec-args.bin"
+    mise_log = tmp_path / "mise.log"
+    command_env = os.environ.copy()
+    for key in list(command_env):
+        if key.startswith(("MISE_", "__MISE_")) or key == "BASH_ENV":
+            command_env.pop(key)
+    command_env.update(
+        {
+            "HOME": str(agent_home),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "TEST_CLAUDE_INSTALL_DIR": str(install_dir),
+            "TEST_CLAUDE_SHIM": str(shim),
+            "TEST_EXEC_LOG": str(exec_log),
+            "TEST_MISE_LOG": str(mise_log),
+        }
+    )
+
+    result = subprocess.run(
+        [str(agent_home / ".safeyolo-command"), "--probe"],
+        env=command_env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    mise_calls = mise_log.read_text().splitlines()
+    assert "where npm:@anthropic-ai/claude-code@latest" in mise_calls
+    assert any(call.startswith("exec node@22 -- node ") for call in mise_calls)
+    assert "--probe" in exec_log.read_bytes().decode().split("\0")
+
+
+@pytest.mark.parametrize(
     ("script_name", "consumer_dir", "user_instruction"),
     [
         ("codex-host-setup.sh", ".agents", ".codex/AGENTS.md"),
