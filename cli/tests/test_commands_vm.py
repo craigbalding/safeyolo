@@ -1007,6 +1007,82 @@ class TestRunAgent:
         assert result.exit_code == 1
         assert "already running" in result.output.lower()
 
+    def test_run_forwards_persistent_and_transient_mounts_to_boot(
+        self, config_dir, tmp_path,
+    ):
+        """Public mount settings must reach both config staging and runtime."""
+        from safeyolo.commands.agent import _run_agent
+
+        project = tmp_path / "project"
+        persistent = tmp_path / "persistent-toolage"
+        transient = tmp_path / "transient-toolage"
+        readonly = tmp_path / "readonly-refs"
+        for path in (project, persistent, transient, readonly):
+            path.mkdir()
+
+        agent_dir = config_dir / "agents" / "mount-agent"
+        status_dir = agent_dir / "status"
+        config_share = agent_dir / "config-share"
+        status_dir.mkdir(parents=True)
+        config_share.mkdir()
+        rootfs = agent_dir / "rootfs"
+        rootfs.mkdir()
+
+        metadata = {
+            "folder": str(project),
+            "mounts": [
+                f"{persistent}:/proj/toolage",
+                f"{readonly}:/refs:ro",
+            ],
+        }
+        expected = [
+            (str(readonly), "/refs", True),
+            (str(transient), "/proj/toolage", False),
+        ]
+        running = False
+        platform = MagicMock()
+        platform.agent_rootfs_path.return_value = rootfs
+
+        def is_running(_name):
+            return running
+
+        def start_sandbox(**_kwargs):
+            nonlocal running
+            running = True
+            (status_dir / "per-run-started").write_text("")
+            return 1234
+
+        platform.is_sandbox_running.side_effect = is_running
+        platform.start_sandbox.side_effect = start_sandbox
+        platform.setup_networking.return_value = {
+            "host_ip": "127.0.0.1",
+            "guest_ip": "10.200.0.2",
+            "attribution_ip": "10.200.0.2",
+            "subnet": None,
+            "needs_bridge_socket": False,
+        }
+
+        with (
+            patch("safeyolo.commands.agent._load_agent_metadata", return_value=metadata),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0),
+            patch("safeyolo.commands.agent._update_agent_map"),
+            patch("safeyolo.commands.agent.write_event"),
+            patch("safeyolo.commands.agent.prepare_config_share") as prepare,
+            patch("safeyolo.platform.get_platform", return_value=platform),
+            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock"),
+        ):
+            result = _run_agent(
+                "mount-agent",
+                extra_mounts=[f"{transient}:/proj/toolage"],
+                detach=True,
+                no_snapshot=True,
+            )
+
+        assert result == 0
+        assert prepare.call_args.kwargs["host_mounts"] == expected
+        assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
+
 
 # ---------------------------------------------------------------------------
 # init.py
@@ -1776,6 +1852,39 @@ class TestParseMount:
         host_dir.mkdir()
         with pytest.raises(Exit):
             _parse_mount(f"{host_dir}:data")
+
+    def test_container_path_cannot_traverse_or_replace_runtime_mounts(self, tmp_path):
+        from typer import Exit
+
+        from safeyolo.commands.agent import _parse_mount
+
+        host_dir = tmp_path / "data"
+        host_dir.mkdir()
+        with pytest.raises(Exit):
+            _parse_mount(f"{host_dir}:/proj/../safeyolo")
+        with pytest.raises(Exit):
+            _parse_mount(f"{host_dir}:/workspace")
+
+    def test_persistent_and_transient_mounts_resolve_with_transient_override(
+        self, tmp_path,
+    ):
+        from safeyolo.commands.agent import _resolve_extra_shares
+
+        persistent = tmp_path / "persistent"
+        replacement = tmp_path / "replacement"
+        readonly = tmp_path / "readonly"
+        for path in (persistent, replacement, readonly):
+            path.mkdir()
+
+        shares = _resolve_extra_shares(
+            {"mounts": [f"{persistent}:/proj/toolage", f"{readonly}:/refs:ro"]},
+            [f"{replacement}:/proj/toolage"],
+        )
+
+        assert shares == [
+            (str(readonly), "/refs", True),
+            (str(replacement), "/proj/toolage", False),
+        ]
 
 
 # ---------------------------------------------------------------------------

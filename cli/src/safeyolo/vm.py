@@ -975,21 +975,20 @@ def prepare_config_share(
     if agent_token.exists():
         shutil.copy2(str(agent_token), str(share_dir / "agent_token"))
 
-    # Host config mount manifest -- tells the guest init which VirtioFS tags
-    # to mount and where. Format: one line per mount, "tag:guest_path"
+    # Extra-mount manifest for the macOS guest. start_vm assigns matching,
+    # deterministic VirtioFS tags in the same list order. Linux consumes the
+    # guest destinations directly in its OCI spec; its harmless mount attempts
+    # are suppressed by guest-init after detecting the existing OCI mounts.
+    # Format: one line per mount, "tag:guest_path".
+    host_mount_manifest = share_dir / "host-mounts"
     if host_mounts:
         lines = []
-        for host_path, tag, _read_only in host_mounts:
-            # Derive guest path: ~/.claude → /home/agent/.claude
-            host_p = Path(host_path)
-            home = Path.home()
-            try:
-                rel = host_p.relative_to(home)
-                guest_path = f"/home/agent/{rel}"
-            except ValueError:
-                guest_path = f"/mnt/{tag}"
-            lines.append(f"{tag}:{guest_path}")
-        (share_dir / "host-mounts").write_text("\n".join(lines) + "\n")
+        for index, (_host_path, guest_path, _read_only) in enumerate(host_mounts):
+            lines.append(f"extra{index}:{guest_path}")
+        host_mount_manifest.write_text("\n".join(lines) + "\n")
+    else:
+        # One-off mounts must not survive into a later run via stale config.
+        host_mount_manifest.unlink(missing_ok=True)
 
     return share_dir
 
@@ -1169,11 +1168,12 @@ def start_vm(
     if shell_socket_path:
         cmd.extend(["--shell-socket", shell_socket_path])
 
-    # Additional shares
+    # Additional shares. Tags are internal transport identifiers; the matching
+    # tag-to-destination manifest is written by prepare_config_share().
     if extra_shares:
-        for host_path, tag, read_only in extra_shares:
+        for index, (host_path, _guest_path, read_only) in enumerate(extra_shares):
             mode = "ro" if read_only else "rw"
-            cmd.extend(["--share", f"{host_path}:{tag}:{mode}"])
+            cmd.extend(["--share", f"{host_path}:extra{index}:{mode}"])
 
     if background:
         cmd.append("--no-terminal")

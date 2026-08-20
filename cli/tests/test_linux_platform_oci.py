@@ -1,10 +1,8 @@
 """Unit tests for the Linux gVisor OCI spec builder.
 
-Exercises behavior on the `_generate_oci_config` path that isn't
-reachable via the blackbox suite because the CLI doesn't currently
-wire `extra_shares` to any public flag. These tests instantiate
-`LinuxPlatform` directly, hermetically scope the config dir + HOME
-via tmp_path, and assert the spec shape and filesystem side-effects.
+Exercises behavior on the `_generate_oci_config` path. These tests instantiate
+`LinuxPlatform` directly, hermetically scope the config dir + HOME via
+tmp_path, and assert the spec shape and filesystem side-effects.
 """
 from __future__ import annotations
 
@@ -73,7 +71,7 @@ def test_extra_shares_under_home_precreate_destinations(isolated_env):
         fw_alloc={"host_ip": "127.0.0.1", "attribution_ip": "10.200.0.1"},
         cpus=1,
         memory_mb=1024,
-        extra_shares=[(str(fake_claude), "claude", True)],
+        extra_shares=[(str(fake_claude), "/home/agent/.claude", True)],
     )
 
     # Side effect: the destination dir now exists under host-side agent_home.
@@ -241,10 +239,10 @@ def test_etxtbsy_experiment_can_restore_cached_workspace_baseline(
     assert not any(option.startswith("dcache=") for option in workspace["options"])
 
 
-def test_workspace_dcache_policy_does_not_spill_into_extra_shares(
+def test_writable_extra_shares_get_dcache_zero_but_readonly_shares_do_not(
     isolated_env, monkeypatch,
 ):
-    """Extra shares retain their own cache policy until explicitly designed."""
+    """Writable operator shares get host-exec semantics without global scope."""
     from safeyolo.platform import linux
     from safeyolo.vm import ensure_agent_persistent_dirs
 
@@ -265,8 +263,8 @@ def test_workspace_dcache_policy_does_not_spill_into_extra_shares(
         cpus=1,
         memory_mb=1024,
         extra_shares=[
-            (str(writable), "writable", False),
-            (str(readonly), "readonly", True),
+            (str(writable), "/mnt/writable", False),
+            (str(readonly), "/mnt/readonly", True),
         ],
     )
 
@@ -277,9 +275,15 @@ def test_workspace_dcache_policy_does_not_spill_into_extra_shares(
     ]
     assert "dcache=0" in workspace["options"]
     assert len(extras) == 2
+    writable_mount = next(m for m in extras if m["source"] == str(writable))
+    readonly_mount = next(m for m in extras if m["source"] == str(readonly))
+    assert "rw" in writable_mount["options"]
+    assert "dcache=0" in writable_mount["options"]
+    assert "ro" in readonly_mount["options"]
+    assert not any(option.startswith("dcache=") for option in readonly_mount["options"])
     assert all(
-        not any(option.startswith("dcache=") for option in mount["options"])
-        for mount in extras
+        {"nosuid", "nodev"}.issubset(mount["options"])
+        for mount in (writable_mount, readonly_mount)
     )
 
 

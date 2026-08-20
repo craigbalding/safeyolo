@@ -6,7 +6,7 @@ import os
 import re
 import shlex
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import typer
 import yaml
@@ -372,6 +372,11 @@ def _run_agent(
         raise typer.Exit(1)
     _check_project_ownership(workspace_path, dangerously_allow_unowned)
 
+    # Revalidate persistent metadata on every run, merge one-off mounts, and
+    # resolve the public CLI syntax to the platform contract. Transient mounts
+    # override a persistent mount at the same guest destination for this run.
+    extra_shares = _resolve_extra_shares(metadata, extra_mounts)
+
     # Build agent args string for guest env
     agent_args_str = ""
     if agent_args:
@@ -487,6 +492,7 @@ def _run_agent(
             cpus=cpus_for_run,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
+            extra_shares=extra_shares,
         )
         if is_snapshot_valid(name, snapshot_version):
             snapshot_mode = "restore"
@@ -516,6 +522,7 @@ def _run_agent(
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
             attribution_ip=attribution_ip,
+            host_mounts=extra_shares,
             pre_write_per_run_go=(for_mode != "capture"),
             debug_mode=_debug_mode,
         )
@@ -559,7 +566,7 @@ def _run_agent(
                 fw_alloc=fw_alloc,
                 cpus=cpus_for_run,
                 memory_mb=memory_for_run,
-                extra_shares=None,
+                extra_shares=extra_shares,
                 background=run_background,
                 restore_from_path=restore_src,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
@@ -636,7 +643,7 @@ def _run_agent(
                 fw_alloc=fw_alloc,
                 cpus=cpus_for_run,
                 memory_mb=memory_for_run,
-                extra_shares=None,
+                extra_shares=extra_shares,
                 background=run_background,
                 snapshot_capture_path=capture_path,
                 ephemeral=(metadata.get("rootfs_overlay") == "memory"),
@@ -796,6 +803,25 @@ def _parse_mount(mount_spec: str) -> str:
     if not container_path.startswith("/"):
         console.print(f"[red]Container path must be absolute:[/red] {escape(container_path)}")
         raise typer.Exit(1)
+    if ".." in PurePosixPath(container_path).parts:
+        console.print(f"[red]Container path cannot contain '..':[/red] {escape(container_path)}")
+        raise typer.Exit(1)
+    container_path = str(PurePosixPath(container_path))
+    protected_destinations = {
+        "/",
+        "/home/agent",
+        "/workspace",
+    }
+    protected_trees = ("/dev", "/proc", "/safeyolo", "/safeyolo-status", "/sys")
+    if container_path in protected_destinations or any(
+        container_path == root or container_path.startswith(f"{root}/")
+        for root in protected_trees
+    ):
+        console.print(
+            f"[red]Container mount destination is reserved:[/red] "
+            f"{escape(container_path)}"
+        )
+        raise typer.Exit(1)
 
     if not host_path.exists():
         console.print(f"[red]Host path not found:[/red] {host_path}")
@@ -821,6 +847,34 @@ def _parse_mount(mount_spec: str) -> str:
         return f"{host_path}:{container_path}:ro"
 
     return f"{host_path}:{container_path}"
+
+
+def _mount_spec_to_share(mount_spec: str) -> tuple[str, str, bool]:
+    """Convert a validated mount string to (host, guest destination, read-only)."""
+    parts = mount_spec.split(":")
+    return parts[0], parts[1], len(parts) == 3
+
+
+def _resolve_extra_shares(
+    metadata: dict,
+    transient_mounts: list[str] | None,
+) -> list[tuple[str, str, bool]]:
+    """Merge persistent and one-off mounts, with one-off destinations winning."""
+    persistent = metadata.get("mounts", []) or []
+    if not isinstance(persistent, list) or not all(
+        isinstance(item, str) for item in persistent
+    ):
+        console.print("[red]Agent mount metadata is invalid; expected a list of strings.[/red]")
+        raise typer.Exit(1)
+
+    by_destination: dict[str, tuple[str, str, bool]] = {}
+    for spec in [*persistent, *(transient_mounts or [])]:
+        normalized = _parse_mount(spec)
+        share = _mount_spec_to_share(normalized)
+        # Reinsert so a transient override also takes the later mount's order.
+        by_destination.pop(share[1], None)
+        by_destination[share[1]] = share
+    return list(by_destination.values())
 
 
 _RESERVED_PORTS = {8080, 9090}

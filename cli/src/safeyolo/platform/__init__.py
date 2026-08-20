@@ -92,6 +92,9 @@ class AgentPlatform(ABC):
     ) -> int:
         """Start an agent sandbox. Returns PID.
 
+        extra_shares entries are (host_path, guest_destination, read_only).
+        Guest destinations are absolute paths validated by the CLI.
+
         snapshot_capture_path / restore_from_path are macOS-only (VZ
         save/restore). Linux ignores them until PR 5 adds gVisor
         checkpoint support.

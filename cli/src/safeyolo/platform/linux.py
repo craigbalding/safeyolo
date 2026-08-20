@@ -1371,11 +1371,9 @@ class LinuxPlatform(AgentPlatform):
         # Extra shares (host config dirs)
         if extra_shares:
             agent_home = get_agent_home_dir(name)
-            for host_path, tag, read_only in extra_shares:
-                home = Path.home()
+            for host_path, guest_path, read_only in extra_shares:
                 try:
-                    rel = Path(host_path).relative_to(home)
-                    guest_path = f"/home/agent/{rel}"
+                    rel = Path(guest_path).relative_to("/home/agent")
                     # /home/agent is an OCI bind to the host-side agent
                     # home dir (possibly empty on first boot). gVisor
                     # requires nested bind destinations to pre-exist on
@@ -1383,12 +1381,23 @@ class LinuxPlatform(AgentPlatform):
                     # finds it when consuming the spec.
                     (agent_home / rel).mkdir(parents=True, exist_ok=True)
                 except ValueError:
-                    guest_path = f"/mnt/{tag}"
+                    pass
+                options = [
+                    "rbind",
+                    "ro" if read_only else "rw",
+                    "nosuid",
+                    "nodev",
+                ]
+                if not read_only:
+                    # Writable operator shares have the same guest-edit/host-
+                    # execute contract as /workspace. Release gVisor's idle
+                    # writable host FD immediately after the guest closes it.
+                    options.append("dcache=0")
                 mounts.append({
                     "destination": guest_path,
                     "type": "bind",
                     "source": os.path.abspath(host_path),
-                    "options": ["rbind", "ro" if read_only else "rw"],
+                    "options": options,
                 })
 
         namespaces = [

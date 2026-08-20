@@ -227,6 +227,7 @@ def compute_snapshot_version(
     cpus: int,
     gateway_ip: str,
     guest_ip: str,
+    extra_shares: list[tuple[str, str, bool]] | None = None,
 ) -> dict:
     """Hash everything that must match for a snapshot to be restorable.
 
@@ -252,6 +253,10 @@ def compute_snapshot_version(
         "cpus": cpus,
         "network_gateway_ip": gateway_ip,
         "network_guest_ip": guest_ip,
+        # VZ restore requires the same VirtioFS devices and the guest memory
+        # already contains their mount destinations. Any persistent or one-off
+        # mount change must therefore invalidate and recapture the snapshot.
+        "extra_shares": [list(share) for share in (extra_shares or [])],
         "vm_helper_version": _vm_helper_version(),
     }
 
