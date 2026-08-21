@@ -375,6 +375,28 @@ def get_option_safe(name: str, default: Any = True) -> Any:
         return default
 
 
+def find_addon(name: str):
+    """Resolve a live addon instance by its registered name.
+
+    Prefers the master addon registry (``ctx.master.addons``), which is the
+    reliable way to reach a loaded addon at runtime. Module-level singletons
+    (e.g. ``service_discovery.get_service_discovery()``) can be distinct objects
+    that are ``None`` under mitmproxy's addon loader, so addons must not depend
+    on them for cross-addon lookups.
+
+    Returns the addon instance, or ``None`` if unavailable (e.g. no running
+    master, as in some unit tests).
+    """
+    try:
+        from mitmproxy import ctx
+        addons_obj = getattr(getattr(ctx, "master", None), "addons", None)
+        if addons_obj:
+            return addons_obj.get(name)
+    except Exception:
+        return None
+    return None
+
+
 # =============================================================================
 # Background Task Utilities
 # =============================================================================
