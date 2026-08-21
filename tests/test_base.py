@@ -178,7 +178,10 @@ class TestSecurityAddonBypass:
         # Agent-scoped policy disables the addon for this agent.
         mock_client.is_addon_enabled.return_value = False
 
+        # A running master is present, so resolution goes through the registry
+        # (find_addon), not the (None) singleton.
         with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('mitmproxy.ctx.master', Mock(), create=True), \
              patch('safeyolo.core.base.find_addon', return_value=sd), \
              patch('safeyolo.core.base.get_service_discovery', return_value=None):
             # The agent-scoped bypass actually takes effect.
@@ -238,6 +241,7 @@ class TestSecurityAddonBypass:
         mock_client.is_addon_enabled.return_value = True
 
         with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('mitmproxy.ctx.master', Mock(), create=True), \
              patch('safeyolo.core.base.find_addon', return_value=sd), \
              patch('safeyolo.core.base.get_service_discovery', return_value=None):
             addon.is_bypassed(flow)
@@ -264,6 +268,7 @@ class TestSecurityAddonBypass:
         mock_client.is_addon_enabled.return_value = True
 
         with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('mitmproxy.ctx.master', Mock(), create=True), \
              patch('safeyolo.core.base.find_addon', return_value=sd), \
              patch('safeyolo.core.base.get_service_discovery', return_value=None):
             addon.is_bypassed(flow)
