@@ -1,9 +1,11 @@
 """
-agent_api.py - Read-only PDP query API for agent self-service
+agent_api.py - Authenticated agent self-service API
 
 Intercepts requests to virtual hostname _safeyolo.proxy.internal,
-validates readonly bearer token, and returns PDP data as synthetic responses.
-The request never goes upstream.
+validates the agent bearer token, and returns PDP data as synthetic responses.
+The request never goes upstream. In addition to read-only PDP queries this
+endpoint exposes action-oriented routes (gateway access, plumb collaboration,
+and the declared test-context lifecycle).
 
 Loading order: Layer 0, after admin_shield, before loop_guard.
 This ensures:
@@ -32,6 +34,7 @@ from request_id import REQUEST_ID_PATTERN as _REQUEST_ID_PATTERN
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.utils import sanitize_for_log, write_event
 from safeyolo.storage.flow_store import is_text_like_content_type
+from safeyolo.test_context_contract import TestContextError, parse_test_context
 
 log = logging.getLogger("safeyolo.agent-api")
 
@@ -40,7 +43,7 @@ MAX_EXPLAIN_LINES = 10000
 
 
 class AgentAPI:
-    """Read-only PDP API accessible through the proxy via virtual hostname."""
+    """Authenticated agent self-service API, reached through the proxy via a virtual hostname."""
 
     name = "agent-api"
 
@@ -81,7 +84,10 @@ class AgentAPI:
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET", "POST", "DELETE"]})
             return
         if method in ("POST", "DELETE") and not (
-            path.startswith("/api/flows") or path.startswith("/gateway/") or path.startswith("/plumb")
+            path.startswith("/api/flows")
+            or path.startswith("/gateway/")
+            or path.startswith("/plumb")
+            or path == "/api/test-context/current"
         ):
             self._respond(flow, 405, {"error": "Method Not Allowed", "allowed": ["GET"]})
             return
@@ -139,6 +145,10 @@ class AgentAPI:
             "/circuits": self._handle_circuits,
             "/gateway/services": self._handle_gateway_services,
             "/api/flows/search": self._handle_flow_search,
+            # One handler for all methods; it switches on flow.request.method.
+            # Must NOT also appear in post_handlers — the dispatcher resolves
+            # handlers.get(path) first, so a duplicate would shadow POST dispatch.
+            "/api/test-context/current": self._handle_test_context_current,
         }
 
         # POST handlers for flow store API and gateway
@@ -271,9 +281,163 @@ class AgentAPI:
         from safeyolo.core.utils import get_client_ip
         client_ip = get_client_ip(flow)
         agent_name = sd.get_client_for_ip(client_ip)
-        if not agent_name or agent_name == "default":
+        # service_discovery returns "unknown" for an unmapped source; both
+        # "unknown" and "default" are non-identities and must not scope results.
+        if not agent_name or agent_name in ("unknown", "default"):
             return None
         return agent_name
+
+    def _handle_test_context_current(self, flow: http.HTTPFlow):
+        """GET|POST|DELETE /api/test-context/current.
+
+        Manage this agent's current declared test context, used to attribute and
+        record header-less (mobile app) traffic to a target host. Identity is
+        always source-derived: the caller never supplies the trusted agent or
+        source id in the request body.
+        """
+        method = flow.request.method
+
+        # Common prerequisites for every method.
+        agent = self._resolve_agent_id(flow)
+        if agent is None:
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+
+        from safeyolo.core.utils import get_client_ip
+
+        source_id = get_client_ip(flow)
+        if not source_id or source_id == "unknown":
+            self._respond(flow, 403, {"error": "Could not identify source"})
+            return
+
+        tc = self._find_addon("test-context")
+        if tc is None:
+            self._respond(flow, 503, {"error": "test-context addon not loaded"})
+            return
+
+        if method == "GET":
+            self._test_context_get(flow, tc, agent, source_id)
+        elif method == "POST":
+            self._test_context_post(flow, tc, agent, source_id)
+        elif method == "DELETE":
+            self._test_context_delete(flow, tc, agent, source_id)
+        else:
+            # Outer method validation already restricts this, but stay defensive.
+            self._respond(
+                flow,
+                405,
+                {"error": "Method Not Allowed", "allowed": ["GET", "POST", "DELETE"]},
+            )
+
+    def _test_context_get(self, flow, tc, agent, source_id):
+        """Return the caller's active declaration + remaining TTL, or null."""
+        rec = tc.get_declaration(source_id, agent)
+        if rec is None:
+            self._respond(flow, 200, {"context": None})
+            return
+        context, expires_in = rec
+        self._respond(
+            flow,
+            200,
+            {"agent": agent, "context": context, "expires_in": expires_in},
+        )
+
+    def _test_context_post(self, flow, tc, agent, source_id):
+        """Set the caller's declared context from a canonical X-Test-Context string."""
+        body = self._read_json_body(flow)
+        if body is None or not isinstance(body, dict):
+            self._respond(flow, 400, {"error": "Invalid JSON body"})
+            return
+
+        context_str = body.get("context")
+        if type(context_str) is not str:
+            self._respond(
+                flow,
+                400,
+                {
+                    "error": "context must be a string",
+                    "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
+                },
+            )
+            return
+
+        try:
+            parsed = parse_test_context(context_str)
+        except TestContextError as exc:
+            self._respond(
+                flow,
+                400,
+                {
+                    "error": "Invalid test context",
+                    "detail": str(exc),
+                    "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
+                    "example": "run=sec1;agent=idor;test=IDOR-003;intent=probe;expect=blocked",
+                },
+            )
+            return
+
+        # Optional TTL: reject anything that is not a positive int. bool is a
+        # subclass of int, so `type(ttl) is not int` excludes True/False.
+        ttl = body.get("ttl")
+        if ttl is not None and (type(ttl) is not int or ttl <= 0):
+            self._respond(flow, 400, {"error": "ttl must be a positive integer (seconds)"})
+            return
+
+        # The TestContext owner performs the authoritative maximum-TTL bound.
+        try:
+            granted = tc.set_declaration(source_id, agent, parsed, ttl)
+        except ValueError as exc:
+            self._respond(flow, 400, {"error": str(exc)})
+            return
+
+        declared_agent = parsed.get("agent")
+        write_event(
+            "security.test_context_declared",
+            kind=EventKind.SECURITY,
+            severity=Severity.LOW,
+            summary=f"Declared test context for agent {sanitize_for_log(agent)}",
+            host=AGENT_API_HOST,
+            request_id=flow.metadata.get("request_id"),
+            agent=agent,
+            addon=self.name,
+            details={
+                "source_id": source_id,
+                "trusted_agent": agent,
+                "declared_agent": declared_agent,
+                "test_agent_match": (
+                    (declared_agent == agent) if declared_agent is not None else None
+                ),
+                "context": parsed,
+                "requested_ttl": ttl,
+                "granted_ttl": granted,
+            },
+        )
+
+        self._respond(
+            flow,
+            200,
+            {"status": "set", "agent": agent, "expires_in": granted, "context": parsed},
+        )
+
+    def _test_context_delete(self, flow, tc, agent, source_id):
+        """Clear the caller's declaration. Idempotent (absent → still 200)."""
+        existed = tc.clear_declaration(source_id)
+        write_event(
+            "security.test_context_cleared",
+            kind=EventKind.SECURITY,
+            severity=Severity.LOW,
+            summary=f"Cleared test context for agent {sanitize_for_log(agent)}",
+            host=AGENT_API_HOST,
+            request_id=flow.metadata.get("request_id"),
+            agent=agent,
+            addon=self.name,
+            details={
+                "source_id": source_id,
+                "trusted_agent": agent,
+                "had_declaration": existed,
+            },
+        )
+        self._respond(flow, 200, {"status": "cleared"})
 
     def _plumb_respond(self, flow: http.HTTPFlow, res: dict):
         """Translate a PlumbService result dict into an HTTP response.

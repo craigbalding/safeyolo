@@ -832,3 +832,248 @@ class TestTestContextWarnMode:
         assert flow.response is None
         assert addon.stats.warned == 1
         assert addon.stats.blocked == 0
+
+
+# =============================================================================
+# Declared-context (mobile / header-less traffic) tests
+# =============================================================================
+
+
+def _mock_discovery(agent="pickup"):
+    """Patch service_discovery.get_service_discovery to resolve a fixed agent."""
+    sd = MagicMock()
+    sd.get_client_for_ip.return_value = agent
+    return patch("service_discovery.get_service_discovery", return_value=sd)
+
+
+class TestDeclarationStore:
+    """Unit tests for the (source_id, trusted_agent)-bound declaration store."""
+
+    def test_set_get_round_trip_and_defensive_copy(self):
+        addon = _make_addon_with_targets()
+        original = {"run": "r1", "agent": "pickup", "test": "T-1"}
+        granted = addon.set_declaration("src-1", "pickup", original, 120)
+        assert granted == 120
+
+        rec = addon.get_declaration("src-1", "pickup")
+        assert rec is not None
+        context, expires_in = rec
+        assert context == {"run": "r1", "agent": "pickup", "test": "T-1"}
+        assert 1 <= expires_in <= 120
+
+        # Mutating inputs/outputs must not affect stored state.
+        original["run"] = "mutated"
+        context["agent"] = "mutated"
+        again, _ = addon.get_declaration("src-1", "pickup")
+        assert again["run"] == "r1"
+        assert again["agent"] == "pickup"
+
+    def test_omitted_ttl_receives_max(self):
+        addon = _make_addon_with_targets()
+        granted = addon.set_declaration("src", "pickup", {"run": "r", "agent": "pickup"}, None)
+        assert granted == 900  # default option ceiling
+
+    def test_requested_ttl_bounded_to_max(self):
+        addon = _make_addon_with_targets()
+        assert addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 60) == 60
+        assert addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 99999) == 900
+
+    def test_invalid_ttl_raises(self):
+        addon = _make_addon_with_targets()
+        ctx = {"run": "r", "agent": "pickup"}
+        for bad in (0, -5, True, False, "120", 12.5):
+            try:
+                addon.set_declaration("s", "pickup", ctx, bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"expected ValueError for ttl={bad!r}")
+
+    def test_unusable_identity_raises(self):
+        addon = _make_addon_with_targets()
+        ctx = {"run": "r", "agent": "pickup"}
+        for src, agent in [("unknown", "pickup"), ("", "pickup"), ("s", "unknown"), ("s", "default"), ("s", "")]:
+            try:
+                addon.set_declaration(src, agent, ctx, 60)
+            except ValueError:
+                continue
+            raise AssertionError(f"expected ValueError for ({src!r},{agent!r})")
+
+    def test_expiry_uses_monotonic(self):
+        addon = _make_addon_with_targets()
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 60)
+        # Before expiry
+        with patch("test_context.time.monotonic", return_value=1059.0):
+            assert addon.get_declaration("s", "pickup") is not None
+        # At/after expiry -> None and removed
+        with patch("test_context.time.monotonic", return_value=1060.0):
+            assert addon.get_declaration("s", "pickup") is None
+        assert "s" not in addon._declarations
+
+    def test_agent_mismatch_returns_none_and_evicts(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 60)
+        assert addon.get_declaration("s", "other") is None
+        # Stale binding is dropped immediately (slot-reuse guard).
+        assert "s" not in addon._declarations
+
+    def test_two_sources_isolated(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("a", "agentA", {"run": "ra", "agent": "agentA"}, 60)
+        addon.set_declaration("b", "agentB", {"run": "rb", "agent": "agentB"}, 60)
+        assert addon.get_declaration("a", "agentA")[0]["run"] == "ra"
+        assert addon.get_declaration("b", "agentB")[0]["run"] == "rb"
+        assert addon.get_declaration("a", "agentB") is None
+
+    def test_clear_returns_existence(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 60)
+        assert addon.clear_declaration("s") is True
+        assert addon.clear_declaration("s") is False
+
+    def test_active_count_evicts_expired(self):
+        addon = _make_addon_with_targets()
+        with patch("test_context.time.monotonic", return_value=100.0):
+            addon.set_declaration("live", "pickup", {"run": "r", "agent": "pickup"}, 60)
+            addon.set_declaration("dead", "pickup", {"run": "r", "agent": "pickup"}, 10)
+        with patch("test_context.time.monotonic", return_value=140.0):
+            assert addon._declared_active_count() == 1
+        assert "dead" not in addon._declarations
+
+
+class TestDeclaredConfig:
+    """Effective feature/TTL configuration resolution."""
+
+    def test_inject_enabled_from_config(self):
+        addon = _make_addon_with_targets()
+        with patch("safeyolo.core.config_cache.addon_section", return_value={"inject_declared": True}):
+            assert addon._inject_declared_enabled() is True
+
+    def test_inject_invalid_config_falls_back_to_option(self):
+        addon = _make_addon_with_targets()
+        with patch("safeyolo.core.config_cache.addon_section", return_value={"inject_declared": "yes"}), \
+             patch("test_context.get_option_safe", return_value=False):
+            assert addon._inject_declared_enabled() is False
+
+    def test_inject_default_option_false(self):
+        addon = _make_addon_with_targets()
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}):
+            # Option unavailable -> default False
+            assert addon._inject_declared_enabled() is False
+
+    def test_ttl_max_from_config(self):
+        addon = _make_addon_with_targets()
+        with patch("safeyolo.core.config_cache.addon_section", return_value={"declared_ttl_max": 300}):
+            assert addon._declared_ttl_max() == 300
+
+    def test_ttl_max_invalid_config_falls_back(self):
+        addon = _make_addon_with_targets()
+        for bad in ({"declared_ttl_max": 0}, {"declared_ttl_max": -1}, {"declared_ttl_max": True}, {"declared_ttl_max": "60"}):
+            with patch("safeyolo.core.config_cache.addon_section", return_value=bad), \
+                 patch("test_context.get_option_safe", return_value=900):
+                assert addon._declared_ttl_max() == 900
+
+
+class TestDeclaredInjection:
+    """Request-path behavior for declared-context injection on target hosts."""
+
+    def _run(self, addon, flow, *, enabled=True, block=True):
+        side = (lambda name, default=True: name != "test_context_block") if not block else None
+        basepatch = (
+            patch("safeyolo.core.base.get_option_safe", side_effect=side)
+            if side else patch("safeyolo.core.base.get_option_safe", return_value=True)
+        )
+        with _mock_discovery("pickup"), \
+             patch.object(addon, "_inject_declared_enabled", return_value=enabled), \
+             patch("test_context.write_event"), \
+             basepatch:
+            addon.request(flow)
+
+    def test_missing_header_valid_declaration_injects(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "r1", "agent": "pickup", "test": "T"}, 120)
+        flow = _make_mock_flow()  # no header
+        self._run(addon, flow)
+
+        assert flow.response is None
+        assert flow.metadata["ccapt_context"] == {"run": "r1", "agent": "pickup", "test": "T"}
+        assert flow.metadata["test_context_source"] == "declared"
+        assert flow.metadata["agent"] == "pickup"
+        assert addon.stats.allowed == 1
+        assert addon._declared_injections_total == 1
+
+    def test_empty_header_strips_and_injects(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "r1", "agent": "pickup"}, 120)
+        flow = _make_mock_flow(headers={"X-Test-Context": ""})
+        self._run(addon, flow)
+
+        assert "X-Test-Context" not in flow.request.headers
+        assert flow.metadata["test_context_source"] == "declared"
+
+    def test_missing_header_no_declaration_blocks(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow()
+        self._run(addon, flow)
+        assert flow.response.status_code == 428
+        assert addon._declared_injections_total == 0
+
+    def test_missing_header_expired_declaration_blocks(self):
+        addon = _make_addon_with_targets()
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 30)
+        flow = _make_mock_flow()
+        with patch("test_context.time.monotonic", return_value=2000.0):
+            self._run(addon, flow)
+        assert flow.response.status_code == 428
+
+    def test_missing_header_agent_mismatch_blocks(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "someone-else", {"run": "r", "agent": "x"}, 120)
+        flow = _make_mock_flow()
+        self._run(addon, flow)  # discovery resolves "pickup" != stored "someone-else"
+        assert flow.response.status_code == 428
+
+    def test_valid_header_ignores_declaration(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "declared", "agent": "pickup"}, 120)
+        flow = _make_mock_flow(headers={"X-Test-Context": "run=hdr;agent=pickup"})
+        self._run(addon, flow)
+        assert flow.metadata["ccapt_context"] == {"run": "hdr", "agent": "pickup"}
+        assert flow.metadata["test_context_source"] == "header"
+        assert addon._declared_injections_total == 0
+
+    def test_malformed_header_never_rescued_block_mode(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
+        flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
+        self._run(addon, flow)
+        assert flow.response.status_code == 428
+        assert "X-Test-Context" not in flow.request.headers  # leak fix
+        assert "ccapt_context" not in flow.metadata
+
+    def test_malformed_header_warn_mode_strips_and_forwards(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
+        self._run(addon, flow, block=False)
+        assert flow.response is None
+        assert "X-Test-Context" not in flow.request.headers  # warn-mode leak fix
+        assert addon.stats.warned == 1
+
+    def test_feature_disabled_ignores_declaration(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
+        flow = _make_mock_flow()
+        self._run(addon, flow, enabled=False)
+        assert flow.response.status_code == 428
+
+    def test_non_target_no_header_passthrough_no_lookup(self):
+        addon = _make_addon_with_targets(["target.example.com"])
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
+        flow = _make_mock_flow(host="ordinary.example.com")
+        # Injection must not be consulted for a non-target host.
+        with patch.object(addon, "_trusted_agent", side_effect=AssertionError("must not resolve")), \
+             patch.object(addon, "_inject_declared_enabled", return_value=True):
+            addon.request(flow)
+        assert flow.response is None
+        assert "ccapt_context" not in flow.metadata
