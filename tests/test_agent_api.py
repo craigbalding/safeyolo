@@ -1177,3 +1177,346 @@ class TestEnvVarPaths:
 # and contract model mocking. These are better tested as integration tests or
 # in a dedicated test file. The endpoint handler logic is ~300 LOC with multiple
 # addon lookups, service registry calls, and contract validation.
+
+
+# =============================================================================
+# Declared test-context endpoint: /api/test-context/current
+# =============================================================================
+
+
+def _make_tc_flow(method, token, body=None, source_ip="10.0.0.5"):
+    """Build a flow for the declared test-context endpoint."""
+    flow = _make_api_flow("/api/test-context/current", method=method, token=token)
+    flow.client_conn.peername = (source_ip, 5555)
+    if body is not None:
+        flow.request.content = json.dumps(body).encode()
+    return flow
+
+
+def _tc_find(mock_sd, tc):
+    """side_effect for _find_addon routing service-discovery and test-context."""
+    def _find(name):
+        return {"service-discovery": mock_sd, "test-context": tc}.get(name)
+    return _find
+
+
+class TestTestContextEndpoint:
+    """POST/GET/DELETE /api/test-context/current."""
+
+    def _sd(self, agent="pickup"):
+        sd = Mock()
+        sd.get_client_for_ip.return_value = agent
+        return sd
+
+    def _tc(self):
+        from test_context import TestContext
+        return TestContext()
+
+    def test_post_sets_declaration_200(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        body = {"context": "run=pickup-1;agent=pickup;suite=android;intent=baseline;expect=allowed", "ttl": 120}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event"):
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 200
+        out = json.loads(flow.response.content)
+        assert out["status"] == "set"
+        assert out["agent"] == "pickup"
+        assert out["expires_in"] == 120
+        assert out["context"]["run"] == "pickup-1"
+        # Stored against the trusted source identity.
+        assert tc.get_declaration("10.0.0.5", "pickup") is not None
+
+    def test_post_omitted_ttl_gets_max(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        body = {"context": "run=r;agent=pickup"}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event"):
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        assert json.loads(flow.response.content)["expires_in"] == 900
+
+    def test_post_over_max_ttl_bounded(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        body = {"context": "run=r;agent=pickup", "ttl": 99999}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event"):
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        assert json.loads(flow.response.content)["expires_in"] == 900
+
+    def test_post_malformed_context_400(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("POST", agent_token, {"context": "garbage-no-equals"})
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 400
+
+    def test_post_missing_context_400(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("POST", agent_token, {"ttl": 60})
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 400
+
+    def test_post_non_string_context_400(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("POST", agent_token, {"context": {"run": "r"}})
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 400
+
+    def test_post_invalid_ttl_values_400(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        for bad in (0, -1, 1.5, "60", True):
+            with _patch_active_token(agent_token), \
+                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+                flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup", "ttl": bad})
+                asyncio.run(api.request(flow))
+            assert flow.response.status_code == 400, f"ttl={bad!r}"
+
+    def test_post_body_agent_not_used_for_identity(self, api, agent_token):
+        sd, tc = self._sd("pickup"), self._tc()
+        # Declared agent differs from trusted source agent -> accepted, auditable.
+        body = {"context": "run=r;agent=someone-else", "ttl": 60}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event"):
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 200
+        assert json.loads(flow.response.content)["agent"] == "pickup"
+        # Keyed by trusted identity, not the body's agent value.
+        assert tc.get_declaration("10.0.0.5", "pickup") is not None
+
+    def test_unmapped_source_403(self, api, agent_token):
+        sd, tc = self._sd("unknown"), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup"})
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 403
+
+    def test_default_source_403(self, api, agent_token):
+        sd, tc = self._sd("default"), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("GET", agent_token)
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 403
+
+    def test_addon_missing_503(self, api, agent_token):
+        sd = self._sd("pickup")
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, None)):
+            flow = _make_tc_flow("GET", agent_token)
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 503
+
+    def test_get_active_returns_context_and_expires_in(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("GET", agent_token)
+            asyncio.run(api.request(flow))
+        out = json.loads(flow.response.content)
+        assert out["agent"] == "pickup"
+        assert out["context"]["run"] == "r"
+        assert 1 <= out["expires_in"] <= 90
+
+    def test_get_absent_returns_null(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)):
+            flow = _make_tc_flow("GET", agent_token)
+            asyncio.run(api.request(flow))
+        assert json.loads(flow.response.content) == {"context": None}
+
+    def test_delete_clears_and_is_idempotent(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event"):
+            flow = _make_tc_flow("DELETE", agent_token)
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 200
+            assert json.loads(flow.response.content) == {"status": "cleared"}
+            assert tc.get_declaration("10.0.0.5", "pickup") is None
+            # Idempotent: deleting again is still 200.
+            flow2 = _make_tc_flow("DELETE", agent_token)
+            asyncio.run(api.request(flow2))
+            assert flow2.response.status_code == 200
+
+    def test_all_methods_dispatch_to_one_handler(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event"):
+            for method in ("GET", "POST", "DELETE"):
+                body = {"context": "run=r;agent=pickup"} if method == "POST" else None
+                flow = _make_tc_flow(method, agent_token, body)
+                asyncio.run(api.request(flow))
+                # Reached the handler (not 404/405 from the router).
+                assert flow.response.status_code in (200,), f"{method} -> {flow.response.status_code}"
+
+    def test_post_without_bearer_401(self, api):
+        flow = _make_tc_flow("POST", token=None, body={"context": "run=r;agent=pickup"})
+        asyncio.run(api.request(flow))
+        assert flow.response.status_code == 401
+
+
+class TestResolveAgentIdRegression:
+    """_resolve_agent_id must reject both 'unknown' and 'default'."""
+
+    def test_rejects_unknown_and_default(self, api):
+        for name in ("unknown", "default"):
+            sd = Mock()
+            sd.get_client_for_ip.return_value = name
+            with patch.object(api, "_find_addon", return_value=sd):
+                flow = _make_api_flow("/health")
+                flow.client_conn.peername = ("10.0.0.5", 1)
+                assert api._resolve_agent_id(flow) is None
+
+    def test_accepts_mapped_agent(self, api):
+        sd = Mock()
+        sd.get_client_for_ip.return_value = "pickup"
+        with patch.object(api, "_find_addon", return_value=sd):
+            flow = _make_api_flow("/health")
+            flow.client_conn.peername = ("10.0.0.5", 1)
+            assert api._resolve_agent_id(flow) == "pickup"
+
+
+class TestTestContextEndpointAudit:
+    """Assert the security.test_context_declared / _cleared events fire with fields."""
+
+    def _sd(self, agent="pickup"):
+        sd = Mock()
+        sd.get_client_for_ip.return_value = agent
+        return sd
+
+    def _tc(self):
+        from test_context import TestContext
+        return TestContext()
+
+    def test_post_emits_declared_event_with_fields(self, api, agent_token):
+        sd, tc = self._sd("pickup"), self._tc()
+        body = {"context": "run=pickup-1;agent=pickup;test=IDOR-3", "ttl": 120}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 200
+        calls = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"]
+        assert len(calls) == 1
+        call = calls[0]
+        assert call.kwargs["agent"] == "pickup"
+        d = call.kwargs["details"]
+        assert d["source_id"] == "10.0.0.5"
+        assert d["trusted_agent"] == "pickup"
+        assert d["declared_agent"] == "pickup"
+        assert d["test_agent_match"] is True
+        assert d["context"] == {"run": "pickup-1", "agent": "pickup", "test": "IDOR-3"}
+        assert d["requested_ttl"] == 120
+        assert d["granted_ttl"] == 120
+
+    def test_post_declared_event_records_agent_mismatch(self, api, agent_token):
+        sd, tc = self._sd("pickup"), self._tc()
+        body = {"context": "run=r;agent=someone-else", "ttl": 60}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"][0].kwargs["details"]
+        assert d["trusted_agent"] == "pickup"
+        assert d["declared_agent"] == "someone-else"
+        assert d["test_agent_match"] is False
+
+    def test_post_omitted_ttl_audit_records_requested_none(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup"})
+            asyncio.run(api.request(flow))
+        d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"][0].kwargs["details"]
+        assert d["requested_ttl"] is None
+        assert d["granted_ttl"] == 900
+
+    def test_delete_emits_cleared_event_with_had_declaration(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("DELETE", agent_token)
+            asyncio.run(api.request(flow))
+        calls = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_cleared"]
+        assert len(calls) == 1
+        d = calls[0].kwargs["details"]
+        assert d["source_id"] == "10.0.0.5"
+        assert d["trusted_agent"] == "pickup"
+        assert d["had_declaration"] is True
+
+    def test_delete_absent_records_had_declaration_false(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("DELETE", agent_token)
+            asyncio.run(api.request(flow))
+        d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_cleared"][0].kwargs["details"]
+        assert d["had_declaration"] is False
+
+
+class TestTestContextEndpointExpiry:
+    """GET reflects monotonic expiry and never refreshes the TTL."""
+
+    def _sd(self, agent="pickup"):
+        sd = Mock()
+        sd.get_client_for_ip.return_value = agent
+        return sd
+
+    def _tc(self):
+        from test_context import TestContext
+        return TestContext()
+
+    def test_get_expired_returns_null(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 30)
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("test_context.time.monotonic", return_value=2000.0):
+            flow = _make_tc_flow("GET", agent_token)
+            asyncio.run(api.request(flow))
+        assert json.loads(flow.response.content) == {"context": None}
+
+    def test_get_does_not_refresh_ttl(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)  # exp 1090
+
+        def _get(now):
+            with _patch_active_token(agent_token), \
+                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+                 patch("test_context.time.monotonic", return_value=now):
+                flow = _make_tc_flow("GET", agent_token)
+                asyncio.run(api.request(flow))
+            return json.loads(flow.response.content)["expires_in"]
+
+        first = _get(1030.0)   # ~60 remaining
+        second = _get(1060.0)  # ~30 remaining — must be smaller, not reset to 90
+        assert first == 60
+        assert second == 30
+        assert second < first

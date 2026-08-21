@@ -7,6 +7,18 @@ FlowStore recording, even when the host is not an enforcement target.
 
 Requests without the header to non-target hosts pass through untouched.
 
+Declared context (mobile / header-less traffic):
+- Native apps cannot attach X-Test-Context. When enabled, the operating agent
+  can declare its current test context out-of-band via the Agent API. A
+  target-host request that arrives WITHOUT a usable header then inherits the
+  caller's active declaration (bound to (source_id, trusted_agent), monotonic
+  TTL) and is recorded exactly as a valid-header flow would be.
+- A valid explicit header always wins. The declaration fallback is never used
+  for a non-empty malformed header. When neither a usable header nor an
+  applicable declaration is present, ordinary block/warn policy applies (428 in
+  block mode; warn + forward, unrecorded, in warn mode) — unchanged by this
+  feature.
+
 Design:
 - Active when target_hosts is non-empty in policy.yaml (no separate enable flag)
 - Soft-reject (428) for missing/malformed context headers on target hosts
@@ -18,13 +30,21 @@ Usage:
 """
 
 import logging
+import math
+import threading
 import time
 
 from mitmproxy import http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
-from safeyolo.core.utils import matches_host_pattern, sanitize_for_log, write_event
+from safeyolo.core.utils import (
+    get_client_ip,
+    get_option_safe,
+    matches_host_pattern,
+    sanitize_for_log,
+    write_event,
+)
 from safeyolo.test_context_contract import (
     CONTEXT_HEADER,
     MAX_CONTEXT_PAIRS,
@@ -35,6 +55,10 @@ from safeyolo.test_context_contract import (
 log = logging.getLogger("safeyolo.test-context")
 
 _MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
+
+# Fallback TTL ceiling if neither policy config nor the mitmproxy option yields
+# a usable positive integer.
+_DEFAULT_DECLARED_TTL = 900
 
 _LIVE_METADATA_FIELDS = {
     "run": "test_run",
@@ -113,6 +137,14 @@ class TestContext(SecurityAddon):
         self._target_hosts: list[str] = []
         self._last_policy_hash: str = ""
 
+        # Declared-context state (mobile / header-less traffic). Owned here so a
+        # single component enforces the TTL and its maximum. In-memory only: a
+        # proxy restart invalidates every declaration by design.
+        # source_id -> (trusted_agent, context, expires_at_monotonic)
+        self._declarations: dict[str, tuple[str, dict[str, str], float]] = {}
+        self._declared_lock = threading.Lock()
+        self._declared_injections_total = 0
+
     def load(self, loader):
         """Register mitmproxy options."""
         loader.add_option(
@@ -120,6 +152,25 @@ class TestContext(SecurityAddon):
             typespec=bool,
             default=True,
             help="Block (428) requests to target hosts missing context header",
+        )
+        loader.add_option(
+            name="test_context_inject_declared",
+            typespec=bool,
+            default=False,
+            help=(
+                "Allow target-host header-less traffic to inherit the operating "
+                "agent's declared test context (fallback default; may be "
+                "overridden by addons.test_context.inject_declared)"
+            ),
+        )
+        loader.add_option(
+            name="test_context_declared_ttl",
+            typespec=int,
+            default=_DEFAULT_DECLARED_TTL,
+            help=(
+                "Maximum TTL (seconds) for a declared test context (fallback "
+                "default; may be overridden by addons.test_context.declared_ttl_max)"
+            ),
         )
 
     def _maybe_reload_config(self):
@@ -148,6 +199,281 @@ class TestContext(SecurityAddon):
                 return True
         return False
 
+    # ------------------------------------------------------------------
+    # Declared-context: effective configuration (single source of truth)
+    # ------------------------------------------------------------------
+
+    def _inject_declared_enabled(self) -> bool:
+        """Whether declared-context injection is active.
+
+        Dynamic addon config wins over the mitmproxy option; a malformed config
+        value falls back to the option rather than failing open/closed randomly.
+        """
+        import safeyolo.core.config_cache as config_cache
+
+        section = config_cache.addon_section("test_context")
+        if "inject_declared" in section:
+            value = section["inject_declared"]
+            if isinstance(value, bool):
+                return value
+            log.warning("Invalid test_context.inject_declared; using mitmproxy option")
+
+        return bool(get_option_safe("test_context_inject_declared", False))
+
+    def _declared_ttl_max(self) -> int:
+        """The single authoritative maximum TTL for a declaration (seconds)."""
+        import safeyolo.core.config_cache as config_cache
+
+        option_default = get_option_safe("test_context_declared_ttl", _DEFAULT_DECLARED_TTL)
+
+        section = config_cache.addon_section("test_context")
+        value = section.get("declared_ttl_max", option_default)
+
+        # Reject non-int (incl. bool) and non-positive values; fall back safely.
+        if type(value) is not int or value <= 0:
+            log.warning("Invalid test_context.declared_ttl_max; using fallback")
+            value = option_default
+
+        if type(value) is not int or value <= 0:
+            return _DEFAULT_DECLARED_TTL
+
+        return value
+
+    # ------------------------------------------------------------------
+    # Declared-context: store operations (thread-safe)
+    # ------------------------------------------------------------------
+
+    def set_declaration(
+        self,
+        source_id: str,
+        trusted_agent: str,
+        context: dict[str, str],
+        ttl_s: int | None,
+    ) -> int:
+        """Store the caller's current declared context. Returns granted TTL.
+
+        Raises ValueError on an unusable identity or an invalid explicit TTL.
+        """
+        if not source_id or source_id == "unknown":
+            raise ValueError("invalid source identity")
+        if not trusted_agent or trusted_agent in ("unknown", "default"):
+            raise ValueError("invalid trusted agent")
+
+        ttl_max = self._declared_ttl_max()
+
+        if ttl_s is None:
+            granted = ttl_max
+        else:
+            # bool is a subclass of int; `type(...) is not int` rejects it.
+            if type(ttl_s) is not int or ttl_s <= 0:
+                raise ValueError("ttl must be a positive integer")
+            granted = min(ttl_s, ttl_max)
+
+        expires_at = time.monotonic() + granted
+        with self._declared_lock:
+            self._declarations[source_id] = (trusted_agent, dict(context), expires_at)
+        return granted
+
+    def get_declaration(
+        self,
+        source_id: str,
+        trusted_agent: str,
+    ) -> tuple[dict[str, str], int] | None:
+        """Return (context_copy, expires_in_seconds) or None.
+
+        Expiry inspection and deletion happen inside a single lock acquisition
+        so a concurrently-replaced declaration is never removed by a stale read.
+        Agent mismatch invalidates the stale declaration immediately — this is
+        the network-slot reuse guard.
+        """
+        now = time.monotonic()
+        with self._declared_lock:
+            rec = self._declarations.get(source_id)
+            if rec is None:
+                return None
+
+            agent, context, expires_at = rec
+
+            if agent != trusted_agent:
+                self._declarations.pop(source_id, None)
+                return None
+
+            if now >= expires_at:
+                self._declarations.pop(source_id, None)
+                return None
+
+            expires_in = max(1, math.ceil(expires_at - now))
+            return dict(context), expires_in
+
+    def clear_declaration(self, source_id: str) -> bool:
+        """Remove the caller's declaration. Returns whether one existed."""
+        with self._declared_lock:
+            return self._declarations.pop(source_id, None) is not None
+
+    def _declared_active_count(self) -> int:
+        """Count of currently-unexpired declarations, lazily evicting expired."""
+        now = time.monotonic()
+        with self._declared_lock:
+            expired = [k for k, (_a, _c, exp) in self._declarations.items() if now >= exp]
+            for k in expired:
+                self._declarations.pop(k, None)
+            return len(self._declarations)
+
+    def _find_service_discovery(self):
+        """Resolve the live service-discovery addon instance.
+
+        Prefer the master addon registry (the same mechanism agent_api uses and
+        which is known to resolve correctly at runtime); the module-level
+        ``get_service_discovery()`` singleton can be a distinct object that is
+        ``None`` under mitmproxy's addon loader, which would silently disable
+        declared-context injection. Fall back to the singleton for contexts
+        without a master (e.g. some unit tests).
+        """
+        try:
+            from mitmproxy import ctx
+
+            addons_obj = getattr(getattr(ctx, "master", None), "addons", None)
+            if addons_obj:
+                sd = addons_obj.get("service-discovery")
+                if sd is not None:
+                    return sd
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug(f"service-discovery registry lookup failed: {type(exc).__name__}: {exc}")
+
+        try:
+            from service_discovery import get_service_discovery
+
+            return get_service_discovery()
+        except Exception:  # pragma: no cover - defensive
+            return None
+
+    def _trusted_agent(self, flow: http.HTTPFlow) -> str | None:
+        """Resolve the trusted agent for the injection path, self-sufficiently.
+
+        Does not depend on service_discovery.request() having already stamped
+        flow.metadata["agent"]; ensures flow_recorder later sees the same
+        trusted identity that authorized the declaration.
+        """
+        sd = self._find_service_discovery()
+        if sd is None:
+            return None
+
+        source_id = get_client_ip(flow)
+        agent = sd.get_client_for_ip(source_id)
+
+        if not agent or agent in ("unknown", "default"):
+            return None
+
+        stamped = flow.metadata.get("agent")
+        if stamped not in (None, "unknown", agent):
+            log.warning(
+                "Trusted agent mismatch for source %s: metadata=%r resolved=%r",
+                sanitize_for_log(source_id),
+                stamped,
+                agent,
+            )
+            return None
+
+        # Populate for downstream FlowStore attribution even if the
+        # service_discovery request hook has not yet run.
+        flow.metadata["agent"] = agent
+        return agent
+
+    # ------------------------------------------------------------------
+    # Request handling
+    # ------------------------------------------------------------------
+
+    def _apply_context(
+        self,
+        flow: http.HTTPFlow,
+        context: dict[str, str],
+        *,
+        source: str,
+    ) -> bool | None:
+        """Apply a validated context (explicit or declared) to a flow.
+
+        Sets ccapt_context (the flow_recorder recording gate), promotes live
+        metadata, and emits the request security.test_context audit event with
+        honest provenance. `source` is one of "header" | "declared".
+        """
+        flow.metadata["ccapt_context"] = dict(context)
+        # Internal correlation only — NOT a FlowStore field. response() reads it
+        # back to stamp the same provenance on the response audit event.
+        flow.metadata["test_context_source"] = source
+
+        test_agent_match = _promote_live_metadata(flow, context)
+        flow.metadata["ccapt_request_time"] = time.time()
+
+        request_body = _capture_body(flow.request.content or b"")
+
+        write_event(
+            "security.test_context",
+            kind=EventKind.SECURITY,
+            severity=Severity.LOW,
+            summary=(
+                f"Test context request: {flow.request.method} "
+                f"{sanitize_for_log(flow.request.host)}{sanitize_for_log(flow.request.path)}"
+            ),
+            host=flow.request.host,
+            request_id=flow.metadata.get("request_id"),
+            agent=flow.metadata.get("agent"),
+            addon=self.name,
+            details={
+                "phase": "request",
+                "method": flow.request.method,
+                "path": flow.request.path,
+                "context": context,
+                "trusted_agent": flow.metadata.get("agent"),
+                "test_agent_match": test_agent_match,
+                "test_context_source": source,
+                "request_body_snippet": request_body[:512] if request_body else "",
+            },
+        )
+
+        self.stats.allowed += 1
+        if source == "declared":
+            self._declared_injections_total += 1
+
+        return test_agent_match
+
+    def _reject_missing_or_malformed(self, flow: http.HTTPFlow, reason: str):
+        """Apply existing block/warn policy for a missing/malformed target-host
+        request. Does not touch the reserved header (callers strip it first)."""
+        if self.should_block():
+            self.log_decision(
+                flow,
+                Decision.DENY,
+                severity=Severity.HIGH,
+                summary=f"Test context {reason} for {sanitize_for_log(flow.request.host)}",
+                host=flow.request.host,
+                reason=reason,
+                path=flow.request.path,
+                method=flow.request.method,
+            )
+            body = {
+                "error": "Test context required",
+                "type": reason,
+                "destination": flow.request.host,
+                "action": "add_header",
+                "header": CONTEXT_HEADER,
+                "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
+                "example": f"{CONTEXT_HEADER}: run=sec1;agent=idor;test=IDOR-003",
+                "reflection": f"Add {CONTEXT_HEADER} header to link this request to your test activity.",
+            }
+            self.block(flow, 428, body)
+        else:
+            self.log_decision(
+                flow,
+                Decision.WARN,
+                severity=Severity.HIGH,
+                summary=f"Test context {reason} for {sanitize_for_log(flow.request.host)} (warn)",
+                host=flow.request.host,
+                reason=reason,
+                path=flow.request.path,
+                method=flow.request.method,
+            )
+            self.warn(flow)
+
     def request(self, flow: http.HTTPFlow):
         """Check requests to target hosts for context header.
 
@@ -160,9 +486,15 @@ class TestContext(SecurityAddon):
         self._maybe_reload_config()
 
         is_target = self._is_target_host(flow.request.host)
+        header_present = CONTEXT_HEADER in flow.request.headers
         header_value = flow.request.headers.get(CONTEXT_HEADER, "")
 
-        # Optional provenance is inert unless the caller supplies the header.
+        # An explicitly empty reserved header is semantically "missing", but the
+        # reserved header must never leak upstream — strip it now.
+        if header_present and not header_value:
+            del flow.request.headers[CONTEXT_HEADER]
+
+        # Optional provenance is inert unless the caller supplies a usable header.
         if not is_target and not header_value:
             return
 
@@ -173,10 +505,12 @@ class TestContext(SecurityAddon):
 
         if context is None:
             if not is_target:
-                # The reserved header must not leak upstream, but an invalid
-                # optional annotation must not turn an ordinary host into an
-                # enforcement target.
-                del flow.request.headers[CONTEXT_HEADER]
+                # Non-empty invalid optional annotation on a non-target host: the
+                # reserved header must not leak upstream, but an invalid optional
+                # annotation must not turn an ordinary host into an enforcement
+                # target.
+                if CONTEXT_HEADER in flow.request.headers:
+                    del flow.request.headers[CONTEXT_HEADER]
                 self.log_decision(
                     flow,
                     Decision.WARN,
@@ -193,73 +527,35 @@ class TestContext(SecurityAddon):
                 self.warn(flow)
                 return
 
-            # Missing or malformed context
-            reason = "missing_context" if not header_value else "malformed_context"
+            if header_value:
+                # Non-empty malformed header on a target host. The declaration
+                # fallback is NEVER used here (broken explicit instrumentation
+                # must not be masked); ordinary block/warn policy applies below.
+                # Strip the reserved header before block/warn so it never leaks
+                # upstream (fixes a warn-mode leak in the previous behavior).
+                if CONTEXT_HEADER in flow.request.headers:
+                    del flow.request.headers[CONTEXT_HEADER]
+                self._reject_missing_or_malformed(flow, "malformed_context")
+                return
 
-            if self.should_block():
-                self.log_decision(
-                    flow,
-                    Decision.DENY,
-                    severity=Severity.HIGH,
-                    summary=f"Test context {reason} for {sanitize_for_log(flow.request.host)}",
-                    host=flow.request.host,
-                    reason=reason,
-                    path=flow.request.path,
-                    method=flow.request.method,
-                )
-                body = {
-                    "error": "Test context required",
-                    "type": reason,
-                    "destination": flow.request.host,
-                    "action": "add_header",
-                    "header": CONTEXT_HEADER,
-                    "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
-                    "example": f"{CONTEXT_HEADER}: run=sec1;agent=idor;test=IDOR-003",
-                    "reflection": f"Add {CONTEXT_HEADER} header to link this request to your test activity.",
-                }
-                self.block(flow, 428, body)
-            else:
-                self.log_decision(
-                    flow,
-                    Decision.WARN,
-                    severity=Severity.HIGH,
-                    summary=f"Test context {reason} for {sanitize_for_log(flow.request.host)} (warn)",
-                    host=flow.request.host,
-                    reason=reason,
-                    path=flow.request.path,
-                    method=flow.request.method,
-                )
-                self.warn(flow)
+            # Missing or explicitly empty header on a target host: try to inherit
+            # the operating agent's declared context.
+            if self._inject_declared_enabled():
+                source_id = get_client_ip(flow)
+                agent = self._trusted_agent(flow)
+                if agent is not None:
+                    rec = self.get_declaration(source_id, agent)
+                    if rec is not None:
+                        declared_context, _expires_in = rec
+                        self._apply_context(flow, declared_context, source="declared")
+                        return
+
+            self._reject_missing_or_malformed(flow, "missing_context")
             return
 
-        # Valid context - store for response() and log, then strip before sending
-        flow.metadata["ccapt_context"] = context
-        test_agent_match = _promote_live_metadata(flow, context)
-        flow.metadata["ccapt_request_time"] = time.time()
+        # Valid context - strip before sending upstream, then apply + record.
         del flow.request.headers[CONTEXT_HEADER]
-
-        request_body = _capture_body(flow.request.content or b"")
-
-        write_event(
-            "security.test_context",
-            kind=EventKind.SECURITY,
-            severity=Severity.LOW,
-            summary=f"Test context request: {flow.request.method} {sanitize_for_log(flow.request.host)}{sanitize_for_log(flow.request.path)}",
-            host=flow.request.host,
-            request_id=flow.metadata.get("request_id"),
-            addon=self.name,
-            details={
-                "phase": "request",
-                "method": flow.request.method,
-                "path": flow.request.path,
-                "context": context,
-                "trusted_agent": flow.metadata.get("agent"),
-                "test_agent_match": test_agent_match,
-                "request_body_snippet": request_body[:512] if request_body else "",
-            },
-        )
-
-        self.stats.allowed += 1
+        self._apply_context(flow, context, source="header")
 
     def response(self, flow: http.HTTPFlow):
         """Log response for requests that had valid context."""
@@ -287,6 +583,7 @@ class TestContext(SecurityAddon):
                 "context": context,
                 "trusted_agent": flow.metadata.get("agent"),
                 "test_agent_match": flow.metadata.get("test_agent_match"),
+                "test_context_source": flow.metadata.get("test_context_source"),
                 "status_code": flow.response.status_code if flow.response else 0,
                 "response_body_snippet": response_body[:512] if response_body else "",
                 "duration_ms": duration_ms,
@@ -302,6 +599,8 @@ class TestContext(SecurityAddon):
             "allowed_total": self.stats.allowed,
             "blocked_total": self.stats.blocked,
             "warned_total": self.stats.warned,
+            "declared_injections_total": self._declared_injections_total,
+            "declared_active": self._declared_active_count(),
         }
 
 

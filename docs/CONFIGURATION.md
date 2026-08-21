@@ -335,6 +335,14 @@ safeyolo policy host add-list package_registries --rate 1200
 comments, validates the document before and after the narrow list mutation, and
 atomically replaces `addons.yaml`. Repeated add/remove operations are idempotent.
 
+`test_context` also accepts two optional keys under `addons.test_context` for
+the declared-context feature (mobile / header-less traffic):
+`inject_declared` (bool, default `false`) and `declared_ttl_max` (int seconds,
+default `900`). Leave them **unset** in the default template so the
+`test_context_inject_declared` / `test_context_declared_ttl` mitmproxy option
+fallbacks apply; set them only for engagements that need header-less traffic
+recorded. See `docs/ADDONS.md` → `test_context.py` → *Declared context*.
+
 ### Egress posture
 
 ```bash
