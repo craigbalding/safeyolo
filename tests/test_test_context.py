@@ -1077,3 +1077,152 @@ class TestDeclaredInjection:
             addon.request(flow)
         assert flow.response is None
         assert "ccapt_context" not in flow.metadata
+
+
+class TestProvenanceAuditContract:
+    """test_context_source must appear in BOTH request and response events."""
+
+    def _set_response(self, flow):
+        flow.response = MagicMock()
+        flow.response.status_code = 200
+        flow.response.content = b'{"ok": true}'
+        return flow
+
+    def test_header_source_in_request_and_response_events(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(headers={"X-Test-Context": "run=sec1;agent=idor"})
+        with patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event") as we:
+            addon.request(flow)          # flow.response is None here
+            self._set_response(flow)     # backend responded
+            addon.response(flow)
+        sources = [c.kwargs["details"].get("test_context_source") for c in we.call_args_list]
+        phases = [c.kwargs["details"].get("phase") for c in we.call_args_list]
+        assert phases == ["request", "response"]
+        assert sources == ["header", "header"]
+
+    def test_declared_source_in_request_and_response_events(self):
+        addon = _make_addon_with_targets()
+        addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
+        flow = _make_mock_flow()
+        with _mock_discovery("pickup"), \
+             patch.object(addon, "_inject_declared_enabled", return_value=True), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event") as we:
+            addon.request(flow)          # flow.response is None here
+            self._set_response(flow)     # backend responded
+            addon.response(flow)
+        sources = [c.kwargs["details"].get("test_context_source") for c in we.call_args_list]
+        phases = [c.kwargs["details"].get("phase") for c in we.call_args_list]
+        assert phases == ["request", "response"]
+        assert sources == ["declared", "declared"]
+
+
+class TestTrustedAgentResolution:
+    """Direct tests for _trusted_agent() — the injection identity guard."""
+
+    def test_missing_discovery_returns_none(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow()
+        with patch("service_discovery.get_service_discovery", return_value=None):
+            assert addon._trusted_agent(flow) is None
+
+    def test_unknown_and_default_rejected(self):
+        addon = _make_addon_with_targets()
+        for name in ("unknown", "default", ""):
+            flow = _make_mock_flow()
+            with _mock_discovery(name):
+                assert addon._trusted_agent(flow) is None
+
+    def test_matching_prestamped_metadata_accepted(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow()
+        flow.metadata["agent"] = "pickup"
+        with _mock_discovery("pickup"):
+            assert addon._trusted_agent(flow) == "pickup"
+        assert flow.metadata["agent"] == "pickup"
+
+    def test_absent_metadata_gets_populated(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow()  # no agent stamped
+        with _mock_discovery("pickup"):
+            assert addon._trusted_agent(flow) == "pickup"
+        assert flow.metadata["agent"] == "pickup"
+
+    def test_conflicting_prestamped_metadata_fails_no_overwrite(self):
+        """Security-relevant: a pre-stamped agent that conflicts with the
+        resolved trusted agent must fail rather than be silently overwritten."""
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow()
+        flow.metadata["agent"] = "attacker"
+        with _mock_discovery("pickup"):
+            assert addon._trusted_agent(flow) is None
+        # Must NOT overwrite the conflicting stamp.
+        assert flow.metadata["agent"] == "attacker"
+
+
+class TestEmptyHeaderNoDeclaration:
+    """Explicit-empty header without a declaration: strip + ordinary policy."""
+
+    def test_empty_header_block_mode_strips_and_428(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(headers={"X-Test-Context": ""})
+        with _mock_discovery("pickup"), \
+             patch.object(addon, "_inject_declared_enabled", return_value=True), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event"):
+            addon.request(flow)
+        assert flow.response.status_code == 428
+        assert "X-Test-Context" not in flow.request.headers
+        assert "ccapt_context" not in flow.metadata
+
+    def test_empty_header_warn_mode_strips_and_forwards(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(headers={"X-Test-Context": ""})
+        with _mock_discovery("pickup"), \
+             patch.object(addon, "_inject_declared_enabled", return_value=True), \
+             patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"), \
+             patch("test_context.write_event"):
+            addon.request(flow)
+        assert flow.response is None
+        assert "X-Test-Context" not in flow.request.headers
+        assert addon.stats.warned == 1
+
+
+class TestDeclarationReplacementRace:
+    """v4 called out the replace-vs-expiry race explicitly; pin it."""
+
+    def test_replacement_not_evicted_by_stale_expiry(self):
+        addon = _make_addon_with_targets()
+        # Original short-lived declaration.
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            addon.set_declaration("s", "pickup", {"run": "old", "agent": "pickup"}, 10)  # exp 1010
+        # Replaced with a fresh, longer one before the original would expire.
+        with patch("test_context.time.monotonic", return_value=1005.0):
+            addon.set_declaration("s", "pickup", {"run": "new", "agent": "pickup"}, 100)  # exp 1105
+        # A read past the ORIGINAL expiry must see the fresh record, not evict it.
+        with patch("test_context.time.monotonic", return_value=1050.0):
+            rec = addon.get_declaration("s", "pickup")
+        assert rec is not None
+        assert rec[0]["run"] == "new"
+        assert "s" in addon._declarations
+
+
+class TestConfigFallbackHonorsOption:
+    """When the addon config key is absent, the mitmproxy option is honored."""
+
+    def test_option_enables_injection_when_config_key_absent(self):
+        addon = _make_addon_with_targets()
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}), \
+             patch("test_context.get_option_safe", return_value=True):
+            assert addon._inject_declared_enabled() is True
+
+    def test_non_default_option_ttl_honored_when_config_key_absent(self):
+        addon = _make_addon_with_targets()
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}), \
+             patch("test_context.get_option_safe", return_value=300):
+            assert addon._declared_ttl_max() == 300
+        # And that ceiling is actually applied to an over-max request.
+        with patch("safeyolo.core.config_cache.addon_section", return_value={}), \
+             patch("test_context.get_option_safe", return_value=300):
+            assert addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 9999) == 300

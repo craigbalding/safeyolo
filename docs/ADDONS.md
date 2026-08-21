@@ -49,7 +49,7 @@ Addons are loaded in this order (order matters for security):
 | 0 | file_logging | Structured JSONL file logging setup | Always on |
 | 0 | memory_monitor | Process memory and connection tracking | Always on |
 | 0 | admin_shield | Block proxy access to admin API | Always on |
-| 0 | agent_api | Read-only PDP agent API for agent self-service | Always on |
+| 0 | agent_api | Authenticated agent self-service API | Always on |
 | 0 | loop_guard | Detect and break proxy loops (Via header) | Always on |
 | 0 | request_id | Request ID for event correlation | Always on |
 | 0 | sse_streaming | SSE/streaming for LLM responses | Always on |
@@ -126,7 +126,7 @@ Tracks process memory and active connection/WebSocket state for OOM diagnostics.
 
 ## agent_api.py
 
-Read-only PDP agent API on virtual hostname `_safeyolo.proxy.internal` for agent self-service diagnostics.
+Authenticated agent self-service API on virtual hostname `_safeyolo.proxy.internal`. In addition to read-only PDP queries it exposes action-oriented routes (gateway access, plumb collaboration, and the declared test-context lifecycle).
 
 **Always active** (infrastructure, not a security sensor)
 
@@ -151,6 +151,9 @@ Read-only PDP agent API on virtual hostname `_safeyolo.proxy.internal` for agent
 | `/memory` | Memory and connection stats |
 | `/gateway/services` | Authorized capabilities and available services for the agent |
 | `/gateway/request-access` | Submit an access request for a risky route (POST, returns 202) |
+| `/api/test-context/current` | Get/set/clear this agent's declared test context (GET/POST/DELETE) — see `test_context.py` |
+
+Identity for every action route is source-derived (`service-discovery`), never taken from the request body. `/api/test-context/current` POST/DELETE require the caller to resolve to a real agent (`unknown`/`default` → `403`).
 
 **Token management:**
 ```bash
@@ -714,6 +717,67 @@ addons:
       - "*.target-corp.com"   # Wildcards supported
 ```
 
+### Declared context (mobile / header-less traffic)
+
+Native mobile apps under test cannot attach `X-Test-Context` to their own
+requests, so on a target host they are `428`'d (block mode) or
+forwarded-but-unrecorded (warn mode). When enabled, the operating agent can
+**declare** its current test context out-of-band via the Agent API; a
+target-host request that arrives with **no usable header** (absent or empty)
+then inherits that declaration and is recorded exactly as a valid-header flow
+would be.
+
+- The declaration is bound to `(source_id, trusted_agent)` (source-derived
+  identity, never a body value) with a **monotonic TTL**, and is re-checked on
+  every request — a recycled source slot cannot inherit another agent's
+  declaration.
+- **Precedence:** a valid explicit header always wins; a non-empty **malformed**
+  header is never rescued by a declaration (ordinary block/warn policy applies,
+  and the reserved header is stripped); with no usable header and no applicable
+  declaration, ordinary block/warn policy applies.
+- Attribution is **temporal**: target-host traffic from the agent during the
+  declaration interval inherits it (including concurrent app background
+  traffic). Provenance is recorded as `test_context_source = header | declared`
+  in the request and response `security.test_context` audit events (not a
+  FlowStore column).
+- **Default off.** Nothing is injected unless the feature is enabled and a
+  declaration is active. Declarations are in-memory only — a proxy restart
+  clears them.
+
+**Agent API workflow** (`_safeyolo.proxy.internal`, bearer-authenticated):
+
+```bash
+# Declare before launching the app (short baseline TTL); re-declare per test.
+curl -X POST http://_safeyolo.proxy.internal/api/test-context/current \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"context": "run=pickup-1;agent=pickup;suite=android;intent=baseline;expect=allowed", "ttl": 120}'
+
+curl http://_safeyolo.proxy.internal/api/test-context/current -H "Authorization: Bearer <token>"        # GET current + expires_in
+curl -X DELETE http://_safeyolo.proxy.internal/api/test-context/current -H "Authorization: Bearer <token>"  # clear
+```
+
+`context` is the canonical `X-Test-Context` string (same parser as the header);
+`ttl` is optional and bounded by the policy maximum. POST/DELETE emit
+`security.test_context_declared` / `security.test_context_cleared` audit events.
+
+**Enabling (addon config overrides the mitmproxy option fallbacks):**
+```yaml
+addons:
+  test_context:
+    target_hosts:
+      - "test-app.example.com"
+    inject_declared: true      # default: false (mitmproxy option test_context_inject_declared)
+    declared_ttl_max: 900      # max TTL seconds (mitmproxy option test_context_declared_ttl)
+```
+
+> Do **not** add `inject_declared`/`declared_ttl_max` to the default config
+> template — leaving them unset lets the mitmproxy option defaults apply. Set
+> them only for engagements that need the feature.
+
+Observability: `get_stats()` exposes `declared_injections_total` (flows given a
+declared context) and `declared_active` (unexpired declarations held).
+
 **Response when missing (428):**
 ```json
 {
@@ -728,8 +792,12 @@ addons:
 
 **Options:**
 ```bash
---set test_context_block=true   # Block mode (default: true, false = warn only)
+--set test_context_block=true            # Block mode (default: true, false = warn only)
+--set test_context_inject_declared=false # Declared-context injection (default: false)
+--set test_context_declared_ttl=900      # Max declared-context TTL seconds (default: 900)
 ```
+The last two are fallbacks; `addons.test_context.inject_declared` /
+`declared_ttl_max` override them per engagement.
 
 ---
 

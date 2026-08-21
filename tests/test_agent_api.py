@@ -1393,3 +1393,130 @@ class TestResolveAgentIdRegression:
             flow = _make_api_flow("/health")
             flow.client_conn.peername = ("10.0.0.5", 1)
             assert api._resolve_agent_id(flow) == "pickup"
+
+
+class TestTestContextEndpointAudit:
+    """Assert the security.test_context_declared / _cleared events fire with fields."""
+
+    def _sd(self, agent="pickup"):
+        sd = Mock()
+        sd.get_client_for_ip.return_value = agent
+        return sd
+
+    def _tc(self):
+        from test_context import TestContext
+        return TestContext()
+
+    def test_post_emits_declared_event_with_fields(self, api, agent_token):
+        sd, tc = self._sd("pickup"), self._tc()
+        body = {"context": "run=pickup-1;agent=pickup;test=IDOR-3", "ttl": 120}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        assert flow.response.status_code == 200
+        calls = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"]
+        assert len(calls) == 1
+        call = calls[0]
+        assert call.kwargs["agent"] == "pickup"
+        d = call.kwargs["details"]
+        assert d["source_id"] == "10.0.0.5"
+        assert d["trusted_agent"] == "pickup"
+        assert d["declared_agent"] == "pickup"
+        assert d["test_agent_match"] is True
+        assert d["context"] == {"run": "pickup-1", "agent": "pickup", "test": "IDOR-3"}
+        assert d["requested_ttl"] == 120
+        assert d["granted_ttl"] == 120
+
+    def test_post_declared_event_records_agent_mismatch(self, api, agent_token):
+        sd, tc = self._sd("pickup"), self._tc()
+        body = {"context": "run=r;agent=someone-else", "ttl": 60}
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("POST", agent_token, body)
+            asyncio.run(api.request(flow))
+        d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"][0].kwargs["details"]
+        assert d["trusted_agent"] == "pickup"
+        assert d["declared_agent"] == "someone-else"
+        assert d["test_agent_match"] is False
+
+    def test_post_omitted_ttl_audit_records_requested_none(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("POST", agent_token, {"context": "run=r;agent=pickup"})
+            asyncio.run(api.request(flow))
+        d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_declared"][0].kwargs["details"]
+        assert d["requested_ttl"] is None
+        assert d["granted_ttl"] == 900
+
+    def test_delete_emits_cleared_event_with_had_declaration(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("DELETE", agent_token)
+            asyncio.run(api.request(flow))
+        calls = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_cleared"]
+        assert len(calls) == 1
+        d = calls[0].kwargs["details"]
+        assert d["source_id"] == "10.0.0.5"
+        assert d["trusted_agent"] == "pickup"
+        assert d["had_declaration"] is True
+
+    def test_delete_absent_records_had_declaration_false(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("agent_api.write_event") as we:
+            flow = _make_tc_flow("DELETE", agent_token)
+            asyncio.run(api.request(flow))
+        d = [c for c in we.call_args_list if c.args and c.args[0] == "security.test_context_cleared"][0].kwargs["details"]
+        assert d["had_declaration"] is False
+
+
+class TestTestContextEndpointExpiry:
+    """GET reflects monotonic expiry and never refreshes the TTL."""
+
+    def _sd(self, agent="pickup"):
+        sd = Mock()
+        sd.get_client_for_ip.return_value = agent
+        return sd
+
+    def _tc(self):
+        from test_context import TestContext
+        return TestContext()
+
+    def test_get_expired_returns_null(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 30)
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+             patch("test_context.time.monotonic", return_value=2000.0):
+            flow = _make_tc_flow("GET", agent_token)
+            asyncio.run(api.request(flow))
+        assert json.loads(flow.response.content) == {"context": None}
+
+    def test_get_does_not_refresh_ttl(self, api, agent_token):
+        sd, tc = self._sd(), self._tc()
+        with patch("test_context.time.monotonic", return_value=1000.0):
+            tc.set_declaration("10.0.0.5", "pickup", {"run": "r", "agent": "pickup"}, 90)  # exp 1090
+
+        def _get(now):
+            with _patch_active_token(agent_token), \
+                 patch.object(api, "_find_addon", side_effect=_tc_find(sd, tc)), \
+                 patch("test_context.time.monotonic", return_value=now):
+                flow = _make_tc_flow("GET", agent_token)
+                asyncio.run(api.request(flow))
+            return json.loads(flow.response.content)["expires_in"]
+
+        first = _get(1030.0)   # ~60 remaining
+        second = _get(1060.0)  # ~30 remaining — must be smaller, not reset to 90
+        assert first == 60
+        assert second == 30
+        assert second < first

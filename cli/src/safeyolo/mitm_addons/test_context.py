@@ -13,8 +13,11 @@ Declared context (mobile / header-less traffic):
   target-host request that arrives WITHOUT a usable header then inherits the
   caller's active declaration (bound to (source_id, trusted_agent), monotonic
   TTL) and is recorded exactly as a valid-header flow would be.
-- A valid explicit header always wins. A non-empty malformed header is never
-  rescued by a declaration (fail closed). No declaration + no header → 428.
+- A valid explicit header always wins. The declaration fallback is never used
+  for a non-empty malformed header. When neither a usable header nor an
+  applicable declaration is present, ordinary block/warn policy applies (428 in
+  block mode; warn + forward, unrecorded, in warn mode) — unchanged by this
+  feature.
 
 Design:
 - Active when target_hosts is non-empty in policy.yaml (no separate enable flag)
@@ -499,8 +502,9 @@ class TestContext(SecurityAddon):
                 return
 
             if header_value:
-                # Non-empty malformed header on a target host. Fail closed: a
-                # declaration must NEVER rescue broken explicit instrumentation.
+                # Non-empty malformed header on a target host. The declaration
+                # fallback is NEVER used here (broken explicit instrumentation
+                # must not be masked); ordinary block/warn policy applies below.
                 # Strip the reserved header before block/warn so it never leaks
                 # upstream (fixes a warn-mode leak in the previous behavior).
                 if CONTEXT_HEADER in flow.request.headers:
