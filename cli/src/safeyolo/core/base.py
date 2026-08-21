@@ -96,18 +96,19 @@ class SecurityAddon:
         a master exists its registry is authoritative, so an absent addon means
         "unresolved" rather than a reason to consult a possibly-stale singleton.
         """
-        sd = find_addon("service-discovery")
-        if sd is not None:
-            return sd
         try:
             from mitmproxy import ctx
-            master_present = bool(getattr(getattr(ctx, "master", None), "addons", None))
+            master = getattr(ctx, "master", None)
         except Exception:  # pragma: no cover - defensive
-            master_present = False
-        if master_present:
-            # Master present but service-discovery not registered → unresolved;
-            # do not consult the possibly-stale module singleton.
-            return None
+            master = None
+
+        if master is not None:
+            # A running master's addon registry is authoritative: return the live
+            # instance (or None if it isn't registered) and never consult the
+            # possibly-stale module singleton.
+            return find_addon("service-discovery")
+
+        # No running master at all (e.g. unit tests): fall back to the singleton.
         return get_service_discovery()
 
     def is_bypassed(self, flow: http.HTTPFlow) -> bool:

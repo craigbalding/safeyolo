@@ -625,7 +625,10 @@ clients:
         with policy_context(tmp_path, policy_yaml):
             scanner = PatternScanner()
 
-            with taddons.context(scanner) as tctx:
+            # Register service-discovery in the master so is_bypassed() resolves
+            # it via the addon registry (mirrors production; the module singleton
+            # is not consulted when a master is present).
+            with taddons.context(discovery, scanner) as tctx:
                 tctx.options.pattern_block_request = True
 
                 # Flow from admin IP - should be bypassed
@@ -671,7 +674,9 @@ clients:
         with policy_context(tmp_path, policy_yaml):
             guard = NetworkGuard()
 
-            with taddons.context(guard):
+            # Register service-discovery in the master so is_bypassed() resolves
+            # it via the addon registry (mirrors production).
+            with taddons.context(discovery, guard):
                 # Flow from test IP - should be bypassed
                 test_flow = make_flow(url="http://example.com/api")
                 test_flow.client_conn.peername = ("10.0.0.101", 12345)
