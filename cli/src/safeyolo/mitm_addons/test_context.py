@@ -319,6 +319,34 @@ class TestContext(SecurityAddon):
                 self._declarations.pop(k, None)
             return len(self._declarations)
 
+    def _find_service_discovery(self):
+        """Resolve the live service-discovery addon instance.
+
+        Prefer the master addon registry (the same mechanism agent_api uses and
+        which is known to resolve correctly at runtime); the module-level
+        ``get_service_discovery()`` singleton can be a distinct object that is
+        ``None`` under mitmproxy's addon loader, which would silently disable
+        declared-context injection. Fall back to the singleton for contexts
+        without a master (e.g. some unit tests).
+        """
+        try:
+            from mitmproxy import ctx
+
+            addons_obj = getattr(getattr(ctx, "master", None), "addons", None)
+            if addons_obj:
+                sd = addons_obj.get("service-discovery")
+                if sd is not None:
+                    return sd
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug(f"service-discovery registry lookup failed: {type(exc).__name__}: {exc}")
+
+        try:
+            from service_discovery import get_service_discovery
+
+            return get_service_discovery()
+        except Exception:  # pragma: no cover - defensive
+            return None
+
     def _trusted_agent(self, flow: http.HTTPFlow) -> str | None:
         """Resolve the trusted agent for the injection path, self-sufficiently.
 
@@ -326,9 +354,7 @@ class TestContext(SecurityAddon):
         flow.metadata["agent"]; ensures flow_recorder later sees the same
         trusted identity that authorized the declaration.
         """
-        from service_discovery import get_service_discovery
-
-        sd = get_service_discovery()
+        sd = self._find_service_discovery()
         if sd is None:
             return None
 
