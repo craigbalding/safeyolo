@@ -88,6 +88,28 @@ class SecurityAddon:
         option = f"{self._option_prefix()}_block"
         return get_option_safe(option, True)
 
+    def _resolve_service_discovery(self):
+        """Resolve the live service-discovery addon for client-id mapping.
+
+        Prefer the master addon registry. Only fall back to the module-level
+        singleton when there is no running master at all (e.g. unit tests): when
+        a master exists its registry is authoritative, so an absent addon means
+        "unresolved" rather than a reason to consult a possibly-stale singleton.
+        """
+        sd = find_addon("service-discovery")
+        if sd is not None:
+            return sd
+        try:
+            from mitmproxy import ctx
+            master_present = bool(getattr(getattr(ctx, "master", None), "addons", None))
+        except Exception:  # pragma: no cover - defensive
+            master_present = False
+        if master_present:
+            # Master present but service-discovery not registered → unresolved;
+            # do not consult the possibly-stale module singleton.
+            return None
+        return get_service_discovery()
+
     def is_bypassed(self, flow: http.HTTPFlow) -> bool:
         """Check if addon is bypassed for this request.
 
@@ -110,7 +132,7 @@ class SecurityAddon:
         # the master registry first; the module-level singleton can be a distinct
         # object that is None under the addon loader, which would silently drop
         # per-client policy resolution (client_id stays None) proxy-wide.
-        discovery = find_addon("service-discovery") or get_service_discovery()
+        discovery = self._resolve_service_discovery()
         if discovery:
             client_ip = get_client_ip(flow)
             client_id = discovery.get_client_for_ip(client_ip)

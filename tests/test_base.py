@@ -187,6 +187,37 @@ class TestSecurityAddonBypass:
         # Resolved agent is passed, not None — proving registry resolution worked.
         mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", "boris")
 
+    def test_no_singleton_fallback_when_master_present_but_addon_absent(self):
+        """With a running master, its registry is authoritative: an absent
+        service-discovery must NOT fall back to the module singleton."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.response = None
+        flow.request.host = "example.com"
+        flow.client_conn.peername = ("10.0.0.1", 12345)
+
+        stale_singleton = Mock()
+        stale_singleton.get_client_for_ip.return_value = "boris"
+        master = Mock()  # present, with a truthy addons registry
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = True
+
+        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('safeyolo.core.base.find_addon', return_value=None), \
+             patch('mitmproxy.ctx.master', master, create=True), \
+             patch('safeyolo.core.base.get_service_discovery', return_value=stale_singleton) as singleton:
+            addon.is_bypassed(flow)
+
+        # Unresolved -> client_id None, and the stale singleton is never consulted.
+        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
+        singleton.assert_not_called()
+
     def test_unknown_agent_normalized_to_none(self):
         """An unmapped source ('unknown') is not a project scope -> None."""
         from safeyolo.core.base import SecurityAddon
