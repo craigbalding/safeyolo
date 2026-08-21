@@ -35,7 +35,13 @@ from service_discovery import get_service_discovery
 
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
-from safeyolo.core.utils import get_client_ip, get_option_safe, make_block_response, write_event
+from safeyolo.core.utils import (
+    find_addon,
+    get_client_ip,
+    get_option_safe,
+    make_block_response,
+    write_event,
+)
 
 
 @dataclass
@@ -100,13 +106,18 @@ class SecurityAddon:
 
         domain = flow.request.host
 
-        # Get client_id from ServiceDiscovery IP mapping
-        discovery = get_service_discovery()
+        # Get client_id from ServiceDiscovery IP mapping. Resolve the addon via
+        # the master registry first; the module-level singleton can be a distinct
+        # object that is None under the addon loader, which would silently drop
+        # per-client policy resolution (client_id stays None) proxy-wide.
+        discovery = find_addon("service-discovery") or get_service_discovery()
         if discovery:
             client_ip = get_client_ip(flow)
             client_id = discovery.get_client_for_ip(client_ip)
-            # "default" means no specific project, treat as None
-            if client_id == "default":
+            # Non-identities are not project scopes: "default" (no specific
+            # project) and "unknown" (unmapped source) both resolve to None so
+            # per-client rules aren't evaluated against a literal placeholder.
+            if not client_id or client_id in ("unknown", "default"):
                 client_id = None
         else:
             client_id = None

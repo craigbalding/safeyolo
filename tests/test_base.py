@@ -157,6 +157,88 @@ class TestSecurityAddonBypass:
 
         mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
 
+    def test_resolves_agent_via_registry_when_singleton_none(self):
+        """When the module singleton is None but the master registry has the
+        live discovery addon, the agent-scoped rule must still be evaluated."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.response = None
+        flow.request.host = "example.com"
+        flow.client_conn.peername = ("10.200.0.4", 12345)
+
+        sd = Mock()
+        sd.get_client_for_ip.return_value = "boris"
+        mock_client = Mock()
+        # Agent-scoped policy disables the addon for this agent.
+        mock_client.is_addon_enabled.return_value = False
+
+        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('safeyolo.core.base.find_addon', return_value=sd), \
+             patch('safeyolo.core.base.get_service_discovery', return_value=None):
+            # The agent-scoped bypass actually takes effect.
+            assert addon.is_bypassed(flow) is True
+
+        # Resolved agent is passed, not None — proving registry resolution worked.
+        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", "boris")
+
+    def test_unknown_agent_normalized_to_none(self):
+        """An unmapped source ('unknown') is not a project scope -> None."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.response = None
+        flow.request.host = "example.com"
+        flow.client_conn.peername = ("10.0.0.9", 12345)
+
+        sd = Mock()
+        sd.get_client_for_ip.return_value = "unknown"
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = True
+
+        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('safeyolo.core.base.find_addon', return_value=sd), \
+             patch('safeyolo.core.base.get_service_discovery', return_value=None):
+            addon.is_bypassed(flow)
+
+        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
+
+    def test_default_agent_normalized_to_none(self):
+        """'default' (no specific project) resolves to None (regression)."""
+        from safeyolo.core.base import SecurityAddon
+
+        class TestAddon(SecurityAddon):
+            name = "test-addon"
+
+        addon = TestAddon()
+
+        flow = Mock()
+        flow.response = None
+        flow.request.host = "example.com"
+        flow.client_conn.peername = ("10.0.0.10", 12345)
+
+        sd = Mock()
+        sd.get_client_for_ip.return_value = "default"
+        mock_client = Mock()
+        mock_client.is_addon_enabled.return_value = True
+
+        with patch('safeyolo.core.base.get_policy_client', return_value=mock_client), \
+             patch('safeyolo.core.base.find_addon', return_value=sd), \
+             patch('safeyolo.core.base.get_service_discovery', return_value=None):
+            addon.is_bypassed(flow)
+
+        mock_client.is_addon_enabled.assert_called_once_with("test-addon", "example.com", None)
+
 
 class TestSecurityAddonBlocking:
     """Tests for addon blocking functionality."""
@@ -334,3 +416,27 @@ class TestSecurityAddonLogging:
             assert call_args[1]["addon"] == "test-addon"
             assert call_args[1]["decision"] == Decision.DENY
             assert call_args[1]["host"] == "example.com"
+
+
+class TestFindAddon:
+    """Direct tests for the shared find_addon() registry helper."""
+
+    def test_returns_addon_from_master_registry(self):
+        from unittest.mock import Mock, patch
+
+        from safeyolo.core.utils import find_addon
+
+        sd = Mock()
+        master = Mock()
+        master.addons.get.return_value = sd
+        with patch("mitmproxy.ctx.master", master, create=True):
+            assert find_addon("service-discovery") is sd
+        master.addons.get.assert_called_with("service-discovery")
+
+    def test_returns_none_without_master(self):
+        from unittest.mock import patch
+
+        from safeyolo.core.utils import find_addon
+
+        with patch("mitmproxy.ctx.master", None, create=True):
+            assert find_addon("service-discovery") is None
