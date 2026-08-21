@@ -840,10 +840,18 @@ class TestTestContextWarnMode:
 
 
 def _mock_discovery(agent="pickup"):
-    """Patch service_discovery.get_service_discovery to resolve a fixed agent."""
+    """Resolve a fixed agent via the addon registry, deterministically.
+
+    Patches ``ctx.master`` with a registry that returns a mock service-discovery
+    so ``_trusted_agent`` resolves through it regardless of any leftover taddons
+    master left behind by another test (the module singleton is not consulted
+    when a master is present).
+    """
     sd = MagicMock()
     sd.get_client_for_ip.return_value = agent
-    return patch("service_discovery.get_service_discovery", return_value=sd)
+    master = MagicMock()
+    master.addons.get.return_value = sd
+    return patch("mitmproxy.ctx.master", master, create=True)
 
 
 class TestDeclarationStore:
@@ -1124,7 +1132,9 @@ class TestTrustedAgentResolution:
     def test_missing_discovery_returns_none(self):
         addon = _make_addon_with_targets()
         flow = _make_mock_flow()
-        with patch("service_discovery.get_service_discovery", return_value=None):
+        # No running master and no singleton -> unresolved (deterministic).
+        with patch("mitmproxy.ctx.master", None, create=True), \
+             patch("service_discovery.get_service_discovery", return_value=None):
             assert addon._trusted_agent(flow) is None
 
     def test_unknown_and_default_rejected(self):
