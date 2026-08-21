@@ -1237,36 +1237,7 @@ class TestConfigFallbackHonorsOption:
              patch("test_context.get_option_safe", return_value=300):
             assert addon.set_declaration("s", "pickup", {"run": "r", "agent": "pickup"}, 9999) == 300
 
-
-class TestServiceDiscoveryResolution:
-    """_find_service_discovery must prefer the master registry over the
-    module-level singleton (which can be None under the addon loader)."""
-
-    def test_registry_used_when_singleton_is_none(self):
-        addon = _make_addon_with_targets()
-        flow = _make_mock_flow()
-        sd = MagicMock()
-        sd.get_client_for_ip.return_value = "pickup"
-        master = MagicMock()
-        master.addons.get.return_value = sd
-        # Singleton broken (None) — resolution must still succeed via registry.
-        with patch("mitmproxy.ctx.master", master, create=True), \
-             patch("service_discovery.get_service_discovery", return_value=None):
-            assert addon._trusted_agent(flow) == "pickup"
-        master.addons.get.assert_called_with("service-discovery")
-
-    def test_falls_back_to_singleton_when_registry_absent(self):
-        addon = _make_addon_with_targets()
-        flow = _make_mock_flow()
-        sd = MagicMock()
-        sd.get_client_for_ip.return_value = "pickup"
-        with patch("mitmproxy.ctx.master", None, create=True), \
-             patch("service_discovery.get_service_discovery", return_value=sd):
-            assert addon._trusted_agent(flow) == "pickup"
-
-    def test_none_when_neither_registry_nor_singleton(self):
-        addon = _make_addon_with_targets()
-        flow = _make_mock_flow()
-        with patch("mitmproxy.ctx.master", None, create=True), \
-             patch("service_discovery.get_service_discovery", return_value=None):
-            assert addon._trusted_agent(flow) is None
+# The registry-vs-singleton resolution mechanics now live in the inherited
+# SecurityAddon._resolve_service_discovery() and are covered by tests/test_base.py
+# (registry-first, master-authoritative, singleton-only-without-a-master). The
+# _trusted_agent tests above only supply a controlled registry via _mock_discovery.
