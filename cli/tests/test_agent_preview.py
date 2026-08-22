@@ -1860,8 +1860,12 @@ class _StubUpstreamProcess:
         pass
 
 
-def _fast_retry(monkeypatch, window=0.05, interval=0.01):
-    """Shrink the retry constants so tests finish in ms, not seconds."""
+def _fast_retry(monkeypatch, window=0.5, interval=0.05):
+    """Shrink the retry constants so tests finish in a few seconds, not
+    tens of seconds. Default window is deliberately half a second — long
+    enough that nested/compounded retry loops become visible (the
+    countdown-oscillation bug hid at sub-second windows because both
+    loops finished almost instantly)."""
     monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_WINDOW_SECONDS", window)
     monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_INTERVAL_SECONDS", interval)
 
@@ -1889,8 +1893,11 @@ def test_prefers_html_negotiation():
     assert not _prefers_html("")
 
 
-def test_silent_retry_rides_through_transient_refuse(monkeypatch):
-    """First few port-forward attempts refuse, next one succeeds → no waiting-room."""
+def test_silent_retry_rides_through_transient_eager_refused(monkeypatch):
+    """First few port-forward attempts refuse eagerly (Popen raises
+    RuntimeError), next one succeeds → no waiting-room. Companion to
+    test_lazy_eof_recovers_within_silent_window which covers the
+    lazy failure shape."""
     monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
     _fast_retry(monkeypatch, window=1.0, interval=0.01)
 
@@ -2235,3 +2242,131 @@ def test_websocket_upgrade_gets_503_not_waiting_room(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Invariant regression guards for bugs we hit in live macOS testing
+# ---------------------------------------------------------------------------
+
+
+def test_total_wall_time_bounded_by_single_silent_window(monkeypatch):
+    """Guard against nested/compounded retry loops.
+
+    The countdown-oscillation bug was caused by _open_guest_relay
+    running its own silent-retry loop unaware of the outer loop in
+    _proxy_stream — each request effectively consumed 2× the silent
+    window. Assertion: total wall-time ≤ 1.5× window even under a
+    long window where compounding would be obvious. Any future
+    refactor that accidentally re-nests retry loops trips this.
+    """
+    import time as _time
+
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_WINDOW_SECONDS", 1.0)
+    monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_INTERVAL_SECONDS", 0.1)
+
+    platform = _AlwaysRefusedPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="claude", guest_port=3000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        t0 = _time.monotonic()
+        resp, _body = _request(
+            server, "/",
+            headers={"Cookie": cookie, "Accept": "text/html"},
+        )
+        elapsed = _time.monotonic() - t0
+        assert resp.status == 200  # waiting-room served
+        assert elapsed < 1.5, (
+            f"total request took {elapsed:.2f}s > 1.5× silent window (1.0s) — "
+            "retry loops compounded (nested?)"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_open_guest_relay_does_exactly_one_attempt():
+    """Lock in the single-attempt semantic of _open_guest_relay.
+
+    Any silent-retry now lives in _proxy_stream so poll requests
+    (X-SafeYolo-Waiting-Room-Poll) can bypass it cleanly. If a future
+    change re-adds an inner retry loop, the poll-header fast-fail
+    would silently break and the countdown-oscillation bug would
+    return.
+
+    Uses a zero-length silent window so the outer loop also does
+    exactly one attempt; the resulting single-attempt count is the
+    intersection of BOTH loops being disciplined.
+    """
+    from safeyolo.preview import _UpstreamRefused
+
+    with patch(
+        "safeyolo.preview.PREVIEW_SILENT_RETRY_WINDOW_SECONDS", 0.0,
+    ):
+        platform = _AlwaysRefusedPlatform()
+        server = start_preview_server(
+            PreviewConfig(agent="claude", guest_port=3000),
+            platform,
+            "session",
+            "1234-5678",
+        )
+        _serve(server)
+        try:
+            cookie = f"{server.token_cookie}=session"
+            resp, _body = _request(
+                server, "/",
+                headers={"Cookie": cookie, "Accept": "text/html"},
+            )
+            # Waiting-room served (window == 0 → immediate)
+            assert resp.status == 200
+            assert resp.getheader("X-SafeYolo-Waiting-Room") == "1"
+            # Exactly one port-forward attempt — no nesting on either loop.
+            assert platform.attempts == 1
+        finally:
+            server.shutdown()
+            server.server_close()
+    # Suppress unused-import warning for _UpstreamRefused (it documents
+    # the raise semantics of _open_guest_relay for the reader).
+    assert _UpstreamRefused.__name__ == "_UpstreamRefused"
+
+
+def test_waiting_room_html_carries_poll_header_name():
+    """Drift check: the JS in the waiting-room template must send the
+    same poll header that the server special-cases for fast-fail.
+
+    Renaming WAITING_ROOM_POLL_HEADER without updating the HTML
+    template silently breaks the fast-fail path — the countdown
+    starts oscillating again in production and no server-side
+    unit test would notice.
+    """
+    from safeyolo.preview import (
+        WAITING_ROOM_POLL_HEADER,
+        _render_waiting_room_html,
+    )
+
+    html = _render_waiting_room_html(
+        agent="claude", guest_port=3000, timeout_seconds=60,
+    )
+    # The header name must appear in the JS.
+    assert WAITING_ROOM_POLL_HEADER in html, (
+        f"waiting-room HTML doesn't reference {WAITING_ROOM_POLL_HEADER} — "
+        "server's poll fast-fail path can't fire"
+    )
+    # And it must be inside a fetch() call, not just a stray string.
+    assert "fetch(" in html
+    # Sanity: the meta-refresh should NOT be short (would compete with JS poll).
+    # Timeout=60 → meta-refresh interval should be ≥ 30 (JS-off fallback only).
+    import re
+    refreshes = re.findall(r'http-equiv="refresh" content="(\d+)"', html)
+    assert refreshes, "waiting-room HTML lost its meta-refresh JS-off fallback"
+    for interval in refreshes:
+        assert int(interval) >= 30, (
+            f"meta-refresh interval {interval}s competes with the 1s JS poll — "
+            "countdown will oscillate"
+        )
