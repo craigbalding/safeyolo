@@ -33,7 +33,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from _doc_config import USER_FACING_DOCS  # noqa: E402
+from _doc_config import (  # noqa: E402
+    ALL_SHIPPED_DOCS,
+    SKILL_FILES,
+    USER_FACING_DOCS,
+)
 
 CONSTANTS_PATH = REPO_ROOT / "scripts" / "doc_constants.toml"
 FORBIDDEN_PATH = REPO_ROOT / "scripts" / "doc_forbidden.toml"
@@ -183,22 +187,34 @@ def _print_per_doc_counts(
     marker_b, const_b, forbid_b, out=sys.stdout,
 ) -> None:
     print("=== DOC BINDING COUNTS ===\n", file=out)
-    print(f"{'Doc':44}  {'Markers':>8}  {'Consts':>7}  {'Forbid':>7}  {'Total':>6}", file=out)
-    print("-" * 80, file=out)
-    for doc in sorted(USER_FACING_DOCS):
-        m = len(marker_b.get(doc, []))
-        c = len(const_b.get(doc, []))
-        f = len(forbid_b.get(doc, []))
-        tot = m + c + f
-        marker = " " if tot else "!"
-        print(f"{marker} {doc:42}  {m:>8}  {c:>7}  {f:>7}  {tot:>6}", file=out)
-    # Totals are per (doc, binding) counts across the allowlist only. Refs
-    # pointing outside the allowlist show up in _print_orphan_markers.
-    total_m = sum(len(marker_b.get(d, [])) for d in USER_FACING_DOCS)
-    total_c = sum(len(const_b.get(d, [])) for d in USER_FACING_DOCS)
-    total_f = sum(len(forbid_b.get(d, [])) for d in USER_FACING_DOCS)
-    print("-" * 80, file=out)
-    print(f"  {'TOTAL':42}  {total_m:>8}  {total_c:>7}  {total_f:>7}  {total_m + total_c + total_f:>6}", file=out)
+    print(f"{'Doc':64}  {'Markers':>8}  {'Consts':>7}  {'Forbid':>7}  {'Total':>6}", file=out)
+
+    def _section(title: str, docs: frozenset[str]) -> tuple[int, int, int]:
+        print("-" * 100, file=out)
+        print(f"# {title}", file=out)
+        print("-" * 100, file=out)
+        section_m = section_c = section_f = 0
+        for doc in sorted(docs):
+            m = len(marker_b.get(doc, []))
+            c = len(const_b.get(doc, []))
+            f = len(forbid_b.get(doc, []))
+            tot = m + c + f
+            gap = "!" if tot == 0 else " "
+            print(f"{gap} {doc:62}  {m:>8}  {c:>7}  {f:>7}  {tot:>6}", file=out)
+            section_m += m
+            section_c += c
+            section_f += f
+        return section_m, section_c, section_f
+
+    um, uc, uf = _section("user_facing_docs (operator-facing)", USER_FACING_DOCS)
+    sm, sc, sf = _section("skill_files (agent-facing)", SKILL_FILES)
+    total_m, total_c, total_f = um + sm, uc + sc, uf + sf
+    print("=" * 100, file=out)
+    print(
+        f"  {'TOTAL (all shipped docs)':62}  {total_m:>8}  {total_c:>7}  {total_f:>7}  "
+        f"{total_m + total_c + total_f:>6}",
+        file=out,
+    )
     print(file=out)
 
 
@@ -207,12 +223,12 @@ def _print_keyword_coverage(
 ) -> None:
     print("=== SECURITY KEYWORD COVERAGE ===\n", file=out)
     print(
-        "Keywords found in each user-facing doc, and whether that doc has any\n"
-        "active binding at all. Docs with keywords but no bindings are the\n"
-        "highest-value gaps to close next.\n",
+        "Keywords found in each shipped doc (user-facing + skill), and\n"
+        "whether that doc has any active binding at all. Docs with\n"
+        "keywords but no bindings are the highest-value gaps to close next.\n",
         file=out,
     )
-    for doc_rel in sorted(USER_FACING_DOCS):
+    for doc_rel in sorted(ALL_SHIPPED_DOCS):
         doc_path = REPO_ROOT / doc_rel
         if not doc_path.exists():
             continue
@@ -237,7 +253,7 @@ def _print_orphan_markers(
 ) -> None:
     """DOC refs that point at unknown / not-in-allowlist docs."""
     all_refs = set(marker_b) | set(const_b) | set(forbid_b)
-    unknown = sorted(r for r in all_refs if r not in USER_FACING_DOCS)
+    unknown = sorted(r for r in all_refs if r not in ALL_SHIPPED_DOCS)
     if not unknown:
         return
     print("=== BINDINGS POINTING OUTSIDE THE ALLOWLIST ===\n", file=out)

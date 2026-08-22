@@ -32,7 +32,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from _doc_config import USER_FACING_DOCS  # noqa: E402
+from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
 
 # Inline links: [text](target) or [text](target "title"). Target ends at
 # whitespace or closing paren.
@@ -84,7 +84,7 @@ def _resolve(target: str, doc_path: Path) -> Path:
 
 def main() -> int:
     problems: list[tuple[Path, int, str, str]] = []
-    for doc_rel in sorted(USER_FACING_DOCS):
+    for doc_rel in sorted(ALL_SHIPPED_DOCS):
         doc_path = REPO_ROOT / doc_rel
         if not doc_path.exists():
             continue

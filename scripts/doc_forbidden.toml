@@ -47,3 +47,20 @@ forbidden = [
     "EROFS rootfs",
     "rootfs-base.erofs",
 ]
+
+# Skill references documenting contributor workflow must use `uv run
+# pre-commit ...`, not raw `pre-commit ...`. Raw invocation silently skips
+# hooks that shell to `uv run` internally (uv-lock-check,
+# blackbox-coverage-doc, skill-graph-render) and they then fail on CI where
+# uv is present. Convention is set in docs/DEVELOPERS.md.
+#
+# `\n`-prefix anchors the phrase to line-start, so `uv run pre-commit ...`
+# does NOT match (the newline is followed by `u`, not `p`).
+[[rule]]
+name = "skill-must-use-uv-run-pre-commit"
+docs = ["cli/src/safeyolo/agent_context/skills/safeyolo/references/contributing-to-safeyolo.md"]
+reason = "Skill contributor guidance must invoke pre-commit via `uv run pre-commit ...` per docs/DEVELOPERS.md. Raw `pre-commit` silently skips uv-dependent hooks locally."
+forbidden = [
+    "\npre-commit install",
+    "\npre-commit run",
+]

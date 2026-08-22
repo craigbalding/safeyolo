@@ -17,10 +17,11 @@ source and its user-facing documentation are drifting.
 
 - ``SKILL:`` targets live under
   ``cli/src/safeyolo/agent_context/skills/safeyolo/references/``.
-- ``DOC:`` targets live in the user-facing docs allowlist below
-  (``USER_FACING_DOCS``). A ``DOC:`` ref pointing anywhere else is a hard
-  error, so accidental targeting of design docs or scratch files fails
-  loudly.
+- ``DOC:`` targets live in the shipped-docs allowlist
+  (``ALL_SHIPPED_DOCS`` = ``USER_FACING_DOCS`` ∪ ``SKILL_FILES``, from
+  ``scripts/doc_allowlist.toml``). A ``DOC:`` ref pointing anywhere
+  else is a hard error, so accidental targeting of design docs or
+  scratch files fails loudly.
 
 Anchors (``#section``) are advisory in v1: presence of the file in the
 diff is enough. A later version can enforce that the specific section
@@ -64,13 +65,13 @@ SUPPORTED_SOURCE_SUFFIXES = {".py", ".sh"}
 # false positives and cascade churn onto docs the tests don't actually document.
 EXCLUDED_PATH_PREFIXES: tuple[str, ...] = ("tests/",)
 
-# Explicit allowlist of user-facing docs that DOC: markers may target.
-# A DOC: ref outside this set is rejected, preventing accidental coverage
-# of design/planning docs (which describe intent, not runtime behavior).
-# Sourced from scripts/doc_allowlist.toml so all four drift checks agree
-# on the same set with no duplication.
+# Allowlist of shipped docs that DOC: markers may target — both
+# operator-facing (USER_FACING_DOCS) and agent-facing skill docs
+# (SKILL_FILES). A DOC: ref outside the union is rejected, preventing
+# accidental coverage of design/planning docs (which describe intent,
+# not runtime behavior). Sourced from scripts/doc_allowlist.toml.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _doc_config import USER_FACING_DOCS  # noqa: E402
+from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
 
 
 def _git(*args: str) -> str:
@@ -153,10 +154,11 @@ def _skill_relpath(ref: str) -> Path | None:
 def _doc_relpath(ref: str) -> Path | None:
     """Convert 'docs/AGENTS.md#section' to a repo-relative Path.
 
-    Returns None if the reference is outside USER_FACING_DOCS.
+    Returns None if the reference is outside the shipped-docs allowlist
+    (user-facing docs plus skill files).
     """
     file_part = ref.split("#", 1)[0]
-    if file_part not in USER_FACING_DOCS:
+    if file_part not in ALL_SHIPPED_DOCS:
         return None
     return Path(file_part)
 
@@ -205,7 +207,8 @@ def main() -> int:
             ref_path = _doc_relpath(ref)
             if ref_path is None:
                 problems.append(
-                    (path, "DOC", ref, "reference is not in USER_FACING_DOCS allowlist"),
+                    (path, "DOC", ref, "reference is not in shipped-docs allowlist "
+                     "(user_facing_docs + skill_files in doc_allowlist.toml)"),
                 )
                 continue
             if not (REPO_ROOT / ref_path).exists():
