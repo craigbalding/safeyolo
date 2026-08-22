@@ -6,6 +6,8 @@ destinations. Body/URL scanning for arbitrary patterns is handled by
 pattern_scanner.py.
 """
 
+import base64
+import binascii
 import logging
 import math
 from dataclasses import dataclass
@@ -85,6 +87,38 @@ def extract_bearer_token(auth_value: str) -> str:
     if auth_value.lower().startswith("bearer "):
         return auth_value[7:].strip()
     return auth_value
+
+
+def extract_basic_credential(auth_value: str) -> str | None:
+    """Extract the credential half of an `Authorization: Basic <b64>` header.
+
+    Basic auth transports credentials as `base64(userinfo:credential)`.
+    The credential half is where the useful classifier signal lives --
+    for example git-over-HTTPS via `gh auth git-credential fill` sends
+    `Authorization: Basic <base64(oauth:gho_...)>`, so the underlying
+    GitHub token is invisible to a pattern classifier that only looks at
+    the raw header value.
+
+    Returns the credential (everything after the first `:`) if the value
+    is a decodable Basic header, else None. Callers should treat None as
+    "not applicable, fall through to other extraction paths."
+    """
+    if not auth_value.lower().startswith("basic "):
+        return None
+    encoded = auth_value[6:].strip()
+    if not encoded:
+        return None
+    try:
+        # RFC 7617 says the payload is base64. Strict decoding rejects
+        # values that a client would never actually send.
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return None
+    _userinfo, sep, credential = decoded.partition(":")
+    if not sep:
+        # No colon: not a well-formed userinfo pair.
+        return None
+    return credential
 
 
 # =============================================================================
@@ -229,7 +263,17 @@ def analyze_headers(
 
         value = header_value
         if header_lower == "authorization":
-            value = extract_bearer_token(header_value)
+            lowered = header_value.lower()
+            if lowered.startswith("bearer "):
+                value = extract_bearer_token(header_value)
+            elif lowered.startswith("basic "):
+                # Git-over-HTTPS via gh's credential helper sends
+                # `Basic <b64(oauth:gho_...)>`. Decode and classify the
+                # password half so the underlying token matches the
+                # github rule instead of falling to entropy fallback.
+                basic_credential = extract_basic_credential(header_value)
+                if basic_credential is not None:
+                    value = basic_credential
 
         if header_lower in standard_auth_headers:
             for rule in rules:
