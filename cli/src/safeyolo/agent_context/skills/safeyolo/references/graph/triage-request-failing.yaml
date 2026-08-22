@@ -383,7 +383,8 @@ edges:
   - {from: cls.header_wire_format_violation, to: ev.check_client_updates_upstream, kind: next_check, when: "the wire-format debug field is distinctive enough to search verbatim in the client's issue tracker"}
 
   - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND its changelog or a referenced issue matches this failure signature (or strongly implies the fix)"}
-  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available, OR current head does not reference this failure -- treat as a genuinely new bug worth filing"}
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND version delta is substantial (roughly >=3 minor releases or >90 days) -- verify against latest before reporting; a silent fix in an intervening release is more likely than a genuinely new bug"}
+  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available, OR delta is small AND current head does not reference this failure -- treat as a genuinely new bug worth filing"}
 
   - {from: cls.proxy_reencode_bug,     to: ask.mitmproxy_version_and_doctor, kind: escalates_to}
 

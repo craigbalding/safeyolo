@@ -231,7 +231,8 @@ edges:
   # check before escalating, to counter the training-data-is-stale bias.
   - {from: cls.tls_client_library_bug,       to: ev.check_client_updates_upstream, kind: next_check}
   - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND its changelog or a referenced issue matches this failure signature"}
-  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available OR head does not reference this failure -- treat as a genuinely new bug worth filing"}
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND version delta is substantial (roughly >=3 minor releases or >90 days) -- verify against latest before reporting; a silent fix in an intervening release is more likely than a genuinely new bug"}
+  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available, OR delta is small AND head does not reference this failure -- treat as a genuinely new bug worth filing"}
 
   # Nothing here should suggest disabling verification
   - {from: cls.tls_ca_bundle_stale,     to: con.tls_do_not_disable_verify, kind: implies}

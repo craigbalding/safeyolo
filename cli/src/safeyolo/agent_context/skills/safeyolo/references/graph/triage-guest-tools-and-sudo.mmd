@@ -66,7 +66,8 @@ flowchart TD
     ev.tools_check_pip_index_url -->|"implies: pip index and cert config are correct AND the tool still fails"| cls.tools_package_manager_bug
     cls.tools_package_manager_bug -->|"next_check"| ev.check_client_updates_upstream
     ev.check_client_updates_upstream -->|"escalates_to: a newer tool release exists AND its changelog or a referenced issue matches this failure signature"| ask.suggest_client_upgrade
-    ev.check_client_updates_upstream -->|"escalates_to: no newer release OR head does not reference this failure -- treat as a genuinely new bug worth filing"| ask.report_client_bug
+    ev.check_client_updates_upstream -->|"escalates_to: a newer tool release exists AND version delta is substantial (roughly >=3 minor releases or >90 days) -- verify against latest before reporting; a silent fix in an intervening release is more likely than a genuinely new bug"| ask.suggest_client_upgrade
+    ev.check_client_updates_upstream -->|"escalates_to: no newer release, OR delta is small AND head does not reference this failure -- treat as a genuinely new bug worth filing"| ask.report_client_bug
     ev.tools_check_lookup_package_host -->|"implies: effect == deny"| cls.tools_package_host_not_in_policy
     cls.tools_package_host_not_in_policy -->|"escalates_to"| ask.tools_policy_add_package_host
     ev.tools_check_lookup_package_host -->|"next_check: effect == budget"| ev.tools_check_budgets_for_host

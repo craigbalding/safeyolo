@@ -258,7 +258,8 @@ edges:
   - {from: ev.tools_check_pip_index_url, to: cls.tools_package_manager_bug, kind: implies, when: "pip index and cert config are correct AND the tool still fails"}
   - {from: cls.tools_package_manager_bug,    to: ev.check_client_updates_upstream, kind: next_check}
   - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer tool release exists AND its changelog or a referenced issue matches this failure signature"}
-  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release OR head does not reference this failure -- treat as a genuinely new bug worth filing"}
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer tool release exists AND version delta is substantial (roughly >=3 minor releases or >90 days) -- verify against latest before reporting; a silent fix in an intervening release is more likely than a genuinely new bug"}
+  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release, OR delta is small AND head does not reference this failure -- treat as a genuinely new bug worth filing"}
 
   # Policy / budget
   - {from: ev.tools_check_lookup_package_host, to: cls.tools_package_host_not_in_policy, kind: implies, when: "effect == deny"}

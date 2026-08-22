@@ -60,7 +60,8 @@ flowchart TD
     ev.tls_curl_verbose -->|"implies: curl succeeds AND the runtime's CA env vars ARE set AND the runtime still fails -- env / CA / proxy all ruled out"| cls.tls_client_library_bug
     cls.tls_client_library_bug -->|"next_check"| ev.check_client_updates_upstream
     ev.check_client_updates_upstream -->|"escalates_to: a newer client release exists AND its changelog or a referenced issue matches this failure signature"| ask.suggest_client_upgrade
-    ev.check_client_updates_upstream -->|"escalates_to: no newer release available OR head does not reference this failure -- treat as a genuinely new bug worth filing"| ask.report_client_bug
+    ev.check_client_updates_upstream -->|"escalates_to: a newer client release exists AND version delta is substantial (roughly >=3 minor releases or >90 days) -- verify against latest before reporting; a silent fix in an intervening release is more likely than a genuinely new bug"| ask.suggest_client_upgrade
+    ev.check_client_updates_upstream -->|"escalates_to: no newer release available, OR delta is small AND head does not reference this failure -- treat as a genuinely new bug worth filing"| ask.report_client_bug
     cls.tls_ca_bundle_stale -->|"implies"| con.tls_do_not_disable_verify
     cls.tls_runtime_env_missing -->|"implies"| con.tls_do_not_disable_verify
     cls.tls_client_direct -->|"implies"| con.tls_do_not_disable_verify
