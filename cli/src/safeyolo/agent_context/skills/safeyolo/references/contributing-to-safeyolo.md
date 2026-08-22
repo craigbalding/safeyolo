@@ -43,11 +43,18 @@ whitespace, end-of-file, private-key detection, and the other
 pre-existing hooks. Every gate CI runs is in `.pre-commit-config.yaml`;
 run the whole set through `uv run`.
 
-## Adding a new claim to a user-facing doc
+## Adding a new claim to a shipped doc
 
-The user-facing doc allowlist lives in `scripts/doc_allowlist.toml`.
-Five drift checks guard every doc in that list; pick the one that fits
-what you are documenting.
+The shipped-docs allowlist lives in `scripts/doc_allowlist.toml`, with
+two tiers:
+
+- `user_facing_docs` — operator-facing (`README.md`, `SECURITY.md`,
+  `docs/*`, `guest/README.md`, `cli/README.md`, `contrib/*.md`)
+- `skill_files` — agent-facing skill docs shipped into sandboxes
+  (`SKILL.md` + `references/*.md`, glob-expanded)
+
+All drift checks scan both tiers. The five checks below pick the
+mechanism that fits what you are documenting.
 
 | You are documenting… | Add… |
 |---|---|

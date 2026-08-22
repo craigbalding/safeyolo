@@ -472,11 +472,29 @@ not a gate.
 
 ### Where the allowlist lives
 
-The set of "user-facing" docs is `scripts/doc_allowlist.toml`. All five
-checks read from there via `scripts/_doc_config.py`. Add a doc to the
-`user_facing_docs` list and every check picks it up on the next run.
-Design/planning docs (`docs/*-design.md`, `docs/FUTURE.md`, etc.) are
-deliberately out of scope — they describe intent, not runtime behaviour.
+The shipped-docs allowlist is `scripts/doc_allowlist.toml`, with two
+tiers reflecting the two audiences:
+
+- `user_facing_docs` — human-operator docs (`README.md`, `SECURITY.md`,
+  `docs/*`, `guest/README.md`, `cli/README.md`, `contrib/*.md`). Explicit
+  list, no globs.
+- `skill_files` — agent-facing docs shipped INTO agent sandboxes as part
+  of the safeyolo skill (`SKILL.md` + `references/*.md`). Glob patterns
+  allowed — new reference files get automatic coverage.
+
+Both tiers are exposed via `scripts/_doc_config.py` as
+`USER_FACING_DOCS`, `SKILL_FILES`, and their union `ALL_SHIPPED_DOCS`.
+The link and CLI-flag checks scan the union. The marker check accepts
+DOC refs pointing at either tier. The audit tool reports per-tier
+binding counts. Design/planning docs (`docs/*-design.md`,
+`docs/FUTURE.md`, etc.) are deliberately out of scope — they describe
+intent, not runtime behaviour.
+
+`doc_forbidden.toml` and `doc_constants.toml` rules each declare their
+own `docs = [...]` list independent of the allowlist, so a rule can
+target any file in the repo (used, for example, by the
+`skill-must-use-uv-run-pre-commit` rule that scans the skill reference
+file directly).
 
 ### Where to place a `# DOC:` marker
 

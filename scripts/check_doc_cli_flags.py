@@ -38,10 +38,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI_SRC = REPO_ROOT / "cli" / "src"
 
-# Load the shared user-facing docs allowlist. Drift-detection scope is
-# defined once in scripts/doc_allowlist.toml.
+# Load the shared shipped-docs allowlist (user-facing docs plus
+# agent-facing skill files). Both tiers can contain `safeyolo` invocations
+# that must resolve against the current Typer surface. Defined once in
+# scripts/doc_allowlist.toml.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-from _doc_config import USER_FACING_DOCS  # noqa: E402
+from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
 
 FENCE_RE = re.compile(r"^\s*```")
 SAFEYOLO_LINE_RE = re.compile(r"^\s*safeyolo(?:\s|$)")
@@ -174,7 +176,7 @@ def main() -> int:
         return 2
 
     problems: list[tuple[Path, int, str, str]] = []
-    for doc_rel in sorted(USER_FACING_DOCS):
+    for doc_rel in sorted(ALL_SHIPPED_DOCS):
         doc_path = REPO_ROOT / doc_rel
         if not doc_path.exists():
             continue

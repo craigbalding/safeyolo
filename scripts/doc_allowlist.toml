@@ -1,14 +1,23 @@
-# User-facing docs under drift protection.
+# Shipped documentation under drift protection.
 #
-# The four drift checks — check_skill_markers (DOC: markers),
-# check_doc_cli_flags, check_doc_constants, check_doc_links — all read this
-# list to decide what "in scope" means. Adding a doc here brings it under
-# all four mechanisms at once.
+# Two tiers reflect the two audiences:
 #
-# Explicit list, not a glob: prevents accidental coverage of design docs
-# (docs/*-design.md, docs/FUTURE.md), scratch files at repo root, and
-# already-covered generated docs (docs/blackbox-coverage.md is regenerated
-# from source; see tests/blackbox/gen_docs.py).
+# - `user_facing_docs`  → docs read by human operators/contributors on the
+#                          host. Explicit list, no globs — prevents
+#                          accidental coverage of design docs
+#                          (docs/*-design.md, docs/FUTURE.md), scratch
+#                          files at repo root, and already-covered
+#                          generated docs (docs/blackbox-coverage.md is
+#                          regenerated from source).
+# - `skill_files`       → docs shipped INTO agent sandboxes as part of
+#                          the safeyolo skill (SKILL.md + references/).
+#                          Glob patterns allowed — new reference files
+#                          get automatic coverage.
+#
+# Both tiers are checked by the same content-scanning drift checks
+# (`check_doc_links`, `check_doc_cli_flags`) and can be targeted by
+# `# DOC:` markers and by rules in doc_forbidden.toml / doc_constants.toml.
+# The audit_doc_coverage.py tool reports per-tier binding counts.
 
 user_facing_docs = [
     "README.md",
@@ -27,4 +36,11 @@ user_facing_docs = [
     "docs/TLS_CERTIFICATE.md",
     "docs/agent-debugging.md",
     "docs/security-verification.md",
+]
+
+# Skill reference files shipped into agent sandboxes. Globs expanded at
+# load time; new references/*.md files get automatic coverage.
+skill_files = [
+    "cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/*.md",
 ]

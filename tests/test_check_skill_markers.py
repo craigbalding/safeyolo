@@ -212,7 +212,27 @@ class TestEndToEnd:
         _git(fake_repo, "add", str(f))
         r = _run_script(fake_repo)
         assert r.returncode == 1
-        assert "USER_FACING_DOCS allowlist" in r.stderr
+        assert "shipped-docs allowlist" in r.stderr
+
+    def test_doc_marker_can_target_skill_file(self, fake_repo: Path):
+        """DOC markers may point at agent-facing skill files (SKILL_FILES),
+        not only user-facing docs. The allowlist is the union of both tiers."""
+        # Materialise the skill file the allowlist glob would resolve to.
+        skill_ref = (
+            fake_repo
+            / "cli/src/safeyolo/agent_context/skills/safeyolo/references/"
+            / "contributing-to-safeyolo.md"
+        )
+        skill_ref.write_text("# contributing\n")
+        f = fake_repo / "scripts" / "worker.py"
+        f.write_text(
+            "def foo():  # DOC: cli/src/safeyolo/agent_context/skills/safeyolo/"
+            "references/contributing-to-safeyolo.md\n    pass\n",
+        )
+        _git(fake_repo, "add", str(f), str(skill_ref))
+        r = _run_script(fake_repo)
+        # Pure add — structural validation passes since the ref resolves.
+        assert r.returncode == 0, r.stderr
 
     def test_doc_marker_multiple_refs_all_required_on_edit(self, fake_repo: Path):
         """On edit of a marked line, every listed ref must be co-changed."""
