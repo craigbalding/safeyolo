@@ -164,9 +164,22 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
                 bytes_out=bytes_out,
                 path=self.path,
             )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            # Client (browser or Tailscale Serve) closed mid-request. Nothing
+            # to send back; do not attempt an error response on a dead socket.
+            log.debug("preview client disconnected: %s", exc)
+            self.close_connection = True
+            self._log_event(
+                "traffic.preview_error",
+                f"client disconnected: {exc}",
+                status=499,
+                started=started,
+                path=self.path,
+            )
         except Exception as exc:  # noqa: BLE001 - convert to HTTP boundary
             log.exception("preview request failed")
-            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "preview request failed", "detail": str(exc)})
+            self.close_connection = True
+            self._try_send_json(HTTPStatus.BAD_GATEWAY, {"error": "preview request failed", "detail": str(exc)})
             self._log_event("traffic.preview_error", str(exc), status=502, started=started, path=self.path)
 
     def _handle_control_path(self, started: float, path: str) -> None:
@@ -327,10 +340,10 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
     def _forward_response_head(self, src) -> tuple[int, int]:
         head, rest = read_http_response_head(src)
         status = parse_response_status(head)
-        self.connection.sendall(add_preview_response_headers(head, self.server.config))
+        if not self._safe_send(add_preview_response_headers(head, self.server.config)):
+            return status, 0
         bytes_out = 0
-        if rest:
-            self.connection.sendall(rest)
+        if rest and self._safe_send(rest):
             bytes_out += len(rest)
         return status, bytes_out
 
@@ -340,8 +353,24 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             chunk = src.read(STREAM_CHUNK_SIZE)
             if not chunk:
                 return bytes_out
-            self.connection.sendall(chunk)
+            if not self._safe_send(chunk):
+                return bytes_out
             bytes_out += len(chunk)
+
+    def _safe_send(self, data: bytes) -> bool:
+        """Write to the client socket, treating client disconnect as a soft stop.
+
+        Returns True if the write succeeded, False if the client is gone.
+        Raising OSError from every sendall in every copy loop is expensive
+        (each raise is a candidate for double-fault when the error handler
+        itself tries to write). Returning False lets loops unwind cleanly.
+        """
+        try:
+            self.connection.sendall(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+            return False
+        return True
 
     def _relay_upgraded_connection(self, proc: subprocess.Popen[bytes]) -> int:
         assert proc.stdin is not None
@@ -375,18 +404,25 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             thread.join(timeout=1)
 
     def _close_relay(self, proc: subprocess.Popen[bytes]) -> None:
-        if proc.poll() is not None:
-            return
         try:
-            proc.wait(timeout=1)
-            return
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
+            if proc.poll() is not None:
+                return
+            try:
+                proc.wait(timeout=1)
+                return
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+        except OSError as exc:
+            # terminate()/kill()/wait() can race with the relay's own exit
+            # (ProcessLookupError, ESRCH). The relay is effectively closed
+            # in that case; suppress so we do not mask the primary exception
+            # in the caller's finally.
+            log.debug("preview relay close raced with process exit: %s", exc)
 
     def _send_unlock_page(self) -> None:
         body = (
@@ -427,6 +463,18 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _try_send_json(self, status: HTTPStatus, payload: dict) -> None:
+        """Attempt to send a JSON error response, tolerating a dead socket.
+
+        Used from error-handling paths where the client may already have
+        closed the connection -- in that case an error response would raise
+        a second exception on top of whatever we were reporting.
+        """
+        try:
+            self._send_json(status, payload)
+        except OSError as exc:
+            log.debug("preview client gone before error response: %s", exc)
+
     def _log_event(
         self,
         event: str,
@@ -451,15 +499,22 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         }
         if status is not None:
             details["status"] = status
-        write_event(
-            event,
-            kind=EventKind.AGENT if event.startswith("agent.") else EventKind.TRAFFIC,
-            severity=Severity.LOW,
-            summary=summary,
-            agent=cfg.agent,
-            addon="agent-preview",
-            details=details,
-        )
+        try:
+            write_event(
+                event,
+                kind=EventKind.AGENT if event.startswith("agent.") else EventKind.TRAFFIC,
+                severity=Severity.LOW,
+                summary=summary,
+                agent=cfg.agent,
+                addon="agent-preview",
+                details=details,
+            )
+        except Exception:  # noqa: BLE001 - auditing must not break request handling
+            # write_event failures (disk full, log rotation race, permissions
+            # regression) previously took down the request-handling thread
+            # and cascaded into a double-fault when the error handler tried
+            # to log its own event. Auditing is best-effort at this layer.
+            log.warning("preview audit event write failed: %s", event, exc_info=True)
 
 
 def validate_guest_port(port: int) -> None:
