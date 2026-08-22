@@ -63,6 +63,7 @@ inside it:
 | [`triage-service-gateway.yaml`](references/graph/triage-service-gateway.yaml) | "How do I use a gated service (Gmail, Jira, etc.)?" |
 | [`triage-tls-and-ca.yaml`](references/graph/triage-tls-and-ca.yaml) | "TLS handshake failing / cert not trusted" |
 | [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
+| [`triage-kernel-observability.yaml`](references/graph/triage-kernel-observability.yaml) | "perf / eBPF / bpftrace / ftrace / kprobe / uprobe doesn't work inside the guest" |
 | [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The operator can't see what I'm showing / desktop isn't working" |
 
 Graphs cross-reference each other via a top-level `see_also:` block when a

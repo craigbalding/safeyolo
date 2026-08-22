@@ -1,0 +1,173 @@
+# Triage graph: "kernel-observability tool doesn't work inside the guest"
+#
+# Entry question: I tried to use a kernel-level observability tool
+# (perf record, bpftrace, ftrace, kprobes, uprobes, /sys/kernel/tracing)
+# from inside a safeyolo guest and it either isn't installed, produces
+# EPERM, or the required kernel subsystem isn't present. This graph
+# distinguishes "substrate doesn't expose this subsystem" (gVisor sentry
+# / stripped microVM kernel) from "kernel exposes it but caps or paranoid
+# sysctl gate it" from "just isn't installed in this rootfs."
+#
+# See schema comment in `triage-request-failing.yaml` for field
+# definitions.
+
+see_also:
+  - graph: triage-guest-tools-and-sudo
+    when: "the failure is ptrace-flavoured (strace / gdb / py-spy attach denied)"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.kobs_perf_missing
+    kind: symptom
+    label: "`perf record` / `perf stat` / `perf top` fails with `command not found` OR reports `perf_event_open failed` / `Permission denied` / `perf_event_paranoid` message"
+    keywords: [perf, perf_event_open, perf_event_paranoid, "perf: command not found",
+               "cycles not counted", PMU]
+    source: authored
+
+  - id: sym.kobs_bpf_missing
+    kind: symptom
+    label: "`bpftrace`, `bpftool`, or eBPF-based tool fails: binary missing, `Operation not permitted`, or `/sys/fs/bpf` not mounted"
+    keywords: [bpftrace, bpftool, "eBPF", "BPF", "/sys/fs/bpf", "CAP_BPF",
+               "CAP_SYS_ADMIN", "BPF: unknown syscall", tracepoint]
+    source: authored
+
+  - id: sym.kobs_ftrace_missing
+    kind: symptom
+    label: "ftrace / tracepoints / kprobes / uprobes: `/sys/kernel/tracing` (or `/sys/kernel/debug/tracing`) is absent or read-only, `echo` to `set_event` fails"
+    keywords: [ftrace, tracepoint, kprobe, uprobe, "/sys/kernel/tracing",
+               "/sys/kernel/debug/tracing", "set_event", "trace_pipe"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.kobs_check_substrate
+    kind: evidence
+    label: "Identify the sandbox substrate: gVisor (`/proc/1/comm` looks like `runsc-sandbox`, dmesg shows sentry lines) vs real-kernel microVM (dmesg shows real driver init, `uname -r` matches a real Linux release, virtio-blk on `/dev/vda`)"
+    detail: |
+      This is the primary axis. gVisor's sentry deliberately does not
+      implement perf_event_open, ftrace, or most of the eBPF surface --
+      no elevation inside a gVisor guest lifts that. A real-kernel
+      microVM (macOS VZ, KVM, or the Claude Code microVM) has the
+      kernel-side machinery compiled in, but may not expose it via caps
+      or /sys mounts.
+    source: authored
+
+  - id: ev.kobs_check_perf_sysctl
+    kind: evidence
+    label: "cat /proc/sys/kernel/perf_event_paranoid -- if the file is absent, the kernel was built without CONFIG_PERF_EVENTS or the tool is running under gVisor; if present, its value gates unprivileged access (-1 = anyone, 0/1/2/3 = progressively more restricted)"
+    source: authored
+
+  - id: ev.kobs_check_bpf_mount
+    kind: evidence
+    label: "ls /sys/fs/bpf -- absent means the bpffs isn't mounted; present with unprivileged bpf() still failing means CAP_BPF / CAP_SYS_ADMIN gate applies"
+    source: authored
+
+  - id: ev.kobs_check_bpf_sysctl
+    kind: evidence
+    label: "cat /proc/sys/kernel/unprivileged_bpf_disabled -- if absent, no CONFIG_BPF_SYSCALL; if 0, unprivileged bpf() is allowed; if 1 or 2, only CAP_BPF/CAP_SYS_ADMIN holders can use it"
+    source: authored
+
+  - id: ev.kobs_check_ftrace_mount
+    kind: evidence
+    label: "mount | grep -E 'tracefs|debugfs' AND ls /sys/kernel/tracing /sys/kernel/debug/tracing -- absent both means the guest kernel doesn't expose tracefs, either not compiled in or intentionally hidden"
+    source: authored
+
+  - id: ev.kobs_check_capeff
+    kind: evidence
+    label: "grep -E '^CapEff' /proc/self/status -- if 0000000000000000 the agent has no effective caps, so CAP_BPF / CAP_SYS_ADMIN / CAP_PERFMON gates cannot be bypassed by the agent uid alone; check whether setpriv to root can elevate (`setpriv --reuid=0 /bin/true`)"
+    source: authored
+
+  - id: ev.kobs_check_tool_installed
+    kind: evidence
+    label: "which perf bpftrace bpftool -- if missing, the tool simply isn't in this rootfs; separate from any kernel-substrate question"
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.kobs_gvisor_substrate
+    kind: classification
+    label: "gVisor's sentry does not implement the kernel subsystem this tool uses (perf_event_open, ftrace, most of bpf()). No cap change and no sysctl inside the guest lifts this -- the syscall is not wired up."
+    source: authored
+
+  - id: cls.kobs_microvm_kernel_missing_config
+    kind: classification
+    label: "Real-kernel microVM but the guest kernel was built without the required config (CONFIG_PERF_EVENTS, CONFIG_BPF_SYSCALL, CONFIG_FTRACE). Cannot be fixed at runtime; requires a different kernel build."
+    source: authored
+
+  - id: cls.kobs_microvm_caps_gate
+    kind: classification
+    label: "Real-kernel microVM with the subsystem compiled in, but caps (CAP_BPF / CAP_SYS_ADMIN / CAP_PERFMON) or a paranoid sysctl gate access. The agent uid does not hold the caps; whether setpriv-root helps depends on whether root_caps in the platform's OCI spec includes them."
+    source: authored
+
+  - id: cls.kobs_tool_not_installed
+    kind: classification
+    label: "The kernel subsystem is fine; the userspace tool just isn't in the rootfs. Install via distro package manager, verify against the guest's substrate before assuming it will work."
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.kobs_reproduce_outside_sandbox
+    kind: conclusion
+    label: "For gVisor substrate limitations: reproduce the observability workload against a real-kernel Linux environment outside safeyolo (a real VM, dev workstation, or a CI runner). Do not ask the operator to weaken the sandbox to expose the missing subsystem -- it isn't a policy knob."
+    source: authored
+
+  - id: con.kobs_use_userspace_alternative
+    kind: conclusion
+    label: "Replace the kernel-obs step with a userspace alternative: `py-spy` / `rbspy` for profiling, `strace -f cmd` for syscall tracing at launch, language-native instrumentation. See [[triage-guest-tools-and-sudo]] for the ptrace-side story."
+    source: authored
+
+  - id: con.kobs_install_tool
+    kind: conclusion
+    label: "Install the tool via the guest sudo/apt path (see [[triage-guest-tools-and-sudo]] for install semantics) and re-run. Verify against `ev.kobs_check_substrate` first; installing a kernel-obs tool that the substrate doesn't support wastes budget and time."
+    source: authored
+
+  - id: con.kobs_retry_under_setpriv
+    kind: conclusion
+    label: "On real-kernel microVM with caps gating access: retry the command under `setpriv --reuid=0 --regid=0 --clear-groups CMD`. Only works if the OCI root_caps list includes the required cap (CAP_BPF / CAP_SYS_ADMIN / CAP_PERFMON). If setpriv is not the issue, the paranoid sysctl is."
+    source: authored
+
+edges:
+  # perf entries
+  - {from: sym.kobs_perf_missing, to: ev.kobs_check_tool_installed,  kind: next_check}
+  - {from: sym.kobs_perf_missing, to: ev.kobs_check_substrate,       kind: next_check}
+  - {from: sym.kobs_perf_missing, to: ev.kobs_check_perf_sysctl,     kind: next_check}
+  - {from: sym.kobs_perf_missing, to: ev.kobs_check_capeff,          kind: next_check}
+
+  # eBPF entries
+  - {from: sym.kobs_bpf_missing, to: ev.kobs_check_tool_installed,   kind: next_check}
+  - {from: sym.kobs_bpf_missing, to: ev.kobs_check_substrate,        kind: next_check}
+  - {from: sym.kobs_bpf_missing, to: ev.kobs_check_bpf_mount,        kind: next_check}
+  - {from: sym.kobs_bpf_missing, to: ev.kobs_check_bpf_sysctl,       kind: next_check}
+  - {from: sym.kobs_bpf_missing, to: ev.kobs_check_capeff,           kind: next_check}
+
+  # ftrace entries
+  - {from: sym.kobs_ftrace_missing, to: ev.kobs_check_substrate,     kind: next_check}
+  - {from: sym.kobs_ftrace_missing, to: ev.kobs_check_ftrace_mount,  kind: next_check}
+  - {from: sym.kobs_ftrace_missing, to: ev.kobs_check_capeff,        kind: next_check}
+
+  # substrate is gVisor -> not fixable
+  - {from: ev.kobs_check_substrate,   to: cls.kobs_gvisor_substrate, kind: implies, when: "substrate is gVisor sentry (runsc-sandbox comm, sentry dmesg lines)"}
+  - {from: cls.kobs_gvisor_substrate, to: con.kobs_reproduce_outside_sandbox, kind: implies}
+  - {from: cls.kobs_gvisor_substrate, to: con.kobs_use_userspace_alternative, kind: implies, when: "a userspace equivalent exists (profiling -> py-spy; syscall trace -> strace at launch)"}
+
+  # substrate is real kernel but subsystem sysctl / mount absent -> kernel not built with it
+  - {from: ev.kobs_check_perf_sysctl,  to: cls.kobs_microvm_kernel_missing_config, kind: implies, when: "substrate is real-kernel microVM AND perf_event_paranoid is absent"}
+  - {from: ev.kobs_check_bpf_sysctl,   to: cls.kobs_microvm_kernel_missing_config, kind: implies, when: "substrate is real-kernel microVM AND unprivileged_bpf_disabled is absent AND no CONFIG_BPF_SYSCALL is compiled in"}
+  - {from: ev.kobs_check_ftrace_mount, to: cls.kobs_microvm_kernel_missing_config, kind: implies, when: "substrate is real-kernel microVM AND no tracefs or debugfs mount points exist"}
+  - {from: cls.kobs_microvm_kernel_missing_config, to: con.kobs_reproduce_outside_sandbox, kind: implies}
+  - {from: cls.kobs_microvm_kernel_missing_config, to: con.kobs_use_userspace_alternative, kind: implies, when: "a userspace equivalent exists"}
+
+  # substrate is real kernel, subsystem present, caps or sysctl gate access
+  - {from: ev.kobs_check_perf_sysctl,  to: cls.kobs_microvm_caps_gate, kind: implies, when: "perf_event_paranoid >= 2 AND CapEff is 0"}
+  - {from: ev.kobs_check_bpf_mount,    to: cls.kobs_microvm_caps_gate, kind: implies, when: "/sys/fs/bpf exists but bpf() calls EPERM AND CapEff is 0"}
+  - {from: ev.kobs_check_bpf_sysctl,   to: cls.kobs_microvm_caps_gate, kind: implies, when: "unprivileged_bpf_disabled is 1 or 2 AND CapEff is 0"}
+  - {from: ev.kobs_check_capeff,       to: cls.kobs_microvm_caps_gate, kind: implies, when: "CapEff is 0 AND the tool needs CAP_BPF / CAP_SYS_ADMIN / CAP_PERFMON"}
+  - {from: cls.kobs_microvm_caps_gate, to: con.kobs_retry_under_setpriv, kind: implies}
+  - {from: cls.kobs_microvm_caps_gate, to: con.kobs_use_userspace_alternative, kind: implies, when: "setpriv path is not viable (no sudo shim, cap not in root_caps)"}
+
+  # tool simply not installed
+  - {from: ev.kobs_check_tool_installed, to: cls.kobs_tool_not_installed, kind: implies, when: "which returns no match AND substrate check does not rule out the tool"}
+  - {from: cls.kobs_tool_not_installed,  to: con.kobs_install_tool,       kind: implies}
+
+
+entries:
+  - symptom: sym.kobs_perf_missing
+  - symptom: sym.kobs_bpf_missing
+  - symptom: sym.kobs_ftrace_missing
