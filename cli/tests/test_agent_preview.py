@@ -2151,6 +2151,58 @@ def test_lazy_eof_returns_503_for_non_html_client(monkeypatch):
         server.server_close()
 
 
+def test_waiting_room_poll_skips_silent_retry(monkeypatch):
+    """Requests carrying X-SafeYolo-Waiting-Room-Poll:1 must not sit in
+    the server-side silent-retry loop.
+
+    Regression for the live-macOS demo: the waiting-room JS polls the
+    same URL every ~1s. Without this signal each poll blocked for
+    PREVIEW_SILENT_RETRY_WINDOW_SECONDS server-side, making the
+    countdown UI oscillate (60 → 55 → 60 → 55) instead of counting
+    down smoothly.
+
+    Assertion: with the poll header set and the platform always
+    refusing, the total request time is well under the silent-retry
+    window — proof that the retry loop was skipped.
+    """
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    # Silent window deliberately long so the assertion is meaningful.
+    monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_WINDOW_SECONDS", 2.0)
+    monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_INTERVAL_SECONDS", 0.5)
+
+    platform = _AlwaysRefusedPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="claude", guest_port=3000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        import time as _time
+        t0 = _time.monotonic()
+        resp, _body = _request(
+            server, "/",
+            headers={
+                "Cookie": cookie,
+                "Accept": "text/html",
+                "X-SafeYolo-Waiting-Room-Poll": "1",
+            },
+        )
+        elapsed = _time.monotonic() - t0
+        # Waiting room still served (server had nothing to relay).
+        assert resp.status == 200
+        assert resp.getheader("X-SafeYolo-Waiting-Room") == "1"
+        # But we did NOT sit in the 2s silent-retry loop.
+        assert elapsed < 1.0, f"poll blocked for {elapsed:.2f}s — silent retry did not skip"
+        # Exactly one port-forward attempt for the fast-fail poll.
+        assert platform.attempts == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_websocket_upgrade_gets_503_not_waiting_room(monkeypatch):
     """WS upgrades never see the waiting-room — a stalled upgrade is worse than a fast fail."""
     monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)

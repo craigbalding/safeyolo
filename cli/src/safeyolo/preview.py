@@ -68,6 +68,7 @@ PREVIEW_SILENT_RETRY_WINDOW_SECONDS = 5.0
 PREVIEW_SILENT_RETRY_INTERVAL_SECONDS = 0.5
 PREVIEW_WAITING_ROOM_TIMEOUT_SECONDS = 60
 WAITING_ROOM_HEADER = "X-SafeYolo-Waiting-Room"
+WAITING_ROOM_POLL_HEADER = "X-SafeYolo-Waiting-Room-Poll"
 # Max request-body size we'll buffer for the silent-retry path. Bodies
 # larger than this bypass the retry (proc opens, streams straight
 # through, EOF surfaces as the original 502). 1 MiB covers typical dev
@@ -171,11 +172,21 @@ def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: i
     # keeps the template robust if that constraint ever loosens.
     from html import escape as _e
 
+    # Countdown updates smoothly via setInterval independent of the poll,
+    # so a slow network round-trip doesn't stall the visible timer.
+    #
+    # Meta-refresh interval is deliberately LONG (equal to the JS
+    # timeout) — it exists purely as a JS-off fallback. Anything
+    # shorter competes with the JS poll loop and causes flicker /
+    # counter oscillation.
+    #
+    # Every fetch carries the poll header so the server-side
+    # silent-retry doesn't apply — we're already polling client-side.
     return (
         "<!doctype html>\n"
         "<html lang=\"en\"><head>\n"
         "<meta charset=\"utf-8\">\n"
-        "<meta http-equiv=\"refresh\" content=\"2\">\n"
+        f"<meta http-equiv=\"refresh\" content=\"{timeout_seconds}\">\n"
         f"<title>Waiting for {_e(agent)}…</title>\n"
         "<style>\n"
         "  body{font-family:-apple-system,system-ui,sans-serif;"
@@ -199,14 +210,20 @@ def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: i
         "  var start = Date.now();\n"
         f"  var timeout = {timeout_seconds} * 1000;\n"
         f"  var header = \"{WAITING_ROOM_HEADER}\";\n"
+        f"  var pollHeader = \"{WAITING_ROOM_POLL_HEADER}\";\n"
         "  var el = document.getElementById(\"t\");\n"
+        "  var pollHeaders = {};\n"
+        "  pollHeaders[pollHeader] = \"1\";\n"
+        "  function updateCountdown(){\n"
+        "    if (el) el.textContent = Math.max(0, Math.round((timeout - (Date.now() - start)) / 1000));\n"
+        "  }\n"
+        "  setInterval(updateCountdown, 250);\n"
         "  async function poll(){\n"
         "    if (Date.now() - start > timeout) return;\n"
         "    try {\n"
-        "      var r = await fetch(location.href, {cache:\"no-store\", credentials:\"include\"});\n"
+        "      var r = await fetch(location.href, {cache:\"no-store\", credentials:\"include\", headers: pollHeaders});\n"
         "      if (!r.headers.get(header)) { location.reload(); return; }\n"
         "    } catch (e) {}\n"
-        "    if (el) el.textContent = Math.max(0, Math.round((timeout - (Date.now() - start)) / 1000));\n"
         "    setTimeout(poll, 1000);\n"
         "  }\n"
         "  poll();\n"
@@ -469,8 +486,17 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             # single-shot attempt so the original error surfaces cleanly.
             return self._do_relay_attempt(request_body=None, is_upgrade=False)
 
+        # Waiting-room JS polls carry a header signalling "I am the poller,
+        # do not silent-retry — I'm already polling client-side". Without
+        # this each poll would block for PREVIEW_SILENT_RETRY_WINDOW_SECONDS
+        # inside the server, breaking the client-side countdown UI and
+        # making polls take 5-6s each. Bug found in live macOS demo:
+        # countdown oscillated 55 → 60 → 55 → 60 because polls were
+        # queueing behind the server-side retry.
+        is_waiting_room_poll = self.headers.get(WAITING_ROOM_POLL_HEADER) == "1"
+        silent_window = 0.0 if is_waiting_room_poll else PREVIEW_SILENT_RETRY_WINDOW_SECONDS
         started = time.monotonic()
-        deadline = started + PREVIEW_SILENT_RETRY_WINDOW_SECONDS
+        deadline = started + silent_window
         last_failure: Exception
         while True:
             try:
@@ -583,64 +609,58 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             self._close_relay(proc)
 
     def _open_guest_relay(self):
+        """Single attempt to open the relay. Silent-retry lives in the
+        caller (_proxy_stream) so poll requests can bypass it.
+
+        Raises _UpstreamRefused for the eager ECONNREFUSED pattern —
+        Linux runsc port-forward exits nonzero with 'connection was
+        refused' before we've written anything. macOS's lazy path
+        (ssh+socat succeeding at Popen but EOF-ing when the guest port
+        has no listener) surfaces separately in _do_relay_attempt when
+        the response head read returns empty; both route to the same
+        outer retry / waiting-room via _proxy_stream.
+        """
         agent = self.server.config.agent
         guest_port = self.server.config.guest_port
         open_port_forward = getattr(self.server.platform, "popen_port_forward", None)
 
-        def _attempt():
+        try:
             if open_port_forward is None:
                 command = build_guest_relay_command(guest_port)
-                return self.server.platform.popen_binary_in_sandbox(agent, command, user="agent")
-            return open_port_forward(agent, guest_port, user="agent")
+                proc = self.server.platform.popen_binary_in_sandbox(agent, command, user="agent")
+            else:
+                proc = open_port_forward(agent, guest_port, user="agent")
+        except FileNotFoundError as exc:
+            # Platform sandbox binary (runsc, socat) not on PATH. The
+            # user sees a 502 instead of a raw traceback; the message
+            # tells them what to check.
+            raise PreviewError(
+                f"preview relay binary missing on the host: {exc}"
+            ) from exc
+        except PermissionError as exc:
+            raise PreviewError(
+                f"preview relay was denied by the platform: {exc}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise PreviewError(
+                f"preview relay timed out opening a stream to agent '{agent}'; "
+                "check whether the agent sandbox is still running"
+            ) from exc
+        except (RuntimeError, OSError) as exc:
+            # Native runsc port-forward surfaces RuntimeError with
+            # detail; UDS bind errors on Linux surface as OSError. Both
+            # usually mean the agent sandbox is not accepting
+            # connections (stopped, or its app briefly down for a
+            # restart). The specific "connection was refused" pattern
+            # is signalled up as _UpstreamRefused so _proxy_stream's
+            # retry loop can catch it; every other flavour surfaces as
+            # an actionable 502 immediately.
+            if _is_upstream_refused(exc):
+                raise _UpstreamRefused(agent, guest_port, 0.0, exc) from exc
+            raise PreviewError(
+                f"preview relay could not reach agent '{agent}': {exc}"
+            ) from exc
 
-        started = time.monotonic()
-        deadline = started + PREVIEW_SILENT_RETRY_WINDOW_SECONDS
-        last_refused: Exception | None = None
-        while True:
-            try:
-                proc = _attempt()
-                break
-            except FileNotFoundError as exc:
-                # Platform sandbox binary (runsc, socat) not on PATH. The
-                # user sees a 502 instead of a raw traceback; the message
-                # tells them what to check.
-                raise PreviewError(
-                    f"preview relay binary missing on the host: {exc}"
-                ) from exc
-            except PermissionError as exc:
-                raise PreviewError(
-                    f"preview relay was denied by the platform: {exc}"
-                ) from exc
-            except subprocess.TimeoutExpired as exc:
-                raise PreviewError(
-                    f"preview relay timed out opening a stream to agent '{agent}'; "
-                    "check whether the agent sandbox is still running"
-                ) from exc
-            except (RuntimeError, OSError) as exc:
-                # Native runsc port-forward surfaces RuntimeError with
-                # detail; UDS bind errors on Linux surface as OSError. Both
-                # usually mean the agent sandbox is not accepting
-                # connections (stopped, or its app briefly down for a
-                # restart). The specific "connection was refused" pattern
-                # gets the silent-retry + waiting-room treatment; every
-                # other flavour surfaces as an actionable 502 immediately.
-                if not _is_upstream_refused(exc):
-                    raise PreviewError(
-                        f"preview relay could not reach agent '{agent}': {exc}"
-                    ) from exc
-                last_refused = exc
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    log.info(
-                        "preview %s port %d refused after %.1fs silent retry — waiting-room",
-                        agent, guest_port, time.monotonic() - started,
-                    )
-                    raise _UpstreamRefused(
-                        agent, guest_port, time.monotonic() - started, exc,
-                    ) from exc
-                time.sleep(min(PREVIEW_SILENT_RETRY_INTERVAL_SECONDS, remaining))
-
-        del last_refused
         if proc.stdin is None or proc.stdout is None:
             raise PreviewError("preview relay did not expose stdin/stdout")
         return proc
