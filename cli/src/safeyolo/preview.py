@@ -44,6 +44,45 @@ UNLOCK_PATH = f"{CONTROL_PREFIX}/unlock"
 UNLOCK_CODE_TTL_SECONDS = 300
 MAX_UNLOCK_FAILURES = 5
 RESERVED_GUEST_PORTS = {8080, 9090}
+
+# When an agent's app inside the sandbox restarts (dev server reload, crash
+# and recover, port switch), the port-forward briefly gets ECONNREFUSED with
+# the specific runsc stderr signature checked by _is_upstream_refused below.
+# We handle this transparently in two phases:
+#
+#   1. Silent retry: hold the browser's request for up to
+#      PREVIEW_SILENT_RETRY_WINDOW_SECONDS, re-attempting the port-forward
+#      every PREVIEW_SILENT_RETRY_INTERVAL_SECONDS. Sub-window restarts are
+#      invisible to the operator — the page just loads slightly slower.
+#      Same trick nginx/traefik do by default.
+#
+#   2. Waiting room: if the silent window elapses without recovery, serve a
+#      minimal HTML page (or 503 for non-HTML requests) that polls the URL
+#      and reloads when the app comes back. Each waiting-room page has a
+#      client-side heartbeat via <meta refresh> at
+#      PREVIEW_WAITING_ROOM_HEARTBEAT_SECONDS — the page reloads on that
+#      cadence, fetching a fresh waiting-room from the server. Not a hard
+#      timeout; the waiting-room persists indefinitely.
+#
+# Only the specific "connection was refused" from runsc port-forward enters
+# this path. Every other error (sandbox down, runsc missing, TLS, etc.)
+# still surfaces as the actionable 502 the operator needs.
+PREVIEW_SILENT_RETRY_WINDOW_SECONDS = 5.0
+PREVIEW_SILENT_RETRY_INTERVAL_SECONDS = 0.5
+PREVIEW_WAITING_ROOM_HEARTBEAT_SECONDS = 60
+WAITING_ROOM_HEADER = "X-SafeYolo-Waiting-Room"
+WAITING_ROOM_POLL_HEADER = "X-SafeYolo-Waiting-Room-Poll"
+# Max request-body size we'll buffer for the silent-retry path. Bodies
+# larger than this bypass the retry (proc opens, streams straight
+# through, EOF surfaces as the original 502). 1 MiB covers typical dev
+# form POSTs; anything above is likely a file upload that shouldn't be
+# quietly retried anyway.
+PREVIEW_MAX_RETRYABLE_BODY_BYTES = 1 * 1024 * 1024
+_UPSTREAM_REFUSED_MARKERS = (
+    "connection was refused",   # gVisor netstack ECONNREFUSED phrasing
+    "connection refused",       # BSD-style variant (defensive)
+)
+_STREAM_CLOSED_BEFORE_HEADERS = "preview relay closed before response headers"
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -78,6 +117,143 @@ class PreviewConfig:
 
 
 PreviewError = TailnetServeError
+
+
+class _UpstreamRefused(Exception):
+    """The guest port had no listener across the full silent-retry window.
+
+    Signals _proxy_stream to serve a waiting-room page (or 503 for non-HTML
+    requests) instead of the generic 502. Only raised when the failure is
+    the specific ECONNREFUSED-on-port-forward pattern — every other
+    failure surfaces via PreviewError like before.
+    """
+
+    def __init__(self, agent: str, guest_port: int, elapsed: float, cause: Exception):
+        super().__init__(f"upstream port {guest_port} refused after {elapsed:.1f}s")
+        self.agent = agent
+        self.guest_port = guest_port
+        self.elapsed = elapsed
+        self.__cause__ = cause
+
+
+def _prefers_html(accept_header: str) -> bool:
+    """True if the client's Accept header prefers HTML over JSON.
+
+    Simple heuristic — full RFC 7231 q-value negotiation isn't necessary
+    here; the two clients we care about are browsers (send `text/html`
+    with high preference) and JS fetch()/XHR (usually `application/json`
+    or `*/*`). A browser navigation always prefers HTML; anything else
+    gets JSON with proper Retry-After semantics.
+    """
+    if not accept_header:
+        return False
+    accept = accept_header.lower()
+    if "text/html" not in accept:
+        return False
+    # `*/*` alone → not a browser navigation
+    if accept.strip() == "*/*":
+        return False
+    return True
+
+
+def _render_waiting_room_html(*, agent: str, guest_port: int, heartbeat_seconds: int) -> str:
+    """Return the HTML for the waiting-room page.
+
+    Kept minimal and inline: one file, one page, no external assets so a
+    slow-first-paint restart still shows the page instantly. Both a JS
+    poller AND a meta-refresh fallback are included, so JS-disabled
+    browsers still reload.
+
+    The client-side JS polls the same URL and reloads only when the
+    response does not carry the WAITING_ROOM_HEADER. That distinguishes
+    "the app is back and returned any status" from "still waiting-room
+    from us" — a 500 from the real app is treated as success (the app
+    is up; the reload will show that 500).
+
+    heartbeat_seconds is the meta-refresh cadence AND the JS-side
+    countdown reset interval. NOT a hard timeout — the page reloads
+    on this cadence (fetching a fresh waiting-room), so the room
+    persists indefinitely until the upstream comes back.
+    """
+    # HTML-escape user-controlled values. Agent names come from a
+    # validated set (see agents_store), but guarding here is cheap and
+    # keeps the template robust if that constraint ever loosens.
+    from html import escape as _e
+
+    # Countdown updates smoothly via setInterval independent of the poll,
+    # so a slow network round-trip doesn't stall the visible timer.
+    #
+    # Meta-refresh interval matches the heartbeat — long enough not to
+    # compete with the 1s JS poll (short values cause flicker / counter
+    # oscillation). Purely a JS-off fallback.
+    #
+    # Every fetch carries the poll header so the server-side
+    # silent-retry doesn't apply — we're already polling client-side.
+    return (
+        "<!doctype html>\n"
+        "<html lang=\"en\"><head>\n"
+        "<meta charset=\"utf-8\">\n"
+        f"<meta http-equiv=\"refresh\" content=\"{heartbeat_seconds}\">\n"
+        f"<title>Waiting for {_e(agent)}…</title>\n"
+        "<style>\n"
+        "  body{font-family:-apple-system,system-ui,sans-serif;"
+        "margin:3rem auto;max-width:32rem;color:#222;text-align:center}\n"
+        "  h1{font-weight:500;font-size:1.4rem;margin-bottom:0.5rem}\n"
+        "  code{background:#f4f4f4;padding:0.1rem 0.3rem;border-radius:3px}\n"
+        "  .spinner{margin:2rem auto;width:2.5rem;height:2.5rem;"
+        "border:3px solid #e0e0e0;border-top-color:#666;border-radius:50%;"
+        "animation:spin 1s linear infinite}\n"
+        "  @keyframes spin{to{transform:rotate(360deg)}}\n"
+        "  .detail{color:#888;font-size:0.9rem;margin-top:1.5rem}\n"
+        "</style>\n"
+        "</head><body>\n"
+        f"<h1>Waiting for <code>{_e(agent)}</code></h1>\n"
+        f"<p>Port {guest_port} inside the sandbox has no listener — the app is probably restarting.</p>\n"
+        "<div class=\"spinner\"></div>\n"
+        "<p class=\"detail\">This page reloads automatically. Next reload in "
+        "<span id=\"t\">" + str(heartbeat_seconds) + "</span>s.</p>\n"
+        "<script>\n"
+        "(function(){\n"
+        "  var start = Date.now();\n"
+        f"  var heartbeat = {heartbeat_seconds} * 1000;\n"
+        f"  var header = \"{WAITING_ROOM_HEADER}\";\n"
+        f"  var pollHeader = \"{WAITING_ROOM_POLL_HEADER}\";\n"
+        "  var el = document.getElementById(\"t\");\n"
+        "  var pollHeaders = {};\n"
+        "  pollHeaders[pollHeader] = \"1\";\n"
+        "  function updateCountdown(){\n"
+        "    if (el) el.textContent = Math.max(0, Math.round((heartbeat - (Date.now() - start)) / 1000));\n"
+        "  }\n"
+        "  setInterval(updateCountdown, 250);\n"
+        "  async function poll(){\n"
+        "    if (Date.now() - start > heartbeat) return;\n"
+        "    try {\n"
+        "      var r = await fetch(location.href, {cache:\"no-store\", credentials:\"include\", headers: pollHeaders});\n"
+        "      if (!r.headers.get(header)) { location.reload(); return; }\n"
+        "    } catch (e) {}\n"
+        "    setTimeout(poll, 1000);\n"
+        "  }\n"
+        "  poll();\n"
+        "})();\n"
+        "</script>\n"
+        "</body></html>\n"
+    )
+
+
+def _is_upstream_refused(exc: BaseException) -> bool:
+    """True if `exc` matches the runsc-port-forward ECONNREFUSED signature.
+
+    The full runsc stderr line for this class of failure is::
+
+        runsc port-forward exited N: doStream: PortForward:
+        port forwarding to sandbox: creating netstack port forward
+        connection: connecting endpoint: connection was refused
+
+    We match on the trailing marker so this catches the specific case we
+    want to retry, not every RuntimeError from the platform.
+    """
+    message = str(exc).lower()
+    return any(marker in message for marker in _UPSTREAM_REFUSED_MARKERS)
 
 
 class PreviewHTTPServer(http.server.ThreadingHTTPServer):
@@ -283,7 +459,125 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         return self.rfile.read(max(n, 0))
 
     def _proxy_stream(self, *, is_upgrade: bool) -> tuple[int, int]:
-        proc = self._open_guest_relay()
+        # Two failure modes both look like "app not listening":
+        #
+        #   EAGER — port-forward Popen raises RuntimeError("... connection
+        #     was refused") synchronously. Linux runsc under some conditions.
+        #     Caught in _open_guest_relay as _UpstreamRefused.
+        #
+        #   LAZY — port-forward Popen returns a live-looking proc, we write
+        #     the request, upstream (socat inside macOS sandbox, or the
+        #     gVisor sentry) attempts the TCP connect on our behalf, gets
+        #     refused, closes the stream. Response-head read returns EOF
+        #     immediately. Surfaces as PreviewError with the specific
+        #     "closed before response headers" message.
+        #
+        # Both must route through the same silent-retry + waiting-room path.
+        # For LAZY we retry the whole request, which requires the body to be
+        # replayable — so buffer it up front for retryable methods, or fall
+        # back to a single-shot attempt for streaming/large-body requests.
+        if is_upgrade:
+            # WebSocket upgrades can't retry mid-handshake without
+            # re-drawing state. One shot, no waiting room; a stalled
+            # upgrade is worse than a fast failure. _serve_waiting_room
+            # handles the WS case by returning 503 + Retry-After (no HTML).
+            try:
+                return self._do_relay_attempt(request_body=None, is_upgrade=True)
+            except _UpstreamRefused as refused:
+                return self._serve_waiting_room(refused, is_upgrade=True)
+
+        try:
+            request_body = self._buffer_request_body_for_retry()
+        except PreviewError:
+            # Body too large or client already gave up. Fall through to a
+            # single-shot attempt so the original error surfaces cleanly.
+            return self._do_relay_attempt(request_body=None, is_upgrade=False)
+
+        # Waiting-room JS polls carry a header signalling "I am the poller,
+        # do not silent-retry — I'm already polling client-side". Without
+        # this each poll would block for PREVIEW_SILENT_RETRY_WINDOW_SECONDS
+        # inside the server, breaking the client-side countdown UI and
+        # making polls take 5-6s each. Bug found in live macOS demo:
+        # countdown oscillated 55 → 60 → 55 → 60 because polls were
+        # queueing behind the server-side retry.
+        is_waiting_room_poll = self.headers.get(WAITING_ROOM_POLL_HEADER) == "1"
+        silent_window = 0.0 if is_waiting_room_poll else PREVIEW_SILENT_RETRY_WINDOW_SECONDS
+        started = time.monotonic()
+        deadline = started + silent_window
+        last_failure: Exception
+        while True:
+            try:
+                return self._do_relay_attempt(
+                    request_body=request_body, is_upgrade=False,
+                )
+            except _UpstreamRefused as refused:
+                last_failure = refused  # eager
+            except PreviewError as pe:
+                if str(pe) != _STREAM_CLOSED_BEFORE_HEADERS:
+                    raise  # unrelated failure — surface as 502
+                last_failure = _UpstreamRefused(
+                    agent=self.server.config.agent,
+                    guest_port=self.server.config.guest_port,
+                    elapsed=time.monotonic() - started,
+                    cause=pe,
+                )  # lazy — treat like eager for retry purposes
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.info(
+                    "preview %s port %d refused after %.1fs silent retry — waiting-room",
+                    self.server.config.agent,
+                    self.server.config.guest_port,
+                    time.monotonic() - started,
+                )
+                assert isinstance(last_failure, _UpstreamRefused)
+                return self._serve_waiting_room(last_failure, is_upgrade=False)
+            time.sleep(min(PREVIEW_SILENT_RETRY_INTERVAL_SECONDS, remaining))
+
+    def _buffer_request_body_for_retry(self) -> bytes | None:
+        """Read the request body into memory so it can be replayed on retry.
+
+        Returns None when there's no body (Content-Length: 0 or absent and
+        not chunked). Raises PreviewError if the body is too large to
+        buffer, or if chunked encoding is used (chunked is rejected
+        outright by _copy_request_body anyway).
+        """
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if transfer_encoding and transfer_encoding.lower() != "identity":
+            raise PreviewError("chunked request bodies cannot be buffered for retry")
+        length = self.headers.get("Content-Length")
+        if not length:
+            return None
+        try:
+            n = int(length)
+        except ValueError as exc:
+            raise PreviewError("invalid request Content-Length") from exc
+        if n <= 0:
+            return b""
+        if n > PREVIEW_MAX_RETRYABLE_BODY_BYTES:
+            raise PreviewError(
+                f"request body {n}B exceeds retry buffer "
+                f"{PREVIEW_MAX_RETRYABLE_BODY_BYTES}B",
+            )
+        data = self.rfile.read(n)
+        if len(data) != n:
+            raise PreviewError("client closed before request body completed")
+        return data
+
+    def _do_relay_attempt(
+        self, *, request_body: bytes | None, is_upgrade: bool,
+    ) -> tuple[int, int]:
+        """One attempt: open relay, write request, read response.
+
+        Raises:
+          - _UpstreamRefused if the open failed eagerly with the ECONNREFUSED
+            signature (from _open_guest_relay).
+          - PreviewError("preview relay closed before response headers")
+            if the stream returned EOF before the response head — the
+            LAZY ECONNREFUSED case. Caller decides whether to retry.
+          - Other PreviewError / OSError for genuine failures.
+        """
+        proc = self._open_guest_relay()  # may raise _UpstreamRefused
         try:
             assert proc.stdin is not None
             assert proc.stdout is not None
@@ -296,7 +590,16 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
                 is_upgrade=is_upgrade,
             )
             proc.stdin.write(request)
-            self._copy_request_body(proc.stdin, is_upgrade=is_upgrade)
+            if is_upgrade:
+                pass  # no body for upgrade
+            elif request_body is not None:
+                if request_body:
+                    proc.stdin.write(request_body)
+            else:
+                # Body wasn't buffered (too large / streaming). Fall back
+                # to the pre-fix streaming behaviour so at least the
+                # happy path works.
+                self._copy_request_body(proc.stdin, is_upgrade=False)
             proc.stdin.flush()
             # Do not close stdin here. Across gVisor's exec and port-forward
             # relays, a host-side write EOF can close the whole guest stream
@@ -313,22 +616,31 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             self._close_relay(proc)
 
     def _open_guest_relay(self):
+        """Single attempt to open the relay. Silent-retry lives in the
+        caller (_proxy_stream) so poll requests can bypass it.
+
+        Raises _UpstreamRefused for the eager ECONNREFUSED pattern —
+        Linux runsc port-forward exits nonzero with 'connection was
+        refused' before we've written anything. macOS's lazy path
+        (ssh+socat succeeding at Popen but EOF-ing when the guest port
+        has no listener) surfaces separately in _do_relay_attempt when
+        the response head read returns empty; both route to the same
+        outer retry / waiting-room via _proxy_stream.
+        """
         agent = self.server.config.agent
+        guest_port = self.server.config.guest_port
         open_port_forward = getattr(self.server.platform, "popen_port_forward", None)
+
         try:
             if open_port_forward is None:
-                command = build_guest_relay_command(self.server.config.guest_port)
+                command = build_guest_relay_command(guest_port)
                 proc = self.server.platform.popen_binary_in_sandbox(agent, command, user="agent")
             else:
-                proc = open_port_forward(
-                    agent,
-                    self.server.config.guest_port,
-                    user="agent",
-                )
+                proc = open_port_forward(agent, guest_port, user="agent")
         except FileNotFoundError as exc:
-            # Platform sandbox binary (runsc, socat) not on PATH. The user
-            # sees a 502 instead of a raw traceback; the message tells them
-            # what to check.
+            # Platform sandbox binary (runsc, socat) not on PATH. The
+            # user sees a 502 instead of a raw traceback; the message
+            # tells them what to check.
             raise PreviewError(
                 f"preview relay binary missing on the host: {exc}"
             ) from exc
@@ -342,13 +654,20 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
                 "check whether the agent sandbox is still running"
             ) from exc
         except (RuntimeError, OSError) as exc:
-            # Native runsc port-forward surfaces RuntimeError with detail;
-            # UDS bind errors on Linux surface as OSError. Both usually mean
-            # the agent sandbox is not accepting connections (stopped, or
-            # restarting).
+            # Native runsc port-forward surfaces RuntimeError with
+            # detail; UDS bind errors on Linux surface as OSError. Both
+            # usually mean the agent sandbox is not accepting
+            # connections (stopped, or its app briefly down for a
+            # restart). The specific "connection was refused" pattern
+            # is signalled up as _UpstreamRefused so _proxy_stream's
+            # retry loop can catch it; every other flavour surfaces as
+            # an actionable 502 immediately.
+            if _is_upstream_refused(exc):
+                raise _UpstreamRefused(agent, guest_port, 0.0, exc) from exc
             raise PreviewError(
                 f"preview relay could not reach agent '{agent}': {exc}"
             ) from exc
+
         if proc.stdin is None or proc.stdout is None:
             raise PreviewError("preview relay did not expose stdin/stdout")
         return proc
@@ -459,6 +778,61 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             # in that case; suppress so we do not mask the primary exception
             # in the caller's finally.
             log.debug("preview relay close raced with process exit: %s", exc)
+
+    def _serve_waiting_room(
+        self, refused: _UpstreamRefused, *, is_upgrade: bool,
+    ) -> tuple[int, int]:
+        """Serve either an HTML waiting-room page or a 503 + Retry-After.
+
+        Content-negotiation on the request's Accept header:
+
+        - text/html preferred → 200 with a small HTML page that polls the
+          same URL with fetch() and reloads once the app is back up. The
+          WAITING_ROOM_HEADER on the response tells the client-side JS
+          that the polled response was itself a waiting-room (so it
+          keeps polling); any response without that header means the
+          port-forward succeeded and JS should reload to show it.
+
+        - Anything else (JSON APIs, XHR, WebSocket) → 503 with
+          Retry-After: 2 and a short JSON body. Serving HTML into a JSON
+          client would break the caller's contract.
+
+        WebSocket upgrades never get the waiting room — a paused
+        upgrade is worse than a fast failure.
+        """
+        if is_upgrade or not _prefers_html(self.headers.get("Accept", "")):
+            body = json.dumps({
+                "error": "upstream not ready",
+                "detail": (
+                    f"port {refused.guest_port} inside agent '{refused.agent}' "
+                    f"has no listener; waited {refused.elapsed:.1f}s"
+                ),
+            }).encode()
+            self.send_response(int(HTTPStatus.SERVICE_UNAVAILABLE))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Retry-After", "2")
+            self.send_header(WAITING_ROOM_HEADER, "1")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return int(HTTPStatus.SERVICE_UNAVAILABLE), len(body)
+
+        body = _render_waiting_room_html(
+            agent=refused.agent,
+            guest_port=refused.guest_port,
+            heartbeat_seconds=PREVIEW_WAITING_ROOM_HEARTBEAT_SECONDS,
+        ).encode()
+        self.send_response(int(HTTPStatus.OK))
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(WAITING_ROOM_HEADER, "1")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+        return int(HTTPStatus.OK), len(body)
 
     def _send_unlock_page(self) -> None:
         body = (
