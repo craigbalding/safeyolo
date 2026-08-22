@@ -84,8 +84,9 @@ flowchart TD
     cls.header_wire_format_violation -->|"next_check"| ev.check_client_version_string
     cls.header_wire_format_violation -->|"next_check"| ev.reproduce_with_curl_same_ua
     ev.check_client_version_string -->|"implies: version is empty or missing AND the offending value looks like a version-templated header (e.g. 'GitHub CLI ')"| cls.client_sent_bad_header
-    ev.reproduce_with_curl_same_ua -->|"implies: curl with the same value succeeds (proxy is not the culprit)"| cls.client_sent_bad_header
-    ev.reproduce_with_curl_same_ua -->|"implies: curl with a normal value succeeds but same value reproduces the GOAWAY (proxy adds/preserves the whitespace)"| cls.proxy_reencode_bug
+    ev.check_client_version_string -->|"next_check: version IS populated -- version alone doesn't explain the malformed value; verify what actually reaches the wire"| ev.reproduce_with_curl_same_ua
+    ev.reproduce_with_curl_same_ua -->|"implies: curl sending the same malformed value REPRODUCES the wire-format rejection AND a baseline value succeeds -- proxy transmits both faithfully, so the client is the source of the malformed value"| cls.client_sent_bad_header
+    ev.reproduce_with_curl_same_ua -->|"implies: curl succeeds even sending the same malformed value BUT the client still fails -- the proxy is doing something specific to the failing client's connections (HTTP/2 upgrade path, client fingerprint, etc.)"| cls.proxy_reencode_bug
     cls.client_sent_bad_header -->|"escalates_to"| ask.report_client_bug
     cls.proxy_reencode_bug -->|"escalates_to"| ask.mitmproxy_version_and_doctor
 

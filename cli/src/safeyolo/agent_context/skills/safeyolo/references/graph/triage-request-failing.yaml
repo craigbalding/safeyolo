@@ -307,8 +307,9 @@ edges:
   - {from: cls.header_wire_format_violation, to: ev.check_client_version_string, kind: next_check}
   - {from: cls.header_wire_format_violation, to: ev.reproduce_with_curl_same_ua, kind: next_check}
   - {from: ev.check_client_version_string,   to: cls.client_sent_bad_header, kind: implies, when: "version is empty or missing AND the offending value looks like a version-templated header (e.g. 'GitHub CLI ')"}
-  - {from: ev.reproduce_with_curl_same_ua,   to: cls.client_sent_bad_header, kind: implies, when: "curl with the same value succeeds (proxy is not the culprit)"}
-  - {from: ev.reproduce_with_curl_same_ua,   to: cls.proxy_reencode_bug,     kind: implies, when: "curl with a normal value succeeds but same value reproduces the GOAWAY (proxy adds/preserves the whitespace)"}
+  - {from: ev.check_client_version_string,   to: ev.reproduce_with_curl_same_ua, kind: next_check, when: "version IS populated -- version alone doesn't explain the malformed value; verify what actually reaches the wire"}
+  - {from: ev.reproduce_with_curl_same_ua,   to: cls.client_sent_bad_header, kind: implies, when: "curl sending the same malformed value REPRODUCES the wire-format rejection AND a baseline value succeeds -- proxy transmits both faithfully, so the client is the source of the malformed value"}
+  - {from: ev.reproduce_with_curl_same_ua,   to: cls.proxy_reencode_bug,     kind: implies, when: "curl succeeds even sending the same malformed value BUT the client still fails -- the proxy is doing something specific to the failing client's connections (HTTP/2 upgrade path, client fingerprint, etc.)"}
   - {from: cls.client_sent_bad_header, to: ask.report_client_bug, kind: escalates_to}
   - {from: cls.proxy_reencode_bug,     to: ask.mitmproxy_version_and_doctor, kind: escalates_to}
 
