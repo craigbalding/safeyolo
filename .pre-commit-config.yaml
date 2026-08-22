@@ -48,6 +48,17 @@ repos:
         files: ^(tests/blackbox/.*\.py|docs/blackbox-coverage\.md)$
         pass_filenames: false
 
+      # If a source line carries a `# SKILL: <ref>` marker and it changes,
+      # the referenced skill reference file must be in the same diff.
+      # The script inspects `git diff --cached` itself, so pass_filenames is
+      # false; always_run is true (cheap: no diff -> instant exit 0).
+      - id: skill-marker-drift
+        name: Skill marker / reference drift
+        entry: python3 scripts/check_skill_markers.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: local-codeql
         name: Local CodeQL security and quality analysis
         entry: uv run python scripts/check_codeql.py
