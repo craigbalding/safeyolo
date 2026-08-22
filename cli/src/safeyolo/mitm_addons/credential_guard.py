@@ -24,6 +24,7 @@ from mitmproxy import ctx, http
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, Severity
 from safeyolo.core.base import SecurityAddon
 from safeyolo.detection import (
+    DEFAULT_RULES,
     CredentialRule,
     analyze_headers,
     detect_credential_type,
@@ -256,14 +257,37 @@ class CredentialGuard(SecurityAddon):
         self.safe_headers_config = cg.get("safe_headers", {})
 
     def _load_rules_from_policy(self, config: dict):
-        """Load credential rules from policy configuration.
+        """Load credential rules.
 
-        Args:
-            config: Sensor config dict with credential_rules
+        Rules are built by taking `safeyolo.detection.DEFAULT_RULES`
+        (openai, anthropic, github token families) and appending any
+        rules supplied by the policy under `credential_rules`, in the
+        order they appear. A policy can therefore add classifiers for
+        internal services or additional third-party credential types
+        without displacing the built-in ones. If two entries share a
+        classifier name (e.g. both call themselves `github`), both are
+        kept and the first pattern to match wins per the iteration
+        order in `detect_credential_type` -- policy-supplied rules
+        therefore act as fallbacks after the defaults, not overrides.
+
+        Operators who want no built-in classification can set
+        `addons.credential_guard.use_default_credential_rules: false`
+        to skip `DEFAULT_RULES` entirely and use only what the policy
+        supplies.
+
+        Malformed policy rules are logged at WARNING and skipped; the
+        remaining rules load normally.
         """
         raw_rules = config.get("credential_rules", [])
-        self.rules = []
+        cg_addon_config = config.get("addons", {}).get("credential_guard", {})
+        use_defaults = cg_addon_config.get("use_default_credential_rules", True)
 
+        self.rules = []
+        if use_defaults:
+            self.rules.extend(DEFAULT_RULES)
+            log.info(f"Loaded {len(DEFAULT_RULES)} default credential rules")
+
+        added_from_policy = 0
         for r in raw_rules:
             try:
                 self.rules.append(CredentialRule(
@@ -273,13 +297,14 @@ class CredentialGuard(SecurityAddon):
                     header_names=r.get("header_names", ["authorization", "x-api-key"]),
                     suggested_url=r.get("suggested_url", ""),
                 ))
+                added_from_policy += 1
             except Exception as e:
                 log.warning(f"Invalid credential rule '{r.get('name', 'unknown')}': {type(e).__name__}: {e}")
 
-        if self.rules:
-            log.info(f"Loaded {len(self.rules)} credential rules from policy")
-        else:
-            log.warning("No credential rules loaded from policy")
+        if added_from_policy:
+            log.info(f"Loaded {added_from_policy} credential rules from policy")
+        elif not use_defaults:
+            log.info("No credential rules loaded (use_default_credential_rules=false and policy supplied none)")
 
     def _maybe_reload_rules(self):
         """Reload credential rules and config if policy changed.

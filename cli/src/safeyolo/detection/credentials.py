@@ -137,9 +137,46 @@ DEFAULT_RULES = [
         patterns=[r"sk-ant-api[a-zA-Z0-9_-]{90,}"],
         allowed_hosts=["api.anthropic.com"],
     ),
+    # GitHub tokens are split across six prefix families. All classify to
+    # the `github` type so a policy `credential: ["github:*"]` allow
+    # condition covers every family. Keeping each family in its own
+    # entry makes it easy to add or tune one without touching the
+    # others, and mirrors the per-family entries in
+    # `detection.patterns.DEFAULT_PATTERNS` used by the DLP scanner.
     CredentialRule(
+        # Classic personal access token.
         name="github",
-        patterns=[r"gh[ps]_[a-zA-Z0-9]{36}"],
+        patterns=[r"ghp_[A-Za-z0-9]{36,251}"],
+        allowed_hosts=["api.github.com", "github.com"],
+    ),
+    CredentialRule(
+        # OAuth App user token issued by the browser / device flow.
+        name="github",
+        patterns=[r"gho_[A-Za-z0-9]{36,251}"],
+        allowed_hosts=["api.github.com", "github.com"],
+    ),
+    CredentialRule(
+        # GitHub App user-to-server token.
+        name="github",
+        patterns=[r"ghu_[A-Za-z0-9]{36,251}"],
+        allowed_hosts=["api.github.com", "github.com"],
+    ),
+    CredentialRule(
+        # GitHub App server-to-server (installation) token.
+        name="github",
+        patterns=[r"ghs_[A-Za-z0-9]{36,251}"],
+        allowed_hosts=["api.github.com", "github.com"],
+    ),
+    CredentialRule(
+        # Refresh token.
+        name="github",
+        patterns=[r"ghr_[A-Za-z0-9]{36,251}"],
+        allowed_hosts=["api.github.com", "github.com"],
+    ),
+    CredentialRule(
+        # Fine-grained personal access token.
+        name="github",
+        patterns=[r"github_pat_[A-Za-z0-9_]{60,255}"],
         allowed_hosts=["api.github.com", "github.com"],
     ),
 ]
