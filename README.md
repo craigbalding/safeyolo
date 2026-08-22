@@ -158,16 +158,21 @@ See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop 
 
 ## Key Features
 
-- **One-command agent setup** — host scripts in `contrib/` install and configure Claude Code, OpenAI Codex, or any tool of your choice; a minimal `mise-shell-host-setup.sh` drops you into a ready sandbox for BYO agents
-- **Strong isolation** — each agent in its own sandbox: hardware-backed microVM on macOS, gVisor on Linux
-- **Structural egress control** — sandbox has no external network interface; the only path out is a per-agent host socket routed through the proxy. No firewall rules to misconfigure.
-- **Scoped API access** — grant agents specific capabilities per service
-- **Credential isolation** — agents access your services without seeing your keys
-- **Human-in-the-loop** — risky actions need approval via `safeyolo watch`
-- **Rate limiting** — prevent runaway loops from harming your IP reputation
-- **Audit trail** — every request logged with decisions and correlation
-- **Persistent sandboxes** — mise installs, shell history, agent state survive restarts
-- **Proper terminal** — full PTY with resize support (vsock bridge on macOS, `runsc exec` on Linux)
+- **One-command agent setup** — host scripts configure Claude Code, OpenAI Codex, or your own agent; `mise-shell-host-setup.sh` gives you a ready sandbox for anything else
+- **Strong isolation** — each agent gets its own sandbox: a hardware-backed Linux microVM on macOS, rootless gVisor on Linux
+- **Structural egress control** — sandboxes have no external network interface; the only path out is a per-agent host socket through SafeYolo. No firewall rules to bypass or misconfigure.
+- **Safe browser and desktop previews** — agents can run browsers, graphical tools and the webapps they are building inside the sandbox, while giving the operator a safe window onto the result without exposing the host
+- **First-class traffic inspection** — inspect each agent's live HTTP(S) traffic through mitmproxy's web interface; particularly useful for debugging, QA and security testing against remote applications and APIs
+- **Operator access from anywhere over Tailscale** — if you use Tailscale, publish the traffic-inspection UI and agent previews to your tailnet so you can review, approve or debug from any device without exposing anything to the public internet
+- **Scoped network access** — allow, deny, prompt or rate-limit access by host, with per-agent overrides and a global traffic budget
+- **Capability-scoped service access** — give an agent only the operations it needs against services such as Gmail or GitHub; risky routes can require explicit approval
+- **Credentials stay outside the sandbox** — SafeYolo holds real credentials and injects them only into authorized requests; credential guards stop secrets being sent to the wrong destination
+- **Human-in-the-loop where it matters** — new egress, credential use and risky service actions can stop for approval in `safeyolo watch`, rather than interrupting the agent for routine work
+- **Runaway protection** — rate budgets, circuit breakers and loop detection contain broken retry loops before they hammer an API, fill logs or damage your IP reputation
+- **Agent-visible guardrails** — agents can inspect their own policy, budgets, available capabilities and block reasons, then self-correct instead of guessing
+- **Traffic evidence and audit trail** — correlated audit events and queryable HTTP flow recording preserve what actually happened, including test context for QA and security workflows
+- **Productive sandboxes** — toolchains, shell history and agent state persist; agents get a real PTY, guest-local root for package installs, and useful in-sandbox debugging
+- **Bring your own environment** — use the standard dev image or build and clone custom environments such as Kali or Alpine
 
 ## Multiple Agents
 
