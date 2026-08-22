@@ -266,6 +266,17 @@ echo "[static] sshd launched pid=$!" > /dev/console 2>/dev/null || true
 
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 
+# Restore classic same-uid ptrace semantics INSIDE the sandbox. Debian
+# and Ubuntu ship Linux YAMA's `ptrace_scope=1` by default (parent-only
+# attach). Inside a per-agent gVisor sandbox that policy is
+# counterproductive: an agent trying to attach py-spy / rbspy / gdb /
+# strace to a sibling process it owns hits EPERM even though the target
+# is the same uid. The blast radius of relaxing this is the sandbox
+# itself -- gVisor's sentry serves its own /proc/sys view, so this
+# write does NOT touch the host's YAMA policy.
+# Silent-fail so hosts / kernels without YAMA compiled in do not error.
+sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
+
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
 # to exec after a restore. VirtioFS file reads are unreliable post-
 # resume in this framework (stat works via cached dentry, but open+read

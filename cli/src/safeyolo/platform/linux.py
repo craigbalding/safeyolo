@@ -1519,12 +1519,19 @@ class LinuxPlatform(AgentPlatform):
         # Capabilities: CAP_CHOWN for guest-init to chown /home/agent
         # to uid 1000 (gVisor's sentry handles this internally).
         # CAP_NET_ADMIN for ip addr add (agent IP on lo).
+        # CAP_SYS_PTRACE lets guest-root (via `sudo` or
+        # `setpriv --reuid=0`) bypass Linux YAMA's ptrace-relationship
+        # check on non-parent same-uid attach. Ordinary agent uid 1000
+        # does NOT hold this cap; agents needing it opt in through the
+        # existing setpriv path. Blast radius: this sandbox only --
+        # gVisor's sentry never gives capabilities to the host kernel.
         root_caps = [
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
             "CAP_NET_BIND_SERVICE", "CAP_SYS_CHROOT",
             "CAP_NET_ADMIN",
             "CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_SETFCAP",
+            "CAP_SYS_PTRACE",
         ]
         # Rootfs is the directory tree at OCI root.path — gVisor reads
         # the tree directly. No dev.gvisor.spec.rootfs.source /
