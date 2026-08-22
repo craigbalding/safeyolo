@@ -42,6 +42,38 @@ interfaces; do not try to bypass or weaken it.
 
 Read only the reference needed for the current task.
 
+## Triage graphs
+
+For fast-turn triage, use the graphs in [`references/graph/`](references/graph/)
+as decision aids rather than re-deriving SafeYolo's plane story every time.
+Each `.yaml` is the source of truth; the `.mmd` next to it is a mermaid
+render for a human operator watching over my shoulder.
+
+Available graphs:
+
+- `triage-request-failing.yaml` — bind a "request through SafeYolo failed"
+  symptom (401 upstream, 403, 428, 429, 503, 508, `/api/flows/search`
+  count:0, gh transport-flavored error after OAuth polls) to an entry
+  node, walk `next_check` edges, land on a bounded conclusion or an
+  `operator_ask`. Covers upstream-vs-block classification, credential-guard
+  vs network-guard, budget/circuit paths, and the observability-plane gap
+  that trips up flow-search queries.
+
+**Traversal protocol I follow when using a graph in-context:**
+
+1. State the entry-node match out loud so the reader can see the bind.
+2. At each `evidence` node, state which endpoint or operator command
+   yields the value I'm reading.
+3. Follow `implies` / `rules_out` edges by the evidence value.
+4. Land on a `conclusion` or `operator_ask` and stop.
+5. **Graph gap:** if the evidence I have is not covered by an outgoing
+   edge, say `Graph gap` explicitly, name the node id, edit the YAML
+   with a new node/edge, run `scripts/render_skill_graph.py`, and only
+   then continue. Do not guess and continue with an unwritten edge.
+
+The graphs are mine to maintain. When I add a new symptom or find a
+missing edge during real triage, I update the YAML in the same turn.
+
 ## Preserve the boundary
 
 - Use `http://_safeyolo.proxy.internal`, never HTTPS, for the virtual Agent API.

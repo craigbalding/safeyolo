@@ -1,0 +1,265 @@
+# Triage graph: "a request through SafeYolo failed / was blocked / behaved weirdly".
+#
+# I (the agent operating in a SafeYolo sandbox) use this to bind an observed
+# symptom to an entry node, walk the edges as I collect evidence, and land on
+# a bounded conclusion or an operator ask — rather than re-deriving the shape
+# of SafeYolo's block/upstream/plane story every time.
+#
+# Schema (kept minimal on purpose; extend when a real triage needs something
+# this doesn't cover):
+#
+#   nodes:
+#     - id: unique-slug
+#       kind: symptom | evidence | classification | conclusion | operator_ask
+#       label: one-line human-readable name
+#       detail: prose (optional, only where the label needs it)
+#       source: source path or `authored` (for provenance when I regenerate)
+#
+#   edges:
+#     - from: node-id
+#       to: node-id
+#       kind: next_check | implies | rules_out | escalates_to
+#       when: short condition string (evidence-shape or classification)
+#
+#   entries:
+#     - symptom: node-id       # nodes I can bind an observed symptom to
+#
+# Traversal protocol I follow when I use this graph in-context:
+#   1. Match the observed symptom to an `entries` node. State the match out
+#      loud, so the user reading over my shoulder sees the entry choice.
+#   2. Follow `next_check` edges to collect evidence; state which endpoint I
+#      hit and what field I'm reading.
+#   3. Follow `implies` / `rules_out` edges based on the evidence value.
+#   4. Land on a `conclusion` or `operator_ask` and stop.
+#   5. **Graph gap:** if at any node the evidence I have is not covered by an
+#      outgoing edge, say `Graph gap` explicitly, name the node id, and edit
+#      this YAML with a new edge before moving on. Do NOT guess and continue.
+
+nodes:
+  # ---- Symptoms (what I observed) --------------------------------------
+  - id: sym.upstream_401
+    kind: symptom
+    label: "Upstream returned 401"
+    detail: "Client received a 401 from a normal-looking response; no SafeYolo block markers."
+    source: authored
+
+  - id: sym.status_403
+    kind: symptom
+    label: "Response was 403"
+    source: authored
+
+  - id: sym.status_428
+    kind: symptom
+    label: "Response was 428 (approval / self-correct)"
+    source: authored
+
+  - id: sym.status_429
+    kind: symptom
+    label: "Response was 429 (rate / budget)"
+    source: authored
+
+  - id: sym.status_503
+    kind: symptom
+    label: "Response was 503 (dependency / circuit)"
+    source: authored
+
+  - id: sym.status_508
+    kind: symptom
+    label: "Response was 508 (loop guard)"
+    source: authored
+
+  - id: sym.flow_search_empty
+    kind: symptom
+    label: "/api/flows/search returned count:0 for traffic I know happened"
+    source: authored
+
+  - id: sym.gh_error_after_ok_polls
+    kind: symptom
+    label: "gh printed a transport-flavored error after OAuth polls returned 200s"
+    detail: "e.g. HTTP/2 GOAWAY, connection reset, could-not-authenticate; the source of the phrasing is the CLI, not the wire."
+    source: authored
+
+  # ---- Evidence (what I check next) ------------------------------------
+  - id: ev.check_x_blocked_by
+    kind: evidence
+    label: "Inspect X-Blocked-By header on the failing response"
+    source: authored
+
+  - id: ev.check_response_body_json
+    kind: evidence
+    label: "Parse response body for `type`, `action`, `reflection`, `reason`, `Retry-After`"
+    source: authored
+
+  - id: ev.check_lookup_host
+    kind: evidence
+    label: "GET /lookup?host=HOST — network:request effect for that host"
+    source: authored
+
+  - id: ev.check_policy_credential_use
+    kind: evidence
+    label: "GET /policy — look for credential:use permission on the target host"
+    detail: "policy-plane rule that fires only when detection classified a credential"
+    source: authored
+
+  - id: ev.check_config_credential_rules
+    kind: evidence
+    label: "GET /config — read credential_rules array"
+    detail: "empty list means the detection plane loaded no custom patterns"
+    source: authored
+
+  - id: ev.check_status_security_events
+    kind: evidence
+    label: "Operator runs `safeyolo logs --event security --tail 20` for the failing time window"
+    source: authored
+
+  - id: ev.check_explain_request_id
+    kind: evidence
+    label: "GET /explain?request_id=req-... using request_id from safeyolo logs"
+    source: authored
+
+  - id: ev.check_budgets
+    kind: evidence
+    label: "GET /budgets — remaining for the target host"
+    source: authored
+
+  - id: ev.check_circuits
+    kind: evidence
+    label: "GET /circuits — state for the target host"
+    source: authored
+
+  - id: ev.check_context_header_and_targets
+    kind: evidence
+    label: "Confirm request carried X-Test-Context AND policy test_context.target_hosts non-empty"
+    source: authored
+
+  # ---- Classifications (which plane owns this) --------------------------
+  - id: cls.upstream_only
+    kind: classification
+    label: "Upstream response; no SafeYolo plane action"
+    source: authored
+
+  - id: cls.policy_block
+    kind: classification
+    label: "Policy-plane block (network_guard / credential_guard / service_gateway)"
+    source: authored
+
+  - id: cls.approval_gate
+    kind: classification
+    label: "Policy-plane approval-required (safeyolo watch)"
+    source: authored
+
+  - id: cls.budget_exhausted
+    kind: classification
+    label: "Policy-plane budget exhausted"
+    source: authored
+
+  - id: cls.circuit_open
+    kind: classification
+    label: "Circuit-breaker tripped for this host"
+    source: authored
+
+  - id: cls.observability_gate
+    kind: classification
+    label: "Observability-plane gap (recording preconditions not met)"
+    source: authored
+
+  # ---- Conclusions & operator asks --------------------------------------
+  - id: con.self_correct_request
+    kind: conclusion
+    label: "Self-correct the request (destination / credential / method) and retry"
+    source: authored
+
+  - id: con.honor_retry_after
+    kind: conclusion
+    label: "Honor Retry-After, back off, retry once budget resets"
+    source: authored
+
+  - id: con.upstream_auth_issue
+    kind: conclusion
+    label: "Upstream rejected the credential; not a SafeYolo action"
+    detail: "Common flavours: bad token, OAuth SSO not authorized for org, token scope insufficient, revoked."
+    source: authored
+
+  - id: ask.watch_for_approval
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and approve the specific host/capability/binding"
+    source: authored
+
+  - id: ask.diag_agent
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo agent diag <name>` (attribution / bridge / end-to-end route)"
+    source: authored
+
+  - id: ask.policy_add_host
+    kind: operator_ask
+    label: "Ask operator: `safeyolo policy host add HOST --agent AGENT`"
+    source: authored
+
+  - id: ask.logs_request_id
+    kind: operator_ask
+    label: "Ask operator for the request_id via `safeyolo logs --request-id req-... --raw`"
+    source: authored
+
+
+edges:
+  # From symptoms to first-cut evidence checks
+  - {from: sym.upstream_401, to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.status_403,   to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.status_428,   to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.status_429,   to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.status_503,   to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.status_508,   to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.gh_error_after_ok_polls, to: ev.check_status_security_events, kind: next_check}
+
+  # X-Blocked-By presence classifies plane
+  - {from: ev.check_x_blocked_by, to: ev.check_response_body_json, kind: next_check, when: "header present"}
+  - {from: ev.check_x_blocked_by, to: cls.upstream_only,            kind: implies,     when: "header absent AND status is upstream-shaped (401/403/404/5xx)"}
+
+  # Body JSON drives the exact policy branch
+  - {from: ev.check_response_body_json, to: cls.policy_block,     kind: implies, when: "type refers to network_guard or credential_guard route"}
+  - {from: ev.check_response_body_json, to: cls.approval_gate,    kind: implies, when: "action == wait_for_approval"}
+  - {from: ev.check_response_body_json, to: cls.budget_exhausted, kind: implies, when: "type mentions budget or Retry-After present"}
+  - {from: ev.check_response_body_json, to: cls.circuit_open,     kind: implies, when: "X-Blocked-By == circuit-breaker"}
+
+  # Upstream_only leads to the actual upstream diagnosis path
+  - {from: cls.upstream_only, to: ev.check_policy_credential_use, kind: rules_out, when: "confirming no credential:use policy would have caught it silently"}
+  - {from: cls.upstream_only, to: con.upstream_auth_issue,        kind: implies,    when: "status == 401"}
+
+  # Policy_block branch has plane-specific verification
+  - {from: cls.policy_block, to: ev.check_lookup_host,             kind: next_check}
+  - {from: cls.policy_block, to: ev.check_config_credential_rules, kind: next_check, when: "credential-guard involved"}
+  - {from: ev.check_lookup_host, to: ask.policy_add_host,          kind: implies,     when: "effect == deny AND host is expected"}
+  - {from: ev.check_lookup_host, to: con.self_correct_request,     kind: implies,     when: "effect == deny AND host is a mistake"}
+
+  # Budget / circuit branches to their conclusions
+  - {from: cls.budget_exhausted, to: ev.check_budgets, kind: next_check}
+  - {from: ev.check_budgets,     to: con.honor_retry_after, kind: implies}
+  - {from: cls.circuit_open,     to: ev.check_circuits, kind: next_check}
+  - {from: ev.check_circuits,    to: con.honor_retry_after, kind: implies}
+
+  # Approval gate → operator ask
+  - {from: cls.approval_gate, to: ask.watch_for_approval, kind: escalates_to}
+
+  # Flow-search-empty branch — the mistake I made today
+  - {from: sym.flow_search_empty, to: ev.check_context_header_and_targets, kind: next_check}
+  - {from: ev.check_context_header_and_targets, to: cls.observability_gate, kind: implies, when: "either precondition is missing"}
+  - {from: cls.observability_gate, to: con.self_correct_request, kind: implies, when: "recording is what I wanted; either send the header or add host to test_context.target_hosts"}
+
+  # Correlation escape hatch — from any evidence branch, if the picture is unclear, get the request_id and use /explain
+  - {from: ev.check_response_body_json, to: ask.logs_request_id, kind: next_check, when: "picture is unclear after body inspection"}
+  - {from: ask.logs_request_id,         to: ev.check_explain_request_id, kind: next_check}
+
+  # Security-events check drives the gh-flavored branch
+  - {from: ev.check_status_security_events, to: cls.upstream_only, kind: implies, when: "no security events on the target host in the failing window"}
+  - {from: ev.check_status_security_events, to: cls.policy_block,  kind: implies, when: "any security event fired on the target host"}
+
+
+entries:
+  - symptom: sym.upstream_401
+  - symptom: sym.status_403
+  - symptom: sym.status_428
+  - symptom: sym.status_429
+  - symptom: sym.status_503
+  - symptom: sym.status_508
+  - symptom: sym.flow_search_empty
+  - symptom: sym.gh_error_after_ok_polls
