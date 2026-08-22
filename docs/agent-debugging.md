@@ -56,20 +56,22 @@ when `/dev/kvm` is available on the host.
 | `CAP_SYS_PTRACE` in `root_caps`             | granted; reached only via `setpriv --reuid=0` (guest root)|
 | `/proc/$pid/mem` sampler (py-spy, rbspy)    | works same-uid, any relationship, no elevation            |
 | `process_vm_readv` / `process_vm_writev`    | works same-uid                                            |
-| `ptrace()` attach (strace -p, gdb -p)       | works on `--platform=kvm`; **not implemented** on systrap |
+| `ptrace()` attach (strace -p, gdb -p)       | works on both platforms; gVisor's Sentry implements guest `ptrace(2)` including `PTRACE_ATTACH` and `PTRACE_SEIZE` |
 | `strace -f cmd` (launch under strace)       | works                                                     |
 | `perf_event_open`                           | not exposed by gVisor                                     |
 | eBPF / bpftrace                             | not exposed by gVisor                                     |
 | ftrace / `/sys/kernel/tracing`              | not exposed by gVisor                                     |
 | Guest sudo helper (`sudo -n`)               | rootless-gVisor shim via `setpriv` — see [`guest-tools.md`](../cli/src/safeyolo/agent_context/skills/safeyolo/references/guest-tools.md) |
 
-The systrap `ptrace()` case is the one users hit most often. The failure
-signature is `ptrace(PTRACE_SEIZE, ...): Operation not permitted` even
-though the target is same-uid. No amount of elevation lifts it —
-gVisor's sentry does not implement the syscall on systrap. The correct
-fix is to switch to a `/proc/$pid/mem`-based sampler (`py-spy`, `rbspy`)
-or to launch the target under `strace -f cmd` rather than attaching
-mid-run.
+Debian and Ubuntu ship Linux YAMA at `ptrace_scope=1` by default, which
+blocks non-parent same-uid attach even though the guest `ptrace()`
+syscall is implemented. safeyolo's `guest-init-static.sh` sets guest
+YAMA to `0` at boot (#295), which restores conventional same-UID
+tracing. Attach paths that were previously failing with
+`ptrace(PTRACE_SEIZE, ...): Operation not permitted` work after that
+sysctl is honoured. `CAP_SYS_PTRACE` in `root_caps` is a backstop for
+runs where the guest-init sysctl write did not land (kernels compiled
+without YAMA, or where the sysctl view is not writable).
 
 ### macOS host (Apple Virtualization microVM)
 
@@ -130,14 +132,12 @@ sudo -n apt-get install -y strace   # Debian/Ubuntu/Kali rootfs
 strace -f -p $(pgrep -f my_worker)
 ```
 
-On systrap gVisor, the `strace -f -p` case will return EPERM. Prefer
-launching under strace:
+Launch-under-strace is an alternative when you want the full syscall
+history from process start rather than from attach time:
 
 ```sh
 strace -f -o /tmp/tr.log ./my_worker
 ```
-
-or attach with a `/proc/mem`-based sampler instead.
 
 ## What it will not do
 

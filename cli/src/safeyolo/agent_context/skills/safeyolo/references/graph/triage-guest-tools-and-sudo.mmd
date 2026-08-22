@@ -15,7 +15,7 @@ flowchart TD
     sym.tools_mise_install_hangs(["'mise install python@X' hangs or times out downloading the runtime"])
     sym.tools_pip_ssl_or_timeout(["'pip install PACKAGE' fails with SSL error or long timeout"])
     sym.tools_download_28x_block(["Package download returned a 428 (wait_for_approval) from SafeYolo"])
-    sym.tools_ptrace_denied(["Debugger / profiler / sampler cannot attach to a running same-uid process (ptrace, strace, gdb, py-spy record --pid, rbspy record --pid, perf record -p, ...)"])
+    sym.tools_ptrace_denied(["Debugger / profiler / sampler cannot attach to a running same-uid process (ptrace, strace, gdb, py-spy record --pid, rbspy record --pid, ...)"])
     ev.tools_check_sudo_path["which sudo -- and readlink -f the result; setuid bit present?"]
     ev.tools_check_setpriv["test -x /usr/bin/setpriv -- guest fallback path when sudo is unavailable (Linux gVisor only)"]
     ev.tools_check_proxy_env["env / grep -E '^(HTTP/HTTPS)_PROXY=' -- most package tools need these set (mise, apt via apt.conf)"]
@@ -25,10 +25,9 @@ flowchart TD
     ev.tools_check_budgets_for_host["GET /budgets -- remaining for the package host and __global__"]
     ev.tools_check_response_body["Read the SafeYolo block body -- type, action, reflection tell whether this is credential-guard / network-guard / budget"]
     ev.tools_check_release_apt_keyring["ls /usr/share/keyrings/ /etc/apt/keyrings/ -- the mirror's signing key must be locally trusted regardless of proxy"]
-    ev.tools_check_gvisor_platform["Check whether the sandbox is running under gVisor and which platform (systrap vs kvm)"]
-    ev.tools_check_setpriv_helps_ptrace["Try the invocation under 'setpriv --reuid=0 --regid=0 --clear-groups'. If it succeeds, YAMA / caps were the blocker (fixable). If the same EPERM returns, gVisor's sentry has not wired up the syscall (not fixable inside the guest)."]
+    ev.tools_check_setpriv_helps_ptrace["Try the invocation under 'setpriv --reuid=0 --regid=0 --clear-groups'. If it succeeds, YAMA was the block on the ordinary uid; setpriv-root inherits 'CAP_SYS_PTRACE' which bypasses YAMA. Use this as the workaround on runs where the guest-init sysctl write did not land."]
     ev.tools_check_yama_scope["cat /proc/sys/kernel/yama/ptrace_scope -- expected '0' inside a safeyolo sandbox (guest-init relaxes it). A '1' or '2' means the guest-init YAMA fix did not apply on this run."]
-    ev.tools_check_procmem_readable["test -r /proc/TARGET_PID/mem -- if not readable and the sampler is same-uid, YAMA or file caps are blocking; if readable but ptrace()-based attach still fails, the block is at the ptrace() syscall level"]
+    ev.tools_check_procmem_readable["test -r /proc/TARGET_PID/mem -- if not readable and the sampler is same-uid, YAMA is blocking. Same YAMA gate as the ptrace() syscall; a fresh sandbox with guest-init YAMA-0 applied should read fine."]
     ev.check_client_updates_upstream["Look online for a newer release of the package manager / tool itself and check its changelog and issue tracker for this specific failure signature"]
     cls.tools_sudo_helper_missing{{"Guest sudo helper is broken (config missing / not setuid)"}}
     cls.tools_setpriv_needed{{"gVisor setpriv is the correct root-inside-guest path here"}}
@@ -37,13 +36,12 @@ flowchart TD
     cls.tools_package_budget_exhausted{{"Budget for the package host is exhausted; wait or negotiate a higher budget"}}
     cls.tools_apt_key_untrusted{{"apt signing key for the mirror is not trusted regardless of the proxy path"}}
     cls.tools_package_manager_bug{{"Package manager / tool itself has a bug: proxy env set, policy allows the host, budget healthy, keys trusted -- yet the tool still fails (mise install algorithm hang, pip resolver crash, apt bug, etc.)"}}
-    cls.tools_gvisor_syscall_unsupported{{"gVisor's sentry does not implement the requested syscall on the current platform (systrap ptrace()). EPERM here means 'not wired up,' not 'cap missing.' Neither 'sudo' nor 'setpriv' nor 'CAP_SYS_PTRACE' can lift this -- it's a substrate limitation, not a policy one. Switch to a tool that uses '/proc/$pid/mem' instead (py-spy, rbspy)."}}
     cls.tools_yama_stale_scope{{"YAMA scope is still >=1 inside the guest -- the safeyolo YAMA-0 fix did not apply on this run. Either the safeyolo version is older than the fix, or the sysctl write silently failed at boot."}}
     con.tools_use_setpriv(["Use 'setpriv --reuid=0 --regid=0 --clear-groups CMD' (Linux gVisor only) instead of chasing sudo"])
     con.tools_set_proxy_env_for_tool(["Set HTTP_PROXY / HTTPS_PROXY inline or via a tool-specific config (apt.conf.d, pip.conf, npmrc)"])
     con.tools_use_configured_manager(["For runtimes prefer mise -- it caches under /home/agent/.mise and survives cold restarts"])
     con.tools_wait_for_budget(["Wait for the budget window to reset before retrying; do not loop"])
-    con.tools_use_non_ptrace_tool(["Switch to a tool that does not use ptrace(): 'py-spy' / 'rbspy' (read /proc/$pid/mem), eBPF where the sentry allows it, language-native debuggers with alternative attach paths, or 'strace -f cmd' (launch under strace) instead of 'strace -p PID' (attach). Inside safeyolo with guest-init YAMA-0 applied, py-spy/rbspy can attach to any same-uid process without a relationship or elevation. If no non-ptrace equivalent exists for the specific triage, report the limitation in-band and pick the closest workable alternative -- do NOT escalate to the operator (gVisor platform is deterministic; there is nothing for the operator to change from the guest's perspective) and do NOT push the debugging out to the host."])
+    con.tools_use_non_ptrace_tool(["Alternative attach paths when a ptrace-attach is not required: 'py-spy' / 'rbspy' (bounded /proc/$pid/mem samplers, cheap for profiling), or 'strace -f cmd' (launch under strace) instead of 'strace -p PID' (attach). These are style choices with guest YAMA=0 applied; both ptrace-attach and /proc/mem paths work same-uid without elevation. Do NOT frame this as a workaround for a substrate limitation."])
     con.tools_retry_under_setpriv(["Re-run the attach under 'setpriv --reuid=0 --regid=0 --clear-groups'. 'CAP_SYS_PTRACE' in the sandbox's root_caps bypasses YAMA for the elevated process; use this on runs where the guest-init YAMA-0 sysctl did not apply."])
     ask.tools_repair_sudo[["Ask operator to run 'safeyolo agent shell <name> --root' and repair the guest sudo helper. Use this ONLY when guest sudo itself is broken, never for a policy or approval block."]]
     ask.tools_policy_add_package_host[["Ask operator to 'safeyolo policy host add HOST --agent AGENT' for the specific package host"]]
@@ -89,13 +87,10 @@ flowchart TD
     sym.tools_ptrace_denied -->|"next_check"| ev.tools_check_yama_scope
     sym.tools_ptrace_denied -->|"next_check"| ev.tools_check_procmem_readable
     sym.tools_ptrace_denied -->|"next_check"| ev.tools_check_setpriv_helps_ptrace
-    sym.tools_ptrace_denied -->|"next_check"| ev.tools_check_gvisor_platform
     ev.tools_check_yama_scope -->|"implies: ptrace_scope reads >=1 -- guest-init sysctl did not land"| cls.tools_yama_stale_scope
     cls.tools_yama_stale_scope -->|"implies"| con.tools_retry_under_setpriv
-    ev.tools_check_setpriv_helps_ptrace -->|"implies: same EPERM returns even under setpriv -- caps and YAMA are ruled out"| cls.tools_gvisor_syscall_unsupported
-    ev.tools_check_gvisor_platform -->|"implies: platform is systrap AND the tool uses ptrace() directly (strace, gdb)"| cls.tools_gvisor_syscall_unsupported
-    cls.tools_gvisor_syscall_unsupported -->|"implies"| con.tools_use_non_ptrace_tool
-    ev.tools_check_procmem_readable -->|"implies: the tool uses /proc/mem AND ptrace_scope is 0 -- no relationship or elevation is needed"| con.tools_use_non_ptrace_tool
+    ev.tools_check_setpriv_helps_ptrace -->|"implies: attach succeeds under setpriv -- CAP_SYS_PTRACE bypasses YAMA on this run"| con.tools_retry_under_setpriv
+    ev.tools_check_procmem_readable -->|"implies: the tool uses /proc/mem AND ptrace_scope is 0 -- no relationship or elevation needed"| con.tools_use_non_ptrace_tool
 
     class sym.tools_sudo_asks_password symptom
     class sym.tools_sudo_command_not_found symptom
@@ -115,7 +110,6 @@ flowchart TD
     class ev.tools_check_budgets_for_host evidence
     class ev.tools_check_response_body evidence
     class ev.tools_check_release_apt_keyring evidence
-    class ev.tools_check_gvisor_platform evidence
     class ev.tools_check_setpriv_helps_ptrace evidence
     class ev.tools_check_yama_scope evidence
     class ev.tools_check_procmem_readable evidence
@@ -127,7 +121,6 @@ flowchart TD
     class cls.tools_package_budget_exhausted classification
     class cls.tools_apt_key_untrusted classification
     class cls.tools_package_manager_bug classification
-    class cls.tools_gvisor_syscall_unsupported classification
     class cls.tools_yama_stale_scope classification
     class con.tools_use_setpriv conclusion
     class con.tools_set_proxy_env_for_tool conclusion
