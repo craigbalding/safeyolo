@@ -341,6 +341,33 @@ class TestPrepareConfigShare:
         assert "_runtime_hostname=$(hostname" in source
         assert 'for _hostname_alias in "$_agent_name" "$_runtime_hostname"' in source
 
+    def test_guest_init_static_populates_root_authorized_keys(self, tmp_config_dir):
+        """`safeyolo agent shell --root` on macOS SSHes to root@sandbox.
+
+        If the operator's authorized_keys is not staged at /root/.ssh
+        at boot, the pubkey handshake fails and --root returns
+        `Permission denied (publickey)`. Regression guard for #296.
+        """
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-static").read_text()
+
+        assert "mkdir -p /root/.ssh" in source
+        assert "cp /safeyolo/authorized_keys /root/.ssh/authorized_keys" in source
+        assert "chown -R root:root /root/.ssh" in source
+        assert "chmod 700 /root/.ssh" in source
+        assert "chmod 600 /root/.ssh/authorized_keys" in source
+
+    def test_guest_init_static_unlocks_root_password_at_boot(self, tmp_config_dir):
+        """OpenSSH on Alpine (9.7+) refuses pubkey auth on `!`-locked
+        accounts. The runtime `usermod -p '*' root` in guest-init-static
+        is the fallback for rootfs that predate the build-time unlock
+        in install-guest-common.sh. Regression guard for #296.
+        """
+        share = prepare_config_share("agent1", "/workspace")
+        source = (share / "guest-init-static").read_text()
+
+        assert "usermod -p '*' root" in source
+
     def test_guest_desktop_launcher_is_staged_and_executable(self, tmp_config_dir):
         share = prepare_config_share("agent1", "/workspace")
         launcher = share / "guest-desktop"
