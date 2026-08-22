@@ -132,3 +132,26 @@ jobs:
       # "edited YAML but forgot to regenerate mermaid" mistake.
       - name: Skill triage graph render check
         run: uv run python scripts/render_skill_graph.py --check
+
+      # User-facing docs cannot reference `safeyolo <cmd>` invocations or
+      # flags that do not exist in the current Typer surface. Needs
+      # SafeYolo importable, which the earlier `uv sync` step provides.
+      - name: Doc CLI-flag drift check
+        run: uv run python scripts/check_doc_cli_flags.py
+
+      # Pinned values in source (rootfs size, mise/gh versions, attribution
+      # CIDR, admin API bind, uid mapping) must match what user-facing docs
+      # quote. Assertions live in scripts/doc_constants.toml.
+      - name: Doc constants drift check
+        run: uv run python scripts/check_doc_constants.py
+
+      # Repo-relative link check on the user-facing doc allowlist. External
+      # URLs deliberately skipped to keep CI offline-safe.
+      - name: Doc repo-relative link check
+        run: uv run python scripts/check_doc_links.py
+
+      # Forbidden-phrase check: fails if any user-facing doc contains a
+      # blacklisted phrase (stale mechanism claims for code removed months
+      # ago). See scripts/doc_forbidden.toml.
+      - name: Doc forbidden-phrase check
+        run: uv run python scripts/check_doc_forbidden.py

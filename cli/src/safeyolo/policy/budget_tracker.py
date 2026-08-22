@@ -31,7 +31,7 @@ class BudgetState:
     last_check: float = 0.0
 
 
-class GCRABudgetTracker:
+class GCRABudgetTracker:  # DOC: SECURITY.md
     """
     GCRA-based budget tracking with per-minute windows.
 

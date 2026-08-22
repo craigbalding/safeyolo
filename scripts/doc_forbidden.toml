@@ -1,0 +1,33 @@
+# Prose blacklist for user-facing docs.
+#
+# For the drift class where the code that used to defend a claim has been
+# removed — nothing left to bind a `# DOC:` marker against, and no pinned
+# value to extract. Only prose vigilance catches these; without a check,
+# stale-mechanism claims survive for months (Docker era: 4 mo; PROXY-v2
+# identity: 4 mo — both survived in SECURITY.md / README.md until this
+# check was added).
+#
+# Each [[rule]] blocks a fixed set of phrases from appearing in a fixed
+# set of docs. Use `reason` to record why the phrases are banned — it
+# gets printed on failure so the reader knows why the check fired without
+# having to git-archaeology the assertion.
+
+[[rule]]
+name = "no-docker-era-language"
+docs = ["SECURITY.md", "README.md"]
+reason = "Docker was removed in PR #130 (April 2026). SafeYolo now runs as a host mitmproxy process; sandboxes are Apple Virtualization.framework microVMs (macOS) or gVisor (Linux). There is no SafeYolo container and no Docker socket to gate."
+forbidden = [
+    "no Docker socket",
+    "SafeYolo container",
+    "control the Docker runtime",
+    "The container runs as",
+]
+
+[[rule]]
+name = "no-proxy-protocol-v2-identity-claim"
+docs = ["README.md", "SECURITY.md"]
+reason = "PR #201 (April 2026) replaced PROXY-protocol-v2 identity with per-agent Unix-domain-socket path-derived peername stamping. See cli/src/safeyolo/proxy_modes/unix_listener.py."
+forbidden = [
+    "PROXY protocol v2",
+    "PROXY-protocol-v2",
+]

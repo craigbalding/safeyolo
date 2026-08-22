@@ -62,7 +62,7 @@ from safeyolo.core.sensor_utils import build_http_event_from_flow
 log = logging.getLogger("safeyolo.network-guard")
 
 
-def detect_homoglyph_attack(text: str) -> dict | None:
+def detect_homoglyph_attack(text: str) -> dict | None:  # DOC: SECURITY.md
     """Detect mixed-script homoglyph attacks in domain names.
 
     Catches spoofing attempts like 'api.οpenai.com' where 'ο' is Cyrillic.

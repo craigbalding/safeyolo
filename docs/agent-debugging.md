@@ -35,11 +35,10 @@ So the default posture is:
    observability, the correct move is to reproduce the workload against
    a real-kernel microVM, not to widen the sandbox.
 
-For the design-level treatment of *why* the Linux gVisor guest works the
-way it does — YAMA emulation, `CAP_SYS_PTRACE`, the two-profile idea,
-and the proposed gVisor introspection broker — see [`agent_debug.md`](../agent_debug.md)
-at the repo root. This document is the user-facing "what you get today"
-counterpart to that design.
+The design rationale — YAMA emulation, `CAP_SYS_PTRACE`, and the gVisor
+guest-ptrace implementation — is captured in the same-UID ptrace commit
+history (PR #295) and the guest-side tests. This document is the
+user-facing "what you get today" counterpart.
 
 ## What the sandbox provides
 

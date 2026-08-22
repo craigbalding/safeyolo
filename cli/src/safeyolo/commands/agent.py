@@ -956,7 +956,7 @@ def _parse_port(port_spec: str) -> str:
 
 
 @agent_app.command()
-def add(
+def add(  # DOC: README.md, docs/AGENTS.md
     name: str = typer.Argument(
         ...,
         help="Instance name (used for run/shell/remove commands)",
@@ -1369,7 +1369,7 @@ def remove(
 
 @agent_app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 @profiled_command("agent run")
-def run(
+def run(  # DOC: README.md, docs/AGENTS.md
     ctx: typer.Context,
     name: str = typer.Argument(..., help="Agent instance name to run"),
     folder: str = typer.Option(None, "--folder", "-f", help="Override folder to mount (default: from agent add)"),
@@ -1500,7 +1500,7 @@ def run(
 
 
 @agent_app.command()
-def shell(
+def shell(  # DOC: docs/agent-debugging.md
     name: str = typer.Argument(..., help="Agent instance name"),
     command: str = typer.Option(None, "--command", "-c", help="Run a command instead of interactive shell"),
     root: bool = typer.Option(
@@ -1541,7 +1541,7 @@ def shell(
 
 
 @agent_app.command()
-def preview(
+def preview(  # DOC: README.md
     name: str = typer.Argument(..., help="Agent instance name"),
     guest_port: int = typer.Argument(..., help="Agent-local HTTP port to preview"),
     host_port: int = typer.Option(
@@ -2225,7 +2225,7 @@ def _load_policy_hosts() -> dict:
 
 
 @agent_app.command()
-def authorize(
+def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     agent_name: str = typer.Argument(..., help="Agent instance name"),
     service_name: str = typer.Argument(..., help="Service to authorize"),
     capability: str = typer.Option(None, "--capability", "-c", help="Capability within the service"),

@@ -1,0 +1,30 @@
+# User-facing docs under drift protection.
+#
+# The four drift checks — check_skill_markers (DOC: markers),
+# check_doc_cli_flags, check_doc_constants, check_doc_links — all read this
+# list to decide what "in scope" means. Adding a doc here brings it under
+# all four mechanisms at once.
+#
+# Explicit list, not a glob: prevents accidental coverage of design docs
+# (docs/*-design.md, docs/FUTURE.md), scratch files at repo root, and
+# already-covered generated docs (docs/blackbox-coverage.md is regenerated
+# from source; see tests/blackbox/gen_docs.py).
+
+user_facing_docs = [
+    "README.md",
+    "SECURITY.md",
+    "guest/README.md",
+    "cli/README.md",
+    "contrib/README.md",
+    "contrib/HOST_SCRIPT_GUIDE.md",
+    "contrib/ROOTFS_SCRIPT_GUIDE.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AGENTS.md",
+    "docs/ADDONS.md",
+    "docs/CONFIGURATION.md",
+    "docs/DEVELOPERS.md",
+    "docs/SERVICE_DISCOVERY.md",
+    "docs/TLS_CERTIFICATE.md",
+    "docs/agent-debugging.md",
+    "docs/security-verification.md",
+]

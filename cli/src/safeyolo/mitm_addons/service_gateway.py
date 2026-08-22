@@ -585,7 +585,7 @@ class ServiceGateway:
                     return
 
         # Refuse to inject credentials over plaintext HTTP — redirect to HTTPS
-        if flow.request.scheme == "http":
+        if flow.request.scheme == "http":  # DOC: SECURITY.md
             https_url = "https://" + flow.request.url[len("http://") :]
             flow.response = http.Response.make(
                 301,
@@ -614,7 +614,7 @@ class ServiceGateway:
             return
 
         # Strip sgw_ token and inject real credential (same header)
-        auth_header = service.auth.header if service.auth else "Authorization"
+        auth_header = service.auth.header if service.auth else "Authorization"  # DOC: SECURITY.md
         del flow.request.headers[auth_header]
         injected_header = auth_header
         if service.auth and service.auth.type == "bearer":
@@ -1086,7 +1086,7 @@ class ServiceGateway:
             return value
         return None
 
-    def _evaluate_capability_routes(self, method, path, capability) -> bool:
+    def _evaluate_capability_routes(self, method, path, capability) -> bool:  # DOC: SECURITY.md
         """Check if method+path is in the capability's route list (positive-list only)."""
         for route in capability.routes:
             if self._method_matches(method, route.methods) and matches_resource_pattern(path, route.path):
@@ -1231,7 +1231,7 @@ class ServiceGateway:
                 request_id=flow.metadata.get("request_id"),
                 agent=binding.agent,
                 addon=self.name,
-                approval=ApprovalRequest(
+                approval=ApprovalRequest(  # DOC: SECURITY.md, README.md
                     required=True,
                     approval_type="gateway_route",
                     key=f"gw:{binding.agent}:{service.name}:{method}:{path}",

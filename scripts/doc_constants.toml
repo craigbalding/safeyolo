@@ -1,0 +1,95 @@
+# Constants-in-prose assertions for check_doc_constants.py.
+#
+# Each [[assertion]] extracts a value from source code with a named-capture
+# regex, then requires the templated `must_contain` string to appear in each
+# listed doc, AND requires none of the `forbidden` strings to appear.
+#
+# When adding an assertion: use the tightest regex you can (avoid greedy
+# matches), name the capture groups, and prefer specific `must_contain`
+# phrases over generic ones ("2048 MiB" beats "MiB").
+
+[[assertion]]
+name = "rootfs-size-mb"
+source = "guest/build-rootfs.sh"
+pattern = 'ROOTFS_SIZE_MB="\$\{ROOTFS_SIZE_MB:-(?P<size_mb>\d+)\}"'
+docs = ["guest/README.md"]
+must_contain = "{size_mb} MiB"
+forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
+
+[[assertion]]
+name = "mise-version-pin"
+source = "guest/build-rootfs.sh"
+pattern = 'MISE_VERSION="\$\{MISE_VERSION:-(?P<mise_version>[0-9.]+)\}"'
+docs = ["guest/README.md"]
+# guest/README.md doesn't currently pin the mise version in prose — this
+# assertion only requires the word "mise" appears somewhere. Kept as a
+# sanity check that the tool is still mentioned; upgrade to full-version
+# pinning when the doc quotes a specific version.
+must_contain = "mise"
+
+[[assertion]]
+name = "gh-version-pin"
+source = "guest/build-rootfs.sh"
+pattern = 'GH_VERSION="\$\{GH_VERSION:-(?P<gh_version>[0-9.]+)\}"'
+docs = ["guest/README.md"]
+must_contain = "gh"
+
+[[assertion]]
+name = "attribution-cidr-linux"
+source = "cli/src/safeyolo/platform/linux.py"
+pattern = 'attribution_ip = f"10\.200\.'
+docs = ["SECURITY.md"]
+must_contain = "synthetic loopback"
+
+[[assertion]]
+name = "admin-api-bind"
+source = "cli/src/safeyolo/mitm_addons/admin_api.py"
+pattern = 'HTTPServer\(\("127\.0\.0\.1", port\)'
+docs = ["SECURITY.md"]
+# Either explicit IP or the equivalent English phrasing is acceptable —
+# avoids spurious failure if a future rewrite prefers "loopback only".
+must_contain_any = ["127.0.0.1", "loopback only", "localhost only"]
+forbidden = ["binds to 0.0.0.0", "binds on all interfaces"]
+
+# Note: "no-Docker-era-language" and "no-PROXY-v2-claim" rules moved to
+# scripts/doc_forbidden.toml — those are prose-only blacklists with no
+# source-code anchor to bind against, and belong in the first-class
+# forbidden-phrase check rather than piggybacking on this file.
+
+[[assertion]]
+name = "credguard-scan-url-option-name"
+source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
+pattern = 'loader\.add_option\("(?P<opt>credguard_scan_urls)"'
+docs = ["SECURITY.md"]
+must_contain = "{opt}"
+
+[[assertion]]
+name = "credguard-scan-body-option-name"
+source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
+pattern = 'loader\.add_option\("(?P<opt>credguard_scan_bodies)"'
+docs = ["SECURITY.md"]
+must_contain = "{opt}"
+
+[[assertion]]
+name = "block-response-status-code"
+# credential_guard's destination-mismatch response is the canonical
+# example of the 428 "fail closed with actionable feedback" contract
+# advertised in SECURITY.md.
+source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
+pattern = 'Create (?P<code>428) response for destination mismatch'
+docs = ["SECURITY.md"]
+must_contain = "HTTP {code}"
+
+[[assertion]]
+name = "rootfs-tree-install-path"
+source = "cli/src/safeyolo/vm.py"
+pattern = 'return get_share_dir\(\) / "(?P<subdir>rootfs-tree)"'
+docs = ["README.md"]
+must_contain = "share/{subdir}"
+
+[[assertion]]
+name = "guest-root-uid-mapping"
+source = "cli/src/safeyolo/platform/linux.py"
+pattern = '"0", "100000", "1000"'
+docs = ["docs/security-verification.md", "README.md"]
+must_contain = "100000"

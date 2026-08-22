@@ -75,7 +75,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
 
         # Extract and compare token (timing-attack resistant)
         provided_token = auth_header[7:]  # Strip "Bearer "
-        return secrets.compare_digest(provided_token, self.admin_token)
+        return secrets.compare_digest(provided_token, self.admin_token)  # DOC: SECURITY.md
 
     def _require_auth(self) -> bool:
         """Check auth and send 401 if unauthorized.
@@ -1646,7 +1646,7 @@ class AdminAPI:
         # Start HTTP server in background thread with error handling
         # allow_reuse_address must be set before bind() — use class attribute
         HTTPServer.allow_reuse_address = True
-        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)
+        self.server = HTTPServer(("127.0.0.1", port), AdminRequestHandler)  # DOC: SECURITY.md, docs/security-verification.md
         self._server_port = port
 
         def serve_with_recovery():

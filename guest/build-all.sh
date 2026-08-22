@@ -49,7 +49,7 @@ run_builds_native() {
     # (Virtualization.framework). On Linux, gVisor provides its own kernel —
     # only the rootfs is needed. Set BUILD_KERNEL=1 to force kernel+initramfs
     # on Linux (e.g., when producing artifacts for macOS consumers in CI).
-    if [ "${BUILD_KERNEL:-}" = "1" ]; then
+    if [ "${BUILD_KERNEL:-}" = "1" ]; then  # DOC: guest/README.md, README.md
         "$SCRIPT_DIR/build-kernel.sh"
         echo ""
         "$SCRIPT_DIR/build-initramfs.sh"
