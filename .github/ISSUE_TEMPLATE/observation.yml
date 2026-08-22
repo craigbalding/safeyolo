@@ -1,0 +1,46 @@
+name: Observation
+description: File an observation about safeyolo -- something you saw, something that surprised you, or something that needs a decision.
+title: "<component>: <one-line observation>"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Keep this issue short.** Two required sections below, one optional.
+
+        Do NOT add:
+        - "Why this might be intentional" / "Why this might not be" pairs, or any structurally equivalent bothsidesism.
+        - "Considerations" / "Tradeoffs" / "Pros and cons" columns.
+        - Restatements of the observation phrased as motivation.
+        - Rhetorical framing paragraphs before the concrete evidence.
+
+        If you can't fill both required sections without padding, the observation isn't ready to file.
+  - type: textarea
+    id: observation
+    attributes:
+      label: Observation
+      description: What was seen, with concrete evidence -- file paths + line numbers, command output, error text, exact reproduction. No prose warmup.
+      placeholder: |
+        Ran X in context Y and got Z.
+
+        Evidence:
+        - path/to/file.py:42
+        - command output
+    validations:
+      required: true
+  - type: textarea
+    id: ask
+    attributes:
+      label: Ask
+      description: What decision or action is needed. One sentence is fine.
+      placeholder: |
+        Should X be Y? / Please investigate whether Z. / Consider merging A into B.
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: Related
+      description: Optional -- links to PRs, other issues, upstream reports, prior discussion.
+    validations:
+      required: false
