@@ -178,6 +178,15 @@ install_safeyolo_guest_common() {
     # sshd_config so this cannot be abused for passwordless login.
     chroot "$rootfs" usermod -p '*' agent
 
+    # Same treatment for root so `safeyolo agent shell --root` works.
+    # Debian bases ship root with pw="!"; sshd's default
+    # `PermitRootLogin prohibit-password` allows pubkey but Alpine's
+    # OpenSSH refuses locked accounts for any auth path. The authorized_keys
+    # for root are dropped by guest-init-static.sh at boot from the
+    # per-agent share; this only unlocks the account so sshd will
+    # honour that key.
+    chroot "$rootfs" usermod -p '*' root 2>/dev/null || true
+
     install_safeyolo_runtime_mount_targets "$rootfs"
     install_safeyolo_privilege_helper "$rootfs"
 
