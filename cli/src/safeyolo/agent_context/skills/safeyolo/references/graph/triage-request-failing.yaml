@@ -8,11 +8,16 @@
 # Schema (kept minimal on purpose; extend when a real triage needs something
 # this doesn't cover):
 #
+#   see_also:                                # optional; cross-graph hints
+#     - graph: <other-graph-file-basename>
+#       when: "prose condition"
+#
 #   nodes:
 #     - id: unique-slug
 #       kind: symptom | evidence | classification | conclusion | operator_ask
 #       label: one-line human-readable name
 #       detail: prose (optional, only where the label needs it)
+#       keywords: [strings]                  # optional; symptom fuzzy-matching
 #       source: source path or `authored` (for provenance when I regenerate)
 #
 #   edges:
@@ -35,54 +40,71 @@
 #      outgoing edge, say `Graph gap` explicitly, name the node id, and edit
 #      this YAML with a new edge before moving on. Do NOT guess and continue.
 
+see_also:
+  - graph: triage-credential-guard
+    when: "the failure looks credential-related (401 upstream on a credentialed request, credential-guard event, destination mismatch)"
+  - graph: triage-approval-required
+    when: "response was 428 with `wait_for_approval` action"
+  - graph: triage-flow-inspection
+    when: "the debugging is about /api/flows/search results rather than a live request"
+
 nodes:
   # ---- Symptoms (what I observed) --------------------------------------
   - id: sym.upstream_401
     kind: symptom
     label: "Upstream returned 401"
     detail: "Client received a 401 from a normal-looking response; no SafeYolo block markers."
+    keywords: [401, unauthorized, "auth failed", "bad token", "invalid credentials", upstream]
     source: authored
 
   - id: sym.status_403
     kind: symptom
     label: "Response was 403"
+    keywords: [403, forbidden, denied, "policy denied", "not allowed"]
     source: authored
 
   - id: sym.status_428
     kind: symptom
     label: "Response was 428 (approval / self-correct)"
+    keywords: [428, "precondition required", "wait_for_approval", "self-correct", "approval required"]
     source: authored
 
   - id: sym.status_429
     kind: symptom
     label: "Response was 429 (rate / budget)"
+    keywords: [429, "too many requests", "rate limit", budget, "Retry-After"]
     source: authored
 
   - id: sym.status_503
     kind: symptom
     label: "Response was 503 (dependency / circuit)"
+    keywords: [503, "service unavailable", "circuit breaker", "circuit tripped", dependency, "PDP down"]
     source: authored
 
   - id: sym.status_508
     kind: symptom
     label: "Response was 508 (loop guard)"
+    keywords: [508, "loop detected", "loop guard", "double proxy", "re-entered"]
     source: authored
 
   - id: sym.flow_search_empty
     kind: symptom
     label: "/api/flows/search returned count:0 for traffic I know happened"
+    keywords: ["count 0", "no flows", "flows missing", "flow search empty", "/api/flows/search"]
     source: authored
 
   - id: sym.gh_error_after_ok_polls
     kind: symptom
     label: "gh printed a transport-flavored error after OAuth polls returned 200s"
     detail: "e.g. HTTP/2 GOAWAY, connection reset, could-not-authenticate; the source of the phrasing is the CLI, not the wire."
+    keywords: [gh, "gh auth", "OAuth polls", "device flow", "transport error", "could not authenticate"]
     source: authored
 
   - id: sym.http2_goaway_header_value
     kind: symptom
     label: "Client HTTP/2 stack reported GOAWAY / PROTOCOL_ERROR with a specific header value in the debug field"
     detail: "e.g. Go net/http2 emits `server sent GOAWAY ... ErrCode=PROTOCOL_ERROR, debug=\"...b'HEADER VALUE '\"`. The debug string names the offending value. Common causes: value has leading/trailing whitespace, control chars, or an obs-fold; the upstream HTTP/2 stack rejects it per RFC 9113 sec 8.2.1."
+    keywords: [GOAWAY, PROTOCOL_ERROR, "HTTP/2 protocol error", "header value", whitespace, "RFC 9113", "connection reset"]
     source: authored
 
   # ---- Evidence (what I check next) ------------------------------------

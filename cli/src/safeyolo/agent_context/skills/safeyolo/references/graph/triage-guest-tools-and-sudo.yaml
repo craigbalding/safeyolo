@@ -1,0 +1,237 @@
+# Triage graph: "sudo / apt / mise / package install failing"
+#
+# Entry question: I tried to install a package, upgrade a runtime, or use
+# `sudo` inside the guest, and something didn't work. This graph
+# disambiguates guest sudo path, setpriv fallback, package download policy,
+# and runtime-manager (mise/pyenv) failures behind the proxy.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-tls-and-ca
+    when: "the failure is TLS-flavored (cert verify, unknown authority)"
+  - graph: triage-request-failing
+    when: "package download returned a specific 428/429/503 status"
+  - graph: triage-approval-required
+    when: "download was blocked with wait_for_approval"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.tools_sudo_asks_password
+    kind: symptom
+    label: "`sudo -n` prompts for a password (guest sudo helper missing or broken)"
+    keywords: ["sudo password", "sudo -n", "password required", "guest sudo"]
+    source: authored
+
+  - id: sym.tools_sudo_command_not_found
+    kind: symptom
+    label: "`sudo: command not found` inside the guest"
+    keywords: ["sudo not found", "no sudo", "command not found"]
+    source: authored
+
+  - id: sym.tools_setpriv_permission_denied
+    kind: symptom
+    label: "`setpriv --reuid=0 ...` returns permission denied"
+    keywords: ["setpriv", "permission denied", "reuid", "regid"]
+    source: authored
+
+  - id: sym.tools_apt_403_407
+    kind: symptom
+    label: "`apt-get install` fails with 403 / 407 / 502 during download"
+    keywords: ["apt", "apt-get", "403", "407", "502", "package download failed"]
+    source: authored
+
+  - id: sym.tools_apt_key_verify_fail
+    kind: symptom
+    label: "`apt-get update` fails signature verification for the SafeYolo-proxied mirror"
+    keywords: ["apt signature", "InRelease", "gpg verify", "NO_PUBKEY"]
+    source: authored
+
+  - id: sym.tools_mise_install_hangs
+    kind: symptom
+    label: "`mise install python@X` hangs or times out downloading the runtime"
+    keywords: ["mise", "install hangs", "runtime download", "mise-versions"]
+    source: authored
+
+  - id: sym.tools_pip_ssl_or_timeout
+    kind: symptom
+    label: "`pip install PACKAGE` fails with SSL error or long timeout"
+    keywords: ["pip", "pypi", "files.pythonhosted.org", "timeout", "ssl"]
+    source: authored
+
+  - id: sym.tools_download_28x_block
+    kind: symptom
+    label: "Package download returned a 428 (wait_for_approval) from SafeYolo"
+    keywords: ["428", "wait_for_approval", "package host", "policy"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.tools_check_sudo_path
+    kind: evidence
+    label: "which sudo -- and readlink -f the result; setuid bit present?"
+    source: authored
+
+  - id: ev.tools_check_setpriv
+    kind: evidence
+    label: "test -x /usr/bin/setpriv -- guest fallback path when sudo is unavailable (Linux gVisor only)"
+    source: authored
+
+  - id: ev.tools_check_proxy_env
+    kind: evidence
+    label: "env | grep -E '^(HTTP|HTTPS)_PROXY=' -- most package tools need these set (mise, apt via apt.conf)"
+    source: authored
+
+  - id: ev.tools_check_apt_apt_conf
+    kind: evidence
+    label: "cat /etc/apt/apt.conf.d/*proxy* -- apt has its own proxy config separate from HTTP_PROXY"
+    source: authored
+
+  - id: ev.tools_check_pip_index_url
+    kind: evidence
+    label: "pip config list -- verify index-url and cert are configured (usually inherit env)"
+    source: authored
+
+  - id: ev.tools_check_lookup_package_host
+    kind: evidence
+    label: "GET /lookup?host=HOST for the package host (pypi.org, files.pythonhosted.org, deb.debian.org, mise-versions.jdx.dev, ...)"
+    source: authored
+
+  - id: ev.tools_check_budgets_for_host
+    kind: evidence
+    label: "GET /budgets -- remaining for the package host and __global__"
+    source: authored
+
+  - id: ev.tools_check_response_body
+    kind: evidence
+    label: "Read the SafeYolo block body -- type, action, reflection tell whether this is credential-guard / network-guard / budget"
+    source: authored
+
+  - id: ev.tools_check_release_apt_keyring
+    kind: evidence
+    label: "ls /usr/share/keyrings/ /etc/apt/keyrings/ -- the mirror's signing key must be locally trusted regardless of proxy"
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.tools_sudo_helper_missing
+    kind: classification
+    label: "Guest sudo helper is broken (config missing / not setuid)"
+    source: authored
+
+  - id: cls.tools_setpriv_needed
+    kind: classification
+    label: "gVisor setpriv is the correct root-inside-guest path here"
+    source: authored
+
+  - id: cls.tools_proxy_env_missing_for_tool
+    kind: classification
+    label: "The package tool did not inherit HTTP_PROXY / HTTPS_PROXY / apt.conf proxy"
+    source: authored
+
+  - id: cls.tools_package_host_not_in_policy
+    kind: classification
+    label: "The package host is not allowed by the current policy (or needs approval)"
+    source: authored
+
+  - id: cls.tools_package_budget_exhausted
+    kind: classification
+    label: "Budget for the package host is exhausted; wait or negotiate a higher budget"
+    source: authored
+
+  - id: cls.tools_apt_key_untrusted
+    kind: classification
+    label: "apt signing key for the mirror is not trusted regardless of the proxy path"
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.tools_use_setpriv
+    kind: conclusion
+    label: "Use `setpriv --reuid=0 --regid=0 --clear-groups CMD` (Linux gVisor only) instead of chasing sudo"
+    source: authored
+
+  - id: con.tools_set_proxy_env_for_tool
+    kind: conclusion
+    label: "Set HTTP_PROXY / HTTPS_PROXY inline or via a tool-specific config (apt.conf.d, pip.conf, npmrc)"
+    source: authored
+
+  - id: con.tools_use_configured_manager
+    kind: conclusion
+    label: "For runtimes prefer mise -- it caches under /home/agent/.mise and survives cold restarts"
+    source: authored
+
+  - id: con.tools_wait_for_budget
+    kind: conclusion
+    label: "Wait for the budget window to reset before retrying; do not loop"
+    source: authored
+
+  # ---- Operator asks ---------------------------------------------------
+  - id: ask.tools_repair_sudo
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo agent shell <name> --root` and repair the guest sudo helper. Use this ONLY when guest sudo itself is broken, never for a policy or approval block."
+    source: authored
+
+  - id: ask.tools_policy_add_package_host
+    kind: operator_ask
+    label: "Ask operator to `safeyolo policy host add HOST --agent AGENT` for the specific package host"
+    source: authored
+
+  - id: ask.tools_watch_for_download_approval
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and approve the specific download"
+    source: authored
+
+
+edges:
+  # sudo entries
+  - {from: sym.tools_sudo_asks_password,      to: ev.tools_check_sudo_path, kind: next_check}
+  - {from: sym.tools_sudo_command_not_found,  to: ev.tools_check_sudo_path, kind: next_check}
+  - {from: sym.tools_setpriv_permission_denied, to: ev.tools_check_setpriv, kind: next_check}
+
+  - {from: ev.tools_check_sudo_path, to: cls.tools_sudo_helper_missing, kind: implies, when: "sudo not present OR not setuid OR misconfigured"}
+  - {from: ev.tools_check_sudo_path, to: ev.tools_check_setpriv, kind: next_check, when: "no sudo AND we're on Linux gVisor"}
+  - {from: ev.tools_check_setpriv,   to: cls.tools_setpriv_needed, kind: implies, when: "setpriv is present and executable"}
+  - {from: cls.tools_setpriv_needed, to: con.tools_use_setpriv, kind: implies}
+  - {from: cls.tools_sudo_helper_missing, to: ask.tools_repair_sudo, kind: escalates_to}
+
+  # Package-install entries -> proxy env + policy checks
+  - {from: sym.tools_apt_403_407,       to: ev.tools_check_apt_apt_conf, kind: next_check}
+  - {from: sym.tools_apt_403_407,       to: ev.tools_check_lookup_package_host, kind: next_check}
+  - {from: sym.tools_apt_key_verify_fail, to: ev.tools_check_release_apt_keyring, kind: next_check}
+  - {from: sym.tools_mise_install_hangs,  to: ev.tools_check_proxy_env, kind: next_check}
+  - {from: sym.tools_mise_install_hangs,  to: ev.tools_check_lookup_package_host, kind: next_check}
+  - {from: sym.tools_pip_ssl_or_timeout,  to: ev.tools_check_pip_index_url, kind: next_check}
+  - {from: sym.tools_pip_ssl_or_timeout,  to: ev.tools_check_lookup_package_host, kind: next_check}
+  - {from: sym.tools_download_28x_block,  to: ev.tools_check_response_body, kind: next_check}
+
+  # Proxy env missing
+  - {from: ev.tools_check_proxy_env,   to: cls.tools_proxy_env_missing_for_tool, kind: implies, when: "HTTP_PROXY / HTTPS_PROXY unset"}
+  - {from: ev.tools_check_apt_apt_conf, to: cls.tools_proxy_env_missing_for_tool, kind: implies, when: "no proxy in apt.conf.d"}
+  - {from: ev.tools_check_pip_index_url, to: cls.tools_proxy_env_missing_for_tool, kind: implies, when: "pip cannot see proxy or index"}
+  - {from: cls.tools_proxy_env_missing_for_tool, to: con.tools_set_proxy_env_for_tool, kind: implies}
+
+  # Policy / budget
+  - {from: ev.tools_check_lookup_package_host, to: cls.tools_package_host_not_in_policy, kind: implies, when: "effect == deny"}
+  - {from: cls.tools_package_host_not_in_policy, to: ask.tools_policy_add_package_host, kind: escalates_to}
+  - {from: ev.tools_check_lookup_package_host, to: ev.tools_check_budgets_for_host, kind: next_check, when: "effect == budget"}
+  - {from: ev.tools_check_budgets_for_host,    to: cls.tools_package_budget_exhausted, kind: implies, when: "remaining <= 0"}
+  - {from: cls.tools_package_budget_exhausted, to: con.tools_wait_for_budget, kind: implies}
+
+  # Approval-flavored downloads
+  - {from: ev.tools_check_response_body, to: ask.tools_watch_for_download_approval, kind: escalates_to, when: "action == wait_for_approval"}
+
+  # apt key
+  - {from: ev.tools_check_release_apt_keyring, to: cls.tools_apt_key_untrusted, kind: implies, when: "expected keyring for the mirror is missing"}
+  - {from: cls.tools_apt_key_untrusted,       to: ask.tools_repair_sudo,        kind: escalates_to, when: "installing the keyring requires root"}
+
+  # Encourage mise as the preferred runtime manager
+  - {from: sym.tools_mise_install_hangs, to: con.tools_use_configured_manager, kind: implies}
+
+
+entries:
+  - symptom: sym.tools_sudo_asks_password
+  - symptom: sym.tools_sudo_command_not_found
+  - symptom: sym.tools_setpriv_permission_denied
+  - symptom: sym.tools_apt_403_407
+  - symptom: sym.tools_apt_key_verify_fail
+  - symptom: sym.tools_mise_install_hangs
+  - symptom: sym.tools_pip_ssl_or_timeout
+  - symptom: sym.tools_download_28x_block

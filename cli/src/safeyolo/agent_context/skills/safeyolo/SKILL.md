@@ -46,18 +46,28 @@ Read only the reference needed for the current task.
 
 For fast-turn triage, use the graphs in [`references/graph/`](references/graph/)
 as decision aids rather than re-deriving SafeYolo's plane story every time.
-Each `.yaml` is the source of truth; the `.mmd` next to it is a mermaid
-render for a human operator watching over my shoulder.
+Each `.yaml` is the source of truth; the sibling `.mmd` is a mermaid render
+for a human operator watching over my shoulder. Every symptom node carries
+a `keywords:` list so binding an observed symptom to an entry can be
+keyword-matched, not eye-matched.
 
-Available graphs:
+**Manifest** — pick the graph whose entry-question fits, then bind a symptom
+inside it:
 
-- `triage-request-failing.yaml` — bind a "request through SafeYolo failed"
-  symptom (401 upstream, 403, 428, 429, 503, 508, `/api/flows/search`
-  count:0, gh transport-flavored error after OAuth polls) to an entry
-  node, walk `next_check` edges, land on a bounded conclusion or an
-  `operator_ask`. Covers upstream-vs-block classification, credential-guard
-  vs network-guard, budget/circuit paths, and the observability-plane gap
-  that trips up flow-search queries.
+| Graph | Entry question |
+|---|---|
+| [`triage-request-failing.yaml`](references/graph/triage-request-failing.yaml) | "A request through SafeYolo failed / was blocked / behaved weirdly" |
+| [`triage-credential-guard.yaml`](references/graph/triage-credential-guard.yaml) | "Why is credential-guard questioning my credential?" |
+| [`triage-approval-required.yaml`](references/graph/triage-approval-required.yaml) | "The proxy said `wait_for_approval` — what now?" |
+| [`triage-flow-inspection.yaml`](references/graph/triage-flow-inspection.yaml) | "Why isn't `/api/flows/search` returning what I expect?" |
+| [`triage-service-gateway.yaml`](references/graph/triage-service-gateway.yaml) | "How do I use a gated service (Gmail, Jira, etc.)?" |
+| [`triage-tls-and-ca.yaml`](references/graph/triage-tls-and-ca.yaml) | "TLS handshake failing / cert not trusted" |
+| [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
+| [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The operator can't see what I'm showing / desktop isn't working" |
+
+Graphs cross-reference each other via a top-level `see_also:` block when a
+symptom overlaps concerns — check the target graph before authoring a new
+edge in the current one.
 
 **Traversal protocol I follow when using a graph in-context:**
 

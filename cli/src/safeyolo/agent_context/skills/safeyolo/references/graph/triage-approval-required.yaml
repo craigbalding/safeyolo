@@ -1,0 +1,219 @@
+# Triage graph: "the proxy said wait_for_approval / pending -- now what?"
+#
+# Entry question: a request or gateway/plumb call returned 428 or 202 with
+# an `action` of `wait_for_approval` (or an equivalent pending state). This
+# graph disambiguates credential-guard / network-guard / service-gateway
+# / plumb approval flavours, tells me when waiting is the right move vs
+# when I should self-correct instead, and points at the exact operator ask.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-credential-guard
+    when: "approval is on a credential+destination pair"
+  - graph: triage-service-gateway
+    when: "approval is on a gateway capability grant or contract binding"
+  - graph: triage-request-failing
+    when: "the response was a plain block (not an approval flow)"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.approval_428_generic
+    kind: symptom
+    label: "428 with `action: wait_for_approval` in the body"
+    keywords: ["428", "wait_for_approval", "approval required", "safeyolo watch"]
+    source: authored
+
+  - id: sym.approval_428_self_correct
+    kind: symptom
+    label: "428 with `action: self_correct` in the body"
+    detail: "This is NOT an approval flow; the response tells me to fix the request myself."
+    keywords: ["428", "self_correct", "self-correct", "fix the request"]
+    source: authored
+
+  - id: sym.gateway_202_pending
+    kind: symptom
+    label: "202 from `/gateway/request-access` with `status: pending`"
+    keywords: ["202", "pending", "gateway", "request-access", "capability", "waiting approval"]
+    source: authored
+
+  - id: sym.gateway_needs_contract
+    kind: symptom
+    label: "Gateway response with `decision: needs_contract_binding`"
+    keywords: ["needs_contract_binding", "gateway", "contract", "binding required"]
+    source: authored
+
+  - id: sym.plumb_202_pending
+    kind: symptom
+    label: "202 from `/plumb/request-chat` with pending status"
+    keywords: ["202", "plumb", "pending", "conversation", "chat request"]
+    source: authored
+
+  - id: sym.stuck_looping_retries
+    kind: symptom
+    label: "I've been retrying an approval-blocked call and getting the same 428 / 429 back"
+    keywords: ["loop", "retry", "428", "429", "same error", "not making progress"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.approval_read_action_field
+    kind: evidence
+    label: "Parse response body: read `action` (wait_for_approval | self_correct | block) and `type` fields"
+    source: authored
+
+  - id: ev.approval_read_type_field
+    kind: evidence
+    label: "Read `type` field to identify which addon owns the approval: credential-guard / network-guard / service-gateway / plumb"
+    source: authored
+
+  - id: ev.approval_read_reflection
+    kind: evidence
+    label: "Read `reflection` field -- describes what the operator will see in `safeyolo watch`"
+    source: authored
+
+  - id: ev.approval_poll_gateway_services
+    kind: evidence
+    label: "GET /gateway/services -- has the requested capability moved from `available` to `authorized`?"
+    source: authored
+
+  - id: ev.approval_poll_plumb_convos
+    kind: evidence
+    label: "GET /plumb/conversations -- has the conversation been approved?"
+    source: authored
+
+  - id: ev.approval_check_retry_after
+    kind: evidence
+    label: "Read `Retry-After` header -- some approvals include a hint for when to poll again"
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.approval_credguard
+    kind: classification
+    label: "credential-guard requires approval for this credential + destination pair"
+    source: authored
+
+  - id: cls.approval_networkguard
+    kind: classification
+    label: "network-guard requires egress approval for this host"
+    source: authored
+
+  - id: cls.approval_gateway_grant
+    kind: classification
+    label: "service-gateway requires capability grant approval"
+    source: authored
+
+  - id: cls.approval_gateway_binding
+    kind: classification
+    label: "service-gateway granted capability but requires a contract binding first"
+    source: authored
+
+  - id: cls.approval_plumb
+    kind: classification
+    label: "plumb requires operator approval to open a conversation"
+    source: authored
+
+  - id: cls.approval_not_wanted
+    kind: classification
+    label: "This wasn't an approval flow; response says to self-correct the request"
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.approval_wait_do_not_retry
+    kind: conclusion
+    label: "Stop retrying immediately -- looping on 428/429 wastes budget and does not accelerate approval"
+    source: authored
+
+  - id: con.approval_self_correct_then_retry
+    kind: conclusion
+    label: "Self-correct the request as `reflection`/`reason` describes, then retry once"
+    source: authored
+
+  - id: con.approval_submit_binding
+    kind: conclusion
+    label: "Submit the requested contract binding via `/gateway/submit-binding` with only the requested variables"
+    source: authored
+
+  - id: con.approval_poll_at_interval
+    kind: conclusion
+    label: "Poll the relevant endpoint (`/gateway/services` or `/plumb/conversations`) at a reasonable interval; honor `Retry-After` if present"
+    source: authored
+
+  # ---- Operator asks ---------------------------------------------------
+  - id: ask.approval_watch_credguard
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and approve/deny this credential+destination pair"
+    source: authored
+
+  - id: ask.approval_watch_networkguard
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and approve/deny egress to this host"
+    source: authored
+
+  - id: ask.approval_watch_gateway
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and grant/deny this capability (name the capability, explain the purpose)"
+    source: authored
+
+  - id: ask.approval_watch_plumb
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and approve/deny the plumb conversation (state topic, participants, TTL)"
+    source: authored
+
+  - id: ask.approval_reconsider_scope
+    kind: operator_ask
+    label: "Explain to the operator what narrower capability/host/binding would work; do NOT ask for `disable SafeYolo` or `warn mode`"
+    source: authored
+
+
+edges:
+  # Entry symptoms fan out to a first read of the response body
+  - {from: sym.approval_428_generic,      to: ev.approval_read_action_field, kind: next_check}
+  - {from: sym.approval_428_self_correct, to: ev.approval_read_action_field, kind: next_check}
+  - {from: sym.gateway_202_pending,       to: ev.approval_read_type_field, kind: next_check}
+  - {from: sym.gateway_needs_contract,    to: ev.approval_read_type_field, kind: next_check}
+  - {from: sym.plumb_202_pending,         to: ev.approval_read_type_field, kind: next_check}
+  - {from: sym.stuck_looping_retries,     to: con.approval_wait_do_not_retry, kind: implies}
+
+  # action field disambiguates approval vs self-correct
+  - {from: ev.approval_read_action_field, to: ev.approval_read_type_field, kind: next_check, when: "action == wait_for_approval"}
+  - {from: ev.approval_read_action_field, to: cls.approval_not_wanted,     kind: implies,     when: "action == self_correct"}
+  - {from: cls.approval_not_wanted,       to: con.approval_self_correct_then_retry, kind: implies}
+
+  # type field routes to the specific plane
+  - {from: ev.approval_read_type_field, to: cls.approval_credguard,       kind: implies, when: "type mentions credential-guard"}
+  - {from: ev.approval_read_type_field, to: cls.approval_networkguard,    kind: implies, when: "type mentions network-guard OR egress_approval_required"}
+  - {from: ev.approval_read_type_field, to: cls.approval_gateway_grant,   kind: implies, when: "type mentions service-gateway AND decision != needs_contract_binding"}
+  - {from: ev.approval_read_type_field, to: cls.approval_gateway_binding, kind: implies, when: "decision == needs_contract_binding"}
+  - {from: ev.approval_read_type_field, to: cls.approval_plumb,           kind: implies, when: "endpoint was /plumb/*"}
+
+  # Each classification -> the exact operator ask + wait conclusion
+  - {from: cls.approval_credguard,       to: ask.approval_watch_credguard,   kind: escalates_to}
+  - {from: cls.approval_credguard,       to: con.approval_wait_do_not_retry, kind: implies}
+  - {from: cls.approval_networkguard,    to: ask.approval_watch_networkguard, kind: escalates_to}
+  - {from: cls.approval_networkguard,    to: con.approval_wait_do_not_retry, kind: implies}
+  - {from: cls.approval_gateway_grant,   to: ask.approval_watch_gateway,     kind: escalates_to}
+  - {from: cls.approval_gateway_grant,   to: con.approval_poll_at_interval,  kind: implies}
+  - {from: cls.approval_gateway_grant,   to: ev.approval_poll_gateway_services, kind: next_check}
+  - {from: cls.approval_gateway_binding, to: con.approval_submit_binding,    kind: implies}
+  - {from: cls.approval_plumb,           to: ask.approval_watch_plumb,       kind: escalates_to}
+  - {from: cls.approval_plumb,           to: ev.approval_poll_plumb_convos,  kind: next_check}
+
+  # Reflection helps the operator ask read cleanly
+  - {from: cls.approval_credguard,     to: ev.approval_read_reflection, kind: next_check}
+  - {from: cls.approval_networkguard,  to: ev.approval_read_reflection, kind: next_check}
+  - {from: cls.approval_gateway_grant, to: ev.approval_read_reflection, kind: next_check}
+
+  # Retry-After hint for polling cadence
+  - {from: con.approval_poll_at_interval, to: ev.approval_check_retry_after, kind: next_check}
+
+  # If the operator won't approve as-asked, negotiate a narrower ask
+  - {from: ask.approval_watch_gateway, to: ask.approval_reconsider_scope, kind: escalates_to, when: "operator declined; consider a narrower capability"}
+
+
+entries:
+  - symptom: sym.approval_428_generic
+  - symptom: sym.approval_428_self_correct
+  - symptom: sym.gateway_202_pending
+  - symptom: sym.gateway_needs_contract
+  - symptom: sym.plumb_202_pending
+  - symptom: sym.stuck_looping_retries

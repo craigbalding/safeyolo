@@ -1,0 +1,203 @@
+# Triage graph: "why isn't /api/flows/search returning what I expect?"
+#
+# Entry question: I queried the FlowStore via the Agent API and either got
+# `count: 0` when I expected traffic, got metadata but no bodies, or got a
+# filter/schema error. Recording is opt-in per request (see
+# `references/agent-api.md#flow-inspection`) and flow results are scoped to
+# the calling agent by attribution -- both are common sources of confusion.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-request-failing
+    when: "the debugging is about a live failing request, not about a stored flow"
+  - graph: triage-credential-guard
+    when: "flow inspection is for a request I suspect was blocked; check credential-guard first"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.flow_count_zero
+    kind: symptom
+    label: "/api/flows/search returned `count: 0` for traffic I know happened"
+    keywords: ["count 0", "no flows", "empty result", "flow-search"]
+    source: authored
+
+  - id: sym.flow_no_bodies
+    kind: symptom
+    label: "Flow metadata is present but request/response body endpoints return empty"
+    keywords: ["no body", "empty body", "body_base64 missing", "body_text missing"]
+    source: authored
+
+  - id: sym.flow_400_filter
+    kind: symptom
+    label: "400 Bad Request from `/api/flows/search` (unknown filter or invalid limit)"
+    detail: "The search endpoint rejects unknown filters rather than silently ignoring them."
+    keywords: ["400", "unknown filter", "invalid limit", "bad request", "unknown query parameter"]
+    source: authored
+
+  - id: sym.body_search_needs_engagement
+    kind: symptom
+    label: "`/api/flows/body-search` or `/request-body-search` returns 400 / missing `engagement_id`"
+    keywords: ["engagement_id", "body-search", "request-body-search", "400", "missing parameter"]
+    source: authored
+
+  - id: sym.flow_wrong_agent
+    kind: symptom
+    label: "Flows exist somewhere but not for the agent I expected -- attribution surprise"
+    keywords: ["wrong agent", "attribution", "not my flows", "scoping"]
+    source: authored
+
+  - id: sym.flow_body_too_large
+    kind: symptom
+    label: "Body was captured but truncated / marked as size-limit exceeded"
+    keywords: ["truncated", "size limit", "max_request_body_bytes", "max_response_body_bytes", "body too large"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.flow_check_x_test_context
+    kind: evidence
+    label: "Did the request carry `X-Test-Context` with a value that `test_context_contract.parse_test_context` accepts?"
+    detail: "Presence of a syntactically valid header is what causes flow_recorder to write the flow at all."
+    source: authored
+
+  - id: ev.flow_check_target_hosts
+    kind: evidence
+    label: "GET /policy -- is `test_context.target_hosts` non-empty AND does it include the target host?"
+    detail: "The addon activates only when target_hosts is non-empty in policy."
+    source: authored
+
+  - id: ev.flow_check_attribution
+    kind: evidence
+    label: "GET /agents -- which agent name is the traffic attributed to? Is that the agent I'm querying as?"
+    source: authored
+
+  - id: ev.flow_check_flowstore_config
+    kind: evidence
+    label: "GET /config -- inspect `flow_store` settings for `max_request_body_bytes` and `max_response_body_bytes`"
+    source: authored
+
+  - id: ev.flow_check_endpoints_list
+    kind: evidence
+    label: "POST /api/flows/endpoints -- shows distinct endpoints and counts; useful for orienting on what IS stored"
+    source: authored
+
+  - id: ev.flow_read_search_error_body
+    kind: evidence
+    label: "Read the 400 response body -- it names the unknown filter or invalid parameter"
+    source: authored
+
+  - id: ev.flow_check_engagement_id
+    kind: evidence
+    label: "Body-search endpoints require both `engagement_id` and `query`; both must be POSTed as JSON"
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.flow_recording_precondition_missing
+    kind: classification
+    label: "Recording precondition not met (missing X-Test-Context OR empty target_hosts)"
+    source: authored
+
+  - id: cls.flow_attribution_scoped_out
+    kind: classification
+    label: "Traffic was recorded but attributed to a different agent; my query is scoped to me"
+    source: authored
+
+  - id: cls.flow_bad_filter
+    kind: classification
+    label: "Search filter uses an unknown or invalid parameter"
+    source: authored
+
+  - id: cls.flow_body_over_size_limit
+    kind: classification
+    label: "Body exceeded configured max size and was truncated / not captured"
+    source: authored
+
+  - id: cls.flow_engagement_required
+    kind: classification
+    label: "Body-search requires `engagement_id` -- missing from the request"
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.flow_add_x_test_context
+    kind: conclusion
+    label: "Self-correct: add a valid `X-Test-Context` header to future outbound requests I want recorded"
+    detail: "See `safeyolo.test_context_contract` for the required keys (`run`, `agent`) and canonical order."
+    source: authored
+
+  - id: con.flow_use_valid_filter
+    kind: conclusion
+    label: "Rewrite the search using documented filters (see agent-api.md flow-inspection table)"
+    source: authored
+
+  - id: con.flow_pass_engagement_id
+    kind: conclusion
+    label: "Include `engagement_id` (usually the agent name) in body-search JSON payload"
+    source: authored
+
+  - id: con.flow_accept_truncation
+    kind: conclusion
+    label: "The body was too big to store; either accept metadata-only or ask operator to raise the size limit for a specific triage"
+    source: authored
+
+  - id: con.flow_query_without_agent_scope
+    kind: conclusion
+    label: "Re-query with a different `engagement_id` matching the actual attributed agent"
+    source: authored
+
+  # ---- Operator asks ---------------------------------------------------
+  - id: ask.flow_add_target_host
+    kind: operator_ask
+    label: "Ask operator to add the host to `test_context.target_hosts` in policy (recording will start for future traffic)"
+    source: authored
+
+  - id: ask.flow_raise_body_size
+    kind: operator_ask
+    label: "Ask operator to raise `max_request_body_bytes` / `max_response_body_bytes` in the flow_store config for a specific triage"
+    source: authored
+
+
+edges:
+  # Zero-count entry point -- always start with the recording preconditions
+  - {from: sym.flow_count_zero, to: ev.flow_check_x_test_context, kind: next_check}
+  - {from: sym.flow_count_zero, to: ev.flow_check_target_hosts,   kind: next_check}
+  - {from: sym.flow_count_zero, to: ev.flow_check_attribution,    kind: next_check}
+  - {from: sym.flow_count_zero, to: ev.flow_check_endpoints_list, kind: next_check, when: "want to see what IS stored to orient"}
+
+  # Recording preconditions -> observability-plane gap
+  - {from: ev.flow_check_x_test_context, to: cls.flow_recording_precondition_missing, kind: implies, when: "header absent or malformed"}
+  - {from: ev.flow_check_target_hosts,   to: cls.flow_recording_precondition_missing, kind: implies, when: "target_hosts empty OR does not include the host"}
+  - {from: cls.flow_recording_precondition_missing, to: con.flow_add_x_test_context, kind: implies}
+  - {from: cls.flow_recording_precondition_missing, to: ask.flow_add_target_host,    kind: escalates_to, when: "the host should be a permanent recording target"}
+
+  # Attribution surprise
+  - {from: ev.flow_check_attribution,   to: cls.flow_attribution_scoped_out, kind: implies, when: "traffic came from a different agent name"}
+  - {from: cls.flow_attribution_scoped_out, to: con.flow_query_without_agent_scope, kind: implies}
+
+  # Bodies missing -> size limit
+  - {from: sym.flow_no_bodies,             to: ev.flow_check_flowstore_config, kind: next_check}
+  - {from: sym.flow_body_too_large,        to: ev.flow_check_flowstore_config, kind: next_check}
+  - {from: ev.flow_check_flowstore_config, to: cls.flow_body_over_size_limit,  kind: implies, when: "body size > configured max_*_body_bytes"}
+  - {from: cls.flow_body_over_size_limit,  to: con.flow_accept_truncation,     kind: implies}
+  - {from: cls.flow_body_over_size_limit,  to: ask.flow_raise_body_size,       kind: escalates_to, when: "the specific triage needs the full body"}
+
+  # 400 on search
+  - {from: sym.flow_400_filter,           to: ev.flow_read_search_error_body, kind: next_check}
+  - {from: ev.flow_read_search_error_body, to: cls.flow_bad_filter,           kind: implies}
+  - {from: cls.flow_bad_filter,           to: con.flow_use_valid_filter,      kind: implies}
+
+  # engagement_id missing
+  - {from: sym.body_search_needs_engagement, to: ev.flow_check_engagement_id, kind: next_check}
+  - {from: ev.flow_check_engagement_id,      to: cls.flow_engagement_required, kind: implies}
+  - {from: cls.flow_engagement_required,     to: con.flow_pass_engagement_id,  kind: implies}
+
+  # sym.flow_wrong_agent -> attribution check
+  - {from: sym.flow_wrong_agent, to: ev.flow_check_attribution, kind: next_check}
+
+
+entries:
+  - symptom: sym.flow_count_zero
+  - symptom: sym.flow_no_bodies
+  - symptom: sym.flow_400_filter
+  - symptom: sym.body_search_needs_engagement
+  - symptom: sym.flow_wrong_agent
+  - symptom: sym.flow_body_too_large
