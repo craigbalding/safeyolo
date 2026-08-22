@@ -260,6 +260,7 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             body = self._read_body().decode()
         except UnicodeDecodeError:
+            log.debug("preview unlock body was not UTF-8; treating as empty code")
             return ""
         values = urllib.parse.parse_qs(body, keep_blank_values=True)
         return values.get("code", [""])[0].strip()
@@ -271,6 +272,9 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             n = int(length)
         except ValueError:
+            # Do not log the value itself: an attacker-controlled
+            # Content-Length would land verbatim in the log stream.
+            log.debug("preview request had non-integer Content-Length (len=%d); treating as empty", len(length))
             return b""
         return self.rfile.read(max(n, 0))
 
@@ -305,16 +309,42 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
             self._close_relay(proc)
 
     def _open_guest_relay(self):
+        agent = self.server.config.agent
         open_port_forward = getattr(self.server.platform, "popen_port_forward", None)
-        if open_port_forward is None:
-            command = build_guest_relay_command(self.server.config.guest_port)
-            proc = self.server.platform.popen_binary_in_sandbox(self.server.config.agent, command, user="agent")
-        else:
-            proc = open_port_forward(
-                self.server.config.agent,
-                self.server.config.guest_port,
-                user="agent",
-            )
+        try:
+            if open_port_forward is None:
+                command = build_guest_relay_command(self.server.config.guest_port)
+                proc = self.server.platform.popen_binary_in_sandbox(agent, command, user="agent")
+            else:
+                proc = open_port_forward(
+                    agent,
+                    self.server.config.guest_port,
+                    user="agent",
+                )
+        except FileNotFoundError as exc:
+            # Platform sandbox binary (runsc, socat) not on PATH. The user
+            # sees a 502 instead of a raw traceback; the message tells them
+            # what to check.
+            raise PreviewError(
+                f"preview relay binary missing on the host: {exc}"
+            ) from exc
+        except PermissionError as exc:
+            raise PreviewError(
+                f"preview relay was denied by the platform: {exc}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise PreviewError(
+                f"preview relay timed out opening a stream to agent '{agent}'; "
+                "check whether the agent sandbox is still running"
+            ) from exc
+        except (RuntimeError, OSError) as exc:
+            # Native runsc port-forward surfaces RuntimeError with detail;
+            # UDS bind errors on Linux surface as OSError. Both usually mean
+            # the agent sandbox is not accepting connections (stopped, or
+            # restarting).
+            raise PreviewError(
+                f"preview relay could not reach agent '{agent}': {exc}"
+            ) from exc
         if proc.stdin is None or proc.stdout is None:
             raise PreviewError("preview relay did not expose stdin/stdout")
         return proc
@@ -764,7 +794,17 @@ def build_upstream_request(
     for key, value in sanitize_request_headers(headers, guest_port, is_upgrade=is_upgrade):
         lines.append(f"{key}: {value}")
     lines.extend(["", ""])
-    return "\r\n".join(lines).encode("iso-8859-1")
+    try:
+        return "\r\n".join(lines).encode("iso-8859-1")
+    except UnicodeEncodeError as exc:
+        # RFC 7230 forbids non-latin-1 in header field values. Hitting this
+        # means a client sent an out-of-spec header (or a guest with a
+        # hostile identity is trying to smuggle one through). Fail as a
+        # PreviewError so the outer handler returns a 502 with a helpful
+        # detail instead of a raw traceback.
+        raise PreviewError(
+            f"upstream request contains a non-latin-1 header value: {exc}"
+        ) from exc
 
 
 def read_http_response_head(src) -> tuple[bytes, bytes]:
