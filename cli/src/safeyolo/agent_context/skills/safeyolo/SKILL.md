@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Operate and troubleshoot from inside a SafeYolo sandbox. Use for SafeYolo proxy or TLS failures, policy and credential blocks, HTTP 403/428/429/503/508 responses, guest package installation and sudo/setpriv behavior, optional desktop and operator preview access, X-Blocked-By responses, Agent API queries, flow inspection, budgets, circuit breakers, service-gateway access, approvals through safeyolo watch, and approved agent-to-agent plumb collaboration.
+description: Operate and troubleshoot from inside a SafeYolo sandbox. Auto-invoke on the first turn that touches any sandbox-side operation, including SafeYolo proxy or TLS failures; policy and credential blocks; HTTP 403/428/429/503/508 responses; X-Blocked-By responses; guest package installation and sudo/setpriv/apt/apk/pip/mise behavior; ptrace / strace / gdb / py-spy / rbspy / perf attach failures and same-uid in-guest debugging; `agent shell --root` or operator recovery paths; optional desktop and operator preview access; Agent API queries; flow inspection; budgets; circuit breakers; service-gateway access; approvals through `safeyolo watch`; approved agent-to-agent plumb collaboration; and general "am I inside a SafeYolo sandbox / what can I do from here / how do I debug this" introspection questions.
 ---
 
 # Operate inside SafeYolo
