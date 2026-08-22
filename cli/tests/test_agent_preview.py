@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import io
+import json
 import socket
 import subprocess
 import threading
@@ -23,6 +24,7 @@ from safeyolo.preview import (
     PreviewConfig,
     PreviewError,
     build_guest_relay_command,
+    build_upstream_request,
     normalize_display_path,
     parse_ttl,
     preferred_vnc_geometry,
@@ -1626,6 +1628,140 @@ def test_serve_agent_preview_cleans_up_on_signal(tmp_path, signame):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=2)
+
+
+class _RelayFailPlatform:
+    """Platform whose port-forward call raises a chosen exception.
+
+    Used to verify _open_guest_relay converts raw platform errors into
+    PreviewError with an actionable message, rather than letting the raw
+    class name land in the 502 body.
+    """
+
+    def __init__(self, *, exc: Exception):
+        self._exc = exc
+
+    def popen_port_forward(self, name, guest_port, user="agent"):  # noqa: ARG002
+        raise self._exc
+
+
+class _RelayFailPlatformNoPortForward:
+    """Same as _RelayFailPlatform but exercises the popen_binary_in_sandbox arm."""
+
+    def __init__(self, *, exc: Exception):
+        self._exc = exc
+
+    def popen_binary_in_sandbox(self, name, command, user="agent"):  # noqa: ARG002
+        raise self._exc
+
+
+def test_open_guest_relay_reports_agent_stopped_clearly(monkeypatch):
+    """RuntimeError from the port-forward call becomes an actionable 502."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    platform = _RelayFailPlatform(exc=RuntimeError("runsc port-forward exited 1: container 'codey' not found"))
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie})
+        assert resp.status == 502
+        payload = json.loads(body)
+        detail = payload.get("detail", "")
+        # Actionable: mentions the agent name and hints at the sandbox.
+        assert "codey" in detail, detail
+        assert "reach" in detail or "sandbox" in detail or "not accepting" in detail, detail
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_open_guest_relay_reports_relay_binary_missing_clearly(monkeypatch):
+    """FileNotFoundError from popen_binary_in_sandbox becomes an actionable 502."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    platform = _RelayFailPlatformNoPortForward(
+        exc=FileNotFoundError(2, "No such file or directory: 'runsc'"),
+    )
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie})
+        assert resp.status == 502
+        detail = json.loads(body).get("detail", "")
+        assert "missing" in detail or "not found" in detail.lower(), detail
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_open_guest_relay_reports_permission_denied(monkeypatch):
+    """PermissionError from the platform becomes an actionable 502.
+
+    "Permission denied" is already in str(exc) for PermissionError, so
+    that string alone doesn't discriminate the fix from master. We check
+    for the added context ("platform") that only PR4's rewrap adds.
+    """
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    platform = _RelayFailPlatform(exc=PermissionError(13, "Permission denied"))
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie})
+        assert resp.status == 502
+        detail = json.loads(body).get("detail", "")
+        assert "platform" in detail.lower(), detail
+        assert "denied" in detail.lower(), detail
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_build_upstream_request_rejects_non_latin1_header_value():
+    """A non-latin-1 header value must produce a PreviewError, not a raw traceback.
+
+    RFC 7230 forbids non-latin-1 in header field values; hitting this means
+    a client sent an out-of-spec header (or a guest is trying to smuggle
+    one through). The old code would raise UnicodeEncodeError deep inside
+    _proxy_stream and rely on the outer catch to report the class name.
+    """
+    class _Headers:
+        """Minimum header container matching what BaseHTTPRequestHandler exposes."""
+        def items(self):
+            return [
+                ("X-Fine", "ok"),
+                ("X-Snowman", "hello ☃"),  # non-latin-1
+            ]
+        def get(self, name, default=""):
+            return default
+        def __iter__(self):
+            return iter([k for k, _ in self.items()])
+
+    with pytest.raises(PreviewError) as excinfo:
+        build_upstream_request(
+            method="GET",
+            path="/",
+            version="HTTP/1.1",
+            headers=_Headers(),
+            guest_port=8000,
+            is_upgrade=False,
+        )
+    assert "non-latin-1" in str(excinfo.value)
 
 
 def test_serve_agent_preview_reports_broken_browser_launcher(monkeypatch, capsys):
