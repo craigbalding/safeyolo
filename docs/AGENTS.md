@@ -43,6 +43,36 @@ inspect its HTTP status, JSON body, and `X-Blocked-By` header before retrying.
 Use the `safeyolo` skill for policy lookup, approvals, flow inspection,
 service-gateway access, agent collaboration, and troubleshooting.
 
+## When to invoke the `safeyolo` skill
+
+Auto-invoke on the *first turn* any of these come up — do not wait for the
+operator to prompt you, and do not attempt a workaround before reading the
+skill's references. The skill has authoritative, up-to-date answers that
+supersede training-data guesses.
+
+Triggers include, non-exhaustively:
+
+- SafeYolo blocks: `X-Blocked-By`, HTTP 403 / 428 / 429 / 503 / 508 from a
+  request that would normally succeed, `wait_for_approval`, `type:` /
+  `action:` / `reflection:` JSON block bodies.
+- TLS / CA failures behind the SafeYolo proxy (`SEC_ERROR_UNKNOWN_ISSUER`,
+  `unable to get local issuer certificate`, unknown authority) that would
+  succeed outside the sandbox.
+- Guest package installation, `sudo`, `setpriv`, `apt`, `apk`, `pip`, `mise`
+  behaviour that surprises you (blocked, missing, silently redirected).
+- Debugger / profiler attach failures inside the guest: `ptrace: Operation
+  not permitted`, `py-spy` / `rbspy` / `strace` / `gdb` denied against a
+  same-uid process.
+- `safeyolo agent shell --root` or operator-recovery-shell paths.
+- Agent API queries (`/lookup`, `/budgets`, `/policy`, `/flows`, `/plumb`),
+  flow inspection, budget or circuit-breaker state.
+- Approved agent-to-agent plumb collaboration.
+- General "am I inside a SafeYolo sandbox / what facilities are available /
+  how do I debug this in-container" introspection.
+
+If you find yourself typing an answer that starts with "I think" about any
+of the above, stop and invoke the skill first.
+
 ## Security boundaries
 
 - Never request, read, expose, or use the host admin token. It is deliberately
