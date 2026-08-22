@@ -16,7 +16,7 @@ provisions to sandboxes.
 | mitmproxy version | Pinned in `pyproject.toml` | [pyproject.toml](../pyproject.toml) |
 | No root at runtime | Started by the operator, runs as the operator's uid | n/a |
 | Bind address | Loopback by default; listen host configurable | [cli/src/safeyolo/proxy.py](../cli/src/safeyolo/proxy.py) |
-| Admin API gating | Bearer token in `~/.safeyolo/data/admin_token`, mode 0600 | [addons/admin_api.py](../addons/admin_api.py), [addons/admin_shield.py](../addons/admin_shield.py) |
+| Admin API gating | Bearer token in `~/.safeyolo/data/admin_token`, mode 0600 | [cli/src/safeyolo/mitm_addons/admin_api.py](../cli/src/safeyolo/mitm_addons/admin_api.py), [cli/src/safeyolo/mitm_addons/admin_shield.py](../cli/src/safeyolo/mitm_addons/admin_shield.py) |
 | Tokens never in argv | Tokens passed via file paths / env vars, not CLI args | [tests/blackbox/host/security/test_firewall_structural.py](../tests/blackbox/host/security/test_firewall_structural.py) |
 
 ## Agent Sandbox
@@ -133,17 +133,17 @@ All installed package versions verified clean against [OSV.dev](https://osv.dev)
 
 | Area | Location |
 |------|----------|
-| Policy engine | [policy_engine.py](../addons/policy_engine.py) |
-| Credential detection | [credential_guard.py](../addons/credential_guard.py) |
-| Credential type mapping | [detection/credentials.py](../addons/detection/credentials.py) |
-| HMAC fingerprinting | [utils.py](../addons/utils.py) |
-| Shannon entropy | [detection/credentials.py](../addons/detection/credentials.py) |
-| Budget tracking | [budget_tracker.py](../addons/budget_tracker.py) |
-| Homoglyph detection | [network_guard.py](../addons/network_guard.py) |
-| Circuit breaker | [circuit_breaker.py](../addons/circuit_breaker.py) |
-| Service gateway | [service_gateway.py](../addons/service_gateway.py) |
-| Admin API auth | [admin_api.py](../addons/admin_api.py) |
-| Request ID | [request_id.py](../addons/request_id.py) |
-| Request logging | [request_logger.py](../addons/request_logger.py) |
+| Policy engine | [policy_engine.py](../cli/src/safeyolo/mitm_addons/policy_engine.py) |
+| Credential detection | [credential_guard.py](../cli/src/safeyolo/mitm_addons/credential_guard.py) |
+| Credential type mapping | [detection/credentials.py](../cli/src/safeyolo/detection/credentials.py) |
+| HMAC fingerprinting | [detection/matching.py](../cli/src/safeyolo/detection/matching.py) |
+| Shannon entropy | [detection/credentials.py](../cli/src/safeyolo/detection/credentials.py) |
+| Budget tracking | [budget_tracker.py](../cli/src/safeyolo/policy/budget_tracker.py) |
+| Homoglyph detection | [network_guard.py](../cli/src/safeyolo/mitm_addons/network_guard.py) |
+| Circuit breaker | [circuit_breaker.py](../cli/src/safeyolo/mitm_addons/circuit_breaker.py) |
+| Service gateway | [service_gateway.py](../cli/src/safeyolo/mitm_addons/service_gateway.py) |
+| Admin API auth | [admin_api.py](../cli/src/safeyolo/mitm_addons/admin_api.py) |
+| Request ID | [request_id.py](../cli/src/safeyolo/mitm_addons/request_id.py) |
+| Request logging | [request_logger.py](../cli/src/safeyolo/mitm_addons/request_logger.py) |
 | Startup verification | [start-safeyolo.sh](../scripts/start-safeyolo.sh) |
 | Blackbox tests | [tests/blackbox/](../tests/blackbox/) |

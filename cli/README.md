@@ -44,25 +44,24 @@ safeyolo doctor
 | `safeyolo doctor` | Run 11-check diagnostic cascade (config, Docker, proxy, addons) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |
 
-**Aliases:** `safeyolo up` (start with `--pull` and `--wait` only), `safeyolo down` = `stop`
+**Aliases:** `safeyolo up` = `start` (accepts `--wait/--no-wait` and `--profile`), `safeyolo down` = `stop`
 
 **Start options:**
 
 ```bash
 safeyolo start              # Normal start
-safeyolo start --dev        # Dev mode: mount addons/ and pdp/ from local repo
-safeyolo start --build      # Rebuild image before starting
-safeyolo start --headless   # Force headless mode (no TUI)
-safeyolo start --pull       # Pull latest image before starting
+safeyolo start --dev        # Dev mode: run proxy from local repo checkout
+safeyolo start --test       # Enable sinkhole routing + test CA (config-driven)
+safeyolo start --no-wait    # Skip waiting for healthy status
 ```
 
-**Doctor options:**
+Guest VM images (used to launch agent sandboxes) are built separately with
+`safeyolo build` — see the top-level README.
+
+**Doctor:**
 
 ```bash
-safeyolo doctor             # Run all checks, stop at first failure
-safeyolo doctor --verbose   # Show details for passing checks too
-safeyolo doctor --json      # Output results as JSON
-safeyolo doctor --fix       # Attempt to fix problems automatically
+safeyolo doctor             # Report host prerequisites, runtime, agents
 ```
 
 ### Monitoring & Logs
@@ -319,31 +318,6 @@ Manage hosts, egress posture, and named lists in policy.toml.
 | `safeyolo policy list add <name> <host>` | Add a host to a named list |
 | `safeyolo policy list remove <name> <host>` | Remove a host from a named list |
 | `safeyolo policy list show <name>` | Show hosts in a named list |
-
-### Token Management
-
-Manage the readonly agent API token for agent self-service diagnostics. Only one token exists at a time. Token survives proxy restarts and expires after the TTL (default: 1h).
-
-| Command | Description |
-|---------|-------------|
-| `safeyolo token create` | Create an agent API token (replaces any existing) |
-| `safeyolo token show` | Show current token status and expiry |
-| `safeyolo token revoke` | Delete the active token |
-
-```bash
-# Create a token (default: 1h TTL)
-safeyolo token create
-
-# Create a token with custom TTL
-safeyolo token create --ttl 4h
-safeyolo token create --ttl 30m
-
-# Check token status
-safeyolo token show
-
-# Revoke (delete) the token
-safeyolo token revoke
-```
 
 ### Certificate Management
 

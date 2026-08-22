@@ -43,7 +43,7 @@ echo "Log dir: ${LOG_DIR}"
 mkdir -p "${CERT_DIR}" "${PUBLIC_CERT_DIR}" "${LOG_DIR}" 2>/dev/null || true
 
 # Check write permissions (important for non-root execution)
-if ! touch "${CERT_DIR}/.write-test" 2>/dev/null; then
+if ! touch "${CERT_DIR}/.write-test" 2>/dev/null; then  # DOC: SECURITY.md, docs/TLS_CERTIFICATE.md
     echo "ERROR: Cannot write to ${CERT_DIR}"
     echo "  If using non-root (SAFEYOLO_UID/GID), the safeyolo-certs volume"
     echo "  may have root ownership from a previous run."
@@ -424,7 +424,7 @@ if [ "${SAFEYOLO_TUI}" = "true" ]; then
     # Verify it took effect via GET /plugins/network-guard/mode
     MODE=$(python3 -c "import httpx; r=httpx.get('http://localhost:9090/plugins/network-guard/mode', headers={'Authorization': 'Bearer $ADMIN_TOKEN'}); print(r.json().get('mode','unknown'))" 2>/dev/null)
 
-    if [ "$MODE" != "block" ]; then
+    if [ "$MODE" != "block" ]; then  # DOC: SECURITY.md
         echo "ERROR: Failed to set network guard to block mode (got: $MODE) - failing closed"
         tmux kill-session -t proxy 2>/dev/null
         exit 1

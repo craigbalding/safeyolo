@@ -88,7 +88,7 @@ def _bootstrap_config(config_dir: Path) -> None:
 
 
 @profiled_command("proxy start")
-def start(
+def start(  # DOC: README.md, docs/DEVELOPERS.md
     wait: bool = typer.Option(
         True,
         "--wait/--no-wait",
@@ -238,7 +238,7 @@ def start(
 
 
 @profiled_command("proxy stop")
-def stop(
+def stop(  # DOC: README.md
     all: bool = typer.Option(False, "--all", help="Also stop all agents and tear down networking"),
     profile: bool = typer.Option(
         False,
@@ -535,7 +535,7 @@ def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:
         console.print("  Installed rootfs-tree")
 
 
-def build() -> None:
+def build() -> None:  # DOC: docs/DEVELOPERS.md
     """Build guest VM images (kernel, initramfs, rootfs).
 
     Runs natively on Linux and through Lima on macOS. Output is installed

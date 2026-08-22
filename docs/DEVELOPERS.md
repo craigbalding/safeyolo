@@ -321,15 +321,16 @@ addons = [MyAddon()]
 
 **Running with live source editing:**
 ```bash
-# CLI: mounts addons/ and pdp/ from repo checkout into the container
+# `--dev` runs the proxy from your local checkout so edits to addons/pdp
+# source pick up on the next start (no container image, no rebuild step).
 safeyolo start --dev
 
 # Edit addons/*.py or pdp/*.py, then restart to pick up changes:
 safeyolo stop && safeyolo start --dev
-
-# Rebuild required for changes to scripts/ (baked into image):
-safeyolo start --dev --build
 ```
+
+Guest VM artifacts (kernel, initramfs, rootfs) are rebuilt separately via
+`safeyolo build` — see the top-level README for the full guest-build flow.
 
 **Install dev dependencies and pre-commit hooks:**
 ```bash
@@ -446,6 +447,92 @@ safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1
 safeyolo test https://httpbin.org/get
 # Should return 200 (allowed)
 ```
+
+## Documentation drift protection
+
+User-facing docs listed in `scripts/doc_allowlist.toml` are guarded by
+five pre-commit hooks that fail CI when a claim in a doc no longer matches
+the code. Each mechanism addresses one drift class; together they cover
+the four drift classes we've actually observed in this repo.
+
+### The five checks
+
+| Check | Script | Catches |
+|---|---|---|
+| Marker co-change | `check_skill_markers.py` | Source lines with `# DOC:` markers edited/removed without a matching doc update |
+| CLI-flag drift | `check_doc_cli_flags.py` | Docs referencing `safeyolo <cmd>` commands or flags that don't exist |
+| Constants-in-prose | `check_doc_constants.py` + `doc_constants.toml` | Pinned values in code no longer matching what docs quote |
+| Repo-relative links | `check_doc_links.py` | `[text](path)` / `[label]: path` references to moved or renamed files |
+| Forbidden phrases | `check_doc_forbidden.py` + `doc_forbidden.toml` | Stale mechanism claims after the enforcing code was deleted (no anchor left to mark against) |
+
+An additional soft check, `audit_doc_coverage.py`, reports which docs
+carry how many bindings and which curated security keywords appear in
+any doc without a binding. Run it manually — it's a visibility tool,
+not a gate.
+
+### Where the allowlist lives
+
+The set of "user-facing" docs is `scripts/doc_allowlist.toml`. All five
+checks read from there via `scripts/_doc_config.py`. Add a doc to the
+`user_facing_docs` list and every check picks it up on the next run.
+Design/planning docs (`docs/*-design.md`, `docs/FUTURE.md`, etc.) are
+deliberately out of scope — they describe intent, not runtime behaviour.
+
+### Where to place a `# DOC:` marker
+
+**Rule of thumb: place the marker on the specific expression that, if
+changed, would invalidate the doc claim.** Check semantics are "edits
+and removals fire; pure declarative additions do not" — so the marker
+line needs to actually change when the enforced fact changes.
+
+Concrete choices used in this repo:
+
+| Kind of claim | Marker location | Example |
+|---|---|---|
+| Typer command exists | The `def cmdname(` line | `def start(  # DOC: README.md` |
+| Typer flag exists (specific flag) | The `"--flag"` string line, not the `def` | `"--dev",  # DOC: docs/DEVELOPERS.md` |
+| Pinned constant (shell) | The assignment line | `ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"  # DOC: guest/README.md` |
+| Security invariant (specific expression) | The enforcement expression | `HTTPServer(("127.0.0.1", port), ...)  # DOC: SECURITY.md` |
+| Class-level property (whole class defends the claim) | The `class Foo:` line | `class AdminShield:  # DOC: SECURITY.md` |
+| Function-level property (whole function defends the claim) | The `def foo(` line | `def hmac_fingerprint(...):  # DOC: SECURITY.md` |
+
+A marker can list multiple docs: `# DOC: SECURITY.md, README.md`.
+Anchors (`# DOC: docs/AGENTS.md#agents-section`) are advisory in v1.
+
+### Adding a new claim to a user-facing doc
+
+1. **CLI reference** (`safeyolo cmd --flag`) → no action needed; the
+   CLI-flag check catches broken references automatically. If you want
+   the reverse binding ("changing this flag reminds me to update the
+   doc"), add a `# DOC:` marker per the table above.
+2. **Pinned value** (version, size, IP, path) → add an `[[assertion]]`
+   to `scripts/doc_constants.toml`. Use `must_contain_any = [...]` when
+   several phrasings are equivalent (e.g. `["127.0.0.1", "loopback only"]`).
+3. **Security or behavioural invariant** → place a `# DOC:` marker on
+   the specific enforcement expression per the table above.
+4. **Claim about a mechanism that could be removed later** → add a
+   `[[rule]]` to `scripts/doc_forbidden.toml` listing the phrases that
+   should never appear if the mechanism is gone. This is the check that
+   catches "the code that used to defend the claim was deleted" — no
+   marker helps there because there's nothing left to mark.
+5. **Referenced file path** → the link check handles it automatically
+   once the path is in a `[text](path)` or `[label]: path`.
+
+Run `pre-commit run --all-files` locally to verify all five checks pass.
+Run `python3 scripts/audit_doc_coverage.py` to see current coverage per
+doc and per security keyword — useful for planning what to mark next.
+
+### When *not* to add a marker
+
+- **Design or planning doc** — out of scope; those describe intent.
+- **Prose that describes a behaviour enforced by absence of code**
+  (e.g. "no external network interface" is defended by the absence of
+  bridge configuration — no line to mark). Cover it with a
+  forbidden-phrase rule for the stale-mechanism variant, or a
+  constants-in-prose assertion for a specific verifiable value.
+- **The same claim already has a marker at a stronger enforcement site.**
+  One marker per claim is fine; N markers on the same claim add churn
+  without extra coverage.
 
 ## Contributing
 

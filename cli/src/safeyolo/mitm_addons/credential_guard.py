@@ -52,7 +52,7 @@ log = logging.getLogger("safeyolo.credential-guard")
 # Decision Engine (PolicyClient-based)
 # =============================================================================
 
-def evaluate_credential_with_pdp(
+def evaluate_credential_with_pdp(  # DOC: SECURITY.md
     flow: http.HTTPFlow,
     credential: str,
     rule_name: str,
@@ -227,8 +227,8 @@ class CredentialGuard(SecurityAddon):
     def load(self, loader):
         """Register mitmproxy options."""
         loader.add_option("credguard_block", bool, True, "Block violations (default: true)")
-        loader.add_option("credguard_scan_urls", bool, False, "Scan URLs for credentials")
-        loader.add_option("credguard_scan_bodies", bool, False, "Scan request bodies")
+        loader.add_option("credguard_scan_urls", bool, False, "Scan URLs for credentials")  # DOC: SECURITY.md
+        loader.add_option("credguard_scan_bodies", bool, False, "Scan request bodies")  # DOC: SECURITY.md
 
     def configure(self, updates):
         """Handle configuration updates."""

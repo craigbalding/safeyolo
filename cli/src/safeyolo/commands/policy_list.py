@@ -44,7 +44,7 @@ def _count_entries(list_path: Path) -> int:
 
 
 @list_app.command("add")
-def list_add(
+def list_add(  # DOC: docs/CONFIGURATION.md
     name: str = typer.Argument(..., help="List name (used as $name in [hosts])"),
     path: str = typer.Argument(..., help="Path to list file (relative to config dir or absolute)"),
 ) -> None:

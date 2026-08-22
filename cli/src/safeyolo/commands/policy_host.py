@@ -97,7 +97,7 @@ def _scope_label(agent: str | None) -> str:
 
 
 @host_app.command("add")
-def host_add(
+def host_add(  # DOC: docs/CONFIGURATION.md
     host: str = typer.Argument(..., help="Host pattern (e.g., api.stripe.com)"),
     rate: Optional[int] = typer.Option(None, "--rate", "-r", help="Rate limit (requests/min)"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name (agent-scoped entry)"),

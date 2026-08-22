@@ -26,7 +26,19 @@ cd guest
 ./build-all.sh
 ```
 
-On Linux this runs natively. On macOS it auto-shells into a Lima VM (see below).
+On Linux this runs natively (rootfs only by default; kernel + initramfs are
+macOS-microVM artifacts, opted in via `BUILD_KERNEL=1`). On macOS it
+auto-shells into a Lima VM (see below).
+
+**Rebuilding after a prior build**: `build-rootfs.sh` short-circuits with
+"Rootfs already present. Delete them to rebuild." when both
+`out/rootfs-base.ext4` and `out/rootfs-tree/` exist. Wipe them first:
+```bash
+sudo rm -rf guest/out/rootfs-base.ext4 guest/out/rootfs-tree guest/out/cache-paths.txt
+./build-all.sh
+```
+The download cache under `guest/out/.download-cache/` is preserved — mise/gh
+tarballs and the trixie OCI image don't re-fetch.
 
 Artifacts land in `guest/out/`. To use them, from the same `guest/` directory you ran `./build-all.sh` in:
 
@@ -185,7 +197,11 @@ Eliminating sudo entirely would require either a user-namespace chroot (rootless
 ## Troubleshooting
 
 **`mkfs.ext4: No space left on device`**
-Content exceeded the sized image. The script computes size with 20% + 50MB headroom, so this shouldn't happen in normal flow. If it does, shrink the rootfs package list or bump the headroom in `build-rootfs.sh`.
+Content exceeded the sized image. The script uses a fixed 2048 MiB ext4 (see
+`ROOTFS_SIZE_MB` in `build-rootfs.sh`); override it with
+`ROOTFS_SIZE_MB=4096 ./build-rootfs.sh` if you're staging a rootfs script that
+adds bulky packages. Alternatively, trim the customize-hook or the extras
+apt-installed at the top of `build-rootfs.sh`.
 
 **Lima VM won't start**
 ```bash

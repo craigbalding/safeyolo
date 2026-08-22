@@ -30,10 +30,14 @@ Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patt
 git clone https://github.com/craigbalding/safeyolo.git
 cd safeyolo
 
-# Build guest VM images (kernel, initramfs, rootfs) — one-time, ~10 min.
-# On macOS this auto-shells into a Lima VM; on Linux it runs natively via
-# skopeo+umoci pulling the debian:trixie OCI image. See guest/README.md
-# for platform-specific setup notes.
+# Build the guest VM image. On Linux only the rootfs is produced (gVisor
+# supplies its own kernel); ~4-6 min. On macOS the driver auto-shells into a
+# Lima VM and additionally builds the kernel + initramfs for Apple
+# Virtualization.framework; ~10 min first time.
+#
+# See guest/README.md for platform-specific setup notes. On Linux you'll
+# also need `BUILD_KERNEL=1 ./build-all.sh` if you're producing artifacts for
+# a macOS consumer from a Linux box.
 #   Linux build prerequisite: sudo apt-get install skopeo umoci e2fsprogs curl
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
@@ -148,7 +152,7 @@ Internet
 
 The sandbox itself is a hardware-backed microVM on macOS (Apple Virtualization.framework + vsock) and a rootless gVisor container on Linux (runsc in an unprivileged user namespace, with `--network=sandbox` and `--host-uds=open`). Either way: if the agent unsets proxy vars → no effect, because there is no other network path. Raw TCP → impossible (no external interface). DNS → no resolver reachable (no external interface). **Enforcement is structural, not policy-based** — there are no firewall rules to misconfigure; there's simply nowhere else for traffic to go.
 
-Agent identity is cross-platform via PROXY protocol v2 — the host bridge stamps every upstream connection with the agent's attribution IP, and mitmproxy's `next_layer` hook resolves it. No per-agent lo0 aliases, no sudo at runtime.
+Agent identity is cross-platform via a per-agent Unix domain socket. On both macOS and Linux each agent talks to its own host-owned UDS at `<ip>_<agent>/proxy.sock`; mitmproxy's `UnixMode` listener parses the path at bind and stamps `client.peername = (ip, 0)` on every accepted connection. No per-agent lo0 aliases, no sudo at runtime.
 
 See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
 
@@ -243,7 +247,7 @@ Full technical design: [docs/microvm-architecture.md](docs/microvm-architecture.
 - **Networking**: no external interface in the sandbox — egress is UDS/vsock to a per-agent host socket → proxy bridge → mitmproxy (structural isolation)
 - **Terminal**: full PTY with resize — vsock PTY bridge on macOS, `runsc exec` on Linux
 - **Guest init**: served from a writable status share + read-only config share (changes without rootfs rebuild)
-- **Identity**: PROXY protocol v2 — the bridge stamps upstream TCP with each agent's attribution IP; mitmproxy's `next_layer` hook parses it
+- **Identity**: per-agent Unix domain socket at `<ip>_<agent>/proxy.sock` — mitmproxy's `UnixMode` parses the path at bind and stamps `client.peername = (ip, 0)` on every accepted connection
 
 Linux specifics:
 

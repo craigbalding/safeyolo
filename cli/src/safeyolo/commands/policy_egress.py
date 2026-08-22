@@ -21,7 +21,7 @@ egress_app = typer.Typer(
 
 
 @egress_app.command("set")
-def egress_set(
+def egress_set(  # DOC: docs/CONFIGURATION.md
     posture: str = typer.Argument(..., help="Egress posture: allow, prompt, or deny"),
     agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent name (set agent-level posture)"),
 ) -> None:

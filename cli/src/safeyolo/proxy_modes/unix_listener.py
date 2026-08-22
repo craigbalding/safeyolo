@@ -91,7 +91,7 @@ class UnixMode(mode_specs.ProxyMode):
         return _parse_sock_path(self.data)[1]
 
 
-class _PeeredStreamWriter:
+class _PeeredStreamWriter:  # DOC: SECURITY.md, docs/security-verification.md
     """Thin shim around `asyncio.StreamWriter` that reports a synthetic
     peername. `asyncio.start_unix_server` hands us a writer whose
     `get_extra_info("peername")` is `""`; mitmproxy's

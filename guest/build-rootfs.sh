@@ -59,14 +59,14 @@ case "${ARCH:-$HOST_ARCH}" in
 esac
 
 # --- Fixed-size ext4 image (matches the historical 2 GiB sparse) ------------
-ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"
+ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-2048}"  # DOC: guest/README.md
 
 # --- Pinned tarballs installed by the customize-hook -----------------------
-MISE_VERSION="${MISE_VERSION:-2026.8.8}"
+MISE_VERSION="${MISE_VERSION:-2026.8.8}"  # DOC: guest/README.md
 MISE_SHA256_ARM64="${MISE_SHA256_ARM64:-6e6e96d319fe274996db5aed691f5398552865e641dc4b6fb6b01d73f4853a17}"
 MISE_SHA256_AMD64="${MISE_SHA256_AMD64:-58edfbdba6d4255b6536a61daeaf3b21f7a059430c789e948c8494ba32d59e1f}"
 
-GH_VERSION="${GH_VERSION:-2.98.0}"
+GH_VERSION="${GH_VERSION:-2.98.0}"  # DOC: guest/README.md
 GH_SHA256_ARM64="${GH_SHA256_ARM64:-cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86}"
 GH_SHA256_AMD64="${GH_SHA256_AMD64:-3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de}"
 
@@ -75,7 +75,7 @@ GH_SHA256_AMD64="${GH_SHA256_AMD64:-3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761c
 # canonical digest to pin. Floating tag is no worse than mmdebstrap's
 # "whatever deb.debian.org has today" — reproducibility has always been
 # a future-work item — but pinning by digest is a strict improvement.
-DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://debian:trixie}"
+DEBIAN_IMAGE="${DEBIAN_IMAGE:-docker://debian:trixie}"  # DOC: guest/README.md, README.md
 
 # --- Helper: `command -v` that also probes /usr/sbin / /sbin --------------
 # Debian packages these binaries into system sbin dirs that aren't on
@@ -121,7 +121,7 @@ OUTPUT_TREE="$OUTPUT_DIR/rootfs-tree"
 
 # Short-circuit only if BOTH artifacts are already present. A partial
 # build can never self-heal otherwise.
-if [ -f "$OUTPUT_EXT4" ] && [ -d "$OUTPUT_TREE" ]; then
+if [ -f "$OUTPUT_EXT4" ] && [ -d "$OUTPUT_TREE" ]; then  # DOC: guest/README.md
     echo "Rootfs already present:"
     echo "  $OUTPUT_EXT4"
     echo "  $OUTPUT_TREE/"
@@ -309,7 +309,7 @@ sudo rsync -aHAX --numeric-ids "$ROOTFS/" "$OUTPUT_TREE/"
 # VZ runs a full Linux VM with its own real root, so ownership doesn't
 # matter there).
 echo "=== Chowning tree to 100000:100000 (rootless subuid-root) ==="
-sudo chown -R 100000:100000 "$OUTPUT_TREE"
+sudo chown -R 100000:100000 "$OUTPUT_TREE"  # DOC: guest/README.md, SECURITY.md
 echo "tree:  $OUTPUT_TREE/ ($(sudo du -sh "$OUTPUT_TREE" | cut -f1))"
 
 # --- Emit: ext4 for macOS VZ ---------------------------------------------

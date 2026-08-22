@@ -230,7 +230,7 @@ def _print_web_share(runtime: dict) -> None:
 
 
 @web_app.command("share")
-def web_share(
+def web_share(  # DOC: README.md
     tailnet: bool = typer.Option(
         False,
         "--tailnet",

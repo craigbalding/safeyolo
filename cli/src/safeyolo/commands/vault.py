@@ -72,7 +72,7 @@ def _load_vault():
 
 
 @vault_app.command()
-def add(
+def add(  # DOC: docs/CONFIGURATION.md
     name: str = typer.Argument(..., help="Credential name (e.g., gmail-oauth2)"),
     credential_type: str = typer.Option(
         "bearer",

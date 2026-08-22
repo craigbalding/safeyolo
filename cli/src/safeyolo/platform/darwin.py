@@ -42,7 +42,7 @@ class DarwinPlatform(AgentPlatform):
         # — one consistent identity visible inside and outside the
         # sandbox.
         offset = agent_index + 1  # 0 → 10.200.0.1
-        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"
+        attribution_ip = f"10.200.{offset // 256}.{offset % 256}"  # DOC: SECURITY.md, README.md, docs/ARCHITECTURE.md
 
         return {
             "attribution_ip": attribution_ip,
@@ -52,8 +52,10 @@ class DarwinPlatform(AgentPlatform):
         }
 
     def teardown_networking(self, agent_index: int) -> None:
-        # No lo0 aliases to clean up — identity is conveyed via
-        # PROXY protocol, not kernel interface configuration.
+        # No lo0 aliases to clean up — identity is derived from the
+        # per-agent UDS socket path (see cli/src/safeyolo/sockets.py and
+        # cli/src/safeyolo/proxy_modes/unix_listener.py), not from kernel
+        # interface configuration.
         pass
 
     def load_firewall_rules(self, proxy_port: int, admin_port: int,
@@ -248,7 +250,8 @@ class DarwinPlatform(AgentPlatform):
     def cleanup_all(self, agents_dir: Path) -> None:
         """Clean up agent resources for this instance.
 
-        No lo0 aliases to remove — identity is conveyed via PROXY protocol.
+        No lo0 aliases to remove — identity is derived from the per-agent
+        UDS socket path (see sockets.py / proxy_modes/unix_listener.py).
         vsock state and bridge sockets are process-scoped and get cleaned
         up with the respective daemons.
         """

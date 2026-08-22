@@ -68,7 +68,7 @@ def directory_for(agent: str, ip: str) -> Path:
 
 def path_for(agent: str, ip: str) -> Path:
     """Host-side UDS path for an agent."""
-    p = directory_for(agent, ip) / "proxy.sock"
+    p = directory_for(agent, ip) / "proxy.sock"  # DOC: SECURITY.md, docs/security-verification.md
     if len(str(p).encode()) > _SUN_PATH_MAX:
         raise ValueError(
             f"socket path exceeds sun_path limit ({_SUN_PATH_MAX} bytes): {p}"
