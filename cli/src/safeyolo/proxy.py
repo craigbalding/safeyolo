@@ -252,7 +252,7 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
     else:
         admin_token = secrets.token_urlsafe(32)
         admin_token_file.write_text(admin_token)
-        admin_token_file.chmod(0o600)
+        admin_token_file.chmod(0o600)  # DOC: docs/security-verification.md, SECURITY.md
 
     # Agent token: persist across restarts. In the Docker era this was
     # a bind-mount so regeneration was transparent (container saw the
@@ -463,7 +463,7 @@ def _build_command(
     cmd.extend(["--set", "stream_large_bodies=10m"])
     cmd.extend(["--set", f"flow_pruner_max={flow_cache}"])
     cmd.extend(["--set", "web_open_browser=false"])
-    cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])
+    cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])  # DOC: docs/security-verification.md
     cmd.extend(["--set", f"web_port={(proxy_config or {}).get('web_port', 8081)}"])
     cmd.extend(["--set", f"admin_port={admin_port}"])
     # Pass token via file path, NOT on the command line. The cmdline is

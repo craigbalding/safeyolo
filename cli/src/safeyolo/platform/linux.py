@@ -1402,7 +1402,7 @@ class LinuxPlatform(AgentPlatform):
             {"destination": "/workspace", "type": "bind",
              "source": os.path.abspath(workspace_path),
              "options": workspace_options},
-            {"destination": "/safeyolo", "type": "bind",
+            {"destination": "/safeyolo", "type": "bind",  # DOC: docs/security-verification.md
              "source": str(config_share),
              "options": ["rbind", "ro"]},
             {"destination": "/safeyolo-status", "type": "bind",
@@ -1525,7 +1525,7 @@ class LinuxPlatform(AgentPlatform):
         # does NOT hold this cap; agents needing it opt in through the
         # existing setpriv path. Blast radius: this sandbox only --
         # gVisor's sentry never gives capabilities to the host kernel.
-        root_caps = [
+        root_caps = [  # DOC: docs/security-verification.md, SECURITY.md
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID",
             "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP",
             "CAP_NET_BIND_SERVICE", "CAP_SYS_CHROOT",
