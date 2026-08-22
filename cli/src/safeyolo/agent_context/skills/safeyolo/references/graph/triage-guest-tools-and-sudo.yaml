@@ -251,7 +251,7 @@ nodes:
 
   - id: con.tools_use_non_ptrace_tool
     kind: conclusion
-    label: "Switch to a tool that does not use ptrace(): `py-spy` / `rbspy` (read /proc/$pid/mem), eBPF where the sentry allows it, language-native debuggers with alternative attach paths, or `strace -f cmd` (launch under strace) instead of `strace -p PID` (attach). Inside safeyolo with guest-init YAMA-0 applied, py-spy/rbspy can attach to any same-uid process without a relationship or elevation."
+    label: "Switch to a tool that does not use ptrace(): `py-spy` / `rbspy` (read /proc/$pid/mem), eBPF where the sentry allows it, language-native debuggers with alternative attach paths, or `strace -f cmd` (launch under strace) instead of `strace -p PID` (attach). Inside safeyolo with guest-init YAMA-0 applied, py-spy/rbspy can attach to any same-uid process without a relationship or elevation. If no non-ptrace equivalent exists for the specific triage, report the limitation in-band and pick the closest workable alternative -- do NOT escalate to the operator (gVisor platform is deterministic; there is nothing for the operator to change from the guest's perspective) and do NOT push the debugging out to the host."
     source: authored
 
   - id: con.tools_retry_under_setpriv
@@ -273,11 +273,6 @@ nodes:
   - id: ask.tools_watch_for_download_approval
     kind: operator_ask
     label: "Ask operator to run `safeyolo watch` and approve the specific download"
-    source: authored
-
-  - id: ask.tools_switch_to_kvm_platform
-    kind: operator_ask
-    label: "Only when a `/proc/$pid/mem`-based equivalent genuinely does not exist for the specific triage: ask the operator whether `/dev/kvm` is exposed on the host so safeyolo can pick the kvm platform (kvm may implement `ptrace()` where systrap does not). If /dev/kvm is not available, stay inside the sandbox and pick a non-ptrace tool. Do NOT ask the operator to attach a debugger from the host side, `docker exec` a tracer in, or move the target process out of the sandbox -- that is the *agent-takes-over-host* antipattern (boundary erosion, exactly what safeyolo exists to prevent), not merely a delegation shortcut. Do NOT ask to grant `CAP_SYS_PTRACE` at the agent's own uid and do NOT ask to weaken host YAMA -- neither is the correct axis."
     source: authored
 
   - id: ask.suggest_client_upgrade
@@ -376,7 +371,6 @@ edges:
   - {from: ev.tools_check_setpriv_helps_ptrace, to: cls.tools_gvisor_syscall_unsupported, kind: implies, when: "same EPERM returns even under setpriv -- caps and YAMA are ruled out"}
   - {from: ev.tools_check_gvisor_platform,      to: cls.tools_gvisor_syscall_unsupported, kind: implies, when: "platform is systrap AND the tool uses ptrace() directly (strace, gdb)"}
   - {from: cls.tools_gvisor_syscall_unsupported, to: con.tools_use_non_ptrace_tool, kind: implies}
-  - {from: cls.tools_gvisor_syscall_unsupported, to: ask.tools_switch_to_kvm_platform, kind: escalates_to, when: "the specific triage genuinely requires ptrace() and no /proc/mem-based equivalent exists"}
 
   # /proc/mem based tools (py-spy) succeed under a correctly-configured
   # safeyolo -- YAMA=0 in guest + CAP_SYS_PTRACE for setpriv-root as
