@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 
-from .core.audit_schema import EventKind, Severity
+from .core.audit_schema import EventKind, Severity, sanitize_for_log
 from .events import write_event
 from .tailnet import (
     TailnetServeError,
@@ -272,9 +272,13 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             n = int(length)
         except ValueError:
-            # Do not log the value itself: an attacker-controlled
-            # Content-Length would land verbatim in the log stream.
-            log.debug("preview request had non-integer Content-Length (len=%d); treating as empty", len(length))
+            # `length` is attacker-controlled; sanitize before logging.
+            # `sanitize_for_log` is CodeQL-recognised as a log-injection
+            # barrier (see cli/src/safeyolo/core/audit_schema.py).
+            log.debug(
+                "preview request had non-integer Content-Length %s; treating as empty",
+                sanitize_for_log(length),
+            )
             return b""
         return self.rfile.read(max(n, 0))
 
