@@ -58,4 +58,26 @@ stage_safeyolo_context() {
             ln -s "$link_target" "$link_path"
         fi
     fi
+
+    # Install slash commands shipped by the safeyolo skill. Skills live under
+    # $link_dir/safeyolo but Claude Code auto-discovers slash commands at
+    # $agent_home/.claude/commands/. Skip cleanly on codex/none.
+    if [ "$consumer" = "claude" ]; then
+        local commands_src="$link_target/commands"
+        local commands_dst="$agent_home/.claude/commands"
+        if [ -d "$commands_src" ]; then
+            mkdir -p "$commands_dst"
+            local cmd_file cmd_name
+            for cmd_file in "$commands_src"/*.md; do
+                [ -f "$cmd_file" ] || continue
+                cmd_name="$(basename "$cmd_file")"
+                # Do not clobber a user-authored command with the same name;
+                # safeyolo-shipped commands are prefixed `safeyolo-` to keep
+                # the namespace collision surface small.
+                if [ ! -e "$commands_dst/$cmd_name" ]; then
+                    cp "$cmd_file" "$commands_dst/$cmd_name"
+                fi
+            done
+        fi
+    fi
 }

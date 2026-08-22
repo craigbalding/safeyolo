@@ -8,7 +8,7 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-CONTEXT_HEADER = "X-Test-Context"
+CONTEXT_HEADER = "X-Test-Context"  # SKILL: agent-api.md#flow-inspection
 REQUIRED_KEYS = ("run", "agent")
 CANONICAL_KEYS = (
     "run",

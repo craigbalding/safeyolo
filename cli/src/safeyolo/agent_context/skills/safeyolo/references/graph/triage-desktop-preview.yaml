@@ -1,0 +1,216 @@
+# Triage graph: "the operator can't see what I'm showing / desktop isn't working"
+#
+# Entry question: a visual agent is trying to expose a graphical session
+# (Xvfb + noVNC + optional browser) via SafeYolo's preview mechanism, and
+# either the operator sees a blank / 404 URL, the desktop doesn't start,
+# or the in-guest browser can't launch. I'm the only party with in-guest
+# evidence; the operator can only act on the host side. This graph
+# narrates the diagnosis so the operator can act.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-tls-and-ca
+    when: "preview URL is HTTPS and fails to load with a cert error on the operator's browser"
+  - graph: triage-guest-tools-and-sudo
+    when: "installing Xvfb / noVNC / a browser inside the guest failed"
+  - graph: triage-request-failing
+    when: "the operator-facing URL returns a specific status code"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.desktop_operator_sees_404
+    kind: symptom
+    label: "Operator opens the preview URL and gets 404 / connection refused"
+    keywords: ["404", "preview URL", "connection refused", "not found", "operator can't reach"]
+    source: authored
+
+  - id: sym.desktop_operator_sees_blank
+    kind: symptom
+    label: "Operator sees the noVNC page but the desktop area is blank / black"
+    keywords: ["blank", "black screen", "novnc empty", "no desktop", "Xvfb not running"]
+    source: authored
+
+  - id: sym.desktop_novnc_connect_drops
+    kind: symptom
+    label: "noVNC in the operator's browser connects then immediately disconnects"
+    keywords: ["novnc drop", "immediate disconnect", "vnc drop", "auth loop"]
+    source: authored
+
+  - id: sym.desktop_xdg_open_missing
+    kind: symptom
+    label: "In-guest tool tried to launch a browser and failed with `xdg-open` missing"
+    detail: "The sandbox is generally headless -- no default browser. This is not a bug, it's an environment feature."
+    keywords: ["xdg-open", "x-www-browser", "www-browser", "launch browser", "no browser"]
+    source: authored
+
+  - id: sym.desktop_browser_wont_start
+    kind: symptom
+    label: "I asked a browser to start (headed) inside the guest but it exits immediately"
+    keywords: ["browser exit", "chromium exit", "chrome not starting", "no DISPLAY"]
+    source: authored
+
+  - id: sym.desktop_preview_not_started
+    kind: symptom
+    label: "I'm not sure the operator has actually run `safeyolo preview` for this agent"
+    keywords: ["safeyolo preview", "no preview URL", "no session"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.desktop_check_xvfb_running
+    kind: evidence
+    label: "pgrep -a Xvfb -- Xvfb display should be running on :1 (or whichever DISPLAY is configured)"
+    source: authored
+
+  - id: ev.desktop_check_novnc_running
+    kind: evidence
+    label: "ss -ltnp | grep -E ':6080|:5901' -- noVNC websockify (6080) and the VNC server (5901) should both be listening"
+    source: authored
+
+  - id: ev.desktop_check_display_env
+    kind: evidence
+    label: "echo \"$DISPLAY\" -- must be set (usually `:1`) for X clients to reach the Xvfb server"
+    source: authored
+
+  - id: ev.desktop_check_browser_binary
+    kind: evidence
+    label: "which -a chromium chromium-browser google-chrome firefox -- a browser binary must be installed in the guest"
+    source: authored
+
+  - id: ev.desktop_check_preview_process
+    kind: evidence
+    label: "Ask operator: `safeyolo status` -- does it list an active preview session for this agent?"
+    source: authored
+
+  - id: ev.desktop_check_preview_url_reach
+    kind: evidence
+    label: "Ask operator: does the preview URL match `http://127.0.0.1:PORT/vnc.html?...` and does the port match `safeyolo status`?"
+    source: authored
+
+  - id: ev.desktop_check_operator_ttl
+    kind: evidence
+    label: "Ask operator: was `safeyolo preview --ttl` set? If yes, the session may have expired -- session close is silent from the guest side"
+    source: authored
+
+  - id: ev.desktop_check_novnc_logs
+    kind: evidence
+    label: "Ask operator to check noVNC / websockify logs on the host side for the specific browser connection attempt"
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.desktop_stack_not_started
+    kind: classification
+    label: "The Xvfb + VNC + noVNC stack was never started in this agent"
+    source: authored
+
+  - id: cls.desktop_preview_not_started
+    kind: classification
+    label: "Operator hasn't run `safeyolo preview` yet, or the session expired"
+    source: authored
+
+  - id: cls.desktop_port_mismatch
+    kind: classification
+    label: "The preview URL points at a port different from where noVNC is listening"
+    source: authored
+
+  - id: cls.desktop_no_browser_in_guest
+    kind: classification
+    label: "No browser binary is installed in the guest; xdg-open has nothing to launch"
+    source: authored
+
+  - id: cls.desktop_headless_expected
+    kind: classification
+    label: "Trying to run a browser without DISPLAY set; browser exits because there's no X server visible to it"
+    source: authored
+
+  - id: cls.desktop_operator_cannot_view
+    kind: classification
+    label: "Everything is running but the operator's browser cannot render the noVNC page (host-side network / cert / TTL issue)"
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.desktop_start_stack
+    kind: conclusion
+    label: "Start Xvfb + x11vnc + noVNC in the guest (or invoke the guest's `start-desktop` helper if one exists)"
+    source: authored
+
+  - id: con.desktop_print_url_manually
+    kind: conclusion
+    label: "Do NOT retry launching a browser via xdg-open. Print the URL to stdout and ask the operator to open it manually."
+    source: authored
+
+  - id: con.desktop_set_display_before_browser
+    kind: conclusion
+    label: "Set DISPLAY (e.g. `:1`) before launching a headed browser, OR use the browser's --headless mode"
+    source: authored
+
+  - id: con.desktop_report_port_and_url
+    kind: conclusion
+    label: "Report the actual noVNC listening port + expected URL back to the operator so they can compare with what they've been given"
+    source: authored
+
+  # ---- Operator asks ---------------------------------------------------
+  - id: ask.desktop_run_preview
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo preview <agent>` (with `--ttl` if a long-lived session is wanted) and share the URL"
+    source: authored
+
+  - id: ask.desktop_check_status
+    kind: operator_ask
+    label: "Ask operator to `safeyolo status` and confirm the preview session and port for this agent"
+    source: authored
+
+  - id: ask.desktop_install_browser
+    kind: operator_ask
+    label: "Ask operator to add a browser binary to the agent's rootfs (chromium is a common minimal choice); explain why the visual task needs it"
+    source: authored
+
+
+edges:
+  # Every desktop entry starts by confirming the stack is up in the guest
+  - {from: sym.desktop_operator_sees_404,   to: ev.desktop_check_preview_process, kind: next_check}
+  - {from: sym.desktop_operator_sees_blank, to: ev.desktop_check_xvfb_running,    kind: next_check}
+  - {from: sym.desktop_novnc_connect_drops, to: ev.desktop_check_novnc_running,   kind: next_check}
+  - {from: sym.desktop_novnc_connect_drops, to: ev.desktop_check_novnc_logs,      kind: next_check}
+  - {from: sym.desktop_xdg_open_missing,    to: ev.desktop_check_browser_binary,  kind: next_check}
+  - {from: sym.desktop_browser_wont_start,  to: ev.desktop_check_display_env,     kind: next_check}
+  - {from: sym.desktop_preview_not_started, to: ev.desktop_check_preview_process, kind: next_check}
+
+  # Stack running?
+  - {from: ev.desktop_check_xvfb_running,  to: cls.desktop_stack_not_started, kind: implies, when: "Xvfb not running"}
+  - {from: ev.desktop_check_novnc_running, to: cls.desktop_stack_not_started, kind: implies, when: "no listener on the expected VNC/noVNC ports"}
+  - {from: cls.desktop_stack_not_started,  to: con.desktop_start_stack, kind: implies}
+  - {from: cls.desktop_stack_not_started,  to: con.desktop_report_port_and_url, kind: implies}
+
+  # Preview process on the host side
+  - {from: ev.desktop_check_preview_process, to: cls.desktop_preview_not_started, kind: implies, when: "no active preview in `safeyolo status`"}
+  - {from: cls.desktop_preview_not_started,  to: ask.desktop_run_preview, kind: escalates_to}
+  - {from: ev.desktop_check_preview_process, to: ev.desktop_check_operator_ttl, kind: next_check, when: "operator says the session was open but is not now"}
+  - {from: ev.desktop_check_operator_ttl,    to: cls.desktop_preview_not_started, kind: implies, when: "TTL had passed"}
+
+  # URL / port mismatch
+  - {from: ev.desktop_check_preview_url_reach, to: cls.desktop_port_mismatch, kind: implies, when: "URL port differs from listening noVNC port"}
+  - {from: cls.desktop_port_mismatch,          to: con.desktop_report_port_and_url, kind: implies}
+  - {from: sym.desktop_operator_sees_404,      to: ev.desktop_check_preview_url_reach, kind: next_check, when: "stack is running but operator still 404s"}
+
+  # No browser inside the guest
+  - {from: ev.desktop_check_browser_binary, to: cls.desktop_no_browser_in_guest, kind: implies, when: "no browser binary present"}
+  - {from: cls.desktop_no_browser_in_guest, to: con.desktop_print_url_manually,  kind: implies}
+  - {from: cls.desktop_no_browser_in_guest, to: ask.desktop_install_browser,     kind: escalates_to, when: "the visual task actually needs an in-guest browser (e.g. Playwright / Chrome DevTools)"}
+
+  # Browser started but DISPLAY missing
+  - {from: ev.desktop_check_display_env, to: cls.desktop_headless_expected, kind: implies, when: "DISPLAY unset"}
+  - {from: cls.desktop_headless_expected, to: con.desktop_set_display_before_browser, kind: implies}
+
+  # Operator can't view -- everything up but host-side issue
+  - {from: ev.desktop_check_novnc_logs, to: cls.desktop_operator_cannot_view, kind: implies, when: "guest stack is fine but connection dies on host side"}
+  - {from: cls.desktop_operator_cannot_view, to: ask.desktop_check_status, kind: escalates_to}
+
+
+entries:
+  - symptom: sym.desktop_operator_sees_404
+  - symptom: sym.desktop_operator_sees_blank
+  - symptom: sym.desktop_novnc_connect_drops
+  - symptom: sym.desktop_xdg_open_missing
+  - symptom: sym.desktop_browser_wont_start
+  - symptom: sym.desktop_preview_not_started

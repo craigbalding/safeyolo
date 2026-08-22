@@ -68,6 +68,55 @@ class TestCredentialRule:
         assert rule.matches("sk-abc123xyz456def789ghi") is None
 
 
+class TestGithubClassifierCoverage:
+    """Regression: the default `github` classifier must match every GitHub
+    token prefix family, not just ghp_/ghs_.
+
+    Historically the DEFAULT_RULES pattern was `gh[ps]_[a-zA-Z0-9]{36}`,
+    which missed gh's OAuth device-flow tokens (`gho_`), GitHub App tokens
+    (`ghu_`, `ghs_`, `ghr_`), and fine-grained PATs (`github_pat_`).
+    Under that gap, api.github.com traffic bearing an unclassified token
+    hit credential-guard's entropy fallback and got fingerprinted as
+    `unknown_secret`, so any `credential: ["github:*"]` allow condition
+    in policy was dead-lettered and every mint of a fresh token required
+    a separate operator approval.
+    """
+
+    def _classify(self, value: str) -> str | None:
+        """Classify against DEFAULT_RULES and return the rule name that matched.
+
+        Split entries all share `name="github"`; the return value is that
+        name if any of the github rules matched, else None.
+        """
+        from safeyolo.detection import DEFAULT_RULES, detect_credential_type
+        return detect_credential_type(value, DEFAULT_RULES)
+
+    def test_matches_classic_pat_ghp(self):
+        assert self._classify("ghp_" + "A" * 36) == "github"
+
+    def test_matches_oauth_gho(self):
+        """Device-flow token issued by `gh auth login --web` (the case
+        that surfaced this bug)."""
+        assert self._classify("gho_" + "A" * 36) == "github"
+
+    def test_matches_github_app_user_ghu(self):
+        assert self._classify("ghu_" + "A" * 36) == "github"
+
+    def test_matches_github_app_server_ghs(self):
+        assert self._classify("ghs_" + "A" * 36) == "github"
+
+    def test_matches_refresh_ghr(self):
+        assert self._classify("ghr_" + "A" * 36) == "github"
+
+    def test_matches_fine_grained_pat(self):
+        assert self._classify("github_pat_" + "A" * 82) == "github"
+
+    def test_does_not_match_short_or_wrong_prefix(self):
+        assert self._classify("ghp_short") is None
+        assert self._classify("ghx_" + "A" * 36) is None
+        assert self._classify("github_pat_short") is None
+
+
 class TestHostMatching:
     """Tests for host pattern matching (imported from utils)."""
 
@@ -837,8 +886,15 @@ class TestMaybeReloadRules:
         guard.safe_headers_config = {}
         return guard
 
-    def test_reloads_on_hash_change(self):
-        """Rules are reloaded when policy hash changes."""
+    def test_reloads_on_hash_change_merges_defaults_and_policy(self):
+        """On hash change, rules are DEFAULT_RULES ++ policy-supplied.
+
+        Additive merge: policy adds classifiers without displacing the
+        built-ins. First matching rule wins per the iteration order in
+        `detect_credential_type`, so defaults are consulted first and
+        policy-supplied entries act as fallbacks.
+        """
+        from safeyolo.detection import DEFAULT_RULES
         guard = self._make_guard()
         guard._last_policy_hash = "old-hash"
 
@@ -846,7 +902,7 @@ class TestMaybeReloadRules:
         mock_client.get_sensor_config.return_value = {
             "policy_hash": "new-hash",
             "credential_rules": [
-                {"name": "openai", "patterns": [r"sk-[a-zA-Z0-9]{20,}"], "allowed_hosts": ["api.openai.com"]},
+                {"name": "internal_svc", "patterns": [r"svc-[a-zA-Z0-9]{20,}"], "allowed_hosts": ["internal.corp"]},
             ],
             "addons": {},
         }
@@ -856,8 +912,103 @@ class TestMaybeReloadRules:
             guard._maybe_reload_rules()
 
         assert guard._last_policy_hash == "new-hash"
+        assert len(guard.rules) == len(DEFAULT_RULES) + 1
+        # Defaults come first, policy-supplied are appended.
+        assert [r.name for r in guard.rules[:len(DEFAULT_RULES)]] == [r.name for r in DEFAULT_RULES]
+        assert guard.rules[-1].name == "internal_svc"
+
+    def test_empty_policy_rules_gives_defaults_only(self):
+        """When policy supplies no credential_rules and defaults are on,
+        the loaded set is exactly DEFAULT_RULES.
+
+        This is the case where `credential:use` allow conditions on
+        built-in classifier names (e.g. `github:*`) actually bind --
+        without the defaults the classifier never emits `github` for
+        any token, so every mint fingerprints fresh as `unknown_secret`
+        and requires operator approval per token.
+        """
+        from safeyolo.detection import DEFAULT_RULES
+        guard = self._make_guard()
+        guard._last_policy_hash = "old"
+
+        mock_client = mock.MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "new",
+            "credential_rules": [],
+            "addons": {},
+        }
+
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            guard._maybe_reload_rules()
+
+        assert [r.name for r in guard.rules] == [r.name for r in DEFAULT_RULES]
+        # In particular a github classifier must be present.
+        assert any(r.name == "github" for r in guard.rules)
+
+    def test_missing_policy_rules_key_gives_defaults_only(self):
+        """`credential_rules` absent from policy has the same effect as empty."""
+        from safeyolo.detection import DEFAULT_RULES
+        guard = self._make_guard()
+        guard._last_policy_hash = "old"
+
+        mock_client = mock.MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "new",
+            # credential_rules key not present
+            "addons": {},
+        }
+
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            guard._maybe_reload_rules()
+
+        assert len(guard.rules) == len(DEFAULT_RULES)
+
+    def test_opt_out_of_defaults_gives_only_policy_supplied(self):
+        """`addons.credential_guard.use_default_credential_rules: false`
+        skips DEFAULT_RULES; only policy-supplied rules apply."""
+        guard = self._make_guard()
+        guard._last_policy_hash = "old"
+
+        mock_client = mock.MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "new",
+            "credential_rules": [
+                {"name": "internal_svc", "patterns": [r"svc-[a-zA-Z0-9]{20,}"], "allowed_hosts": ["internal.corp"]},
+            ],
+            "addons": {
+                "credential_guard": {"use_default_credential_rules": False},
+            },
+        }
+
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            guard._maybe_reload_rules()
+
         assert len(guard.rules) == 1
-        assert guard.rules[0].name == "openai"
+        assert guard.rules[0].name == "internal_svc"
+        assert not any(r.name == "github" for r in guard.rules)
+
+    def test_opt_out_with_no_policy_rules_gives_empty(self):
+        """opt-out + empty policy = no rules loaded; entropy fallback only."""
+        guard = self._make_guard()
+        guard._last_policy_hash = "old"
+
+        mock_client = mock.MagicMock()
+        mock_client.get_sensor_config.return_value = {
+            "policy_hash": "new",
+            "credential_rules": [],
+            "addons": {
+                "credential_guard": {"use_default_credential_rules": False},
+            },
+        }
+
+        with mock.patch("pdp.get_policy_client", return_value=mock_client), \
+             mock.patch("pdp.is_policy_client_configured", return_value=True):
+            guard._maybe_reload_rules()
+
+        assert guard.rules == []
 
     def test_noop_on_same_hash(self):
         """No reload when policy hash is unchanged."""

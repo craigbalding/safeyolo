@@ -1,0 +1,250 @@
+# Triage graph: "TLS handshake failing / cert not trusted"
+#
+# Entry question: an HTTPS call fails at the TLS layer -- certificate
+# verify failed, unknown authority, handshake reset, or the specific
+# runtime (Go/Python/Node/curl) rejects the SafeYolo intermediate CA.
+# This graph disambiguates runtime env-var gaps, missing bundle refresh,
+# and clients that bypass the proxy.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-guest-tools-and-sudo
+    when: "the failure is package/tool install-time and might be TLS-related"
+  - graph: triage-request-failing
+    when: "the connection completes and the failure is a status code, not a TLS error"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.tls_python_verify_failed
+    kind: symptom
+    label: "Python: `ssl.SSLCertVerificationError: certificate verify failed`"
+    keywords: ["ssl", "SSLCertVerificationError", "certificate verify failed", "python", "requests", "urllib"]
+    source: authored
+
+  - id: sym.tls_go_unknown_authority
+    kind: symptom
+    label: "Go client: `x509: certificate signed by unknown authority`"
+    keywords: ["x509", "unknown authority", "Go", "gh", "docker", "kubectl", "tls: bad certificate"]
+    source: authored
+
+  - id: sym.tls_node_self_signed
+    kind: symptom
+    label: "Node.js: `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `SELF_SIGNED_CERT_IN_CHAIN`"
+    keywords: ["Node", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN", "npm", "corepack"]
+    source: authored
+
+  - id: sym.tls_curl_ok_python_fails
+    kind: symptom
+    label: "`curl` succeeds but Python/Node/Go fails on the same URL"
+    keywords: ["curl works", "python fails", "runtime-specific", "differing behaviour"]
+    source: authored
+
+  - id: sym.tls_handshake_reset
+    kind: symptom
+    label: "TLS handshake times out or resets before ANY response"
+    detail: "Distinct from cert failure -- this is either the proxy not reachable or the client bypassing the proxy."
+    keywords: ["handshake timeout", "handshake reset", "connection refused", "connect timeout"]
+    source: authored
+
+  - id: sym.tls_client_bypasses_proxy
+    kind: symptom
+    label: "Client seems to try a direct DNS resolution / raw egress rather than going through the proxy"
+    keywords: ["direct connect", "dns lookup", "bypass proxy", "no proxy env"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.tls_check_ca_file_present
+    kind: evidence
+    label: "test -r /usr/local/share/ca-certificates/safeyolo.crt (SafeYolo intermediate CA present in guest)"
+    source: authored
+
+  - id: ev.tls_check_system_ca_bundle_updated
+    kind: evidence
+    label: "Verify safeyolo.crt content is present in /etc/ssl/certs/ca-certificates.crt (Debian) or equivalent"
+    detail: "The CA file being placed does NOT automatically update the aggregated bundle; `update-ca-certificates` must have run."
+    source: authored
+
+  - id: ev.tls_check_python_env
+    kind: evidence
+    label: "env | grep -E '^(SSL_CERT_FILE|REQUESTS_CA_BUNDLE)=' -- Python's ssl and requests read these"
+    source: authored
+
+  - id: ev.tls_check_node_env
+    kind: evidence
+    label: "env | grep -E '^NODE_EXTRA_CA_CERTS=' -- Node.js only picks up additional CAs via this env var"
+    source: authored
+
+  - id: ev.tls_check_proxy_env
+    kind: evidence
+    label: "env | grep -E '^(HTTP|HTTPS|NO)_PROXY=' -- both upper- and lower-case matter for some runtimes"
+    source: authored
+
+  - id: ev.tls_curl_verbose
+    kind: evidence
+    label: "curl -v https://TARGET -- observe cert chain, subject, issuer, and whether curl was routed through the proxy"
+    source: authored
+
+  - id: ev.tls_check_agent_api_health
+    kind: evidence
+    label: "curl -sS http://_safeyolo.proxy.internal/health -H 'Authorization: Bearer $(cat /app/agent_token)' -- if THIS fails the proxy is unreachable"
+    source: authored
+
+  - id: ev.check_client_updates_upstream
+    kind: evidence
+    label: "Look online for a newer release of the client CLI/SDK/runtime and check its changelog and issue tracker for this specific failure signature"
+    detail: |
+      A third-party client library or runtime (openssl, python ssl,
+      node crypto, Go crypto/tls, curl, requests, ...) has been
+      diagnosed as the fault. Agent training data is stale relative
+      to real-time upstream release activity; check the client
+      project's release page, changelog, and open+closed issues for
+      the specific error signature. A recent release may already
+      fix it; an existing issue may confirm the maintainers know.
+      Common sources: github.com/OWNER/REPO/releases + issues,
+      project pypi.org / npmjs.com / crates.io page.
+    keywords: [update, upgrade, "newer release", changelog, "issue tracker",
+               "check online", "third party client", "already fixed"]
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.tls_ca_bundle_stale
+    kind: classification
+    label: "SafeYolo CA is on disk but the system bundle was not regenerated"
+    source: authored
+
+  - id: cls.tls_runtime_env_missing
+    kind: classification
+    label: "Runtime-specific CA env var is unset in the child process; runtime does not read the system bundle"
+    source: authored
+
+  - id: cls.tls_client_direct
+    kind: classification
+    label: "Client is bypassing the proxy (missing/wrong HTTPS_PROXY, hardcoded direct connect)"
+    source: authored
+
+  - id: cls.tls_proxy_unreachable
+    kind: classification
+    label: "The proxy socket path is broken (Agent API health also fails)"
+    source: authored
+
+  - id: cls.tls_client_library_bug
+    kind: classification
+    label: "TLS failure persists after ruling out CA bundle, env vars, and proxy path -- points at a client TLS library / runtime bug (openssl, python ssl, node crypto, Go crypto/tls)"
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.tls_preserve_env_in_child
+    kind: conclusion
+    label: "Preserve SSL_CERT_FILE / REQUESTS_CA_BUNDLE / NODE_EXTRA_CA_CERTS when spawning child processes / venvs / sudo"
+    source: authored
+
+  - id: con.tls_configure_proxy_for_client
+    kind: conclusion
+    label: "Set HTTPS_PROXY and HTTP_PROXY (and lowercase equivalents) for the specific client if it isn't inheriting them"
+    source: authored
+
+  - id: con.tls_do_not_disable_verify
+    kind: conclusion
+    label: "Do NOT use `--insecure`, `verify=False`, `rejectUnauthorized: false`, or install an untrusted CA as a workaround"
+    source: authored
+
+  - id: con.tls_use_full_bundle
+    kind: conclusion
+    label: "Point runtime CA env var at the aggregated bundle (e.g. /etc/ssl/certs/ca-certificates.crt), not at safeyolo.crt alone"
+    source: authored
+
+  # ---- Operator asks ---------------------------------------------------
+  - id: ask.tls_update_ca_certificates
+    kind: operator_ask
+    label: "Ask operator to run `update-ca-certificates` on the host image (or the equivalent on Alpine / RHEL)"
+    source: authored
+
+  - id: ask.tls_agent_diag
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo agent diag <name>` -- Agent API being unreachable points at the socket/attribution path"
+    source: authored
+
+  - id: ask.tls_doctor
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo doctor` -- CA installation, addons, and image are inspected"
+    source: authored
+
+  - id: ask.suggest_client_upgrade
+    kind: operator_ask
+    label: "Determine how the client library / runtime was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"
+    detail: |
+      The agent must not upgrade without permission; the current
+      version may be pinned deliberately by the operator's project.
+      The agent must also not push the *choice of command* onto the
+      operator -- the agent can read `which`, `readlink`, package
+      metadata, and language-manager state to determine the install
+      path (mise / pyenv / brew / apt / pip / npm) and propose a
+      specific upgrade command. Present the newer release or matching
+      issue by URL, propose the specific command matched to the
+      observed install path, and get yes/no. If declined, fall back
+      to the workaround.
+    source: authored
+
+  - id: ask.report_client_bug
+    kind: operator_ask
+    label: "Report a client library / runtime bug upstream (include version, exact failure signature, minimal repro); apply the runtime-specific workaround if available"
+    source: authored
+
+
+edges:
+  # Every TLS symptom starts with the Agent API health check -- fastest way to distinguish "proxy down" from "cert not trusted"
+  - {from: sym.tls_python_verify_failed,   to: ev.tls_check_agent_api_health, kind: next_check}
+  - {from: sym.tls_go_unknown_authority,   to: ev.tls_check_agent_api_health, kind: next_check}
+  - {from: sym.tls_node_self_signed,       to: ev.tls_check_agent_api_health, kind: next_check}
+  - {from: sym.tls_handshake_reset,        to: ev.tls_check_agent_api_health, kind: next_check}
+  - {from: sym.tls_client_bypasses_proxy,  to: ev.tls_check_proxy_env,        kind: next_check}
+  - {from: sym.tls_curl_ok_python_fails,   to: ev.tls_check_python_env,       kind: next_check}
+
+  # Agent API health -> proxy reachability decision
+  - {from: ev.tls_check_agent_api_health, to: cls.tls_proxy_unreachable, kind: implies, when: "health call itself fails / times out"}
+  - {from: ev.tls_check_agent_api_health, to: ev.tls_check_ca_file_present, kind: next_check, when: "health call succeeds"}
+  - {from: cls.tls_proxy_unreachable,     to: ask.tls_agent_diag, kind: escalates_to}
+
+  # CA present but bundle not regenerated
+  - {from: ev.tls_check_ca_file_present,        to: ev.tls_check_system_ca_bundle_updated, kind: next_check, when: "safeyolo.crt is present on disk"}
+  - {from: ev.tls_check_ca_file_present,        to: ask.tls_doctor, kind: escalates_to, when: "safeyolo.crt is missing"}
+  - {from: ev.tls_check_system_ca_bundle_updated, to: cls.tls_ca_bundle_stale, kind: implies, when: "safeyolo.crt content is NOT in the aggregated bundle"}
+  - {from: cls.tls_ca_bundle_stale,             to: ask.tls_update_ca_certificates, kind: escalates_to}
+
+  # Runtime env-var gap
+  - {from: ev.tls_check_python_env, to: cls.tls_runtime_env_missing, kind: implies, when: "neither SSL_CERT_FILE nor REQUESTS_CA_BUNDLE is set for python"}
+  - {from: ev.tls_check_node_env,   to: cls.tls_runtime_env_missing, kind: implies, when: "NODE_EXTRA_CA_CERTS is not set for node"}
+  - {from: cls.tls_runtime_env_missing, to: con.tls_preserve_env_in_child, kind: implies}
+  - {from: cls.tls_runtime_env_missing, to: con.tls_use_full_bundle,       kind: implies}
+
+  # Client bypassing proxy
+  - {from: ev.tls_check_proxy_env, to: cls.tls_client_direct, kind: implies, when: "HTTP_PROXY / HTTPS_PROXY unset or NO_PROXY includes the target host"}
+  - {from: cls.tls_client_direct,  to: con.tls_configure_proxy_for_client, kind: implies}
+
+  # Curl works but runtime fails -> runtime env-gap OR runtime-library bug
+  - {from: sym.tls_curl_ok_python_fails, to: ev.tls_curl_verbose,        kind: next_check}
+  - {from: ev.tls_curl_verbose,          to: cls.tls_runtime_env_missing, kind: implies, when: "curl uses system bundle successfully; other runtime uses its own bundle path"}
+  - {from: ev.tls_curl_verbose,          to: cls.tls_client_library_bug,  kind: implies, when: "curl succeeds AND the runtime's CA env vars ARE set AND the runtime still fails -- env / CA / proxy all ruled out"}
+
+  # Client library / runtime bug always routes through the upstream update
+  # check before escalating, to counter the training-data-is-stale bias.
+  - {from: cls.tls_client_library_bug,       to: ev.check_client_updates_upstream, kind: next_check}
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND its changelog or a referenced issue matches this failure signature"}
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND version delta is substantial (roughly >=3 minor releases or >90 days) -- verify against latest before reporting; a silent fix in an intervening release is more likely than a genuinely new bug"}
+  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available, OR delta is small AND head does not reference this failure -- treat as a genuinely new bug worth filing"}
+
+  # Nothing here should suggest disabling verification
+  - {from: cls.tls_ca_bundle_stale,     to: con.tls_do_not_disable_verify, kind: implies}
+  - {from: cls.tls_runtime_env_missing, to: con.tls_do_not_disable_verify, kind: implies}
+  - {from: cls.tls_client_direct,       to: con.tls_do_not_disable_verify, kind: implies}
+  - {from: cls.tls_client_library_bug,  to: con.tls_do_not_disable_verify, kind: implies}
+
+
+entries:
+  - symptom: sym.tls_python_verify_failed
+  - symptom: sym.tls_go_unknown_authority
+  - symptom: sym.tls_node_self_signed
+  - symptom: sym.tls_curl_ok_python_fails
+  - symptom: sym.tls_handshake_reset
+  - symptom: sym.tls_client_bypasses_proxy

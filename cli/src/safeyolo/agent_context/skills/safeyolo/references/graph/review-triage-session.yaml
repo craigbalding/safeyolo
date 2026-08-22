@@ -1,0 +1,209 @@
+# Review graph: "reviewing a Claude Code session for what it says about
+# SafeYolo triage graphs".
+#
+# This is the graph the /safeyolo-graph command traverses. The entry is a
+# session jsonl the operator wants reviewed; the traversal gathers
+# evidence about graph adoption, classifies the finding into one of five
+# categories, and lands on the correct action (edit a graph, report a
+# safeyolo defect, or nothing at all).
+#
+# Symmetry note: this graph is itself a triage DAG. Same schema, same
+# traversal protocol, same drift/render pipeline. It is under the same
+# directory as the triage-*.yaml graphs on purpose.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-request-failing
+    when: "the session was diagnosing a request failure and you want to cross-check the classification the reviewed agent should have reached"
+  - graph: triage-credential-guard
+    when: "the session was diagnosing credential-guard behaviour"
+  - graph: triage-approval-required
+    when: "the session was navigating a wait_for_approval response"
+
+nodes:
+  # ---- Entry symptoms (kinds of session to review) --------------------
+  - id: sym.review_recent_session
+    kind: symptom
+    label: "Operator invoked /safeyolo-graph with no session id; review the most recent Claude Code session jsonl"
+    keywords: ["most recent", "latest session", "no args", "default"]
+    source: authored
+
+  - id: sym.review_specific_session
+    kind: symptom
+    label: "Operator named a specific session jsonl path or session id"
+    keywords: ["session id", "jsonl path", "specific session"]
+    source: authored
+
+  - id: sym.review_focus_on_graph
+    kind: symptom
+    label: "Operator asked to focus the review on one specific triage graph (e.g. `--graph triage-request-failing`)"
+    keywords: ["specific graph", "focus", "one graph"]
+    source: authored
+
+  - id: sym.review_no_session_available
+    kind: symptom
+    label: "No session jsonl can be located; nothing to review"
+    keywords: ["no sessions", "empty projects dir", "nothing to review"]
+    source: authored
+
+  # ---- Evidence gathering ---------------------------------------------
+  - id: ev.review_locate_jsonl
+    kind: evidence
+    label: "Resolve the session file: `find ~/.claude/projects -name '*.jsonl' -type f -printf '%T@ %p\\n' | sort -n | tail -1 | awk '{print $2}'` for most-recent, or use the operator-supplied path"
+    source: authored
+
+  - id: ev.review_parse_events
+    kind: evidence
+    label: "Parse jsonl line-by-line; filter to `type in {user, assistant}` events; inspect `message.content` blocks for `text`, `tool_use`, `tool_result`"
+    source: authored
+
+  - id: ev.review_extract_skill_use
+    kind: evidence
+    label: "Find tool_use blocks where `name == Skill` and `args` reference `safeyolo`"
+    source: authored
+
+  - id: ev.review_extract_graph_names
+    kind: evidence
+    label: "Find any assistant text or tool_use naming a `triage-*.yaml` file"
+    source: authored
+
+  - id: ev.review_extract_node_ids
+    kind: evidence
+    label: "Regex assistant text for `\\b(sym|ev|cls|con|ask)\\.[a-z0-9_]+` — nodes the agent actually cited"
+    source: authored
+
+  - id: ev.review_identify_terminal
+    kind: evidence
+    label: "Determine whether the traversal named a `con.*` conclusion or `ask.*` operator ask at the end"
+    source: authored
+
+  - id: ev.review_look_for_graph_gap
+    kind: evidence
+    label: "Search for explicit `Graph gap` narration and any proposed missing node/edge"
+    source: authored
+
+  - id: ev.review_load_referenced_graphs
+    kind: evidence
+    label: "Read the actual YAML at `~/.claude/skills/safeyolo/references/graph/*.yaml` for each graph the session referenced; you'll need real node IDs before proposing edits"
+    source: authored
+
+  - id: ev.review_reconstruct_failure
+    kind: evidence
+    label: "Reconstruct what the failure actually was from the session — status codes, response bodies, X-Blocked-By values, /explain output"
+    source: authored
+
+  - id: ev.review_check_operator_interventions
+    kind: evidence
+    label: "Note where the operator manually did something the agent couldn't (approvals, package installs, policy edits)"
+    source: authored
+
+  # ---- Classifications (the disambiguation) ---------------------------
+  - id: cls.review_graph_gap
+    kind: classification
+    label: "graph_gap: the graph did not cover this failure; agent had to guess or work around a missing edge"
+    source: authored
+
+  - id: cls.review_correct_safeyolo_defect
+    kind: classification
+    label: "graph_correct_safeyolo_defect: the graph led to a correct diagnosis and the diagnosis names a real SafeYolo defect (dead-lettered rules, missing classifiers, structural traps agents hit)"
+    source: authored
+
+  - id: cls.review_graph_overfit
+    kind: classification
+    label: "graph_overfit: the graph forced a longer/wrong path when a shorter diagnosis existed"
+    source: authored
+
+  - id: cls.review_env_or_operator
+    kind: classification
+    label: "environment_or_operator_issue: nothing to change; user misread normal behaviour, or environment was transient"
+    source: authored
+
+  - id: cls.review_mixed
+    kind: classification
+    label: "mixed: more than one of the above; each must be broken out separately"
+    source: authored
+
+  # ---- Conclusions ----------------------------------------------------
+  - id: con.review_no_action
+    kind: conclusion
+    label: "No action required. Traversal was correct, no defect surfaced. Write the review and stop."
+    source: authored
+
+  - id: con.review_propose_graph_edit
+    kind: conclusion
+    label: "Produce a concrete YAML diff for the affected `references/graph/triage-*.yaml`. Reference real node IDs read from the YAML."
+    source: authored
+
+  - id: con.review_report_safeyolo_defect
+    kind: conclusion
+    label: "Write a defect report: symptom one-liner, quoted evidence, minimum reproduction, likely SafeYolo source location, suggested severity"
+    source: authored
+
+  - id: con.review_propose_prune
+    kind: conclusion
+    label: "Flag pruning or edge-condition tightening candidates. Lower priority than gap-fill; note but do not urge."
+    source: authored
+
+  # ---- Operator asks --------------------------------------------------
+  - id: ask.review_operator_reviews_edit
+    kind: operator_ask
+    label: "Operator reviews the proposed YAML diff and decides whether to commit"
+    source: authored
+
+  - id: ask.review_operator_files_defect
+    kind: operator_ask
+    label: "Operator files the reported SafeYolo defect (issue tracker / PR) or triages it further"
+    source: authored
+
+
+edges:
+  # Entry -> locate the file
+  - {from: sym.review_recent_session,    to: ev.review_locate_jsonl, kind: next_check}
+  - {from: sym.review_specific_session,  to: ev.review_locate_jsonl, kind: next_check}
+  - {from: sym.review_focus_on_graph,    to: ev.review_locate_jsonl, kind: next_check}
+  - {from: sym.review_no_session_available, to: con.review_no_action, kind: implies}
+
+  # File -> parse -> evidence extraction fan-out
+  - {from: ev.review_locate_jsonl,       to: ev.review_parse_events, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_extract_skill_use, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_extract_graph_names, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_extract_node_ids, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_identify_terminal, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_look_for_graph_gap, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_reconstruct_failure, kind: next_check}
+  - {from: ev.review_parse_events,       to: ev.review_check_operator_interventions, kind: next_check}
+
+  # Load the actual graphs before classifying anything
+  - {from: ev.review_extract_graph_names, to: ev.review_load_referenced_graphs, kind: next_check, when: "at least one graph file was referenced"}
+
+  # Evidence -> classification (the disambiguation is gated on multiple pieces)
+  - {from: ev.review_identify_terminal, to: cls.review_graph_gap,           kind: implies, when: "no bounded terminal was reached AND explicit or implicit Graph gap AND no reasonable entry existed for the observed symptom"}
+  - {from: ev.review_identify_terminal, to: cls.review_correct_safeyolo_defect, kind: implies, when: "bounded terminal was reached AND the reconstructed failure names a genuine SafeYolo defect that the terminal correctly points at"}
+  - {from: ev.review_identify_terminal, to: cls.review_graph_overfit,       kind: implies, when: "bounded terminal was reached BUT the traversal was longer than necessary OR routed via classifications that added no signal for this specific failure"}
+  - {from: ev.review_identify_terminal, to: cls.review_env_or_operator,     kind: implies, when: "the failure was transient / normal environment behaviour misread by the agent; graph and safeyolo both correct"}
+  - {from: ev.review_identify_terminal, to: cls.review_mixed,               kind: implies, when: "multiple of the above apply; each is separately grounded in evidence"}
+
+  # Never let "safeyolo defect" be a shortcut past the graph review
+  - {from: ev.review_reconstruct_failure, to: ev.review_load_referenced_graphs, kind: rules_out, when: "the reviewer has not yet loaded the referenced graphs; classification cannot proceed without knowing what the graph did/didn't cover"}
+
+  # Classification -> action
+  - {from: cls.review_graph_gap,               to: con.review_propose_graph_edit, kind: implies}
+  - {from: cls.review_graph_gap,               to: ask.review_operator_reviews_edit, kind: escalates_to}
+  - {from: cls.review_correct_safeyolo_defect, to: con.review_report_safeyolo_defect, kind: implies}
+  - {from: cls.review_correct_safeyolo_defect, to: ask.review_operator_files_defect, kind: escalates_to}
+  - {from: cls.review_graph_overfit,           to: con.review_propose_prune, kind: implies}
+  - {from: cls.review_graph_overfit,           to: ask.review_operator_reviews_edit, kind: escalates_to}
+  - {from: cls.review_env_or_operator,         to: con.review_no_action, kind: implies}
+  - {from: cls.review_mixed,                   to: con.review_propose_graph_edit, kind: implies, when: "at least one graph_gap or graph_overfit component"}
+  - {from: cls.review_mixed,                   to: con.review_report_safeyolo_defect, kind: implies, when: "at least one graph_correct_safeyolo_defect component"}
+
+  # Operator-intervention observation feeds coverage suggestions
+  - {from: ev.review_check_operator_interventions, to: con.review_propose_graph_edit, kind: implies, when: "the operator had to do something the graph never suggested; that intervention is a candidate future entry symptom / operator_ask"}
+
+
+entries:
+  - symptom: sym.review_recent_session
+  - symptom: sym.review_specific_session
+  - symptom: sym.review_focus_on_graph
+  - symptom: sym.review_no_session_available

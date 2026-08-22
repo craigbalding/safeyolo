@@ -42,6 +42,48 @@ interfaces; do not try to bypass or weaken it.
 
 Read only the reference needed for the current task.
 
+## Triage graphs
+
+For fast-turn triage, use the graphs in [`references/graph/`](references/graph/)
+as decision aids rather than re-deriving SafeYolo's plane story every time.
+Each `.yaml` is the source of truth; the sibling `.mmd` is a mermaid render
+for a human operator watching over my shoulder. Every symptom node carries
+a `keywords:` list so binding an observed symptom to an entry can be
+keyword-matched, not eye-matched.
+
+**Manifest** — pick the graph whose entry-question fits, then bind a symptom
+inside it:
+
+| Graph | Entry question |
+|---|---|
+| [`triage-request-failing.yaml`](references/graph/triage-request-failing.yaml) | "A request through SafeYolo failed / was blocked / behaved weirdly" |
+| [`triage-credential-guard.yaml`](references/graph/triage-credential-guard.yaml) | "Why is credential-guard questioning my credential?" |
+| [`triage-approval-required.yaml`](references/graph/triage-approval-required.yaml) | "The proxy said `wait_for_approval` — what now?" |
+| [`triage-flow-inspection.yaml`](references/graph/triage-flow-inspection.yaml) | "Why isn't `/api/flows/search` returning what I expect?" |
+| [`triage-service-gateway.yaml`](references/graph/triage-service-gateway.yaml) | "How do I use a gated service (Gmail, Jira, etc.)?" |
+| [`triage-tls-and-ca.yaml`](references/graph/triage-tls-and-ca.yaml) | "TLS handshake failing / cert not trusted" |
+| [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
+| [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The operator can't see what I'm showing / desktop isn't working" |
+
+Graphs cross-reference each other via a top-level `see_also:` block when a
+symptom overlaps concerns — check the target graph before authoring a new
+edge in the current one.
+
+**Traversal protocol I follow when using a graph in-context:**
+
+1. State the entry-node match out loud so the reader can see the bind.
+2. At each `evidence` node, state which endpoint or operator command
+   yields the value I'm reading.
+3. Follow `implies` / `rules_out` edges by the evidence value.
+4. Land on a `conclusion` or `operator_ask` and stop.
+5. **Graph gap:** if the evidence I have is not covered by an outgoing
+   edge, say `Graph gap` explicitly, name the node id, edit the YAML
+   with a new node/edge, run `scripts/render_skill_graph.py`, and only
+   then continue. Do not guess and continue with an unwritten edge.
+
+The graphs are mine to maintain. When I add a new symptom or find a
+missing edge during real triage, I update the YAML in the same turn.
+
 ## Preserve the boundary
 
 - Use `http://_safeyolo.proxy.internal`, never HTTPS, for the virtual Agent API.

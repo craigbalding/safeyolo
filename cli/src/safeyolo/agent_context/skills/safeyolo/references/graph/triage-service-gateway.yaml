@@ -1,0 +1,220 @@
+# Triage graph: "how do I use a gated service (Gmail, Jira, etc.)?"
+#
+# Entry question: I need to call an external service that has a gateway
+# capability. This graph walks discovery, capability requests, contract
+# bindings, and correct use of the `sgw_` token. It also catches the
+# common mistake of trying to use a raw credential when a gateway path
+# exists.
+#
+# See schema comment in `triage-request-failing.yaml` for field definitions.
+
+see_also:
+  - graph: triage-credential-guard
+    when: "you have a raw credential and are unsure whether to use it or the gateway"
+  - graph: triage-approval-required
+    when: "a request-access call returned pending"
+
+nodes:
+  # ---- Symptoms --------------------------------------------------------
+  - id: sym.gateway_want_to_call_service
+    kind: symptom
+    label: "I want to call an external service (Gmail / Jira / Slack / ...) and I'm not sure whether a gateway path exists"
+    keywords: ["gateway", "gmail", "jira", "slack", "want to call", "how do I", "external service"]
+    source: authored
+
+  - id: sym.gateway_no_capability_listed
+    kind: symptom
+    label: "GET /gateway/services -- the capability I need is not listed as `available` or `authorized`"
+    keywords: ["no capability", "not listed", "capability missing", "not available"]
+    source: authored
+
+  - id: sym.gateway_available_not_authorized
+    kind: symptom
+    label: "Capability shows `available` in /gateway/services but not `authorized`"
+    keywords: ["available", "not authorized", "grant", "capability"]
+    source: authored
+
+  - id: sym.gateway_needs_contract_binding
+    kind: symptom
+    label: "Gateway response `decision: needs_contract_binding`"
+    keywords: ["needs_contract_binding", "contract", "binding", "gateway decision"]
+    source: authored
+
+  - id: sym.gateway_contract_not_enforceable
+    kind: symptom
+    label: "Gateway response `decision: contract_not_enforceable`"
+    keywords: ["contract_not_enforceable", "not enforceable", "cannot grant", "gateway"]
+    source: authored
+
+  - id: sym.gateway_sgw_token_rejected
+    kind: symptom
+    label: "Using an `sgw_` token in the service call returned 401 / 403 from the service"
+    keywords: ["sgw_", "token rejected", "401", "403", "gateway token"]
+    source: authored
+
+  - id: sym.gateway_credential_leak_attempt
+    kind: symptom
+    label: "credential-guard blocked my request even though I thought I was using a gateway token"
+    keywords: ["credential-guard blocked", "sgw_", "gateway token", "unexpected block"]
+    source: authored
+
+  # ---- Evidence --------------------------------------------------------
+  - id: ev.gateway_list_services
+    kind: evidence
+    label: "GET /gateway/services -- list authorized and available services and their capabilities"
+    source: authored
+
+  - id: ev.gateway_request_access
+    kind: evidence
+    label: "POST /gateway/request-access with `{service, capability, reason}` -- request a narrow capability with a clear purpose"
+    source: authored
+
+  - id: ev.gateway_read_decision
+    kind: evidence
+    label: "Read `decision` and `requested_bindings` in the response body"
+    source: authored
+
+  - id: ev.gateway_submit_binding
+    kind: evidence
+    label: "POST /gateway/submit-binding with ONLY the requested binding variables + a purpose_code"
+    source: authored
+
+  - id: ev.gateway_recheck_after_approval
+    kind: evidence
+    label: "After operator approval, GET /gateway/services again -- capability should now be `authorized` with an `sgw_` token"
+    source: authored
+
+  - id: ev.gateway_check_auth_header_name
+    kind: evidence
+    label: "Read the service definition: which header does the sgw_ token belong in, and is it HTTPS-only?"
+    source: authored
+
+  - id: ev.gateway_check_route
+    kind: evidence
+    label: "Compare the URL I'm calling to the service's configured routes -- capability + route must both be authorized"
+    source: authored
+
+  # ---- Classifications -------------------------------------------------
+  - id: cls.gateway_service_not_registered
+    kind: classification
+    label: "The service simply has no gateway config on this host; nothing to grant"
+    source: authored
+
+  - id: cls.gateway_needs_grant
+    kind: classification
+    label: "Capability exists but this agent is not authorized; needs operator grant"
+    source: authored
+
+  - id: cls.gateway_needs_binding_submit
+    kind: classification
+    label: "Capability grant approved conditionally; must submit the requested binding first"
+    source: authored
+
+  - id: cls.gateway_impossible
+    kind: classification
+    label: "SafeYolo cannot enforce the requested contract; broader capability will not be granted"
+    source: authored
+
+  - id: cls.gateway_wrong_route
+    kind: classification
+    label: "The route I'm calling is not part of the granted capability (even if the service is authorized)"
+    source: authored
+
+  - id: cls.gateway_token_in_wrong_place
+    kind: classification
+    label: "sgw_ token was sent in the wrong header, over http:// instead of https://, or leaked into body/URL"
+    source: authored
+
+  # ---- Conclusions -----------------------------------------------------
+  - id: con.gateway_request_narrow_capability
+    kind: conclusion
+    label: "Request only the specific capability needed (`read_messages`, `create_issue`), never a blanket grant"
+    source: authored
+
+  - id: con.gateway_submit_only_requested_bindings
+    kind: conclusion
+    label: "Submit ONLY the binding variables the gateway requested; do not add extras"
+    source: authored
+
+  - id: con.gateway_do_not_broaden
+    kind: conclusion
+    label: "If contract_not_enforceable: do NOT try a broader capability. Explain to operator, stop."
+    source: authored
+
+  - id: con.gateway_use_configured_header
+    kind: conclusion
+    label: "Place the sgw_ token in the service's configured auth header; make requests over HTTPS only"
+    source: authored
+
+  - id: con.gateway_never_share_token
+    kind: conclusion
+    label: "Never print, persist, or send an sgw_ token to another agent (including via plumb)"
+    source: authored
+
+  - id: con.gateway_correct_route
+    kind: conclusion
+    label: "Restrict my call to routes the capability actually covers; other routes will 403"
+    source: authored
+
+  # ---- Operator asks ---------------------------------------------------
+  - id: ask.gateway_register_service
+    kind: operator_ask
+    label: "Ask operator whether the service should be registered at all; do not assume it will be"
+    source: authored
+
+  - id: ask.gateway_watch_grant
+    kind: operator_ask
+    label: "Ask operator to run `safeyolo watch` and grant the specific capability I requested"
+    source: authored
+
+
+edges:
+  # Discovery entry -> list services
+  - {from: sym.gateway_want_to_call_service, to: ev.gateway_list_services, kind: next_check}
+  - {from: sym.gateway_no_capability_listed,  to: ev.gateway_list_services, kind: next_check}
+  - {from: sym.gateway_available_not_authorized, to: ev.gateway_request_access, kind: next_check}
+  - {from: sym.gateway_needs_contract_binding, to: ev.gateway_read_decision, kind: next_check}
+  - {from: sym.gateway_contract_not_enforceable, to: ev.gateway_read_decision, kind: next_check}
+  - {from: sym.gateway_sgw_token_rejected, to: ev.gateway_check_auth_header_name, kind: next_check}
+  - {from: sym.gateway_credential_leak_attempt, to: ev.gateway_check_auth_header_name, kind: next_check}
+
+  # /gateway/services outcomes
+  - {from: ev.gateway_list_services, to: cls.gateway_service_not_registered, kind: implies, when: "service not present anywhere in response"}
+  - {from: ev.gateway_list_services, to: cls.gateway_needs_grant,            kind: implies, when: "service listed with capability under `available` but not `authorized`"}
+  - {from: ev.gateway_list_services, to: ev.gateway_check_route,             kind: next_check, when: "capability is authorized but call still fails"}
+
+  # not-registered -> operator ask (careful: don't assume they'll add it)
+  - {from: cls.gateway_service_not_registered, to: ask.gateway_register_service, kind: escalates_to}
+
+  # needs grant -> request-access -> operator
+  - {from: cls.gateway_needs_grant, to: ev.gateway_request_access, kind: next_check}
+  - {from: ev.gateway_request_access, to: con.gateway_request_narrow_capability, kind: implies}
+  - {from: ev.gateway_request_access, to: ev.gateway_read_decision, kind: next_check}
+  - {from: cls.gateway_needs_grant, to: ask.gateway_watch_grant, kind: escalates_to}
+
+  # decision field routes contract paths
+  - {from: ev.gateway_read_decision, to: cls.gateway_needs_binding_submit, kind: implies, when: "decision == needs_contract_binding"}
+  - {from: ev.gateway_read_decision, to: cls.gateway_impossible,           kind: implies, when: "decision == contract_not_enforceable"}
+  - {from: cls.gateway_needs_binding_submit, to: ev.gateway_submit_binding, kind: next_check}
+  - {from: cls.gateway_needs_binding_submit, to: con.gateway_submit_only_requested_bindings, kind: implies}
+  - {from: ev.gateway_submit_binding, to: ev.gateway_recheck_after_approval, kind: next_check, when: "operator approves"}
+  - {from: cls.gateway_impossible,   to: con.gateway_do_not_broaden, kind: implies}
+
+  # sgw_ token misuse
+  - {from: ev.gateway_check_auth_header_name, to: cls.gateway_token_in_wrong_place, kind: implies, when: "token in wrong header, or http:// used, or token appears in body/URL"}
+  - {from: cls.gateway_token_in_wrong_place,  to: con.gateway_use_configured_header, kind: implies}
+  - {from: cls.gateway_token_in_wrong_place,  to: con.gateway_never_share_token,     kind: implies}
+
+  # Wrong route within an authorized capability
+  - {from: ev.gateway_check_route, to: cls.gateway_wrong_route, kind: implies, when: "URL path or method is not covered by the granted capability"}
+  - {from: cls.gateway_wrong_route, to: con.gateway_correct_route, kind: implies}
+
+
+entries:
+  - symptom: sym.gateway_want_to_call_service
+  - symptom: sym.gateway_no_capability_listed
+  - symptom: sym.gateway_available_not_authorized
+  - symptom: sym.gateway_needs_contract_binding
+  - symptom: sym.gateway_contract_not_enforceable
+  - symptom: sym.gateway_sgw_token_rejected
+  - symptom: sym.gateway_credential_leak_attempt
