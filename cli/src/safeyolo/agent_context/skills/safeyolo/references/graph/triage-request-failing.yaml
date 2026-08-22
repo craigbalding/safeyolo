@@ -177,6 +177,26 @@ nodes:
     detail: "Isolates client-vs-proxy: if curl reproduces the GOAWAY the proxy is the source; if curl succeeds the client sent the malformed header."
     source: authored
 
+  - id: ev.check_client_updates_upstream
+    kind: evidence
+    label: "Look online for a newer release of the client CLI/SDK and check its changelog and issue tracker for this specific failure signature"
+    detail: |
+      Third-party client software (gh, curl, pip, mise, node, docker,
+      kubectl, ...) has been diagnosed as the fault. Agent training
+      data is stale relative to real-time upstream release activity;
+      check the client project's release page, changelog, and
+      open+closed issues for the specific error signature (paste in
+      the exact wire-visible string -- e.g. the GOAWAY debug value,
+      the exact error code, the stack trace top line). A recent
+      release may already fix it; an existing issue may confirm the
+      maintainers know about it.
+      Common sources: github.com/OWNER/REPO/releases + issues,
+      project pypi.org / npmjs.com / crates.io page, official
+      changelog / news.
+    keywords: [update, upgrade, "newer release", changelog, "issue tracker",
+               "check online", "third party client", "already fixed"]
+    source: authored
+
   # ---- Classifications (which plane owns this) --------------------------
   - id: cls.upstream_only
     kind: classification
@@ -265,6 +285,23 @@ nodes:
     label: "Report a client bug upstream (include version + exact malformed value); use `--with-token` as a workaround"
     source: authored
 
+  - id: ask.suggest_client_upgrade
+    kind: operator_ask
+    label: "Determine how the client was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"
+    detail: |
+      The agent must not upgrade without permission: the operator's
+      current project may depend on the current version's behaviour.
+      The agent also must not push the decision of *how* to upgrade
+      onto the operator -- the agent has the shell and can determine
+      the install path (mise / brew / apt / pip / npm / cargo / etc.)
+      from `which`, `readlink`, package metadata, and shell history.
+      Present the finding, cite the newer release or issue by URL,
+      propose a specific upgrade command matched to the observed
+      install path ("Shall I upgrade gh via `mise use -g gh@latest`?"),
+      and get a yes/no. If the operator declines, fall back to the
+      workaround.
+    source: authored
+
   - id: ask.mitmproxy_version_and_doctor
     kind: operator_ask
     label: "Ask operator: `safeyolo doctor` and check the running mitmproxy version for known header-whitespace re-encoding fixes"
@@ -332,7 +369,22 @@ edges:
   - {from: ev.check_client_version_string,   to: ev.reproduce_with_curl_same_ua, kind: next_check, when: "version IS populated -- version alone doesn't explain the malformed value; verify what actually reaches the wire"}
   - {from: ev.reproduce_with_curl_same_ua,   to: cls.client_sent_bad_header, kind: implies, when: "curl sending the same malformed value REPRODUCES the wire-format rejection AND a baseline value succeeds -- proxy transmits both faithfully, so the client is the source of the malformed value"}
   - {from: ev.reproduce_with_curl_same_ua,   to: cls.proxy_reencode_bug,     kind: implies, when: "curl succeeds even sending the same malformed value BUT the client still fails -- the proxy is doing something specific to the failing client's connections (HTTP/2 upgrade path, client fingerprint, etc.)"}
-  - {from: cls.client_sent_bad_header, to: ask.report_client_bug, kind: escalates_to}
+
+  # "Client is at fault" always routes through an upstream update check
+  # before escalating -- see ev.check_client_updates_upstream. This
+  # counteracts the training-data-is-stale bias where an agent proposes
+  # to file a bug or write a workaround for a defect a recent release
+  # already fixes.
+  - {from: cls.client_sent_bad_header, to: ev.check_client_updates_upstream, kind: next_check}
+  # Shortcut: when the failure signature is distinctive enough that a
+  # curl reproduction adds no signal, skip straight to the update check.
+  # Distinctive means the debug field named a specific header value or
+  # error string an issue tracker can be searched for verbatim.
+  - {from: cls.header_wire_format_violation, to: ev.check_client_updates_upstream, kind: next_check, when: "the wire-format debug field is distinctive enough to search verbatim in the client's issue tracker"}
+
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND its changelog or a referenced issue matches this failure signature (or strongly implies the fix)"}
+  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available, OR current head does not reference this failure -- treat as a genuinely new bug worth filing"}
+
   - {from: cls.proxy_reencode_bug,     to: ask.mitmproxy_version_and_doctor, kind: escalates_to}
 
 

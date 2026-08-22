@@ -90,6 +90,23 @@ nodes:
     label: "curl -sS http://_safeyolo.proxy.internal/health -H 'Authorization: Bearer $(cat /app/agent_token)' -- if THIS fails the proxy is unreachable"
     source: authored
 
+  - id: ev.check_client_updates_upstream
+    kind: evidence
+    label: "Look online for a newer release of the client CLI/SDK/runtime and check its changelog and issue tracker for this specific failure signature"
+    detail: |
+      A third-party client library or runtime (openssl, python ssl,
+      node crypto, Go crypto/tls, curl, requests, ...) has been
+      diagnosed as the fault. Agent training data is stale relative
+      to real-time upstream release activity; check the client
+      project's release page, changelog, and open+closed issues for
+      the specific error signature. A recent release may already
+      fix it; an existing issue may confirm the maintainers know.
+      Common sources: github.com/OWNER/REPO/releases + issues,
+      project pypi.org / npmjs.com / crates.io page.
+    keywords: [update, upgrade, "newer release", changelog, "issue tracker",
+               "check online", "third party client", "already fixed"]
+    source: authored
+
   # ---- Classifications -------------------------------------------------
   - id: cls.tls_ca_bundle_stale
     kind: classification
@@ -109,6 +126,11 @@ nodes:
   - id: cls.tls_proxy_unreachable
     kind: classification
     label: "The proxy socket path is broken (Agent API health also fails)"
+    source: authored
+
+  - id: cls.tls_client_library_bug
+    kind: classification
+    label: "TLS failure persists after ruling out CA bundle, env vars, and proxy path -- points at a client TLS library / runtime bug (openssl, python ssl, node crypto, Go crypto/tls)"
     source: authored
 
   # ---- Conclusions -----------------------------------------------------
@@ -148,6 +170,27 @@ nodes:
     label: "Ask operator to run `safeyolo doctor` -- CA installation, addons, and image are inspected"
     source: authored
 
+  - id: ask.suggest_client_upgrade
+    kind: operator_ask
+    label: "Determine how the client library / runtime was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"
+    detail: |
+      The agent must not upgrade without permission; the current
+      version may be pinned deliberately by the operator's project.
+      The agent must also not push the *choice of command* onto the
+      operator -- the agent can read `which`, `readlink`, package
+      metadata, and language-manager state to determine the install
+      path (mise / pyenv / brew / apt / pip / npm) and propose a
+      specific upgrade command. Present the newer release or matching
+      issue by URL, propose the specific command matched to the
+      observed install path, and get yes/no. If declined, fall back
+      to the workaround.
+    source: authored
+
+  - id: ask.report_client_bug
+    kind: operator_ask
+    label: "Report a client library / runtime bug upstream (include version, exact failure signature, minimal repro); apply the runtime-specific workaround if available"
+    source: authored
+
 
 edges:
   # Every TLS symptom starts with the Agent API health check -- fastest way to distinguish "proxy down" from "cert not trusted"
@@ -179,14 +222,22 @@ edges:
   - {from: ev.tls_check_proxy_env, to: cls.tls_client_direct, kind: implies, when: "HTTP_PROXY / HTTPS_PROXY unset or NO_PROXY includes the target host"}
   - {from: cls.tls_client_direct,  to: con.tls_configure_proxy_for_client, kind: implies}
 
-  # Curl works but runtime fails -> runtime env-gap
+  # Curl works but runtime fails -> runtime env-gap OR runtime-library bug
   - {from: sym.tls_curl_ok_python_fails, to: ev.tls_curl_verbose,        kind: next_check}
   - {from: ev.tls_curl_verbose,          to: cls.tls_runtime_env_missing, kind: implies, when: "curl uses system bundle successfully; other runtime uses its own bundle path"}
+  - {from: ev.tls_curl_verbose,          to: cls.tls_client_library_bug,  kind: implies, when: "curl succeeds AND the runtime's CA env vars ARE set AND the runtime still fails -- env / CA / proxy all ruled out"}
+
+  # Client library / runtime bug always routes through the upstream update
+  # check before escalating, to counter the training-data-is-stale bias.
+  - {from: cls.tls_client_library_bug,       to: ev.check_client_updates_upstream, kind: next_check}
+  - {from: ev.check_client_updates_upstream, to: ask.suggest_client_upgrade, kind: escalates_to, when: "a newer client release exists AND its changelog or a referenced issue matches this failure signature"}
+  - {from: ev.check_client_updates_upstream, to: ask.report_client_bug,     kind: escalates_to, when: "no newer release available OR head does not reference this failure -- treat as a genuinely new bug worth filing"}
 
   # Nothing here should suggest disabling verification
   - {from: cls.tls_ca_bundle_stale,     to: con.tls_do_not_disable_verify, kind: implies}
   - {from: cls.tls_runtime_env_missing, to: con.tls_do_not_disable_verify, kind: implies}
   - {from: cls.tls_client_direct,       to: con.tls_do_not_disable_verify, kind: implies}
+  - {from: cls.tls_client_library_bug,  to: con.tls_do_not_disable_verify, kind: implies}
 
 
 entries:

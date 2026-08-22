@@ -24,12 +24,14 @@ flowchart TD
     ev.tools_check_budgets_for_host["GET /budgets -- remaining for the package host and __global__"]
     ev.tools_check_response_body["Read the SafeYolo block body -- type, action, reflection tell whether this is credential-guard / network-guard / budget"]
     ev.tools_check_release_apt_keyring["ls /usr/share/keyrings/ /etc/apt/keyrings/ -- the mirror's signing key must be locally trusted regardless of proxy"]
+    ev.check_client_updates_upstream["Look online for a newer release of the package manager / tool itself and check its changelog and issue tracker for this specific failure signature"]
     cls.tools_sudo_helper_missing{{"Guest sudo helper is broken (config missing / not setuid)"}}
     cls.tools_setpriv_needed{{"gVisor setpriv is the correct root-inside-guest path here"}}
     cls.tools_proxy_env_missing_for_tool{{"The package tool did not inherit HTTP_PROXY / HTTPS_PROXY / apt.conf proxy"}}
     cls.tools_package_host_not_in_policy{{"The package host is not allowed by the current policy (or needs approval)"}}
     cls.tools_package_budget_exhausted{{"Budget for the package host is exhausted; wait or negotiate a higher budget"}}
     cls.tools_apt_key_untrusted{{"apt signing key for the mirror is not trusted regardless of the proxy path"}}
+    cls.tools_package_manager_bug{{"Package manager / tool itself has a bug: proxy env set, policy allows the host, budget healthy, keys trusted -- yet the tool still fails (mise install algorithm hang, pip resolver crash, apt bug, etc.)"}}
     con.tools_use_setpriv(["Use 'setpriv --reuid=0 --regid=0 --clear-groups CMD' (Linux gVisor only) instead of chasing sudo"])
     con.tools_set_proxy_env_for_tool(["Set HTTP_PROXY / HTTPS_PROXY inline or via a tool-specific config (apt.conf.d, pip.conf, npmrc)"])
     con.tools_use_configured_manager(["For runtimes prefer mise -- it caches under /home/agent/.mise and survives cold restarts"])
@@ -37,6 +39,8 @@ flowchart TD
     ask.tools_repair_sudo[["Ask operator to run 'safeyolo agent shell <name> --root' and repair the guest sudo helper. Use this ONLY when guest sudo itself is broken, never for a policy or approval block."]]
     ask.tools_policy_add_package_host[["Ask operator to 'safeyolo policy host add HOST --agent AGENT' for the specific package host"]]
     ask.tools_watch_for_download_approval[["Ask operator to run 'safeyolo watch' and approve the specific download"]]
+    ask.suggest_client_upgrade[["Determine how the package manager / tool was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"]]
+    ask.report_client_bug[["Report a package manager / tool bug upstream (include version, exact failure signature, minimal repro); apply a targeted workaround where one exists"]]
 
     sym.tools_sudo_asks_password -->|"next_check"| ev.tools_check_sudo_path
     sym.tools_sudo_command_not_found -->|"next_check"| ev.tools_check_sudo_path
@@ -58,6 +62,11 @@ flowchart TD
     ev.tools_check_apt_apt_conf -->|"implies: no proxy in apt.conf.d"| cls.tools_proxy_env_missing_for_tool
     ev.tools_check_pip_index_url -->|"implies: pip cannot see proxy or index"| cls.tools_proxy_env_missing_for_tool
     cls.tools_proxy_env_missing_for_tool -->|"implies"| con.tools_set_proxy_env_for_tool
+    ev.tools_check_proxy_env -->|"implies: proxy env IS set AND lookup for the package host is allow AND the tool still hangs or crashes"| cls.tools_package_manager_bug
+    ev.tools_check_pip_index_url -->|"implies: pip index and cert config are correct AND the tool still fails"| cls.tools_package_manager_bug
+    cls.tools_package_manager_bug -->|"next_check"| ev.check_client_updates_upstream
+    ev.check_client_updates_upstream -->|"escalates_to: a newer tool release exists AND its changelog or a referenced issue matches this failure signature"| ask.suggest_client_upgrade
+    ev.check_client_updates_upstream -->|"escalates_to: no newer release OR head does not reference this failure -- treat as a genuinely new bug worth filing"| ask.report_client_bug
     ev.tools_check_lookup_package_host -->|"implies: effect == deny"| cls.tools_package_host_not_in_policy
     cls.tools_package_host_not_in_policy -->|"escalates_to"| ask.tools_policy_add_package_host
     ev.tools_check_lookup_package_host -->|"next_check: effect == budget"| ev.tools_check_budgets_for_host
@@ -85,12 +94,14 @@ flowchart TD
     class ev.tools_check_budgets_for_host evidence
     class ev.tools_check_response_body evidence
     class ev.tools_check_release_apt_keyring evidence
+    class ev.check_client_updates_upstream evidence
     class cls.tools_sudo_helper_missing classification
     class cls.tools_setpriv_needed classification
     class cls.tools_proxy_env_missing_for_tool classification
     class cls.tools_package_host_not_in_policy classification
     class cls.tools_package_budget_exhausted classification
     class cls.tools_apt_key_untrusted classification
+    class cls.tools_package_manager_bug classification
     class con.tools_use_setpriv conclusion
     class con.tools_set_proxy_env_for_tool conclusion
     class con.tools_use_configured_manager conclusion
@@ -98,6 +109,8 @@ flowchart TD
     class ask.tools_repair_sudo operator_ask
     class ask.tools_policy_add_package_host operator_ask
     class ask.tools_watch_for_download_approval operator_ask
+    class ask.suggest_client_upgrade operator_ask
+    class ask.report_client_bug operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.tools_sudo_asks_password stroke-width:3px

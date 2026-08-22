@@ -20,10 +20,12 @@ flowchart TD
     ev.tls_check_proxy_env["env / grep -E '^(HTTP/HTTPS/NO)_PROXY=' -- both upper- and lower-case matter for some runtimes"]
     ev.tls_curl_verbose["curl -v https://TARGET -- observe cert chain, subject, issuer, and whether curl was routed through the proxy"]
     ev.tls_check_agent_api_health["curl -sS http://_safeyolo.proxy.internal/health -H 'Authorization: Bearer $(cat /app/agent_token)' -- if THIS fails the proxy is unreachable"]
+    ev.check_client_updates_upstream["Look online for a newer release of the client CLI/SDK/runtime and check its changelog and issue tracker for this specific failure signature"]
     cls.tls_ca_bundle_stale{{"SafeYolo CA is on disk but the system bundle was not regenerated"}}
     cls.tls_runtime_env_missing{{"Runtime-specific CA env var is unset in the child process; runtime does not read the system bundle"}}
     cls.tls_client_direct{{"Client is bypassing the proxy (missing/wrong HTTPS_PROXY, hardcoded direct connect)"}}
     cls.tls_proxy_unreachable{{"The proxy socket path is broken (Agent API health also fails)"}}
+    cls.tls_client_library_bug{{"TLS failure persists after ruling out CA bundle, env vars, and proxy path -- points at a client TLS library / runtime bug (openssl, python ssl, node crypto, Go crypto/tls)"}}
     con.tls_preserve_env_in_child(["Preserve SSL_CERT_FILE / REQUESTS_CA_BUNDLE / NODE_EXTRA_CA_CERTS when spawning child processes / venvs / sudo"])
     con.tls_configure_proxy_for_client(["Set HTTPS_PROXY and HTTP_PROXY (and lowercase equivalents) for the specific client if it isn't inheriting them"])
     con.tls_do_not_disable_verify(["Do NOT use '--insecure', 'verify=False', 'rejectUnauthorized: false', or install an untrusted CA as a workaround"])
@@ -31,6 +33,8 @@ flowchart TD
     ask.tls_update_ca_certificates[["Ask operator to run 'update-ca-certificates' on the host image (or the equivalent on Alpine / RHEL)"]]
     ask.tls_agent_diag[["Ask operator to run 'safeyolo agent diag <name>' -- Agent API being unreachable points at the socket/attribution path"]]
     ask.tls_doctor[["Ask operator to run 'safeyolo doctor' -- CA installation, addons, and image are inspected"]]
+    ask.suggest_client_upgrade[["Determine how the client library / runtime was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"]]
+    ask.report_client_bug[["Report a client library / runtime bug upstream (include version, exact failure signature, minimal repro); apply the runtime-specific workaround if available"]]
 
     sym.tls_python_verify_failed -->|"next_check"| ev.tls_check_agent_api_health
     sym.tls_go_unknown_authority -->|"next_check"| ev.tls_check_agent_api_health
@@ -53,9 +57,14 @@ flowchart TD
     cls.tls_client_direct -->|"implies"| con.tls_configure_proxy_for_client
     sym.tls_curl_ok_python_fails -->|"next_check"| ev.tls_curl_verbose
     ev.tls_curl_verbose -->|"implies: curl uses system bundle successfully; other runtime uses its own bundle path"| cls.tls_runtime_env_missing
+    ev.tls_curl_verbose -->|"implies: curl succeeds AND the runtime's CA env vars ARE set AND the runtime still fails -- env / CA / proxy all ruled out"| cls.tls_client_library_bug
+    cls.tls_client_library_bug -->|"next_check"| ev.check_client_updates_upstream
+    ev.check_client_updates_upstream -->|"escalates_to: a newer client release exists AND its changelog or a referenced issue matches this failure signature"| ask.suggest_client_upgrade
+    ev.check_client_updates_upstream -->|"escalates_to: no newer release available OR head does not reference this failure -- treat as a genuinely new bug worth filing"| ask.report_client_bug
     cls.tls_ca_bundle_stale -->|"implies"| con.tls_do_not_disable_verify
     cls.tls_runtime_env_missing -->|"implies"| con.tls_do_not_disable_verify
     cls.tls_client_direct -->|"implies"| con.tls_do_not_disable_verify
+    cls.tls_client_library_bug -->|"implies"| con.tls_do_not_disable_verify
 
     class sym.tls_python_verify_failed symptom
     class sym.tls_go_unknown_authority symptom
@@ -70,10 +79,12 @@ flowchart TD
     class ev.tls_check_proxy_env evidence
     class ev.tls_curl_verbose evidence
     class ev.tls_check_agent_api_health evidence
+    class ev.check_client_updates_upstream evidence
     class cls.tls_ca_bundle_stale classification
     class cls.tls_runtime_env_missing classification
     class cls.tls_client_direct classification
     class cls.tls_proxy_unreachable classification
+    class cls.tls_client_library_bug classification
     class con.tls_preserve_env_in_child conclusion
     class con.tls_configure_proxy_for_client conclusion
     class con.tls_do_not_disable_verify conclusion
@@ -81,6 +92,8 @@ flowchart TD
     class ask.tls_update_ca_certificates operator_ask
     class ask.tls_agent_diag operator_ask
     class ask.tls_doctor operator_ask
+    class ask.suggest_client_upgrade operator_ask
+    class ask.report_client_bug operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.tls_python_verify_failed stroke-width:3px
