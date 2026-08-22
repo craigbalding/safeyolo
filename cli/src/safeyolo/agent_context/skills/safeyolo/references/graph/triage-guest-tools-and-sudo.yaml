@@ -67,14 +67,28 @@ nodes:
 
   - id: sym.tools_ptrace_denied
     kind: symptom
-    label: "ptrace / strace / gdb attach fails with EPERM (`Operation not permitted`) even when the target process is the same uid"
+    label: "Debugger / profiler / sampler cannot attach to a running same-uid process (ptrace, strace, gdb, py-spy record --pid, rbspy record --pid, perf record -p, ...)"
     detail: |
-      Example: `strace -c -p PID` from the same uid inside the guest
-      returns `ptrace(PTRACE_SEIZE, PID): Operation not permitted`, or
-      `gdb attach` returns similar. Not a YAMA `ptrace_scope` issue --
-      caps and YAMA are not what's blocking here.
-    keywords: ["ptrace", "strace", "gdb attach", "PTRACE_SEIZE",
-               "Operation not permitted", "EPERM", "attach failed"]
+      Two distinct restrictions produce this shape and they need to be
+      distinguished, because they have different fixes:
+        (a) The tool uses `ptrace()` directly (strace, gdb attach).
+            On gVisor's default `--platform=systrap`, `ptrace()` is
+            not implemented -- EPERM here means "syscall not wired
+            up," and no elevation inside the guest helps.
+        (b) The tool reads `/proc/$pid/mem` (py-spy, rbspy). That
+            path IS implemented, but Linux YAMA enforces a
+            ptrace-relationship model on it. On kernels where
+            `/proc/sys/kernel/yama/ptrace_scope >= 1`, only a parent
+            (or a `CAP_SYS_PTRACE` holder) may attach; sibling and
+            unrelated same-uid attaches are denied.
+      safeyolo relaxes (b) inside each per-agent sandbox: guest-init
+      sets `ptrace_scope=0` for the sandbox's own /proc/sys view, and
+      `CAP_SYS_PTRACE` is in `root_caps` so setpriv-root can bypass
+      YAMA on kernels where the sysctl write is not honored. Host
+      YAMA policy is unchanged.
+    keywords: [ptrace, strace, gdb, "py-spy", rbspy, perf, PTRACE_SEIZE,
+               "Operation not permitted", EPERM, "attach failed",
+               "process denied", YAMA, "ptrace_scope"]
     source: authored
 
   # ---- Evidence --------------------------------------------------------
@@ -138,12 +152,17 @@ nodes:
 
   - id: ev.tools_check_setpriv_helps_ptrace
     kind: evidence
-    label: "Try `setpriv --reuid=0 --regid=0 --clear-groups <ptrace-invocation>` -- if the same EPERM returns, caps are not what's blocking"
-    detail: |
-      Confirms the failure is at the syscall implementation layer,
-      not at cap-checking. gVisor's sentry can return EPERM for a
-      syscall it simply hasn't wired up, and no elevation inside the
-      guest can help.
+    label: "Try the invocation under `setpriv --reuid=0 --regid=0 --clear-groups`. If it succeeds, YAMA / caps were the blocker (fixable). If the same EPERM returns, gVisor's sentry has not wired up the syscall (not fixable inside the guest)."
+    source: authored
+
+  - id: ev.tools_check_yama_scope
+    kind: evidence
+    label: "cat /proc/sys/kernel/yama/ptrace_scope -- expected `0` inside a safeyolo sandbox (guest-init relaxes it). A `1` or `2` means the guest-init YAMA fix did not apply on this run."
+    source: authored
+
+  - id: ev.tools_check_procmem_readable
+    kind: evidence
+    label: "test -r /proc/TARGET_PID/mem -- if not readable and the sampler is same-uid, YAMA or file caps are blocking; if readable but ptrace()-based attach still fails, the block is at the ptrace() syscall level"
     source: authored
 
   - id: ev.check_client_updates_upstream
@@ -201,7 +220,12 @@ nodes:
 
   - id: cls.tools_gvisor_syscall_unsupported
     kind: classification
-    label: "gVisor's sentry does not implement the requested syscall on the current platform. EPERM here means 'not wired up,' not 'cap missing.' Neither `sudo` nor `setpriv` can lift this -- it's a substrate limitation, not a policy one."
+    label: "gVisor's sentry does not implement the requested syscall on the current platform (systrap ptrace()). EPERM here means 'not wired up,' not 'cap missing.' Neither `sudo` nor `setpriv` nor `CAP_SYS_PTRACE` can lift this -- it's a substrate limitation, not a policy one. Switch to a tool that uses `/proc/$pid/mem` instead (py-spy, rbspy)."
+    source: authored
+
+  - id: cls.tools_yama_stale_scope
+    kind: classification
+    label: "YAMA scope is still >=1 inside the guest -- the safeyolo YAMA-0 fix did not apply on this run. Either the safeyolo version is older than the fix, or the sysctl write silently failed at boot."
     source: authored
 
   # ---- Conclusions -----------------------------------------------------
@@ -227,7 +251,12 @@ nodes:
 
   - id: con.tools_use_non_ptrace_tool
     kind: conclusion
-    label: "Switch to a tool that does not require ptrace attach: `py-spy` (reads /proc/$pid/mem read-only), eBPF where the sentry allows it, language-native debuggers with alternative attach paths, or run under `strace -f` from process launch instead of attaching mid-run"
+    label: "Switch to a tool that does not use ptrace(): `py-spy` / `rbspy` (read /proc/$pid/mem), eBPF where the sentry allows it, language-native debuggers with alternative attach paths, or `strace -f cmd` (launch under strace) instead of `strace -p PID` (attach). Inside safeyolo with guest-init YAMA-0 applied, py-spy/rbspy can attach to any same-uid process without a relationship or elevation."
+    source: authored
+
+  - id: con.tools_retry_under_setpriv
+    kind: conclusion
+    label: "Re-run the attach under `setpriv --reuid=0 --regid=0 --clear-groups`. `CAP_SYS_PTRACE` in the sandbox's root_caps bypasses YAMA for the elevated process; use this on runs where the guest-init YAMA-0 sysctl did not apply."
     source: authored
 
   # ---- Operator asks ---------------------------------------------------
@@ -246,9 +275,9 @@ nodes:
     label: "Ask operator to run `safeyolo watch` and approve the specific download"
     source: authored
 
-  - id: ask.tools_switch_to_kvm_platform_or_debug_outside
+  - id: ask.tools_switch_to_kvm_platform
     kind: operator_ask
-    label: "If the traced process genuinely needs ptrace: ask operator whether `/dev/kvm` is available on the host (safeyolo picks kvm platform when it is, and kvm may support the syscall); otherwise ask the operator to attach the debugger from the host side or run the traced process outside the sandbox for that specific triage. Do NOT ask to grant CAP_SYS_PTRACE inside the guest -- it will not help."
+    label: "Only when a `/proc/$pid/mem`-based equivalent genuinely does not exist for the specific triage: ask the operator whether `/dev/kvm` is exposed on the host so safeyolo can pick the kvm platform (kvm may implement `ptrace()` where systrap does not). If /dev/kvm is not available, stay inside the sandbox and pick a non-ptrace tool -- the safeyolo philosophy is to keep debugging inside the agent's own sandbox, not to push it out to the host. Do NOT ask to grant `CAP_SYS_PTRACE` at the agent's own uid and do NOT ask to weaken host YAMA -- neither is the correct axis."
     source: authored
 
   - id: ask.suggest_client_upgrade
@@ -328,14 +357,31 @@ edges:
   # Encourage mise as the preferred runtime manager
   - {from: sym.tools_mise_install_hangs, to: con.tools_use_configured_manager, kind: implies}
 
-  # ptrace / strace / gdb inside guest hits gVisor's unsupported-syscall wall.
-  # setpriv elevation cannot lift this -- it's a substrate limitation.
-  - {from: sym.tools_ptrace_denied,          to: ev.tools_check_setpriv_helps_ptrace, kind: next_check}
-  - {from: sym.tools_ptrace_denied,          to: ev.tools_check_gvisor_platform,      kind: next_check}
-  - {from: ev.tools_check_setpriv_helps_ptrace, to: cls.tools_gvisor_syscall_unsupported, kind: implies, when: "same EPERM returns under setpriv -- caps are not what's blocking"}
-  - {from: ev.tools_check_gvisor_platform,   to: cls.tools_gvisor_syscall_unsupported, kind: implies, when: "platform is systrap (gVisor default without /dev/kvm)"}
+  # ptrace-denied triage. Two independent restrictions can produce the
+  # same shape; fan out to evidence that distinguishes them, then route
+  # to the correct fix.
+  - {from: sym.tools_ptrace_denied, to: ev.tools_check_yama_scope,           kind: next_check}
+  - {from: sym.tools_ptrace_denied, to: ev.tools_check_procmem_readable,     kind: next_check}
+  - {from: sym.tools_ptrace_denied, to: ev.tools_check_setpriv_helps_ptrace, kind: next_check}
+  - {from: sym.tools_ptrace_denied, to: ev.tools_check_gvisor_platform,      kind: next_check}
+
+  # YAMA scope stale inside the guest (safeyolo YAMA-0 fix did not apply).
+  # Both fixes work: setpriv-root with CAP_SYS_PTRACE, or re-run under an
+  # up-to-date safeyolo where guest-init has relaxed scope=0.
+  - {from: ev.tools_check_yama_scope, to: cls.tools_yama_stale_scope, kind: implies, when: "ptrace_scope reads >=1 -- guest-init sysctl did not land"}
+  - {from: cls.tools_yama_stale_scope, to: con.tools_retry_under_setpriv, kind: implies}
+
+  # gVisor's sentry not implementing ptrace() -- setpriv confirms it is
+  # not caps or YAMA.
+  - {from: ev.tools_check_setpriv_helps_ptrace, to: cls.tools_gvisor_syscall_unsupported, kind: implies, when: "same EPERM returns even under setpriv -- caps and YAMA are ruled out"}
+  - {from: ev.tools_check_gvisor_platform,      to: cls.tools_gvisor_syscall_unsupported, kind: implies, when: "platform is systrap AND the tool uses ptrace() directly (strace, gdb)"}
   - {from: cls.tools_gvisor_syscall_unsupported, to: con.tools_use_non_ptrace_tool, kind: implies}
-  - {from: cls.tools_gvisor_syscall_unsupported, to: ask.tools_switch_to_kvm_platform_or_debug_outside, kind: escalates_to, when: "the specific triage genuinely requires ptrace and no equivalent non-ptrace tool exists"}
+  - {from: cls.tools_gvisor_syscall_unsupported, to: ask.tools_switch_to_kvm_platform, kind: escalates_to, when: "the specific triage genuinely requires ptrace() and no /proc/mem-based equivalent exists"}
+
+  # /proc/mem based tools (py-spy) succeed under a correctly-configured
+  # safeyolo -- YAMA=0 in guest + CAP_SYS_PTRACE for setpriv-root as
+  # backstop. Nothing else to escalate.
+  - {from: ev.tools_check_procmem_readable, to: con.tools_use_non_ptrace_tool, kind: implies, when: "the tool uses /proc/mem AND ptrace_scope is 0 -- no relationship or elevation is needed"}
 
 
 entries:
