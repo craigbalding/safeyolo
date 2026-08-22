@@ -60,25 +60,63 @@ would conclude:
 You are qualified to make these judgments; you have the same graphs and
 the same evidence the reviewed agent had.
 
-## 4. Propose graph edits where warranted
+**Do this step before classifying the finding.** A rushed
+"the graph is fine, it's a safeyolo bug" verdict is the fastest way to
+miss a genuine graph gap or over-fit. Walk the traversal explicitly
+before you jump to what kind of finding this is.
 
-- If the traversal was correct and clean: say so. No edits.
+## 4. Disambiguate what the finding actually is
+
+Only after step 3, classify the finding into one of these categories
+(a single session can produce more than one — say so if it does):
+
+- **`graph_gap`** — the graph did not cover this failure mode. Agent had
+  to guess or work around the missing edge. Propose YAML edits (step 5a).
+- **`graph_correct_safeyolo_defect`** — the graph led to a correct
+  diagnosis, and the diagnosis names a real SafeYolo defect (dead-lettered
+  policy clauses, missing credential classifiers, structural traps that
+  only agents hit, addon behavior contradicting documentation, etc).
+  Report the defect (step 5b), no graph changes.
+- **`graph_overfit`** — the graph forced the agent down a wrong or overly
+  long path when a shorter/simpler diagnosis existed. Propose pruning or
+  edge-condition tightening (step 5a).
+- **`environment_or_operator_issue`** — nothing in graph or safeyolo needs
+  changing; user misread a normal behavior, or the environment was in a
+  transient state. Say so and stop.
+- **`mixed`** — combinations of the above. Break out each.
+
+Be honest. If the graph led correctly and the finding is a safeyolo
+defect the graph surfaced, that is a *win* for the graph — not a reason
+to invent an edit for it.
+
+## 5a. Propose graph edits (only if classification requires)
+
 - If a node or edge was missing: produce a concrete YAML diff for the
   affected `references/graph/triage-*.yaml`. Reference real node IDs by
   reading the YAML directly — never invent an ID that would collide.
-- If the graph is over-fitted (nodes never visited across observed
-  sessions): flag pruning candidates but treat this as lower priority
-  than gap-fill.
+- If the graph is over-fitted: flag pruning candidates or edge-condition
+  tightening, but treat as lower priority than gap-fill.
 
-## 5. Beyond graph evidence
+## 5b. Report a SafeYolo defect (only if classification requires)
 
-The session log is rich data. Surface anything else useful:
+Give the operator what they need to file or fix:
 
-- Repeated dead-ends, or workarounds the agent invented.
-- Real defects surfaced (skill misalignments, policy oddities,
-  dead-lettered rules, structural traps that only agents ever hit).
-- Cases where the operator had to intervene manually — those are
-  candidate scenarios for future graph coverage.
+- Symptom in one sentence.
+- Concrete evidence quoted from the session (event id, request id,
+  policy fragment, log excerpt — whatever is definitive).
+- Minimum reproduction if you can identify one from the session.
+- Where in the SafeYolo source (paths + rough location) the fix would
+  likely live, if you can tell.
+- Suggested severity: low / medium / high, with reasoning.
+
+Do not open issues or push changes. Report to the operator.
+
+## 6. Other observations
+
+The session log is rich data beyond graph adoption and defect reports.
+Note anything else useful — repeated dead-ends, workarounds the agent
+invented, cases where the operator had to intervene manually (those are
+candidate scenarios for future graph coverage).
 
 ## Output shape
 
@@ -90,8 +128,14 @@ A single markdown response with these sections, in order:
    node IDs cited.
 3. **Traversal correctness** — your judgment with the specific evidence
    you're citing.
-4. **Proposed edits** — YAML diff blocks, or "None." Never both.
-5. **Other observations** — bullets. Terse. Only what is useful.
+4. **Finding classification** — the category from step 4 (one of
+   `graph_gap`, `graph_correct_safeyolo_defect`, `graph_overfit`,
+   `environment_or_operator_issue`, `mixed`). One line of reasoning
+   for why this category and not the others.
+5. **Proposed graph edits** — YAML diff blocks, or "None." Never both.
+6. **SafeYolo defect** — description + evidence + suggested severity,
+   or "None."
+7. **Other observations** — bullets. Terse. Only what is useful.
 
 ## Constraints
 
