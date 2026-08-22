@@ -1446,3 +1446,129 @@ def test_close_relay_tolerates_dead_process():
     # Post-exit path: wait itself raises because the child is already reaped.
     handler._close_relay(_RacyProc(wait_error=ChildProcessError))
     handler._close_relay(_RacyProc(wait_error=ProcessLookupError))
+
+
+class _RaisingTailnetSession:
+    """TailnetServeSession stand-in whose close() raises.
+
+    Not a MagicMock; models one exact failure: close() blowing up during
+    shutdown (zombie tailscale process, /tmp cleanup race, etc).
+    """
+
+    def __init__(self, *, dns_name: str = "preview.example.ts.net", port: int = 8443):
+        self.dns_name = dns_name
+        self.exposed_port = port
+        self.closing = False
+        self.close_called = False
+
+        class _Proc:
+            returncode = None
+            def poll(self):
+                return None
+            def wait(self, timeout=None):  # noqa: ARG002
+                return 0
+        self.process = _Proc()
+
+    def url(self, display_path: str = "/") -> str:
+        return f"https://{self.dns_name}:{self.exposed_port}{display_path}"
+
+    def close(self) -> None:
+        self.close_called = True
+        raise RuntimeError("simulated tailnet close failure")
+
+    def read_output(self) -> str:
+        return ""
+
+
+class _FakeServer:
+    """Minimal serve_agent_preview target with observable close hook."""
+
+    def __init__(self, *, close_raises: bool = False):
+        self.server_address = ("127.0.0.1", 54321)
+        self.close_raises = close_raises
+        self.server_close_called = False
+
+    def serve_forever(self):
+        return None
+
+    def shutdown(self):
+        return None
+
+    def server_close(self):
+        self.server_close_called = True
+        if self.close_raises:
+            raise RuntimeError("simulated server_close failure")
+
+
+def test_serve_agent_preview_still_closes_server_when_tailnet_close_raises(monkeypatch):
+    """A raise from tailnet_session.close() must not skip server_close or the audit event.
+
+    Regression: the old finally was a straight-line sequence; the first raise
+    skipped every subsequent step, leaking the server socket and dropping
+    the agent.preview_close event.
+    """
+    events: list[str] = []
+    monkeypatch.setattr(
+        "safeyolo.preview.write_event",
+        lambda event, **kwargs: events.append(event),
+    )
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: "1234-5678")
+    fake_server = _FakeServer()
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", lambda *a: fake_server)
+    session = _RaisingTailnetSession()
+    monkeypatch.setattr(
+        "safeyolo.preview.start_tailnet_serve",
+        lambda local_port, exposed_port: session,
+    )
+
+    config = PreviewConfig(agent="web", guest_port=6080, tailnet_port=8443)
+    assert serve_agent_preview(config, object()) == 0
+    assert session.close_called, "tailnet close should have been attempted"
+    assert fake_server.server_close_called, "server_close was skipped by the raising tailnet close"
+    assert "agent.preview_close" in events, f"preview_close event dropped: {events}"
+
+
+def test_serve_agent_preview_still_writes_close_event_when_server_close_raises(monkeypatch):
+    """A raise from server.server_close() must not skip the audit event."""
+    events: list[str] = []
+    monkeypatch.setattr(
+        "safeyolo.preview.write_event",
+        lambda event, **kwargs: events.append(event),
+    )
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: "1234-5678")
+    fake_server = _FakeServer(close_raises=True)
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", lambda *a: fake_server)
+
+    config = PreviewConfig(agent="codey", guest_port=8000)
+    assert serve_agent_preview(config, object()) == 0
+    assert fake_server.server_close_called
+    assert "agent.preview_close" in events, f"preview_close event dropped: {events}"
+
+
+def test_serve_agent_preview_reports_broken_browser_launcher(monkeypatch, capsys):
+    """webbrowser.open failure must not abort the preview.
+
+    Regression: webbrowser.open ran before serve_forever; if it raised
+    (headless host, broken $BROWSER, xdg-open missing), the preview never
+    started.
+    """
+    events: list[str] = []
+    monkeypatch.setattr(
+        "safeyolo.preview.write_event",
+        lambda event, **kwargs: events.append(event),
+    )
+    monkeypatch.setattr("safeyolo.preview.generate_unlock_code", lambda: "1234-5678")
+    fake_server = _FakeServer()
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", lambda *a: fake_server)
+
+    def broken_open(url):  # noqa: ARG001
+        raise RuntimeError("no browser available on this host")
+    monkeypatch.setattr("safeyolo.preview.webbrowser.open", broken_open)
+
+    config = PreviewConfig(agent="codey", guest_port=8000, open_browser=True)
+    assert serve_agent_preview(config, object()) == 0
+    err = capsys.readouterr().err
+    assert "Could not open browser" in err, err
+    # Preview still opened and closed successfully.
+    assert "agent.preview_open" in events
+    assert "agent.preview_close" in events
