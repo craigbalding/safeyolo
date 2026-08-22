@@ -91,3 +91,20 @@ def test_guest_installer_does_not_hide_agent_creation_failure() -> None:
     assert 'chroot "$rootfs" useradd -m -s /bin/bash -u 1000 agent' in source
     assert "useradd -m -s /bin/bash -u 1000 agent 2>/dev/null || true" not in source
     assert 'for required_dir in workspace safeyolo safeyolo-status home/agent' in source
+
+
+def test_guest_installer_unlocks_root_for_pubkey_auth() -> None:
+    """`safeyolo agent shell --root` SSHes to root@sandbox on the
+    macOS microVM. Debian bases ship root with pw="!" (locked), and
+    OpenSSH on Alpine (9.7+) refuses pubkey auth against locked
+    accounts. Unlocking root at rootfs build time mirrors the
+    existing `usermod -p '*' agent` pattern. Regression guard for #296.
+    """
+    source = (GUEST_DIR / "install-guest-common.sh").read_text()
+
+    assert 'chroot "$rootfs" usermod -p \'*\' root' in source
+    # PasswordAuthentication is off in the sshd_config the same
+    # installer writes -- clearing the lock does NOT enable password
+    # login. Verify that guard still holds for anyone reading this
+    # test in isolation.
+    assert 'PasswordAuthentication no' in source
