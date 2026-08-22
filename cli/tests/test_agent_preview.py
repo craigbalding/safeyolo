@@ -1791,3 +1791,269 @@ def test_serve_agent_preview_reports_broken_browser_launcher(monkeypatch, capsys
     # Preview still opened and closed successfully.
     assert "agent.preview_open" in events
     assert "agent.preview_close" in events
+
+
+# ---------------------------------------------------------------------------
+# Silent retry + waiting room for restarting-app case
+# ---------------------------------------------------------------------------
+
+
+def _refused_exc(agent: str = "codey") -> RuntimeError:
+    """Reproduce the exact runsc stderr signature the bug report shows."""
+    return RuntimeError(
+        f"runsc port-forward exited 128: doStream: PortForward: "
+        f"port forwarding to sandbox: creating netstack port forward "
+        f"connection: connecting endpoint: connection was refused "
+        f"(agent={agent})",
+    )
+
+
+class _RefusedThenOKPlatform:
+    """Refuses the first `fail_count` calls, then returns a fake OK process.
+
+    Models the 'app restarted mid-request' scenario: the port-forward
+    briefly refuses until the app rebinds the port, then succeeds. The
+    silent-retry loop should ride through the transient refuseds.
+    """
+
+    def __init__(self, fail_count: int, ok_process):
+        self.fail_count = fail_count
+        self.ok_process = ok_process
+        self.attempts = 0
+
+    def popen_port_forward(self, name, guest_port, user="agent"):  # noqa: ARG002
+        self.attempts += 1
+        if self.attempts <= self.fail_count:
+            raise _refused_exc(agent=name)
+        return self.ok_process
+
+
+class _AlwaysRefusedPlatform:
+    """Every port-forward attempt raises the ECONNREFUSED signature."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    def popen_port_forward(self, name, guest_port, user="agent"):  # noqa: ARG002
+        self.attempts += 1
+        raise _refused_exc(agent=name)
+
+
+class _StubUpstreamProcess:
+    """Minimal Popen-alike that returns a small valid HTTP response."""
+
+    def __init__(self, response_bytes: bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(response_bytes)
+        self.returncode = 0
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):  # noqa: ARG002
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def _fast_retry(monkeypatch, window=0.05, interval=0.01):
+    """Shrink the retry constants so tests finish in ms, not seconds."""
+    monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_WINDOW_SECONDS", window)
+    monkeypatch.setattr("safeyolo.preview.PREVIEW_SILENT_RETRY_INTERVAL_SECONDS", interval)
+
+
+def test_is_upstream_refused_matches_runsc_signature():
+    """The specific runsc ECONNREFUSED phrasing must trigger the retry path."""
+    from safeyolo.preview import _is_upstream_refused
+
+    assert _is_upstream_refused(_refused_exc())
+    assert _is_upstream_refused(RuntimeError("blah: connection refused blah"))
+    # Different failures must not match.
+    assert not _is_upstream_refused(RuntimeError("runsc port-forward exited 1: container not found"))
+    assert not _is_upstream_refused(FileNotFoundError("runsc"))
+    assert not _is_upstream_refused(PermissionError("denied"))
+
+
+def test_prefers_html_negotiation():
+    """Browser navigation prefers HTML; JSON/XHR/`*/*` does not."""
+    from safeyolo.preview import _prefers_html
+
+    assert _prefers_html("text/html,application/xhtml+xml,*/*;q=0.9")
+    assert _prefers_html("text/html")
+    assert not _prefers_html("*/*")
+    assert not _prefers_html("application/json")
+    assert not _prefers_html("")
+
+
+def test_silent_retry_rides_through_transient_refuse(monkeypatch):
+    """First few port-forward attempts refuse, next one succeeds → no waiting-room."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch, window=1.0, interval=0.01)
+
+    upstream = _StubUpstreamProcess()
+    platform = _RefusedThenOKPlatform(fail_count=3, ok_process=upstream)
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie})
+        assert resp.status == 200
+        assert body == b"ok"
+        assert platform.attempts >= 4  # 3 refuseds + 1 success
+        # No waiting-room marker on the successful response.
+        assert resp.getheader("X-SafeYolo-Waiting-Room") is None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_waiting_room_html_served_when_html_client_and_refused_beyond_window(monkeypatch):
+    """Browser navigation past the silent window → 200 + waiting-room HTML."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch)
+
+    platform = _AlwaysRefusedPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(
+            server,
+            "/",
+            headers={
+                "Cookie": cookie,
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+            },
+        )
+        assert resp.status == 200
+        assert resp.getheader("X-SafeYolo-Waiting-Room") == "1"
+        assert resp.getheader("Content-Type", "").startswith("text/html")
+        # Must contain the agent name, the port, and JS that polls.
+        text = body.decode()
+        assert "codey" in text
+        assert "8000" in text
+        assert "fetch(" in text
+        assert 'http-equiv="refresh"' in text  # JS-off fallback
+        # Silent-retry loop ran at least once before giving up.
+        assert platform.attempts >= 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_503_served_for_non_html_client_when_refused_beyond_window(monkeypatch):
+    """XHR/JSON client past the silent window → 503 + Retry-After + JSON body."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch)
+
+    platform = _AlwaysRefusedPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(
+            server,
+            "/api/status",
+            headers={"Cookie": cookie, "Accept": "application/json"},
+        )
+        assert resp.status == 503
+        assert resp.getheader("Retry-After") == "2"
+        assert resp.getheader("X-SafeYolo-Waiting-Room") == "1"
+        payload = json.loads(body)
+        assert payload.get("error") == "upstream not ready"
+        assert "codey" in payload.get("detail", "")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_non_refused_error_still_becomes_immediate_502(monkeypatch):
+    """Regression: non-ECONNREFUSED errors must NOT enter the silent-retry path.
+
+    'Container not found' (agent stopped, wrong id, etc.) is a real
+    problem the operator needs to see fast — the waiting-room would
+    mask it and stall the browser instead of surfacing the fault.
+    """
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch, window=10.0, interval=1.0)  # long window; must not be entered
+
+    class _NotFoundPlatform:
+        attempts = 0
+
+        def popen_port_forward(self, name, guest_port, user="agent"):  # noqa: ARG002
+            self.attempts += 1
+            raise RuntimeError("runsc port-forward exited 1: container 'codey' not found")
+
+    platform = _NotFoundPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie, "Accept": "text/html"})
+        assert resp.status == 502
+        assert resp.getheader("X-SafeYolo-Waiting-Room") is None
+        # Exactly one attempt: no retry loop.
+        assert platform.attempts == 1
+        payload = json.loads(body)
+        assert "not found" in payload.get("detail", "")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_websocket_upgrade_gets_503_not_waiting_room(monkeypatch):
+    """WS upgrades never see the waiting-room — a stalled upgrade is worse than a fast fail."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch)
+
+    platform = _AlwaysRefusedPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=8000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, _body = _request(
+            server,
+            "/ws",
+            headers={
+                "Cookie": cookie,
+                "Accept": "text/html",  # browser navigation would normally get HTML
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                "Sec-WebSocket-Version": "13",
+            },
+        )
+        assert resp.status == 503
+        assert resp.getheader("Retry-After") == "2"
+    finally:
+        server.shutdown()
+        server.server_close()
