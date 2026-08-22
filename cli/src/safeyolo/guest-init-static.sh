@@ -222,6 +222,23 @@ if [ -f /safeyolo/authorized_keys ]; then
     chown -R agent:agent /home/agent/.ssh
     chmod 700 /home/agent/.ssh
     chmod 600 /home/agent/.ssh/authorized_keys
+
+    # Also stage the operator's key for root so `safeyolo agent shell
+    # --root` reaches guest root. `PermitRootLogin prohibit-password`
+    # is the Debian default and permits pubkey; `usermod -p '*' root`
+    # mirrors the agent-account unlock in install-guest-common.sh so
+    # OpenSSH accepts pubkey auth against `!`-locked accounts on
+    # Alpine (9.7+). Idempotent -- silent-fail on rootfs without
+    # usermod. Runs each boot; the parallel build-time unlock in
+    # install-guest-common.sh means new rootfs won't need this, but
+    # already-built rootfs (which the operator asked us not to
+    # rebuild) do.
+    mkdir -p /root/.ssh
+    cp /safeyolo/authorized_keys /root/.ssh/authorized_keys
+    chown -R root:root /root/.ssh
+    chmod 700 /root/.ssh
+    chmod 600 /root/.ssh/authorized_keys
+    usermod -p '*' root 2>/dev/null || true
 fi
 
 if command -v ssh-keygen >/dev/null 2>&1 \
