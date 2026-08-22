@@ -2351,7 +2351,7 @@ def test_waiting_room_html_carries_poll_header_name():
     )
 
     html = _render_waiting_room_html(
-        agent="claude", guest_port=3000, timeout_seconds=60,
+        agent="claude", guest_port=3000, heartbeat_seconds=60,
     )
     # The header name must appear in the JS.
     assert WAITING_ROOM_POLL_HEADER in html, (

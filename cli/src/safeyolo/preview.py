@@ -58,15 +58,18 @@ RESERVED_GUEST_PORTS = {8080, 9090}
 #
 #   2. Waiting room: if the silent window elapses without recovery, serve a
 #      minimal HTML page (or 503 for non-HTML requests) that polls the URL
-#      and reloads when the app comes back. Bounded by
-#      PREVIEW_WAITING_ROOM_TIMEOUT_SECONDS on the client side.
+#      and reloads when the app comes back. Each waiting-room page has a
+#      client-side heartbeat via <meta refresh> at
+#      PREVIEW_WAITING_ROOM_HEARTBEAT_SECONDS — the page reloads on that
+#      cadence, fetching a fresh waiting-room from the server. Not a hard
+#      timeout; the waiting-room persists indefinitely.
 #
 # Only the specific "connection was refused" from runsc port-forward enters
 # this path. Every other error (sandbox down, runsc missing, TLS, etc.)
 # still surfaces as the actionable 502 the operator needs.
 PREVIEW_SILENT_RETRY_WINDOW_SECONDS = 5.0
 PREVIEW_SILENT_RETRY_INTERVAL_SECONDS = 0.5
-PREVIEW_WAITING_ROOM_TIMEOUT_SECONDS = 60
+PREVIEW_WAITING_ROOM_HEARTBEAT_SECONDS = 60
 WAITING_ROOM_HEADER = "X-SafeYolo-Waiting-Room"
 WAITING_ROOM_POLL_HEADER = "X-SafeYolo-Waiting-Room-Poll"
 # Max request-body size we'll buffer for the silent-retry path. Bodies
@@ -153,7 +156,7 @@ def _prefers_html(accept_header: str) -> bool:
     return True
 
 
-def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: int) -> str:
+def _render_waiting_room_html(*, agent: str, guest_port: int, heartbeat_seconds: int) -> str:
     """Return the HTML for the waiting-room page.
 
     Kept minimal and inline: one file, one page, no external assets so a
@@ -166,6 +169,11 @@ def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: i
     "the app is back and returned any status" from "still waiting-room
     from us" — a 500 from the real app is treated as success (the app
     is up; the reload will show that 500).
+
+    heartbeat_seconds is the meta-refresh cadence AND the JS-side
+    countdown reset interval. NOT a hard timeout — the page reloads
+    on this cadence (fetching a fresh waiting-room), so the room
+    persists indefinitely until the upstream comes back.
     """
     # HTML-escape user-controlled values. Agent names come from a
     # validated set (see agents_store), but guarding here is cheap and
@@ -175,10 +183,9 @@ def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: i
     # Countdown updates smoothly via setInterval independent of the poll,
     # so a slow network round-trip doesn't stall the visible timer.
     #
-    # Meta-refresh interval is deliberately LONG (equal to the JS
-    # timeout) — it exists purely as a JS-off fallback. Anything
-    # shorter competes with the JS poll loop and causes flicker /
-    # counter oscillation.
+    # Meta-refresh interval matches the heartbeat — long enough not to
+    # compete with the 1s JS poll (short values cause flicker / counter
+    # oscillation). Purely a JS-off fallback.
     #
     # Every fetch carries the poll header so the server-side
     # silent-retry doesn't apply — we're already polling client-side.
@@ -186,7 +193,7 @@ def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: i
         "<!doctype html>\n"
         "<html lang=\"en\"><head>\n"
         "<meta charset=\"utf-8\">\n"
-        f"<meta http-equiv=\"refresh\" content=\"{timeout_seconds}\">\n"
+        f"<meta http-equiv=\"refresh\" content=\"{heartbeat_seconds}\">\n"
         f"<title>Waiting for {_e(agent)}…</title>\n"
         "<style>\n"
         "  body{font-family:-apple-system,system-ui,sans-serif;"
@@ -203,23 +210,23 @@ def _render_waiting_room_html(*, agent: str, guest_port: int, timeout_seconds: i
         f"<h1>Waiting for <code>{_e(agent)}</code></h1>\n"
         f"<p>Port {guest_port} inside the sandbox has no listener — the app is probably restarting.</p>\n"
         "<div class=\"spinner\"></div>\n"
-        "<p class=\"detail\">This page reloads automatically. Timeout in "
-        "<span id=\"t\">" + str(timeout_seconds) + "</span>s.</p>\n"
+        "<p class=\"detail\">This page reloads automatically. Next reload in "
+        "<span id=\"t\">" + str(heartbeat_seconds) + "</span>s.</p>\n"
         "<script>\n"
         "(function(){\n"
         "  var start = Date.now();\n"
-        f"  var timeout = {timeout_seconds} * 1000;\n"
+        f"  var heartbeat = {heartbeat_seconds} * 1000;\n"
         f"  var header = \"{WAITING_ROOM_HEADER}\";\n"
         f"  var pollHeader = \"{WAITING_ROOM_POLL_HEADER}\";\n"
         "  var el = document.getElementById(\"t\");\n"
         "  var pollHeaders = {};\n"
         "  pollHeaders[pollHeader] = \"1\";\n"
         "  function updateCountdown(){\n"
-        "    if (el) el.textContent = Math.max(0, Math.round((timeout - (Date.now() - start)) / 1000));\n"
+        "    if (el) el.textContent = Math.max(0, Math.round((heartbeat - (Date.now() - start)) / 1000));\n"
         "  }\n"
         "  setInterval(updateCountdown, 250);\n"
         "  async function poll(){\n"
-        "    if (Date.now() - start > timeout) return;\n"
+        "    if (Date.now() - start > heartbeat) return;\n"
         "    try {\n"
         "      var r = await fetch(location.href, {cache:\"no-store\", credentials:\"include\", headers: pollHeaders});\n"
         "      if (!r.headers.get(header)) { location.reload(); return; }\n"
@@ -815,7 +822,7 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         body = _render_waiting_room_html(
             agent=refused.agent,
             guest_port=refused.guest_port,
-            timeout_seconds=PREVIEW_WAITING_ROOM_TIMEOUT_SECONDS,
+            heartbeat_seconds=PREVIEW_WAITING_ROOM_HEARTBEAT_SECONDS,
         ).encode()
         self.send_response(int(HTTPStatus.OK))
         self.send_header("Content-Type", "text/html; charset=utf-8")
