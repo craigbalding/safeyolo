@@ -820,12 +820,9 @@ def start_preview_server(
 
 def serve_agent_preview(config: PreviewConfig, platform) -> int:
     validate_guest_port(config.guest_port)
-    try:
-        session_token = secrets.token_urlsafe(32)
-        unlock_code = generate_unlock_code()
-        server = start_preview_server(config, platform, session_token, unlock_code)
-    except Exception:
-        raise
+    session_token = secrets.token_urlsafe(32)
+    unlock_code = generate_unlock_code()
+    server = start_preview_server(config, platform, session_token, unlock_code)
     host, port = server.server_address
     display_path = normalize_display_path(config.display_path)
     tailnet_session: TailnetServeSession | None = None
@@ -863,7 +860,16 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
         print("Press Ctrl-C to close.")
 
         if config.open_browser:
-            webbrowser.open(url)
+            try:
+                webbrowser.open(url)
+            except Exception as exc:  # noqa: BLE001 - webbrowser.open can raise anything
+                # webbrowser.get() dispatches to platform-specific launchers
+                # (BROWSER env, xdg-open, /usr/bin/open, ...). Any of them can
+                # be missing or broken; that must not take down the preview.
+                print(
+                    f"Could not open browser automatically: {exc}",
+                    file=sys.stderr,
+                )
 
         if tailnet_session:
 
@@ -890,21 +896,34 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        # Each cleanup step is independent: a failure in one must not skip
+        # the others. Previously a raise from tailnet_session.close() would
+        # leak the server socket and drop the audit event, and a raise from
+        # server.server_close() would drop the audit event.
         if tailnet_session:
-            tailnet_session.close()
-        server.server_close()
+            try:
+                tailnet_session.close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                log.exception("preview tailnet close failed")
+        try:
+            server.server_close()
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            log.exception("preview server close failed")
         if preview_opened:
-            write_event(
-                "agent.preview_close",
-                kind=EventKind.AGENT,
-                severity=Severity.LOW,
-                summary=f"Preview closed for {config.agent}:127.0.0.1:{config.guest_port}",
-                agent=config.agent,
-                addon="agent-preview",
-                details={
-                    "agent": config.agent,
-                    "guest_port": config.guest_port,
-                    "host_port": port,
-                    "tailnet_port": config.tailnet_port,
-                },
-            )
+            try:
+                write_event(
+                    "agent.preview_close",
+                    kind=EventKind.AGENT,
+                    severity=Severity.LOW,
+                    summary=f"Preview closed for {config.agent}:127.0.0.1:{config.guest_port}",
+                    agent=config.agent,
+                    addon="agent-preview",
+                    details={
+                        "agent": config.agent,
+                        "guest_port": config.guest_port,
+                        "host_port": port,
+                        "tailnet_port": config.tailnet_port,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - auditing must not mask exit path
+                log.exception("preview close event write failed")
