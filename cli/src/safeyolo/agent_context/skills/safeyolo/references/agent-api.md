@@ -50,6 +50,26 @@ responses and `/circuits` for circuit-breaker 503 responses.
 
 ## Flow inspection
 
+Flow recording is **opt-in per request**, not automatic. A request is
+written to the FlowStore only when both hold:
+
+1. It carries the canonical `X-Test-Context` header, parsed and accepted
+   by the `test_context` addon. The format is defined by
+   `safeyolo.test_context_contract`; presence alone is not enough.
+2. The active policy has a non-empty `test_context.target_hosts` list,
+   which is what activates the addon. On those target hosts, a missing
+   or malformed header is soft-rejected with `428`. On non-target hosts,
+   a valid header opts the request into recording; a missing header
+   passes through and is not recorded.
+
+The FlowStore is a **permanent audit record** kept on the operator's
+host (bounded by disk, not by retention time). The agent has no
+filesystem access to it; the only reachable interface is `/api/flows/*`
+on the Agent API. `/api/flows/search` returning `count: 0` means the
+recording preconditions were not met (or the query is agent-scoped and
+this agent did not originate the traffic), never that the records
+expired.
+
 In the normal per-agent configuration, flow results and bodies are scoped to
 the calling agent by service-discovery attribution.
 
