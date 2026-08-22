@@ -2025,6 +2025,132 @@ def test_non_refused_error_still_becomes_immediate_502(monkeypatch):
         server.server_close()
 
 
+class _LazyEOFPlatform:
+    """popen returns a fake proc whose stdout reads empty (EOF) before headers.
+
+    Reproduces the macOS failure mode: SSH+socat inside the sandbox
+    succeeds at Popen time but fails when the guest port has no
+    listener. The failure surfaces as "preview relay closed before
+    response headers" from read_http_response_head.
+    """
+
+    def __init__(self):
+        self.attempts = 0
+
+    def popen_binary_in_sandbox(self, name, command, user="agent"):  # noqa: ARG002
+        self.attempts += 1
+        return _StubUpstreamProcess(response_bytes=b"")  # empty → EOF before headers
+
+
+class _LazyEOFThenOKPlatform:
+    """First N popens return empty-response procs (EOF before headers);
+    subsequent popens return a working proc. Models the app-restart case
+    where the port comes back mid-retry."""
+
+    def __init__(self, fail_count: int, ok_response: bytes):
+        self.fail_count = fail_count
+        self.ok_response = ok_response
+        self.attempts = 0
+
+    def popen_binary_in_sandbox(self, name, command, user="agent"):  # noqa: ARG002
+        self.attempts += 1
+        if self.attempts <= self.fail_count:
+            return _StubUpstreamProcess(response_bytes=b"")
+        return _StubUpstreamProcess(response_bytes=self.ok_response)
+
+
+def test_lazy_eof_beyond_silent_window_serves_waiting_room(monkeypatch):
+    """macOS-style: Popen succeeds, stdout is EOF immediately. Silent-retry
+    then waiting-room, same as the eager Linux path.
+
+    Regression for the live-test failure — the observed traceback ended in
+    read_http_response_head raising 'preview relay closed before response
+    headers'. This routes that specific failure through the retry loop and
+    ultimately into the waiting-room UI, matching what the eager
+    RuntimeError path does.
+    """
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch)
+
+    platform = _LazyEOFPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="claude", guest_port=3000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(
+            server,
+            "/",
+            headers={"Cookie": cookie, "Accept": "text/html,*/*;q=0.9"},
+        )
+        assert resp.status == 200
+        assert resp.getheader("X-SafeYolo-Waiting-Room") == "1"
+        assert resp.getheader("Content-Type", "").startswith("text/html")
+        assert "claude" in body.decode()
+        assert platform.attempts >= 2  # more than one attempt during silent retry
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_lazy_eof_recovers_within_silent_window(monkeypatch):
+    """Lazy-EOF platform recovers mid-silent-retry → real response, no waiting-room."""
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch, window=1.0, interval=0.01)
+
+    platform = _LazyEOFThenOKPlatform(
+        fail_count=3,
+        ok_response=b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+    )
+    server = start_preview_server(
+        PreviewConfig(agent="claude", guest_port=3000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie})
+        assert resp.status == 200
+        assert body == b"hello"
+        assert resp.getheader("X-SafeYolo-Waiting-Room") is None
+        assert platform.attempts >= 4  # 3 EOFs + 1 real
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_lazy_eof_returns_503_for_non_html_client(monkeypatch):
+    monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
+    _fast_retry(monkeypatch)
+
+    platform = _LazyEOFPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="claude", guest_port=3000),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(
+            server, "/api/x",
+            headers={"Cookie": cookie, "Accept": "application/json"},
+        )
+        assert resp.status == 503
+        assert resp.getheader("Retry-After") == "2"
+        assert json.loads(body).get("error") == "upstream not ready"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_websocket_upgrade_gets_503_not_waiting_room(monkeypatch):
     """WS upgrades never see the waiting-room — a stalled upgrade is worse than a fast fail."""
     monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)

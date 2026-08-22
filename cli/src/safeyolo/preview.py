@@ -68,10 +68,17 @@ PREVIEW_SILENT_RETRY_WINDOW_SECONDS = 5.0
 PREVIEW_SILENT_RETRY_INTERVAL_SECONDS = 0.5
 PREVIEW_WAITING_ROOM_TIMEOUT_SECONDS = 60
 WAITING_ROOM_HEADER = "X-SafeYolo-Waiting-Room"
+# Max request-body size we'll buffer for the silent-retry path. Bodies
+# larger than this bypass the retry (proc opens, streams straight
+# through, EOF surfaces as the original 502). 1 MiB covers typical dev
+# form POSTs; anything above is likely a file upload that shouldn't be
+# quietly retried anyway.
+PREVIEW_MAX_RETRYABLE_BODY_BYTES = 1 * 1024 * 1024
 _UPSTREAM_REFUSED_MARKERS = (
     "connection was refused",   # gVisor netstack ECONNREFUSED phrasing
     "connection refused",       # BSD-style variant (defensive)
 )
+_STREAM_CLOSED_BEFORE_HEADERS = "preview relay closed before response headers"
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -428,10 +435,116 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         return self.rfile.read(max(n, 0))
 
     def _proxy_stream(self, *, is_upgrade: bool) -> tuple[int, int]:
+        # Two failure modes both look like "app not listening":
+        #
+        #   EAGER — port-forward Popen raises RuntimeError("... connection
+        #     was refused") synchronously. Linux runsc under some conditions.
+        #     Caught in _open_guest_relay as _UpstreamRefused.
+        #
+        #   LAZY — port-forward Popen returns a live-looking proc, we write
+        #     the request, upstream (socat inside macOS sandbox, or the
+        #     gVisor sentry) attempts the TCP connect on our behalf, gets
+        #     refused, closes the stream. Response-head read returns EOF
+        #     immediately. Surfaces as PreviewError with the specific
+        #     "closed before response headers" message.
+        #
+        # Both must route through the same silent-retry + waiting-room path.
+        # For LAZY we retry the whole request, which requires the body to be
+        # replayable — so buffer it up front for retryable methods, or fall
+        # back to a single-shot attempt for streaming/large-body requests.
+        if is_upgrade:
+            # WebSocket upgrades can't retry mid-handshake without
+            # re-drawing state. One shot, no waiting room; a stalled
+            # upgrade is worse than a fast failure. _serve_waiting_room
+            # handles the WS case by returning 503 + Retry-After (no HTML).
+            try:
+                return self._do_relay_attempt(request_body=None, is_upgrade=True)
+            except _UpstreamRefused as refused:
+                return self._serve_waiting_room(refused, is_upgrade=True)
+
         try:
-            proc = self._open_guest_relay()
-        except _UpstreamRefused as refused:
-            return self._serve_waiting_room(refused, is_upgrade=is_upgrade)
+            request_body = self._buffer_request_body_for_retry()
+        except PreviewError:
+            # Body too large or client already gave up. Fall through to a
+            # single-shot attempt so the original error surfaces cleanly.
+            return self._do_relay_attempt(request_body=None, is_upgrade=False)
+
+        started = time.monotonic()
+        deadline = started + PREVIEW_SILENT_RETRY_WINDOW_SECONDS
+        last_failure: Exception
+        while True:
+            try:
+                return self._do_relay_attempt(
+                    request_body=request_body, is_upgrade=False,
+                )
+            except _UpstreamRefused as refused:
+                last_failure = refused  # eager
+            except PreviewError as pe:
+                if str(pe) != _STREAM_CLOSED_BEFORE_HEADERS:
+                    raise  # unrelated failure — surface as 502
+                last_failure = _UpstreamRefused(
+                    agent=self.server.config.agent,
+                    guest_port=self.server.config.guest_port,
+                    elapsed=time.monotonic() - started,
+                    cause=pe,
+                )  # lazy — treat like eager for retry purposes
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.info(
+                    "preview %s port %d refused after %.1fs silent retry — waiting-room",
+                    self.server.config.agent,
+                    self.server.config.guest_port,
+                    time.monotonic() - started,
+                )
+                assert isinstance(last_failure, _UpstreamRefused)
+                return self._serve_waiting_room(last_failure, is_upgrade=False)
+            time.sleep(min(PREVIEW_SILENT_RETRY_INTERVAL_SECONDS, remaining))
+
+    def _buffer_request_body_for_retry(self) -> bytes | None:
+        """Read the request body into memory so it can be replayed on retry.
+
+        Returns None when there's no body (Content-Length: 0 or absent and
+        not chunked). Raises PreviewError if the body is too large to
+        buffer, or if chunked encoding is used (chunked is rejected
+        outright by _copy_request_body anyway).
+        """
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if transfer_encoding and transfer_encoding.lower() != "identity":
+            raise PreviewError("chunked request bodies cannot be buffered for retry")
+        length = self.headers.get("Content-Length")
+        if not length:
+            return None
+        try:
+            n = int(length)
+        except ValueError as exc:
+            raise PreviewError("invalid request Content-Length") from exc
+        if n <= 0:
+            return b""
+        if n > PREVIEW_MAX_RETRYABLE_BODY_BYTES:
+            raise PreviewError(
+                f"request body {n}B exceeds retry buffer "
+                f"{PREVIEW_MAX_RETRYABLE_BODY_BYTES}B",
+            )
+        data = self.rfile.read(n)
+        if len(data) != n:
+            raise PreviewError("client closed before request body completed")
+        return data
+
+    def _do_relay_attempt(
+        self, *, request_body: bytes | None, is_upgrade: bool,
+    ) -> tuple[int, int]:
+        """One attempt: open relay, write request, read response.
+
+        Raises:
+          - _UpstreamRefused if the open failed eagerly with the ECONNREFUSED
+            signature (from _open_guest_relay).
+          - PreviewError("preview relay closed before response headers")
+            if the stream returned EOF before the response head — the
+            LAZY ECONNREFUSED case. Caller decides whether to retry.
+          - Other PreviewError / OSError for genuine failures.
+        """
+        proc = self._open_guest_relay()  # may raise _UpstreamRefused
         try:
             assert proc.stdin is not None
             assert proc.stdout is not None
@@ -444,7 +557,16 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
                 is_upgrade=is_upgrade,
             )
             proc.stdin.write(request)
-            self._copy_request_body(proc.stdin, is_upgrade=is_upgrade)
+            if is_upgrade:
+                pass  # no body for upgrade
+            elif request_body is not None:
+                if request_body:
+                    proc.stdin.write(request_body)
+            else:
+                # Body wasn't buffered (too large / streaming). Fall back
+                # to the pre-fix streaming behaviour so at least the
+                # happy path works.
+                self._copy_request_body(proc.stdin, is_upgrade=False)
             proc.stdin.flush()
             # Do not close stdin here. Across gVisor's exec and port-forward
             # relays, a host-side write EOF can close the whole guest stream

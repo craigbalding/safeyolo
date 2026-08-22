@@ -1235,33 +1235,6 @@ class LinuxPlatform(AgentPlatform):
                     f"runsc port-forward exited {process.returncode}: "
                     f"{detail or '<no output>'}"
                 )
-            # gVisor has TWO failure modes for ECONNREFUSED at the endpoint:
-            #
-            #   1. Eager — runsc exits nonzero, handled above.
-            #   2. Lazy — runsc exits 0 (its job of handing the FD to the
-            #      sentry succeeded), the sentry then attempts the endpoint
-            #      TCP connect, gets refused, and closes the UDS stream.
-            #      Without this probe we'd return a _SocketRelay wrapping a
-            #      dead socket; the failure would surface deep inside the
-            #      caller's response-reading path as "closed before headers"
-            #      instead of the specific "connection was refused" that the
-            #      preview silent-retry / waiting-room path expects.
-            #
-            # Probe: if the peer has already closed the stream, a non-blocking
-            # peek returns 0 bytes. Would-block (BlockingIOError) is the
-            # healthy case — no data yet because we haven't sent the request.
-            connection.setblocking(False)
-            try:
-                peek = connection.recv(1, socket.MSG_PEEK)
-                if not peek:
-                    raise RuntimeError(
-                        "runsc port-forward: connecting endpoint: "
-                        "connection was refused",
-                    )
-            except BlockingIOError:
-                pass  # healthy
-            finally:
-                connection.setblocking(True)
             return _SocketRelay(connection)
         except Exception:
             if connection is not None:
