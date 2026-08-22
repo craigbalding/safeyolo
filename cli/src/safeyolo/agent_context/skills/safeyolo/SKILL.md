@@ -39,6 +39,15 @@ interfaces; do not try to bypass or weaken it.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or
   diagnosing Xvfb, VNC, noVNC, and browser startup.
+- Read [Contributing to the SafeYolo repo](references/contributing-to-safeyolo.md)
+  when editing files in the SafeYolo checkout itself: any pre-commit or CI
+  drift check firing (`check_skill_markers`, `check_doc_cli_flags`,
+  `check_doc_constants`, `check_doc_links`, `check_doc_forbidden`); adding
+  claims to user-facing docs (`README.md`, `SECURITY.md`, `docs/*`, `guest/README.md`,
+  `cli/README.md`, `contrib/*.md`); or generally "why is CI red after I only
+  changed docs / do I need `pre-commit install` here". Not for unrelated
+  project work — SafeYolo being the sandbox boundary does not make every
+  in-sandbox task SafeYolo development.
 
 Read only the reference needed for the current task.
 
