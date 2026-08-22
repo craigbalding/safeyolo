@@ -163,7 +163,7 @@ See [docs/networking-vsock-uds.md](docs/networking-vsock-uds.md) for hop-by-hop 
 - **Structural egress control** — sandboxes have no external network interface; the only path out is a per-agent host socket through SafeYolo. No firewall rules to bypass or misconfigure.
 - **Safe browser and desktop previews** — agents can run browsers, graphical tools and the webapps they are building inside the sandbox, while giving the operator a safe window onto the result without exposing the host
 - **First-class traffic inspection** — inspect each agent's live HTTP(S) traffic through mitmproxy's web interface; particularly useful for debugging, QA and security testing against remote applications and APIs
-- **Operator access from anywhere over Tailscale** — publish the traffic-inspection UI and agent previews to your tailnet so you can review, approve or debug from any device without exposing anything to the public internet
+- **Operator access from anywhere over Tailscale** — if you use Tailscale, publish the traffic-inspection UI and agent previews to your tailnet so you can review, approve or debug from any device without exposing anything to the public internet
 - **Scoped network access** — allow, deny, prompt or rate-limit access by host, with per-agent overrides and a global traffic budget
 - **Capability-scoped service access** — give an agent only the operations it needs against services such as Gmail or GitHub; risky routes can require explicit approval
 - **Credentials stay outside the sandbox** — SafeYolo holds real credentials and injects them only into authorized requests; credential guards stop secrets being sent to the wrong destination
