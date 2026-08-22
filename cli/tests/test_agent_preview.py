@@ -1545,6 +1545,89 @@ def test_serve_agent_preview_still_writes_close_event_when_server_close_raises(m
     assert "agent.preview_close" in events, f"preview_close event dropped: {events}"
 
 
+def _run_preview_in_subprocess(tmp_path, *, guest_port: int):
+    """Start serve_agent_preview in a real subprocess.
+
+    The runner script monkeypatches write_event to append names to an
+    events file, and touches a `ready` file when agent.preview_open is
+    emitted. This lets the test wait deterministically without polling
+    for stdout parsing.
+    """
+    import sys as _sys
+    events_file = tmp_path / "events.log"
+    ready_file = tmp_path / "ready"
+    exit_file = tmp_path / "exit_code"
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        "import sys\n"
+        f"import safeyolo.preview as p\n"
+        f"events_path = {str(events_file)!r}\n"
+        f"ready_path = {str(ready_file)!r}\n"
+        f"exit_path = {str(exit_file)!r}\n"
+        "def _capture(event, **_kw):\n"
+        "    with open(events_path, 'a') as f:\n"
+        "        f.write(event + '\\n')\n"
+        "    if event == 'agent.preview_open':\n"
+        "        with open(ready_path, 'w') as f:\n"
+        "            f.write('go')\n"
+        "p.write_event = _capture\n"
+        "class Plat:\n"
+        "    def popen_binary_in_sandbox(self, name, command, user='agent'):\n"
+        "        raise AssertionError('no relay expected')\n"
+        f"cfg = p.PreviewConfig(agent='sigtest', guest_port={guest_port})\n"
+        "code = p.serve_agent_preview(cfg, Plat())\n"
+        "with open(exit_path, 'w') as f:\n"
+        "    f.write(str(code))\n"
+    )
+    proc = subprocess.Popen(
+        [_sys.executable, str(runner)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc, events_file, ready_file
+
+
+def _wait_for_file(path, *, timeout: float = 5.0) -> bool:
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if path.exists():
+            return True
+        _t.sleep(0.05)
+    return False
+
+
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
+def test_serve_agent_preview_cleans_up_on_signal(tmp_path, signame):
+    """Real subprocess, real signal, real HTTP server.
+
+    Regression: only SIGINT (KeyboardInterrupt) was caught. SIGTERM or SIGHUP
+    killed the process mid serve_forever, leaking the Tailscale Serve
+    mapping and dropping the agent.preview_close event. Now the signal
+    handler shuts down the server from a background thread so the finally
+    clause runs cleanly.
+    """
+    import os as _os
+    import signal as _signal
+    sig = getattr(_signal, signame, None)
+    if sig is None:
+        pytest.skip(f"{signame} not available on this platform")
+
+    proc, events_file, ready_file = _run_preview_in_subprocess(tmp_path, guest_port=8000)
+    try:
+        assert _wait_for_file(ready_file, timeout=5.0), "preview did not open"
+        _os.kill(proc.pid, sig)
+        exit_code = proc.wait(timeout=5.0)
+        assert exit_code == 0, f"expected clean exit, got {exit_code}"
+        emitted = events_file.read_text().splitlines() if events_file.exists() else []
+        assert "agent.preview_open" in emitted, emitted
+        assert "agent.preview_close" in emitted, emitted
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
 def test_serve_agent_preview_reports_broken_browser_launcher(monkeypatch, capsys):
     """webbrowser.open failure must not abort the preview.
 

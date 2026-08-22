@@ -8,6 +8,7 @@ platform relay.
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import logging
@@ -15,6 +16,7 @@ import os
 import re
 import secrets
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -801,6 +803,52 @@ def build_guest_relay_command(guest_port: int) -> str:
     return f"exec socat - TCP:127.0.0.1:{shlex.quote(str(guest_port))}"
 
 
+_SHUTDOWN_SIGNALS: tuple[str, ...] = ("SIGTERM", "SIGHUP")
+
+
+@contextlib.contextmanager
+def _shutdown_on_signals(server):
+    """Install signal handlers that shut down `server` from a background thread.
+
+    Only SIGINT (KeyboardInterrupt) was handled previously. Closing the
+    terminal (SIGHUP) or `kill <pid>` (SIGTERM) killed the process mid
+    serve_forever without running the finally block, leaking the Tailscale
+    Serve mapping and dropping the agent.preview_close audit event.
+
+    `server.shutdown()` blocks until the serve_forever loop notices, so it
+    cannot run on the signal-handling thread itself. We spawn a daemon
+    thread instead.
+
+    signal.signal() can only be called from the main thread. When called
+    from another thread (some test fixtures), we skip installation rather
+    than raise -- the KeyboardInterrupt path still works, and tests that
+    need signal behavior explicitly run in a subprocess.
+    """
+    installed: dict[int, object] = {}
+    if threading.current_thread() is threading.main_thread():
+        def _shutdown(_sig, _frame):
+            threading.Thread(target=server.shutdown, daemon=True).start()
+        for name in _SHUTDOWN_SIGNALS:
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                installed[sig] = signal.signal(sig, _shutdown)
+            except (OSError, ValueError):
+                # Some POSIX signals cannot be caught in some environments
+                # (e.g. containers with restricted signal masks). Skip and
+                # let KeyboardInterrupt / lifecycle handle shutdown.
+                log.debug("could not install shutdown handler for %s", name)
+    try:
+        yield
+    finally:
+        for sig, previous in installed.items():
+            try:
+                signal.signal(sig, previous)
+            except (OSError, ValueError):
+                pass
+
+
 def start_preview_server(
     config: PreviewConfig,
     platform,
@@ -883,7 +931,8 @@ def serve_agent_preview(config: PreviewConfig, platform) -> int:
             timer = threading.Timer(config.ttl_seconds, server.shutdown)
             timer.daemon = True
             timer.start()
-        server.serve_forever()
+        with _shutdown_on_signals(server):
+            server.serve_forever()
         if tailnet_session and tailnet_session.process.poll() is not None:
             output = tailnet_session.read_output()
             suffix = f": {output}" if output else ""
