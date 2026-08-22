@@ -12,29 +12,36 @@ counterpart: the exact commands and the anti-patterns that bite.
 
 ## One-time setup in a fresh checkout
 
+`uv` is the assumed baseline — several hooks (`uv-lock-check`,
+`blackbox-coverage-doc`, `skill-graph-render`) shell out to `uv run ...`
+internally. Install it first if you don't already have it, then:
+
 ```sh
-pre-commit install --hook-type pre-commit --hook-type pre-push
+uv sync --group dev
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
-Without this, `git commit` does not gate on the hooks configured in
-`.pre-commit-config.yaml` and you are relying on remembering to run them
-manually. Do not skip.
+Without `pre-commit install`, `git commit` does not gate on the hooks
+configured in `.pre-commit-config.yaml` and you are relying on remembering
+to run them manually. Do not skip.
 
 ## Before every push
 
 ```sh
-pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
-Not `pytest tests/... && python3 scripts/check_*.py`. That combination
-exercises pytest and the drift checks but skips ruff, whitespace,
-end-of-file, private-key detection, and the other pre-existing hooks.
-Every gate CI runs is in `.pre-commit-config.yaml`; run the whole set.
+Always via `uv run`, matching the convention in `docs/DEVELOPERS.md`.
+Raw `pre-commit run --all-files` will silently skip the uv-dependent
+hooks with "Executable `uv` not found" — those hooks will then fail on
+CI where uv is present. Running via `uv run` makes uv available to every
+hook subprocess and reproduces the CI environment locally.
 
-If `uv` is missing on your machine two hooks (`blackbox-coverage-doc`,
-`skill-graph-render`) will report "Executable `uv` not found". Install
-`uv` or run those two under CI only — do not merge with them silently
-skipped.
+Not `pytest tests/... && python3 scripts/check_*.py` either. That
+combination exercises pytest and the drift checks but skips ruff,
+whitespace, end-of-file, private-key detection, and the other
+pre-existing hooks. Every gate CI runs is in `.pre-commit-config.yaml`;
+run the whole set through `uv run`.
 
 ## Adding a new claim to a user-facing doc
 
@@ -75,8 +82,8 @@ error verbatim; the message includes the fix path.
 For visibility into what is covered where, run:
 
 ```sh
-python3 scripts/audit_doc_coverage.py --brief   # per-doc counts
-python3 scripts/audit_doc_coverage.py           # + keyword hits + orphans
+uv run python scripts/audit_doc_coverage.py --brief   # per-doc counts
+uv run python scripts/audit_doc_coverage.py           # + keyword hits + orphans
 ```
 
 Docs with zero bindings are marked `!` in the count report. Those are
@@ -97,9 +104,12 @@ the gaps to close next when the change lands near them.
 - **Editing `doc_constants.toml` with both `must_contain` and
   `must_contain_any` on the same assertion.** The checker rejects this;
   pick one.
-- **Running individual scripts instead of `pre-commit run --all-files`
+- **Running individual scripts instead of `uv run pre-commit run --all-files`
   before push.** Documented above; the failure mode is a CI red on lint
   after the drift checks all pass locally.
+- **Running `pre-commit` without the `uv run` prefix.** Silently skips
+  the uv-dependent hooks locally; they then fail on CI. Convention in
+  this repo is always `uv run pre-commit ...`.
 - **Adding a doc to the allowlist without any bindings.** The audit
   report will surface it with `!` on the next run — either add coverage
   or explain in `docs/DEVELOPERS.md` why the doc is scoped in but
