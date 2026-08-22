@@ -43,7 +43,6 @@ CLI_SRC = REPO_ROOT / "cli" / "src"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from _doc_config import USER_FACING_DOCS  # noqa: E402
 
-
 FENCE_RE = re.compile(r"^\s*```")
 SAFEYOLO_LINE_RE = re.compile(r"^\s*safeyolo(?:\s|$)")
 
