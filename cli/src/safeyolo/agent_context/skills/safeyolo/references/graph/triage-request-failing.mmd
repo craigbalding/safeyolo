@@ -15,6 +15,7 @@ flowchart TD
     sym.status_508(["Response was 508 (loop guard)"])
     sym.flow_search_empty(["/api/flows/search returned count:0 for traffic I know happened"])
     sym.gh_error_after_ok_polls(["gh printed a transport-flavored error after OAuth polls returned 200s"])
+    sym.http2_goaway_header_value(["Client HTTP/2 stack reported GOAWAY / PROTOCOL_ERROR with a specific header value in the debug field"])
     ev.check_x_blocked_by["Inspect X-Blocked-By header on the failing response"]
     ev.check_response_body_json["Parse response body for 'type', 'action', 'reflection', 'reason', 'Retry-After'"]
     ev.check_lookup_host["GET /lookup?host=HOST — network:request effect for that host"]
@@ -25,12 +26,18 @@ flowchart TD
     ev.check_budgets["GET /budgets — remaining for the target host"]
     ev.check_circuits["GET /circuits — state for the target host"]
     ev.check_context_header_and_targets["Confirm request carried X-Test-Context AND policy test_context.target_hosts non-empty"]
+    ev.check_goaway_debug_string["Read the GOAWAY debug field for the specific reason (header name, value pattern, forbidden chars)"]
+    ev.check_client_version_string["Verify the client sends a valid version string (e.g. 'gh --version', 'curl --version') — an empty version can produce a trailing space in a User-Agent template like 'GitHub CLI '"]
+    ev.reproduce_with_curl_same_ua["Reproduce with curl from the same sandbox, sending the same User-Agent value verbatim: 'curl -v -H 'User-Agent: <exact value>' https://HOST/PATH'"]
     cls.upstream_only{{"Upstream response; no SafeYolo plane action"}}
     cls.policy_block{{"Policy-plane block (network_guard / credential_guard / service_gateway)"}}
     cls.approval_gate{{"Policy-plane approval-required (safeyolo watch)"}}
     cls.budget_exhausted{{"Policy-plane budget exhausted"}}
     cls.circuit_open{{"Circuit-breaker tripped for this host"}}
     cls.observability_gate{{"Observability-plane gap (recording preconditions not met)"}}
+    cls.header_wire_format_violation{{"Header field reached the upstream in a form the HTTP/2 wire spec forbids (RFC 9113 sec 8.2.1)"}}
+    cls.client_sent_bad_header{{"Client itself sent a malformed header value; not a SafeYolo action"}}
+    cls.proxy_reencode_bug{{"SafeYolo/mitmproxy re-encoded a header in a way the upstream rejects"}}
     con.self_correct_request(["Self-correct the request (destination / credential / method) and retry"])
     con.honor_retry_after(["Honor Retry-After, back off, retry once budget resets"])
     con.upstream_auth_issue(["Upstream rejected the credential; not a SafeYolo action"])
@@ -38,6 +45,8 @@ flowchart TD
     ask.diag_agent[["Ask operator to run 'safeyolo agent diag <name>' (attribution / bridge / end-to-end route)"]]
     ask.policy_add_host[["Ask operator: 'safeyolo policy host add HOST --agent AGENT'"]]
     ask.logs_request_id[["Ask operator for the request_id via 'safeyolo logs --request-id req-... --raw'"]]
+    ask.report_client_bug[["Report a client bug upstream (include version + exact malformed value); use '--with-token' as a workaround"]]
+    ask.mitmproxy_version_and_doctor[["Ask operator: 'safeyolo doctor' and check the running mitmproxy version for known header-whitespace re-encoding fixes"]]
 
     sym.upstream_401 -->|"next_check"| ev.check_x_blocked_by
     sym.status_403 -->|"next_check"| ev.check_x_blocked_by
@@ -70,6 +79,15 @@ flowchart TD
     ask.logs_request_id -->|"next_check"| ev.check_explain_request_id
     ev.check_status_security_events -->|"implies: no security events on the target host in the failing window"| cls.upstream_only
     ev.check_status_security_events -->|"implies: any security event fired on the target host"| cls.policy_block
+    sym.http2_goaway_header_value -->|"next_check"| ev.check_goaway_debug_string
+    ev.check_goaway_debug_string -->|"implies: debug identifies a header value with leading/trailing whitespace, control chars, or obs-fold"| cls.header_wire_format_violation
+    cls.header_wire_format_violation -->|"next_check"| ev.check_client_version_string
+    cls.header_wire_format_violation -->|"next_check"| ev.reproduce_with_curl_same_ua
+    ev.check_client_version_string -->|"implies: version is empty or missing AND the offending value looks like a version-templated header (e.g. 'GitHub CLI ')"| cls.client_sent_bad_header
+    ev.reproduce_with_curl_same_ua -->|"implies: curl with the same value succeeds (proxy is not the culprit)"| cls.client_sent_bad_header
+    ev.reproduce_with_curl_same_ua -->|"implies: curl with a normal value succeeds but same value reproduces the GOAWAY (proxy adds/preserves the whitespace)"| cls.proxy_reencode_bug
+    cls.client_sent_bad_header -->|"escalates_to"| ask.report_client_bug
+    cls.proxy_reencode_bug -->|"escalates_to"| ask.mitmproxy_version_and_doctor
 
     class sym.upstream_401 symptom
     class sym.status_403 symptom
@@ -79,6 +97,7 @@ flowchart TD
     class sym.status_508 symptom
     class sym.flow_search_empty symptom
     class sym.gh_error_after_ok_polls symptom
+    class sym.http2_goaway_header_value symptom
     class ev.check_x_blocked_by evidence
     class ev.check_response_body_json evidence
     class ev.check_lookup_host evidence
@@ -89,12 +108,18 @@ flowchart TD
     class ev.check_budgets evidence
     class ev.check_circuits evidence
     class ev.check_context_header_and_targets evidence
+    class ev.check_goaway_debug_string evidence
+    class ev.check_client_version_string evidence
+    class ev.reproduce_with_curl_same_ua evidence
     class cls.upstream_only classification
     class cls.policy_block classification
     class cls.approval_gate classification
     class cls.budget_exhausted classification
     class cls.circuit_open classification
     class cls.observability_gate classification
+    class cls.header_wire_format_violation classification
+    class cls.client_sent_bad_header classification
+    class cls.proxy_reencode_bug classification
     class con.self_correct_request conclusion
     class con.honor_retry_after conclusion
     class con.upstream_auth_issue conclusion
@@ -102,6 +127,8 @@ flowchart TD
     class ask.diag_agent operator_ask
     class ask.policy_add_host operator_ask
     class ask.logs_request_id operator_ask
+    class ask.report_client_bug operator_ask
+    class ask.mitmproxy_version_and_doctor operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.upstream_401 stroke-width:3px
@@ -112,3 +139,4 @@ flowchart TD
     style sym.status_508 stroke-width:3px
     style sym.flow_search_empty stroke-width:3px
     style sym.gh_error_after_ok_polls stroke-width:3px
+    style sym.http2_goaway_header_value stroke-width:3px

@@ -79,6 +79,12 @@ nodes:
     detail: "e.g. HTTP/2 GOAWAY, connection reset, could-not-authenticate; the source of the phrasing is the CLI, not the wire."
     source: authored
 
+  - id: sym.http2_goaway_header_value
+    kind: symptom
+    label: "Client HTTP/2 stack reported GOAWAY / PROTOCOL_ERROR with a specific header value in the debug field"
+    detail: "e.g. Go net/http2 emits `server sent GOAWAY ... ErrCode=PROTOCOL_ERROR, debug=\"...b'HEADER VALUE '\"`. The debug string names the offending value. Common causes: value has leading/trailing whitespace, control chars, or an obs-fold; the upstream HTTP/2 stack rejects it per RFC 9113 sec 8.2.1."
+    source: authored
+
   # ---- Evidence (what I check next) ------------------------------------
   - id: ev.check_x_blocked_by
     kind: evidence
@@ -132,6 +138,23 @@ nodes:
     label: "Confirm request carried X-Test-Context AND policy test_context.target_hosts non-empty"
     source: authored
 
+  - id: ev.check_goaway_debug_string
+    kind: evidence
+    label: "Read the GOAWAY debug field for the specific reason (header name, value pattern, forbidden chars)"
+    detail: "The client's HTTP/2 stack echoes the server's GOAWAY debug string verbatim. Look for a header value in quotes, whitespace markers, or explicit RFC reference."
+    source: authored
+
+  - id: ev.check_client_version_string
+    kind: evidence
+    label: "Verify the client sends a valid version string (e.g. `gh --version`, `curl --version`) — an empty version can produce a trailing space in a User-Agent template like 'GitHub CLI '"
+    source: authored
+
+  - id: ev.reproduce_with_curl_same_ua
+    kind: evidence
+    label: "Reproduce with curl from the same sandbox, sending the same User-Agent value verbatim: `curl -v -H 'User-Agent: <exact value>' https://HOST/PATH`"
+    detail: "Isolates client-vs-proxy: if curl reproduces the GOAWAY the proxy is the source; if curl succeeds the client sent the malformed header."
+    source: authored
+
   # ---- Classifications (which plane owns this) --------------------------
   - id: cls.upstream_only
     kind: classification
@@ -161,6 +184,21 @@ nodes:
   - id: cls.observability_gate
     kind: classification
     label: "Observability-plane gap (recording preconditions not met)"
+    source: authored
+
+  - id: cls.header_wire_format_violation
+    kind: classification
+    label: "Header field reached the upstream in a form the HTTP/2 wire spec forbids (RFC 9113 sec 8.2.1)"
+    source: authored
+
+  - id: cls.client_sent_bad_header
+    kind: classification
+    label: "Client itself sent a malformed header value; not a SafeYolo action"
+    source: authored
+
+  - id: cls.proxy_reencode_bug
+    kind: classification
+    label: "SafeYolo/mitmproxy re-encoded a header in a way the upstream rejects"
     source: authored
 
   # ---- Conclusions & operator asks --------------------------------------
@@ -198,6 +236,16 @@ nodes:
   - id: ask.logs_request_id
     kind: operator_ask
     label: "Ask operator for the request_id via `safeyolo logs --request-id req-... --raw`"
+    source: authored
+
+  - id: ask.report_client_bug
+    kind: operator_ask
+    label: "Report a client bug upstream (include version + exact malformed value); use `--with-token` as a workaround"
+    source: authored
+
+  - id: ask.mitmproxy_version_and_doctor
+    kind: operator_ask
+    label: "Ask operator: `safeyolo doctor` and check the running mitmproxy version for known header-whitespace re-encoding fixes"
     source: authored
 
 
@@ -253,6 +301,17 @@ edges:
   - {from: ev.check_status_security_events, to: cls.upstream_only, kind: implies, when: "no security events on the target host in the failing window"}
   - {from: ev.check_status_security_events, to: cls.policy_block,  kind: implies, when: "any security event fired on the target host"}
 
+  # HTTP/2 wire-format branch (client reports GOAWAY with a header value in debug)
+  - {from: sym.http2_goaway_header_value, to: ev.check_goaway_debug_string, kind: next_check}
+  - {from: ev.check_goaway_debug_string,  to: cls.header_wire_format_violation, kind: implies, when: "debug identifies a header value with leading/trailing whitespace, control chars, or obs-fold"}
+  - {from: cls.header_wire_format_violation, to: ev.check_client_version_string, kind: next_check}
+  - {from: cls.header_wire_format_violation, to: ev.reproduce_with_curl_same_ua, kind: next_check}
+  - {from: ev.check_client_version_string,   to: cls.client_sent_bad_header, kind: implies, when: "version is empty or missing AND the offending value looks like a version-templated header (e.g. 'GitHub CLI ')"}
+  - {from: ev.reproduce_with_curl_same_ua,   to: cls.client_sent_bad_header, kind: implies, when: "curl with the same value succeeds (proxy is not the culprit)"}
+  - {from: ev.reproduce_with_curl_same_ua,   to: cls.proxy_reencode_bug,     kind: implies, when: "curl with a normal value succeeds but same value reproduces the GOAWAY (proxy adds/preserves the whitespace)"}
+  - {from: cls.client_sent_bad_header, to: ask.report_client_bug, kind: escalates_to}
+  - {from: cls.proxy_reencode_bug,     to: ask.mitmproxy_version_and_doctor, kind: escalates_to}
+
 
 entries:
   - symptom: sym.upstream_401
@@ -263,3 +322,4 @@ entries:
   - symptom: sym.status_508
   - symptom: sym.flow_search_empty
   - symptom: sym.gh_error_after_ok_polls
+  - symptom: sym.http2_goaway_header_value
