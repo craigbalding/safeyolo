@@ -48,13 +48,55 @@ repos:
         files: ^(tests/blackbox/.*\.py|docs/blackbox-coverage\.md)$
         pass_filenames: false
 
-      # If a source line carries a `# SKILL: <ref>` marker and it changes,
-      # the referenced skill reference file must be in the same diff.
-      # The script inspects `git diff --cached` itself, so pass_filenames is
-      # false; always_run is true (cheap: no diff -> instant exit 0).
+      # If a source line carries a `# SKILL: <ref>` or `# DOC: <path>` marker
+      # and it is edited or removed, the referenced doc must be in the same
+      # diff. Pure declarative additions of a marker are allowed. Handles
+      # both marker types across .py and .sh sources. See
+      # scripts/check_skill_markers.py for full semantics.
       - id: skill-marker-drift
-        name: Skill marker / reference drift
+        name: Skill / doc marker drift
         entry: python3 scripts/check_skill_markers.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      # CLI-flag drift: user-facing docs cannot reference `safeyolo <cmd>`
+      # invocations whose command or flag does not exist in the current
+      # Typer surface. Complements the marker check by catching drift the
+      # author never marked.
+      - id: doc-cli-drift
+        name: Doc CLI-flag drift
+        entry: python3 scripts/check_doc_cli_flags.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      # Constants drift: pinned values in source (rootfs size, mise/gh
+      # versions, attribution CIDR, admin API bind, etc.) must match what
+      # user-facing docs quote. Assertions live in scripts/doc_constants.toml.
+      - id: doc-constants-drift
+        name: Doc constants drift
+        entry: python3 scripts/check_doc_constants.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      # Repo-relative link check on user-facing docs. External URLs are
+      # skipped (would flake in CI); this catches moved/renamed files
+      # being referenced by stale paths.
+      - id: doc-links-drift
+        name: Doc repo-relative link drift
+        entry: python3 scripts/check_doc_links.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      # Forbidden-phrase check. Catches the drift class where the code that
+      # used to defend a claim was removed — no site left to mark, no value
+      # to extract, only prose vigilance. See scripts/doc_forbidden.toml.
+      - id: doc-forbidden-phrases
+        name: Doc forbidden-phrase drift
+        entry: python3 scripts/check_doc_forbidden.py
         language: system
         always_run: true
         pass_filenames: false

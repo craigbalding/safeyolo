@@ -35,7 +35,7 @@ def _generate_admin_token(config_dir: Path) -> str:
     return token
 
 
-def init(
+def init(  # DOC: README.md
     force: bool = typer.Option(
         False,
         "--force",

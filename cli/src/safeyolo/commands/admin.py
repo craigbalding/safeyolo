@@ -19,7 +19,7 @@ from ..proxy import is_proxy_running
 console = Console()
 
 
-def check() -> None:
+def check() -> None:  # DOC: docs/ADDONS.md
     """Verify SafeYolo setup is working correctly.
 
     Checks configuration, proxy, API, and HTTPS inspection.

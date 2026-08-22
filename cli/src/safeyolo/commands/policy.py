@@ -153,7 +153,7 @@ def _compile_locally(raw: dict, policy_path: Path) -> dict:
 
 
 @policy_app.command()
-def show(
+def show(  # DOC: docs/CONFIGURATION.md
     compiled: bool = typer.Option(False, "--compiled", help="Show compiled IAM format"),
     section: str | None = typer.Option(
         None, "--section", "-s", help="Show only this section (e.g. hosts, agents, credentials)"

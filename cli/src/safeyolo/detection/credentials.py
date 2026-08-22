@@ -33,7 +33,7 @@ def calculate_shannon_entropy(s: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in freq.values())
 
 
-def looks_like_secret(value: str, entropy_config: dict | None = None) -> bool:
+def looks_like_secret(value: str, entropy_config: dict | None = None) -> bool:  # DOC: SECURITY.md
     """Check if value looks like a secret based on entropy heuristics.
 
     Uses length, character diversity, and Shannon entropy to detect
@@ -126,7 +126,7 @@ def extract_basic_credential(auth_value: str) -> str | None:
 # =============================================================================
 
 @dataclass
-class CredentialRule:
+class CredentialRule:  # DOC: SECURITY.md
     """A credential detection rule."""
     name: str
     patterns: list[str]

@@ -22,7 +22,7 @@ def get_ca_cert_path() -> Path | None:
     return None
 
 
-def env() -> None:
+def env() -> None:  # DOC: docs/TLS_CERTIFICATE.md
     """Print environment variables for CA trust and proxy.
 
     These variables configure per-process CA trust and proxy settings.
@@ -68,7 +68,7 @@ def env() -> None:
     print(f"export HTTPS_PROXY=http://localhost:{proxy_port}")
 
 
-def show() -> None:
+def show() -> None:  # DOC: docs/TLS_CERTIFICATE.md
     """Show CA certificate location and status.
 
     Examples:

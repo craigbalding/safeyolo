@@ -11,7 +11,7 @@ import unicodedata
 from yarl import URL
 
 
-def hmac_fingerprint(value: str, secret: bytes, prefix_len: int = 16) -> str:
+def hmac_fingerprint(value: str, secret: bytes, prefix_len: int = 16) -> str:  # DOC: SECURITY.md
     """Generate HMAC fingerprint for sensitive data (never log raw values).
 
     Args:
@@ -47,7 +47,7 @@ def normalize_path(path: str) -> str:
     return normalized.rstrip("/") or "/"
 
 
-def reject_path_tricks(raw_path: str) -> str | None:
+def reject_path_tricks(raw_path: str) -> str | None:  # DOC: SECURITY.md
     """Check raw path for tricks BEFORE normalisation. Returns description or None.
 
     Must run on the raw path string before yarl touches it, because yarl

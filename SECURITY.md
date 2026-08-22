@@ -24,8 +24,8 @@ Agents need to be controlled to prevent accidents and limit the blast radius of 
 └──────────────────────────────────────────────────┘
 ```
 
-- **Host** is the trust root. You run the CLI, own config, and control the Docker runtime.
-- **SafeYolo** enforces your policy — no Docker socket, no host filesystem access beyond mounts, runs non-root.
+- **Host** is the trust root. You run the CLI, own config, and control the sandbox runtime (Apple Virtualization.framework on macOS, gVisor on Linux).
+- **SafeYolo** enforces your policy — a host mitmproxy process, no privileged runtime, no host filesystem access beyond your explicit mounts, runs as your uid.
 - **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
 - **External services** are reachable only if policy explicitly permits the destination.
 
@@ -33,7 +33,7 @@ Agents need to be controlled to prevent accidents and limit the blast radius of 
 
 ### Minimize trust
 
-Grant the minimum access required. Agents run in isolated networks. The SafeYolo container has no Docker socket. Admin API binds to localhost only and requires token auth. The container runs as the host user's UID/GID, not root.
+Grant the minimum access required. Agents run in isolated sandboxes with no external network interface. SafeYolo runs as a host mitmproxy process — no privileged runtime. Admin API binds to 127.0.0.1 only and requires bearer-token auth (`secrets.compare_digest`, timing-safe). All processes run as your host uid; on Linux `safeyolo agent run` is zero-sudo.
 
 ### Fail closed
 

@@ -184,7 +184,7 @@ def _rotate_jsonl_if_needed() -> None:
         AUDIT_LOG_PATH.rename(AUDIT_LOG_PATH.with_suffix(".jsonl.1"))
 
 
-def write_event(
+def write_event(  # DOC: SECURITY.md, README.md
     event: str,
     *,
     kind: EventKind,

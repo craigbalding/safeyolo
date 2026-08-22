@@ -18,7 +18,7 @@ from mitmproxy import ctx, http
 log = logging.getLogger("safeyolo.admin-shield")
 
 
-class AdminShield:
+class AdminShield:  # DOC: SECURITY.md
     """Block proxy requests targeting the admin API port."""
 
     name = "admin-shield"

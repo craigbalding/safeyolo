@@ -28,7 +28,7 @@ from safeyolo.core.utils import sanitize_for_log, write_event
 log = logging.getLogger("safeyolo.request-logger")
 
 
-class RequestLogger:
+class RequestLogger:  # DOC: SECURITY.md, README.md
     """
     Native mitmproxy addon for JSONL structured logging.
 
