@@ -2,11 +2,55 @@
 
 ## Contents
 
+- [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Agent collaboration with plumb](#agent-collaboration-with-plumb)
+
+## Model
+
+SafeYolo runs three separate planes. Endpoints on the Agent API are windows
+into different planes, and misreading which plane an endpoint reports on is
+the most common cause of wrong-diagnosis loops.
+
+**1. Detection plane.** Sensor addons inspect requests and attach metadata
+without making policy decisions. Examples: `test_context` looks for the
+canonical `X-Test-Context` header and, if valid, tags the flow with
+`ccapt_context`; `credential_guard` runs `analyze_headers` to identify
+credentials in Authorization / API-key headers; scanner patterns look for
+credential leaks in bodies and URLs. Detection can be silent (no rule
+matched → no metadata attached).
+
+**2. Policy plane.** The PDP evaluates each request against the compiled
+policy using detected metadata plus host, method, path, agent, and
+credential fingerprint. Actions are `network:request`, `credential:use`,
+`service:call`, `plumb:*`, etc. Each has an `effect`
+(`allow` / `deny` / `warn` / `require_approval` / `budget`). A `credential:use`
+permission is dead-lettered if the detection plane never classified the
+credential in the first place. This is why `/lookup?host=X` returning
+`effect: allow` does **not** mean "all requests to X will pass" — `/lookup`
+only asks the `network:request` question, not the `credential:use` question.
+
+**3. Observability plane.** The `flow_recorder` writes selected requests to
+the FlowStore for later inspection. Recording is gated on detection metadata
+(specifically `ccapt_context`), so absence of a flow means the detection
+plane did not tag it — never that policy denied it or that retention expired.
+
+Endpoints in this reference by plane:
+
+- Detection plane: `/config` (which rules the detector loads),
+  `/api/flows/*` (what the observability plane wrote based on detection tags).
+- Policy plane: `/policy`, `/lookup`, `/budgets`, `/status`.
+- Observability + policy correlation: `/explain?request_id=...` returns audit
+  events from both planes for one request.
+- Runtime: `/health`, `/memory`, `/agents`, `/circuits`.
+
+When triaging, ask which plane you actually need to inspect before choosing
+the endpoint. A 401 from an upstream host is not a SafeYolo action of any
+plane; a 428 with `X-Blocked-By` is a policy-plane action; a `/api/flows/search`
+`count: 0` is an observability-plane gap.
 
 ## Calling the API
 
