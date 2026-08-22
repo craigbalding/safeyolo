@@ -272,7 +272,9 @@ class PreviewRequestHandler(http.server.BaseHTTPRequestHandler):
         try:
             n = int(length)
         except ValueError:
-            log.debug("preview request had non-integer Content-Length %r; treating as empty", length)
+            # Do not log the value itself: an attacker-controlled
+            # Content-Length would land verbatim in the log stream.
+            log.debug("preview request had non-integer Content-Length (len=%d); treating as empty", len(length))
             return b""
         return self.rfile.read(max(n, 0))
 
