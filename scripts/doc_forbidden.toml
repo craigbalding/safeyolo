@@ -31,3 +31,19 @@ forbidden = [
     "PROXY protocol v2",
     "PROXY-protocol-v2",
 ]
+
+# PR #195 unified the Linux rootfs to a directory tree at
+# ~/.safeyolo/share/rootfs-tree/, dropping the earlier EROFS image
+# output. build-rootfs.sh header spells this out. Guarantee the security
+# verification doc does not describe the removed EROFS mechanism as
+# current, and never asks the reader to sha256sum a file that no longer
+# exists (rootfs-base.erofs).
+[[rule]]
+name = "no-erofs-in-security-verification"
+docs = ["docs/security-verification.md"]
+reason = "PR #195 replaced the Linux EROFS rootfs with a directory tree at ~/.safeyolo/share/rootfs-tree/. Any current-tense EROFS claim in this doc is stale; see guest/build-rootfs.sh header for the removal rationale."
+forbidden = [
+    "EROFS image",
+    "EROFS rootfs",
+    "rootfs-base.erofs",
+]

@@ -87,6 +87,18 @@ pattern = 'return get_share_dir\(\) / "(?P<subdir>rootfs-tree)"'
 docs = ["README.md"]
 must_contain = "share/{subdir}"
 
+# Same code truth, different doc, tighter blacklist: security-verification.md
+# is where a reader looks to VERIFY the artifact model, so guard both the
+# positive claim (the current name must appear) and the negative claim
+# (the pre-PR-#195 name must not).
+[[assertion]]
+name = "linux-rootfs-artifact-in-security-verification"
+source = "cli/src/safeyolo/vm.py"
+pattern = 'return get_share_dir\(\) / "(?P<subdir>rootfs-tree)"'
+docs = ["docs/security-verification.md"]
+must_contain = "{subdir}"
+forbidden = ["rootfs-base.erofs"]
+
 [[assertion]]
 name = "guest-root-uid-mapping"
 source = "cli/src/safeyolo/platform/linux.py"

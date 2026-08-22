@@ -26,7 +26,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Platform | Runtime | Rootfs | Isolation |
 |----------|---------|--------|-----------|
 | macOS (Apple Silicon) | `safeyolo-vm` on Apple Virtualization.framework | per-agent ext4 disk image | Hardware-backed microVM |
-| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | single shared EROFS image, memory-backed writable overlay | Sentry-emulated kernel; optional KVM hardware platform |
+| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; memory-backed writable overlay per sandbox | Sentry-emulated kernel; optional KVM hardware platform |
 
 ### Sandbox Hardening
 
@@ -39,7 +39,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps uid 1000 to the operator and uid 0 to subordinate host uid 100000, never host root | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [cli/src/safeyolo/platform/linux.py](../cli/src/safeyolo/platform/linux.py) |
 | Read-only config share | `/safeyolo` mounted `ro` | [cli/src/safeyolo/vm.py](../cli/src/safeyolo/vm.py) |
-| Read-only rootfs (Linux) | EROFS image; writable overlay lives in gVisor's sentry, not on disk | [guest/build-rootfs.sh](../guest/build-rootfs.sh) |
+| Read-only rootfs (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; writable overlay is memory-backed per sandbox, not on disk | [guest/build-rootfs.sh](../guest/build-rootfs.sh) |
 
 ### Build Verification
 
@@ -48,7 +48,10 @@ Build everything from source (no pre-built images):
 ```bash
 # Build the guest rootfs and kernel artefacts
 cd guest && ./build-all.sh && cd ..
-mkdir -p ~/.safeyolo/share && cp guest/out/* ~/.safeyolo/share/
+# `sudo cp -a` preserves the uid-100000 tree ownership required by
+# rootless gVisor on Linux; a plain cp would chown-to-you and break
+# the sandbox.
+mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
 
 # Install the CLI + proxy dependencies from the hash-pinned lockfile
 uv sync --all-packages --frozen
@@ -60,9 +63,13 @@ cd vm && make install && cd ..
 Verify the shipped artefacts:
 
 ```bash
-# Hash-check the EROFS rootfs (Linux) or ext4 image (macOS)
-sha256sum ~/.safeyolo/share/rootfs-base.erofs     # Linux
-sha256sum ~/.safeyolo/share/rootfs-base.ext4      # macOS
+# Linux: directory tree at ~/.safeyolo/share/rootfs-tree/ used as
+# gVisor's OCI root.path. Content is not a single hashable artefact;
+# spot-check with a manifest walk.
+find ~/.safeyolo/share/rootfs-tree -type f | wc -l   # Linux
+
+# macOS: single ext4 image consumed by Apple Virtualization.framework
+sha256sum ~/.safeyolo/share/rootfs-base.ext4         # macOS
 
 # See what the proxy is actually running with (tokens never appear here)
 pgrep -a mitmdump
