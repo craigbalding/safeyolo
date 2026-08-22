@@ -531,6 +531,122 @@ class TestExtractToken:
         assert extract_bearer_token("") == ""
 
 
+class TestExtractBasicCredential:
+    """Tests for extract_basic_credential() -- Basic auth credential extraction.
+
+    Git-over-HTTPS via `gh auth git-credential fill` sends
+    `Authorization: Basic <base64(oauth:gho_...)>`. Without decoding, the
+    Base64 payload never matches the github classifier regex and every
+    fresh gh token gets fingerprinted as `unknown_secret`, requiring a
+    fresh per-fingerprint approval.
+    """
+
+    def _basic(self, userinfo: str) -> str:
+        import base64
+        return "Basic " + base64.b64encode(userinfo.encode()).decode()
+
+    def test_returns_credential_half(self):
+        from safeyolo.detection import extract_basic_credential
+        assert extract_basic_credential(self._basic("oauth:gho_" + "A" * 36)) == "gho_" + "A" * 36
+
+    def test_github_x_access_token_convention(self):
+        """gh sometimes uses `x-access-token` as the username."""
+        from safeyolo.detection import extract_basic_credential
+        assert extract_basic_credential(self._basic("x-access-token:ghp_" + "A" * 36)) == "ghp_" + "A" * 36
+
+    def test_credential_may_contain_colons(self):
+        """Split on the FIRST colon only -- passwords can contain colons."""
+        from safeyolo.detection import extract_basic_credential
+        assert extract_basic_credential(self._basic("user:pass:with:colons")) == "pass:with:colons"
+
+    def test_case_insensitive_scheme(self):
+        from safeyolo.detection import extract_basic_credential
+        raw = self._basic("oauth:gho_" + "A" * 36).replace("Basic ", "basic ")
+        assert extract_basic_credential(raw) == "gho_" + "A" * 36
+
+    def test_non_basic_returns_none(self):
+        from safeyolo.detection import extract_basic_credential
+        assert extract_basic_credential("Bearer gho_" + "A" * 36) is None
+        assert extract_basic_credential("gho_" + "A" * 36) is None
+        assert extract_basic_credential("") is None
+
+    def test_empty_payload_returns_none(self):
+        from safeyolo.detection import extract_basic_credential
+        assert extract_basic_credential("Basic ") is None
+        assert extract_basic_credential("Basic   ") is None
+
+    def test_invalid_base64_returns_none(self):
+        from safeyolo.detection import extract_basic_credential
+        assert extract_basic_credential("Basic not-base64!!!") is None
+
+    def test_non_utf8_returns_none(self):
+        from safeyolo.detection import extract_basic_credential
+        # 0xff is not valid UTF-8
+        assert extract_basic_credential("Basic /w==") is None
+
+    def test_no_colon_in_payload_returns_none(self):
+        from safeyolo.detection import extract_basic_credential
+        # `only_username` base64-encoded, no colon in the decoded value
+        assert extract_basic_credential(self._basic("only_username")) is None
+
+
+class TestAnalyzeHeadersBasicAuthClassification:
+    """Regression: Basic-wrapped GitHub tokens classify as `github` tier 1.
+
+    Before this fix, Basic auth would fall through to entropy fallback
+    and classify as `unknown_secret` tier 2, causing the per-token
+    approval loop on `git push` after `gh auth setup-git`.
+    """
+
+    def _basic(self, userinfo: str) -> str:
+        import base64
+        return "Basic " + base64.b64encode(userinfo.encode()).decode()
+
+    def _analyze(self, header_value: str):
+        from safeyolo.detection import DEFAULT_RULES, analyze_headers
+        return analyze_headers(
+            headers={"Authorization": header_value},
+            rules=DEFAULT_RULES,
+            safe_headers_config={},
+            entropy_config={"min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5},
+            standard_auth_headers=["authorization"],
+            detection_level="standard",
+        )
+
+    def test_basic_wraps_gho_classifies_as_github(self):
+        """gh device-flow token wrapped in Basic (git-push case)."""
+        detections = self._analyze(self._basic("oauth:gho_" + "A" * 36))
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "github"
+        assert detections[0]["tier"] == 1
+        assert detections[0]["confidence"] == "high"
+
+    def test_basic_wraps_ghp_classifies_as_github(self):
+        """PAT wrapped in Basic via x-access-token convention."""
+        detections = self._analyze(self._basic("x-access-token:ghp_" + "A" * 36))
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "github"
+
+    def test_basic_wraps_fine_grained_pat_classifies_as_github(self):
+        detections = self._analyze(self._basic("oauth:github_pat_" + "A" * 82))
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "github"
+
+    def test_bearer_still_classifies(self):
+        """Existing Bearer path is unaffected."""
+        detections = self._analyze("Bearer gho_" + "A" * 36)
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "github"
+
+    def test_basic_non_github_password_falls_through_to_entropy(self):
+        """A Basic auth with a non-pattern password still triggers entropy fallback."""
+        # Random high-entropy password that doesn't match any rule.
+        detections = self._analyze(self._basic("user:XyZ789abcDEF456pqr123MNo"))
+        assert len(detections) == 1
+        assert detections[0]["rule_name"] == "unknown_secret"
+        assert detections[0]["tier"] == 2
+
+
 # =========================================================================
 # credential_guard.py-specific tests -- NEW
 # =========================================================================
