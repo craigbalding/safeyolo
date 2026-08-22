@@ -1197,3 +1197,252 @@ def test_normalize_display_path_rejects_absolute_urls():
     assert normalize_display_path("/vnc.html#autoconnect=true") == "/vnc.html#autoconnect=true"
     assert normalize_display_path("vnc.html") == "/"
     assert normalize_display_path("http://example.test/vnc.html") == "/"
+
+
+class SlowUpstreamHandler(BaseHTTPRequestHandler):
+    """Upstream that pauses before responding, so the client can disconnect first."""
+
+    def do_GET(self):
+        import time as _t
+        _t.sleep(0.4)
+        body = b"slow-ok"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError:
+            pass  # Expected when the preview relay closed after the client left.
+
+    def log_message(self, format, *args):
+        pass
+
+
+class LargeBodyHandler(BaseHTTPRequestHandler):
+    """Upstream that streams a body big enough to see mid-response disconnect."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        body_size = 512 * 1024
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(body_size))
+        self.end_headers()
+        try:
+            # Write in 16KB slices so the client has room to close mid-stream.
+            written = 0
+            chunk = b"a" * 16384
+            while written < body_size:
+                self.wfile.write(chunk)
+                written += len(chunk)
+        except OSError:
+            pass  # Expected when the client hung up mid-response.
+
+    def log_message(self, format, *args):
+        pass
+
+
+def _raw_request(server, request_bytes: bytes, *, read_bytes: int = 0) -> None:
+    """Send a raw HTTP request and close the socket after optionally reading a bit."""
+    with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as sock:
+        sock.sendall(request_bytes)
+        if read_bytes > 0:
+            try:
+                sock.recv(read_bytes)
+            except OSError:
+                pass
+
+
+def _capture_events(monkeypatch) -> list[tuple[str, dict]]:
+    """Intercept write_event so tests can assert which events actually reached the sink.
+
+    Returns a list of (event, kwargs) tuples that grows as events are emitted.
+    """
+    captured: list[tuple[str, dict]] = []
+    def _record(event, **kwargs):
+        captured.append((event, kwargs))
+    monkeypatch.setattr("safeyolo.preview.write_event", _record)
+    return captured
+
+
+def _wait_for(condition, *, timeout: float = 6.0, poll: float = 0.05) -> bool:
+    """Poll until `condition()` becomes true, or timeout. Returns whether it did."""
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if condition():
+            return True
+        _t.sleep(poll)
+    return False
+
+
+def test_preview_server_survives_client_disconnect_before_response_head(monkeypatch):
+    """Client closes the socket before the upstream begins responding.
+
+    Regression: without the fix, the preview handler's outer catch tried to
+    send a 502 JSON body on the already-dead socket. That sendall raised a
+    second BrokenPipeError inside the except block, so control never reached
+    the completion _log_event call. We assert the completion event is present:
+    proving the handler unwound cleanly instead of double-faulting.
+    """
+    events = _capture_events(monkeypatch)
+    upstream = HTTPServer(("127.0.0.1", 0), SlowUpstreamHandler)
+    _serve(upstream)
+    platform = LocalRelayPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=upstream.server_address[1]),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        request = (
+            f"GET / HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{server.server_address[1]}\r\n"
+            f"Cookie: {cookie}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode()
+        _raw_request(server, request)  # peer closes; upstream will respond ~400ms later
+        completion_events = {"traffic.preview_response", "traffic.preview_error"}
+        # Poll: on master the completion event never arrives because the outer
+        # catch double-faults on _send_json. Timeout accommodates the upstream
+        # sleep (0.4s) and relay cleanup (up to ~3s).
+        arrived = _wait_for(
+            lambda: any(name in completion_events for name, _ in events),
+            timeout=6.0,
+        )
+        emitted = [name for name, _ in events]
+        assert emitted.count("traffic.preview_request") == 1, emitted
+        assert arrived, f"completion event missing (only got {emitted})"
+    finally:
+        server.shutdown()
+        server.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_preview_server_survives_client_disconnect_mid_response(monkeypatch):
+    """Client closes after reading a bit of a large response.
+
+    Regression: mid-body sendall raised BrokenPipeError, propagated to the
+    outer catch, and the outer catch double-faulted on _send_json. Assertion
+    (same shape as the pre-head disconnect test): completion event present.
+    """
+    events = _capture_events(monkeypatch)
+    upstream = HTTPServer(("127.0.0.1", 0), LargeBodyHandler)
+    _serve(upstream)
+    platform = LocalRelayPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=upstream.server_address[1]),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        request = (
+            f"GET / HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{server.server_address[1]}\r\n"
+            f"Cookie: {cookie}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode()
+        _raw_request(server, request, read_bytes=1024)  # read a bit, then close
+        completion_events = {"traffic.preview_response", "traffic.preview_error"}
+        arrived = _wait_for(
+            lambda: any(name in completion_events for name, _ in events),
+            timeout=6.0,
+        )
+        emitted = [name for name, _ in events]
+        assert emitted.count("traffic.preview_request") == 1, emitted
+        assert arrived, f"completion event missing (only got {emitted})"
+    finally:
+        server.shutdown()
+        server.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_preview_server_survives_broken_audit_sink(monkeypatch):
+    """write_event failures must not take down request handling.
+
+    Regression: an unwrapped write_event(...) in _log_event could raise
+    (disk full, log rotation race, permissions regression), taking down
+    the request thread and cascading into a double-fault when the outer
+    error handler tried to log its own event.
+    """
+    def broken_write_event(*args, **kwargs):
+        raise OSError("simulated audit sink failure")
+    monkeypatch.setattr("safeyolo.preview.write_event", broken_write_event)
+    upstream = HTTPServer(("127.0.0.1", 0), TinyHandler)
+    _serve(upstream)
+    platform = LocalRelayPlatform()
+    server = start_preview_server(
+        PreviewConfig(agent="codey", guest_port=upstream.server_address[1]),
+        platform,
+        "session",
+        "1234-5678",
+    )
+    _serve(server)
+    try:
+        cookie = f"{server.token_cookie}=session"
+        resp, body = _request(server, "/", headers={"Cookie": cookie})
+        assert resp.status == 200
+        assert body == b"helper-ok"
+    finally:
+        server.shutdown()
+        server.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+
+
+class _RacyProc:
+    """Popen-shape whose terminate/kill/wait race with the process's own exit.
+
+    Not a MagicMock: this is a minimal fake that models one specific race
+    (ProcessLookupError / ChildProcessError from post-exit wait). Real
+    subprocess.Popen cannot be coerced into this behavior reliably in a test.
+    """
+
+    def __init__(self, *, wait_error: type[Exception] = ProcessLookupError):
+        self.stdin = None
+        self.stdout = None
+        self.returncode = None
+        self._wait_error = wait_error
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return None  # Appears alive even though it just exited.
+
+    def wait(self, timeout=None):
+        raise self._wait_error(3, "No such process")
+
+    def terminate(self):
+        self.terminated = True
+        raise ProcessLookupError(3, "No such process")
+
+    def kill(self):
+        self.killed = True
+        raise ProcessLookupError(3, "No such process")
+
+
+def test_close_relay_tolerates_dead_process():
+    """_close_relay must not raise if the relay process exited while we were closing it.
+
+    Regression: an unhandled OSError from terminate/kill/wait would propagate
+    through _proxy_stream's finally clause and mask the real exception that
+    caused us to be tearing down in the first place.
+    """
+    from safeyolo.preview import PreviewRequestHandler
+
+    handler = PreviewRequestHandler.__new__(PreviewRequestHandler)
+    # subprocess.TimeoutExpired path: wait times out, terminate raises ESRCH.
+    handler._close_relay(_RacyProc(wait_error=subprocess.TimeoutExpired))
+    # Post-exit path: wait itself raises because the child is already reaped.
+    handler._close_relay(_RacyProc(wait_error=ChildProcessError))
+    handler._close_relay(_RacyProc(wait_error=ProcessLookupError))
