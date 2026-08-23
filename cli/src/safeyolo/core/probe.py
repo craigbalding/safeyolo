@@ -5,8 +5,9 @@ components:
 
 - `PDPCore._evaluate_inner` — grants an intrinsic ALLOW below user policy,
   so `network_guard` still evaluates normally but always sees the probe
-  as allowed. User `deny "*"` and budget/circuit state must not defeat
-  doctor.
+  as allowed. User `deny "*"` and budget state must not defeat doctor.
+  (Circuit-breaker is deliberately outside the PDP path and executes
+  normally as its own trace-participating addon.)
 - `probe_sink` addon — early-marks the flow, then synthesises a local 200
   after every security addon has evaluated.
 - A transport-boundary guard — refuses any upstream connect for this host

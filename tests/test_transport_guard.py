@@ -195,6 +195,72 @@ class TestErrorHookBridgesToTrace:
             if rec:
                 assert not any(s.addon == "transport-guard" for s in rec.steps)
 
+    def test_error_hook_self_sufficient_when_request_hook_never_ran(self):
+        """The critical regression the fourth-pass review flagged:
+        on the early-connect path `server_connect` preempts
+        `RequestIdGenerator.request()`, so neither the trace opt-in
+        flag nor `flow.metadata["agent"]` is set before `error(flow)`
+        fires. `record_step` would then silently no-op (its `is_traced`
+        gate reads `flow.metadata["trace"]`) and any forced step would
+        be unowned by any agent.
+
+        This test builds a raw probe flow with the X-SafeYolo-Trace
+        header + a trusted UnixMode agent, DOES NOT call
+        `RequestIdGenerator.request()` first, and asserts the trace
+        step is created AND readable via the agent-scoped store.
+        """
+        from unittest.mock import MagicMock
+
+        from mitmproxy.test import tflow
+
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        reset_store_for_tests()
+        from request_id import TRACE_REQUEST_HEADER
+        from transport_guard import TransportGuard
+
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        # Client-side opt-in header — the ONLY thing carrying trace
+        # intent when RequestIdGenerator.request() didn't consume it.
+        flow.request.headers[TRACE_REQUEST_HEADER] = "1"
+        # Trusted agent lives on the connection-level UnixMode. Simulate
+        # the shape `flow.client_conn.proxy_mode.agent`.
+        flow.client_conn.proxy_mode = MagicMock()
+        flow.client_conn.proxy_mode.agent = "trusted-uds-agent"
+        # Deliberately NOT calling RequestIdGenerator.request — the
+        # premise is that the request-hook was preempted.
+
+        assert "trace" not in flow.metadata  # premise: no opt-in yet
+        assert "agent" not in flow.metadata  # premise: no attribution yet
+
+        flow.error = OSError("simulated: refused by transport_guard")
+        from unittest.mock import patch as _patch
+        with _patch("transport_guard.write_event"):
+            TransportGuard().error(flow)
+
+        # The hook recovered the opt-in from the request header.
+        assert flow.metadata.get("trace") is True
+        # Header stripped so it never reaches upstream (if this flow
+        # were ever forwarded).
+        assert TRACE_REQUEST_HEADER not in flow.request.headers
+        # Trusted agent recovered from proxy_mode.
+        assert flow.metadata.get("agent") == "trusted-uds-agent"
+        # request_id assigned.
+        rid = flow.metadata["request_id"]
+        # Trace record exists AND is readable via the trusted agent
+        # scope (agent-scoped store refuses foreign records).
+        rec = get_store().get(rid, "trusted-uds-agent")
+        assert rec is not None, (
+            "trace step must be recorded even when RequestIdGenerator "
+            "and service-discovery didn't run — else the transport-guard "
+            "error would be invisible on early-connect."
+        )
+        step = rec.steps[-1]
+        assert step.addon == "transport-guard"
+        assert step.state == "error"
+        assert step.reason == "probe_reached_upstream"
+
     def test_error_hook_stamps_request_id_header_on_response(self):
         """When mitmproxy synthesises an error response, transport-guard
         stamps X-SafeYolo-Request-Id on it so the originating agent can

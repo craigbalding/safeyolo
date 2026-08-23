@@ -95,18 +95,22 @@ Connection: close
 EOF
 ```
 
-**Expect**:
+**Expect (all mandatory — no "if" clauses)**:
 
 - The socat request receives an error response (5xx or connection
   aborted, not 200).
+- **A request_id IS present** in the response headers (`X-SafeYolo-Request-Id`).
+  Capture it: `RID=$(grep -i x-safeyolo-request-id <captured-response> | awk '{print $2}' | tr -d '\r')`.
 - `mitmproxy.log` contains a `PROBE REACHED UPSTREAM` line.
 - `safeyolo logs --event security --tail 5` shows
   `security.probe_reached_upstream` at CRITICAL severity with
   `details.reason_code = probe_reached_upstream` (lower-case, shared
   constant).
-- If a request_id was captured in the response headers, calling
-  `/trace?request_id=req-...` on the agent API returns a payload with
-  a `transport-guard` step of `state=error, reason=probe_reached_upstream`.
+- **`/trace?request_id=$RID` returns a payload containing a
+  `transport-guard` step of `state=error, reason=probe_reached_upstream`.**
+  This is the correlation contract — if it's missing, the bridge from
+  `server_connect` to HTTPFlow-aware trace (via `error(flow)`) is
+  broken and the diagnostic hasn't been proven.
 
 ## V4 — Sink restored, everything green again
 
@@ -127,7 +131,7 @@ and no more `PROBE REACHED UPSTREAM` events fired by this session.
 - [ ] V1: real agent names in DiagResult labels (no `proxy` leak)
 - [ ] V1: no `PROBE REACHED UPSTREAM` events
 - [ ] V2: no DNS/`connect()` for `_safeyolo.probe.internal`
-- [ ] V3: sink-disabled produces `probe_reached_upstream` audit event AND trace step
+- [ ] V3: sink-disabled produces `probe_reached_upstream` audit event AND trace step (both mandatory — trace step proves the HTTPFlow bridge works)
 - [ ] V4: everything green again after revert
 
 Post the checklist result as a comment on

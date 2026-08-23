@@ -524,9 +524,44 @@ def _classify_trace_steps(trace_payload: dict) -> tuple[str, list[str], list[dic
         )
 
     extras = [n for n in order if n not in set(EXPECTED_ADDONS)]
+
+    # Non-manifest steps DO matter when they report failure states
+    # (issue #213 fifth-pass review). transport-guard is intentionally
+    # non-manifest (defence-in-depth), and its `state=error, reason=
+    # probe_reached_upstream` is exactly the failure mode B3 was built
+    # to expose. Ignoring extras entirely would silently pass a probe
+    # where the sink failed and transport-guard caught the egress.
+    for name in extras:
+        step = first_seen[name]
+        state = step.get("state")
+        reason = step.get("reason")
+        if state == "error":
+            verdict = "fail"
+            findings.append(
+                f"{name} (non-manifest): error ({reason}) — hook raised"
+            )
+        elif state == "bypassed" and reason == "prior_response":
+            # A non-manifest addon getting preempted itself is
+            # diagnostic but not failure; the addon it preempted (which
+            # WILL be in EXPECTED_ADDONS) already registers the WARN.
+            pass
+
     if extras:
-        # Not a failure; useful diagnostic info.
         detail.append({"extras": extras})
+
+    # Require probe-sink evidence for a clean PASS. probe-sink is not in
+    # EXPECTED_ADDONS (it's the terminator, not a security-pipeline
+    # participant) but its `evaluated/probe_terminated` step is the
+    # canonical positive signal that the pipeline reached local
+    # termination as designed. Absence downgrades PASS to WARN.
+    probe_sink_step = first_seen.get("probe-sink")
+    if not probe_sink_step or probe_sink_step.get("outcome") != "probe_terminated":
+        verdict = _worst(verdict, "warn")
+        findings.append(
+            "probe-sink: no `evaluated/probe_terminated` step — the "
+            "canonical sink evidence is missing; probe may have been "
+            "preempted or the sink hook did not run"
+        )
 
     return verdict, findings, detail
 
@@ -652,15 +687,21 @@ def _probe_one_socket(sock_path: Path, token: str) -> DiagResult:
         )
 
     # 4. Classify per the disposition table. Non-200 probe status does NOT
-    #    abort — the trace tells us what happened. Only truly-missing
-    #    correlation (no request_id in step 2) is a hard abort.
+    #    abort — the trace still tells us what happened. But non-200 IS a
+    #    verdict-degrading signal on its own: the clean-run contract is
+    #    "sink 200"; anything else means the pipeline didn't complete as
+    #    designed and the operator needs to see that (issue #213
+    #    fifth-pass review — "Do not abort on non-200" meant fetch/classify
+    #    the trace first, not "may still be declared healthy").
     verdict, findings, per_addon = _classify_trace_steps(trace_payload)
 
-    # Include probe HTTP status in findings for completeness — sink 200 is
-    # the clean-run bar. Non-200 gets recorded but doesn't itself force
-    # fail (already reflected via trace error/prior_response classification).
     probe_status_note = f"probe HTTP {probe_status}"
     if probe_status != 200:
+        # Degrade PASS → WARN so a healthy trace doesn't mask a broken
+        # response. If the trace already showed error/not_loaded etc.,
+        # verdict is FAIL and stays FAIL — this only tightens the
+        # otherwise-clean case.
+        verdict = _worst(verdict, "warn")
         findings.insert(0, probe_status_note + " (non-200; see trace)")
     else:
         findings.insert(0, probe_status_note)

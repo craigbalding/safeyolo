@@ -51,7 +51,13 @@ def _step(addon, hook="request", state="evaluated", outcome=None, reason=None):
 
 
 def _classify(**overrides):
-    """Call _classify_trace_steps with a canonical clean payload + overrides."""
+    """Call _classify_trace_steps with a canonical clean payload + overrides.
+
+    Clean payload includes the `probe-sink/evaluated/probe_terminated`
+    step — issue #213 fifth-pass review requires that as the canonical
+    positive signal for a clean PASS. Absent this step, the classifier
+    degrades to WARN.
+    """
     from safeyolo.commands.doctor import _classify_trace_steps
 
     payload = {
@@ -59,6 +65,7 @@ def _classify(**overrides):
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", outcome="allowed"),
             _step("credential-guard", outcome="no_detection"),
+            _step("probe-sink", outcome="probe_terminated"),
         ],
         "not_loaded": [],
         "truncated": False,
@@ -78,12 +85,24 @@ class TestCleanRun:
         assert not any("fail" in f.lower() or "warn" in f.lower() for f in findings)
 
 
+def _sink_ok():
+    """The canonical probe-sink success step — required for a clean PASS.
+
+    Issue #213 fifth-pass review: absence of
+    `probe-sink/evaluated/probe_terminated` in the trace downgrades an
+    otherwise-clean verdict to WARN, because that step is the only
+    positive proof the intended terminator ran.
+    """
+    return _step("probe-sink", outcome="probe_terminated")
+
+
 class TestAddonDisabledIsPassWithReport:
     def test_addon_disabled_passes_and_is_reported(self):
         verdict, findings, detail = _classify(steps=[
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", state="bypassed", reason="addon_disabled"),
             _step("credential-guard", outcome="no_detection"),
+            _sink_ok(),
         ])
         assert verdict == "pass"
         ng = next(e for e in detail if e.get("addon") == "network-guard")
@@ -97,6 +116,7 @@ class TestPolicyDisabledIsPassWithReport:
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", outcome="allowed"),
             _step("credential-guard", state="bypassed", reason="policy_disabled"),
+            _sink_ok(),
         ])
         assert verdict == "pass"
         cg = next(e for e in detail if e.get("addon") == "credential-guard")
@@ -110,6 +130,7 @@ class TestPriorResponseIsWarn:
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", outcome="allowed"),
             _step("credential-guard", state="bypassed", reason="prior_response"),
+            _sink_ok(),
         ])
         assert verdict == "warn"
         cg = next(e for e in detail if e.get("addon") == "credential-guard")
@@ -123,6 +144,7 @@ class TestErrorIsFail:
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", state="error", reason="RuntimeError"),
             _step("credential-guard", outcome="no_detection"),
+            _sink_ok(),
         ])
         assert verdict == "fail"
         ng = next(e for e in detail if e.get("addon") == "network-guard")
@@ -135,6 +157,7 @@ class TestNotLoadedIsFail:
         verdict, findings, detail = _classify(steps=[
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", outcome="allowed"),
+            _sink_ok(),
             # credential-guard absent from steps but present in not_loaded
         ], not_loaded=[{"addon": "credential-guard", "state": "not_loaded"}])
         assert verdict == "fail"
@@ -148,6 +171,7 @@ class TestNotLoadedIsFail:
         verdict, findings, detail = _classify(steps=[
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("network-guard", outcome="allowed"),
+            _sink_ok(),
             # credential-guard missing entirely; not_loaded is empty
         ])
         assert verdict == "fail"
@@ -177,20 +201,22 @@ class TestOrderingContract:
             _step("network-guard", outcome="allowed"),
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("credential-guard", outcome="no_detection"),
+            _sink_ok(),
         ])
         assert verdict == "warn"
         assert any("ordering differs from manifest" in f for f in findings)
 
     def test_extra_non_manifest_addon_is_diagnostic_not_failure(self):
         """Non-manifest addons appearing in trace are noted but do not
-        fail the check. Future diagnostic instrumentation must not break
-        doctor.
+        fail the check UNLESS they report state=error. Future diagnostic
+        instrumentation that runs cleanly must not break doctor.
         """
         verdict, _, detail = _classify(steps=[
             _step("service-gateway", outcome="not_a_gateway_request"),
             _step("some-future-diagnostic-addon", outcome="probe"),
             _step("network-guard", outcome="allowed"),
             _step("credential-guard", outcome="no_detection"),
+            _sink_ok(),
         ])
         assert verdict == "pass"
         extras_entry = next((e for e in detail if "extras" in e), None)
@@ -212,10 +238,89 @@ class TestFirstObservedStep:
             # not change the verdict for network-guard.
             _step("network-guard", outcome="secondary-observation"),
             _step("credential-guard", outcome="no_detection"),
+            _sink_ok(),
         ])
         assert verdict == "pass"
         ng = next(e for e in detail if e.get("addon") == "network-guard")
         assert ng.get("outcome") == "allowed"
+
+
+class TestNonManifestErrorDegradesVerdict:
+    """Issue #213 fifth-pass review: `transport-guard` is intentionally
+    NON-manifest (defence-in-depth, not part of the normal pipeline).
+    Its `state=error, reason=probe_reached_upstream` is exactly the
+    failure mode B3 was built to expose. If the classifier ignores
+    non-manifest error steps, a probe with a failed sink and
+    transport-guard catching the egress would silently PASS.
+    """
+
+    def test_transport_guard_error_forces_fail_even_with_all_expected_evaluated(self):
+        verdict, findings, _ = _classify(steps=[
+            _step("service-gateway", outcome="not_a_gateway_request"),
+            _step("network-guard", outcome="allowed"),
+            _step("credential-guard", outcome="no_detection"),
+            # transport-guard is non-manifest but reports error.
+            _step("transport-guard", state="error", reason="probe_reached_upstream"),
+            # Even a probe-sink step present would not save this — the
+            # non-manifest error is a hard fail.
+            _sink_ok(),
+        ])
+        assert verdict == "fail"
+        assert any(
+            "transport-guard" in f and "probe_reached_upstream" in f
+            for f in findings
+        )
+
+    def test_generic_non_manifest_error_also_fails(self):
+        """Any state=error from a non-manifest addon must fail the
+        verdict — not just the specific transport-guard case. This
+        guards against a future non-manifest addon whose error would
+        otherwise be silently ignored.
+        """
+        verdict, findings, _ = _classify(steps=[
+            _step("service-gateway", outcome="not_a_gateway_request"),
+            _step("network-guard", outcome="allowed"),
+            _step("credential-guard", outcome="no_detection"),
+            _step("hypothetical-future-guard", state="error", reason="SomeException"),
+            _sink_ok(),
+        ])
+        assert verdict == "fail"
+        assert any("hypothetical-future-guard" in f for f in findings)
+
+
+class TestProbeSinkTerminatedRequiredForClean:
+    """Issue #213 fifth-pass review: probe-sink is the canonical
+    terminator; a clean PASS requires its `evaluated/probe_terminated`
+    step. Absent that step, the pipeline either didn't reach the sink
+    or the sink didn't run — either way, the operator needs to see it.
+    """
+
+    def test_missing_probe_sink_step_downgrades_pass_to_warn(self):
+        """All EXPECTED_ADDONS clean, no error, no truncation — but no
+        probe-sink step. Should WARN, not PASS.
+        """
+        verdict, findings, _ = _classify(steps=[
+            _step("service-gateway", outcome="not_a_gateway_request"),
+            _step("network-guard", outcome="allowed"),
+            _step("credential-guard", outcome="no_detection"),
+            # NO probe-sink step
+        ])
+        assert verdict == "warn"
+        assert any("probe-sink" in f and "probe_terminated" in f for f in findings)
+
+    def test_probe_sink_present_but_preempted_downgrades_to_warn(self):
+        """probe-sink present but its outcome is `probe_preempted` (an
+        earlier addon responded first). Not a clean sink success — the
+        pipeline didn't terminate as designed.
+        """
+        verdict, findings, _ = _classify(steps=[
+            _step("service-gateway", outcome="not_a_gateway_request"),
+            _step("network-guard", outcome="allowed"),
+            _step("credential-guard", outcome="no_detection"),
+            _step("probe-sink", outcome="probe_preempted"),
+        ])
+        assert verdict == "warn"
+        assert any("probe-sink" in f and "probe_terminated" in f for f in findings)
 
 
 class TestHelperUtilities:
@@ -293,6 +398,9 @@ class TestProbeOneSocketNoResponse:
                 _step("service-gateway", outcome="not_a_gateway_request"),
                 _step("network-guard", outcome="allowed"),
                 _step("credential-guard", outcome="no_detection"),
+                # probe-sink presence is required for a clean PASS
+                # (issue #213 fifth-pass review).
+                _step("probe-sink", outcome="probe_terminated"),
             ],
             "not_loaded": [],
             "truncated": False,
@@ -315,6 +423,96 @@ class TestProbeOneSocketNoResponse:
         assert result.status == "pass"
         assert "agentx" in result.name
         assert "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in result.message
+
+
+class TestProbeStatusAffectsVerdict:
+    """Issue #213 fifth-pass review: `sink 200` is the clean-run
+    contract. Non-200 probe status must degrade PASS to at least WARN,
+    even if the trace itself looks clean — otherwise a broken response
+    path can be silently declared healthy.
+    """
+
+    def _canned_probe_response(self, status: int = 200) -> bytes:
+        status_line = f"HTTP/1.0 {status} X\r\n".encode()
+        return (
+            status_line
+            + b"X-SafeYolo-Request-Id: req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"
+            + b"Content-Type: application/json\r\n\r\n"
+            + b'{"probe_ok": false}'
+        )
+
+    def _canned_clean_trace(self) -> bytes:
+        import json as _json
+        payload = {
+            "steps": [
+                _step("service-gateway", outcome="not_a_gateway_request"),
+                _step("network-guard", outcome="allowed"),
+                _step("credential-guard", outcome="no_detection"),
+                _step("probe-sink", outcome="probe_terminated"),
+            ],
+            "not_loaded": [],
+            "truncated": False,
+        }
+        return (
+            b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
+            + _json.dumps(payload).encode()
+        )
+
+    def test_non_200_probe_with_clean_trace_downgrades_to_warn(self, tmp_path):
+        from safeyolo.commands import doctor
+
+        sock = _production_sock_path(tmp_path, agent="agentx")
+        calls = {"n": 0}
+        probe = self._canned_probe_response(status=502)
+        trace = self._canned_clean_trace()
+
+        def fake_send(_path, _req, timeout=5.0):
+            calls["n"] += 1
+            return probe if calls["n"] == 1 else trace
+
+        with patch.object(doctor, "_send_uds_request", side_effect=fake_send):
+            result = doctor._probe_one_socket(sock, token="tok")
+
+        # Trace was clean, so classifier would say PASS — but non-200
+        # probe status must downgrade to WARN.
+        assert result.status == "warn"
+        assert "probe HTTP 502" in result.detail
+
+    def test_non_200_probe_still_reports_worse_when_trace_fails(self, tmp_path):
+        """Non-200 shouldn't magically improve a FAIL trace — it should
+        stay FAIL. This is the composability check: non-200 tightens
+        PASS→WARN but never softens a worse verdict.
+        """
+        import json as _json
+
+        from safeyolo.commands import doctor
+
+        sock = _production_sock_path(tmp_path, agent="agentx")
+        calls = {"n": 0}
+        probe = self._canned_probe_response(status=502)
+        # transport-guard error is a non-manifest FAIL
+        bad_trace = (
+            b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
+            + _json.dumps({
+                "steps": [
+                    _step("service-gateway", outcome="not_a_gateway_request"),
+                    _step("network-guard", outcome="allowed"),
+                    _step("credential-guard", outcome="no_detection"),
+                    _step("transport-guard", state="error", reason="probe_reached_upstream"),
+                ],
+                "not_loaded": [],
+                "truncated": False,
+            }).encode()
+        )
+
+        def fake_send(_path, _req, timeout=5.0):
+            calls["n"] += 1
+            return probe if calls["n"] == 1 else bad_trace
+
+        with patch.object(doctor, "_send_uds_request", side_effect=fake_send):
+            result = doctor._probe_one_socket(sock, token="tok")
+
+        assert result.status == "fail"
 
 
 class TestProbeSocketPathParse:

@@ -135,6 +135,59 @@ def ensure_request_id(flow: http.HTTPFlow) -> str:
     return request_id
 
 
+def ensure_trace_opt_in(flow: http.HTTPFlow) -> bool:
+    """Consume `X-SafeYolo-Trace: 1` and set `flow.metadata["trace"] = True`.
+
+    Returns True iff tracing is now opted-in for this flow (was already,
+    or the header was present). Idempotent. Strips the header so it
+    never reaches upstream.
+
+    Exists so addons that respond outside the normal `request` hook —
+    where `RequestIdGenerator.request()` would consume the header — can
+    still recover the trace opt-in themselves. Without this, an early
+    `server_connect` refusal for the reserved probe host would set a
+    trace-error step that `record_step()` silently drops (the store's
+    `is_traced(flow)` gate reads `flow.metadata["trace"]`, which
+    `RequestIdGenerator.request()` may never have set).
+    """
+    if flow.metadata.get("trace") is True:
+        return True
+    header_value = flow.request.headers.get(TRACE_REQUEST_HEADER, "")
+    if header_value:
+        flow.metadata["trace"] = True
+        # Strip so the header never reaches upstream. Mirrors the strip
+        # step in `RequestIdGenerator.request()`.
+        del flow.request.headers[TRACE_REQUEST_HEADER]
+        return True
+    return False
+
+
+def recover_trusted_agent(flow: http.HTTPFlow) -> str | None:
+    """Read the trusted agent name from the per-agent UDS mode metadata.
+
+    Returns the agent name, or None if the mode doesn't expose one.
+
+    Service-discovery stamps `flow.metadata["agent"]` in its `request`
+    hook. When an earlier hook (e.g. transport_guard.error under an
+    early-connect path) needs the agent before service-discovery has
+    run, this helper reads it from the connection-level UnixMode where
+    identity is authoritative — the mode's socket-path directory
+    (`<ip>_<agent>/proxy.sock`) is the source of truth for agent
+    attribution.
+
+    Idempotent — callers can safely invoke and stash the result on
+    `flow.metadata["agent"]` themselves.
+    """
+    try:
+        proxy_mode = flow.client_conn.proxy_mode
+    except AttributeError:
+        return None
+    agent = getattr(proxy_mode, "agent", None)
+    if not agent or agent in ("unknown", "default"):
+        return None
+    return agent
+
+
 class RequestIdGenerator:
     """
     Assigns unique request IDs and strips hop-by-hop headers.

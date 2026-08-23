@@ -45,7 +45,7 @@ import logging
 
 from mitmproxy import http
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
-from request_id import ensure_request_id
+from request_id import ensure_request_id, ensure_trace_opt_in, recover_trusted_agent
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.probe import PROBE_HOST, PROBE_REACHED_UPSTREAM_REASON, is_probe_host
@@ -130,19 +130,42 @@ class TransportGuard:
         error — including the connection abort we produce by setting
         `data.server.error` above.
 
-        Contract (issue #213 review, second pass): when a probe host
-        flow errors, record a trace step so `/trace?request_id=...`
-        surfaces the failure alongside every other pipeline step, and
-        so the DAG's `cls.trace_error` branch fires deterministically.
+        Contract (issue #213 review): when a probe host flow errors,
+        record a trace step so `/trace?request_id=...` surfaces the
+        failure alongside every other pipeline step, and so the DAG's
+        `cls.trace_error` branch fires deterministically.
 
-        request_id may not yet be set — RequestIdGenerator's `request`
-        hook can be preempted when server_connect fires first under
-        the eager connection strategy. `ensure_request_id` is idempotent,
-        so calling it here guarantees a correlation ID exists whether
-        or not the request-phase hook ran.
+        Self-sufficient on the early-connect path (issue #213
+        fourth-pass review): if `server_connect` preempts
+        `RequestIdGenerator.request()`, then neither the trace opt-in
+        flag nor `flow.metadata["agent"]` has been set — `record_step`
+        would silently no-op and any recorded step would be unreadable
+        via agent-scoped `/trace`. This hook recovers both from
+        trusted inputs before recording:
+
+          - `ensure_trace_opt_in(flow)` consumes and strips
+            X-SafeYolo-Trace so tracing is opted-in even if the
+            request-hook path never ran;
+          - `recover_trusted_agent(flow)` reads the agent name from
+            `flow.client_conn.proxy_mode.agent` (the UnixMode's
+            source-of-truth attribution) so agent-scoped `/trace` can
+            find the record;
+          - `ensure_request_id(flow)` is idempotent and guarantees a
+            correlation ID.
         """
         if not is_probe_host(flow.request.host):
             return
+
+        # Recover the trace opt-in from the request header if
+        # RequestIdGenerator.request() never ran (early-connect path).
+        ensure_trace_opt_in(flow)
+        # Recover trusted agent from the per-agent UDS mode if
+        # service_discovery.request() never ran.
+        if not flow.metadata.get("agent"):
+            trusted_agent = recover_trusted_agent(flow)
+            if trusted_agent:
+                flow.metadata["agent"] = trusted_agent
+
         # Idempotent: preserves any earlier RequestIdGenerator assignment.
         request_id = ensure_request_id(flow)
         # Preserve the request_id on the response mitmproxy will surface
