@@ -37,7 +37,7 @@ from pdp import (
     get_policy_client,
 )
 from safeyolo.core.sensor_utils import build_http_event_from_flow
-from safeyolo.core.trace import REASON_ADDON_DISABLED, REASON_PRIOR_RESPONSE, trace_addon_hook
+from safeyolo.core.trace import REASON_POLICY_DISABLED, REASON_PRIOR_RESPONSE, trace_addon_hook
 from safeyolo.core.utils import (
     get_client_ip,
     hmac_fingerprint,
@@ -397,9 +397,12 @@ class CredentialGuard(SecurityAddon):
         # Reload rules if policy changed
         self._maybe_reload_rules()
 
-        # Check if addon is disabled via policy
+        # Check if addon is disabled via policy (PolicyClient.is_addon_enabled).
+        # This is scope-dependent disablement, not a global mitmproxy option —
+        # the DAG must distinguish it from REASON_ADDON_DISABLED so triage
+        # asks the right question (policy edit vs option flip).
         if not self._is_enabled(flow):
-            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED)
+            self._trace_bypassed(flow, reason=REASON_POLICY_DISABLED)
             return
 
         host = flow.request.host.lower()

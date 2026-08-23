@@ -492,6 +492,98 @@ class TestExplain:
         assert body["status"] == "pending"
         assert body["events"] == []
 
+    def test_explain_drains_even_when_scan_finds_partial_events(self, api, agent_token, tmp_path, monkeypatch):
+        """Third-pass review: `/explain` used to only drain the writer when
+        the initial scan returned empty. That meant a request-side event
+        on disk plus a still-queued response-side event would return the
+        partial set as `status=complete`.
+
+        Now the drain runs whenever `pending_count() > 0` — before the
+        authoritative scan — so a partial-set-plus-pending case picks up
+        the pending events too.
+        """
+        target_id = "req-44444444444444444444444444444444"
+        agent = "agent-1"
+        log_file = tmp_path / "safeyolo.jsonl"
+        # Pre-existing request event on disk.
+        log_file.write_text(
+            json.dumps({
+                "request_id": target_id,
+                "agent": agent,
+                "event": "traffic.request",
+                "host": "example.com",
+            }) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        # Writer has a pending response event that only lands on disk when
+        # wait_for_drain runs.
+        pending = {"count": 1}
+
+        class _WriterWithPendingResponse:
+            def pending_count(self):
+                return pending["count"]
+
+            def wait_for_drain(self, timeout_s: float):
+                with open(log_file, "a") as fh:
+                    fh.write(json.dumps({
+                        "request_id": target_id,
+                        "agent": agent,
+                        "event": "traffic.response",
+                        "status_code": 200,
+                    }) + "\n")
+                pending["count"] = 0
+                return True
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch("safeyolo.core.audit_writer.get_writer",
+                   return_value=_WriterWithPendingResponse()):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "complete"
+        # Both events must be present — the drain ran despite the initial
+        # scan finding the request event, so the pending response landed
+        # in time for the authoritative rescan.
+        events = body["events"]
+        assert len(events) == 2
+        assert {e["event"] for e in events} == {"traffic.request", "traffic.response"}
+
+    def test_explain_status_error_on_read_failure(self, api, agent_token, tmp_path, monkeypatch):
+        """A file OSError during scan must surface as `status=error`,
+        distinct from `incomplete_search` (retention bound hit). Callers
+        need to distinguish "search bound exceeded" from "read failed".
+        """
+        target_id = "req-55555555555555555555555555555555"
+        agent = "agent-1"
+        log_file = tmp_path / "safeyolo.jsonl"
+        log_file.write_text(
+            json.dumps({
+                "request_id": target_id, "agent": agent, "event": "traffic.request",
+            }) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        # Force the scan to hit an OSError on every read.
+        import builtins
+        real_open = builtins.open
+
+        def failing_open(path, *args, **kwargs):
+            if str(path) == str(log_file):
+                raise OSError("simulated read failure")
+            return real_open(path, *args, **kwargs)
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch("agent_api.open", failing_open, create=True):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "error"
+
 
 class TestTrace:
     """Tests for /trace?request_id=... (issue #213)."""

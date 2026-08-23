@@ -1090,34 +1090,45 @@ class AgentAPI:
 
         from pathlib import Path
 
+        # Freshness contract (issue #213 third-pass review): if the writer
+        # reports ANY pending events — not just the empty-result case — we
+        # attempt a bounded drain BEFORE the authoritative scan. The old
+        # "only drain when empty" logic returned partial sets as complete
+        # when e.g. the request event was on disk but its response event
+        # was still queued.
+        pending_after_drain = False
+        try:
+            from safeyolo.core.audit_writer import get_writer
+            writer = get_writer()
+            if writer.pending_count() > 0:
+                if not writer.wait_for_drain(timeout_s=0.5):
+                    pending_after_drain = True
+        except Exception as exc:  # noqa: BLE001 — freshness is best-effort
+            log.warning(
+                "Explain freshness drain failed: %s: %s",
+                type(exc).__name__, exc,
+            )
+
+        # Recompute the retained-file list AFTER the drain so first-write
+        # cases (file created by the drain itself) are visible to the scan.
         current_log = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
         search_files = self._retained_audit_files(current_log)
 
-        events, incomplete = self._scan_audit_files(search_files, request_id, agent_id)
+        events, incomplete, read_error = self._scan_audit_files(
+            search_files, request_id, agent_id
+        )
 
-        # Freshness: if we found nothing but the writer thread has events
-        # queued, drain briefly and re-scan. Prevents silent false-empty on
-        # immediate lookups after a request completes.
-        pending_after_drain = False
-        if not events:
-            try:
-                from safeyolo.core.audit_writer import get_writer
-                writer = get_writer()
-                if writer.pending_count() > 0:
-                    drained = writer.wait_for_drain(timeout_s=0.5)
-                    events, rescan_incomplete = self._scan_audit_files(
-                        search_files, request_id, agent_id
-                    )
-                    incomplete = incomplete or rescan_incomplete
-                    if not events and not drained:
-                        pending_after_drain = True
-            except Exception as exc:  # noqa: BLE001 — freshness is best-effort
-                log.warning(
-                    "Explain freshness drain failed: %s: %s",
-                    type(exc).__name__, exc,
-                )
-
-        if pending_after_drain:
+        # Status precedence:
+        # - error: any read/parse failure — result is unreliable regardless
+        #   of what got returned.
+        # - pending: writer still holds events after drain — retry may yield
+        #   more.
+        # - incomplete_search: retention bound hit — retained set larger
+        #   than the per-file scan window.
+        # - complete: retained set fully scanned, events accurate.
+        if read_error:
+            status = "error"
+        elif pending_after_drain:
             status = "pending"
         elif incomplete:
             status = "incomplete_search"
@@ -1159,22 +1170,31 @@ class AgentAPI:
         files: list,
         request_id: str,
         agent_id: str,
-    ) -> tuple[list, bool]:
+    ) -> tuple[list, bool, bool]:
         """Scan `files` for events matching `(request_id, agent_id)`.
 
-        Returns `(events, incomplete)`. `incomplete` is True when any file
-        exceeded the per-file `MAX_EXPLAIN_LINES` window — callers need
-        to know so a "no match" result isn't silently promoted to
-        "definitely no events".
+        Returns `(events, incomplete, read_error)`.
 
-        Errors on individual files are logged and treated as incomplete
-        rather than fatal; a corrupt or partially-flushed rotated file
-        should not black-hole the entire /explain response.
+        - `incomplete`: any file exceeded the per-file `MAX_EXPLAIN_LINES`
+          window. The caller reports `status=incomplete_search` so a "no
+          match" result isn't silently promoted to "definitely no events".
+        - `read_error`: an OSError was raised while reading a file. The
+          caller reports `status=error` — distinct from `incomplete_search`,
+          which means the search bound was hit but the read itself was
+          fine. Issue #213 promises both statuses; conflating them into
+          `incomplete_search` (the previous behaviour) made a genuine read
+          failure indistinguishable from a legitimate retention overflow.
+
+        Agent scope: strict match on the event's recorded agent field.
+        Events without an agent field are dropped (fail-closed). Callers
+        are expected to populate agent on every request-id-correlated
+        write_event() site.
         """
         from collections import deque
 
         events: list = []
         incomplete = False
+        read_error = False
         for path in files:
             try:
                 with open(path) as fh:
@@ -1195,10 +1215,6 @@ class AgentAPI:
                         continue
                     if entry.get("request_id") != request_id:
                         continue
-                    # Agent scope: strict match on the event's recorded agent.
-                    # Events without an agent field are dropped rather than
-                    # returned to the caller — safer default while we tighten
-                    # every event source to include agent attribution.
                     if entry.get("agent") != agent_id:
                         continue
                     events.append(entry)
@@ -1207,8 +1223,8 @@ class AgentAPI:
                     "Explain read failed for %s: %s: %s",
                     path, type(exc).__name__, exc,
                 )
-                incomplete = True
-        return events, incomplete
+                read_error = True
+        return events, incomplete, read_error
 
     def _handle_trace(self, flow: http.HTTPFlow):
         """GET /trace?request_id=X - Opt-in execution trace for one request.

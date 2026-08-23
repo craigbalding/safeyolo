@@ -22,9 +22,10 @@ Usage:
 import logging
 
 from mitmproxy import http
+from request_id import ensure_request_id
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.utils import sanitize_for_log, write_event
+from safeyolo.core.utils import make_block_response, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.loop-guard")
 
@@ -41,6 +42,13 @@ class LoopGuard:
 
         # Check for loop: our token is already present
         if self.VIA_TOKEN in via:
+            # Assign a request_id here — RequestIdGenerator.request() would
+            # normally do this but mitmproxy short-circuits `request` hooks
+            # once a response is set. Without this the 508 would ship with
+            # no X-SafeYolo-Request-Id, breaking #213's correlation-on-
+            # every-SafeYolo-block promise (third-pass review).
+            request_id = ensure_request_id(flow)
+
             host = flow.request.host
             port = flow.request.port
             log.warning(f"Loop detected: {sanitize_for_log(host)}:{port} (via: {sanitize_for_log(via)})")
@@ -51,13 +59,15 @@ class LoopGuard:
                 summary=f"Loop detected for {sanitize_for_log(host)}:{port}",
                 decision=Decision.DENY,
                 host=host,
+                request_id=request_id,
                 addon="loop-guard",
                 details={"port": port, "via": via},
             )
-            flow.response = http.Response.make(
+            flow.response = make_block_response(
                 508,
-                b'{"error": "Loop Detected", "message": "Request would create a proxy loop"}',
-                {"Content-Type": "application/json"},
+                {"error": "Loop Detected", "message": "Request would create a proxy loop"},
+                self.name,
+                request_id=request_id,
             )
             flow.metadata["blocked_by"] = self.name
             flow.metadata["block_reason"] = "proxy_loop"

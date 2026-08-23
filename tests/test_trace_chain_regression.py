@@ -1,20 +1,30 @@
 """End-to-end trace-chain regression tests for issue #213.
 
-These three tests together prove the core promise of #213 — a request's
-trace can distinguish `evaluated`, `bypassed`, and `not_loaded` for every
-expected pipeline addon — rather than merely exercising helper functions.
+These tests prove the core promise of #213 — a request's trace can
+distinguish `evaluated`, `bypassed`, `not_loaded`, and (via the parity
+test) is observation-only — rather than merely exercising helper
+functions.
 
 Structure:
-- A synthetic "early blocker" addon uses `SecurityAddon.block` (base wrapper)
-  so the trace records `evaluated/blocked` for it.
-- Real downstream addons are then invoked in sequence with the shared flow.
-  The `@trace_addon_hook` decorator on each real addon detects the
-  already-set `flow.response` and records `bypassed/prior_response` without
-  entering the addon body, so no PDP / ServiceDiscovery / registry wiring
-  is needed for those addons in the regression flow.
-- Test 2 flips a global mitmproxy option to prove `bypassed/addon_disabled`.
-- Test 3 monkey-patches the expected-addon registry to prove `not_loaded`
-  surfaces addons that were declared expected but never called.
+- A synthetic "early blocker" addon uses `SecurityAddon.block` (base
+  wrapper) so the trace records `evaluated/blocked` for it.
+- Real downstream addons are then invoked in sequence with the shared
+  flow. `@trace_addon_hook` is observation-only: it always calls the
+  wrapped hook. Each addon's own `if flow.response: return` (or
+  `is_bypassed` call) records `bypassed/prior_response`. Addons without
+  such a check (pattern-scanner) continue to run and record their real
+  outcome — the trace reflects what actually happened, not what tracing
+  would prefer.
+- The disabled test flips global mitmproxy options to prove
+  `bypassed/addon_disabled` is emitted for the specific SecurityAddon
+  and for service-gateway (which uses standalone trace helpers).
+- The not-loaded test declares a `phantom-missing-addon` in the manifest
+  whose module is never imported; `/trace` still reports it as
+  `not_loaded` because the manifest is the source of truth (issue #213
+  second-pass review: independent of module import).
+- The parity test runs the same constructed flow through the addon chain
+  once traced and once untraced and asserts identical externally-relevant
+  state — proves the decorator did not change which code executed.
 """
 
 from __future__ import annotations

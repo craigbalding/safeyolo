@@ -148,6 +148,62 @@ class TestViaTokenPresence:
 
         assert "safeyolo" in flow.request.headers.get("via", "")
 
+
+class TestLoopBlockCorrelationHeaders:
+    """Issue #213: every SafeYolo block response must carry an
+    X-SafeYolo-Request-Id so the originating agent can correlate the
+    block without operator log access. loop-guard fires on `requestheaders`,
+    before RequestIdGenerator's `request` hook would normally assign the
+    id — so the addon has to ensure one exists itself before setting
+    flow.response, otherwise the 508 ships without correlation.
+    """
+
+    def _addon(self):
+        from loop_guard import LoopGuard
+        return LoopGuard()
+
+    def test_loop_508_carries_request_id_header(self):
+        from request_id import REQUEST_ID_PATTERN
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        addon.requestheaders(flow)
+
+        assert flow.response is not None
+        assert flow.response.status_code == 508
+        rid_header = flow.response.headers.get("X-SafeYolo-Request-Id", "")
+        assert REQUEST_ID_PATTERN.match(rid_header), (
+            f"loop-guard 508 must carry X-SafeYolo-Request-Id in the "
+            f"expected format (got {rid_header!r})"
+        )
+        # metadata also carries the same id so /explain can find it
+        assert flow.metadata.get("request_id") == rid_header
+
+    def test_loop_508_carries_blocked_by_header(self):
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        addon.requestheaders(flow)
+
+        assert flow.response.headers.get("X-Blocked-By") == "loop-guard"
+
+    def test_loop_audit_event_carries_request_id(self):
+        """The security.loop_guard event must include the request_id so
+        /explain can correlate — the fix threads it into write_event."""
+        from unittest.mock import patch
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        with patch("loop_guard.write_event") as mock_write:
+            addon.requestheaders(flow)
+            kwargs = mock_write.call_args[1]
+            assert kwargs.get("request_id") == flow.metadata["request_id"]
+
     def test_existing_via_preserved(self):
         """Other proxy Via entries are preserved alongside ours."""
         addon = self._addon()

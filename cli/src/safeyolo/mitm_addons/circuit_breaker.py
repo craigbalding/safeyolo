@@ -315,7 +315,18 @@ class CircuitBreaker(SecurityAddon):
     def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
         """Override base block() - circuit breaker has its own stats."""
         flow.metadata["blocked_by"] = self.name
-        flow.response = make_block_response(status, body, self.name, extra_headers)
+        flow.response = make_block_response(
+            status,
+            body,
+            self.name,
+            extra_headers,
+            request_id=flow.metadata.get("request_id"),
+        )
+        # The base class block() records the trace step, but this override
+        # skips super() to avoid its stats accounting. Without this line
+        # an OPEN-circuit block would show as `not_loaded` (issue #213
+        # third-pass review).
+        self._trace_evaluated(flow, outcome="blocked", status=status)
 
     def _log_circuit_event(self, event: str, domain: str, flow: http.HTTPFlow | None = None, **extra):
         """Log circuit breaker state transition as ops event."""

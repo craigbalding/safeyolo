@@ -15,10 +15,12 @@ in all logged events for traceability. The ID format is defined by
 REQUEST_ID_PATTERN below — consumers (e.g. agent_api) import it so the
 generator and validator cannot drift.
 
-Note: the "runs FIRST" claim is not literally true — loop_guard, memory_monitor,
-and admin_shield load before this addon. See Batch 9 (loop_guard review) for the
-load-order question and the fix to ensure loop-detected audit events carry a
-request_id.
+Note: this addon's `request` hook is not literally the first one to run —
+loop_guard, memory_monitor, and admin_shield load before it. Any addon
+that needs to respond from `requestheaders` (which fires before any
+`request` hook) uses `ensure_request_id(flow)` to assign the id itself
+so its block response can carry X-SafeYolo-Request-Id and its audit
+event can be correlated (loop_guard uses this today).
 
 Hop-by-hop headers (RFC 7230 Section 6.1):
 These are meaningful only for a single transport-level connection and must
@@ -112,6 +114,25 @@ def _is_websocket_upgrade(flow: http.HTTPFlow) -> bool:
     if upgrade != "websocket":
         return False
     return "upgrade" in _connection_tokens(flow)
+
+
+def ensure_request_id(flow: http.HTTPFlow) -> str:
+    """Assign a request_id to a flow if it doesn't already have one.
+
+    Returns the request_id (existing or newly assigned). Idempotent.
+
+    Exists so addons that respond from `requestheaders` (loop-guard, in
+    practice) can carry an X-SafeYolo-Request-Id on their block response —
+    RequestIdGenerator.request() would otherwise never run for those
+    flows because a synthesised response short-circuits mitmproxy's
+    `request` hook (issue #213 third-pass review).
+    """
+    existing = flow.metadata.get("request_id")
+    if existing:
+        return existing
+    request_id = f"{REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+    flow.metadata["request_id"] = request_id
+    return request_id
 
 
 class RequestIdGenerator:

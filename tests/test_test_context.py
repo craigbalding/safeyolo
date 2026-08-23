@@ -439,11 +439,18 @@ class TestTestContextAddon:
         assert flow.response.status_code == 428
 
     def test_response_logging_with_context(self):
-        """Response phase logs when context was set in request phase."""
+        """Response phase logs when context was set in request phase.
+
+        Also asserts the event carries `agent=` — /explain's strict
+        agent-scope filter (issue #213) drops events without agent
+        attribution, and the response-side event previously omitted it,
+        silently hiding it from correlated lookups.
+        """
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(
             headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
+        flow.metadata["agent"] = "resolved-agent"
 
         # Simulate request phase
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
@@ -464,6 +471,8 @@ class TestTestContextAddon:
         assert details["phase"] == "response"
         assert details["status_code"] == 200
         assert details["context"]["run"] == "sec1"
+        # Agent attribution must be threaded through so /explain finds it.
+        assert call_kwargs[1]["agent"] == "resolved-agent"
 
     def test_response_skipped_without_context(self):
         """Response phase is a no-op if request didn't set context."""

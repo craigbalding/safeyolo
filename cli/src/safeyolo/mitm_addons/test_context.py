@@ -574,6 +574,11 @@ class TestContext(SecurityAddon):
             summary=f"Test context response: {flow.response.status_code if flow.response else 0} {sanitize_for_log(flow.request.host)}{sanitize_for_log(flow.request.path)}",
             host=flow.request.host,
             request_id=flow.metadata.get("request_id"),
+            # Attribute to the resolved agent so /explain's strict scope
+            # filter (issue #213) doesn't drop this response-side event.
+            # The matching request-side event already carries this — the
+            # omission here was the false-scope leak the reviewer caught.
+            agent=flow.metadata.get("agent"),
             addon=self.name,
             details={
                 "phase": "response",
