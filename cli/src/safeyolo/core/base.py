@@ -35,6 +35,15 @@ from service_discovery import get_service_discovery
 
 from pdp import get_policy_client
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.trace import (
+    REASON_POLICY_DISABLED,
+    STATE_BYPASSED,
+    STATE_ERROR,
+    STATE_EVALUATED,
+    _elapsed_us_from,
+    record_step,
+    register_expected_addon,
+)
 from safeyolo.core.utils import (
     find_addon,
     get_client_ip,
@@ -70,6 +79,20 @@ class SecurityAddon:
     """
 
     name: str  # Subclass must define
+
+    # Set True on addons that a normal outbound request should always traverse.
+    # `TraceStore` uses this to synthesise `state=not_loaded` entries at read
+    # time for expected addons that did not appear in the trace (issue #213).
+    # Left False on addons that only fire on special paths (virtual hosts,
+    # port 9090 admin, response-only observability) so absence from a normal
+    # request's trace isn't misreported as a failure.
+    trace_expected: bool = False
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        name = getattr(cls, "name", None)
+        if isinstance(name, str) and name and getattr(cls, "trace_expected", False):
+            register_expected_addon(name)
 
     def __init__(self):
         self.stats = AddonStats()
@@ -117,6 +140,13 @@ class SecurityAddon:
         Returns True if:
         - Flow already has a response (another addon blocked it)
         - Policy says addon is disabled for this domain/client
+
+        Only records `policy_disabled` here; `prior_response` is emitted by
+        `@trace_addon_hook` before the addon body runs, so recording it here
+        too would double-count. `is_bypassed` is still called by the addon
+        body when the decorator has not preempted, e.g. undecorated call
+        sites; the prior_response branch is left as a safety net returning
+        True without duplicate recording.
         """
         if flow.response:
             return True
@@ -145,7 +175,10 @@ class SecurityAddon:
         else:
             client_id = None
 
-        return not client.is_addon_enabled(self.name, domain, client_id)
+        if not client.is_addon_enabled(self.name, domain, client_id):
+            self._trace_bypassed(flow, reason=REASON_POLICY_DISABLED)
+            return True
+        return False
 
     def log_decision(
         self,
@@ -202,11 +235,82 @@ class SecurityAddon:
         """
         self.stats.blocked += 1
         flow.metadata["blocked_by"] = self.name
-        flow.response = make_block_response(status, body, self.name, extra_headers)
+        flow.response = make_block_response(
+            status,
+            body,
+            self.name,
+            extra_headers,
+            request_id=flow.metadata.get("request_id"),
+        )
+        self._trace_evaluated(flow, outcome="blocked", status=status)
 
     def warn(self, flow: http.HTTPFlow) -> None:
         """Record a warning (would-block in warn mode)."""
         self.stats.warned += 1
+        self._trace_evaluated(flow, outcome="warned")
+
+    # -- trace helpers ----------------------------------------------------
+    # No-op unless the flow opted into tracing (issue #213). Addons that
+    # want to record `state=evaluated` on their allow/no-detection path
+    # call `_trace_evaluated(flow, outcome=...)` directly; the base class
+    # already records blocked/warned/bypassed automatically.
+
+    def _trace_evaluated(
+        self,
+        flow: http.HTTPFlow,
+        *,
+        outcome: str,
+        hook: str = "request",
+        duration_us: int | None = None,
+        **details: Any,
+    ) -> None:
+        if duration_us is None:
+            duration_us = _elapsed_us_from(flow, self.name, hook)
+        record_step(
+            flow,
+            addon=self.name,
+            hook=hook,
+            state=STATE_EVALUATED,
+            outcome=outcome,
+            duration_us=duration_us,
+            details=details or None,
+        )
+
+    def _trace_bypassed(
+        self,
+        flow: http.HTTPFlow,
+        *,
+        reason: str,
+        hook: str = "request",
+    ) -> None:
+        # No duration for bypassed steps — either the hook was preempted
+        # before entering (prior_response) or the addon short-circuited on
+        # a policy/option check, neither of which is meaningful runtime.
+        record_step(
+            flow,
+            addon=self.name,
+            hook=hook,
+            state=STATE_BYPASSED,
+            reason=reason,
+        )
+
+    def _trace_error(
+        self,
+        flow: http.HTTPFlow,
+        *,
+        exc: BaseException,
+        hook: str = "request",
+    ) -> None:
+        # Record the exception TYPE only. The message can carry request-derived
+        # content (URL fragments, header values) and must not leak into trace.
+        record_step(
+            flow,
+            addon=self.name,
+            hook=hook,
+            state=STATE_ERROR,
+            reason=type(exc).__name__,
+            duration_us=_elapsed_us_from(flow, self.name, hook),
+        )
 
     def get_stats(self) -> dict[str, Any]:
         """Return stats dict for admin API."""

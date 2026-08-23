@@ -30,9 +30,17 @@ from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import BackgroundWorker, atomic_write_json, make_block_response, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.circuit-breaker")
+
+
+# =============================================================================
+# Trace outcome vocabulary (issue #213)
+# =============================================================================
+OUTCOME_ALLOWED = "allowed"
+OUTCOME_EXCLUDED_DOMAIN = "excluded_domain"
 
 
 class CircuitState(Enum):
@@ -149,6 +157,7 @@ class CircuitBreaker(SecurityAddon):
     """
 
     name = "circuit-breaker"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -490,9 +499,11 @@ class CircuitBreaker(SecurityAddon):
         self._log_circuit_event("force_open", domain)
         log.info(f"Circuit FORCE OPEN: {domain}")
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Check circuit before request."""
         if not self.is_enabled():
+            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED)
             return
 
         if self.is_bypassed(flow):
@@ -502,6 +513,7 @@ class CircuitBreaker(SecurityAddon):
 
         domain = flow.request.host
         if domain in self._excluded_domains:
+            self._trace_evaluated(flow, outcome=OUTCOME_EXCLUDED_DOMAIN)
             return
 
         allowed, status = self.should_allow_request(domain)
@@ -540,10 +552,19 @@ class CircuitBreaker(SecurityAddon):
                     "X-Circuit-State": status.state.value,
                 },
             )
+            return
 
+        self._trace_evaluated(
+            flow,
+            outcome=OUTCOME_ALLOWED,
+            circuit_state=status.state.value,
+        )
+
+    @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Record success/failure based on response."""
         if not self.is_enabled():
+            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED, hook="response")
             return
 
         self._maybe_reload_config()

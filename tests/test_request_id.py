@@ -396,11 +396,101 @@ class TestWebSocketLogSanitisation:
 
 
 class TestNonPromises:
-    def test_addon_has_no_response_hook(self, addon):
-        """The addon does not touch response headers — scope-limiting assertion."""
-        assert not hasattr(addon, "response")
+    def test_response_hook_only_stamps_request_id_header(self, addon):
+        """The response hook exists solely to echo X-SafeYolo-Request-Id back
+        to the client (issue #213). Guarding here so any future response-side
+        work has to update this assertion deliberately.
+        """
+        import inspect
+
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+        assert hasattr(addon, "response")
+        # Cheap sanity: source references the response header constant.
+        assert RESPONSE_REQUEST_ID_HEADER in inspect.getsource(addon.response)
 
     def test_addon_name_is_request_id(self, addon):
         """The `name` attribute leaks into audit-log fields via blocked_by-style writes
         elsewhere; it is part of the external contract."""
         assert addon.name == "request-id"
+
+
+# =========================================================================
+# Trace marker + internal correlation header hygiene (issue #213)
+# =========================================================================
+
+
+class TestTraceMarker:
+    def test_marker_present_sets_metadata(self, addon):
+        from request_id import TRACE_REQUEST_HEADER
+        flow = tflow.tflow()
+        flow.request.headers[TRACE_REQUEST_HEADER] = "1"
+        addon.request(flow)
+        assert flow.metadata.get("trace") is True
+
+    def test_marker_absent_leaves_metadata_unset(self, addon):
+        flow = tflow.tflow()
+        addon.request(flow)
+        assert "trace" not in flow.metadata
+
+    def test_marker_stripped_before_upstream(self, addon):
+        """The trace header must never survive into the upstream request."""
+        from request_id import TRACE_REQUEST_HEADER
+        flow = tflow.tflow()
+        flow.request.headers[TRACE_REQUEST_HEADER] = "1"
+        addon.request(flow)
+        assert TRACE_REQUEST_HEADER not in flow.request.headers
+
+
+class TestClientSuppliedRequestIdStripped:
+    def test_inbound_request_id_header_deleted(self, addon):
+        """A client-supplied X-SafeYolo-Request-Id must not be trusted or
+        forwarded upstream — the proxy always assigns its own."""
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+        flow = tflow.tflow()
+        flow.request.headers[RESPONSE_REQUEST_ID_HEADER] = "req-forged00000000000000000000000000000"
+        addon.request(flow)
+        assert RESPONSE_REQUEST_ID_HEADER not in flow.request.headers
+        # And the metadata id came from the generator, not the header.
+        assert flow.metadata["request_id"] != "req-forged00000000000000000000000000000"
+
+
+class TestResponseHeaderStamping:
+    def test_stamps_on_upstream_response(self, addon):
+        """Normal upstream response gets X-SafeYolo-Request-Id echoed."""
+        from mitmproxy import http as mitm_http
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+
+        flow = tflow.tflow()
+        addon.request(flow)  # assigns request_id
+        rid = flow.metadata["request_id"]
+        flow.response = mitm_http.Response.make(200, b"ok", {})
+
+        addon.response(flow)
+
+        assert flow.response.headers[RESPONSE_REQUEST_ID_HEADER] == rid
+
+    def test_does_not_overwrite_existing_header(self, addon):
+        """If make_block_response already stamped the header, don't clobber."""
+        from mitmproxy import http as mitm_http
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+
+        flow = tflow.tflow()
+        addon.request(flow)
+        preset = "req-preset0000000000000000000000000000"
+        flow.response = mitm_http.Response.make(200, b"ok", {RESPONSE_REQUEST_ID_HEADER: preset})
+
+        addon.response(flow)
+
+        assert flow.response.headers[RESPONSE_REQUEST_ID_HEADER] == preset
+
+    def test_no_stamp_when_request_id_absent(self, addon):
+        """Response hook is a no-op if the request never got an id (shouldn't
+        happen in practice but the hook mustn't crash)."""
+        from mitmproxy import http as mitm_http
+        from request_id import RESPONSE_REQUEST_ID_HEADER
+
+        flow = tflow.tflow()
+        # Deliberately skip addon.request(flow) — no request_id in metadata.
+        flow.response = mitm_http.Response.make(200, b"ok", {})
+        addon.response(flow)
+        assert RESPONSE_REQUEST_ID_HEADER not in flow.response.headers

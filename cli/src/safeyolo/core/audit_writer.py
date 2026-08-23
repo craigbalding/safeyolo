@@ -91,10 +91,10 @@ class _AuditWriter:
     def wait_for_drain(self, timeout_s: float = 2.0) -> bool:
         """Block until the queue is empty. Returns False on timeout.
 
-        Test helper only. Production doesn't need this — enqueue is
-        fire-and-forget, and shutdown flushes via atexit. Tests that
-        assert on log-file contents after a `write_event` call it to
-        avoid racing the writer thread.
+        Originally a test helper; also used by `/explain` (issue #213) to
+        avoid the race where a request has completed but its audit events
+        are still queued for background write, so an immediate lookup
+        returns an empty result even though events exist.
         """
         import time
         deadline = time.monotonic() + timeout_s
@@ -108,6 +108,17 @@ class _AuditWriter:
                     return True
             time.sleep(0.01)
         return False
+
+    def pending_count(self) -> int:
+        """Approximate number of events queued but not yet flushed.
+
+        Reader-facing helper used by `/explain` to distinguish
+        "no events for this request" from "events exist but the writer
+        thread hasn't drained them yet" (issue #213). Value is a snapshot
+        and may be stale by the time the caller reads it — safe for
+        gating a drain-and-rescan, not for exact accounting.
+        """
+        return self._queue.qsize()
 
     def _ensure_started(self) -> None:
         # Deferred start so import time stays cheap and tests can

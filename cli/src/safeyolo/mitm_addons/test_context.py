@@ -38,6 +38,7 @@ from mitmproxy import http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.trace import trace_addon_hook
 from safeyolo.core.utils import (
     get_client_ip,
     get_option_safe,
@@ -53,6 +54,17 @@ from safeyolo.test_context_contract import (
 )
 
 log = logging.getLogger("safeyolo.test-context")
+
+
+# =============================================================================
+# Trace outcome vocabulary (issue #213)
+# =============================================================================
+OUTCOME_ALLOWED = "allowed"
+# Emitted for requests to hosts NOT in target_hosts and with no context
+# header — proves the addon ran and correctly decided not to enforce, rather
+# than showing as `not_loaded` (which would be the false-not-loaded pattern
+# the #213 review flagged).
+OUTCOME_NOT_TARGET_HOST = "not_target_host"
 
 _MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
 
@@ -131,6 +143,7 @@ class TestContext(SecurityAddon):
     """Link test HTTP traffic to test activities via X-Test-Context header."""
 
     name = "test-context"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -407,6 +420,7 @@ class TestContext(SecurityAddon):
         self.stats.allowed += 1
         if source == "declared":
             self._declared_injections_total += 1
+        self._trace_evaluated(flow, outcome=OUTCOME_ALLOWED, context_source=source)
 
         return test_agent_match
 
@@ -448,6 +462,7 @@ class TestContext(SecurityAddon):
             )
             self.warn(flow)
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Check requests to target hosts for context header.
 
@@ -470,6 +485,10 @@ class TestContext(SecurityAddon):
 
         # Optional provenance is inert unless the caller supplies a usable header.
         if not is_target and not header_value:
+            # Emit evidence we ran and chose not to enforce. Absent this the
+            # addon would look identical to `not_loaded` for every non-target
+            # host, which is the false-not-loaded pattern #213 exists to fix.
+            self._trace_evaluated(flow, outcome=OUTCOME_NOT_TARGET_HOST)
             return
 
         self.stats.checks += 1

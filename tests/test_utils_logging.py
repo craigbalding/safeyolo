@@ -283,6 +283,31 @@ class TestMakeBlockResponse:
             resp = make_block_response(status, {"error": "test"}, "test")
             assert resp.status_code == status
 
+    def test_request_id_stamped_when_supplied(self):
+        """Block responses echo X-SafeYolo-Request-Id when caller passes it.
+
+        Issue #213: originating agents must be able to correlate a block
+        response back to the request without asking the operator to search
+        logs.
+        """
+        from safeyolo.core.utils import make_block_response
+
+        resp = make_block_response(
+            403,
+            {"error": "blocked"},
+            "test-addon",
+            request_id="req-aabbccdd11223344aabbccdd11223344",
+        )
+        assert resp.headers["X-SafeYolo-Request-Id"] == "req-aabbccdd11223344aabbccdd11223344"
+
+    def test_request_id_absent_when_not_supplied(self):
+        """No header if caller didn't pass a request_id (e.g. early-boot
+        blocks before the id generator has run)."""
+        from safeyolo.core.utils import make_block_response
+
+        resp = make_block_response(403, {"error": "blocked"}, "test-addon")
+        assert "X-SafeYolo-Request-Id" not in resp.headers
+
 
 class TestConfigureFileLogging:
     """Tests for configure_file_logging function."""

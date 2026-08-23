@@ -37,6 +37,7 @@ from pdp import (
     get_policy_client,
 )
 from safeyolo.core.sensor_utils import build_http_event_from_flow
+from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import (
     get_client_ip,
     hmac_fingerprint,
@@ -46,6 +47,13 @@ from safeyolo.core.utils import (
 )
 
 log = logging.getLogger("safeyolo.credential-guard")
+
+
+# =============================================================================
+# Trace outcome vocabulary (issue #213: enumerated, not ad-hoc strings)
+# =============================================================================
+OUTCOME_NO_DETECTION = "no_detection"
+OUTCOME_DETECTED = "detected"
 
 
 # =============================================================================
@@ -213,6 +221,7 @@ class CredentialGuard(SecurityAddon):
     """Credential protection addon - detect, validate, decide, emit."""
 
     name = "credential-guard"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -376,8 +385,12 @@ class CredentialGuard(SecurityAddon):
             # PolicyClient not configured - default to enabled
             return True
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
+        # prior_response is emitted by the decorator; we still short-circuit
+        # here for parity with the decorator's semantics and to keep this
+        # method sensible if invoked outside the decorator (e.g. unit tests).
         if flow.response:
             return
 
@@ -386,6 +399,7 @@ class CredentialGuard(SecurityAddon):
 
         # Check if addon is disabled via policy
         if not self._is_enabled(flow):
+            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED)
             return
 
         host = flow.request.host.lower()
@@ -407,6 +421,16 @@ class CredentialGuard(SecurityAddon):
             entropy_config=entropy_config,
             standard_auth_headers=standard_auth_headers,
             detection_level=detection_level
+        )
+
+        if not detections:
+            self._trace_evaluated(flow, outcome=OUTCOME_NO_DETECTION)
+            return
+
+        self._trace_evaluated(
+            flow,
+            outcome=OUTCOME_DETECTED,
+            detection_count=len(detections),
         )
 
         for det in detections:
@@ -516,6 +540,10 @@ class CredentialGuard(SecurityAddon):
                     approval=approval,
                     **detail_fields,
                 )
+                # Base class `warn()` bumps stats and (per issue #213) records
+                # a trace step. Previously omitted here — the audit event was
+                # written but trace and warned-count both under-reported.
+                self.warn(flow)
 
     def get_stats(self) -> dict:
         """Get stats for admin API."""

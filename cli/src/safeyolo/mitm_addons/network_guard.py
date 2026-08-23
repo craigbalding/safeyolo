@@ -49,6 +49,7 @@ except ImportError:
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import get_client_ip, sanitize_for_log
 
 # Add pdp to path for imports
@@ -60,6 +61,12 @@ from pdp import (
 from safeyolo.core.sensor_utils import build_http_event_from_flow
 
 log = logging.getLogger("safeyolo.network-guard")
+
+
+# =============================================================================
+# Trace outcome vocabulary (issue #213)
+# =============================================================================
+OUTCOME_ALLOWED = "allowed"
 
 
 def detect_homoglyph_attack(text: str) -> dict | None:  # DOC: SECURITY.md
@@ -93,6 +100,7 @@ class NetworkGuard(SecurityAddon):
     """
 
     name = "network-guard"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -133,9 +141,11 @@ class NetworkGuard(SecurityAddon):
         # TODO: Could use service_discovery for richer principal mapping
         return f"client:{client_ip}"
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Enforce network policy: homoglyphs, access control, rate limits."""
         if not self.is_enabled():
+            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED)
             return
 
         # Check per-flow bypass (flow already has response, or policy says
@@ -201,6 +211,7 @@ class NetworkGuard(SecurityAddon):
         self.stats.allowed += 1
         if decision.budget and decision.budget.remaining is not None:
             flow.metadata["ratelimit_remaining"] = decision.budget.remaining
+        self._trace_evaluated(flow, outcome=OUTCOME_ALLOWED)
 
     def _handle_homoglyph(self, flow, domain, path, method, homoglyph):
         """Handle homoglyph attack detection."""
