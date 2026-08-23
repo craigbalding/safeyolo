@@ -59,7 +59,7 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 25
+        assert len(ADDON_CHAIN) == 26
 
     def test_addon_chain_starts_with_readiness_writer(self):
         """Script addons start with the readiness writer.

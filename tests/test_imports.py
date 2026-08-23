@@ -41,6 +41,7 @@ ADDON_MODULES = [
     "sse_streaming",
     "test_context",
     "traffic_scope",
+    "transport_guard",
 ]
 
 # Names that must be importable after the addon loads standalone.

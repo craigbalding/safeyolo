@@ -67,8 +67,13 @@ ADDON_CHAIN = [
     "traffic_scope.py",
     "flow_pruner.py",
     "admin_api.py",
-    # Layer 4: Local termination for reserved diagnostic destinations.
-    # MUST be the last request-hook participant — see probe_sink.py docstring.
+    # Layer 4: Reserved diagnostic destinations.
+    # transport_guard fires on server_connect (defence-in-depth no-egress
+    # boundary for the probe host). Loaded before probe_sink so the
+    # transport guard is always registered even if the sink is disabled or
+    # removed — see transport_guard.py docstring.
+    "transport_guard.py",
+    # probe_sink MUST be the last request-hook participant — see docstring.
     "probe_sink.py",
 ]
 
