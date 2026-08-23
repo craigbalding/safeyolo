@@ -127,6 +127,34 @@ class TestScopeGate:
             disabled.response(flow)
             assert disabled._stats["skipped"] == 1
 
+    def test_probe_flow_suppressed_even_with_ccapt_context(self, recorder):
+        """Doctor sends a valid X-Test-Context (issue #213 B4) so
+        test-context runs its normal parse/apply path — which would set
+        ccapt_context and pull every doctor run into FlowStore as
+        evidence. The safeyolo_probe marker (set early by probe_sink)
+        short-circuits before ccapt_context matters. Verifies the
+        successful-sink case: probe reached the sink normally and its
+        flow must not be recorded.
+        """
+        flow = _make_test_flow()
+        flow.metadata["safeyolo_probe"] = True
+        recorder.response(flow)
+        assert recorder._stats["skipped"] == 1
+        assert recorder._stats["recorded"] == 0
+
+    def test_probe_flow_suppressed_when_pre_sink_block(self, recorder):
+        """The pre-sink block case: some pathological addon set
+        flow.response before the sink ran, so `blocked_by` is set. The
+        probe marker is still there (early-marked before the block) and
+        FlowStore suppression must still apply.
+        """
+        flow = _make_test_flow(response_status=403)
+        flow.metadata["safeyolo_probe"] = True
+        flow.metadata["blocked_by"] = "some-earlier-addon"
+        recorder.response(flow)
+        assert recorder._stats["skipped"] == 1
+        assert recorder._stats["recorded"] == 0
+
     def test_no_store_skips(self, recorder):
         """If store is None (init failed), flows are skipped."""
         recorder.store = None
