@@ -352,6 +352,391 @@ def _check_pipeline_probe() -> DiagResult:
     )
 
 
+# =============================================================================
+# Traced pipeline probe (#213 B5)
+# =============================================================================
+# Complementary to `_check_pipeline_probe` above. The virtual-host probe
+# proves UDS → mitmproxy → agent_api → PDP. This one proves the FULL
+# request-hook security pipeline actually ran for a real outbound request:
+#
+#   agent UDS
+#   → mitmproxy
+#   → request_id / service_discovery / trace instrumentation
+#   → every security addon in EXPECTED_ADDONS
+#   → probe_sink (local terminator, no upstream egress)
+#   → response back over the UDS with X-SafeYolo-Request-Id
+#   → GET /trace?request_id=... over the same UDS
+#   → classify observed steps per the disposition table below.
+#
+# Iterates every registered agent UDS (not just the first) — PR A made
+# attribution and policy disablement agent-scoped, so per-agent coverage
+# is now meaningful.
+
+
+def _send_uds_request(sock_path: Path, request_bytes: bytes, timeout: float = 5.0) -> bytes:
+    """Send a raw HTTP/1.0 request over a UNIX socket and return the response."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(str(sock_path))
+    try:
+        s.sendall(request_bytes)
+        chunks = []
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        s.close()
+
+
+def _parse_http_response(raw: bytes) -> tuple[int, dict[str, str], bytes]:
+    """Parse HTTP/1.0 response bytes into (status, headers, body).
+
+    Header lookup is case-insensitive (returned dict lower-cases keys).
+    Raises ValueError on unparseable input so callers can classify as error.
+    """
+    if not raw:
+        raise ValueError("empty response")
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    status_line = lines[0].decode(errors="replace")
+    parts = status_line.split(" ", 2)
+    if len(parts) < 2:
+        raise ValueError(f"malformed status line: {status_line!r}")
+    try:
+        status = int(parts[1])
+    except ValueError as e:
+        raise ValueError(f"non-integer status: {parts[1]!r}") from e
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        text = line.decode(errors="replace")
+        if ":" in text:
+            k, _, v = text.partition(":")
+            headers[k.strip().lower()] = v.strip()
+    return status, headers, body
+
+
+def _classify_trace_steps(trace_payload: dict) -> tuple[str, list[str], list[dict]]:
+    """Apply the #213 B5 disposition table to a /trace payload.
+
+    Returns (verdict, findings, per_addon_detail) where verdict is one of
+    "pass" | "warn" | "fail". `findings` is a short human-readable list of
+    reasons for warn/fail; per_addon_detail is the structured view for
+    diagnostic output.
+
+    Contract (issue #213 fifth-pass review):
+      - Per expected addon, take the FIRST observed request-hook step.
+      - Every expected addon must have either an observed step or an
+        explicit `not_loaded` entry.
+      - Ordered list of first-observed expected addons must equal
+        EXPECTED_ADDONS exactly on a clean run.
+      - Extra non-manifest steps do not themselves fail doctor but are
+        surfaced in detail and their effects still matter (e.g. an extra
+        addon causing prior_response gets caught as WARN on the addon it
+        preempted).
+    """
+    import sys as _sys
+    _cli_src = Path(__file__).resolve().parents[2]
+    if str(_cli_src) not in _sys.path:
+        _sys.path.insert(0, str(_cli_src))
+    from safeyolo.core.trace import EXPECTED_ADDONS
+
+    steps = [s for s in trace_payload.get("steps", []) if s.get("hook") == "request"]
+    not_loaded = {e["addon"] for e in trace_payload.get("not_loaded", [])}
+    truncated = trace_payload.get("truncated", False)
+
+    # First observed request-hook step per addon (order of first appearance).
+    first_seen: dict[str, dict] = {}
+    order: list[str] = []
+    for step in steps:
+        name = step.get("addon")
+        if name and name not in first_seen:
+            first_seen[name] = step
+            order.append(name)
+
+    detail: list[dict] = []
+    verdict = "pass"
+    findings: list[str] = []
+
+    if truncated:
+        verdict = "fail"
+        findings.append("trace was truncated (steps > STEPS_MAX); doctor probe should never need that many")
+
+    for name in EXPECTED_ADDONS:
+        entry = {"addon": name}
+        if name in first_seen:
+            step = first_seen[name]
+            state = step.get("state")
+            reason = step.get("reason")
+            outcome = step.get("outcome")
+            entry.update({"state": state, "outcome": outcome, "reason": reason})
+            if state == "evaluated":
+                pass  # PASS — normal case
+            elif state == "bypassed" and reason == "addon_disabled":
+                entry["verdict"] = "pass_reported"
+                # PASS but report state; doctor bubbles up the disabled list.
+                findings.append(f"{name}: bypassed/addon_disabled — loaded but off")
+            elif state == "bypassed" and reason == "policy_disabled":
+                entry["verdict"] = "pass_reported"
+                findings.append(f"{name}: bypassed/policy_disabled — PDP said no for this scope")
+            elif state == "bypassed" and reason == "prior_response":
+                verdict = _worst(verdict, "warn")
+                blocker = trace_payload.get("_first_responder", "unknown")
+                entry["verdict"] = "warn"
+                findings.append(
+                    f"{name}: bypassed/prior_response — earlier addon responded first (see {blocker})"
+                )
+            elif state == "error":
+                verdict = "fail"
+                entry["verdict"] = "fail"
+                findings.append(f"{name}: error ({reason}) — hook raised")
+            else:
+                # Unknown state — treat as fail to avoid silently passing on
+                # a state the classification table hasn't accounted for.
+                verdict = "fail"
+                entry["verdict"] = "fail"
+                findings.append(f"{name}: unknown state={state!r}")
+        elif name in not_loaded:
+            verdict = "fail"
+            entry["state"] = "not_loaded"
+            entry["verdict"] = "fail"
+            findings.append(f"{name}: not_loaded — expected addon did not run")
+        else:
+            # Neither observed nor declared not_loaded — the trace is
+            # incomplete, which is itself a fail (equivalent to trace
+            # unavailable for this addon).
+            verdict = "fail"
+            entry["state"] = "missing_from_trace"
+            entry["verdict"] = "fail"
+            findings.append(f"{name}: missing from trace (neither observed nor not_loaded)")
+        detail.append(entry)
+
+    # Ordering: first-observed subset must match EXPECTED_ADDONS exactly on
+    # a clean run. Extras (non-manifest addons) don't fail — they're noted.
+    observed_expected_order = [n for n in order if n in set(EXPECTED_ADDONS)]
+    if observed_expected_order != EXPECTED_ADDONS[: len(observed_expected_order)]:
+        verdict = _worst(verdict, "warn")
+        findings.append(
+            f"expected-addon ordering differs from manifest: "
+            f"observed={observed_expected_order} manifest={EXPECTED_ADDONS}"
+        )
+
+    extras = [n for n in order if n not in set(EXPECTED_ADDONS)]
+    if extras:
+        # Not a failure; useful diagnostic info.
+        detail.append({"extras": extras})
+
+    return verdict, findings, detail
+
+
+def _worst(a: str, b: str) -> str:
+    """Rank statuses so a single degrader isn't overwritten by a passer."""
+    order = {"pass": 0, "warn": 1, "fail": 2}
+    return a if order.get(a, 0) >= order.get(b, 0) else b
+
+
+def _probe_one_socket(sock_path: Path, token: str) -> DiagResult:
+    """Run one traced probe against a single agent's UDS and classify the trace."""
+    from safeyolo.core.probe import PROBE_HOST, PROBE_PATH
+
+    # Read agent name from the socket filename convention `<ip>_<agent>.sock`
+    # so DiagResult messages point at the specific agent that failed.
+    sock_name = sock_path.name.replace(".sock", "")
+    agent_hint = sock_name.split("_", 1)[1] if "_" in sock_name else sock_name
+
+    ts_run = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    x_test_context = f"run=doctor-{ts_run};agent={agent_hint};test=pipeline-probe"
+
+    # 1. Traced probe request. HTTP (not HTTPS) — avoids CONNECT/TLS
+    #    complications on the CI/sandbox path. probe_sink terminates
+    #    locally on the request hook, so no upstream is contacted.
+    probe_request = (
+        f"GET {PROBE_PATH} HTTP/1.0\r\n"
+        f"Host: {PROBE_HOST}\r\n"
+        f"X-SafeYolo-Trace: 1\r\n"
+        f"X-Test-Context: {x_test_context}\r\n"
+        f"Connection: close\r\n\r\n"
+    ).encode()
+
+    try:
+        probe_raw = _send_uds_request(sock_path, probe_request, timeout=5.0)
+    except OSError as exc:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=f"UDS probe failed: {type(exc).__name__}: {exc}",
+            remediation=f"safeyolo agent diag {agent_hint}",
+        )
+
+    try:
+        probe_status, probe_headers, probe_body = _parse_http_response(probe_raw)
+    except ValueError as exc:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=f"unparseable probe response: {exc}",
+            detail=probe_raw[:500].decode(errors="replace"),
+        )
+
+    request_id = probe_headers.get("x-safeyolo-request-id", "")
+
+    # 2. If no request_id came back we cannot diagnose further. This is
+    #    almost certainly a broken RequestIdGenerator.response() hook or a
+    #    pathological response path — fail loudly.
+    if not request_id:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=(
+                f"probe response ({probe_status}) missing X-SafeYolo-Request-Id "
+                "— cannot correlate to /trace"
+            ),
+            detail=probe_body[:500].decode(errors="replace"),
+            remediation="Check RequestIdGenerator.response() and probe_sink",
+        )
+
+    # 3. Fetch /trace for the request_id over the same UDS.
+    trace_request = (
+        f"GET /trace?request_id={request_id} HTTP/1.0\r\n"
+        f"Host: _safeyolo.proxy.internal\r\n"
+        f"Authorization: Bearer {token}\r\n"
+        f"Connection: close\r\n\r\n"
+    ).encode()
+
+    try:
+        trace_raw = _send_uds_request(sock_path, trace_request, timeout=5.0)
+    except OSError as exc:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=(
+                f"traced probe sent (rid={request_id}) but /trace fetch failed: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        )
+
+    try:
+        trace_status, _, trace_body = _parse_http_response(trace_raw)
+    except ValueError as exc:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=f"unparseable /trace response for rid={request_id}: {exc}",
+        )
+
+    if trace_status != 200:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=f"/trace returned {trace_status} for rid={request_id}",
+            detail=trace_body[:500].decode(errors="replace"),
+            remediation="Check agent_api /trace and TraceStore",
+        )
+
+    try:
+        trace_payload = json.loads(trace_body)
+    except json.JSONDecodeError as exc:
+        return DiagResult(
+            name=f"Pipeline probe (traced, {agent_hint})",
+            status="fail",
+            message=f"/trace body is not JSON for rid={request_id}: {exc}",
+        )
+
+    # 4. Classify per the disposition table. Non-200 probe status does NOT
+    #    abort — the trace tells us what happened. Only truly-missing
+    #    correlation (no request_id in step 2) is a hard abort.
+    verdict, findings, per_addon = _classify_trace_steps(trace_payload)
+
+    # Include probe HTTP status in findings for completeness — sink 200 is
+    # the clean-run bar. Non-200 gets recorded but doesn't itself force
+    # fail (already reflected via trace error/prior_response classification).
+    probe_status_note = f"probe HTTP {probe_status}"
+    if probe_status != 200:
+        findings.insert(0, probe_status_note + " (non-200; see trace)")
+    else:
+        findings.insert(0, probe_status_note)
+
+    message = (
+        f"agent={agent_hint} rid={request_id}: {verdict.upper()} "
+        f"({len(findings) - 1} findings)"
+    )
+    detail = json.dumps({"findings": findings, "per_addon": per_addon}, indent=2)
+
+    return DiagResult(
+        name=f"Pipeline probe (traced, {agent_hint})",
+        status=verdict,
+        message=message,
+        detail=detail,
+    )
+
+
+def _check_pipeline_probe_traced() -> DiagResult:
+    """Traced probe across every registered agent UDS (#213 B5).
+
+    Aggregates one probe per registered agent socket. Overall status is
+    the worst individual verdict — one failing agent fails the check
+    even if others pass, since agent-scoped attribution means each is
+    independently significant.
+    """
+    from ..sockets import sockets_dir
+
+    socks_dir = sockets_dir()
+    if not socks_dir.exists():
+        return DiagResult(
+            name="Pipeline probe (traced)",
+            status="skip",
+            message=f"No sockets directory ({socks_dir})",
+        )
+
+    expected = _registered_agent_sockets()
+    socks = [p for p in expected if p.exists()]
+    if not socks:
+        return DiagResult(
+            name="Pipeline probe (traced)",
+            status="skip",
+            message="No agent sockets present (no agents running)",
+        )
+
+    token_path = get_agent_token_path()
+    try:
+        token = token_path.read_text().strip()
+    except FileNotFoundError:
+        return DiagResult(
+            name="Pipeline probe (traced)",
+            status="warn",
+            message=f"Agent token missing at {token_path}",
+            remediation="safeyolo start (regenerates token)",
+        )
+    if not token:
+        return DiagResult(
+            name="Pipeline probe (traced)",
+            status="warn",
+            message="Agent token file is empty",
+            remediation="safeyolo stop && safeyolo start",
+        )
+
+    per_agent = [_probe_one_socket(p, token) for p in socks]
+
+    verdict = "pass"
+    for r in per_agent:
+        verdict = _worst(verdict, r.status)
+
+    summary = f"{len(per_agent)} agent(s) probed"
+    details = "\n\n".join(
+        f"=== {r.name} ===\nstatus: {r.status}\n{r.message}\n{r.detail}"
+        for r in per_agent
+    )
+
+    return DiagResult(
+        name="Pipeline probe (traced)",
+        status=verdict,
+        message=summary,
+        detail=details,
+    )
+
+
 def _check_ca_cert() -> DiagResult:
     """Check if CA certificate exists and is valid."""
     certs_dir = get_certs_dir()
@@ -1072,6 +1457,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Admin API", _check_admin_api),
             ("Addon loading", _check_addon_loading),
             ("Pipeline probe", _check_pipeline_probe),
+            ("Pipeline probe (traced)", _check_pipeline_probe_traced),
             ("CA certificate", _check_ca_cert),
             ("Upstream CA trust", _check_upstream_ca_cert),
             ("Baseline policy", _check_baseline),
