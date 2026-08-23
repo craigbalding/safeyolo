@@ -282,7 +282,6 @@ class TestLoopFullCorrelationRoundTrip:
         import json
         from unittest.mock import Mock, patch
 
-        import agent_api as agent_api_mod
         from agent_api import AgentAPI
         from loop_guard import LoopGuard
         from mitmproxy.test import taddons
@@ -339,13 +338,6 @@ class TestLoopFullCorrelationRoundTrip:
         api = AgentAPI()
         with taddons.context(api) as tctx:
             tctx.options.agent_api_enabled = True
-            with patch("pdp.tokens.read_active_token", return_value="tok"), \
-                 patch.object(api, "_find_addon", return_value=Mock(
-                     get_client_for_ip=Mock(return_value=agent_name))), \
-                 patch.object(agent_api_mod, "get_writer", return_value=_NoPending(), create=True):
-                # get_writer is imported inside _handle_explain — patch the
-                # audit_writer module directly instead:
-                pass
             with patch("pdp.tokens.read_active_token", return_value="tok"), \
                  patch.object(api, "_find_addon", return_value=Mock(
                      get_client_for_ip=Mock(return_value=agent_name))), \
