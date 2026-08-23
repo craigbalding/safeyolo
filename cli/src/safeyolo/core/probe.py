@@ -30,6 +30,14 @@ PROBE_HOST: str = "_safeyolo.probe.internal"
 # reserved path rather than via user configuration.
 PROBE_ALLOW_REASON_CODE: str = "INTERNAL_PIPELINE_PROBE"
 
+# Shared reason string used by both:
+#   - the trace step recorded by transport_guard when a probe reaches
+#     the upstream-connect stage (state=error, reason=<this>);
+#   - the security.probe_reached_upstream audit event's details.reason_code.
+# Kept lower-case to match the rest of the trace/audit reason vocabulary
+# (issue #213 review, second-pass cleanup).
+PROBE_REACHED_UPSTREAM_REASON: str = "probe_reached_upstream"
+
 # Fixed path used by doctor when sending the probe. Not load-bearing for
 # routing (the host alone triggers everything) — kept constant so trace
 # entries and audit events include a recognisable marker.

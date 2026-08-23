@@ -228,18 +228,37 @@ class TestHelperUtilities:
         assert _worst("pass", "pass") == "pass"
 
 
+def _production_sock_path(tmp_path, agent="agentx", ip="10.0.0.42"):
+    """Build a socket path with SafeYolo's production layout:
+    `<sockets_dir>/<ip>_<agent>/proxy.sock`. Uses `sockets.path_for` so
+    the shape stays in step with the source of truth — reviewer flagged
+    that hand-crafted `<ip>_<agent>.sock` paths hid the parse bug where
+    doctor labelled every real agent as `proxy` (issue #213 B8).
+    """
+    from safeyolo import sockets as _sockets
+
+    # Point sockets_dir at tmp_path so path_for lands under our tmp tree.
+    with patch.object(_sockets, "sockets_dir", return_value=tmp_path):
+        p = _sockets.path_for(agent, ip)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 class TestProbeOneSocketNoResponse:
     def test_probe_missing_response_returns_fail(self, tmp_path):
         """When the UDS send raises OSError, doctor returns fail without
-        even attempting to fetch /trace.
+        even attempting to fetch /trace. Uses the production socket shape
+        so doctor parses the real agent name (regression against #213 B8).
         """
         from safeyolo.commands import doctor
 
-        sock = tmp_path / "1.2.3.4_agentX.sock"
+        sock = _production_sock_path(tmp_path, agent="agentx")
         with patch.object(doctor, "_send_uds_request", side_effect=OSError("no socket")):
             result = doctor._probe_one_socket(sock, token="tok")
         assert result.status == "fail"
-        assert "agentX" in result.name
+        assert "agentx" in result.name
+        # And critically NOT the literal filename stem:
+        assert "proxy" not in result.name.split("traced, ")[1].split(")")[0]
         assert "UDS probe failed" in result.message
 
     def test_probe_response_missing_request_id_fails(self, tmp_path):
@@ -248,8 +267,7 @@ class TestProbeOneSocketNoResponse:
         """
         from safeyolo.commands import doctor
 
-        sock = tmp_path / "1.2.3.4_agentX.sock"
-        # HTTP response with no X-SafeYolo-Request-Id header
+        sock = _production_sock_path(tmp_path, agent="agentx")
         canned = b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}"
         with patch.object(doctor, "_send_uds_request", return_value=canned):
             result = doctor._probe_one_socket(sock, token="tok")
@@ -262,7 +280,7 @@ class TestProbeOneSocketNoResponse:
         """
         from safeyolo.commands import doctor
 
-        sock = tmp_path / "1.2.3.4_agentX.sock"
+        sock = _production_sock_path(tmp_path, agent="agentx")
 
         probe_response = (
             b"HTTP/1.0 200 OK\r\n"
@@ -295,5 +313,24 @@ class TestProbeOneSocketNoResponse:
             result = doctor._probe_one_socket(sock, token="tok")
 
         assert result.status == "pass"
-        assert "agentX" in result.name
+        assert "agentx" in result.name
         assert "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in result.message
+
+
+class TestProbeSocketPathParse:
+    def test_agent_hint_comes_from_directory_not_filename(self, tmp_path):
+        """Regression against #213 B8: earlier code parsed sock_path.name
+        as `<ip>_<agent>.sock` and split on `_`. The real invariant is
+        `<sockets_dir>/<ip>_<agent>/proxy.sock` — the filename is
+        literally `proxy.sock`, so every real agent got labelled `proxy`.
+        Doctor now uses sockets.parse() and reports the actual agent.
+        """
+        from safeyolo.commands import doctor
+
+        sock = _production_sock_path(tmp_path, agent="realagent", ip="10.9.8.7")
+        assert sock.name == "proxy.sock"  # sanity: production layout
+        with patch.object(doctor, "_send_uds_request", side_effect=OSError("boom")):
+            result = doctor._probe_one_socket(sock, token="tok")
+        # Real agent name in DiagResult label + no "proxy" leak.
+        assert "traced, realagent" in result.name
+        assert "traced, proxy" not in result.name

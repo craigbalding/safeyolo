@@ -541,10 +541,17 @@ def _probe_one_socket(sock_path: Path, token: str) -> DiagResult:
     """Run one traced probe against a single agent's UDS and classify the trace."""
     from safeyolo.core.probe import PROBE_HOST, PROBE_PATH
 
-    # Read agent name from the socket filename convention `<ip>_<agent>.sock`
-    # so DiagResult messages point at the specific agent that failed.
-    sock_name = sock_path.name.replace(".sock", "")
-    agent_hint = sock_name.split("_", 1)[1] if "_" in sock_name else sock_name
+    from ..sockets import parse as parse_sock_path
+
+    # Real UDS layout is `<sockets_dir>/<ip>_<agent>/proxy.sock` — the file
+    # itself is always literally `proxy.sock`. Use the canonical parser so
+    # DiagResult messages and X-Test-Context attribution name the real agent,
+    # not "proxy". Fall back defensively to a name-guess only if the path
+    # doesn't match the SafeYolo shape (e.g. legacy or hand-crafted paths).
+    try:
+        _ip, agent_hint = parse_sock_path(sock_path)
+    except ValueError:
+        agent_hint = sock_path.parent.name or sock_path.name
 
     ts_run = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     x_test_context = f"run=doctor-{ts_run};agent={agent_hint};test=pipeline-probe"

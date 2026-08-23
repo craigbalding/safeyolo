@@ -43,10 +43,13 @@ from __future__ import annotations
 
 import logging
 
+from mitmproxy import http
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
+from request_id import ensure_request_id
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.probe import PROBE_HOST, is_probe_host
+from safeyolo.core.probe import PROBE_HOST, PROBE_REACHED_UPSTREAM_REASON, is_probe_host
+from safeyolo.core.trace import STATE_ERROR, record_step
 from safeyolo.core.utils import sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.transport-guard")
@@ -109,11 +112,59 @@ class TransportGuard:
             agent=agent,
             addon=self.name,
             details={
-                "reason_code": "PROBE_REACHED_UPSTREAM",
+                "reason_code": PROBE_REACHED_UPSTREAM_REASON,
                 "client_ip": client_ip,
                 "server_address": list(data.server.address) if data.server.address else None,
                 "sni": data.client.sni,
             },
+        )
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Bridge the server_connect refusal into HTTPFlow-aware trace evidence.
+
+        server_connect (above) has no HTTPFlow reference — it operates
+        on ServerConnectionHookData. That means the audit event is the
+        only correlation surface unless we cross the boundary here in
+        an HTTP-layer hook. The mitmproxy `error` hook fires with a
+        real `http.HTTPFlow` when a flow encounters a transport/protocol
+        error — including the connection abort we produce by setting
+        `data.server.error` above.
+
+        Contract (issue #213 review, second pass): when a probe host
+        flow errors, record a trace step so `/trace?request_id=...`
+        surfaces the failure alongside every other pipeline step, and
+        so the DAG's `cls.trace_error` branch fires deterministically.
+
+        request_id may not yet be set — RequestIdGenerator's `request`
+        hook can be preempted when server_connect fires first under
+        the eager connection strategy. `ensure_request_id` is idempotent,
+        so calling it here guarantees a correlation ID exists whether
+        or not the request-phase hook ran.
+        """
+        if not is_probe_host(flow.request.host):
+            return
+        # Idempotent: preserves any earlier RequestIdGenerator assignment.
+        request_id = ensure_request_id(flow)
+        # Preserve the request_id on the response mitmproxy will surface
+        # to the client so the originating agent can still correlate to
+        # `/trace` even though the request errored (issue #213 promise).
+        if flow.response is not None and "X-SafeYolo-Request-Id" not in flow.response.headers:
+            flow.response.headers["X-SafeYolo-Request-Id"] = request_id
+        # Record explicit trace evidence. Uses the shared lower-case
+        # reason constant so it matches the DAG YAML's `when:` clauses
+        # exactly (see references/agent-api.md).
+        record_step(
+            flow,
+            addon=self.name,
+            hook="request",
+            state=STATE_ERROR,
+            reason=PROBE_REACHED_UPSTREAM_REASON,
+            details={"error_type": type(flow.error).__name__ if flow.error else None},
+        )
+        log.warning(
+            "PROBE ERROR bridged to trace for %s (rid=%s)",
+            sanitize_for_log(flow.request.host),
+            request_id,
         )
 
 

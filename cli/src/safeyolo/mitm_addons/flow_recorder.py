@@ -98,7 +98,11 @@ class FlowRecorder:
         # short-circuits before ccapt_context is even considered, so
         # suppression works whether the flow eventually reaches the sink
         # or gets synthetically blocked by a pathological pre-sink addon.
-        if flow.metadata.get("safeyolo_probe"):
+        # Strict `is True` (not truthiness) — the contract is a boolean
+        # marker set by probe_sink; an accidental truthy value in a
+        # collision-adjacent metadata key must not silently suppress
+        # non-probe flows (issue #213 review, second-pass cleanup).
+        if flow.metadata.get("safeyolo_probe") is True:
             return False
         # Must have test context (set by test_context.py for valid headers)
         if "ccapt_context" not in flow.metadata:

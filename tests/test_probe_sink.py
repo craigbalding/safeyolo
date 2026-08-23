@@ -181,48 +181,67 @@ class TestLateSink:
         assert step.outcome == "probe_terminated"
 
 
-class TestProbeMarkerNotReadBySecurityAddons:
-    """Enforce the boundary the sink relies on: security addons MUST NOT
-    read `safeyolo_probe`. That marker is informational only, consumed by
-    probe-sink, flow_recorder (B4), and the transport-boundary guard (B3).
-    A security addon that branches on it becomes a covert probe-only path
-    which is exactly the boundary erosion the reviewer flagged.
+class TestProbeMarkerAllowlist:
+    """Enforce the boundary the sink relies on: only an explicit
+    allowlist of addons may read `safeyolo_probe`. Every other file in
+    `mitm_addons/*.py` must not mention the marker — this is inverted
+    from the previous hand-maintained security-addon list (issue #213
+    B10) so a future addon dropped into the directory can't silently
+    start branching on the marker.
+
+    The marker is informational only, consumed by:
+      - probe_sink.py     (owner: sets it in requestheaders)
+      - flow_recorder.py  (B4 suppression)
+      - transport_guard.py (B3 no-egress boundary — may key on it later)
     """
 
-    def test_no_security_addon_reads_safeyolo_probe_marker(self):
+    # Files allowed to reference the marker. Update ONLY when a legitimate
+    # new reader is introduced; must not include any security-decision
+    # addon (network_guard, credential_guard, pattern_scanner,
+    # circuit_breaker, test_context, service_gateway, loop_guard, etc.).
+    ALLOWED_READERS = {
+        "probe_sink.py",
+        "flow_recorder.py",
+        "transport_guard.py",
+    }
+
+    def test_no_addon_outside_allowlist_reads_safeyolo_probe_marker(self):
         import re
 
         mitm_dir = Path(__file__).resolve().parents[1] / "cli/src/safeyolo/mitm_addons"
-
-        # Files ALLOWED to read the marker (informational readers, not
-        # security-decision paths).
-        allowed = {
-            "probe_sink.py",              # this addon
-            "flow_recorder.py",           # B4 suppression
-            "transport_guard.py",         # B3 no-egress boundary (future)
-        }
-
-        security_addons = {
-            "credential_guard.py",
-            "pattern_scanner.py",
-            "network_guard.py",
-            "circuit_breaker.py",
-            "test_context.py",
-            "service_gateway.py",
-            "loop_guard.py",
-            "admin_shield.py",
-        }
-
         pattern = re.compile(r"safeyolo_probe")
+
         offenders = []
-        for name in security_addons:
-            path = mitm_dir / name
-            if not path.exists():
+        # Scan EVERY .py in mitm_addons/ — the reviewer's inverted-test
+        # request. Previous version hand-maintained a security-addon
+        # subset and missed anything new.
+        for path in sorted(mitm_dir.glob("*.py")):
+            if path.name.startswith("_"):
                 continue
-            if pattern.search(path.read_text()):
-                offenders.append(name)
+            if path.name in self.ALLOWED_READERS:
+                continue
+            try:
+                text = path.read_text()
+            except OSError:
+                continue
+            if pattern.search(text):
+                offenders.append(path.name)
 
         assert not offenders, (
-            f"Security addons must not branch on `safeyolo_probe`: {offenders}. "
-            f"That marker is informational-only for {sorted(allowed)}."
+            f"Addons outside the allowlist must not reference "
+            f"`safeyolo_probe`: {offenders}. "
+            f"Allowlist: {sorted(self.ALLOWED_READERS)}. "
+            f"Add to ALLOWED_READERS only if the new reader is an "
+            f"informational consumer (never a security-decision branch)."
+        )
+
+    def test_allowlist_readers_actually_exist(self):
+        """Guard against the allowlist referencing a file that was
+        removed — that would silently hide an offender.
+        """
+        mitm_dir = Path(__file__).resolve().parents[1] / "cli/src/safeyolo/mitm_addons"
+        missing = [name for name in self.ALLOWED_READERS if not (mitm_dir / name).exists()]
+        assert not missing, (
+            f"ALLOWED_READERS references non-existent files: {missing}. "
+            "Remove them so the scan-all check remains meaningful."
         )
