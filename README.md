@@ -5,9 +5,19 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11693/badge)](https://www.bestpractices.dev/projects/11693)
 [![CodeQL](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml/badge.svg)](https://github.com/craigbalding/safeyolo/actions/workflows/codeql.yml)
 
-**Don't slow your agents down, just scope their access.**
+**Want your AI agents to do more without giving them access to more?**
 
-SafeYolo is a security proxy that gives operators scoped control over what AI agents can access. Agents run in isolated Linux sandboxes — hardware-backed microVMs on macOS, gVisor on Linux — with enforced network egress control that the agent cannot bypass.
+SafeYolo gives coding agents room to get useful work done without handing them your desktop, your credentials, or unrestricted access to your network and third-party services.
+
+Give the agent root. Let it install tools, run browsers, start services, debug code and improvise within the scope you give it. The sandbox is there to limit the blast radius, not to hobble the agent.
+
+SafeYolo doesn't try to make agents safe by replacing the world with a small set of approved tools. Agents can use normal CLIs, SDKs, browsers and web services — GitHub is GitHub, AWS is AWS. SafeYolo sits at the boundary, controlling what the agent can reach and keeping credentials out of its hands.
+
+Each agent runs in an isolated Linux sandbox — hardware-backed microVM on macOS, gVisor on Linux — with network traffic forced through a programmable [mitmproxy](https://mitmproxy.org/) policy layer.
+
+**You steer. Your agents get on with the job.**
+
+Works with Claude Code, OpenAI Codex, or whatever agent you want to run.
 
 Built on the fantastic [mitmproxy](https://mitmproxy.org/) project. MicroVM patterns informed by [Shuru](https://github.com/superhq-ai/shuru/).
 
