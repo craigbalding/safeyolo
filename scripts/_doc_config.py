@@ -20,6 +20,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+__all__ = ("ALL_SHIPPED_DOCS", "SKILL_FILES", "USER_FACING_DOCS")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _ALLOWLIST_PATH = REPO_ROOT / "scripts" / "doc_allowlist.toml"
 

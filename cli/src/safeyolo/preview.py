@@ -1264,6 +1264,8 @@ def _shutdown_on_signals(server):
             try:
                 signal.signal(sig, previous)
             except (OSError, ValueError):
+                # Best-effort restore on teardown; same environment
+                # restrictions apply as at install time.
                 pass
 
 
