@@ -413,6 +413,85 @@ class TestRequestHookFailsafe:
         assert step.state == "error"
         assert step.reason == "probe_sink_failed"
 
+    def test_missing_sink_sets_safeyolo_probe_marker_for_flowstore_suppression(self):
+        """B4 invariant preserved on the missing-sink path (issue #213
+        eighth-pass review): `flow_recorder` suppresses probe flows on
+        `flow.metadata["safeyolo_probe"] is True`. That marker is
+        normally set by `probe_sink.requestheaders`, but the very
+        failure this failsafe exists to handle includes probe_sink
+        being absent entirely. Without setting the marker here, doctor's
+        diagnostic 502 (with a valid X-Test-Context) would satisfy
+        FlowStore's ccapt_context gate and end up recorded.
+
+        Explicit follow-through: the same helper `flow_recorder._should_record()`
+        is exercised in the FlowStore-suppression regression test.
+        """
+        from mitmproxy.test import tflow
+
+        addon = self._addon()
+
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        flow.metadata["trace"] = True
+        flow.metadata["agent"] = "test-agent"
+        # Simulate real missing-sink state: NO safeyolo_probe marker
+        # (probe_sink.requestheaders never ran) but ccapt_context set
+        # by test_context because doctor sent a valid X-Test-Context.
+        flow.metadata["ccapt_context"] = {"run": "doctor", "agent": "x", "test": "y"}
+        assert "safeyolo_probe" not in flow.metadata
+
+        with patch("transport_guard.write_event"):
+            addon.request(flow)
+
+        # Marker set — flow_recorder's _should_record will now short-
+        # circuit before the ccapt_context gate.
+        assert flow.metadata.get("safeyolo_probe") is True
+
+    def test_flowstore_regression_end_to_end_on_missing_sink(self, tmp_path):
+        """End-to-end proof of the B4 invariant on the missing-sink path.
+        Drives the exact scenario the reviewer flagged:
+          - doctor sends X-Test-Context → test_context sets ccapt_context
+          - probe_sink is absent (no marker on requestheaders)
+          - transport_guard.request synthesises 502 AND sets marker
+          - flow_recorder.response sees the flow → skips (marker present)
+        """
+        from flow_recorder import FlowRecorder
+        from mitmproxy.test import taddons, tflow
+        from transport_guard import TransportGuard
+
+        addon = TransportGuard()
+
+        # Build a flow like doctor's real probe.
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        flow.metadata["trace"] = True
+        flow.metadata["agent"] = "test-agent"
+        flow.metadata["start_time"] = 0
+        # Simulate test_context having accepted a valid X-Test-Context.
+        flow.metadata["ccapt_context"] = {"run": "doctor", "agent": "x", "test": "y"}
+
+        with patch("transport_guard.write_event"):
+            addon.request(flow)
+
+        # Now simulate the response side going through flow_recorder.
+        # Response is the 502 we synthesised.
+        assert flow.response is not None
+        assert flow.response.status_code == 502
+
+        recorder = FlowRecorder()
+        with taddons.context(recorder) as tctx:
+            tctx.options.flow_store_enabled = True
+            tctx.options.flow_store_db_path = str(tmp_path / "flows.sqlite3")
+            # Bypass real store init — we only need the _should_record gate.
+            recorder.store = object()
+            skipped = not recorder._should_record(flow)
+
+        assert skipped, (
+            "flow_recorder must NOT record the diagnostic probe flow — "
+            "the safeyolo_probe marker set by transport_guard is what "
+            "keeps B4 suppression working on the missing-sink path."
+        )
+
     def test_missing_sink_self_sufficient_without_prior_request_hooks(self):
         """Even if RequestIdGenerator and service-discovery didn't run
         (probe-marker set by requestheaders is enough), the failsafe

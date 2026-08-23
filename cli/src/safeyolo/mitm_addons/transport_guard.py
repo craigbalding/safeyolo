@@ -150,6 +150,13 @@ class TransportGuard:
             if trusted_agent:
                 flow.metadata["agent"] = trusted_agent
         request_id = ensure_request_id(flow)
+        # Set the probe marker so flow_recorder's B4 suppression fires
+        # even on the missing-sink path (probe_sink.requestheaders would
+        # normally have done this, but by definition the sink is absent
+        # here). Observability-only; every security addon has already
+        # run its request hook at this load-order position, so none can
+        # branch on it. Issue #213 seventh-pass review.
+        flow.metadata["safeyolo_probe"] = True
 
         flow.response = http.Response.make(
             502,
