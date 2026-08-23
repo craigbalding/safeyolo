@@ -140,6 +140,7 @@ class AgentAPI:
             "/budgets": self._handle_budgets,
             "/config": self._handle_config,
             "/explain": self._handle_explain,
+            "/trace": self._handle_trace,
             "/memory": self._handle_memory,
             "/agents": self._handle_agents,
             "/circuits": self._handle_circuits,
@@ -1039,7 +1040,34 @@ class AgentAPI:
         self._respond(flow, 200, config)
 
     def _handle_explain(self, flow: http.HTTPFlow):
-        """GET /explain?request_id=X - All events for a request ID."""
+        """GET /explain?request_id=X - Audit events for a request ID.
+
+        Agent-scoped: only events attributed to the caller are returned. A
+        request_id owned by another agent looks identical to a nonexistent
+        one (empty events list) so caller cannot use the response as an
+        existence oracle.
+
+        Retention: scans the current audit file plus configured rotated
+        backups. If the scanned window was truncated for either file the
+        response reports `status: "incomplete_search"` so caller can
+        distinguish "genuinely nothing" from "some retention not fully
+        searched".
+
+        Freshness: audit writes are asynchronous. Before returning an
+        empty result the handler drains the writer queue for a bounded
+        interval and re-scans, so a caller who queries immediately after
+        the request completes does not silently see `events: []` when
+        the events are merely still enqueued.
+
+        Response `status` values:
+            complete           - retained set fully scanned, events accurate
+            incomplete_search  - retention bound hit; some events may exist
+                                 outside the scanned window
+            pending            - writer still holds events after drain
+                                 timeout; retry may yield more
+            error              - read/parse failure; caller should treat
+                                 result as unreliable
+        """
         query = flow.request.query
         request_id = query.get("request_id", "")
         if not request_id or not _REQUEST_ID_PATTERN.match(request_id):
@@ -1053,46 +1081,210 @@ class AgentAPI:
             )
             return
 
-        # Search JSONL log for matching events
-        from pathlib import Path
-
-        log_path = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
-        if not log_path.exists():
-            self._respond(flow, 200, {"request_id": request_id, "events": []})
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id is None:
+            # Fail-closed on unresolvable identity: /explain used to return
+            # any agent's events to any caller who knew the id (issue #213).
+            self._respond(flow, 403, {"error": "Could not identify agent"})
             return
 
-        events = []
-        truncated = False
+        from pathlib import Path
+
+        # Freshness contract (issue #213 third-pass review): if the writer
+        # reports ANY pending events — not just the empty-result case — we
+        # attempt a bounded drain BEFORE the authoritative scan. The old
+        # "only drain when empty" logic returned partial sets as complete
+        # when e.g. the request event was on disk but its response event
+        # was still queued.
+        pending_after_drain = False
         try:
-            # Stream through file, retaining only last N lines (constant memory)
-            from collections import deque
+            from safeyolo.core.audit_writer import get_writer
+            writer = get_writer()
+            if writer.pending_count() > 0:
+                if not writer.wait_for_drain(timeout_s=0.5):
+                    pending_after_drain = True
+        except Exception as exc:  # noqa: BLE001 — freshness is best-effort
+            log.warning(
+                "Explain freshness drain failed: %s: %s",
+                type(exc).__name__, exc,
+            )
 
-            with open(log_path) as fh:
-                total_lines = 0
-                scan_lines = deque(maxlen=MAX_EXPLAIN_LINES)
-                for line in fh:
-                    total_lines += 1
-                    scan_lines.append(line)
-                truncated = total_lines > MAX_EXPLAIN_LINES
+        # Recompute the retained-file list AFTER the drain so first-write
+        # cases (file created by the drain itself) are visible to the scan.
+        current_log = Path(os.environ.get("SAFEYOLO_LOG_PATH", "/app/logs/safeyolo.jsonl"))
+        search_files = self._retained_audit_files(current_log)
 
-            for line in scan_lines:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get("request_id") == request_id:
-                        events.append(entry)
-                except json.JSONDecodeError:
-                    continue
-        except Exception as exc:
-            log.error(f"Explain search error: {type(exc).__name__}: {exc}")
+        events, incomplete, read_error = self._scan_audit_files(
+            search_files, request_id, agent_id
+        )
 
-        result = {"request_id": request_id, "events": events}
-        if truncated:
-            result["truncated"] = True
-            result["searched_lines"] = MAX_EXPLAIN_LINES
+        # Status precedence:
+        # - error: any read/parse failure — result is unreliable regardless
+        #   of what got returned.
+        # - pending: writer still holds events after drain — retry may yield
+        #   more.
+        # - incomplete_search: retention bound hit — retained set larger
+        #   than the per-file scan window.
+        # - complete: retained set fully scanned, events accurate.
+        if read_error:
+            status = "error"
+        elif pending_after_drain:
+            status = "pending"
+        elif incomplete:
+            status = "incomplete_search"
+        else:
+            status = "complete"
+
+        result: dict = {
+            "request_id": request_id,
+            "status": status,
+            "events": events,
+        }
+        if incomplete:
+            result["searched_lines_per_file"] = MAX_EXPLAIN_LINES
         self._respond(flow, 200, result)
+
+    def _retained_audit_files(self, current: "Path") -> list["Path"]:  # noqa: F821
+        """Return the current audit file plus any rotated backups, newest first.
+
+        Rotation lives in `utils._rotate_jsonl_if_needed`: current →
+        `.jsonl.1`, `.1` → `.2`, ..., up to `SAFEYOLO_LOG_BACKUPS`. Scan
+        order is newest-to-oldest so events written just before rotation
+        are found before their older neighbours.
+        """
+        files: list = []
+        if current.exists():
+            files.append(current)
+        # Late import to avoid pulling utils' mitmproxy dependency chain
+        # on module load; agent_api may be imported in contexts where
+        # utils.write_event's audit_writer plumbing is not yet ready.
+        from safeyolo.core import utils as _utils
+        for i in range(1, _utils.SAFEYOLO_LOG_BACKUPS + 1):
+            rotated = current.with_suffix(f".jsonl.{i}")
+            if rotated.exists():
+                files.append(rotated)
+        return files
+
+    def _scan_audit_files(
+        self,
+        files: list,
+        request_id: str,
+        agent_id: str,
+    ) -> tuple[list, bool, bool]:
+        """Scan `files` for events matching `(request_id, agent_id)`.
+
+        Returns `(events, incomplete, read_error)`.
+
+        - `incomplete`: any file exceeded the per-file `MAX_EXPLAIN_LINES`
+          window. The caller reports `status=incomplete_search` so a "no
+          match" result isn't silently promoted to "definitely no events".
+        - `read_error`: an OSError was raised while reading a file. The
+          caller reports `status=error` — distinct from `incomplete_search`,
+          which means the search bound was hit but the read itself was
+          fine. Issue #213 promises both statuses; conflating them into
+          `incomplete_search` (the previous behaviour) made a genuine read
+          failure indistinguishable from a legitimate retention overflow.
+
+        Agent scope: strict match on the event's recorded agent field.
+        Events without an agent field are dropped (fail-closed). Callers
+        are expected to populate agent on every request-id-correlated
+        write_event() site.
+        """
+        from collections import deque
+
+        events: list = []
+        incomplete = False
+        read_error = False
+        for path in files:
+            try:
+                with open(path) as fh:
+                    total_lines = 0
+                    scan_lines: deque = deque(maxlen=MAX_EXPLAIN_LINES)
+                    for line in fh:
+                        total_lines += 1
+                        scan_lines.append(line)
+                    if total_lines > MAX_EXPLAIN_LINES:
+                        incomplete = True
+                for line in scan_lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if entry.get("request_id") != request_id:
+                        continue
+                    if entry.get("agent") != agent_id:
+                        continue
+                    events.append(entry)
+            except OSError as exc:
+                log.warning(
+                    "Explain read failed for %s: %s: %s",
+                    path, type(exc).__name__, exc,
+                )
+                read_error = True
+        return events, incomplete, read_error
+
+    def _handle_trace(self, flow: http.HTTPFlow):
+        """GET /trace?request_id=X - Opt-in execution trace for one request.
+
+        Returns the ordered pipeline steps recorded for a request that opted
+        into tracing via `X-SafeYolo-Trace: 1`. Scoped strictly to the
+        originating agent: a foreign or unknown request_id returns the same
+        404 as a missing record so caller cannot use response shape as an
+        existence oracle for another agent's traces (issue #213).
+
+        Response payload:
+            {
+                "request_id": "req-...",
+                "agent_id":   "<agent>",
+                "created_at": <epoch>,
+                "truncated":  bool,
+                "steps": [
+                    {"addon": "...", "hook": "request", "state": "evaluated",
+                     "outcome": "no_detection", "duration_us": 83, ...},
+                    ...
+                ],
+                "not_loaded": [
+                    {"addon": "...", "state": "not_loaded"},
+                    ...
+                ]
+            }
+        """
+        query = flow.request.query
+        request_id = query.get("request_id", "")
+        if not request_id or not _REQUEST_ID_PATTERN.match(request_id):
+            self._respond(
+                flow,
+                400,
+                {
+                    "error": "Invalid or missing request_id",
+                    "usage": "/trace?request_id=req-<32hex>",
+                },
+            )
+            return
+
+        agent_id = self._resolve_agent_id(flow)
+        if agent_id is None:
+            # Fail-closed on unresolvable identity — trace never leaks to an
+            # anonymous caller, matches the /api/flows/* posture.
+            self._respond(flow, 403, {"error": "Could not identify agent"})
+            return
+
+        from safeyolo.core.trace import get_store
+
+        record = get_store().get(request_id, agent_id)
+        if record is None:
+            # Same 404 for missing vs wrong-agent so callers cannot distinguish.
+            self._respond(
+                flow,
+                404,
+                {"error": "No trace for request_id", "request_id": request_id},
+            )
+            return
+
+        self._respond(flow, 200, get_store().serialise(record))
 
     # ---- Flow Store API routes ----
 

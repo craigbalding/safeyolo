@@ -39,6 +39,13 @@ from mitmproxy import ctx, http
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.flow_cache import path_no_query
 from safeyolo.core.service_loader import get_service_registry
+from safeyolo.core.trace import (
+    REASON_ADDON_DISABLED,
+    REASON_PRIOR_RESPONSE,
+    trace_addon_hook,
+    trace_bypassed,
+    trace_evaluated,
+)
 from safeyolo.core.utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.core.vault import get_vault
 from safeyolo.detection.matching import normalize_path, reject_path_tricks
@@ -183,6 +190,22 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
+GATEWAY_NAME = "service-gateway"
+
+# Trace outcome vocabulary (issue #213)
+OUTCOME_NOT_A_GATEWAY_REQUEST = "not_a_gateway_request"     # no sgw_ token — pass through
+OUTCOME_INJECTED = "injected"                                # credential injection succeeded
+# Response-hook outcomes — mirror what the existing consume-grant logic did.
+OUTCOME_NOT_A_GATEWAY_RESPONSE = "not_a_gateway_response"    # no gateway_grant_id — pass through
+OUTCOME_GRANT_CONSUMED = "grant_consumed"                    # once-grant fired on 2xx
+OUTCOME_GRANT_RETAINED = "grant_retained"                    # gateway flow but grant not consumed
+
+# Note: service-gateway is listed in `safeyolo.core.trace.EXPECTED_ADDONS`
+# (the canonical manifest). Self-registration was removed — a truly absent
+# addon must still be reportable as `not_loaded`, and self-registration
+# cannot detect its own absence.
+
+
 class ServiceGateway:
     """Service Gateway addon - credential injection for agents (v2).
 
@@ -190,7 +213,7 @@ class ServiceGateway:
     policy_engine and network_guard in the addon chain.
     """
 
-    name = "service-gateway"
+    name = GATEWAY_NAME
 
     def __init__(self):
         self._token_map: dict[str, TokenBinding] = {}
@@ -378,18 +401,22 @@ class ServiceGateway:
         else:
             log.info("Service gateway disabled")
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Intercept requests with sgw_ gateway tokens."""
         if not ctx.options.gateway_enabled:
+            trace_bypassed(flow, addon=self.name, reason=REASON_ADDON_DISABLED)
             return
 
         # Already handled by another addon
         if flow.response:
+            trace_bypassed(flow, addon=self.name, reason=REASON_PRIOR_RESPONSE)
             return
 
         # Extract sgw_ token from Authorization header
         token = self._extract_sgw_token(flow)
         if not token:
+            trace_evaluated(flow, addon=self.name, outcome=OUTCOME_NOT_A_GATEWAY_REQUEST)
             return  # Not a gateway request - pass through
 
         self.stats.requests += 1
@@ -650,6 +677,13 @@ class ServiceGateway:
         )
 
         self.stats.injected += 1
+        trace_evaluated(
+            flow,
+            addon=self.name,
+            outcome=OUTCOME_INJECTED,
+            service=service.name,
+            capability=capability.name,
+        )
 
     # =========================================================================
     # Grant management
@@ -1038,22 +1072,34 @@ class ServiceGateway:
         except Exception as e:
             log.warning(f"Failed to persist contract bindings: {type(e).__name__}: {e}")
 
+    @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Consume once-grants after successful upstream response."""
         if not ctx.options.gateway_enabled:
+            trace_bypassed(flow, addon=self.name, hook="response", reason=REASON_ADDON_DISABLED)
             return
 
         # Only care about gateway-handled flows
         grant_id = flow.metadata.get("gateway_grant_id")
         if not grant_id:
+            trace_evaluated(flow, addon=self.name, hook="response", outcome=OUTCOME_NOT_A_GATEWAY_RESPONSE)
             return
 
         # Consume on 2xx
+        consumed = False
         if flow.response and 200 <= flow.response.status_code < 300:
             with self._lock:
                 grant = self._grants.get(grant_id)
             if grant and grant.scope == "once":
                 self._consume_grant(grant)
+                consumed = True
+        trace_evaluated(
+            flow,
+            addon=self.name,
+            hook="response",
+            outcome=OUTCOME_GRANT_CONSUMED if consumed else OUTCOME_GRANT_RETAINED,
+            grant_id=grant_id,
+        )
 
     def _extract_sgw_token(self, flow: http.HTTPFlow) -> str | None:
         """Extract sgw_ token from the service-specific auth header.
@@ -1696,8 +1742,17 @@ class ServiceGateway:
         }
         if field:
             body["field"] = field
-        flow.response = make_block_response(status, body, self.name)
+        flow.response = make_block_response(
+            status, body, self.name, request_id=flow.metadata.get("request_id")
+        )
         flow.metadata["blocked_by"] = self.name
+        trace_evaluated(
+            flow,
+            addon=self.name,
+            outcome="blocked",
+            status=status,
+            code=code,
+        )
 
         method = flow.request.method
         path = path_no_query(flow)

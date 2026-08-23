@@ -38,6 +38,7 @@ from mitmproxy import http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.trace import REASON_PRIOR_RESPONSE, trace_addon_hook
 from safeyolo.core.utils import (
     get_client_ip,
     get_option_safe,
@@ -53,6 +54,20 @@ from safeyolo.test_context_contract import (
 )
 
 log = logging.getLogger("safeyolo.test-context")
+
+
+# =============================================================================
+# Trace outcome vocabulary (issue #213)
+# =============================================================================
+OUTCOME_ALLOWED = "allowed"
+# Emitted for requests to hosts NOT in target_hosts and with no context
+# header — proves the addon ran and correctly decided not to enforce, rather
+# than showing as `not_loaded` (which would be the false-not-loaded pattern
+# the #213 review flagged).
+OUTCOME_NOT_TARGET_HOST = "not_target_host"
+# Response-hook outcomes.
+OUTCOME_RESPONSE_RECORDED = "response_recorded"     # captured response event for a tracked flow
+OUTCOME_NOT_APPLICABLE = "not_applicable"           # response hook ran; no ccapt_context on flow
 
 _MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
 
@@ -131,6 +146,7 @@ class TestContext(SecurityAddon):
     """Link test HTTP traffic to test activities via X-Test-Context header."""
 
     name = "test-context"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -407,6 +423,7 @@ class TestContext(SecurityAddon):
         self.stats.allowed += 1
         if source == "declared":
             self._declared_injections_total += 1
+        self._trace_evaluated(flow, outcome=OUTCOME_ALLOWED, context_source=source)
 
         return test_agent_match
 
@@ -448,6 +465,7 @@ class TestContext(SecurityAddon):
             )
             self.warn(flow)
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Check requests to target hosts for context header.
 
@@ -455,6 +473,7 @@ class TestContext(SecurityAddon):
         No separate enable flag - add target hosts to activate, remove to deactivate.
         """
         if flow.response:
+            self._trace_bypassed(flow, reason=REASON_PRIOR_RESPONSE)
             return
 
         self._maybe_reload_config()
@@ -470,6 +489,10 @@ class TestContext(SecurityAddon):
 
         # Optional provenance is inert unless the caller supplies a usable header.
         if not is_target and not header_value:
+            # Emit evidence we ran and chose not to enforce. Absent this the
+            # addon would look identical to `not_loaded` for every non-target
+            # host, which is the false-not-loaded pattern #213 exists to fix.
+            self._trace_evaluated(flow, outcome=OUTCOME_NOT_TARGET_HOST)
             return
 
         self.stats.checks += 1
@@ -531,10 +554,12 @@ class TestContext(SecurityAddon):
         del flow.request.headers[CONTEXT_HEADER]
         self._apply_context(flow, context, source="header")
 
+    @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Log response for requests that had valid context."""
         context = flow.metadata.get("ccapt_context")
         if context is None:
+            self._trace_evaluated(flow, outcome=OUTCOME_NOT_APPLICABLE, hook="response")
             return
 
         request_time = flow.metadata.get("ccapt_request_time", 0)
@@ -549,6 +574,11 @@ class TestContext(SecurityAddon):
             summary=f"Test context response: {flow.response.status_code if flow.response else 0} {sanitize_for_log(flow.request.host)}{sanitize_for_log(flow.request.path)}",
             host=flow.request.host,
             request_id=flow.metadata.get("request_id"),
+            # Attribute to the resolved agent so /explain's strict scope
+            # filter (issue #213) doesn't drop this response-side event.
+            # The matching request-side event already carries this — the
+            # omission here was the false-scope leak the reviewer caught.
+            agent=flow.metadata.get("agent"),
             addon=self.name,
             details={
                 "phase": "response",
@@ -562,6 +592,12 @@ class TestContext(SecurityAddon):
                 "response_body_snippet": response_body[:512] if response_body else "",
                 "duration_ms": duration_ms,
             },
+        )
+        self._trace_evaluated(
+            flow,
+            outcome=OUTCOME_RESPONSE_RECORDED,
+            hook="response",
+            status_code=flow.response.status_code if flow.response else 0,
         )
 
     def get_stats(self) -> dict:

@@ -249,9 +249,17 @@ class TestEndpoints:
             assert body == {"error": "Internal error: RuntimeError"}
 
 
+def _sd_stub(agent="agent-1"):
+    """Minimal service-discovery stub returning `agent` for any client IP."""
+    sd = Mock()
+    sd.get_client_for_ip.return_value = agent
+    return sd
+
+
 class TestExplain:
     def test_explain_missing_param(self, api, agent_token):
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
             flow = _make_api_flow("/explain", token=agent_token)
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
@@ -261,9 +269,12 @@ class TestExplain:
                 "usage": "/explain?request_id=req-<32hex>",
             }
 
-    def test_explain_with_request_id_no_log_file(self, api, agent_token):
-        """When JSONL log doesn't exist, returns empty events list."""
-        with _patch_active_token(agent_token):
+    def test_explain_with_request_id_no_log_file(self, api, agent_token, tmp_path, monkeypatch):
+        """When JSONL log doesn't exist, returns empty complete result."""
+        # Point at a nonexistent log path so no file is scanned.
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(tmp_path / "does-not-exist.jsonl"))
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))
@@ -271,24 +282,28 @@ class TestExplain:
             body = json.loads(flow.response.content)
             assert body["request_id"] == valid_id
             assert body["events"] == []
+            assert body["status"] == "complete"
 
     def test_explain_invalid_request_id(self, api, agent_token):
         """Path traversal attempt is rejected."""
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=../../../etc/passwd")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_explain_rejects_short_request_id(self, api, agent_token):
         """Request ID that doesn't match req-<32hex> format is rejected."""
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-123")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
 
     def test_explain_rejects_old_12hex_format(self, api, agent_token):
         """Old 12-hex format is rejected (must be 32 hex)."""
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
             flow = _make_api_flow("/explain", token=agent_token, query="request_id=req-0a1b2c3d4e5f")
             asyncio.run(api.request(flow))
             assert flow.response.status_code == 400
@@ -297,51 +312,382 @@ class TestExplain:
         """Explain searches JSONL log and returns only events matching request_id."""
         target_id = "req-aabbccdd11223344aabbccdd11223344"
         other_id = "req-00000000000000000000000000000000"
+        agent = "agent-1"
         log_file = tmp_path / "safeyolo.jsonl"
         log_file.write_text(
-            json.dumps({"request_id": target_id, "event": "traffic.request", "host": "example.com"}) + "\n"
-            + json.dumps({"request_id": other_id, "event": "traffic.request", "host": "other.com"}) + "\n"
-            + json.dumps({"request_id": target_id, "event": "traffic.response", "status_code": 200}) + "\n"
+            json.dumps({"request_id": target_id, "agent": agent, "event": "traffic.request", "host": "example.com"}) + "\n"
+            + json.dumps({"request_id": other_id, "agent": agent, "event": "traffic.request", "host": "other.com"}) + "\n"
+            + json.dumps({"request_id": target_id, "agent": agent, "event": "traffic.response", "status_code": 200}) + "\n"
             + "not valid json\n"
         )
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
         assert body["request_id"] == target_id
+        assert body["status"] == "complete"
         assert len(body["events"]) == 2
         assert body["events"][0]["host"] == "example.com"
         assert body["events"][1]["status_code"] == 200
-        assert "truncated" not in body
 
-    def test_explain_sets_truncated_flag_when_log_exceeds_limit(self, api, agent_token, tmp_path, monkeypatch):
-        """When log exceeds MAX_EXPLAIN_LINES, truncated flag is set."""
+    def test_explain_sets_incomplete_search_when_log_exceeds_limit(self, api, agent_token, tmp_path, monkeypatch):
+        """Log exceeding MAX_EXPLAIN_LINES surfaces as status=incomplete_search."""
+        from agent_api import MAX_EXPLAIN_LINES
+
         target_id = "req-aabbccdd11223344aabbccdd11223344"
+        agent = "agent-1"
         log_file = tmp_path / "safeyolo.jsonl"
-        # Write more lines than MAX_EXPLAIN_LINES (10000)
         lines = []
-        for i in range(10002):
-            lines.append(json.dumps({"request_id": "req-00000000000000000000000000000000", "i": i}))
-        # Put target at the end so it's in the retained window
-        lines.append(json.dumps({"request_id": target_id, "event": "traffic.request"}))
+        for i in range(MAX_EXPLAIN_LINES + 2):
+            lines.append(json.dumps({
+                "request_id": "req-00000000000000000000000000000000",
+                "agent": agent,
+                "i": i,
+            }))
+        lines.append(json.dumps({"request_id": target_id, "agent": agent, "event": "traffic.request"}))
         log_file.write_text("\n".join(lines) + "\n")
 
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
-        assert body["truncated"] is True
-        assert body["searched_lines"] == 10000
-        # Target event was in the last 10000 lines, so it should be found
+        assert body["status"] == "incomplete_search"
+        assert body["searched_lines_per_file"] == MAX_EXPLAIN_LINES
+        # Target event was in the last window, so it should still be found.
         assert len(body["events"]) == 1
+
+    def test_explain_rejects_when_agent_unresolvable(self, api, agent_token):
+        """Explain must fail-closed if the caller cannot be identified."""
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=None):
+            valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 403
+
+    def test_explain_scoped_to_calling_agent(self, api, agent_token, tmp_path, monkeypatch):
+        """Agent A must never see events attributed to agent B."""
+        target_id = "req-aabbccdd11223344aabbccdd11223344"
+        log_file = tmp_path / "safeyolo.jsonl"
+        log_file.write_text(
+            json.dumps({"request_id": target_id, "agent": "agent-b", "event": "traffic.request"}) + "\n"
+            + json.dumps({"request_id": target_id, "agent": "agent-a", "event": "traffic.response", "status_code": 200}) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        # Only agent-a's event is returned even though agent-b's shares the id.
+        assert len(body["events"]) == 1
+        assert body["events"][0]["agent"] == "agent-a"
+
+    def test_explain_searches_rotated_files(self, api, agent_token, tmp_path, monkeypatch):
+        """Events that moved into a rotated .jsonl.N file must still be findable."""
+        target_id = "req-11111111111111111111111111111111"
+        agent = "agent-1"
+        current = tmp_path / "safeyolo.jsonl"
+        rotated_1 = tmp_path / "safeyolo.jsonl.1"
+        rotated_2 = tmp_path / "safeyolo.jsonl.2"
+
+        current.write_text(
+            json.dumps({"request_id": "req-00000000000000000000000000000000", "agent": agent, "event": "traffic.request"}) + "\n"
+        )
+        rotated_1.write_text(
+            json.dumps({"request_id": target_id, "agent": agent, "event": "traffic.response", "status_code": 200}) + "\n"
+        )
+        rotated_2.write_text(
+            json.dumps({"request_id": target_id, "agent": agent, "event": "traffic.request", "host": "example.com"}) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(current))
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "complete"
+        assert len(body["events"]) == 2
+
+    def test_explain_drains_writer_before_returning_empty(self, api, agent_token, tmp_path, monkeypatch):
+        """If the writer has pending events, /explain must drain and re-scan
+        rather than silently returning `events: []`.
+        """
+        target_id = "req-22222222222222222222222222222222"
+        agent = "agent-1"
+        log_file = tmp_path / "safeyolo.jsonl"
+        # Empty file — nothing to find on first scan.
+        log_file.write_text("")
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        # Fake writer that reports pending events; the drain callback writes
+        # the event to disk so the rescan finds it — modelling the real
+        # async writer without spinning up a thread.
+        pending = {"count": 1}
+
+        class _FakeWriter:
+            def pending_count(self):
+                return pending["count"]
+
+            def wait_for_drain(self, timeout_s: float):
+                log_file.write_text(
+                    json.dumps({
+                        "request_id": target_id,
+                        "agent": agent,
+                        "event": "traffic.request",
+                    }) + "\n"
+                )
+                pending["count"] = 0
+                return True
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch("safeyolo.core.audit_writer.get_writer", return_value=_FakeWriter()):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "complete"
+        assert len(body["events"]) == 1
+
+    def test_explain_status_pending_when_drain_times_out(self, api, agent_token, tmp_path, monkeypatch):
+        """Drain-timeout + still no events => status=pending, distinguishable
+        from a genuine empty result.
+        """
+        target_id = "req-33333333333333333333333333333333"
+        agent = "agent-1"
+        log_file = tmp_path / "safeyolo.jsonl"
+        log_file.write_text("")
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        class _StuckWriter:
+            def pending_count(self):
+                return 1
+
+            def wait_for_drain(self, timeout_s: float):
+                return False
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch("safeyolo.core.audit_writer.get_writer", return_value=_StuckWriter()):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "pending"
+        assert body["events"] == []
+
+    def test_explain_drains_even_when_scan_finds_partial_events(self, api, agent_token, tmp_path, monkeypatch):
+        """Third-pass review: `/explain` used to only drain the writer when
+        the initial scan returned empty. That meant a request-side event
+        on disk plus a still-queued response-side event would return the
+        partial set as `status=complete`.
+
+        Now the drain runs whenever `pending_count() > 0` — before the
+        authoritative scan — so a partial-set-plus-pending case picks up
+        the pending events too.
+        """
+        target_id = "req-44444444444444444444444444444444"
+        agent = "agent-1"
+        log_file = tmp_path / "safeyolo.jsonl"
+        # Pre-existing request event on disk.
+        log_file.write_text(
+            json.dumps({
+                "request_id": target_id,
+                "agent": agent,
+                "event": "traffic.request",
+                "host": "example.com",
+            }) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        # Writer has a pending response event that only lands on disk when
+        # wait_for_drain runs.
+        pending = {"count": 1}
+
+        class _WriterWithPendingResponse:
+            def pending_count(self):
+                return pending["count"]
+
+            def wait_for_drain(self, timeout_s: float):
+                with open(log_file, "a") as fh:
+                    fh.write(json.dumps({
+                        "request_id": target_id,
+                        "agent": agent,
+                        "event": "traffic.response",
+                        "status_code": 200,
+                    }) + "\n")
+                pending["count"] = 0
+                return True
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch("safeyolo.core.audit_writer.get_writer",
+                   return_value=_WriterWithPendingResponse()):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "complete"
+        # Both events must be present — the drain ran despite the initial
+        # scan finding the request event, so the pending response landed
+        # in time for the authoritative rescan.
+        events = body["events"]
+        assert len(events) == 2
+        assert {e["event"] for e in events} == {"traffic.request", "traffic.response"}
+
+    def test_explain_status_error_on_read_failure(self, api, agent_token, tmp_path, monkeypatch):
+        """A file OSError during scan must surface as `status=error`,
+        distinct from `incomplete_search` (retention bound hit). Callers
+        need to distinguish "search bound exceeded" from "read failed".
+        """
+        target_id = "req-55555555555555555555555555555555"
+        agent = "agent-1"
+        log_file = tmp_path / "safeyolo.jsonl"
+        log_file.write_text(
+            json.dumps({
+                "request_id": target_id, "agent": agent, "event": "traffic.request",
+            }) + "\n"
+        )
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+
+        # Force the scan to hit an OSError on every read.
+        import builtins
+        real_open = builtins.open
+
+        def failing_open(path, *args, **kwargs):
+            if str(path) == str(log_file):
+                raise OSError("simulated read failure")
+            return real_open(path, *args, **kwargs)
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)), \
+             patch("agent_api.open", failing_open, create=True):
+            flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
+            asyncio.run(api.request(flow))
+
+        body = json.loads(flow.response.content)
+        assert body["status"] == "error"
+
+
+class TestTrace:
+    """Tests for /trace?request_id=... (issue #213)."""
+
+    def _seed(self, request_id: str, agent_id: str, *steps):
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+        reset_store_for_tests()
+        store = get_store()
+        for step in steps:
+            store.append_step(request_id, agent_id, step)
+        return store
+
+    def test_missing_param_400(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
+            flow = _make_api_flow("/trace", token=agent_token)
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 400
+
+    def test_invalid_format_400(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
+            flow = _make_api_flow("/trace", token=agent_token, query="request_id=not-a-req")
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 400
+
+    def test_unresolvable_agent_403(self, api, agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=None):
+            valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
+            flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={valid_id}")
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 403
+
+    def test_unknown_id_returns_404(self, api, agent_token):
+        from safeyolo.core.trace import reset_store_for_tests
+        reset_store_for_tests()
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+            valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
+            flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={valid_id}")
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 404
+
+    def test_wrong_agent_returns_same_404(self, api, agent_token):
+        """agent B must not be able to distinguish a trace owned by agent A
+        from a nonexistent one."""
+        from safeyolo.core.trace import STATE_EVALUATED, Step
+        rid = "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        self._seed(rid, "agent-a", Step(addon="x", hook="request", state=STATE_EVALUATED))
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-b")):
+            flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
+            asyncio.run(api.request(flow))
+            assert flow.response.status_code == 404
+
+    def test_owner_receives_ordered_steps(self, api, agent_token):
+        from safeyolo.core.trace import STATE_BYPASSED, STATE_EVALUATED, Step
+        rid = "req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        self._seed(
+            rid, "agent-a",
+            Step(addon="network-guard", hook="request", state=STATE_EVALUATED, outcome="allowed"),
+            Step(addon="credential-guard", hook="request", state=STATE_EVALUATED, outcome="no_detection"),
+            Step(addon="pattern-scanner", hook="request", state=STATE_BYPASSED, reason="prior_response"),
+        )
+
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+            flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
+            asyncio.run(api.request(flow))
+
+        assert flow.response.status_code == 200
+        body = json.loads(flow.response.content)
+        assert body["request_id"] == rid
+        assert body["agent_id"] == "agent-a"
+        assert [s["addon"] for s in body["steps"]] == [
+            "network-guard", "credential-guard", "pattern-scanner",
+        ]
+        assert body["steps"][2]["state"] == "bypassed"
+        assert body["steps"][2]["reason"] == "prior_response"
+
+    def test_not_loaded_synthesis(self, api, agent_token):
+        """Expected addons that never appeared in the trace are surfaced
+        as state=not_loaded so the skill DAG can branch on their absence."""
+        from safeyolo.core import trace as trace_mod
+        from safeyolo.core.trace import STATE_EVALUATED, Step, set_expected_addons
+
+        original_manifest = list(trace_mod.EXPECTED_ADDONS)
+        set_expected_addons(["network-guard", "credential-guard", "pattern-scanner"])
+        try:
+            rid = "req-cccccccccccccccccccccccccccccccc"
+            self._seed(rid, "agent-a", Step(addon="network-guard", hook="request", state=STATE_EVALUATED))
+
+            with _patch_active_token(agent_token), \
+                 patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+                flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
+                asyncio.run(api.request(flow))
+
+            body = json.loads(flow.response.content)
+            not_loaded = {e["addon"] for e in body["not_loaded"]}
+            assert not_loaded == {"credential-guard", "pattern-scanner"}
+        finally:
+            set_expected_addons(original_manifest)
 
 
 class TestPDPEndpoints:
@@ -1141,13 +1487,15 @@ class TestEnvVarPaths:
     def test_log_path_uses_safeyolo_log_path_env(self, api, agent_token, tmp_path, monkeypatch):
         """When SAFEYOLO_LOG_PATH is set, explain reads from that path."""
         target_id = "req-aabbccdd11223344aabbccdd11223344"
+        agent = "agent-1"
         log_file = tmp_path / "custom.jsonl"
         log_file.write_text(
-            json.dumps({"request_id": target_id, "event": "traffic.request", "host": "custom.com"}) + "\n"
+            json.dumps({"request_id": target_id, "agent": agent, "event": "traffic.request", "host": "custom.com"}) + "\n"
         )
         monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
 
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub(agent)):
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={target_id}")
             asyncio.run(api.request(flow))
 
@@ -1161,7 +1509,8 @@ class TestEnvVarPaths:
         monkeypatch.delenv("SAFEYOLO_LOG_PATH", raising=False)
 
         # The default path won't exist in test, so we get empty events (not an error)
-        with _patch_active_token(agent_token):
+        with _patch_active_token(agent_token), \
+             patch.object(api, "_find_addon", return_value=_sd_stub()):
             valid_id = "req-0a1b2c3d4e5f6789abcdef0123456789"
             flow = _make_api_flow("/explain", token=agent_token, query=f"request_id={valid_id}")
             asyncio.run(api.request(flow))

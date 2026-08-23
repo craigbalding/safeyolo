@@ -261,17 +261,23 @@ def make_block_response(
     body: dict,
     addon_name: str,
     extra_headers: dict | None = None,
+    request_id: str | None = None,
 ) -> http.Response:
     """
     Create a standard JSON block response.
 
     All block responses include X-Blocked-By header for chain coordination.
+    When `request_id` is supplied it is echoed back as X-SafeYolo-Request-Id
+    so the originating agent can correlate the block without operator help
+    (issue #213).
 
     Args:
         status: HTTP status code (403, 429, 503, etc.)
         body: Response body as dict (will be JSON-encoded)
         addon_name: Name of blocking addon (for X-Blocked-By header)
         extra_headers: Additional headers to include
+        request_id: SafeYolo request_id (echoed as X-SafeYolo-Request-Id).
+            Callers that go through `SecurityAddon.block` pass it automatically.
 
     Returns:
         mitmproxy http.Response
@@ -284,6 +290,8 @@ def make_block_response(
         "Content-Type": "application/json",
         "X-Blocked-By": addon_name,
     }
+    if request_id:
+        headers["X-SafeYolo-Request-Id"] = request_id
     if extra_headers:
         headers.update(extra_headers)
 

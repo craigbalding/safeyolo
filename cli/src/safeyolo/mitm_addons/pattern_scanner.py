@@ -33,6 +33,7 @@ from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import Decision, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.trace import trace_addon_hook
 from safeyolo.core.utils import make_block_response, sanitize_for_log
 from safeyolo.detection.patterns import (
     PatternRule,
@@ -43,6 +44,15 @@ from safeyolo.detection.patterns import (
 log = logging.getLogger("safeyolo.pattern-scanner")
 
 
+# =============================================================================
+# Trace outcome vocabulary (issue #213)
+# =============================================================================
+OUTCOME_NO_RULES = "no_rules"
+OUTCOME_NO_MATCH = "no_match"
+OUTCOME_MATCH_LOGGED = "match_logged"     # rule matched, warn-only mode
+OUTCOME_MATCH_BLOCKED = "match_blocked"   # rule matched and produced a block
+
+
 class PatternScanner(SecurityAddon):
     """User-configurable pattern scanner for URLs, headers, and bodies.
 
@@ -51,6 +61,7 @@ class PatternScanner(SecurityAddon):
     """
 
     name = "pattern-scanner"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -134,7 +145,14 @@ class PatternScanner(SecurityAddon):
         """Block request/response with error."""
         self.blocks_total += 1
         flow.metadata["blocked_by"] = self.name
-        flow.response = make_block_response(status, body, self.name, extra_headers)
+        flow.response = make_block_response(
+            status,
+            body,
+            self.name,
+            extra_headers,
+            request_id=flow.metadata.get("request_id"),
+        )
+        self._trace_evaluated(flow, outcome="blocked", status=status)
 
     def _scan_for_scope(
         self,
@@ -228,16 +246,19 @@ class PatternScanner(SecurityAddon):
 
         return None, ""
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Scan request for user-defined patterns."""
         # Reload patterns if policy changed
         self._maybe_reload_patterns()
 
         if not self.rules:
+            self._trace_evaluated(flow, outcome=OUTCOME_NO_RULES)
             return
 
         rule, location = self._scan_request_content(flow)
         if not rule:
+            self._trace_evaluated(flow, outcome=OUTCOME_NO_MATCH, rules_evaluated=len(self.rules))
             return
 
         flow.metadata["pattern_matched"] = rule.name
@@ -262,6 +283,8 @@ class PatternScanner(SecurityAddon):
                 host=flow.request.host,
                 **match_fields,
             )
+            # self.block() records the trace step via base wrapper; the extra
+            # outcome tag here would double-count. Base emits outcome=blocked.
             self.block(flow, 403, {
                 "error": "Request blocked by pattern policy",
                 "rule": rule.name,
@@ -277,13 +300,21 @@ class PatternScanner(SecurityAddon):
                 host=flow.request.host,
                 **match_fields,
             )
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_MATCH_LOGGED,
+                rule_name=rule.name,
+                location=location,
+            )
 
+    @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Scan response for user-defined patterns."""
         # Reload patterns if policy changed
         self._maybe_reload_patterns()
 
         if not self.rules:
+            self._trace_evaluated(flow, outcome=OUTCOME_NO_RULES, hook="response")
             return
 
         if not flow.response:
@@ -291,6 +322,12 @@ class PatternScanner(SecurityAddon):
 
         rule, location = self._scan_response_content(flow)
         if not rule:
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_NO_MATCH,
+                hook="response",
+                rules_evaluated=len(self.rules),
+            )
             return
 
         flow.metadata["pattern_matched_response"] = rule.name
@@ -329,6 +366,13 @@ class PatternScanner(SecurityAddon):
                 summary=f"Pattern '{rule.name}' matched in response {location} from {sanitize_for_log(flow.request.host)}",
                 host=flow.request.host,
                 **match_fields,
+            )
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_MATCH_LOGGED,
+                hook="response",
+                rule_name=rule.name,
+                location=location,
             )
 
     def get_stats(self) -> dict:

@@ -1,19 +1,26 @@
 """
-request_id.py - Request ID generator and hop-by-hop header stripper
+request_id.py - Request ID generator, trace-marker consumer, and header hygiene
 
 Runs early in the addon chain to:
 1. Assign a unique request_id to every request (for event correlation)
-2. Strip hop-by-hop headers that must not be forwarded to origin servers
+2. Consume opt-in `X-SafeYolo-Trace` and set flow.metadata["trace"]
+3. Strip SafeYolo-internal correlation headers a client must not spoof or
+   have forwarded upstream (X-SafeYolo-Trace, X-SafeYolo-Request-Id)
+4. Strip hop-by-hop headers that must not be forwarded to origin servers
+5. On response, stamp X-SafeYolo-Request-Id so the originating agent can
+   correlate its request without asking the operator to search host logs
 
 The request_id is stored in flow.metadata["request_id"] and should be included
 in all logged events for traceability. The ID format is defined by
 REQUEST_ID_PATTERN below — consumers (e.g. agent_api) import it so the
 generator and validator cannot drift.
 
-Note: the "runs FIRST" claim is not literally true — loop_guard, memory_monitor,
-and admin_shield load before this addon. See Batch 9 (loop_guard review) for the
-load-order question and the fix to ensure loop-detected audit events carry a
-request_id.
+Note: this addon's `request` hook is not literally the first one to run —
+loop_guard, memory_monitor, and admin_shield load before it. Any addon
+that needs to respond from `requestheaders` (which fires before any
+`request` hook) uses `ensure_request_id(flow)` to assign the id itself
+so its block response can carry X-SafeYolo-Request-Id and its audit
+event can be correlated (loop_guard uses this today).
 
 Hop-by-hop headers (RFC 7230 Section 6.1):
 These are meaningful only for a single transport-level connection and must
@@ -40,6 +47,25 @@ log = logging.getLogger("safeyolo.request_id")
 # generator and validator cannot drift.
 REQUEST_ID_PREFIX = "req-"
 REQUEST_ID_PATTERN = re.compile(r"^req-[a-f0-9]{32}$")
+
+# Response header used to hand the request_id back to the originating client.
+# Also used as the *inbound* header name we strip from incoming requests so a
+# client cannot supply its own value and have it either mistaken for identity
+# or forwarded upstream.
+RESPONSE_REQUEST_ID_HEADER = "X-SafeYolo-Request-Id"
+
+# Opt-in trace marker (issue #213). Consumed by this addon; never forwarded.
+TRACE_REQUEST_HEADER = "X-SafeYolo-Trace"
+
+# All SafeYolo-internal correlation headers. Any inbound header matching one
+# of these is deleted before the request reaches downstream addons or the
+# upstream server. Keep this list narrow: add-only, never removed silently.
+_INTERNAL_CORRELATION_HEADERS = frozenset({
+    header.lower() for header in (
+        RESPONSE_REQUEST_ID_HEADER,
+        TRACE_REQUEST_HEADER,
+    )
+})
 
 # RFC 7230 Section 6.1 - Hop-by-hop headers that must not be forwarded
 # https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
@@ -90,6 +116,25 @@ def _is_websocket_upgrade(flow: http.HTTPFlow) -> bool:
     return "upgrade" in _connection_tokens(flow)
 
 
+def ensure_request_id(flow: http.HTTPFlow) -> str:
+    """Assign a request_id to a flow if it doesn't already have one.
+
+    Returns the request_id (existing or newly assigned). Idempotent.
+
+    Exists so addons that respond from `requestheaders` (loop-guard, in
+    practice) can carry an X-SafeYolo-Request-Id on their block response —
+    RequestIdGenerator.request() would otherwise never run for those
+    flows because a synthesised response short-circuits mitmproxy's
+    `request` hook (issue #213 third-pass review).
+    """
+    existing = flow.metadata.get("request_id")
+    if existing:
+        return existing
+    request_id = f"{REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+    flow.metadata["request_id"] = request_id
+    return request_id
+
+
 class RequestIdGenerator:
     """
     Assigns unique request IDs and strips hop-by-hop headers.
@@ -105,14 +150,27 @@ class RequestIdGenerator:
     name = "request-id"
 
     def request(self, flow: http.HTTPFlow):
-        """Assign request_id, start_time, and strip hop-by-hop headers."""
-        # 1. Assign unique request ID (128 bits of entropy from uuid4).
-        #    Must match REQUEST_ID_PATTERN — consumers rely on the format.
-        request_id = f"{REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
-        flow.metadata["request_id"] = request_id
+        """Assign request_id, consume the trace marker, strip internal + hop-by-hop headers."""
+        # 1. Assign unique request ID via ensure_request_id so any earlier
+        #    hook (loop-guard's `requestheaders`, in practice) that already
+        #    reserved a correlation ID keeps it. Without this, the normal
+        #    path would silently replace an early-hook-assigned ID and
+        #    every log/event/response header would then reference a
+        #    different id than the one on the wire.
+        ensure_request_id(flow)
+        # start_time is always freshly stamped — it's per-hook timing, not
+        # per-request identity, so it doesn't inherit from an earlier hook.
         flow.metadata["start_time"] = time.time()
 
-        # 2. Detect WebSocket upgrades before stripping headers
+        # 2. Consume trace marker BEFORE stripping. Presence of the header
+        #    (any non-empty value) opts this request into pipeline tracing;
+        #    the header itself is stripped below alongside other internal
+        #    correlation headers so it never reaches upstream services.
+        trace_header = flow.request.headers.get(TRACE_REQUEST_HEADER, "")
+        if trace_header:
+            flow.metadata["trace"] = True
+
+        # 3. Detect WebSocket upgrades before stripping headers
         is_websocket = _is_websocket_upgrade(flow)
         if is_websocket:
             flow.metadata["is_websocket"] = True
@@ -122,18 +180,45 @@ class RequestIdGenerator:
                 sanitize_for_log(flow.request.path),
             )
 
-        # 3. Strip hop-by-hop headers (security: prevent credential leakage)
+        # 4. Strip SafeYolo-internal correlation headers + hop-by-hop headers.
+        #    A client-supplied X-SafeYolo-Request-Id must never be trusted as
+        #    identity or forwarded upstream; the trace marker was consumed in
+        #    step 2 and now needs the same treatment.
         # Honour any extra hop-by-hop names listed in the Connection header
         # (RFC 7230 §6.1 permits clients to nominate per-hop headers there).
         extra_hop_by_hop = _connection_tokens(flow)
 
-        headers_to_remove = HOP_BY_HOP_HEADERS | extra_hop_by_hop
+        headers_to_remove = (
+            _INTERNAL_CORRELATION_HEADERS | HOP_BY_HOP_HEADERS | extra_hop_by_hop
+        )
         # Preserve Upgrade + Connection for WebSocket handshakes
         if is_websocket:
             headers_to_remove = headers_to_remove - WEBSOCKET_HEADERS
         for header in list(flow.request.headers.keys()):
             if header.lower() in headers_to_remove:
                 del flow.request.headers[header]
+
+    def response(self, flow: http.HTTPFlow):
+        """Stamp X-SafeYolo-Request-Id on the outbound response.
+
+        Applies to every response the proxy hands back — upstream-served,
+        SafeYolo-synthesised block, and Agent API — so the originating
+        agent can always correlate its request without asking the operator
+        to search host logs.
+
+        Idempotent: `make_block_response` already stamps this header for
+        block paths that carry the request_id; skipping when present keeps
+        us from clobbering that value on the (unlikely) chance the two
+        differ.
+        """
+        if not flow.response:
+            return
+        request_id = flow.metadata.get("request_id")
+        if not request_id:
+            return
+        if RESPONSE_REQUEST_ID_HEADER in flow.response.headers:
+            return
+        flow.response.headers[RESPONSE_REQUEST_ID_HEADER] = request_id
 
 
 addons = [RequestIdGenerator()]

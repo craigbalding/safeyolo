@@ -30,9 +30,24 @@ from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
+from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import BackgroundWorker, atomic_write_json, make_block_response, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.circuit-breaker")
+
+
+# =============================================================================
+# Trace outcome vocabulary (issue #213)
+# =============================================================================
+OUTCOME_ALLOWED = "allowed"
+OUTCOME_EXCLUDED_DOMAIN = "excluded_domain"
+# Response-hook outcomes — mirror what the existing decision path did.
+# The trace does not reinterpret HTTP status; it observes which branch of
+# the pre-existing success/failure/no-action logic actually ran.
+OUTCOME_SUCCESS_RECORDED = "success_recorded"
+OUTCOME_FAILURE_RECORDED = "failure_recorded"
+OUTCOME_STATUS_NO_ACTION = "status_no_action"     # 4xx (non-429) — circuit not updated
+OUTCOME_PRIOR_BLOCK = "prior_block"               # response synthesised by another addon
 
 
 class CircuitState(Enum):
@@ -149,6 +164,7 @@ class CircuitBreaker(SecurityAddon):
     """
 
     name = "circuit-breaker"
+    trace_expected = True
 
     def __init__(self):
         super().__init__()
@@ -299,7 +315,18 @@ class CircuitBreaker(SecurityAddon):
     def block(self, flow: http.HTTPFlow, status: int, body: dict, extra_headers: dict = None):
         """Override base block() - circuit breaker has its own stats."""
         flow.metadata["blocked_by"] = self.name
-        flow.response = make_block_response(status, body, self.name, extra_headers)
+        flow.response = make_block_response(
+            status,
+            body,
+            self.name,
+            extra_headers,
+            request_id=flow.metadata.get("request_id"),
+        )
+        # The base class block() records the trace step, but this override
+        # skips super() to avoid its stats accounting. Without this line
+        # an OPEN-circuit block would show as `not_loaded` (issue #213
+        # third-pass review).
+        self._trace_evaluated(flow, outcome="blocked", status=status)
 
     def _log_circuit_event(self, event: str, domain: str, flow: http.HTTPFlow | None = None, **extra):
         """Log circuit breaker state transition as ops event."""
@@ -490,9 +517,11 @@ class CircuitBreaker(SecurityAddon):
         self._log_circuit_event("force_open", domain)
         log.info(f"Circuit FORCE OPEN: {domain}")
 
+    @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Check circuit before request."""
         if not self.is_enabled():
+            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED)
             return
 
         if self.is_bypassed(flow):
@@ -502,6 +531,7 @@ class CircuitBreaker(SecurityAddon):
 
         domain = flow.request.host
         if domain in self._excluded_domains:
+            self._trace_evaluated(flow, outcome=OUTCOME_EXCLUDED_DOMAIN)
             return
 
         allowed, status = self.should_allow_request(domain)
@@ -540,15 +570,25 @@ class CircuitBreaker(SecurityAddon):
                     "X-Circuit-State": status.state.value,
                 },
             )
+            return
 
+        self._trace_evaluated(
+            flow,
+            outcome=OUTCOME_ALLOWED,
+            circuit_state=status.state.value,
+        )
+
+    @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Record success/failure based on response."""
         if not self.is_enabled():
+            self._trace_bypassed(flow, reason=REASON_ADDON_DISABLED, hook="response")
             return
 
         self._maybe_reload_config()
 
         if flow.metadata.get("blocked_by"):
+            self._trace_evaluated(flow, outcome=OUTCOME_PRIOR_BLOCK, hook="response")
             return
 
         if not flow.response:
@@ -556,13 +596,35 @@ class CircuitBreaker(SecurityAddon):
 
         domain = flow.request.host
         if domain in self._excluded_domains:
+            self._trace_evaluated(flow, outcome=OUTCOME_EXCLUDED_DOMAIN, hook="response")
             return
         status_code = flow.response.status_code
 
         if status_code >= 500 or status_code == 429:
             self.record_failure(domain, f"HTTP {status_code}", flow=flow)
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_FAILURE_RECORDED,
+                hook="response",
+                status_code=status_code,
+            )
         elif status_code < 400:
             self.record_success(domain, flow=flow)
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_SUCCESS_RECORDED,
+                hook="response",
+                status_code=status_code,
+            )
+        else:
+            # 4xx (excluding 429) doesn't affect the circuit — but the
+            # response hook still ran, so record it explicitly.
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_STATUS_NO_ACTION,
+                hook="response",
+                status_code=status_code,
+            )
 
     def get_stats(self) -> dict:
         """Get circuit breaker statistics."""
