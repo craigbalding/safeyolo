@@ -1,0 +1,46 @@
+schema_version: 1
+name: github
+description: "GitHub — smart-HTTP git (fetch/push) via a fine-grained PAT held outside the agent"
+default_host: github.com
+
+auth:
+  type: basic
+  header: Authorization
+  # Username is arbitrary for PAT auth — GitHub reads the password field only.
+  # We use "safeyolo" so the audit trail on GitHub's side is unambiguous.
+  username: safeyolo
+
+# Only the actual receive-pack write is risky. Info/refs probes and fetch traffic
+# are treated as normal capability routes so re-running `git push` after
+# operator approval matches a single once-grant on the concrete write.
+risky_routes:
+  - group: "Repository writes"
+    description: "Push writes agent-controlled commits into the operator's repositories"
+    tactics: [impact, persistence]
+    enables: [supply_chain, credential_access]
+    routes:
+      - path: "/*/*/git-receive-pack"
+        methods: [POST]
+        description: "git push — writes commits to the remote repository"
+        irreversible: false
+
+capabilities:
+  git_fetch:
+    description: "Read-only smart-HTTP clone/fetch (no push)"
+    routes:
+      # Capability probes. `.git` suffix is optional in the path.
+      - methods: [GET]
+        path: "/*/*/info/refs"
+      # Fetch data upload from client (git protocol name is inverted vs. HTTP).
+      - methods: [POST]
+        path: "/*/*/git-upload-pack"
+
+  git_push:
+    description: "Fetch + push via smart-HTTP (push is gated by risky route approval)"
+    routes:
+      - methods: [GET]
+        path: "/*/*/info/refs"
+      - methods: [POST]
+        path: "/*/*/git-upload-pack"
+      - methods: [POST]
+        path: "/*/*/git-receive-pack"

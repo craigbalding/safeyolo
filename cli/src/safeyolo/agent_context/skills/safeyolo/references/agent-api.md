@@ -151,7 +151,10 @@ returning unrelated recent flows. Request and response body endpoints return
 ## Service gateway
 
 The gateway lets an agent call an approved service without seeing the upstream
-credential.
+credential. The credential itself may live in the local encrypted vault or in
+an external secrets manager (e.g. 1Password) — the agent flow is identical
+either way, because resolution happens inside the proxy after policy and
+approval checks succeed.
 
 1. List authorized and available services:
 
@@ -186,10 +189,19 @@ credential.
 
 5. After operator approval, fetch `/gateway/services` again. Use the returned
    `sgw_` token in the service's configured auth header. SafeYolo validates the
-   agent, host, capability, route, risk grants, and contract before replacing
-   that token with the vaulted credential. Credential injection is HTTPS-only.
+   agent, host, capability, route, risk grants, and contract, then resolves
+   the real credential through its configured provider (local vault or an
+   external secrets manager) and substitutes it into the upstream request.
+   Credential injection is HTTPS-only; the real credential never returns to
+   the agent.
 
 Never print, persist, or send an `sgw_` token to another agent.
+
+For git over HTTPS to a gateway-managed service (e.g. github.com), the guest
+image installs `git-credential-safeyolo` and points git's credential helper at
+it, so `git push` / `git fetch` transparently use an `sgw_` token as the HTTPS
+Basic password. The real PAT is resolved and injected by the proxy on the
+operator's behalf; the agent process never sees it.
 
 ## Agent collaboration with plumb
 

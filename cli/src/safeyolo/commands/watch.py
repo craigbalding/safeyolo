@@ -422,7 +422,14 @@ def _gateway_format_row(event: dict) -> tuple[str, str, str, str]:
     service = details.get("service", "unknown")
     method = details.get("method", "")
     path = details.get("path", "")
-    action = f"{service} {method} {path}"
+    # Prefer service-supplied semantic action ("github: push owner/repo") over
+    # the raw METHOD path when the addon has enriched details for us.
+    operation = details.get("operation", "")
+    repository = details.get("repository", "")
+    if operation and repository:
+        action = f"{service}: {operation} {repository}"
+    else:
+        action = f"{service} {method} {path}"
     # Build risk string from tactics
     tactics = details.get("tactics", [])
     risk_parts = [TACTIC_LABELS.get(t, t) for t in tactics] if tactics else []
@@ -1522,6 +1529,10 @@ def format_risky_route_approval(event: dict) -> Panel:
     irreversible = details.get("irreversible", False)
     description = details.get("description", "")
     agent = event.get("agent", "unknown")
+    # Optional protocol-specific semantic fields — currently populated for the
+    # github service (operation ∈ {fetch, push}, repository = "owner/repo").
+    operation = details.get("operation", "")
+    repository = details.get("repository", "")
 
     # Format timestamp
     timestamp_str = ""
@@ -1541,6 +1552,14 @@ def format_risky_route_approval(event: dict) -> Panel:
     table.add_row("Service", f"[cyan]{escape(service)}[/cyan]")
     if capability:
         table.add_row("Capability", escape(capability))
+    # When the service supplies a semantic operation + repository (e.g. github
+    # push craigbalding/safeyolo) prefer that over the raw METHOD path so the
+    # operator sees the intent, not the wire format.
+    if operation and repository:
+        table.add_row(
+            "Action",
+            f"[bold]{escape(service)}: {escape(operation)} {escape(repository)}[/bold]",
+        )
     display_path = path or risky_route_pattern
     table.add_row("Route", f"[bold]{escape(method)} {escape(display_path)}[/bold]")
     if description:

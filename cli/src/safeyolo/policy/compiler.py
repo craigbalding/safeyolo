@@ -520,7 +520,27 @@ def compile_gateway(
             elif isinstance(service_config, dict):
                 # v2: capability field (preferred), fall back to role for compat
                 capability_name = service_config.get("capability", service_config.get("role", ""))
-                vault_token = service_config.get("token", "")
+                # Credential reference: `credential:` is the provider-neutral canonical
+                # field (bare name → local vault, `op://...` → 1Password, unknown scheme
+                # fails closed). `token:` is retained as a compat alias for existing
+                # policies that pre-date external credential providers.
+                if "credential" in service_config:
+                    vault_token = service_config.get("credential", "")
+                    if "token" in service_config:
+                        log.warning(
+                            "Agent %s service %s specifies both 'credential' and 'token'; using 'credential'",
+                            sanitize_for_log(agent_name),
+                            sanitize_for_log(service_name),
+                        )
+                elif "token" in service_config:
+                    vault_token = service_config.get("token", "")
+                    log.info(
+                        "Agent %s service %s uses deprecated 'token:' field; rename to 'credential:'",
+                        sanitize_for_log(agent_name),
+                        sanitize_for_log(service_name),
+                    )
+                else:
+                    vault_token = ""
                 account = service_config.get("account", "agent")
             else:
                 log.warning(
@@ -537,6 +557,19 @@ def compile_gateway(
                     sanitize_for_log(agent_name),
                 )
                 continue
+
+            if not vault_token:
+                # An empty credential reference will fail closed at resolve
+                # time (local provider will raise CredentialNotFound), but the
+                # gateway would still mint an sgw_ token that can never
+                # succeed. Warn now so the misconfiguration surfaces during
+                # compile rather than on the first request.
+                log.warning(
+                    "Agent %s service %s has no credential reference; "
+                    "set 'credential:' to a local vault name or op:// URI",
+                    sanitize_for_log(agent_name),
+                    sanitize_for_log(service_name),
+                )
 
             sgw_token = mint_gateway_token()
             token_map[sgw_token] = {

@@ -143,6 +143,23 @@ rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key "$ROOTFS"/etc/ssh/ssh_host_*_key.pub 2>/d
 cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
+# Install the SafeYolo git credential helper and wire it as the default
+# credential helper for github.com. The helper returns a SafeYolo-minted
+# synthetic (sgw_...) token; the real PAT is resolved inside the proxy after
+# operator approval and the agent process never sees it.
+cp "$GUEST_SRC_DIR/rootfs/git-credential-safeyolo" "$ROOTFS/usr/local/bin/git-credential-safeyolo"
+chmod +x "$ROOTFS/usr/local/bin/git-credential-safeyolo"
+
+# Global git config snippet — scoped to github.com so other hosts are
+# unaffected. `helper =` on its own line resets any previously-configured
+# helper so cached credentials from a prior session can't leak in.
+mkdir -p "$ROOTFS/etc"
+cat > "$ROOTFS/etc/gitconfig" <<'GITCONFIG'
+[credential "https://github.com"]
+	helper =
+	helper = safeyolo
+GITCONFIG
+
 # Pre-create the host bind-mount destinations.  Custom rootfs builders call
 # the same function through install_safeyolo_guest_common, keeping the two
 # image-build paths on one runtime contract.

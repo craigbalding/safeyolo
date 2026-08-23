@@ -282,7 +282,7 @@ class TestCredentialInjection:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is None
@@ -302,7 +302,7 @@ class TestCredentialInjection:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is None
@@ -322,7 +322,7 @@ class TestCredentialInjection:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     gw.request(flow)
 
         assert flow.response is not None
@@ -476,14 +476,16 @@ class TestCredentialInjection:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=None):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=None):
                     gw.request(flow)
 
         assert flow.response is not None
         assert flow.response.status_code == 503
         body = json.loads(flow.response.content)
-        assert "VAULT_UNAVAILABLE" in body["reason_codes"]
-        assert "vault" in body["reflection"].lower()
+        # With the provider abstraction, a missing local vault is surfaced by
+        # the local provider as a resolve failure rather than a gateway-level
+        # "vault unavailable" branch.
+        assert "PROVIDER_RESOLVE_FAILED" in body["reason_codes"]
 
     def test_credential_not_found_returns_503(self, make_flow, configured_gateway):
         """G4: When credential is not in vault, gateway returns 503."""
@@ -500,14 +502,16 @@ class TestCredentialInjection:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=empty_vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=empty_vault):
                     gw.request(flow)
 
         assert flow.response is not None
         assert flow.response.status_code == 503
         body = json.loads(flow.response.content)
         assert "CREDENTIAL_NOT_FOUND" in body["reason_codes"]
-        assert "safeyolo agent authorize" in body["reflection"]
+        # New provider-neutral reflection points to policy.toml (where the ref
+        # lives) rather than to any single provider's CLI.
+        assert "policy.toml" in body["reflection"]
 
 
 # --- Risky Route PDP Integration Tests ---
@@ -570,7 +574,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     # Patch inside the _check_risky_route method's import scope
                     with patch("pdp.is_policy_client_configured", return_value=True):
                         with patch("pdp.get_policy_client", return_value=mock_client):
@@ -658,7 +662,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     with patch("pdp.is_policy_client_configured", return_value=True):
                         with patch("pdp.get_policy_client", return_value=mock_client):
                             gateway.request(flow)
@@ -721,7 +725,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     # PDP not configured — risky route must fail closed
                     with patch("pdp.is_policy_client_configured", return_value=False):
                         gw.request(flow)
@@ -782,7 +786,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     with patch("pdp.is_policy_client_configured", return_value=True):
                         with patch("pdp.get_policy_client", return_value=mock_client):
                             gw.request(flow)
@@ -843,7 +847,7 @@ capabilities:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     with patch("pdp.is_policy_client_configured", return_value=True):
                         with patch("pdp.get_policy_client", return_value=mock_client):
                             gateway.request(flow)
@@ -1049,7 +1053,7 @@ class TestFullFlow:
         # /v1/resources should match /v1/**
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     gw.request(flow)
 
         assert flow.response is None
@@ -1242,7 +1246,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     gw.request(flow)
 
         # Should pass through (grant bypassed PDP)
@@ -1325,7 +1329,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     with patch("pdp.is_policy_client_configured", return_value=True):
                         with patch("pdp.get_policy_client", return_value=mock_client):
                             gw.request(flow)
@@ -1565,7 +1569,7 @@ risky_routes:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault):
                     with patch("pdp.is_policy_client_configured", return_value=True):
                         with patch("pdp.get_policy_client", return_value=mock_client):
                             with patch("service_gateway.write_event") as mock_write:
@@ -1969,7 +1973,7 @@ capabilities:
             agent="testbot",
             service_name="contractsvc",
             capability_name="read_items",
-            vault_token="test-cred",
+            credential_ref="test-cred",
         )
         gw._host_map = {"api.contractsvc.com": "contractsvc"}
         return gw, token, contract_registry, contract_vault
@@ -2001,7 +2005,7 @@ capabilities:
 
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     gw.request(flow)
 
         if flow.response is not None:
@@ -2180,7 +2184,7 @@ capabilities:
             agent="testbot",
             service_name="hygienesvc",
             capability_name="reader",
-            vault_token="test-cred",
+            credential_ref="test-cred",
         )
         gw._host_map = {"api.hygienesvc.com": "hygienesvc"}
         gw.add_contract_binding(
@@ -2249,7 +2253,7 @@ capabilities:
         flow.request.headers["content-type"] = "text/plain"
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     gw.request(flow)
         assert flow.response is not None
         body = json.loads(flow.response.content)
@@ -2264,7 +2268,7 @@ capabilities:
         )
         with patch("service_gateway.ctx", _mock_ctx()):
             with patch("service_gateway.get_service_registry", return_value=registry):
-                with patch("service_gateway.get_vault", return_value=vault_obj):
+                with patch("safeyolo.core.providers.local.get_vault", return_value=vault_obj):
                     gw.request(flow)
         if flow.response is not None:
             body = json.loads(flow.response.content)

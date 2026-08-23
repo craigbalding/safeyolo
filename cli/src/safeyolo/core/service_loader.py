@@ -28,22 +28,41 @@ from safeyolo.core.utils import sanitize_for_log
 log = logging.getLogger("safeyolo.service-loader")
 
 
+_VALID_AUTH_TYPES = frozenset({"bearer", "api_key", "basic"})
+
+
 @dataclass
 class AuthConfig:
-    """Authentication configuration for a service."""
+    """Authentication configuration for a service.
 
-    type: str  # "bearer", "api_key"
+    `username` is only meaningful when `type == "basic"`: the resolved credential
+    value is used as the password, and the header is emitted as
+    `Authorization: Basic base64(username:password)`.
+    """
+
+    type: str  # "bearer" | "api_key" | "basic"
     header: str = "Authorization"
     scheme: str = "Bearer"
     refresh_on_401: bool = False
+    username: str = ""  # required when type == "basic"
 
     @classmethod
     def from_dict(cls, d: dict) -> "AuthConfig":
+        auth_type = d["type"]
+        if auth_type not in _VALID_AUTH_TYPES:
+            raise ValueError(
+                f"Invalid auth.type '{auth_type}'. "
+                f"Must be one of: {', '.join(sorted(_VALID_AUTH_TYPES))}"
+            )
+        username = d.get("username", "")
+        if auth_type == "basic" and not username:
+            raise ValueError("auth.type='basic' requires a non-empty 'username' field")
         return cls(
-            type=d["type"],
+            type=auth_type,
             header=d.get("header", "Authorization"),
             scheme=d.get("scheme", "Bearer"),
             refresh_on_401=d.get("refresh_on_401", False),
+            username=username,
         )
 
 

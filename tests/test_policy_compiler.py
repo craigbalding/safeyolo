@@ -1185,6 +1185,83 @@ class TestCompileGateway:
         gateway = compile_gateway({"agents": {}})
         assert gateway == {"token_map": {}, "agent_env": {}, "host_map": {}}
 
+    def test_compile_gateway_warns_on_missing_credential_ref(self, caplog):
+        """A service block with no `credential:` (nor legacy `token:`) still
+        mints a binding, but the compiler must warn — the sgw_ token would
+        otherwise fail closed only at request time."""
+        import logging
+
+        from safeyolo.policy.compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "a1": {"services": {"gmail": {"capability": "readonly"}}},
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger="safeyolo.policy-compiler"):
+            gateway = compile_gateway(raw)
+
+        # Binding is still produced (fails closed at resolve time).
+        assert len(gateway["token_map"]) == 1
+        binding = list(gateway["token_map"].values())[0]
+        assert binding["token"] == ""
+        # Warning fired identifying the agent + service.
+        assert any(
+            "no credential reference" in rec.message
+            and "a1" in rec.message
+            and "gmail" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_compile_gateway_credential_field_preferred_over_token(self, caplog):
+        """When both fields are set, `credential:` wins and a warning fires."""
+        import logging
+
+        from safeyolo.policy.compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "a1": {
+                    "services": {
+                        "gmail": {
+                            "capability": "readonly",
+                            "credential": "gmail-new",
+                            "token": "gmail-old",
+                        }
+                    },
+                },
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger="safeyolo.policy-compiler"):
+            gateway = compile_gateway(raw)
+
+        binding = list(gateway["token_map"].values())[0]
+        assert binding["token"] == "gmail-new"
+        assert any(
+            "specifies both 'credential' and 'token'" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_compile_gateway_op_scheme_credential_ref(self):
+        """`op://...` refs pass through unchanged into the binding."""
+        from safeyolo.policy.compiler import compile_gateway
+
+        raw = {
+            "agents": {
+                "a1": {
+                    "services": {
+                        "github": {
+                            "capability": "git_push",
+                            "credential": "op://Engineering/GitHub PAT/credential",
+                        }
+                    },
+                },
+            },
+        }
+        gateway = compile_gateway(raw)
+        binding = list(gateway["token_map"].values())[0]
+        assert binding["token"] == "op://Engineering/GitHub PAT/credential"
+
     def test_compile_gateway_no_agents(self):
         from safeyolo.policy.compiler import compile_gateway
 

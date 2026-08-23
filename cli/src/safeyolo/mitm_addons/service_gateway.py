@@ -37,7 +37,16 @@ from pathlib import Path
 from mitmproxy import ctx, http
 
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
+from safeyolo.core.credential_provider import (
+    CredentialNotFound,
+    CredentialProviderError,
+    ResolveFailed,
+    UnknownScheme,
+    refresh_credential,
+    resolve_credential,
+)
 from safeyolo.core.flow_cache import path_no_query
+import safeyolo.core.providers  # noqa: F401 — side-effect: register built-in providers
 from safeyolo.core.service_loader import get_service_registry
 from safeyolo.core.utils import make_block_response, matches_resource_pattern, sanitize_for_log, write_event
 from safeyolo.core.vault import get_vault
@@ -52,12 +61,16 @@ SGW_TOKEN_LEN = 64  # hex chars after prefix
 
 @dataclass
 class TokenBinding:
-    """Maps a gateway token to an agent/service/capability + vault credential."""
+    """Maps a gateway token to an agent/service/capability + credential reference.
+
+    `credential_ref` is a provider-neutral reference resolved through the
+    CredentialProvider registry: bare name → local vault, `op://...` → 1Password.
+    """
 
     agent: str
     service_name: str
     capability_name: str
-    vault_token: str  # vault credential name
+    credential_ref: str  # provider-neutral credential reference
     account: str = "agent"  # persona
 
 
@@ -151,6 +164,62 @@ class GatewayStats:
 def mint_gateway_token() -> str:
     """Generate a new gateway token."""
     return f"{SGW_TOKEN_PREFIX}{secrets.token_hex(SGW_TOKEN_LEN // 2)}"
+
+
+def _extract_basic_password(header_value: str) -> str:
+    """Return the password half of an `Authorization: Basic ...` header.
+
+    Returns "" on any parse failure — the caller then treats the request as a
+    non-gateway request. Never raises, never logs the decoded content.
+    """
+    import base64
+    import binascii
+
+    if not header_value:
+        return ""
+    prefix, _, rest = header_value.partition(" ")
+    if prefix.lower() != "basic" or not rest:
+        return ""
+    try:
+        decoded = base64.b64decode(rest.strip(), validate=True).decode("utf-8", errors="strict")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return ""
+    _user, sep, password = decoded.partition(":")
+    if not sep:
+        return ""
+    return password
+
+
+def _parse_git_smart_http(path: str) -> dict[str, str] | None:
+    """Extract (repository, operation) from a GitHub smart-HTTP URL path.
+
+    Returns None if the path doesn't look like a smart-HTTP endpoint. Recognised
+    endpoints (with optional `.git` suffix on the repo segment):
+
+        /{owner}/{repo}/info/refs           → operation="fetch" (probe)
+        /{owner}/{repo}/git-upload-pack     → operation="fetch"
+        /{owner}/{repo}/git-receive-pack    → operation="push"
+    """
+    parts = [p for p in path.strip("/").split("/") if p]
+    if len(parts) < 3:
+        return None
+    endpoint = parts[-1]
+    if endpoint == "git-receive-pack":
+        operation = "push"
+    elif endpoint in ("git-upload-pack", "refs"):
+        operation = "fetch"
+    else:
+        return None
+    # Handle both `/owner/repo/endpoint` and `/owner/repo/info/refs`.
+    if endpoint == "refs" and len(parts) >= 4 and parts[-2] == "info":
+        owner, repo = parts[-4], parts[-3]
+    else:
+        owner, repo = parts[-3], parts[-2]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo:
+        return None
+    return {"repository": f"{owner}/{repo}", "operation": operation}
 
 
 @dataclass
@@ -337,7 +406,7 @@ class ServiceGateway:
                         agent=binding["agent"],
                         service_name=binding["service"],
                         capability_name=binding.get("capability", binding.get("role", "")),
-                        vault_token=binding["token"],
+                        credential_ref=binding["token"],
                         account=binding.get("account", "agent"),
                     )
                     self.stats.tokens_registered += 1
@@ -543,46 +612,65 @@ class ServiceGateway:
                     # flow.response already set from PDP immediate_response
                     return
 
-        # 3. Inject credential using service.auth
-        vault = get_vault()
-        if not vault:
+        # 3. Resolve credential via the provider registry
+        # Providers are chosen by the ref scheme: bare name / local:// → local
+        # vault; op:// → 1Password; unknown scheme fails closed. Resolution
+        # happens only AFTER all policy + grant + PDP checks above.
+        try:
+            cred = resolve_credential(binding.credential_ref)
+        except CredentialNotFound:
             self._deny(
                 flow,
                 503,
-                "Vault not available",
-                "VAULT_UNAVAILABLE",
-                action="abort",
-                reflection="The credential vault is not loaded. The proxy may still be starting up.",
-            )
-            return
-
-        cred = vault.get(binding.vault_token)
-        if not cred:
-            self._deny(
-                flow,
-                503,
-                "Credential not found in vault",
+                "Credential not found",
                 "CREDENTIAL_NOT_FOUND",
                 action="self_correct",
-                reflection=f"Credential '{sanitize_for_log(binding.vault_token)}' is not in the vault. Re-run `safeyolo agent authorize` to store it.",
+                reflection=f"Credential '{sanitize_for_log(binding.credential_ref)}' could not be located by its provider. Check the reference in policy.toml.",
+            )
+            return
+        except UnknownScheme:
+            self._deny(
+                flow,
+                503,
+                "Credential reference uses an unknown scheme",
+                "PROVIDER_UNKNOWN",
+                action="abort",
+                reflection=f"Credential '{sanitize_for_log(binding.credential_ref)}' uses an unrecognised provider scheme. Registered schemes: local, op.",
+            )
+            return
+        except ResolveFailed as exc:
+            log.warning(
+                "Credential resolve failed for %s: %s",
+                sanitize_for_log(binding.credential_ref),
+                sanitize_for_log(str(exc)),
+            )
+            self._deny(
+                flow,
+                503,
+                "Credential resolution failed",
+                "PROVIDER_RESOLVE_FAILED",
+                action="abort",
+                reflection=f"The credential provider for '{sanitize_for_log(binding.credential_ref)}' failed to return a value. See addon logs for a non-secret diagnostic.",
+            )
+            return
+        except CredentialProviderError:
+            self._deny(
+                flow,
+                503,
+                "Credential provider error",
+                "PROVIDER_ERROR",
+                action="abort",
+                reflection=f"An unexpected provider error occurred resolving '{sanitize_for_log(binding.credential_ref)}'.",
             )
             return
 
-        # Auto-refresh OAuth2 if expired
+        # Auto-refresh OAuth2 if expired (local provider only; external providers
+        # like 1Password return None from refresh() and we simply use what we got).
         if service.auth and cred.type == "oauth2" and cred.is_expired() and service.auth.refresh_on_401:
-            if vault.refresh_oauth2(binding.vault_token):
+            refreshed = refresh_credential(binding.credential_ref)
+            if refreshed is not None:
                 self.stats.refreshed += 1
-                cred = vault.get(binding.vault_token)
-                if not cred:
-                    self._deny(
-                        flow,
-                        503,
-                        "Credential lost after refresh",
-                        "CREDENTIAL_NOT_FOUND",
-                        action="abort",
-                        reflection="The credential was lost during OAuth2 token refresh. Re-run `safeyolo agent authorize` to restore it.",
-                    )
-                    return
+                cred = refreshed
 
         # Refuse to inject credentials over plaintext HTTP — redirect to HTTPS
         if flow.request.scheme == "http":  # DOC: SECURITY.md
@@ -621,6 +709,11 @@ class ServiceGateway:
             flow.request.headers[auth_header] = f"{service.auth.scheme} {cred.value}"
         elif service.auth and service.auth.type == "api_key":
             flow.request.headers[auth_header] = cred.value
+        elif service.auth and service.auth.type == "basic":
+            import base64
+
+            userpass = f"{service.auth.username}:{cred.value}".encode("utf-8")
+            flow.request.headers[auth_header] = f"Basic {base64.b64encode(userpass).decode('ascii')}"
 
         # Stamp metadata
         flow.metadata["gateway_service"] = service.name
@@ -1081,6 +1174,12 @@ class ServiceGateway:
         if service.auth.type == "bearer" and " " in value:
             value = value.split(" ", 1)[1]
 
+        # For basic-type auth (e.g. git over HTTPS), the sgw_ token arrives in
+        # the password field of `Basic base64(username:password)`. Decode and
+        # pull the password out.
+        if service.auth.type == "basic":
+            value = _extract_basic_password(value)
+
         value = value.strip()
         if value.startswith(SGW_TOKEN_PREFIX):
             return value
@@ -1221,6 +1320,29 @@ class ServiceGateway:
             if risky.irreversible:
                 signals += ", irreversible"
 
+            details = {
+                "service": service.name,
+                "capability": capability.name,
+                "method": method,
+                "path": path,
+                "risky_route": risky.path,
+                "tactics": risky.tactics,
+                "enables": risky.enables,
+                "irreversible": risky.irreversible,
+                "description": risky.description,
+                "group": risky.group,
+                "effect": decision.effect.value,
+            }
+
+            # Service-specific semantic enrichment for the operator prompt.
+            # Kept here (not in the service definition) because it's tied to the
+            # protocol we're modelling, not to the service's policy shape.
+            if service.name == "github":
+                git_ctx = _parse_git_smart_http(path)
+                if git_ctx:
+                    details["operation"] = git_ctx["operation"]
+                    details["repository"] = git_ctx["repository"]
+
             write_event(
                 "gateway.risky_route",
                 kind=EventKind.GATEWAY,
@@ -1241,19 +1363,7 @@ class ServiceGateway:
                         "path": path,
                     },
                 ),
-                details={
-                    "service": service.name,
-                    "capability": capability.name,
-                    "method": method,
-                    "path": path,
-                    "risky_route": risky.path,
-                    "tactics": risky.tactics,
-                    "enables": risky.enables,
-                    "irreversible": risky.irreversible,
-                    "description": risky.description,
-                    "group": risky.group,
-                    "effect": decision.effect.value,
-                },
+                details=details,
             )
 
             return decision  # non-None signals the caller to stop
@@ -1722,7 +1832,9 @@ class ServiceGateway:
         """Mint gateway tokens for agent/service bindings.
 
         Args:
-            agent_bindings: {agent_name: {service_name: {"capability": cap_name, "token": vault_token, "account": persona}}}
+            agent_bindings: {agent_name: {service_name: {"capability": cap_name,
+                "credential": ref, "account": persona}}}. `token` is accepted
+                as a compat alias for `credential`.
 
         Returns:
             {agent_name: {service_name: sgw_token}}
@@ -1734,11 +1846,12 @@ class ServiceGateway:
                 agent_env[agent] = {}
                 for service_name, config in services.items():
                     sgw_token = mint_gateway_token()
+                    credential_ref = config.get("credential", config.get("token", ""))
                     self._token_map[sgw_token] = TokenBinding(
                         agent=agent,
                         service_name=service_name,
                         capability_name=config.get("capability", config.get("role", "")),
-                        vault_token=config.get("token", ""),
+                        credential_ref=credential_ref,
                         account=config.get("account", "agent"),
                     )
                     agent_env[agent][service_name] = sgw_token
