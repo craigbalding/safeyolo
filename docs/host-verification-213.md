@@ -47,18 +47,25 @@ Layer 2 (both absent).
 ## Shared setup (used by V3a/V3b/V4)
 
 These commands work on both Linux and macOS. Run from the host, NOT
-from inside the SafeYolo sandbox. The agent token and Agent API
-address differ from container assumptions — use the paths below.
+from inside the SafeYolo sandbox. The agent token, Agent API address,
+and mitmproxy log path differ from container assumptions — use the
+paths below.
 
 ```sh
 # Host-side agent token (get_agent_token_path()). NOT /app/agent_token
 # which is the container path.
 TOKEN_FILE="$HOME/.safeyolo/data/agent_token"
 
+# mitmproxy log lives under XDG_STATE_HOME by default
+# (get_logs_dir() in cli/src/safeyolo/config.py). Honour override.
+LOG_DIR="${SAFEYOLO_LOGS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/safeyolo}"
+MITM_LOG="$LOG_DIR/mitmproxy.log"
+
 # First registered agent socket. Real layout is <ip>_<agent>/proxy.sock.
 AGENT_SOCK=$(ls "$HOME/.safeyolo/data/sockets/"*/proxy.sock 2>/dev/null | head -1)
 AGENT_NAME=$(basename "$(dirname "$AGENT_SOCK")" | cut -d_ -f2-)
 test -n "$AGENT_SOCK" || { echo "no agent socket found"; exit 1; }
+test -f "$MITM_LOG" || { echo "mitmproxy log not found at $MITM_LOG"; exit 1; }
 
 # curl the Agent API via the UDS. `_safeyolo.proxy.internal` is a
 # mitmproxy virtual host, NOT a real DNS name — resolve it via the
@@ -112,15 +119,48 @@ safeyolo doctor
   # → 0
   ```
 
-## V2 — No DNS lookup or upstream socket attempt for the probe host
+## V2 — No egress to the probe host (architectural proof)
 
-Direct process/network observation, portable across Linux and macOS:
+The strongest proof is architectural, not syscall-tracing:
+`connect()` traces show sockaddrs (IPs), not hostnames, and DNS
+payload greps don't reliably match `probe.internal`; `lsof` is a
+point-in-time snapshot and misses transient attempts. Neither is
+hostname-level proof.
+
+Instead, the two-layer architecture itself provides deterministic
+evidence:
+
+- **V1** (already run above): the normal probe returns through
+  `probe_sink` — no `server_connect` for the probe host is invoked
+  and no `security.probe_reached_upstream` audit event is emitted.
+- **V3a** (below): the request-hook failsafe catches a missing sink
+  BEFORE transport is attempted. Still no `probe_reached_upstream`
+  audit event.
+- **V3b** (below): with both request-side terminators disabled, the
+  `server_connect` structural boundary fires and refuses the
+  reserved host BEFORE the connection is opened.
+
+Together these three prove:
+
+- Normal path never reaches `server_connect` for the probe host;
+- Failsafe path never reaches `server_connect` for the probe host;
+- The `server_connect` guard, when actually exercised, refuses the
+  connection locally.
+
+**V2 checklist requirement**: confirm the audit-event evidence
+described in V1/V3a/V3b holds. Doctor's `Pipeline probe (traced)`
+result plus `safeyolo logs --event security` grepping for
+`probe_reached_upstream` is the authoritative signal.
+
+### Optional supplementary syscall observation (not required)
+
+If you want a syscall-level cross-check, these can be useful as
+additional signal but do NOT replace the architectural proof above.
+None of them provides hostname-level certainty on their own:
 
 **Linux:**
 ```sh
 MITM_PID=$(cat "$HOME/.safeyolo/data/proxy.pid")
-# Watch for any DNS resolution or upstream connect on the probe host
-# while doctor runs. Run in one terminal, `safeyolo doctor` in another.
 sudo strace -f -e trace=connect,sendto -p "$MITM_PID" 2>&1 \
   | grep -iE 'probe\.internal|_safeyolo\.probe'
 ```
@@ -128,22 +168,17 @@ sudo strace -f -e trace=connect,sendto -p "$MITM_PID" 2>&1 \
 **macOS:**
 ```sh
 MITM_PID=$(cat "$HOME/.safeyolo/data/proxy.pid")
-# dtruss requires SIP considerations but is the equivalent tool. Alt:
-# use lsof snapshots plus a network trace.
 sudo dtruss -p "$MITM_PID" -t connect 2>&1 \
   | grep -iE 'probe\.internal|_safeyolo\.probe'
 ```
 
-**Alternative (cross-platform, one-shot):** while `safeyolo doctor`
-runs, snapshot open sockets and confirm none reference the probe host.
+**Cross-platform snapshot:**
 ```sh
 lsof -p "$MITM_PID" -i | grep -i probe.internal
-# → no output
 ```
 
-**Expect** zero matches on any of the above during a `safeyolo doctor`
-run. probe_sink terminates the flow before mitmproxy reaches
-`server_connect` for this destination.
+Missing hits are consistent with V1/V3a/V3b's authoritative proof
+but do not by themselves guarantee it.
 
 ## V3a — Missing sink triggers the request-hook failsafe (Layer 1)
 
@@ -189,7 +224,7 @@ cat /tmp/v3a.raw
   `state=error, reason=probe_sink_failed`.
 - **NO** `PROBE REACHED UPSTREAM` line in mitmproxy.log:
   ```sh
-  grep -c "PROBE REACHED UPSTREAM" ~/.safeyolo/data/logs/mitmproxy.log
+  grep -c "PROBE REACHED UPSTREAM" "$MITM_LOG"
   # → 0 (for this session)
   ```
 - **NO** `security.probe_reached_upstream` audit event in
@@ -235,7 +270,7 @@ cat /tmp/v3b.raw
   matches the reviewer's stated posture: audit-only.
 - `mitmproxy.log` contains `PROBE REACHED UPSTREAM`:
   ```sh
-  grep "PROBE REACHED UPSTREAM" ~/.safeyolo/data/logs/mitmproxy.log | tail -1
+  grep "PROBE REACHED UPSTREAM" "$MITM_LOG" | tail -1
   ```
 - `safeyolo logs --event security --tail 5` shows
   `security.probe_reached_upstream` at CRITICAL severity with
@@ -275,8 +310,11 @@ sy_api /circuits | python -m json.tool | grep -A2 probe.internal
       `error`, `not_loaded`, or `missing_from_trace`
 - [ ] V1: `probe-sink/evaluated/probe_terminated` step present
 - [ ] V1: no `PROBE REACHED UPSTREAM` / `probe_sink_failed` events
-- [ ] V2: no DNS / `connect()` attempts for `_safeyolo.probe.internal`
-      (via `strace`/`dtruss`/`lsof` per platform)
+- [ ] V2: no `security.probe_reached_upstream` event during V1
+      (`safeyolo logs --event security --tail 20 | grep -c
+      probe_reached_upstream` → 0) and V3b actually fires it — the
+      pair proves the `server_connect` boundary is exercised only
+      when both request-side terminators are absent
 - [ ] V3a: sink-only-disabled — 502 with `X-SafeYolo-Request-Id`,
       body `reason_code=probe_sink_failed`, `/trace` shows
       `transport-guard/error/probe_sink_failed`, NO audit event,
