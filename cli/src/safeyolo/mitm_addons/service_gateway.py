@@ -42,7 +42,6 @@ from safeyolo.core.service_loader import get_service_registry
 from safeyolo.core.trace import (
     REASON_ADDON_DISABLED,
     REASON_PRIOR_RESPONSE,
-    register_expected_addon,
     trace_addon_hook,
     trace_bypassed,
     trace_evaluated,
@@ -201,10 +200,10 @@ OUTCOME_NOT_A_GATEWAY_RESPONSE = "not_a_gateway_response"    # no gateway_grant_
 OUTCOME_GRANT_CONSUMED = "grant_consumed"                    # once-grant fired on 2xx
 OUTCOME_GRANT_RETAINED = "grant_retained"                    # gateway flow but grant not consumed
 
-# Participate in the trace expected-addon registry so absence from a trace
-# means "did not run" rather than being invisible. ServiceGateway is not a
-# SecurityAddon subclass so it can't opt in via `trace_expected = True`.
-register_expected_addon(GATEWAY_NAME)
+# Note: service-gateway is listed in `safeyolo.core.trace.EXPECTED_ADDONS`
+# (the canonical manifest). Self-registration was removed — a truly absent
+# addon must still be reportable as `not_loaded`, and self-registration
+# cannot detect its own absence.
 
 
 class ServiceGateway:

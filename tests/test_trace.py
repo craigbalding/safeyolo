@@ -19,8 +19,8 @@ from safeyolo.core.trace import (
     TraceStore,
     get_store,
     record_step,
-    register_expected_addon,
     reset_store_for_tests,
+    set_expected_addons,
 )
 
 # =============================================================================
@@ -207,13 +207,18 @@ class TestTraceStoreTTL:
 # Serialisation & safety
 # =============================================================================
 
+@pytest.fixture
+def isolated_manifest():
+    """Snapshot the manifest and restore on exit. Tests that set a scoped
+    manifest use this to avoid bleeding into other tests."""
+    original = list(trace_mod.EXPECTED_ADDONS)
+    yield
+    set_expected_addons(original)
+
+
 class TestSerialise:
-    def test_not_loaded_diff_from_expected(self, monkeypatch):
-        # Isolate the registry for this test.
-        monkeypatch.setattr(trace_mod, "_expected_addons", [])
-        register_expected_addon("network-guard")
-        register_expected_addon("credential-guard")
-        register_expected_addon("pattern-scanner")
+    def test_not_loaded_diff_from_expected(self, isolated_manifest):
+        set_expected_addons(["network-guard", "credential-guard", "pattern-scanner"])
 
         store = TraceStore()
         store.append_step(

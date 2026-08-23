@@ -574,27 +574,28 @@ class TestTrace:
         assert body["steps"][2]["state"] == "bypassed"
         assert body["steps"][2]["reason"] == "prior_response"
 
-    def test_not_loaded_synthesis(self, api, agent_token, monkeypatch):
+    def test_not_loaded_synthesis(self, api, agent_token):
         """Expected addons that never appeared in the trace are surfaced
         as state=not_loaded so the skill DAG can branch on their absence."""
         from safeyolo.core import trace as trace_mod
-        from safeyolo.core.trace import STATE_EVALUATED, Step, register_expected_addon
+        from safeyolo.core.trace import STATE_EVALUATED, Step, set_expected_addons
 
-        monkeypatch.setattr(trace_mod, "_expected_addons", [])
-        for name in ("network-guard", "credential-guard", "pattern-scanner"):
-            register_expected_addon(name)
+        original_manifest = list(trace_mod.EXPECTED_ADDONS)
+        set_expected_addons(["network-guard", "credential-guard", "pattern-scanner"])
+        try:
+            rid = "req-cccccccccccccccccccccccccccccccc"
+            self._seed(rid, "agent-a", Step(addon="network-guard", hook="request", state=STATE_EVALUATED))
 
-        rid = "req-cccccccccccccccccccccccccccccccc"
-        self._seed(rid, "agent-a", Step(addon="network-guard", hook="request", state=STATE_EVALUATED))
+            with _patch_active_token(agent_token), \
+                 patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
+                flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
+                asyncio.run(api.request(flow))
 
-        with _patch_active_token(agent_token), \
-             patch.object(api, "_find_addon", return_value=_sd_stub("agent-a")):
-            flow = _make_api_flow("/trace", token=agent_token, query=f"request_id={rid}")
-            asyncio.run(api.request(flow))
-
-        body = json.loads(flow.response.content)
-        not_loaded = {e["addon"] for e in body["not_loaded"]}
-        assert not_loaded == {"credential-guard", "pattern-scanner"}
+            body = json.loads(flow.response.content)
+            not_loaded = {e["addon"] for e in body["not_loaded"]}
+            assert not_loaded == {"credential-guard", "pattern-scanner"}
+        finally:
+            set_expected_addons(original_manifest)
 
 
 class TestPDPEndpoints:

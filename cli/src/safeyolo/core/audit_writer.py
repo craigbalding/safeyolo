@@ -64,14 +64,32 @@ class _AuditWriter:
         self._start_lock = threading.Lock()
         self._dropped = 0
         self._dropped_lock = threading.Lock()
+        # In-flight accounting for `wait_for_drain` / `pending_count`. Covers
+        # both queued-but-not-yet-dequeued events AND events the writer thread
+        # has already dequeued but not yet flushed to disk. Incremented on
+        # successful enqueue, decremented after `_flush` returns (in a
+        # finally block so failed flushes still drop the count — the events
+        # were echoed to stderr, they aren't waiting to be persisted).
+        # `/explain` freshness (issue #213) relies on this to avoid the race
+        # where queue.empty() reads as drained while a batch is mid-flush.
+        self._inflight = 0
+        self._inflight_cv = threading.Condition()
 
     # ---- producer side (called from addon hooks) --------------------------
     def put_event(self, entry: dict) -> None:
         """Non-blocking enqueue. Drops + warns if the queue is full."""
         self._ensure_started()
+        # Reserve the in-flight slot BEFORE the put so a reader that
+        # observes queue.empty() cannot conclude "drained" while we're
+        # still in the middle of enqueuing.
+        with self._inflight_cv:
+            self._inflight += 1
         try:
             self._queue.put_nowait(entry)
         except queue.Full:
+            with self._inflight_cv:
+                self._inflight -= 1
+                self._inflight_cv.notify_all()
             with self._dropped_lock:
                 self._dropped += 1
                 total = self._dropped
@@ -89,36 +107,37 @@ class _AuditWriter:
             return self._dropped
 
     def wait_for_drain(self, timeout_s: float = 2.0) -> bool:
-        """Block until the queue is empty. Returns False on timeout.
+        """Block until every enqueued event has been flushed. Returns False
+        on timeout.
 
-        Originally a test helper; also used by `/explain` (issue #213) to
-        avoid the race where a request has completed but its audit events
-        are still queued for background write, so an immediate lookup
-        returns an empty result even though events exist.
+        Uses the in-flight counter (incremented on `put_event`, decremented
+        after `_flush` returns) rather than `queue.empty()`, so a batch
+        currently being flushed still counts as pending. Fixes the race
+        where a reader saw an empty queue between the writer dequeuing a
+        batch and finishing the file write — the reason `/explain` used to
+        return a false empty (issue #213 second-pass review).
         """
         import time
         deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if self._queue.empty():
-                # Empty queue + no one in _flush = fully drained.
-                # We can't observe "in _flush" directly, so sleep one
-                # writer-loop tick to cover the tail.
-                time.sleep(0.02)
-                if self._queue.empty():
-                    return True
-            time.sleep(0.01)
-        return False
+        with self._inflight_cv:
+            while self._inflight > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                # Condition.wait releases the lock while blocked; the writer
+                # thread will notify_all after the flush finishes.
+                self._inflight_cv.wait(timeout=remaining)
+            return True
 
     def pending_count(self) -> int:
-        """Approximate number of events queued but not yet flushed.
+        """Events queued OR mid-flush that haven't hit disk yet.
 
-        Reader-facing helper used by `/explain` to distinguish
-        "no events for this request" from "events exist but the writer
-        thread hasn't drained them yet" (issue #213). Value is a snapshot
-        and may be stale by the time the caller reads it — safe for
-        gating a drain-and-rescan, not for exact accounting.
+        Union of "in the queue" and "the writer dequeued them but hasn't
+        finished writing". Callers use this to decide whether an empty
+        `/explain` scan is genuinely empty or just early (issue #213).
         """
-        return self._queue.qsize()
+        with self._inflight_cv:
+            return self._inflight
 
     def _ensure_started(self) -> None:
         # Deferred start so import time stays cheap and tests can
@@ -181,6 +200,14 @@ class _AuditWriter:
             )
             for entry in batch:
                 print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr, flush=True)
+        finally:
+            # Release the in-flight reservations these events held. Runs on
+            # both success and stderr-fallback paths so `wait_for_drain`
+            # doesn't wedge on a persistent flush failure — the events are
+            # no longer waiting to be persisted regardless.
+            with self._inflight_cv:
+                self._inflight -= len(batch)
+                self._inflight_cv.notify_all()
 
     def _shutdown(self) -> None:
         if not self._started or self._thread is None:

@@ -13,12 +13,10 @@ from unittest.mock import patch
 import pytest
 from mitmproxy.test import taddons, tflow
 
-from safeyolo.core import trace as trace_mod
 from safeyolo.core.base import SecurityAddon
 from safeyolo.core.trace import (
     STATE_BYPASSED,
     STATE_EVALUATED,
-    expected_addons,
     get_store,
     reset_store_for_tests,
 )
@@ -26,7 +24,6 @@ from safeyolo.core.trace import (
 
 class _TestAddon(SecurityAddon):
     name = "unit-test-addon"
-    trace_expected = True
 
 
 @pytest.fixture
@@ -48,27 +45,6 @@ def _untraced_flow(request_id="req-ffffffffffffffffffffffffffffffff"):
     flow = tflow.tflow()
     flow.metadata["request_id"] = request_id
     return flow
-
-
-# =============================================================================
-# Expected-addon registry
-# =============================================================================
-
-
-class TestExpectedAddonRegistration:
-    def test_subclass_with_trace_expected_registers(self):
-        assert "unit-test-addon" in expected_addons()
-
-    def test_subclass_without_trace_expected_does_not_register(self, monkeypatch):
-        # Isolate the registry so this subclass's declaration is the only
-        # candidate for registration.
-        monkeypatch.setattr(trace_mod, "_expected_addons", [])
-
-        class _Optional(SecurityAddon):
-            name = "optional-addon"
-            # trace_expected inherits the base default (False).
-
-        assert "optional-addon" not in expected_addons()
 
 
 # =============================================================================

@@ -58,33 +58,49 @@ TRACE_DETAILS_MAX_BYTES = _int_env("SAFEYOLO_TRACE_DETAILS_MAX_BYTES", 4096)
 
 
 # =============================================================================
-# Expected-addon registry
+# Expected-addon manifest (independent of module import)
 # =============================================================================
-# The addons a normal outbound request should traverse. `TraceStore.get`
-# emits `state=not_loaded` for any expected addon that never appeared in
-# the recorded steps. Modules add themselves at import time by calling
-# `register_expected_addon`; this keeps the "what should run" list beside
-# the code that would run it rather than in a distant list.
+# Canonical list of addon names that a normal outbound request should
+# traverse. Source of truth for `TraceStore.get`'s `state=not_loaded`
+# synthesis.
+#
+# IMPORTANT: this is deliberately NOT populated by addon self-registration.
+# A module that fails to load, or that has been dropped from
+# `proxy.ADDON_CHAIN` entirely, will never execute its own registration —
+# so self-registration cannot detect true absence. That is the failure mode
+# `/trace` exists to expose (issue #213 second-pass review).
+#
+# When you add or remove a trace-participating addon, update this constant
+# AND `proxy.ADDON_CHAIN`. `tests/test_trace_manifest.py` cross-checks the
+# two lists at test time to catch drift.
 
-_expected_addons: list[str] = []
+EXPECTED_ADDONS: list[str] = [
+    # Load order mirrors the trace-participating subset of proxy.ADDON_CHAIN.
+    "service-gateway",
+    "network-guard",
+    "circuit-breaker",
+    "credential-guard",
+    "pattern-scanner",
+    "test-context",
+]
+
 _expected_lock = threading.Lock()
 
 
-def register_expected_addon(name: str) -> None:
-    """Declare an addon whose absence from a trace is diagnostic evidence.
+def set_expected_addons(names) -> None:
+    """Replace the expected-addon manifest.
 
-    Safe to call more than once with the same name; duplicates are ignored.
-    Ordering is insertion order (matches the mitmproxy addon load order in
-    practice, which is what we compare against).
+    Intended for tests that need to establish a specific expected set for
+    the addon composition under test. Production uses the module-level
+    `EXPECTED_ADDONS` default.
     """
     with _expected_lock:
-        if name not in _expected_addons:
-            _expected_addons.append(name)
+        EXPECTED_ADDONS[:] = list(names)
 
 
 def expected_addons() -> list[str]:
     with _expected_lock:
-        return list(_expected_addons)
+        return list(EXPECTED_ADDONS)
 
 
 # =============================================================================

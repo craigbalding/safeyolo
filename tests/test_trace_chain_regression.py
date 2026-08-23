@@ -31,8 +31,8 @@ from safeyolo.core.trace import (
     STATE_EVALUATED,
     STATE_NOT_LOADED,
     get_store,
-    register_expected_addon,
     reset_store_for_tests,
+    set_expected_addons,
     trace_addon_hook,
 )
 
@@ -44,11 +44,9 @@ class _EarlyBlocker(SecurityAddon):
     """Stand-in for whichever real addon blocks first in a given request.
 
     Uses `SecurityAddon.block` so we exercise the exact block plumbing all
-    real addons rely on (audit trace + response headers). Marked
-    `trace_expected` so `not_loaded` synthesis includes it when omitted.
+    real addons rely on (audit trace + response headers).
     """
     name = "test-early-blocker"
-    trace_expected = True
 
     @trace_addon_hook("request")
     def request(self, flow):
@@ -217,39 +215,50 @@ class TestNotLoadedRegression:
     prompted #213: absence-as-diagnosis rather than absence-as-silence.
     """
 
-    def test_expected_addon_never_invoked_surfaces_as_not_loaded(
-        self, traced_flow, monkeypatch
+    def test_manifest_addon_absent_from_loaded_set_surfaces_as_not_loaded(
+        self, traced_flow, tmp_path, monkeypatch
     ):
-        # Isolate the expected registry so the assertions are precise.
-        monkeypatch.setattr(trace_mod, "_expected_addons", [])
-        register_expected_addon("network-guard")
-        register_expected_addon("credential-guard")
-        register_expected_addon("pattern-scanner")
+        """Reproduces the real failure mode: an addon named in the manifest
+        but whose module is not imported/instantiated at all. `/trace` must
+        still report it as `not_loaded` because the manifest is the source
+        of truth, independent of module presence.
 
-        from credential_guard import CredentialGuard
+        Uses `phantom-missing-addon` as the deliberately-absent expected
+        entry — no module exists with that name, so no import path could
+        ever register it. Self-registration would have hidden this.
+        """
+        monkeypatch.setenv("SAFEYOLO_DATA_DIR", str(tmp_path))
 
-        # Only credential-guard runs. network-guard and pattern-scanner are
-        # expected but never called — they must appear in `not_loaded`.
-        # Simulate "an earlier addon already responded" so the decorator's
-        # prior_response short-circuit fires — no PDP wiring needed.
-        from mitmproxy import http as mitm_http
-        traced_flow.response = mitm_http.Response.make(403, b"", {})
+        original = list(trace_mod.EXPECTED_ADDONS)
+        set_expected_addons(["credential-guard", "phantom-missing-addon"])
+        try:
+            from credential_guard import CredentialGuard
+            from mitmproxy import http as mitm_http
 
-        with taddons.context(CredentialGuard()) as tctx:
-            addon = tctx.master.addons.get("credential-guard")
-            addon.request(traced_flow)
+            # Give credential-guard something to short-circuit on so its
+            # body doesn't need PDP wiring — the trace point is that IT
+            # ran (evidence recorded) and phantom-missing-addon didn't.
+            traced_flow.response = mitm_http.Response.make(403, b"", {})
 
-        record = get_store().get(TRACED_REQUEST_ID, TRACED_AGENT)
-        assert record is not None
+            with taddons.context(CredentialGuard()) as tctx:
+                addon = tctx.master.addons.get("credential-guard")
+                addon.request(traced_flow)
 
-        payload = get_store().serialise(record)
-        observed = {step["addon"] for step in payload["steps"]}
-        not_loaded = {entry["addon"] for entry in payload["not_loaded"]}
+            record = get_store().get(TRACED_REQUEST_ID, TRACED_AGENT)
+            assert record is not None
 
-        assert "credential-guard" in observed
-        assert not_loaded == {"network-guard", "pattern-scanner"}
-        for entry in payload["not_loaded"]:
-            assert entry["state"] == STATE_NOT_LOADED
+            payload = get_store().serialise(record)
+            observed = {step["addon"] for step in payload["steps"]}
+            not_loaded = {entry["addon"] for entry in payload["not_loaded"]}
+
+            assert "credential-guard" in observed
+            # The phantom addon is only known via the manifest — no code
+            # imports or registers it — yet it still surfaces here.
+            assert "phantom-missing-addon" in not_loaded
+            for entry in payload["not_loaded"]:
+                assert entry["state"] == STATE_NOT_LOADED
+        finally:
+            set_expected_addons(original)
 
 
 # =============================================================================

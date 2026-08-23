@@ -43,7 +43,6 @@ from safeyolo.core.trace import (
     STATE_EVALUATED,
     _elapsed_us_from,
     record_step,
-    register_expected_addon,
 )
 from safeyolo.core.utils import (
     find_addon,
@@ -81,19 +80,12 @@ class SecurityAddon:
 
     name: str  # Subclass must define
 
-    # Set True on addons that a normal outbound request should always traverse.
-    # `TraceStore` uses this to synthesise `state=not_loaded` entries at read
-    # time for expected addons that did not appear in the trace (issue #213).
-    # Left False on addons that only fire on special paths (virtual hosts,
-    # port 9090 admin, response-only observability) so absence from a normal
-    # request's trace isn't misreported as a failure.
+    # Documentation-only marker: True on addons that a normal outbound request
+    # should always traverse. Not a functional registry — the source of truth
+    # is `safeyolo.core.trace.EXPECTED_ADDONS` (issue #213 second-pass review:
+    # a manifest independent of module import so a truly absent addon is still
+    # reportable).
     trace_expected: bool = False
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        name = getattr(cls, "name", None)
-        if isinstance(name, str) and name and getattr(cls, "trace_expected", False):
-            register_expected_addon(name)
 
     def __init__(self):
         self.stats = AddonStats()
