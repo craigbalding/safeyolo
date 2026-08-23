@@ -393,12 +393,26 @@ def record_step(
 
 
 # =============================================================================
-# Hook decorator — timing, error state, prior-response bypass
+# Hook decorator — strictly observational: timing + error capture, nothing else
 # =============================================================================
 # Explicit per-hook wrapper rather than __init_subclass__ magic: keeps this
 # security-relevant instrumentation visible at each participating addon (issue
 # #213 review). Compatible with any addon that exposes a `name` attribute; not
 # tied to SecurityAddon so `service-gateway` can use it too.
+#
+# Invariant (#213 review, second pass): a traced request MUST execute the
+# exact same addon logic as an untraced one. The decorator does not decide
+# whether the addon body runs, does not preempt short-circuits, and does not
+# reinterpret decisions. It may:
+#   - start a monotonic timer whose delta feeds `duration_us`,
+#   - observe raised exceptions, record `state=error, reason=<ExcType>` and
+#     re-raise so enforcement sees identical exception behaviour.
+# It may NOT:
+#   - skip calling the wrapped function under any condition,
+#   - mutate flow.request / flow.response / flow.metadata beyond the private
+#     timer key it sets and removes,
+#   - emit `bypassed/*` on the addon's behalf (the addon owns its own
+#     short-circuit decisions and their trace evidence).
 
 def _hook_start_key(addon_name: str, hook: str) -> str:
     return f"_trace_hook_start:{addon_name}:{hook}"
@@ -422,25 +436,19 @@ def _elapsed_us_from(flow: http.HTTPFlow, addon_name: str, hook: str) -> int | N
 
 
 def trace_addon_hook(hook: str) -> Callable:
-    """Decorator for a participating addon's `request` or `response` method.
+    """Observational decorator for an addon's `request` or `response` method.
 
-    Behaviour:
-    - Untraced flow: passthrough with zero overhead beyond one metadata read.
-    - Traced flow, request hook, prior response already set: emit
-      `bypassed / prior_response` and skip the addon body. Downstream addons
-      appearing in the trace with this state prove they were reached but
-      correctly deferred to the earlier responder.
-    - Traced flow, hook runs: start a monotonic timer stashed on flow metadata
-      so the addon's own `_trace_evaluated` / `_trace_bypassed` calls pick up
-      `duration_us` automatically.
-    - Traced flow, hook raises: emit `error` with `reason=<ExceptionType>` and
-      duration_us, then re-raise. Enforcement behaviour is unchanged; the trace
-      simply carries the failure instead of an exception silently masquerading
-      as `not_loaded`.
+    See the invariant block above. This wrapper only:
+      1. starts a monotonic timer that the addon's own `_trace_evaluated` /
+         `_trace_bypassed` calls read to fill `duration_us`, and
+      2. catches exceptions to emit `state=error, reason=<ExceptionType>,
+         duration_us=<measured>` before re-raising so enforcement sees the
+         identical exception.
 
-    Design choice: chose an explicit decorator over `__init_subclass__` so the
-    instrumentation is visible at every wrapped addon and applies uniformly to
-    non-SecurityAddon participants like service-gateway (issue #213 review).
+    The wrapped function is ALWAYS called for a traced flow — the decorator
+    does not decide whether the hook body runs. Addons that short-circuit
+    (e.g. `if flow.response: return` or `if self.is_bypassed(flow): return`)
+    are responsible for emitting their own `bypassed/*` trace evidence.
     """
     if hook not in ("request", "response"):
         raise ValueError(f"trace_addon_hook: unsupported hook {hook!r}")
@@ -452,25 +460,6 @@ def trace_addon_hook(hook: str) -> Callable:
                 return fn(self, flow, *args, **kwargs)
 
             addon_name = getattr(self, "name", type(self).__name__)
-
-            # Prior-response short-circuit for request hooks only. Response
-            # hooks are expected to see a response object by definition.
-            if hook == "request" and flow.response is not None:
-                try:
-                    get_store().append_step(
-                        flow.metadata.get("request_id"),
-                        flow.metadata.get("agent"),
-                        Step(
-                            addon=addon_name,
-                            hook=hook,
-                            state=STATE_BYPASSED,
-                            reason=REASON_PRIOR_RESPONSE,
-                        ),
-                    ) if flow.metadata.get("request_id") else None
-                except Exception as exc:  # noqa: BLE001 — enforcement must not regress
-                    _log.warning("trace_addon_hook prior_response emit failed: %s: %s", type(exc).__name__, exc)
-                return None
-
             key = _hook_start_key(addon_name, hook)
             flow.metadata[key] = time.perf_counter_ns()
             try:
@@ -495,8 +484,10 @@ def trace_addon_hook(hook: str) -> Callable:
                     )
                 raise
             finally:
-                # Clean up the timer key so it doesn't leak into other hooks
-                # or serialisation surfaces that inspect flow.metadata.
+                # Clean up the private timer key so it doesn't leak into other
+                # hooks or into serialisation surfaces that inspect
+                # flow.metadata. The delete is the only mutation this wrapper
+                # makes to flow.metadata visible to production code.
                 flow.metadata.pop(key, None)
         return wrapper
     return decorator

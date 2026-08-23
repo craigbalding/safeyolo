@@ -16,6 +16,7 @@ from mitmproxy.test import taddons, tflow
 from safeyolo.core import trace as trace_mod
 from safeyolo.core.base import SecurityAddon
 from safeyolo.core.trace import (
+    STATE_BYPASSED,
     STATE_EVALUATED,
     expected_addons,
     get_store,
@@ -76,11 +77,11 @@ class TestExpectedAddonRegistration:
 
 
 class TestIsBypassedTrace:
-    def test_prior_response_not_recorded_by_is_bypassed(self, fresh_store):
-        """`is_bypassed` no longer records `prior_response` — that's now the
-        decorator's job (`@trace_addon_hook`). Recording it here too would
-        double-count the step. `is_bypassed` still returns True so calling
-        code short-circuits correctly.
+    def test_prior_response_recorded_by_is_bypassed(self, fresh_store):
+        """`is_bypassed` records `prior_response` — the addon owns its
+        short-circuit decision AND its trace evidence (issue #213 second-pass
+        review: tracing must not alter which code executes; the decorator is
+        observation-only and does NOT emit `bypassed/*` on the addon's behalf).
         """
         from mitmproxy import http as mitm_http
 
@@ -90,8 +91,11 @@ class TestIsBypassedTrace:
 
         assert addon.is_bypassed(flow) is True
 
-        # No step recorded from is_bypassed — the decorator owns prior_response.
-        assert fresh_store.get(flow.metadata["request_id"], "agent-1") is None
+        rec = fresh_store.get(flow.metadata["request_id"], "agent-1")
+        assert rec is not None
+        assert len(rec.steps) == 1
+        assert rec.steps[0].state == STATE_BYPASSED
+        assert rec.steps[0].reason == "prior_response"
 
     def test_policy_disabled_recorded_as_bypassed(self, fresh_store):
         addon = _TestAddon()

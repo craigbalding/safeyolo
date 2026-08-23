@@ -38,7 +38,7 @@ from mitmproxy import http
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
 from safeyolo.core.base import SecurityAddon
-from safeyolo.core.trace import trace_addon_hook
+from safeyolo.core.trace import REASON_PRIOR_RESPONSE, trace_addon_hook
 from safeyolo.core.utils import (
     get_client_ip,
     get_option_safe,
@@ -65,6 +65,9 @@ OUTCOME_ALLOWED = "allowed"
 # than showing as `not_loaded` (which would be the false-not-loaded pattern
 # the #213 review flagged).
 OUTCOME_NOT_TARGET_HOST = "not_target_host"
+# Response-hook outcomes.
+OUTCOME_RESPONSE_RECORDED = "response_recorded"     # captured response event for a tracked flow
+OUTCOME_NOT_APPLICABLE = "not_applicable"           # response hook ran; no ccapt_context on flow
 
 _MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
 
@@ -470,6 +473,7 @@ class TestContext(SecurityAddon):
         No separate enable flag - add target hosts to activate, remove to deactivate.
         """
         if flow.response:
+            self._trace_bypassed(flow, reason=REASON_PRIOR_RESPONSE)
             return
 
         self._maybe_reload_config()
@@ -550,10 +554,12 @@ class TestContext(SecurityAddon):
         del flow.request.headers[CONTEXT_HEADER]
         self._apply_context(flow, context, source="header")
 
+    @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Log response for requests that had valid context."""
         context = flow.metadata.get("ccapt_context")
         if context is None:
+            self._trace_evaluated(flow, outcome=OUTCOME_NOT_APPLICABLE, hook="response")
             return
 
         request_time = flow.metadata.get("ccapt_request_time", 0)
@@ -581,6 +587,12 @@ class TestContext(SecurityAddon):
                 "response_body_snippet": response_body[:512] if response_body else "",
                 "duration_ms": duration_ms,
             },
+        )
+        self._trace_evaluated(
+            flow,
+            outcome=OUTCOME_RESPONSE_RECORDED,
+            hook="response",
+            status_code=flow.response.status_code if flow.response else 0,
         )
 
     def get_stats(self) -> dict:

@@ -41,6 +41,7 @@ from safeyolo.core.flow_cache import path_no_query
 from safeyolo.core.service_loader import get_service_registry
 from safeyolo.core.trace import (
     REASON_ADDON_DISABLED,
+    REASON_PRIOR_RESPONSE,
     register_expected_addon,
     trace_addon_hook,
     trace_bypassed,
@@ -193,8 +194,12 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
 GATEWAY_NAME = "service-gateway"
 
 # Trace outcome vocabulary (issue #213)
-OUTCOME_NOT_A_GATEWAY_REQUEST = "not_a_gateway_request"  # no sgw_ token — pass through
-OUTCOME_INJECTED = "injected"                            # credential injection succeeded
+OUTCOME_NOT_A_GATEWAY_REQUEST = "not_a_gateway_request"     # no sgw_ token — pass through
+OUTCOME_INJECTED = "injected"                                # credential injection succeeded
+# Response-hook outcomes — mirror what the existing consume-grant logic did.
+OUTCOME_NOT_A_GATEWAY_RESPONSE = "not_a_gateway_response"    # no gateway_grant_id — pass through
+OUTCOME_GRANT_CONSUMED = "grant_consumed"                    # once-grant fired on 2xx
+OUTCOME_GRANT_RETAINED = "grant_retained"                    # gateway flow but grant not consumed
 
 # Participate in the trace expected-addon registry so absence from a trace
 # means "did not run" rather than being invisible. ServiceGateway is not a
@@ -406,6 +411,7 @@ class ServiceGateway:
 
         # Already handled by another addon
         if flow.response:
+            trace_bypassed(flow, addon=self.name, reason=REASON_PRIOR_RESPONSE)
             return
 
         # Extract sgw_ token from Authorization header
@@ -1077,14 +1083,24 @@ class ServiceGateway:
         # Only care about gateway-handled flows
         grant_id = flow.metadata.get("gateway_grant_id")
         if not grant_id:
+            trace_evaluated(flow, addon=self.name, hook="response", outcome=OUTCOME_NOT_A_GATEWAY_RESPONSE)
             return
 
         # Consume on 2xx
+        consumed = False
         if flow.response and 200 <= flow.response.status_code < 300:
             with self._lock:
                 grant = self._grants.get(grant_id)
             if grant and grant.scope == "once":
                 self._consume_grant(grant)
+                consumed = True
+        trace_evaluated(
+            flow,
+            addon=self.name,
+            hook="response",
+            outcome=OUTCOME_GRANT_CONSUMED if consumed else OUTCOME_GRANT_RETAINED,
+            grant_id=grant_id,
+        )
 
     def _extract_sgw_token(self, flow: http.HTTPFlow) -> str | None:
         """Extract sgw_ token from the service-specific auth header.

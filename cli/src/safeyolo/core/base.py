@@ -37,6 +37,7 @@ from pdp import get_policy_client
 from safeyolo.core.audit_schema import ApprovalRequest, Decision, EventKind, Severity
 from safeyolo.core.trace import (
     REASON_POLICY_DISABLED,
+    REASON_PRIOR_RESPONSE,
     STATE_BYPASSED,
     STATE_ERROR,
     STATE_EVALUATED,
@@ -141,14 +142,15 @@ class SecurityAddon:
         - Flow already has a response (another addon blocked it)
         - Policy says addon is disabled for this domain/client
 
-        Only records `policy_disabled` here; `prior_response` is emitted by
-        `@trace_addon_hook` before the addon body runs, so recording it here
-        too would double-count. `is_bypassed` is still called by the addon
-        body when the decorator has not preempted, e.g. undecorated call
-        sites; the prior_response branch is left as a safety net returning
-        True without duplicate recording.
+        Both branches emit their own trace evidence so callers can
+        distinguish `prior_response` from `policy_disabled`. The decorator
+        is observation-only and does NOT emit `bypassed/*` on the addon's
+        behalf (issue #213 second-pass review: tracing must not alter which
+        code executes; the addon owns its short-circuit decision AND its
+        trace evidence).
         """
         if flow.response:
+            self._trace_bypassed(flow, reason=REASON_PRIOR_RESPONSE)
             return True
 
         try:

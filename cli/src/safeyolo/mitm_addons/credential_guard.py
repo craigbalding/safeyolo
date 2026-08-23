@@ -37,7 +37,7 @@ from pdp import (
     get_policy_client,
 )
 from safeyolo.core.sensor_utils import build_http_event_from_flow
-from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
+from safeyolo.core.trace import REASON_ADDON_DISABLED, REASON_PRIOR_RESPONSE, trace_addon_hook
 from safeyolo.core.utils import (
     get_client_ip,
     hmac_fingerprint,
@@ -388,10 +388,10 @@ class CredentialGuard(SecurityAddon):
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
-        # prior_response is emitted by the decorator; we still short-circuit
-        # here for parity with the decorator's semantics and to keep this
-        # method sensible if invoked outside the decorator (e.g. unit tests).
+        # This addon owns its own prior-response short-circuit — the
+        # decorator is observation-only and does NOT preempt the body.
         if flow.response:
+            self._trace_bypassed(flow, reason=REASON_PRIOR_RESPONSE)
             return
 
         # Reload rules if policy changed

@@ -92,7 +92,23 @@ class TestBlockedChainRegression:
     replaces silent 'missing audit event' ambiguity with explicit evidence.
     """
 
-    def test_downstream_addons_show_prior_response(self, traced_flow):
+    def test_downstream_addons_show_prior_response(self, traced_flow, tmp_path, monkeypatch):
+        """When an early addon blocks:
+        - Addons with an explicit `flow.response` short-circuit emit
+          `bypassed/prior_response` from their own body (credential-guard,
+          test-context, service-gateway).
+        - Addons that use base `is_bypassed()` emit the same from that
+          method (network-guard, circuit-breaker).
+        - Addons that don't check `flow.response` at all still run — the
+          decorator is observation-only and MUST NOT skip the body. Their
+          real outcome is recorded (pattern-scanner has no such check;
+          it runs and reports `no_rules`).
+        This proves tracing did not silently change which code executes.
+        """
+        # credential-guard.configure writes hmac secret under SAFEYOLO_DATA_DIR;
+        # default '/safeyolo/data' isn't writable in this sandbox.
+        monkeypatch.setenv("SAFEYOLO_DATA_DIR", str(tmp_path))
+
         from circuit_breaker import CircuitBreaker
         from credential_guard import CredentialGuard
         from network_guard import NetworkGuard
@@ -110,10 +126,12 @@ class TestBlockedChainRegression:
             TestContext(),
         ]
 
-        # taddons.context is needed for addons that read ctx.options in their
-        # early paths; the block short-circuit means most of that code never
-        # runs, but the option namespace still needs to exist.
-        with taddons.context(blocker, *downstream):
+        with taddons.context(blocker, *downstream) as tctx:
+            # gateway_enabled defaults to False; enable so its
+            # short-circuit is prior_response rather than addon_disabled
+            # (the test is about the blocked-chain fan-out, not the
+            # separately-covered addon_disabled path).
+            tctx.options.gateway_enabled = True
             blocker.request(traced_flow)
             for addon in downstream:
                 addon.request(traced_flow)
@@ -125,11 +143,11 @@ class TestBlockedChainRegression:
         assert steps["test-early-blocker"].state == STATE_EVALUATED
         assert steps["test-early-blocker"].outcome == "blocked"
 
+        # Addons whose own bodies short-circuit on flow.response:
         for name in (
-            "circuit-breaker",
             "credential-guard",
-            "pattern-scanner",
             "network-guard",
+            "circuit-breaker",
             "service-gateway",
             "test-context",
         ):
@@ -138,6 +156,13 @@ class TestBlockedChainRegression:
             assert steps[name].reason == REASON_PRIOR_RESPONSE, (
                 f"{name} reason != prior_response (got {steps[name].reason!r})"
             )
+
+        # pattern-scanner has no flow.response early-return in its request
+        # method — it scans regardless. The trace must reflect what actually
+        # ran, not what tracing would prefer. Zero rules loaded in this test
+        # environment, so the outcome is `no_rules`.
+        assert steps["pattern-scanner"].state == STATE_EVALUATED
+        assert steps["pattern-scanner"].outcome == "no_rules"
 
 
 # =============================================================================
@@ -225,3 +250,115 @@ class TestNotLoadedRegression:
         assert not_loaded == {"network-guard", "pattern-scanner"}
         for entry in payload["not_loaded"]:
             assert entry["state"] == STATE_NOT_LOADED
+
+
+# =============================================================================
+# Test 4 — parity: traced and untraced execution are externally identical
+# =============================================================================
+
+
+class TestTracedVsUntracedParity:
+    """Instrumentation must be observation-only.
+
+    Runs the same constructed flow through the same addon chain twice —
+    once with `flow.metadata['trace'] = True`, once without — and asserts
+    that every externally-relevant flow mutation is identical. Trace
+    records are the only permitted difference. This is the direct
+    regression against a decorator that alters which code executes when
+    tracing is enabled (issue #213 second-pass review).
+    """
+
+    def _build_flow(self, traced: bool):
+        """A fresh flow at the state produced by RequestIdGenerator, with
+        the trace opt-in metadata set (or not).
+        """
+        flow = tflow.tflow()
+        flow.request.method = "GET"
+        flow.request.url = "https://parity.example.test/thing"
+        flow.metadata["request_id"] = "req-parity000000000000000000000000000" if traced else "req-untraced000000000000000000000000"
+        flow.metadata["agent"] = TRACED_AGENT
+        if traced:
+            flow.metadata["trace"] = True
+        return flow
+
+    def _run_chain(self, flow, tmp_path, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_DATA_DIR", str(tmp_path))
+
+        from circuit_breaker import CircuitBreaker
+        from credential_guard import CredentialGuard
+        from network_guard import NetworkGuard
+        from pattern_scanner import PatternScanner
+        from service_gateway import ServiceGateway
+        from test_context import TestContext
+
+        chain = [
+            NetworkGuard(),
+            CircuitBreaker(),
+            CredentialGuard(),
+            PatternScanner(),
+            ServiceGateway(),
+            TestContext(),
+        ]
+        with taddons.context(*chain) as tctx:
+            tctx.options.gateway_enabled = True
+            # Skip network_guard's PDP call by treating the addon as disabled
+            # for the parity comparison — otherwise both runs would fail the
+            # same way (still identical), but the exception path is not what
+            # we want to measure. Same for both traced and untraced runs so
+            # any behavioural difference is real.
+            tctx.options.network_guard_enabled = False
+            for addon in chain:
+                addon.request(flow)
+        return flow
+
+    def test_flow_state_identical_traced_vs_untraced(
+        self, tmp_path, monkeypatch
+    ):
+        untraced = self._run_chain(self._build_flow(traced=False), tmp_path, monkeypatch)
+        # Reset store between runs so the traced run's per-agent quota is
+        # not affected by any lingering entries.
+        reset_store_for_tests()
+        traced = self._run_chain(self._build_flow(traced=True), tmp_path, monkeypatch)
+
+        # Response state must be identical (neither should have set a
+        # response — the parity contract is about the code path both
+        # runs took, not the outcome of a synthesised block).
+        assert (traced.response is None) == (untraced.response is None), (
+            "trace toggling changed whether a response was synthesised"
+        )
+
+        # blocked_by / addon-owned metadata keys the enforcement path uses.
+        enforcement_keys = (
+            "blocked_by",
+            "ratelimit_remaining",
+            "credential_fingerprint",
+            "pattern_matched",
+            "pattern_location",
+            "gateway_service",
+            "gateway_capability",
+            "gateway_agent",
+            "gateway_account",
+            "gateway_injected_header",
+            "ccapt_context",
+            "test_agent_match",
+            "test_context_source",
+        )
+        for key in enforcement_keys:
+            assert traced.metadata.get(key) == untraced.metadata.get(key), (
+                f"metadata[{key!r}] diverged between traced/untraced runs "
+                f"(traced={traced.metadata.get(key)!r}, "
+                f"untraced={untraced.metadata.get(key)!r})"
+            )
+
+        # Request headers/method/URL must not have been mutated differently
+        # by the two runs.
+        assert dict(traced.request.headers) == dict(untraced.request.headers)
+        assert traced.request.method == untraced.request.method
+        assert traced.request.url == untraced.request.url
+
+        # The traced run's flow.metadata may hold no trace-timer artefacts —
+        # the decorator's `finally` clause must remove every key it set.
+        for key in list(traced.metadata.keys()):
+            assert not key.startswith("_trace_hook_start:"), (
+                f"traced flow leaked timer key {key!r} into flow.metadata"
+            )

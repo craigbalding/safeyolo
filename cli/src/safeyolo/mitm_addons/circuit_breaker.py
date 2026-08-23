@@ -41,6 +41,13 @@ log = logging.getLogger("safeyolo.circuit-breaker")
 # =============================================================================
 OUTCOME_ALLOWED = "allowed"
 OUTCOME_EXCLUDED_DOMAIN = "excluded_domain"
+# Response-hook outcomes — mirror what the existing decision path did.
+# The trace does not reinterpret HTTP status; it observes which branch of
+# the pre-existing success/failure/no-action logic actually ran.
+OUTCOME_SUCCESS_RECORDED = "success_recorded"
+OUTCOME_FAILURE_RECORDED = "failure_recorded"
+OUTCOME_STATUS_NO_ACTION = "status_no_action"     # 4xx (non-429) — circuit not updated
+OUTCOME_PRIOR_BLOCK = "prior_block"               # response synthesised by another addon
 
 
 class CircuitState(Enum):
@@ -570,6 +577,7 @@ class CircuitBreaker(SecurityAddon):
         self._maybe_reload_config()
 
         if flow.metadata.get("blocked_by"):
+            self._trace_evaluated(flow, outcome=OUTCOME_PRIOR_BLOCK, hook="response")
             return
 
         if not flow.response:
@@ -577,13 +585,35 @@ class CircuitBreaker(SecurityAddon):
 
         domain = flow.request.host
         if domain in self._excluded_domains:
+            self._trace_evaluated(flow, outcome=OUTCOME_EXCLUDED_DOMAIN, hook="response")
             return
         status_code = flow.response.status_code
 
         if status_code >= 500 or status_code == 429:
             self.record_failure(domain, f"HTTP {status_code}", flow=flow)
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_FAILURE_RECORDED,
+                hook="response",
+                status_code=status_code,
+            )
         elif status_code < 400:
             self.record_success(domain, flow=flow)
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_SUCCESS_RECORDED,
+                hook="response",
+                status_code=status_code,
+            )
+        else:
+            # 4xx (excluding 429) doesn't affect the circuit — but the
+            # response hook still ran, so record it explicitly.
+            self._trace_evaluated(
+                flow,
+                outcome=OUTCOME_STATUS_NO_ACTION,
+                hook="response",
+                status_code=status_code,
+            )
 
     def get_stats(self) -> dict:
         """Get circuit breaker statistics."""
