@@ -145,6 +145,21 @@ nodes:
     label: "GET /explain?request_id=req-... using request_id from safeyolo logs"
     source: authored
 
+  # Trace endpoint — "what SafeYolo processing actually ran". Distinct
+  # from /explain (audit events, retrospective) — see references/agent-api.md
+  # for the wire vocabulary (state, reason, per-addon outcome constants).
+  - id: ev.check_trace_request_id
+    kind: evidence
+    label: "GET /trace?request_id=req-... — per-addon state+outcome+reason for the request pipeline"
+    detail: |
+      The request_id comes from the X-SafeYolo-Request-Id response
+      header (present on every SafeYolo response, including block
+      responses) OR from `safeyolo logs --request-id req-... --raw`.
+      Requires opt-in tracing: the request must have carried
+      `X-SafeYolo-Trace: 1`. Response payload documents state, reason,
+      per-addon outcome — see the shipped wire-vocabulary reference.
+    source: authored
+
   - id: ev.check_budgets
     kind: evidence
     label: "GET /budgets — remaining for the target host"
@@ -243,6 +258,58 @@ nodes:
     label: "SafeYolo/mitmproxy re-encoded a header in a way the upstream rejects"
     source: authored
 
+  # Trace-derived classifications. Key on the full state+outcome+reason
+  # tuple from /trace so branching is on stable evidence, not free-form
+  # interpretation. Literals match constants documented in
+  # references/agent-api.md (STATE_*, REASON_*, per-addon OUTCOME_*).
+  - id: cls.trace_evaluated_normal
+    kind: classification
+    label: "Addon ran and reported a normal outcome (state=evaluated, addon-specific outcome)"
+    detail: "For a security addon that concluded nothing to enforce (no_detection / no_match / allowed / not_a_gateway_request / not_target_host). Not the failure — look upstream or reconsider premise."
+    source: authored
+
+  - id: cls.trace_bypassed_addon_disabled
+    kind: classification
+    label: "Addon loaded but off via mitmproxy option (state=bypassed, reason=addon_disabled)"
+    detail: "Operator flipped the global enable flag. If this addon was expected to run, the disablement is the answer."
+    source: authored
+
+  - id: cls.trace_bypassed_policy_disabled
+    kind: classification
+    label: "Addon loaded but disabled by PDP for this scope (state=bypassed, reason=policy_disabled)"
+    detail: "PolicyClient.is_addon_enabled returned False for this host/client. Policy edit needed, not option flip."
+    source: authored
+
+  - id: cls.trace_bypassed_prior_response
+    kind: classification
+    label: "Addon deferred to an earlier responder (state=bypassed, reason=prior_response)"
+    detail: "Something upstream in the chain synthesised a response first. The blocked_by / preceding trace step names the earlier responder — that's the addon to investigate."
+    source: authored
+
+  - id: cls.trace_not_loaded
+    kind: classification
+    label: "Addon expected but never ran for this request (state=not_loaded)"
+    detail: "Module missing from proxy.ADDON_CHAIN, failed to load, or was removed. Not the same as bypassed — the code did not execute."
+    source: authored
+
+  - id: cls.trace_error
+    kind: classification
+    label: "Addon's hook raised (state=error, reason=<ExceptionType>)"
+    detail: "The addon executed but threw. reason names the exception type; check mitmproxy logs for the full traceback."
+    source: authored
+
+  - id: cls.trace_truncated
+    kind: classification
+    label: "Trace hit the per-record step cap (truncated=true)"
+    detail: "Something is emitting a lot of trace steps for one request — could be a loop, could be legitimate diagnostic instrumentation. Investigate step distribution. The doctor probe should never truncate on a normal request."
+    source: authored
+
+  - id: cls.trace_unavailable
+    kind: classification
+    label: "/trace returned nothing or errored — pipeline evidence is unavailable"
+    detail: "Request wasn't traced (no X-SafeYolo-Trace: 1 marker), trace expired from the bounded store, or /trace itself is broken. Retry with the trace header. If the request cannot be re-issued, this branch terminates."
+    source: authored
+
   # ---- Conclusions & operator asks --------------------------------------
   - id: con.self_correct_request
     kind: conclusion
@@ -307,6 +374,16 @@ nodes:
     label: "Ask operator: `safeyolo doctor` and check the running mitmproxy version for known header-whitespace re-encoding fixes"
     source: authored
 
+  - id: ask.retry_with_trace_header
+    kind: operator_ask
+    label: "Retry the failing operation with `X-SafeYolo-Trace: 1` on the request so /trace has pipeline evidence to return"
+    detail: |
+      The trace store is bounded and TTL'd. If the request was never
+      traced, /trace has nothing to return. Ask the operator (or
+      reissue) the request with the opt-in header, then run the trace
+      branch from the top.
+    source: authored
+
 
 edges:
   # From symptoms to first-cut evidence checks
@@ -355,6 +432,36 @@ edges:
   # Correlation escape hatch — from any evidence branch, if the picture is unclear, get the request_id and use /explain
   - {from: ev.check_response_body_json, to: ask.logs_request_id, kind: next_check, when: "picture is unclear after body inspection"}
   - {from: ask.logs_request_id,         to: ev.check_explain_request_id, kind: next_check}
+
+  # Trace escape hatch — /explain answers "what audit events fired"; /trace
+  # answers "what pipeline processing actually ran". When /explain leaves
+  # gaps (empty events, ambiguous set, or the failure is about which addon
+  # ran vs which recorded) escalate to /trace. Requires the request to
+  # have carried X-SafeYolo-Trace: 1; if not, this edge terminates and the
+  # skill's ask is "retry the request with the trace header".
+  - {from: ev.check_explain_request_id, to: ev.check_trace_request_id, kind: next_check, when: "/explain empty/ambiguous OR failure is about which addon ran, not which recorded"}
+
+  # Trace evidence fans out per state+outcome+reason. Literals below MUST
+  # match the constants in references/agent-api.md — the drift test in
+  # test_trace_wire_vocabulary.py enforces they stay aligned.
+  - {from: ev.check_trace_request_id, to: cls.trace_evaluated_normal,        kind: implies, when: "expected addon step has state=evaluated with an addon-specific outcome (no_detection, no_match, allowed, ...)"}
+  - {from: ev.check_trace_request_id, to: cls.trace_bypassed_addon_disabled, kind: implies, when: "expected addon step has state=bypassed AND reason=addon_disabled"}
+  - {from: ev.check_trace_request_id, to: cls.trace_bypassed_policy_disabled,kind: implies, when: "expected addon step has state=bypassed AND reason=policy_disabled"}
+  - {from: ev.check_trace_request_id, to: cls.trace_bypassed_prior_response, kind: implies, when: "expected addon step has state=bypassed AND reason=prior_response"}
+  - {from: ev.check_trace_request_id, to: cls.trace_not_loaded,              kind: implies, when: "expected addon appears in not_loaded[] (never ran)"}
+  - {from: ev.check_trace_request_id, to: cls.trace_error,                   kind: implies, when: "expected addon step has state=error (hook raised)"}
+  - {from: ev.check_trace_request_id, to: cls.trace_truncated,               kind: implies, when: "truncated=true in the /trace payload"}
+  - {from: ev.check_trace_request_id, to: cls.trace_unavailable,             kind: implies, when: "/trace returned 404, or the request wasn't traced (no X-SafeYolo-Trace: 1 header), or the trace expired"}
+
+  # Trace classifications resolve to conclusions or asks
+  - {from: cls.trace_evaluated_normal,        to: cls.upstream_only,               kind: implies, when: "the security addon reported no reason to enforce; if the request still failed, it's an upstream or premise issue"}
+  - {from: cls.trace_bypassed_addon_disabled, to: ask.diag_agent,                  kind: escalates_to, when: "the addon was expected to enforce; ask operator to enable it via `safeyolo` addon options"}
+  - {from: cls.trace_bypassed_policy_disabled,to: ask.policy_add_host,             kind: escalates_to, when: "policy needs to activate the addon for this host/agent scope"}
+  - {from: cls.trace_bypassed_prior_response, to: ev.check_x_blocked_by,           kind: next_check,   when: "the earlier responder's blocked_by tells us which addon actually blocked; loop back to the standard branch on that addon"}
+  - {from: cls.trace_not_loaded,              to: ask.mitmproxy_version_and_doctor,kind: escalates_to, when: "an expected addon never ran — proxy startup or ADDON_CHAIN is broken; `safeyolo doctor` will fail the Pipeline probe (traced) check"}
+  - {from: cls.trace_error,                   to: ask.mitmproxy_version_and_doctor,kind: escalates_to, when: "the addon threw during evaluation; mitmproxy logs will have the full traceback for the reason=<ExceptionType>"}
+  - {from: cls.trace_truncated,               to: ask.mitmproxy_version_and_doctor,kind: escalates_to, when: "trace exceeded the per-record step cap; not a normal request pattern"}
+  - {from: cls.trace_unavailable,             to: ask.retry_with_trace_header,     kind: escalates_to, when: "the request wasn't traced; retry the failing operation with X-SafeYolo-Trace: 1 to re-run this branch"}
 
   # Security-events check drives the gh-flavored branch
   - {from: ev.check_status_security_events, to: cls.upstream_only, kind: implies, when: "no security events on the target host in the failing window"}

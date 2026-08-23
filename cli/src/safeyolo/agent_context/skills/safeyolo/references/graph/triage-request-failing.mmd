@@ -23,6 +23,7 @@ flowchart TD
     ev.check_config_credential_rules["GET /config — read credential_rules array"]
     ev.check_status_security_events["Operator runs 'safeyolo logs --event security --tail 20' for the failing time window"]
     ev.check_explain_request_id["GET /explain?request_id=req-... using request_id from safeyolo logs"]
+    ev.check_trace_request_id["GET /trace?request_id=req-... — per-addon state+outcome+reason for the request pipeline"]
     ev.check_budgets["GET /budgets — remaining for the target host"]
     ev.check_circuits["GET /circuits — state for the target host"]
     ev.check_context_header_and_targets["Confirm request carried X-Test-Context AND policy test_context.target_hosts non-empty"]
@@ -39,6 +40,14 @@ flowchart TD
     cls.header_wire_format_violation{{"Header field reached the upstream in a form the HTTP/2 wire spec forbids (RFC 9113 sec 8.2.1)"}}
     cls.client_sent_bad_header{{"Client itself sent a malformed header value; not a SafeYolo action"}}
     cls.proxy_reencode_bug{{"SafeYolo/mitmproxy re-encoded a header in a way the upstream rejects"}}
+    cls.trace_evaluated_normal{{"Addon ran and reported a normal outcome (state=evaluated, addon-specific outcome)"}}
+    cls.trace_bypassed_addon_disabled{{"Addon loaded but off via mitmproxy option (state=bypassed, reason=addon_disabled)"}}
+    cls.trace_bypassed_policy_disabled{{"Addon loaded but disabled by PDP for this scope (state=bypassed, reason=policy_disabled)"}}
+    cls.trace_bypassed_prior_response{{"Addon deferred to an earlier responder (state=bypassed, reason=prior_response)"}}
+    cls.trace_not_loaded{{"Addon expected but never ran for this request (state=not_loaded)"}}
+    cls.trace_error{{"Addon's hook raised (state=error, reason=<ExceptionType>)"}}
+    cls.trace_truncated{{"Trace hit the per-record step cap (truncated=true)"}}
+    cls.trace_unavailable{{"/trace returned nothing or errored — pipeline evidence is unavailable"}}
     con.self_correct_request(["Self-correct the request (destination / credential / method) and retry"])
     con.honor_retry_after(["Honor Retry-After, back off, retry once budget resets"])
     con.upstream_auth_issue(["Upstream rejected the credential; not a SafeYolo action"])
@@ -49,6 +58,7 @@ flowchart TD
     ask.report_client_bug[["Report a client bug upstream (include version + exact malformed value); use '--with-token' as a workaround"]]
     ask.suggest_client_upgrade[["Determine how the client was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"]]
     ask.mitmproxy_version_and_doctor[["Ask operator: 'safeyolo doctor' and check the running mitmproxy version for known header-whitespace re-encoding fixes"]]
+    ask.retry_with_trace_header[["Retry the failing operation with 'X-SafeYolo-Trace: 1' on the request so /trace has pipeline evidence to return"]]
 
     sym.upstream_401 -->|"next_check"| ev.check_x_blocked_by
     sym.status_403 -->|"next_check"| ev.check_x_blocked_by
@@ -79,6 +89,23 @@ flowchart TD
     cls.observability_gate -->|"implies: recording is what I wanted; either send the header or add host to test_context.target_hosts"| con.self_correct_request
     ev.check_response_body_json -->|"next_check: picture is unclear after body inspection"| ask.logs_request_id
     ask.logs_request_id -->|"next_check"| ev.check_explain_request_id
+    ev.check_explain_request_id -->|"next_check: /explain empty/ambiguous OR failure is about which addon ran, not which recorded"| ev.check_trace_request_id
+    ev.check_trace_request_id -->|"implies: expected addon step has state=evaluated with an addon-specific outcome (no_detection, no_match, allowed, ...)"| cls.trace_evaluated_normal
+    ev.check_trace_request_id -->|"implies: expected addon step has state=bypassed AND reason=addon_disabled"| cls.trace_bypassed_addon_disabled
+    ev.check_trace_request_id -->|"implies: expected addon step has state=bypassed AND reason=policy_disabled"| cls.trace_bypassed_policy_disabled
+    ev.check_trace_request_id -->|"implies: expected addon step has state=bypassed AND reason=prior_response"| cls.trace_bypassed_prior_response
+    ev.check_trace_request_id -->|"implies: expected addon appears in not_loaded[] (never ran)"| cls.trace_not_loaded
+    ev.check_trace_request_id -->|"implies: expected addon step has state=error (hook raised)"| cls.trace_error
+    ev.check_trace_request_id -->|"implies: truncated=true in the /trace payload"| cls.trace_truncated
+    ev.check_trace_request_id -->|"implies: /trace returned 404, or the request wasn't traced (no X-SafeYolo-Trace: 1 header), or the trace expired"| cls.trace_unavailable
+    cls.trace_evaluated_normal -->|"implies: the security addon reported no reason to enforce; if the request still failed, it's an upstream or premise issue"| cls.upstream_only
+    cls.trace_bypassed_addon_disabled -->|"escalates_to: the addon was expected to enforce; ask operator to enable it via 'safeyolo' addon options"| ask.diag_agent
+    cls.trace_bypassed_policy_disabled -->|"escalates_to: policy needs to activate the addon for this host/agent scope"| ask.policy_add_host
+    cls.trace_bypassed_prior_response -->|"next_check: the earlier responder's blocked_by tells us which addon actually blocked; loop back to the standard branch on that addon"| ev.check_x_blocked_by
+    cls.trace_not_loaded -->|"escalates_to: an expected addon never ran — proxy startup or ADDON_CHAIN is broken; 'safeyolo doctor' will fail the Pipeline probe (traced) check"| ask.mitmproxy_version_and_doctor
+    cls.trace_error -->|"escalates_to: the addon threw during evaluation; mitmproxy logs will have the full traceback for the reason=<ExceptionType>"| ask.mitmproxy_version_and_doctor
+    cls.trace_truncated -->|"escalates_to: trace exceeded the per-record step cap; not a normal request pattern"| ask.mitmproxy_version_and_doctor
+    cls.trace_unavailable -->|"escalates_to: the request wasn't traced; retry the failing operation with X-SafeYolo-Trace: 1 to re-run this branch"| ask.retry_with_trace_header
     ev.check_status_security_events -->|"implies: no security events on the target host in the failing window"| cls.upstream_only
     ev.check_status_security_events -->|"implies: any security event fired on the target host"| cls.policy_block
     sym.http2_goaway_header_value -->|"next_check"| ev.check_goaway_debug_string
@@ -112,6 +139,7 @@ flowchart TD
     class ev.check_config_credential_rules evidence
     class ev.check_status_security_events evidence
     class ev.check_explain_request_id evidence
+    class ev.check_trace_request_id evidence
     class ev.check_budgets evidence
     class ev.check_circuits evidence
     class ev.check_context_header_and_targets evidence
@@ -128,6 +156,14 @@ flowchart TD
     class cls.header_wire_format_violation classification
     class cls.client_sent_bad_header classification
     class cls.proxy_reencode_bug classification
+    class cls.trace_evaluated_normal classification
+    class cls.trace_bypassed_addon_disabled classification
+    class cls.trace_bypassed_policy_disabled classification
+    class cls.trace_bypassed_prior_response classification
+    class cls.trace_not_loaded classification
+    class cls.trace_error classification
+    class cls.trace_truncated classification
+    class cls.trace_unavailable classification
     class con.self_correct_request conclusion
     class con.honor_retry_after conclusion
     class con.upstream_auth_issue conclusion
@@ -138,6 +174,7 @@ flowchart TD
     class ask.report_client_bug operator_ask
     class ask.suggest_client_upgrade operator_ask
     class ask.mitmproxy_version_and_doctor operator_ask
+    class ask.retry_with_trace_header operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.upstream_401 stroke-width:3px
