@@ -13,6 +13,7 @@ body:
         - "Considerations" / "Tradeoffs" / "Pros and cons" columns.
         - Restatements of the observation phrased as motivation.
         - Rhetorical framing paragraphs before the concrete evidence.
+        - Transcripts, notes, or deliberation history from chat or AI-assistant sessions.
 
         If you can't fill both required sections without padding, the observation isn't ready to file.
   - type: textarea
@@ -41,6 +42,9 @@ body:
     id: related
     attributes:
       label: Related
-      description: Optional -- links to PRs, other issues, upstream reports, prior discussion.
+      description: |
+        Optional. Cross-references only -- things a reader would otherwise have to hunt for:
+        related PRs or issues, an upstream bug report, a superseded observation. Not a place
+        for rationale, deliberation, or session notes. If there is no cross-reference, leave blank.
     validations:
       required: false
