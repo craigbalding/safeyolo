@@ -44,6 +44,44 @@ Layer 2 (both absent).
 - `safeyolo doctor` baseline runs without errors on `master` first
   (to isolate any regressions).
 
+## Shared setup (used by V3a/V3b/V4)
+
+These commands work on both Linux and macOS. Run from the host, NOT
+from inside the SafeYolo sandbox. The agent token and Agent API
+address differ from container assumptions — use the paths below.
+
+```sh
+# Host-side agent token (get_agent_token_path()). NOT /app/agent_token
+# which is the container path.
+TOKEN_FILE="$HOME/.safeyolo/data/agent_token"
+
+# First registered agent socket. Real layout is <ip>_<agent>/proxy.sock.
+AGENT_SOCK=$(ls "$HOME/.safeyolo/data/sockets/"*/proxy.sock 2>/dev/null | head -1)
+AGENT_NAME=$(basename "$(dirname "$AGENT_SOCK")" | cut -d_ -f2-)
+test -n "$AGENT_SOCK" || { echo "no agent socket found"; exit 1; }
+
+# curl the Agent API via the UDS. `_safeyolo.proxy.internal` is a
+# mitmproxy virtual host, NOT a real DNS name — resolve it via the
+# Host header while connecting to the UDS.
+sy_api() {
+  local path="$1"
+  curl -sS --unix-socket "$AGENT_SOCK" \
+    -H "Host: _safeyolo.proxy.internal" \
+    -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
+    "http://_safeyolo.proxy.internal$path"
+}
+
+# Send the raw HTTP/1.0 origin-form probe (exactly what doctor does).
+# printf with explicit \r\n keeps CRLF line endings — heredocs give LF
+# and mitmproxy's HTTP/1.0 parser is strict about it.
+send_probe() {
+  local ctx_run="$1"
+  printf 'GET /__pipeline_probe HTTP/1.0\r\nHost: _safeyolo.probe.internal\r\nX-SafeYolo-Trace: 1\r\nX-Test-Context: run=%s;agent=%s;test=host-verification\r\nConnection: close\r\n\r\n' \
+    "$ctx_run" "$AGENT_NAME" \
+    | socat - "UNIX-CONNECT:$AGENT_SOCK"
+}
+```
+
 ## V1 — Normal probe reaches probe_sink and returns 200
 
 ```sh
@@ -57,28 +95,55 @@ safeyolo doctor
   - Each per-agent line shows the real agent name (NOT `proxy` — that
     would indicate the B5 socket-parse regression is back).
   - The `findings` block includes `probe HTTP 200` as the first entry.
-  - Every `EXPECTED_ADDONS` member appears with `state=evaluated`.
+  - Every `EXPECTED_ADDONS` member is accounted for. Any of these
+    states is a healthy PASS for a given addon:
+    - `state=evaluated` with any addon-specific outcome
+    - `state=bypassed, reason=addon_disabled` (loaded but option off —
+      legitimate for e.g. service-gateway on a default install)
+    - `state=bypassed, reason=policy_disabled` (PDP scoped it out for
+      the probe host)
+  - **No** `state=error`, `not_loaded`, or `missing_from_trace` for
+    any expected addon.
+  - `probe-sink` step present with `outcome=probe_terminated`.
 - No `transport-guard` step appears in any per-agent trace.
-- No `security.probe_reached_upstream` audit event in
-  `safeyolo logs --event security --tail 20`.
+- No `security.probe_reached_upstream` audit event:
+  ```sh
+  safeyolo logs --event security --tail 20 | grep -c probe_reached_upstream
+  # → 0
+  ```
 
 ## V2 — No DNS lookup or upstream socket attempt for the probe host
 
-While `safeyolo doctor` is running (or immediately after), on the
-host:
+Direct process/network observation, portable across Linux and macOS:
 
+**Linux:**
 ```sh
-# On Linux: watch DNS traffic on the sandbox network for probe host.
-# `sudo strace -f -e trace=connect,sendto -p <mitmdump-pid> 2>&1 | grep -i probe.internal`
-
-# Simpler observable: check no /etc/hosts or resolver hit was made:
-grep -i "probe.internal" /var/log/system.log  /var/log/syslog 2>/dev/null
+MITM_PID=$(cat "$HOME/.safeyolo/data/proxy.pid")
+# Watch for any DNS resolution or upstream connect on the probe host
+# while doctor runs. Run in one terminal, `safeyolo doctor` in another.
+sudo strace -f -e trace=connect,sendto -p "$MITM_PID" 2>&1 \
+  | grep -iE 'probe\.internal|_safeyolo\.probe'
 ```
 
-**Expect** no DNS resolution attempts for `_safeyolo.probe.internal`
-and no `connect()` syscalls to any address labelled as the probe host.
-probe_sink terminates the flow before mitmproxy reaches `server_connect`
-for this destination.
+**macOS:**
+```sh
+MITM_PID=$(cat "$HOME/.safeyolo/data/proxy.pid")
+# dtruss requires SIP considerations but is the equivalent tool. Alt:
+# use lsof snapshots plus a network trace.
+sudo dtruss -p "$MITM_PID" -t connect 2>&1 \
+  | grep -iE 'probe\.internal|_safeyolo\.probe'
+```
+
+**Alternative (cross-platform, one-shot):** while `safeyolo doctor`
+runs, snapshot open sockets and confirm none reference the probe host.
+```sh
+lsof -p "$MITM_PID" -i | grep -i probe.internal
+# → no output
+```
+
+**Expect** zero matches on any of the above during a `safeyolo doctor`
+run. probe_sink terminates the flow before mitmproxy reaches
+`server_connect` for this destination.
 
 ## V3a — Missing sink triggers the request-hook failsafe (Layer 1)
 
@@ -96,18 +161,10 @@ Leave `transport_guard.py` untouched — the failsafe should catch it.
 
 Restart the proxy: `safeyolo stop && safeyolo start`.
 
-Run the traced probe manually (simulating what doctor does):
+Run the raw probe (uses `send_probe` from Shared setup):
 
 ```sh
-AGENT_SOCK=$(ls ~/.safeyolo/data/sockets/*/proxy.sock | head -1)
-socat - UNIX-CONNECT:$AGENT_SOCK <<'EOF' > /tmp/v3a.raw
-GET /__pipeline_probe HTTP/1.0
-Host: _safeyolo.probe.internal
-X-SafeYolo-Trace: 1
-X-Test-Context: run=v3a;agent=$(basename $(dirname $AGENT_SOCK) | cut -d_ -f2);test=missing-sink
-Connection: close
-
-EOF
+send_probe v3a > /tmp/v3a.raw
 cat /tmp/v3a.raw
 ```
 
@@ -116,17 +173,25 @@ cat /tmp/v3a.raw
 - Response status is **502** (not a raw connection error). This proves
   Layer 1 synthesised the response.
 - **`X-SafeYolo-Request-Id` header IS present.** Capture:
-  `RID=$(grep -i x-safeyolo-request-id /tmp/v3a.raw | awk '{print $2}' | tr -d '\r')`.
+  ```sh
+  RID=$(awk '
+    tolower($1) ~ /^x-safeyolo-request-id:$/ { print $2 }
+  ' /tmp/v3a.raw | tr -d '\r')
+  echo "$RID"
+  ```
 - Response body is JSON with `reason_code: "probe_sink_failed"` and
   `host: "_safeyolo.probe.internal"`.
-- Fetch `/trace`:
+- Fetch `/trace` via the Agent API helper from Shared setup:
   ```sh
-  curl -sS -H "Authorization: Bearer $(cat /app/agent_token)" \
-    "http://_safeyolo.proxy.internal/trace?request_id=$RID" | python -m json.tool
+  sy_api "/trace?request_id=$RID" | python -m json.tool
   ```
   Expect a `transport-guard` step with
   `state=error, reason=probe_sink_failed`.
-- **NO** `PROBE REACHED UPSTREAM` line in `mitmproxy.log`.
+- **NO** `PROBE REACHED UPSTREAM` line in mitmproxy.log:
+  ```sh
+  grep -c "PROBE REACHED UPSTREAM" ~/.safeyolo/data/logs/mitmproxy.log
+  # → 0 (for this session)
+  ```
 - **NO** `security.probe_reached_upstream` audit event in
   `safeyolo logs --event security --tail 10`.
 
@@ -154,16 +219,24 @@ class TransportGuard:
 
 Restart: `safeyolo stop && safeyolo start`.
 
-Repeat the socat probe from V3a. This time:
+Repeat the raw probe:
+
+```sh
+send_probe v3b > /tmp/v3b.raw
+cat /tmp/v3b.raw
+```
 
 **Expect**:
 
-- The client-side response is not a clean 502 with correlation — it's
-  mitmproxy's generic protocol error (whatever `handle_protocol_error()`
-  produces). No `X-SafeYolo-Request-Id` — this is the intentional cost
-  of reaching Layer 2, and matches the reviewer's stated posture:
-  "audit event can remain operator-only".
-- `mitmproxy.log` contains `PROBE REACHED UPSTREAM`.
+- The client-side response is **not** a clean 502 with correlation —
+  it's mitmproxy's generic protocol error (whatever
+  `handle_protocol_error()` produces). No `X-SafeYolo-Request-Id`
+  header — this is the intentional cost of reaching Layer 2, and
+  matches the reviewer's stated posture: audit-only.
+- `mitmproxy.log` contains `PROBE REACHED UPSTREAM`:
+  ```sh
+  grep "PROBE REACHED UPSTREAM" ~/.safeyolo/data/logs/mitmproxy.log | tail -1
+  ```
 - `safeyolo logs --event security --tail 5` shows
   `security.probe_reached_upstream` at CRITICAL severity with
   `details.reason_code = probe_reached_upstream`.
@@ -171,7 +244,7 @@ Repeat the socat probe from V3a. This time:
 The operator can still correlate the failure via the audit log even
 without a client-side request-id header.
 
-## V4 — Restore everything, verify healthy state
+## V4 — Restore everything, verify healthy state + no circuit damage
 
 ```sh
 git checkout -- cli/src/safeyolo/mitm_addons/probe_sink.py cli/src/safeyolo/mitm_addons/transport_guard.py
@@ -188,8 +261,7 @@ excluded so repeated diagnostic failures cannot open a persistent
 diagnostic-host circuit):
 
 ```sh
-curl -sS -H "Authorization: Bearer $(cat /app/agent_token)" \
-  http://_safeyolo.proxy.internal/circuits | python -m json.tool | grep -A2 probe
+sy_api /circuits | python -m json.tool | grep -A2 probe.internal
 ```
 
 **Expect** no circuit-breaker state entry for `_safeyolo.probe.internal`.
@@ -198,8 +270,13 @@ curl -sS -H "Authorization: Bearer $(cat /app/agent_token)" \
 
 - [ ] V1: `safeyolo doctor` shows `Pipeline probe (traced) pass` per agent
 - [ ] V1: real agent names in DiagResult labels (no `proxy` leak)
-- [ ] V1: no `PROBE REACHED UPSTREAM` events; no `probe_sink_failed` trace steps
+- [ ] V1: every EXPECTED_ADDONS member accounted for in trace (evaluated
+      OR bypassed with addon_disabled/policy_disabled reason); no
+      `error`, `not_loaded`, or `missing_from_trace`
+- [ ] V1: `probe-sink/evaluated/probe_terminated` step present
+- [ ] V1: no `PROBE REACHED UPSTREAM` / `probe_sink_failed` events
 - [ ] V2: no DNS / `connect()` attempts for `_safeyolo.probe.internal`
+      (via `strace`/`dtruss`/`lsof` per platform)
 - [ ] V3a: sink-only-disabled — 502 with `X-SafeYolo-Request-Id`,
       body `reason_code=probe_sink_failed`, `/trace` shows
       `transport-guard/error/probe_sink_failed`, NO audit event,
