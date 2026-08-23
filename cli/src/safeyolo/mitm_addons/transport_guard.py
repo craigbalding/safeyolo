@@ -41,6 +41,7 @@ proxy is up, independent of whether probe_sink itself loaded.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from mitmproxy import http
@@ -168,11 +169,35 @@ class TransportGuard:
 
         # Idempotent: preserves any earlier RequestIdGenerator assignment.
         request_id = ensure_request_id(flow)
-        # Preserve the request_id on the response mitmproxy will surface
-        # to the client so the originating agent can still correlate to
-        # `/trace` even though the request errored (issue #213 promise).
-        if flow.response is not None and "X-SafeYolo-Request-Id" not in flow.response.headers:
+
+        # Synthesise a correlated downstream response if none exists yet.
+        # In the real ResponseProtocolError path (server_connection refusal
+        # → HttpErrorHook), mitmproxy fires this hook with flow.error set
+        # but flow.response still None; mitmproxy then generates its own
+        # generic protocol-error response for the client. Setting
+        # flow.response here BEFORE that generic response is generated
+        # gives us a deterministic correlatable HTTP surface: the client
+        # (doctor, agent) always receives an X-SafeYolo-Request-Id header
+        # tying the failure to the `/trace` record we're about to write
+        # (issue #213 review — V3 correlation contract).
+        if flow.response is None:
+            flow.response = http.Response.make(
+                502,
+                json.dumps({
+                    "error": "SafeYolo pipeline-probe upstream refused",
+                    "reason_code": PROBE_REACHED_UPSTREAM_REASON,
+                    "host": PROBE_HOST,
+                    "request_id": request_id,
+                }).encode(),
+                {
+                    "Content-Type": "application/json",
+                    "X-SafeYolo-Request-Id": request_id,
+                },
+            )
+        elif "X-SafeYolo-Request-Id" not in flow.response.headers:
+            # Response already exists — just stamp the correlation header.
             flow.response.headers["X-SafeYolo-Request-Id"] = request_id
+
         # Record explicit trace evidence. Uses the shared lower-case
         # reason constant so it matches the DAG YAML's `when:` clauses
         # exactly (see references/agent-api.md).

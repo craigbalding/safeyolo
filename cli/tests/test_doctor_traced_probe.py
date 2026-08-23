@@ -287,6 +287,26 @@ class TestNonManifestErrorDegradesVerdict:
         assert verdict == "fail"
         assert any("hypothetical-future-guard" in f for f in findings)
 
+    def test_non_manifest_late_error_fails_even_after_earlier_evaluated(self):
+        """Precision fix from #213 sixth-pass review: a non-manifest
+        addon may emit an early informational/evaluated step and then
+        a later error step (e.g. an addon that runs on both
+        `requestheaders` and `request`, with the request-hook path
+        raising). The classifier must not ignore the later error just
+        because an earlier step for the same addon looked fine.
+        """
+        verdict, findings, _ = _classify(steps=[
+            _step("service-gateway", outcome="not_a_gateway_request"),
+            _step("network-guard", outcome="allowed"),
+            _step("credential-guard", outcome="no_detection"),
+            # non-manifest addon: earlier evaluated step, later error step
+            _step("dual-hook-diagnostic", outcome="informational"),
+            _step("dual-hook-diagnostic", state="error", reason="LateFailure"),
+            _sink_ok(),
+        ])
+        assert verdict == "fail"
+        assert any("dual-hook-diagnostic" in f and "error" in f for f in findings)
+
 
 class TestProbeSinkTerminatedRequiredForClean:
     """Issue #213 fifth-pass review: probe-sink is the canonical

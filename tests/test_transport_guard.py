@@ -261,6 +261,64 @@ class TestErrorHookBridgesToTrace:
         assert step.state == "error"
         assert step.reason == "probe_reached_upstream"
 
+    def test_error_hook_synthesises_correlated_response_when_none_exists(self):
+        """The critical V3-correlation regression (issue #213 sixth-pass
+        review). In the real `ResponseProtocolError` path
+        (`server_connect` refusal → `HttpErrorHook`), mitmproxy fires
+        error(flow) with `flow.error` set but `flow.response` still None
+        — then generates its own generic protocol-error response for the
+        client. Without a correlated response the client (doctor,
+        agent) has no request-id to hand to `/trace`.
+
+        `error(flow)` must synthesise the response itself so the client
+        always receives an X-SafeYolo-Request-Id header tying the
+        failure to the trace record.
+        """
+        import json as _json
+
+        from mitmproxy.test import tflow
+
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        reset_store_for_tests()
+        from transport_guard import TransportGuard
+
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        flow.metadata["trace"] = True
+        flow.metadata["agent"] = "test-agent"
+        # Simulate the real mitmproxy ResponseProtocolError shape:
+        # flow.error is set, flow.response is None.
+        flow.error = OSError("simulated: server_connect refused")
+        flow.response = None
+
+        with patch("transport_guard.write_event"):
+            TransportGuard().error(flow)
+
+        # The critical assertion: flow.response was created by the hook,
+        # not by a pre-existing setup.
+        assert flow.response is not None, (
+            "error() must synthesise a downstream response when none "
+            "exists — otherwise the client has no correlation to /trace"
+        )
+        rid = flow.metadata["request_id"]
+        assert flow.response.headers.get("X-SafeYolo-Request-Id") == rid
+        # Body should also carry the request_id and reason for grep-ability.
+        body = _json.loads(flow.response.content)
+        assert body["request_id"] == rid
+        assert body["reason_code"] == "probe_reached_upstream"
+        assert body["host"] == PROBE_HOST
+        assert flow.response.status_code == 502
+
+        # Trace record must be readable at the trusted-agent scope so
+        # /trace returns it.
+        rec = get_store().get(rid, "test-agent")
+        assert rec is not None
+        step = rec.steps[-1]
+        assert step.addon == "transport-guard"
+        assert step.state == "error"
+        assert step.reason == "probe_reached_upstream"
+
     def test_error_hook_stamps_request_id_header_on_response(self):
         """When mitmproxy synthesises an error response, transport-guard
         stamps X-SafeYolo-Request-Id on it so the originating agent can

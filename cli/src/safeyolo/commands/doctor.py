@@ -526,25 +526,32 @@ def _classify_trace_steps(trace_payload: dict) -> tuple[str, list[str], list[dic
     extras = [n for n in order if n not in set(EXPECTED_ADDONS)]
 
     # Non-manifest steps DO matter when they report failure states
-    # (issue #213 fifth-pass review). transport-guard is intentionally
-    # non-manifest (defence-in-depth), and its `state=error, reason=
-    # probe_reached_upstream` is exactly the failure mode B3 was built
-    # to expose. Ignoring extras entirely would silently pass a probe
-    # where the sink failed and transport-guard caught the egress.
-    for name in extras:
-        step = first_seen[name]
+    # (issue #213 fifth/sixth-pass reviews). transport-guard is
+    # intentionally non-manifest (defence-in-depth), and its
+    # `state=error, reason=probe_reached_upstream` is exactly the
+    # failure mode B3 was built to expose. Ignoring extras entirely
+    # would silently pass a probe where the sink failed and
+    # transport-guard caught the egress.
+    #
+    # Scan ALL request steps for non-manifest addons, not just
+    # first_seen[]. A non-manifest addon may emit an early
+    # informational step and a later error step; ignoring anything
+    # past the first would let a late failure hide (sixth-pass review
+    # precision fix).
+    extras_set = set(extras)
+    non_manifest_error_seen: set[str] = set()
+    for step in steps:
+        name = step.get("addon")
+        if name not in extras_set:
+            continue
         state = step.get("state")
         reason = step.get("reason")
-        if state == "error":
+        if state == "error" and name not in non_manifest_error_seen:
+            non_manifest_error_seen.add(name)
             verdict = "fail"
             findings.append(
                 f"{name} (non-manifest): error ({reason}) — hook raised"
             )
-        elif state == "bypassed" and reason == "prior_response":
-            # A non-manifest addon getting preempted itself is
-            # diagnostic but not failure; the addon it preempted (which
-            # WILL be in EXPECTED_ADDONS) already registers the WARN.
-            pass
 
     if extras:
         detail.append({"extras": extras})
