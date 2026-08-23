@@ -59,7 +59,7 @@ class TestAddonChain:
     def test_addon_chain_has_expected_count(self):
         """ADDON_CHAIN contains the complete ordered addon set."""
         from safeyolo.proxy import ADDON_CHAIN
-        assert len(ADDON_CHAIN) == 24
+        assert len(ADDON_CHAIN) == 25
 
     def test_addon_chain_starts_with_readiness_writer(self):
         """Script addons start with the readiness writer.
@@ -70,10 +70,17 @@ class TestAddonChain:
         from safeyolo.proxy import ADDON_CHAIN
         assert ADDON_CHAIN[0] == "pid_writer.py"
 
-    def test_addon_chain_ends_with_admin_api(self):
-        """Last addon loaded is admin_api.py (observability layer)."""
+    def test_addon_chain_ends_with_probe_sink(self):
+        """Last addon loaded is probe_sink.py (#213 B2).
+
+        The doctor pipeline-probe sink MUST run after every security
+        addon has evaluated the request, so its position in the chain
+        is a hard invariant, not incidental ordering. Any change to
+        this assertion needs a matching update to probe_sink.py's
+        docstring rationale.
+        """
         from safeyolo.proxy import ADDON_CHAIN
-        assert ADDON_CHAIN[-1] == "admin_api.py"
+        assert ADDON_CHAIN[-1] == "probe_sink.py"
 
     def test_policy_engine_before_network_guard(self):
         """policy_engine.py loads before network_guard.py (policy must exist before enforcement)."""

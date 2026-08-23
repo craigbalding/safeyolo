@@ -33,6 +33,7 @@ ADDON_MODULES = [
     "pattern_scanner",
     "pid_writer",
     "policy_engine",
+    "probe_sink",
     "request_id",
     "request_logger",
     "service_discovery",

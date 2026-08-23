@@ -67,6 +67,9 @@ ADDON_CHAIN = [
     "traffic_scope.py",
     "flow_pruner.py",
     "admin_api.py",
+    # Layer 4: Local termination for reserved diagnostic destinations.
+    # MUST be the last request-hook participant — see probe_sink.py docstring.
+    "probe_sink.py",
 ]
 
 
