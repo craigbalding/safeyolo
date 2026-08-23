@@ -4,9 +4,10 @@ End-to-end reference for how an agent's outbound HTTP request travels
 from inside the sandbox to `mitmproxy`, and how `safeyolo agent shell`
 reaches it — on both Linux and macOS.
 
-Use this doc when debugging "connection reset", "attribution wrong",
-"agent can't reach proxy" — and when extending the stack (cross-host
-agent comms, team proxy, fleet PDP).
+Use this doc as a reference when reasoning about the transport
+end-to-end — tracing a request hop-by-hop, understanding how
+per-connection agent attribution is established, or extending the
+stack.
 
 ---
 
