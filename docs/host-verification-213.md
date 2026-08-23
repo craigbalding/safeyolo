@@ -60,12 +60,32 @@ TOKEN_FILE="$HOME/.safeyolo/data/agent_token"
 # (get_logs_dir() in cli/src/safeyolo/config.py). Honour override.
 LOG_DIR="${SAFEYOLO_LOGS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/safeyolo}"
 MITM_LOG="$LOG_DIR/mitmproxy.log"
+# Structured audit JSONL — same directory (proxy.py sets
+# SAFEYOLO_LOG_PATH = "$LOG_DIR/safeyolo.jsonl").
+AUDIT_JSONL="$LOG_DIR/safeyolo.jsonl"
 
 # First registered agent socket. Real layout is <ip>_<agent>/proxy.sock.
 AGENT_SOCK=$(ls "$HOME/.safeyolo/data/sockets/"*/proxy.sock 2>/dev/null | head -1)
 AGENT_NAME=$(basename "$(dirname "$AGENT_SOCK")" | cut -d_ -f2-)
 test -n "$AGENT_SOCK" || { echo "no agent socket found"; exit 1; }
 test -f "$MITM_LOG" || { echo "mitmproxy log not found at $MITM_LOG"; exit 1; }
+test -f "$AUDIT_JSONL" || { echo "audit log not found at $AUDIT_JSONL"; exit 1; }
+
+# Session-scoped log-diff helpers (issue #213 tenth-pass review).
+# Both mitmproxy.log and safeyolo.jsonl are append/rotating — a
+# whole-file grep can find hits from earlier sessions and let V3b
+# "pass" on a historical event or make V1 "fail" on stale evidence.
+# Baseline the byte offset before each phase, inspect only new bytes.
+mark_offsets() {
+  MITM_OFFSET=$(wc -c < "$MITM_LOG")
+  AUDIT_OFFSET=$(wc -c < "$AUDIT_JSONL")
+}
+new_mitm() {
+  tail -c +$((MITM_OFFSET + 1)) "$MITM_LOG"
+}
+new_audit() {
+  tail -c +$((AUDIT_OFFSET + 1)) "$AUDIT_JSONL"
+}
 
 # curl the Agent API via the UDS. `_safeyolo.proxy.internal` is a
 # mitmproxy virtual host, NOT a real DNS name — resolve it via the
@@ -92,6 +112,7 @@ send_probe() {
 ## V1 — Normal probe reaches probe_sink and returns 200
 
 ```sh
+mark_offsets  # baseline log positions for session-scoped assertions
 safeyolo doctor
 ```
 
@@ -113,9 +134,11 @@ safeyolo doctor
     any expected addon.
   - `probe-sink` step present with `outcome=probe_terminated`.
 - No `transport-guard` step appears in any per-agent trace.
-- No `security.probe_reached_upstream` audit event:
+- **Session-scoped** — no NEW `security.probe_reached_upstream`
+  event added since `mark_offsets` (must be zero for THIS session,
+  not zero across all history):
   ```sh
-  safeyolo logs --event security --tail 20 | grep -c probe_reached_upstream
+  new_audit | grep -c '"event": *"security.probe_reached_upstream"'
   # → 0
   ```
 
@@ -199,6 +222,7 @@ Restart the proxy: `safeyolo stop && safeyolo start`.
 Run the raw probe (uses `send_probe` from Shared setup):
 
 ```sh
+mark_offsets  # baseline for session-scoped assertions below
 send_probe v3a > /tmp/v3a.raw
 cat /tmp/v3a.raw
 ```
@@ -222,13 +246,18 @@ cat /tmp/v3a.raw
   ```
   Expect a `transport-guard` step with
   `state=error, reason=probe_sink_failed`.
-- **NO** `PROBE REACHED UPSTREAM` line in mitmproxy.log:
+- **NO** NEW `PROBE REACHED UPSTREAM` line in mitmproxy.log
+  since `mark_offsets` (session-scoped, ignores history):
   ```sh
-  grep -c "PROBE REACHED UPSTREAM" "$MITM_LOG"
-  # → 0 (for this session)
+  new_mitm | grep -c "PROBE REACHED UPSTREAM"
+  # → 0
   ```
-- **NO** `security.probe_reached_upstream` audit event in
-  `safeyolo logs --event security --tail 10`.
+- **NO** NEW `security.probe_reached_upstream` audit event since
+  `mark_offsets`:
+  ```sh
+  new_audit | grep -c '"event": *"security.probe_reached_upstream"'
+  # → 0
+  ```
 
 Also confirm doctor picks this up:
 
@@ -257,6 +286,7 @@ Restart: `safeyolo stop && safeyolo start`.
 Repeat the raw probe:
 
 ```sh
+mark_offsets  # fresh baseline for this phase
 send_probe v3b > /tmp/v3b.raw
 cat /tmp/v3b.raw
 ```
@@ -268,13 +298,18 @@ cat /tmp/v3b.raw
   `handle_protocol_error()` produces). No `X-SafeYolo-Request-Id`
   header — this is the intentional cost of reaching Layer 2, and
   matches the reviewer's stated posture: audit-only.
-- `mitmproxy.log` contains `PROBE REACHED UPSTREAM`:
+- **New** `PROBE REACHED UPSTREAM` line in mitmproxy.log for THIS
+  phase (session-scoped, proves the boundary fired for THIS
+  invocation and not a historical one):
   ```sh
-  grep "PROBE REACHED UPSTREAM" "$MITM_LOG" | tail -1
+  new_mitm | grep "PROBE REACHED UPSTREAM" | tail -1
   ```
-- `safeyolo logs --event security --tail 5` shows
-  `security.probe_reached_upstream` at CRITICAL severity with
-  `details.reason_code = probe_reached_upstream`.
+- **New** `security.probe_reached_upstream` audit event for THIS
+  phase, at CRITICAL severity with
+  `details.reason_code = probe_reached_upstream`:
+  ```sh
+  new_audit | grep '"event": *"security.probe_reached_upstream"' | tail -1 | python -m json.tool
+  ```
 
 The operator can still correlate the failure via the audit log even
 without a client-side request-id header.
@@ -309,12 +344,15 @@ sy_api /circuits | python -m json.tool | grep -A2 probe.internal
       OR bypassed with addon_disabled/policy_disabled reason); no
       `error`, `not_loaded`, or `missing_from_trace`
 - [ ] V1: `probe-sink/evaluated/probe_terminated` step present
-- [ ] V1: no `PROBE REACHED UPSTREAM` / `probe_sink_failed` events
-- [ ] V2: no `security.probe_reached_upstream` event during V1
-      (`safeyolo logs --event security --tail 20 | grep -c
-      probe_reached_upstream` → 0) and V3b actually fires it — the
-      pair proves the `server_connect` boundary is exercised only
-      when both request-side terminators are absent
+- [ ] V1: no NEW `PROBE REACHED UPSTREAM` / `probe_sink_failed`
+      events since `mark_offsets` (session-scoped via `new_mitm` /
+      `new_audit`)
+- [ ] V2 (architectural proof): NEW `security.probe_reached_upstream`
+      events for THIS session are **zero during V1**, **zero during
+      V3a**, and **at least 1 during V3b** — the triple proves the
+      `server_connect` boundary is exercised only when both request-
+      side terminators are absent (whole-file `grep -c` is not the
+      proof — historical events would poison the assertion)
 - [ ] V3a: sink-only-disabled — 502 with `X-SafeYolo-Request-Id`,
       body `reason_code=probe_sink_failed`, `/trace` shows
       `transport-guard/error/probe_sink_failed`, NO audit event,
