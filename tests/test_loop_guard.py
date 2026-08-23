@@ -148,6 +148,18 @@ class TestViaTokenPresence:
 
         assert "safeyolo" in flow.request.headers.get("via", "")
 
+    def test_existing_via_preserved(self):
+        """Other proxy Via entries are preserved alongside ours."""
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 upstream"
+
+        addon.requestheaders(flow)
+
+        via = flow.request.headers["via"]
+        assert "1.1 upstream" in via
+        assert "1.1 safeyolo" in via
+
 
 class TestLoopBlockCorrelationHeaders:
     """Issue #213: every SafeYolo block response must carry an
@@ -204,17 +216,158 @@ class TestLoopBlockCorrelationHeaders:
             kwargs = mock_write.call_args[1]
             assert kwargs.get("request_id") == flow.metadata["request_id"]
 
-    def test_existing_via_preserved(self):
-        """Other proxy Via entries are preserved alongside ours."""
+    def test_loop_audit_event_carries_agent(self):
+        """The security.loop_guard event must include the trusted agent so
+        `/explain` (which strictly filters by agent) actually returns it
+        for the originating agent. loop-guard runs before
+        service_discovery.request(), so it resolves the agent itself via
+        the service-discovery addon's `get_client_for_ip()` (issue #213
+        fifth-pass review).
+        """
+        from unittest.mock import Mock, patch
+
         addon = self._addon()
         flow = tflow.tflow()
-        flow.request.headers["via"] = "1.1 upstream"
+        flow.request.headers["via"] = "1.1 safeyolo"
 
-        addon.requestheaders(flow)
+        mock_sd = Mock()
+        mock_sd.get_client_for_ip.return_value = "the-real-agent"
 
-        via = flow.request.headers["via"]
-        assert "1.1 upstream" in via
-        assert "1.1 safeyolo" in via
+        with patch("loop_guard.find_addon", return_value=mock_sd), \
+             patch("loop_guard.get_client_ip", return_value="10.0.0.42"), \
+             patch("loop_guard.write_event") as mock_write:
+            addon.requestheaders(flow)
+
+        # Agent attribution on the audit event.
+        assert mock_write.call_args[1].get("agent") == "the-real-agent"
+        # And on the flow metadata so downstream response-side hooks can
+        # read it too.
+        assert flow.metadata.get("agent") == "the-real-agent"
+
+    def test_loop_agent_left_none_when_service_discovery_unresolvable(self):
+        """If service-discovery is absent or reports unknown/default, the
+        event is written with `agent=None` rather than a bogus value.
+        `/explain` will drop it in that case (fail-closed), which is the
+        right posture for an unattributable request.
+        """
+        from unittest.mock import patch
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        with patch("loop_guard.find_addon", return_value=None), \
+             patch("loop_guard.write_event") as mock_write:
+            addon.requestheaders(flow)
+
+        assert mock_write.call_args[1].get("agent") is None
+        assert "agent" not in flow.metadata
+
+
+class TestLoopFullCorrelationRoundTrip:
+    """The full round-trip promised by issue #213:
+
+        loop detected
+        → 508 carries X-SafeYolo-Request-Id
+        → audit event has same request_id + trusted agent
+        → /explain as that agent returns the security.loop_guard event
+
+    This test proves the correlation feature end-to-end, not merely that
+    the header exists.
+    """
+
+    def test_loop_event_is_findable_via_explain_as_owning_agent(self, tmp_path, monkeypatch):
+        """Round-trip: loop → 508 → event on disk → /explain returns it."""
+        import asyncio
+        import json
+        from unittest.mock import Mock, patch
+
+        import agent_api as agent_api_mod
+        from agent_api import AgentAPI
+        from loop_guard import LoopGuard
+        from mitmproxy.test import taddons
+
+        agent_name = "loop-owner-agent"
+        log_file = tmp_path / "safeyolo.jsonl"
+
+        # 1. Loop-guard writes the audit event via a captured write_event
+        #    that appends to our test log file. We drive the file directly
+        #    (rather than starting the real _AuditWriter thread) so the
+        #    test is deterministic.
+        def fake_write_event(event, **kwargs):
+            entry = {
+                "event": event,
+                "kind": kwargs.get("kind").value if kwargs.get("kind") else None,
+                "severity": kwargs.get("severity").value if kwargs.get("severity") else None,
+                "summary": kwargs.get("summary"),
+                "request_id": kwargs.get("request_id"),
+                "agent": kwargs.get("agent"),
+                "addon": kwargs.get("addon"),
+                "host": kwargs.get("host"),
+                "details": kwargs.get("details"),
+            }
+            with open(log_file, "a") as fh:
+                fh.write(json.dumps(entry) + "\n")
+
+        loop = LoopGuard()
+        flow = tflow.tflow()
+        flow.request.headers["via"] = "1.1 safeyolo"
+
+        mock_sd = Mock()
+        mock_sd.get_client_for_ip.return_value = agent_name
+
+        with patch("loop_guard.find_addon", return_value=mock_sd), \
+             patch("loop_guard.get_client_ip", return_value="10.0.0.42"), \
+             patch("loop_guard.write_event", side_effect=fake_write_event):
+            loop.requestheaders(flow)
+
+        assert flow.response.status_code == 508
+        request_id = flow.metadata["request_id"]
+        assert flow.response.headers["X-SafeYolo-Request-Id"] == request_id
+
+        # 2. /explain as the same agent must return the loop_guard event.
+        monkeypatch.setenv("SAFEYOLO_LOG_PATH", str(log_file))
+        # Bypass the real audit writer's drain — the event is already on
+        # disk and no async writer is running here.
+        class _NoPending:
+            def pending_count(self):
+                return 0
+
+            def wait_for_drain(self, timeout_s):
+                return True
+
+        api = AgentAPI()
+        with taddons.context(api) as tctx:
+            tctx.options.agent_api_enabled = True
+            with patch("pdp.tokens.read_active_token", return_value="tok"), \
+                 patch.object(api, "_find_addon", return_value=Mock(
+                     get_client_for_ip=Mock(return_value=agent_name))), \
+                 patch.object(agent_api_mod, "get_writer", return_value=_NoPending(), create=True):
+                # get_writer is imported inside _handle_explain — patch the
+                # audit_writer module directly instead:
+                pass
+            with patch("pdp.tokens.read_active_token", return_value="tok"), \
+                 patch.object(api, "_find_addon", return_value=Mock(
+                     get_client_for_ip=Mock(return_value=agent_name))), \
+                 patch("safeyolo.core.audit_writer.get_writer",
+                       return_value=_NoPending()):
+                url = f"https://_safeyolo.proxy.internal/explain?request_id={request_id}"
+                req_flow = tflow.tflow()
+                req_flow.request.url = url
+                req_flow.request.host = "_safeyolo.proxy.internal"
+                req_flow.request.headers["authorization"] = "Bearer tok"
+                asyncio.run(api.request(req_flow))
+
+        body = json.loads(req_flow.response.content)
+        assert body["status"] in ("complete", "incomplete_search")
+        events = body["events"]
+        assert any(e["event"] == "security.loop_guard" for e in events), (
+            f"loop_guard event missing from /explain — full correlation broken. "
+            f"Got: {[e.get('event') for e in events]}"
+        )
+        loop_event = next(e for e in events if e["event"] == "security.loop_guard")
+        assert loop_event["request_id"] == request_id
+        assert loop_event["agent"] == agent_name
 
 
 class TestLoopSimulation:

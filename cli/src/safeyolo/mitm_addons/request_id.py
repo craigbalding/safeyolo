@@ -151,10 +151,15 @@ class RequestIdGenerator:
 
     def request(self, flow: http.HTTPFlow):
         """Assign request_id, consume the trace marker, strip internal + hop-by-hop headers."""
-        # 1. Assign unique request ID (128 bits of entropy from uuid4).
-        #    Must match REQUEST_ID_PATTERN — consumers rely on the format.
-        request_id = f"{REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
-        flow.metadata["request_id"] = request_id
+        # 1. Assign unique request ID via ensure_request_id so any earlier
+        #    hook (loop-guard's `requestheaders`, in practice) that already
+        #    reserved a correlation ID keeps it. Without this, the normal
+        #    path would silently replace an early-hook-assigned ID and
+        #    every log/event/response header would then reference a
+        #    different id than the one on the wire.
+        ensure_request_id(flow)
+        # start_time is always freshly stamped — it's per-hook timing, not
+        # per-request identity, so it doesn't inherit from an earlier hook.
         flow.metadata["start_time"] = time.time()
 
         # 2. Consume trace marker BEFORE stripping. Presence of the header

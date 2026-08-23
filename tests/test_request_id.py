@@ -80,20 +80,23 @@ class TestRequestIdUniqueness:
         ids = [f.metadata["request_id"] for f in flows]
         assert len(set(ids)) == 100
 
-    def test_request_id_overwrites_preexisting_value(self, addon):
-        """Contract: the addon owns request_id and unconditionally overwrites."""
-        from request_id import REQUEST_ID_PATTERN
-
+    def test_request_id_preserves_valid_preexisting_value(self, addon):
+        """Contract change (issue #213 fifth-pass review): request() is now
+        idempotent via ensure_request_id — an earlier hook (loop-guard's
+        `requestheaders`) may have already reserved a correlation ID, and
+        replacing it would leave logs, events, and the response header
+        each pointing at a different id than the wire.
+        """
+        preset = "req-abcd1234567890abcdef1234567890ab"
         flow = tflow.tflow()
-        flow.metadata["request_id"] = "req-legacy000000000000000000000000000"
+        flow.metadata["request_id"] = preset
 
         addon.request(flow)
 
-        assert flow.metadata["request_id"] != "req-legacy000000000000000000000000000"
-        assert REQUEST_ID_PATTERN.match(flow.metadata["request_id"]) is not None
+        assert flow.metadata["request_id"] == preset
 
-    def test_second_invocation_assigns_fresh_id(self, addon):
-        """Calling request() twice on the same flow produces two distinct IDs."""
+    def test_second_invocation_preserves_id(self, addon):
+        """Calling request() twice on the same flow leaves the id unchanged."""
         flow = tflow.tflow()
         addon.request(flow)
         first = flow.metadata["request_id"]
@@ -101,7 +104,7 @@ class TestRequestIdUniqueness:
         addon.request(flow)
         second = flow.metadata["request_id"]
 
-        assert first != second
+        assert first == second
 
 
 # =========================================================================

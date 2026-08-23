@@ -25,9 +25,35 @@ from mitmproxy import http
 from request_id import ensure_request_id
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.utils import make_block_response, sanitize_for_log, write_event
+from safeyolo.core.utils import find_addon, get_client_ip, make_block_response, sanitize_for_log, write_event
 
 log = logging.getLogger("safeyolo.loop-guard")
+
+
+def _resolve_agent(flow: http.HTTPFlow) -> str | None:
+    """Resolve the trusted agent for this flow's source IP.
+
+    loop-guard fires in `requestheaders`, before `service_discovery.request()`
+    would stamp `flow.metadata["agent"]`. But service_discovery's
+    `get_client_for_ip()` is callable independently of its request hook, so
+    we can attribute the audit event to the right agent even on this early
+    path. Without this, `/explain` (which strictly filters by agent) would
+    drop the loop-guard event and the 508's X-SafeYolo-Request-Id would
+    lead the originating agent to a genuinely empty result (issue #213
+    fifth-pass review).
+    """
+    client_ip = get_client_ip(flow)
+    if client_ip == "unknown":
+        return None
+    sd = find_addon("service-discovery")
+    if sd is None:
+        return None
+    agent = sd.get_client_for_ip(client_ip)
+    # "unknown" and "default" are non-identities from service_discovery's
+    # perspective — same treatment as agent_api._resolve_agent_id.
+    if agent in (None, "unknown", "default"):
+        return None
+    return agent
 
 
 class LoopGuard:
@@ -48,6 +74,12 @@ class LoopGuard:
             # no X-SafeYolo-Request-Id, breaking #213's correlation-on-
             # every-SafeYolo-block promise (third-pass review).
             request_id = ensure_request_id(flow)
+            # Resolve and stash agent identity so /explain finds this
+            # event, and so downstream response-side hooks that read
+            # flow.metadata["agent"] have the right value.
+            agent = _resolve_agent(flow)
+            if agent is not None:
+                flow.metadata["agent"] = agent
 
             host = flow.request.host
             port = flow.request.port
@@ -60,6 +92,7 @@ class LoopGuard:
                 decision=Decision.DENY,
                 host=host,
                 request_id=request_id,
+                agent=agent,
                 addon="loop-guard",
                 details={"port": port, "via": via},
             )
