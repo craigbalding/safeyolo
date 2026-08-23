@@ -261,24 +261,20 @@ class TestErrorHookBridgesToTrace:
         assert step.state == "error"
         assert step.reason == "probe_reached_upstream"
 
-    def test_error_hook_synthesises_correlated_response_when_none_exists(self):
-        """The critical V3-correlation regression (issue #213 sixth-pass
-        review). In the real `ResponseProtocolError` path
-        (`server_connect` refusal → `HttpErrorHook`), mitmproxy fires
-        error(flow) with `flow.error` set but `flow.response` still None
-        — then generates its own generic protocol-error response for the
-        client. Without a correlated response the client (doctor,
-        agent) has no request-id to hand to `/trace`.
+    def test_error_hook_does_NOT_synthesise_response_seventh_pass_review(self):
+        """Reviewer's source check on mitmproxy 12.2.2 (seventh-pass
+        review): setting `flow.response` from `error(flow)` does NOT
+        reach the wire. `handle_protocol_error()` sends the raw
+        `ResponseProtocolError` directly to the client without
+        consulting `flow.response`.
 
-        `error(flow)` must synthesise the response itself so the client
-        always receives an X-SafeYolo-Request-Id header tying the
-        failure to the trace record.
+        error() is now diagnostic-only: records the trace step, does
+        NOT touch flow.response. The client-correlatable path is the
+        request-hook failsafe covered in `TestRequestHookFailsafe`.
         """
-        import json as _json
-
         from mitmproxy.test import tflow
 
-        from safeyolo.core.trace import get_store, reset_store_for_tests
+        from safeyolo.core.trace import reset_store_for_tests
 
         reset_store_for_tests()
         from transport_guard import TransportGuard
@@ -287,43 +283,25 @@ class TestErrorHookBridgesToTrace:
         flow.request.host = PROBE_HOST
         flow.metadata["trace"] = True
         flow.metadata["agent"] = "test-agent"
-        # Simulate the real mitmproxy ResponseProtocolError shape:
-        # flow.error is set, flow.response is None.
         flow.error = OSError("simulated: server_connect refused")
         flow.response = None
 
         with patch("transport_guard.write_event"):
             TransportGuard().error(flow)
 
-        # The critical assertion: flow.response was created by the hook,
-        # not by a pre-existing setup.
-        assert flow.response is not None, (
-            "error() must synthesise a downstream response when none "
-            "exists — otherwise the client has no correlation to /trace"
+        # Must NOT synthesise — that would be dishonest, since mitmproxy
+        # 12.2.2 wouldn't deliver it. Response synthesis moved to
+        # request(flow) where it actually works.
+        assert flow.response is None, (
+            "error() must NOT synthesise flow.response — mitmproxy "
+            "12.2.2's handle_protocol_error() does not consult it. "
+            "See TestRequestHookFailsafe for the working path."
         )
-        rid = flow.metadata["request_id"]
-        assert flow.response.headers.get("X-SafeYolo-Request-Id") == rid
-        # Body should also carry the request_id and reason for grep-ability.
-        body = _json.loads(flow.response.content)
-        assert body["request_id"] == rid
-        assert body["reason_code"] == "probe_reached_upstream"
-        assert body["host"] == PROBE_HOST
-        assert flow.response.status_code == 502
 
-        # Trace record must be readable at the trusted-agent scope so
-        # /trace returns it.
-        rec = get_store().get(rid, "test-agent")
-        assert rec is not None
-        step = rec.steps[-1]
-        assert step.addon == "transport-guard"
-        assert step.state == "error"
-        assert step.reason == "probe_reached_upstream"
-
-    def test_error_hook_stamps_request_id_header_on_response(self):
-        """When mitmproxy synthesises an error response, transport-guard
-        stamps X-SafeYolo-Request-Id on it so the originating agent can
-        correlate to /trace. Issue #213 promises correlation on every
-        SafeYolo-originated response.
+    def test_error_hook_does_NOT_touch_existing_response(self):
+        """Companion: even when a response exists, error() no longer
+        stamps its headers. All response management moved out of
+        error(flow) entirely — it's now diagnostic-only.
         """
         from mitmproxy import http as mitm_http
 
@@ -334,8 +312,137 @@ class TestErrorHookBridgesToTrace:
 
         flow = self._flow()
         flow.response = mitm_http.Response.make(502, b"", {})
+        original = dict(flow.response.headers)
+
         with patch("transport_guard.write_event"):
             TransportGuard().error(flow)
 
-        rid = flow.metadata.get("request_id")
+        assert dict(flow.response.headers) == original
+
+
+class TestRequestHookFailsafe:
+    """The client-correlatable path added in the seventh-pass review.
+
+    Loaded AFTER probe_sink. If sink terminated normally, request()
+    is a no-op. If sink was missing/inert (no flow.response), request()
+    synthesises a correlated 5xx with X-SafeYolo-Request-Id and records
+    a trace step for `transport-guard/error/probe_sink_failed`.
+
+    mitmproxy honours flow.response set from the request hook — this
+    is the path that actually reaches the wire.
+    """
+
+    def _addon(self):
+        from transport_guard import TransportGuard
+        return TransportGuard()
+
+    def test_noop_when_sink_already_responded(self):
+        """Normal successful path: probe_sink terminated. transport_guard's
+        request hook sees flow.response and does nothing.
+        """
+        from mitmproxy import http as mitm_http
+        from mitmproxy.test import tflow
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        # Pretend probe_sink already synthesised.
+        flow.response = mitm_http.Response.make(200, b'{"probe_ok":true}', {})
+        pre = flow.response
+
+        with patch("transport_guard.write_event"):
+            addon.request(flow)
+
+        # Response untouched.
+        assert flow.response is pre
+
+    def test_noop_when_non_probe_host(self):
+        """Non-probe flows: request() is a no-op regardless of state."""
+        from mitmproxy.test import tflow
+
+        addon = self._addon()
+        flow = tflow.tflow()
+        flow.request.host = "example.com"
+        with patch("transport_guard.write_event"):
+            addon.request(flow)
+        assert flow.response is None
+
+    def test_missing_sink_synthesises_correlated_5xx(self):
+        """The critical case: probe_sink was absent/inert, so
+        flow.response is None when transport_guard's request() runs.
+        Must synthesise the 5xx with request-id header + body, and
+        record trace step.
+        """
+        import json as _json
+
+        from mitmproxy.test import tflow
+
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        reset_store_for_tests()
+        addon = self._addon()
+
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        # Simulate probe-marker set by probe_sink.requestheaders BEFORE
+        # the sink's request hook was skipped/broken.
+        flow.metadata["safeyolo_probe"] = True
+        flow.metadata["trace"] = True
+        flow.metadata["agent"] = "test-agent"
+        assert flow.response is None
+
+        with patch("transport_guard.write_event"):
+            addon.request(flow)
+
+        # Correlated 5xx synthesised.
+        assert flow.response is not None
+        assert flow.response.status_code == 502
+        rid = flow.metadata["request_id"]
         assert flow.response.headers.get("X-SafeYolo-Request-Id") == rid
+        body = _json.loads(flow.response.content)
+        assert body["reason_code"] == "probe_sink_failed"
+        assert body["host"] == PROBE_HOST
+        assert body["request_id"] == rid
+
+        # Trace step recorded with the distinct probe_sink_failed reason
+        # (NOT probe_reached_upstream — transport was never attempted).
+        rec = get_store().get(rid, "test-agent")
+        assert rec is not None
+        step = rec.steps[-1]
+        assert step.addon == "transport-guard"
+        assert step.state == "error"
+        assert step.reason == "probe_sink_failed"
+
+    def test_missing_sink_self_sufficient_without_prior_request_hooks(self):
+        """Even if RequestIdGenerator and service-discovery didn't run
+        (probe-marker set by requestheaders is enough), the failsafe
+        recovers trace opt-in and trusted agent from the header + UnixMode.
+        """
+        from unittest.mock import MagicMock
+
+        from mitmproxy.test import tflow
+
+        from safeyolo.core.trace import get_store, reset_store_for_tests
+
+        reset_store_for_tests()
+        addon = self._addon()
+        from request_id import TRACE_REQUEST_HEADER
+
+        flow = tflow.tflow()
+        flow.request.host = PROBE_HOST
+        flow.request.headers[TRACE_REQUEST_HEADER] = "1"
+        flow.client_conn.proxy_mode = MagicMock()
+        flow.client_conn.proxy_mode.agent = "recovered-agent"
+        # Deliberately no trace / agent / request_id metadata set.
+
+        with patch("transport_guard.write_event"):
+            addon.request(flow)
+
+        # Recovered opt-in + agent + request_id.
+        assert flow.metadata.get("trace") is True
+        assert flow.metadata.get("agent") == "recovered-agent"
+        rid = flow.metadata["request_id"]
+        # Trace record at the recovered-agent scope.
+        rec = get_store().get(rid, "recovered-agent")
+        assert rec is not None
+        assert rec.steps[-1].reason == "probe_sink_failed"

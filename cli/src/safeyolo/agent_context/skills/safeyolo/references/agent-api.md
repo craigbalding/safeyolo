@@ -135,6 +135,8 @@ step with the source constants in `safeyolo.core.trace` and each addon's
 | `prior_response` | An earlier addon already set `flow.response`; this addon deferred. |
 | `policy_disabled` | `PolicyClient.is_addon_enabled()` returned False for this scope. |
 | `addon_disabled` | mitmproxy option turned the addon off globally. |
+| `probe_sink_failed` | Reserved-probe request-hook failsafe caught a missing/inert sink BEFORE transport was attempted. Client received a correlated 5xx with `X-SafeYolo-Request-Id`. |
+| `probe_reached_upstream` | Reserved-probe `server_connect` structural backstop fired — transport was attempted and refused. Audit-only diagnostic; client saw mitmproxy's generic protocol error (no correlated response — the request-hook failsafe was also absent). |
 
 ### Per-addon outcomes
 

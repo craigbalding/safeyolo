@@ -31,13 +31,29 @@ PROBE_HOST: str = "_safeyolo.probe.internal"
 # reserved path rather than via user configuration.
 PROBE_ALLOW_REASON_CODE: str = "INTERNAL_PIPELINE_PROBE"
 
-# Shared reason string used by both:
-#   - the trace step recorded by transport_guard when a probe reaches
-#     the upstream-connect stage (state=error, reason=<this>);
-#   - the security.probe_reached_upstream audit event's details.reason_code.
-# Kept lower-case to match the rest of the trace/audit reason vocabulary
-# (issue #213 review, second-pass cleanup).
-PROBE_REACHED_UPSTREAM_REASON: str = "probe_reached_upstream"
+# Trace error-reason values for the reserved probe path. Aliases to the
+# canonical constants in `safeyolo.core.trace` so both `probe.PROBE_*_REASON`
+# (probe-domain) and `trace.REASON_PROBE_*` (trace-vocab) name the same
+# strings. Split by capture stage (issue #213 seventh-pass review):
+#   - PROBE_SINK_FAILED_REASON: the request-hook failsafe caught a missing
+#     sink BEFORE transport was attempted (client got a correlated 5xx).
+#   - PROBE_REACHED_UPSTREAM_REASON: the server_connect backstop fired —
+#     transport was actually attempted (audit-only diagnostic).
+# Distinguishing lets operator triage answer "did doctor's request even
+# leave the proxy" without ambiguity.
+# Self-aliased imports (`x as x`) so ruff recognises them as intentional
+# re-exports rather than unused imports.
+from safeyolo.core.trace import REASON_PROBE_REACHED_UPSTREAM as PROBE_REACHED_UPSTREAM_REASON  # noqa: E402
+from safeyolo.core.trace import REASON_PROBE_SINK_FAILED as PROBE_SINK_FAILED_REASON  # noqa: E402
+
+__all__ = [
+    "PROBE_ALLOW_REASON_CODE",
+    "PROBE_HOST",
+    "PROBE_PATH",
+    "PROBE_REACHED_UPSTREAM_REASON",
+    "PROBE_SINK_FAILED_REASON",
+    "is_probe_host",
+]
 
 # Fixed path used by doctor when sending the probe. Not load-bearing for
 # routing (the host alone triggers everything) — kept constant so trace

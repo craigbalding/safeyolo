@@ -67,14 +67,16 @@ ADDON_CHAIN = [
     "traffic_scope.py",
     "flow_pruner.py",
     "admin_api.py",
-    # Layer 4: Reserved diagnostic destinations.
-    # transport_guard fires on server_connect (defence-in-depth no-egress
-    # boundary for the probe host). Loaded before probe_sink so the
-    # transport guard is always registered even if the sink is disabled or
-    # removed — see transport_guard.py docstring.
-    "transport_guard.py",
-    # probe_sink MUST be the last request-hook participant — see docstring.
+    # Layer 4: Reserved diagnostic destinations (issue #213 PR B).
+    # probe_sink is the normal terminator (early marker in requestheaders,
+    # local 200 in request). transport_guard is the correlated late
+    # request-hook failsafe (client-correlatable) + the structural
+    # server_connect no-egress backstop (audit-only for catastrophic
+    # chain failures). Load order matters: transport_guard's request
+    # hook must run AFTER probe_sink so a normally-terminated probe
+    # bypasses the failsafe entirely.
     "probe_sink.py",
+    "transport_guard.py",
 ]
 
 

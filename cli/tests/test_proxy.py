@@ -70,17 +70,24 @@ class TestAddonChain:
         from safeyolo.proxy import ADDON_CHAIN
         assert ADDON_CHAIN[0] == "pid_writer.py"
 
-    def test_addon_chain_ends_with_probe_sink(self):
-        """Last addon loaded is probe_sink.py (#213 B2).
+    def test_addon_chain_ends_with_transport_guard(self):
+        """Last addon loaded is transport_guard.py (#213 PR B, seventh-pass
+        review).
 
-        The doctor pipeline-probe sink MUST run after every security
-        addon has evaluated the request, so its position in the chain
-        is a hard invariant, not incidental ordering. Any change to
-        this assertion needs a matching update to probe_sink.py's
-        docstring rationale.
+        The doctor pipeline-probe layering requires:
+          - probe_sink.py: normal terminator, MUST run after every
+            security addon
+          - transport_guard.py: correlated late request-hook failsafe,
+            MUST run after probe_sink so a normally-terminated probe
+            bypasses the failsafe entirely
+
+        Any change to this ordering needs matching updates to both
+        addons' docstrings and the ADDON_CHAIN comment block.
         """
         from safeyolo.proxy import ADDON_CHAIN
-        assert ADDON_CHAIN[-1] == "probe_sink.py"
+        assert ADDON_CHAIN[-1] == "transport_guard.py"
+        # And probe_sink is immediately before it:
+        assert ADDON_CHAIN[-2] == "probe_sink.py"
 
     def test_policy_engine_before_network_guard(self):
         """policy_engine.py loads before network_guard.py (policy must exist before enforcement)."""

@@ -1,42 +1,32 @@
 """
-transport_guard.py - Defense-in-depth no-egress boundary for the reserved
-pipeline-probe destination (#213 B3)
+transport_guard.py - Correlated request-hook failsafe + no-egress backstop
+for the reserved pipeline-probe destination (#213 B3, seventh-pass review)
 
-Belt-and-braces with `probe_sink`. In the normal path, probe_sink's
-`request` hook sets `flow.response` for the reserved probe host, so
-mitmproxy never attempts an upstream connection and `server_connect`
-does not fire.
+Two-layer defense for the reserved doctor probe host:
 
-This addon exists for the case where probe_sink is:
-- absent (someone removed it from ADDON_CHAIN),
-- misordered (something responded after it, wrongly),
-- broken (the sink hook raised),
-- disabled at runtime, or
-- shadowed by a future addon that consumes the probe marker without
-  synthesising a response.
+1. **Request-hook failsafe** (`request(flow)`, loaded AFTER `probe_sink`):
+   the client-correlatable catch. If `probe_sink` was missing / inert /
+   didn't synthesise a response, this hook does — with a real
+   `X-SafeYolo-Request-Id` header and a `transport-guard/error/
+   probe_sink_failed` trace step. mitmproxy honours `flow.response`
+   set from a request hook, so the client receives the correlated
+   response and can `GET /trace?request_id=...` to see the reason.
 
-In any of those failures, mitmproxy would proceed to open an upstream
-connection to `_safeyolo.probe.internal`. That host has no DNS entry
-and no route, so the connection would fail anyway — but "connection
-refused because there's no server" is not the same as "SafeYolo
-guarantees this destination never egresses". Issue #213 requires the
-latter: doctor's probe must never generate DNS lookups or TCP
-connection attempts to real infrastructure, even under sink failure.
+2. **`server_connect` structural backstop**: catastrophic-only.
+   Fires if BOTH probe_sink and the request-hook failsafe above were
+   absent (chain broken). Sets `data.server.error` to abort the
+   upstream connection locally and writes an audit event
+   (`security.probe_reached_upstream` at CRITICAL). This is
+   audit-only — mitmproxy 12.2.2's `handle_protocol_error()` does NOT
+   consult `flow.response` set from the `error(flow)` hook, so we
+   cannot deliver a correlated HTTP response from that path
+   (reviewer's source check on the pinned version). The normal
+   missing-sink failure is caught before transport by layer 1, so the
+   audit-only layer 2 is acceptable.
 
-Contract:
-- Fire on `server_connect`. Inspect the resolved server address
-  (and any TLS SNI) for the reserved probe host.
-- If matched: set `data.server.error` so mitmproxy aborts the
-  connection locally, write an audit event with a distinctive
-  reason code (`PROBE_REACHED_UPSTREAM`) so operators see clearly
-  that the sink layer failed.
-- The address check is case-insensitive (DNS names are).
-
-Loading position: anywhere in the request half of the chain works
-because `server_connect` runs on a different mitmproxy hook path than
-`request` hooks — timing is decoupled. Loaded before probe_sink in
-ADDON_CHAIN so this file's audit event is registered whenever the
-proxy is up, independent of whether probe_sink itself loaded.
+Load order (see ADDON_CHAIN in cli/src/safeyolo/proxy.py):
+  probe_sink.py       # normal terminator
+  transport_guard.py  # request-hook failsafe + server_connect backstop
 """
 
 from __future__ import annotations
@@ -49,7 +39,12 @@ from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 from request_id import ensure_request_id, ensure_trace_opt_in, recover_trusted_agent
 
 from safeyolo.core.audit_schema import Decision, EventKind, Severity
-from safeyolo.core.probe import PROBE_HOST, PROBE_REACHED_UPSTREAM_REASON, is_probe_host
+from safeyolo.core.probe import (
+    PROBE_HOST,
+    PROBE_REACHED_UPSTREAM_REASON,
+    PROBE_SINK_FAILED_REASON,
+    is_probe_host,
+)
 from safeyolo.core.trace import STATE_ERROR, record_step
 from safeyolo.core.utils import sanitize_for_log, write_event
 
@@ -120,87 +115,100 @@ class TransportGuard:
             },
         )
 
-    def error(self, flow: http.HTTPFlow) -> None:
-        """Bridge the server_connect refusal into HTTPFlow-aware trace evidence.
+    def request(self, flow: http.HTTPFlow) -> None:
+        """Late request-hook failsafe for the reserved probe host.
 
-        server_connect (above) has no HTTPFlow reference — it operates
-        on ServerConnectionHookData. That means the audit event is the
-        only correlation surface unless we cross the boundary here in
-        an HTTP-layer hook. The mitmproxy `error` hook fires with a
-        real `http.HTTPFlow` when a flow encounters a transport/protocol
-        error — including the connection abort we produce by setting
-        `data.server.error` above.
+        Loaded AFTER `probe_sink` in ADDON_CHAIN. If the sink terminated
+        normally, `flow.response` is already set and this hook does
+        nothing. If the sink was missing/inert/broken, this synthesises
+        a correlated 5xx with `X-SafeYolo-Request-Id` and records a
+        `transport-guard/error/probe_sink_failed` trace step.
 
-        Contract (issue #213 review): when a probe host flow errors,
-        record a trace step so `/trace?request_id=...` surfaces the
-        failure alongside every other pipeline step, and so the DAG's
-        `cls.trace_error` branch fires deterministically.
+        mitmproxy 12.2.2's `HttpRequestHook` runs before
+        `make_server_connection()`. Setting `flow.response` here causes
+        mitmproxy to take the inline-response branch and never attempt
+        the server connection (source-verified by reviewer). This is
+        the client-correlatable path: the response DOES reach the wire,
+        unlike anything set from `error(flow)`.
 
-        Self-sufficient on the early-connect path (issue #213
-        fourth-pass review): if `server_connect` preempts
-        `RequestIdGenerator.request()`, then neither the trace opt-in
-        flag nor `flow.metadata["agent"]` has been set — `record_step`
-        would silently no-op and any recorded step would be unreadable
-        via agent-scoped `/trace`. This hook recovers both from
-        trusted inputs before recording:
-
-          - `ensure_trace_opt_in(flow)` consumes and strips
-            X-SafeYolo-Trace so tracing is opted-in even if the
-            request-hook path never ran;
-          - `recover_trusted_agent(flow)` reads the agent name from
-            `flow.client_conn.proxy_mode.agent` (the UnixMode's
-            source-of-truth attribution) so agent-scoped `/trace` can
-            find the record;
-          - `ensure_request_id(flow)` is idempotent and guarantees a
-            correlation ID.
+        Distinct reason from `server_connect`'s backstop
+        (`probe_reached_upstream`) — this one is `probe_sink_failed`
+        because transport was NOT attempted, only the sink layer failed.
+        Operator triage can tell which caught it.
         """
         if not is_probe_host(flow.request.host):
             return
+        # Sink ran normally — do nothing.
+        if flow.response is not None:
+            return
 
-        # Recover the trace opt-in from the request header if
-        # RequestIdGenerator.request() never ran (early-connect path).
+        # Sink was missing/inert. Recover trace opt-in and trusted agent
+        # (both may be unset if we're catching an unusual pipeline state).
         ensure_trace_opt_in(flow)
-        # Recover trusted agent from the per-agent UDS mode if
-        # service_discovery.request() never ran.
         if not flow.metadata.get("agent"):
             trusted_agent = recover_trusted_agent(flow)
             if trusted_agent:
                 flow.metadata["agent"] = trusted_agent
-
-        # Idempotent: preserves any earlier RequestIdGenerator assignment.
         request_id = ensure_request_id(flow)
 
-        # Synthesise a correlated downstream response if none exists yet.
-        # In the real ResponseProtocolError path (server_connection refusal
-        # → HttpErrorHook), mitmproxy fires this hook with flow.error set
-        # but flow.response still None; mitmproxy then generates its own
-        # generic protocol-error response for the client. Setting
-        # flow.response here BEFORE that generic response is generated
-        # gives us a deterministic correlatable HTTP surface: the client
-        # (doctor, agent) always receives an X-SafeYolo-Request-Id header
-        # tying the failure to the `/trace` record we're about to write
-        # (issue #213 review — V3 correlation contract).
-        if flow.response is None:
-            flow.response = http.Response.make(
-                502,
-                json.dumps({
-                    "error": "SafeYolo pipeline-probe upstream refused",
-                    "reason_code": PROBE_REACHED_UPSTREAM_REASON,
-                    "host": PROBE_HOST,
-                    "request_id": request_id,
-                }).encode(),
-                {
-                    "Content-Type": "application/json",
-                    "X-SafeYolo-Request-Id": request_id,
-                },
-            )
-        elif "X-SafeYolo-Request-Id" not in flow.response.headers:
-            # Response already exists — just stamp the correlation header.
-            flow.response.headers["X-SafeYolo-Request-Id"] = request_id
+        flow.response = http.Response.make(
+            502,
+            json.dumps({
+                "error": "SafeYolo pipeline-probe sink failed",
+                "reason_code": PROBE_SINK_FAILED_REASON,
+                "host": PROBE_HOST,
+                "request_id": request_id,
+            }).encode(),
+            {
+                "Content-Type": "application/json",
+                "X-SafeYolo-Request-Id": request_id,
+            },
+        )
+        # Trace evidence — non-manifest error step; doctor classifier
+        # fails on any non-manifest state=error (issue #213 fifth/sixth
+        # pass reviews).
+        record_step(
+            flow,
+            addon=self.name,
+            hook="request",
+            state=STATE_ERROR,
+            reason=PROBE_SINK_FAILED_REASON,
+        )
+        log.warning(
+            "PROBE SINK FAILED — request-hook failsafe caught missing "
+            "sink for %s (rid=%s)",
+            sanitize_for_log(flow.request.host),
+            request_id,
+        )
 
-        # Record explicit trace evidence. Uses the shared lower-case
-        # reason constant so it matches the DAG YAML's `when:` clauses
-        # exactly (see references/agent-api.md).
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Diagnostic trace breadcrumb for the catastrophic server_connect path.
+
+        Fires when mitmproxy surfaces a flow error, INCLUDING the
+        `ResponseProtocolError` produced by `server_connect` setting
+        `data.server.error` above. Records a trace step for the
+        transport-guard backstop path so `/trace` shows the diagnostic
+        breadcrumb.
+
+        Does NOT synthesise a response — mitmproxy 12.2.2's
+        `handle_protocol_error()` does not consult `flow.response` set
+        from the error hook (source-verified by reviewer). The normal
+        missing-sink failure is caught by the request-hook failsafe
+        above and is client-correlatable there. Reaching this hook
+        means BOTH probe_sink and the request-hook failsafe were
+        absent — that's a catastrophic chain failure, and audit-only
+        evidence is the honest floor.
+        """
+        if not is_probe_host(flow.request.host):
+            return
+        # Recover trace/agent metadata from trusted inputs so the record
+        # is agent-owned even on the earliest-connect path.
+        ensure_trace_opt_in(flow)
+        if not flow.metadata.get("agent"):
+            trusted_agent = recover_trusted_agent(flow)
+            if trusted_agent:
+                flow.metadata["agent"] = trusted_agent
+        request_id = ensure_request_id(flow)
         record_step(
             flow,
             addon=self.name,
@@ -210,7 +218,10 @@ class TransportGuard:
             details={"error_type": type(flow.error).__name__ if flow.error else None},
         )
         log.warning(
-            "PROBE ERROR bridged to trace for %s (rid=%s)",
+            "PROBE REACHED UPSTREAM — server_connect backstop fired for "
+            "%s (rid=%s); trace-only, client sees mitmproxy protocol "
+            "error (no correlated response — request-hook failsafe was "
+            "also absent)",
             sanitize_for_log(flow.request.host),
             request_id,
         )
