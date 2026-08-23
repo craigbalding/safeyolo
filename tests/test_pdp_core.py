@@ -189,6 +189,64 @@ class TestPDPCoreEvaluate:
         assert decision.immediate_response is not None
         assert decision.immediate_response.status_code == 403
 
+    def test_probe_host_gets_intrinsic_allow_below_user_policy(
+        self, pdp_core, mock_engine
+    ):
+        """Issue #213 PR B: `_safeyolo.probe.internal` must be allowed by
+        the PDP regardless of user policy. A hostile user policy of
+        `deny "*"` — modelled here by every legacy check returning DENY —
+        must not defeat doctor. The intrinsic allow runs before any user
+        rule so the mocked engine methods are not consulted at all.
+        """
+        from pdp.schemas import Effect
+
+        mock_engine.evaluate_request.return_value = FakeLegacyDecision(
+            effect="deny", reason="User policy denies everything"
+        )
+        mock_engine.evaluate_credential.return_value = FakeLegacyDecision(
+            effect="deny", reason="Every credential is denied"
+        )
+
+        event = _make_http_event(host="_safeyolo.probe.internal", path="/__pipeline_probe")
+        decision = pdp_core.evaluate(event)
+
+        assert decision.effect == Effect.ALLOW
+        assert "INTERNAL_PIPELINE_PROBE" in decision.reason_codes
+        # No user policy checks were consulted — the intrinsic rule short-
+        # circuits before task-policy, credential, gateway, or network eval.
+        mock_engine.evaluate_request.assert_not_called()
+        mock_engine.evaluate_credential.assert_not_called()
+
+    def test_probe_host_allow_survives_budget_exhaustion(self, pdp_core, mock_engine):
+        """Budget state must not defeat doctor. `evaluate_request` is never
+        called for the probe host so budget accounting cannot factor in.
+        """
+        from pdp.schemas import Effect
+
+        mock_engine.evaluate_request.return_value = FakeLegacyDecision(
+            effect="budget_exceeded",
+            reason="Rate limit exhausted",
+            budget_remaining=0,
+        )
+
+        event = _make_http_event(host="_safeyolo.probe.internal")
+        decision = pdp_core.evaluate(event)
+
+        assert decision.effect == Effect.ALLOW
+        assert "INTERNAL_PIPELINE_PROBE" in decision.reason_codes
+        mock_engine.evaluate_request.assert_not_called()
+
+    def test_probe_host_check_is_case_insensitive(self, pdp_core, mock_engine):
+        """DNS names are case-insensitive; PDP allow must not be evaded by
+        casing the reserved host differently."""
+        from pdp.schemas import Effect
+
+        event = _make_http_event(host="_SafeYolo.Probe.INTERNAL")
+        decision = pdp_core.evaluate(event)
+
+        assert decision.effect == Effect.ALLOW
+        assert "INTERNAL_PIPELINE_PROBE" in decision.reason_codes
+
     def test_evaluate_exception_returns_error_effect(self, pdp_core, mock_engine):
         """Pins the B8 fix: evaluate() never raises, returns Effect.ERROR."""
         from pdp.schemas import Effect
