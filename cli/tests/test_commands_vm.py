@@ -1811,6 +1811,33 @@ class TestSetup:
         assert result.exit_code == 1
         assert "/etc/subuid" in result.output
 
+    def test_kvm_group_membership_missing_shows_usermod_hint(self, runner, config_dir):
+        """/dev/kvm present, group has rw, operator not in group — print the
+        exact `usermod -aG <group>` remediation instead of a bare INFO."""
+        with (
+            patch("safeyolo.commands.setup._platform.system", return_value="Linux"),
+            patch("safeyolo.commands.setup.check_guest_images", return_value=True),
+            patch("safeyolo.platform.linux.find_runsc", return_value="/usr/bin/runsc"),
+            patch("safeyolo.platform.linux.check_userns_prerequisites", return_value={
+                "newuidmap": True, "newgidmap": True,
+                "subuid": True, "subgid": True,
+                "setfacl": True,
+                "apparmor_restricts": False, "apparmor_profile_loaded": False,
+            }),
+            patch("safeyolo.platform.linux.detect_runsc_platform", return_value={
+                "platform": "systrap", "kvm_exists": True,
+                "kvm_operator_access": False, "kvm_subordinate_access": False,
+                "kvm_group": "kvm", "kvm_group_has_rw": True,
+                "operator_in_kvm_group": False,
+                "reason": "/dev/kvm exists but operator lacks rw access",
+            }),
+        ):
+            result = runner.invoke(app, ["setup"])
+
+        assert result.exit_code == 0
+        assert "sudo usermod -aG kvm $USER" in result.output
+        assert "log out and back in" in result.output
+
 
 # ---------------------------------------------------------------------------
 # doctor.py

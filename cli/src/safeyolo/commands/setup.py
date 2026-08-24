@@ -381,6 +381,18 @@ def setup() -> None:  # DOC: README.md
                 console.print("  [yellow]SETUP[/yellow]  KVM available — installing udev rule for sandbox access")
             else:
                 console.print("  [yellow]DEFER[/yellow]  KVM available but setfacl is missing — install `acl` (above), then re-run `safeyolo setup`")
+        elif (
+            kvm.get("kvm_group_has_rw")
+            and kvm.get("kvm_group")
+            and not kvm.get("operator_in_kvm_group")
+        ):
+            group = kvm["kvm_group"]
+            console.print(
+                f"  [yellow]SETUP[/yellow]  /dev/kvm access requires membership of group [bold]{group}[/bold] — using systrap until fixed"
+            )
+            console.print(
+                f"    [bold]sudo usermod -aG {group} $USER[/bold], then log out and back in"
+            )
         else:
             console.print("  [dim]INFO[/dim]  /dev/kvm exists but not accessible — using systrap")
 

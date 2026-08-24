@@ -847,6 +847,18 @@ def _check_isolation_platform() -> DiagResult:
                 detail="Hardware isolation (KVM) available on hosts with virtualization enabled",
             )
         if not info["kvm_operator_access"]:
+            group = info.get("kvm_group") or ""
+            if (
+                info.get("kvm_group_has_rw")
+                and group
+                and not info.get("operator_in_kvm_group")
+            ):
+                return DiagResult(
+                    name="Isolation platform",
+                    status="warn",
+                    message=f"systrap (software isolation) — join group '{group}' for KVM access",
+                    remediation=f"sudo usermod -aG {group} $USER  (then log out and back in)",
+                )
             return DiagResult(
                 name="Isolation platform",
                 status="warn",
