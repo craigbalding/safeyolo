@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+import click
 import pytest
 from click import unstyle
 from typer.testing import CliRunner
@@ -793,6 +794,85 @@ class TestAgentAdd:
         assert "already configured" in result.output.lower()
         mock_run.assert_called_once()
 
+    def test_idempotent_readd_associates_pane_and_requests_rename(
+        self, runner, config_dir, tmp_path
+    ):
+        """Auto-run through the same-config path also associates and renames."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        folder_str = str(folder.resolve())
+        agent_dir = config_dir / "agents" / "test"
+        agent_dir.mkdir()
+        (agent_dir / "rootfs.ext4").touch()
+
+        with (
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": folder_str},
+            ),
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+        ):
+            result = runner.invoke(app, ["agent", "add", "test", str(folder)])
+
+        assert result.exit_code == 0
+        associate.assert_called_once_with("test")
+        assert mock_run.call_args.kwargs["rename_tmux_window"] is True
+
+    def test_idempotent_readd_no_rename_window_skips_rename_only(
+        self, runner, config_dir, tmp_path
+    ):
+        folder = tmp_path / "project"
+        folder.mkdir()
+        folder_str = str(folder.resolve())
+        agent_dir = config_dir / "agents" / "test"
+        agent_dir.mkdir()
+        (agent_dir / "rootfs.ext4").touch()
+
+        with (
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": folder_str},
+            ),
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+        ):
+            result = runner.invoke(
+                app,
+                ["agent", "add", "test", str(folder), "--no-rename-window"],
+            )
+
+        assert result.exit_code == 0
+        associate.assert_called_once_with("test")
+        assert mock_run.call_args.kwargs["rename_tmux_window"] is False
+
+    def test_no_run_skips_association_and_rename(
+        self, runner, config_dir, tmp_path
+    ):
+        """--no-run must not touch the tmux window at all."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        folder_str = str(folder.resolve())
+        agent_dir = config_dir / "agents" / "test"
+        agent_dir.mkdir()
+        (agent_dir / "rootfs.ext4").touch()
+
+        with (
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": folder_str},
+            ),
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+        ):
+            result = runner.invoke(
+                app, ["agent", "add", "test", str(folder), "--no-run"]
+            )
+
+        assert result.exit_code == 0
+        mock_run.assert_not_called()
+        associate.assert_not_called()
+
     def test_different_config_without_force_exits_one(self, runner, config_dir, tmp_path):
         """Re-adding with different folder and no --force exits 1."""
         folder = tmp_path / "project"
@@ -1066,6 +1146,118 @@ class TestRunAgent:
 
         assert result.exit_code == 0
         associate.assert_called_once_with("test-agent")
+
+    def test_run_requests_window_rename_by_default(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane"),
+        ):
+            result = runner.invoke(app, ["agent", "run", "test-agent"])
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["rename_tmux_window"] is True
+
+    def test_run_detach_skips_window_rename(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+        ):
+            result = runner.invoke(app, ["agent", "run", "test-agent", "--detach"])
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["rename_tmux_window"] is False
+        associate.assert_called_once_with("test-agent")
+
+    def test_run_no_rename_window_skips_rename_only(self, runner, config_dir):
+        with (
+            patch("safeyolo.commands.agent._run_agent", return_value=0) as mock_run,
+            patch("safeyolo.commands.agent.associate_agent_pane") as associate,
+        ):
+            result = runner.invoke(
+                app, ["agent", "run", "test-agent", "--no-rename-window"]
+            )
+
+        assert result.exit_code == 0
+        assert mock_run.call_args.kwargs["rename_tmux_window"] is False
+        associate.assert_called_once_with("test-agent")
+
+    def test_run_agent_calls_rename_after_preflight(self, config_dir, tmp_path):
+        """_run_agent invokes rename_window_for_agent once early preflight
+        (rootfs, folder, ownership) has passed and the rename flag is set."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs = tmp_path / "rootfs"
+        rootfs.mkdir()
+
+        fake_platform = MagicMock()
+        fake_platform.agent_rootfs_path.return_value = rootfs
+        fake_platform.is_sandbox_running.return_value = False
+
+        import safeyolo.platform as platform_module
+        from safeyolo.commands.agent import _run_agent
+
+        with (
+            patch.object(platform_module, "get_platform", return_value=fake_platform),
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": str(folder)},
+            ),
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch(
+                "safeyolo.commands.agent.reserve_agent_network_slot",
+                side_effect=OSError("stop here"),
+            ),
+            patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
+            pytest.raises(click.exceptions.Exit),
+        ):
+            _run_agent("committed", rename_tmux_window=True)
+
+        rename.assert_called_once_with("committed")
+
+    def test_run_agent_skips_rename_when_flag_false(self, config_dir, tmp_path):
+        """_run_agent does not touch rename_window_for_agent when the flag
+        is off (e.g. --detach or --no-rename-window)."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs = tmp_path / "rootfs"
+        rootfs.mkdir()
+
+        fake_platform = MagicMock()
+        fake_platform.agent_rootfs_path.return_value = rootfs
+        fake_platform.is_sandbox_running.return_value = False
+
+        import safeyolo.platform as platform_module
+        from safeyolo.commands.agent import _run_agent
+
+        with (
+            patch.object(platform_module, "get_platform", return_value=fake_platform),
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": str(folder)},
+            ),
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch(
+                "safeyolo.commands.agent.reserve_agent_network_slot",
+                side_effect=OSError("stop here"),
+            ),
+            patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
+            pytest.raises(click.exceptions.Exit),
+        ):
+            _run_agent("committed", rename_tmux_window=False)
+
+        rename.assert_not_called()
+
+    def test_run_preflight_failure_does_not_rename(self, runner, config_dir):
+        """Nonexistent agent: preflight fails before rename gets a chance."""
+        with (
+            patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
+        ):
+            result = runner.invoke(app, ["agent", "run", "no-such-agent"])
+
+        assert result.exit_code == 1
+        rename.assert_not_called()
 
     def test_rootfs_missing_exits_one(self, runner, config_dir):
         """_run_agent via `agent run` exits 1 if rootfs doesn't exist."""

@@ -55,7 +55,7 @@ from ..vm import (
 )
 from ._service_discovery import find_service
 from .mount import is_path_protected
-from .tmux import associate_agent_pane
+from .tmux import associate_agent_pane, rename_window_for_agent
 
 log = logging.getLogger("safeyolo.agent")
 console = Console()
@@ -332,6 +332,7 @@ def _run_agent(
     extra_ports: list[str] | None = None,
     detach: bool = False,
     no_snapshot: bool = False,
+    rename_tmux_window: bool = False,
 ) -> int:
     """Run an agent VM. Returns exit code.
 
@@ -340,6 +341,8 @@ def _run_agent(
     detach: Boot VM in background and return after boot confirmation.
     no_snapshot: skip snapshot capture and restore for this run;
         don't touch an existing snapshot on disk either way.
+    rename_tmux_window: rename the invoking tmux window to `name` once
+        launch preflight has committed. See issue #330.
     """
     _t("cli entry (metadata, proxy check)")
     _validate_instance_name(name)
@@ -390,6 +393,9 @@ def _run_agent(
         console.print(f"[red]Folder not found: {workspace_path}[/red]")
         raise typer.Exit(1)
     _check_project_ownership(workspace_path, dangerously_allow_unowned)
+
+    if rename_tmux_window:
+        rename_window_for_agent(name)
 
     # Revalidate persistent metadata on every run, merge one-off mounts, and
     # resolve the public CLI syntax to the platform contract. Transient mounts
@@ -1026,6 +1032,11 @@ def add(  # DOC: README.md, docs/AGENTS.md
         "--dangerously-allow-unowned",
         help="Allow mounting directories you don't own",
     ),
+    no_rename_window: bool = typer.Option(
+        False,
+        "--no-rename-window",
+        help="Don't rename the invoking tmux window to the agent name (auto-run only).",
+    ),
 ) -> None:
     """Add an AI agent sandbox and run it.
 
@@ -1122,7 +1133,13 @@ def add(  # DOC: README.md, docs/AGENTS.md
                 # Same config, no --force - idempotent, just run
                 console.print(f"Agent '{name}' already configured.")
                 if not no_run:
-                    exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned, no_snapshot=True)
+                    associate_agent_pane(name)
+                    exit_code = _run_agent(
+                        name,
+                        dangerously_allow_unowned=dangerously_allow_unowned,
+                        no_snapshot=True,
+                        rename_tmux_window=not no_rename_window,
+                    )
                     raise typer.Exit(exit_code)
                 return
             else:
@@ -1260,7 +1277,13 @@ def add(  # DOC: README.md, docs/AGENTS.md
     # Auto-run unless --no-run
     if not no_run:
         console.print()
-        exit_code = _run_agent(name, dangerously_allow_unowned=dangerously_allow_unowned, no_snapshot=True)
+        associate_agent_pane(name)
+        exit_code = _run_agent(
+            name,
+            dangerously_allow_unowned=dangerously_allow_unowned,
+            no_snapshot=True,
+            rename_tmux_window=not no_rename_window,
+        )
         raise typer.Exit(exit_code)
 
 
@@ -1409,6 +1432,11 @@ def run(  # DOC: README.md, docs/AGENTS.md
         "--profile",
         help="Profile lifecycle phases and write a JSONL timing artifact",
     ),
+    no_rename_window: bool = typer.Option(
+        False,
+        "--no-rename-window",
+        help="Don't rename the invoking tmux window to the agent name.",
+    ),
 ) -> None:
     """Run an existing agent container.
 
@@ -1495,6 +1523,7 @@ def run(  # DOC: README.md, docs/AGENTS.md
         extra_ports=parsed_ports if parsed_ports else None,
         detach=detach,
         no_snapshot=not snapshot,
+        rename_tmux_window=not detach and not no_rename_window,
     )
     raise typer.Exit(exit_code)
 
