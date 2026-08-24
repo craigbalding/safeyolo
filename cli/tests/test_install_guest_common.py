@@ -64,7 +64,7 @@ def test_default_rootfs_hook_uses_shared_mount_target_installer() -> None:
     """The default and custom builders must not drift again."""
     source = (GUEST_DIR / "rootfs-customize-hook.sh").read_text()
 
-    assert 'source "$GUEST_SRC_DIR/install-guest-common.sh"' in source
+    assert 'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"' in source
     assert 'install_safeyolo_runtime_mount_targets "$ROOTFS"' in source
     assert 'install_safeyolo_privilege_helper "$ROOTFS"' in source
 
