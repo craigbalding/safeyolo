@@ -1181,9 +1181,100 @@ class TestRunAgent:
         assert mock_run.call_args.kwargs["rename_tmux_window"] is False
         associate.assert_called_once_with("test-agent")
 
-    def test_run_agent_calls_rename_after_preflight(self, config_dir, tmp_path):
-        """_run_agent invokes rename_window_for_agent once early preflight
-        (rootfs, folder, ownership) has passed and the rename flag is set."""
+    def _committed_launch_patches(self, folder, rootfs):
+        """Mock every step from `_run_agent` entry through `prepare_config_share`
+        as successful, and cut off execution at `write_event("agent.started")`
+        so the sandbox layer is never invoked. Any test using this reaches the
+        rename boundary iff the rename flag is on and no failure was injected
+        earlier in the chain."""
+        fake_platform = MagicMock()
+        fake_platform.agent_rootfs_path.return_value = rootfs
+        fake_platform.is_sandbox_running.return_value = False
+        fake_platform.setup_networking.return_value = {
+            "host_ip": "10.0.0.1",
+            "guest_ip": "10.0.0.2",
+            "subnet": "10.0.0.0/24",
+            "attribution_ip": "10.0.0.2",
+            "needs_bridge_socket": False,
+        }
+
+        import safeyolo.platform as platform_module
+
+        return [
+            patch.object(platform_module, "get_platform", return_value=fake_platform),
+            patch(
+                "safeyolo.commands.agent._load_agent_metadata",
+                return_value={"folder": str(folder)},
+            ),
+            patch("safeyolo.commands.agent._check_project_ownership"),
+            patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1),
+            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[]),
+            patch("safeyolo.commands.agent._update_agent_map"),
+            patch("safeyolo.commands.agent.platform_supports_snapshot", return_value=False),
+            patch("safeyolo.commands.agent.prepare_config_share"),
+            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock")),
+            patch(
+                "safeyolo.commands.agent.write_event",
+                side_effect=RuntimeError("stop after rename boundary"),
+            ),
+        ]
+
+    def test_run_agent_renames_after_config_share_committed(self, config_dir, tmp_path):
+        """rename_window_for_agent fires only once `prepare_config_share` has
+        succeeded and every earlier preflight has passed."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs = tmp_path / "rootfs"
+        rootfs.mkdir()
+
+        from safeyolo.commands.agent import _run_agent
+
+        patches = self._committed_launch_patches(folder, rootfs)
+        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent")
+
+        with rename_patch as rename:
+            for p in patches:
+                p.start()
+            try:
+                with pytest.raises(RuntimeError, match="stop after rename boundary"):
+                    _run_agent("committed", rename_tmux_window=True)
+            finally:
+                for p in patches:
+                    p.stop()
+
+        rename.assert_called_once_with("committed")
+
+    def test_run_agent_skips_rename_when_flag_false(self, config_dir, tmp_path):
+        """With the flag off, the rename call is not made even when the
+        committed-launch boundary is reached (--detach, --no-rename-window)."""
+        folder = tmp_path / "project"
+        folder.mkdir()
+        rootfs = tmp_path / "rootfs"
+        rootfs.mkdir()
+
+        from safeyolo.commands.agent import _run_agent
+
+        patches = self._committed_launch_patches(folder, rootfs)
+        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent")
+
+        with rename_patch as rename:
+            for p in patches:
+                p.start()
+            try:
+                with pytest.raises(RuntimeError, match="stop after rename boundary"):
+                    _run_agent("committed", rename_tmux_window=False)
+            finally:
+                for p in patches:
+                    p.stop()
+
+        rename.assert_not_called()
+
+    def test_run_agent_network_reservation_failure_does_not_rename(
+        self, config_dir, tmp_path
+    ):
+        """`reserve_agent_network_slot` is a launch-committing step; its
+        failure must not leave the tmux window renamed."""
         folder = tmp_path / "project"
         folder.mkdir()
         rootfs = tmp_path / "rootfs"
@@ -1206,18 +1297,20 @@ class TestRunAgent:
             patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
             patch(
                 "safeyolo.commands.agent.reserve_agent_network_slot",
-                side_effect=OSError("stop here"),
+                side_effect=OSError("no slot"),
             ),
             patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
             pytest.raises(click.exceptions.Exit),
         ):
             _run_agent("committed", rename_tmux_window=True)
 
-        rename.assert_called_once_with("committed")
+        rename.assert_not_called()
 
-    def test_run_agent_skips_rename_when_flag_false(self, config_dir, tmp_path):
-        """_run_agent does not touch rename_window_for_agent when the flag
-        is off (e.g. --detach or --no-rename-window)."""
+    def test_run_agent_config_share_failure_does_not_rename(
+        self, config_dir, tmp_path
+    ):
+        """`prepare_config_share` failure sits between early preflight and
+        the rename boundary; if it fails, rename must not run."""
         folder = tmp_path / "project"
         folder.mkdir()
         rootfs = tmp_path / "rootfs"
@@ -1226,6 +1319,13 @@ class TestRunAgent:
         fake_platform = MagicMock()
         fake_platform.agent_rootfs_path.return_value = rootfs
         fake_platform.is_sandbox_running.return_value = False
+        fake_platform.setup_networking.return_value = {
+            "host_ip": "10.0.0.1",
+            "guest_ip": "10.0.0.2",
+            "subnet": "10.0.0.0/24",
+            "attribution_ip": "10.0.0.2",
+            "needs_bridge_socket": False,
+        }
 
         import safeyolo.platform as platform_module
         from safeyolo.commands.agent import _run_agent
@@ -1238,14 +1338,22 @@ class TestRunAgent:
             ),
             patch("safeyolo.commands.agent._check_project_ownership"),
             patch("safeyolo.commands.agent.is_proxy_running", return_value=True),
+            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1),
+            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[]),
+            patch("safeyolo.commands.agent._update_agent_map"),
+            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock")),
             patch(
-                "safeyolo.commands.agent.reserve_agent_network_slot",
-                side_effect=OSError("stop here"),
+                "safeyolo.commands.agent.platform_supports_snapshot",
+                return_value=False,
+            ),
+            patch(
+                "safeyolo.commands.agent.prepare_config_share",
+                side_effect=RuntimeError("config share broken"),
             ),
             patch("safeyolo.commands.agent.rename_window_for_agent") as rename,
             pytest.raises(click.exceptions.Exit),
         ):
-            _run_agent("committed", rename_tmux_window=False)
+            _run_agent("committed", rename_tmux_window=True)
 
         rename.assert_not_called()
 

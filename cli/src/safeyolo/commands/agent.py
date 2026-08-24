@@ -394,9 +394,6 @@ def _run_agent(
         raise typer.Exit(1)
     _check_project_ownership(workspace_path, dangerously_allow_unowned)
 
-    if rename_tmux_window:
-        rename_window_for_agent(name)
-
     # Revalidate persistent metadata on every run, merge one-off mounts, and
     # resolve the public CLI syntax to the platform contract. Transient mounts
     # override a persistent mount at the same guest destination for this run.
@@ -562,6 +559,13 @@ def _run_agent(
     except Exception as err:
         console.print(f"[red]Failed to prepare VM config:[/red] {err}")
         raise typer.Exit(1)
+
+    # Launch is committed here: every preflight that can fail on user or
+    # infrastructure error has passed. Any tmux window rename must happen
+    # at this boundary, not earlier — an earlier failure would leave the
+    # window renamed with nothing behind it (issue #330).
+    if rename_tmux_window:
+        rename_window_for_agent(name)
 
     run_background = detach
 
