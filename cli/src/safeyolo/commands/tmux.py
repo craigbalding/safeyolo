@@ -19,6 +19,7 @@ TRAFFIC_WINDOW = "safeyolo-traffic"
 PANE_AGENT_OPTION = "@safeyolo-agent"
 ORIGIN_PANE_OPTION = "@safeyolo-traffic-origin"
 TRAFFIC_WINDOW_OPTION = "@safeyolo-traffic-window"
+WINDOW_NAME_MARKER = "@safeyolo-window-name"
 TRAFFIC_KEY = "T"
 RETURN_KEY = "R"
 
@@ -61,6 +62,75 @@ def associate_agent_pane(name: str) -> bool:
     except (OSError, subprocess.CalledProcessError) as exc:
         console.print(f"[yellow]Warning: could not associate tmux pane with agent {name}: {exc}[/yellow]")
         return False
+    return True
+
+
+def rename_window_for_agent(name: str) -> bool:
+    """Rename the invoking pane's window to `name` when SafeYolo owns the name.
+
+    Ownership rule (see issue #330):
+
+    - local `automatic-rename` unset or `on` → rename.
+    - local `automatic-rename=off` and current window name equals the
+      `@safeyolo-window-name` marker → rename (SafeYolo already owns it).
+    - local `automatic-rename=off` and name differs from the marker (or the
+      marker is unset) → preserve; user or something else has claimed it.
+
+    `rename-window` itself sets `automatic-rename=off`, so that flag alone
+    cannot prove user ownership — hence the marker. Querying without `-g` and
+    without `-A` means a user's global `set -g automatic-rename off` shows
+    empty at window scope and is treated as safe.
+
+    No-op outside tmux. Best-effort: any tmux command failure is warned and
+    swallowed; agent launch is never blocked.
+    """
+    pane = os.environ.get("TMUX_PANE")
+    if not is_in_tmux() or not pane:
+        return False
+
+    try:
+        auto_rename = tmux_cmd(
+            ["show-options", "-wqv", "-t", pane, "automatic-rename"],
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        console.print(
+            f"[yellow]Warning: could not query tmux automatic-rename for pane {pane}: {exc}[/yellow]"
+        )
+        return False
+
+    if auto_rename == "off":
+        try:
+            current_name = tmux_cmd(
+                ["display-message", "-p", "-t", pane, "#{window_name}"],
+            ).stdout.strip()
+            marker = tmux_cmd(
+                ["show-options", "-wqv", "-t", pane, WINDOW_NAME_MARKER],
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            console.print(
+                f"[yellow]Warning: could not read tmux window ownership state for pane {pane}: {exc}[/yellow]"
+            )
+            return False
+        if not marker or marker != current_name:
+            return False
+
+    try:
+        tmux_cmd(["rename-window", "-t", pane, name])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        console.print(
+            f"[yellow]Warning: could not rename tmux window to {name}: {exc}[/yellow]"
+        )
+        return False
+
+    try:
+        tmux_cmd(["set-option", "-w", "-t", pane, WINDOW_NAME_MARKER, name])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # Non-fatal: leave the window renamed, skip the marker. The next
+        # invocation will observe automatic-rename=off with no matching
+        # marker and fall into the "preserve" branch — the safe fallback.
+        console.print(
+            f"[yellow]Warning: renamed window but could not record SafeYolo marker: {exc}[/yellow]"
+        )
     return True
 
 
