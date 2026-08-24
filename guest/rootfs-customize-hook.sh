@@ -14,7 +14,7 @@
 #   GH_VERSION
 #   GH_SHA256
 #   GH_TARBALL       (optional) path to pre-fetched gh tarball
-#   GUEST_SRC_DIR    absolute path to the repo's guest/ directory
+#   SAFEYOLO_GUEST_SRC_DIR    absolute path to the repo's guest/ directory
 #                    (where rootfs/safeyolo-guest-init lives)
 #
 # Running this script directly (for debugging) is supported -- just set the
@@ -33,11 +33,11 @@ ROOTFS="$1"
 : "${DEB_ARCH:?DEB_ARCH not set}"
 : "${MISE_VERSION:?MISE_VERSION not set}"
 : "${GH_VERSION:?GH_VERSION not set}"
-: "${GUEST_SRC_DIR:?GUEST_SRC_DIR not set}"
+: "${SAFEYOLO_GUEST_SRC_DIR:?SAFEYOLO_GUEST_SRC_DIR not set}"
 
 [ -d "$ROOTFS" ] || { echo "Rootfs not found: $ROOTFS" >&2; exit 1; }
-[ -r "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" ] || {
-    echo "Missing $GUEST_SRC_DIR/rootfs/safeyolo-guest-init" >&2
+[ -r "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-guest-init" ] || {
+    echo "Missing $SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-guest-init" >&2
     exit 1
 }
 
@@ -140,13 +140,13 @@ sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" "$ROOTFS/etc/s
 rm -f "$ROOTFS"/etc/ssh/ssh_host_*_key "$ROOTFS"/etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
 
 # Install guest init stub from the repo's guest/rootfs/ into the new rootfs
-cp "$GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
+cp "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-guest-init" "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 chmod +x "$ROOTFS/usr/local/bin/safeyolo-guest-init"
 
 # Pre-create the host bind-mount destinations.  Custom rootfs builders call
 # the same function through install_safeyolo_guest_common, keeping the two
 # image-build paths on one runtime contract.
-source "$GUEST_SRC_DIR/install-guest-common.sh"
+source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"
 install_safeyolo_runtime_mount_targets "$ROOTFS"
 install_safeyolo_privilege_helper "$ROOTFS"
 
