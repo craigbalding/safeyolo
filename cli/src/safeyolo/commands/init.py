@@ -24,15 +24,35 @@ LISTS_TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "lists"
 console = Console()
 
 
-def _generate_admin_token(config_dir: Path) -> str:
-    """Generate and save admin API token."""
-    token = secrets.token_urlsafe(32)
+def _generate_admin_token(config_dir: Path) -> tuple[str, bool]:
+    """Return (token, was_preserved).
+
+    Preserves the existing admin token when a proxy is already running
+    (#338): the running mitmproxy holds the old token in memory and would
+    reject the new one, breaking the `sync_proxy_modes()` PUT that fires
+    at the end of every `agent add` / `agent remove`. A fresh token here
+    would leave the CLI unable to talk to its own proxy until the
+    operator manually restarts it.
+
+    Callers that genuinely want to rotate the admin token should stop the
+    proxy first (`safeyolo stop`) — this is the same discipline required
+    for any secret rotation against a live process.
+    """
+    from ..proxy import is_proxy_running
+
     data_dir = config_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     token_path = data_dir / "admin_token"
+
+    if token_path.exists() and is_proxy_running():
+        existing = token_path.read_text().strip()
+        if existing:
+            return existing, True
+
+    token = secrets.token_urlsafe(32)
     token_path.write_text(token)
     token_path.chmod(0o600)
-    return token
+    return token, False
 
 
 def init(  # DOC: README.md
@@ -92,9 +112,17 @@ def init(  # DOC: README.md
     (config_dir / "policies").mkdir(exist_ok=True)
     (config_dir / "data").mkdir(exist_ok=True)
 
-    # Generate admin token
-    _generate_admin_token(config_dir)
-    console.print("  [green]Created[/green] admin token")
+    # Generate (or preserve, if the proxy is running) the admin token.
+    # Overwriting a live proxy's admin_token 401s every subsequent CLI call
+    # (mode-sync PUTs, agent add / remove); see #338.
+    _, preserved = _generate_admin_token(config_dir)
+    if preserved:
+        console.print(
+            "  [yellow]Preserved[/yellow] admin token "
+            "([dim]proxy is running — stop it first to rotate[/dim])"
+        )
+    else:
+        console.print("  [green]Created[/green] admin token")
 
     # Write config.yaml
     config = DEFAULT_CONFIG.copy()

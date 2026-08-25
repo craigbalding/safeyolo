@@ -218,6 +218,48 @@ class TestResponseEventShape:
         assert ev["details"]["credential_fingerprint"] == "hmac:abc123"
         assert addon.blocks_total == 1
 
+    def test_block_reason_included_when_present(self, logger_with_log):
+        """When base.block() promoted body["reason"] to
+        flow.metadata["block_reason"], the traffic.response event carries it
+        alongside blocked_by so operators don't need to correlate a
+        separate security.* event by request_id (#337)."""
+        addon, log_path = logger_with_log
+        flow = _make_flow(
+            url="https://nodejs.org/dist/index.json",
+            metadata={
+                "request_id": "req-blk-reason",
+                "blocked_by": "network-guard",
+                "block_reason": "host not in allow list",
+                "start_time": time.time(),
+            },
+            status=403,
+        )
+
+        addon.response(flow)
+
+        ev = _read_events(log_path)[0]
+        assert ev["details"]["blocked_by"] == "network-guard"
+        assert ev["details"]["block_reason"] == "host not in allow list"
+
+    def test_block_reason_absent_when_metadata_missing(self, logger_with_log):
+        """No block_reason on the flow → no key on the event."""
+        addon, log_path = logger_with_log
+        flow = _make_flow(
+            url="https://evil.com/steal",
+            metadata={
+                "request_id": "req-blk-noreason",
+                "blocked_by": "credential-guard",
+                "start_time": time.time(),
+            },
+            status=428,
+        )
+
+        addon.response(flow)
+
+        ev = _read_events(log_path)[0]
+        assert ev["details"]["blocked_by"] == "credential-guard"
+        assert "block_reason" not in ev["details"]
+
     def test_duration_ms_computed_from_start_time(self, logger_with_log):
         """With a fixed start_time, duration_ms is computed from wall clock."""
         addon, log_path = logger_with_log

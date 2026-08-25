@@ -1,11 +1,14 @@
 """Setup commands for SafeYolo system integration."""
 
+import bz2
+import hashlib
 import os
 import platform as _platform
 import re as _re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 
 import typer
@@ -139,100 +142,215 @@ def _announce_linux_sudo_changes(need_apparmor: bool, need_kvm: bool,
     console.print()
 
 
+# Non-apt runtime package name maps. `newuidmap`/`newgidmap` live in
+# `uidmap` on Debian/Ubuntu, but ship inside `shadow-utils` on Fedora/
+# RHEL and inside `shadow` on Alpine/Arch. `acl` is `acl` everywhere.
+_RUNTIME_PACKAGES = {
+    "apt":    {"uidmap": "uidmap",        "acl": "acl"},
+    "dnf":    {"uidmap": "shadow-utils",  "acl": "acl"},
+    "apk":    {"uidmap": "shadow",        "acl": "acl"},
+    "pacman": {"uidmap": "shadow",        "acl": "acl"},
+}
+
+# gVisor's official manual-install channel. Documented at
+# https://gvisor.dev/docs/user_guide/install/. Since 2026-07 the tarball
+# contains not just `runsc` but also `containerd-shim-runsc-v1` and a
+# `gvisor-bin/` sidecar directory that runsc dispatches to; we extract
+# the whole archive under /usr/local/bin so the layout is preserved.
+_GVISOR_TARBALL_URL = "https://storage.googleapis.com/gvisor/releases/release/latest/{arch}/gvisor.tar.bz2"
+
+
+def _install_via_pm(pm: str, packages: list[str]) -> None:
+    """Install `packages` using the host's native package manager."""
+    if pm == "apt":
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run(["sudo", "apt-get", "install", "-y", *packages], check=True)
+    elif pm == "dnf":
+        subprocess.run(["sudo", "dnf", "install", "-y", *packages], check=True)
+    elif pm == "apk":
+        subprocess.run(["sudo", "apk", "update"], check=True)
+        subprocess.run(["sudo", "apk", "add", *packages], check=True)
+    elif pm == "pacman":
+        subprocess.run(["sudo", "pacman", "-Sy", "--needed", "--noconfirm", *packages], check=True)
+    else:
+        raise RuntimeError(f"unknown package manager {pm!r}")
+
+
+def _install_gvisor_apt() -> None:
+    """Existing apt path: install runsc via gVisor's signed apt repository.
+
+    Kept for Debian/Ubuntu because it lets users get updates via `apt
+    upgrade` — the manual-tarball path is a snapshot install and doesn't
+    hook into apt's update flow.
+    """
+    subprocess.run(
+        [
+            "sudo", "apt-get", "install", "-y",
+            "apt-transport-https", "ca-certificates", "curl", "gnupg",
+        ],
+        check=True,
+    )
+    architecture = subprocess.run(
+        ["dpkg", "--print-architecture"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if architecture not in {"amd64", "arm64"}:
+        raise RuntimeError(
+            f"gVisor does not publish apt packages for architecture {architecture!r}."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="safeyolo-gvisor-key-") as tmp:
+        key = Path(tmp) / "archive.key"
+        keyring = Path(tmp) / "archive.gpg"
+        subprocess.run(
+            ["curl", "-fsSL", "https://gvisor.dev/archive.key", "-o", str(key)],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "gpg", "--batch", "--yes", "--dearmor",
+                "--output", str(keyring), str(key),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["sudo", "install", "-m", "0644", str(keyring), str(_GVISOR_KEYRING)],
+            check=True,
+        )
+
+    apt_source = (
+        f"deb [arch={architecture} signed-by={_GVISOR_KEYRING}] "
+        "https://storage.googleapis.com/gvisor/releases release main\n"
+    )
+    subprocess.run(
+        ["sudo", "tee", str(_GVISOR_APT_SOURCE)],
+        input=apt_source, text=True, stdout=subprocess.DEVNULL,
+        check=True,
+    )
+    subprocess.run(["sudo", "apt-get", "update"], check=True)
+    subprocess.run(["sudo", "apt-get", "install", "-y", "runsc"], check=True)
+
+
+def _install_gvisor_tarball() -> None:
+    """gVisor manual-install path for non-apt hosts (Fedora / Alpine /
+    Arch / openSUSE / any Linux without a signed apt repo of its own).
+
+    Downloads the official tarball + SHA-512, verifies the checksum,
+    and extracts the whole archive under /usr/local/bin preserving the
+    `gvisor-bin/` sidecar directory. Documented at
+    https://gvisor.dev/docs/user_guide/install/.
+    """
+    machine = _platform.machine().lower()
+    arch_map = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}
+    if machine not in arch_map:
+        raise RuntimeError(f"gVisor does not publish tarballs for architecture {machine!r}")
+    arch = arch_map[machine]
+
+    tarball_url = _GVISOR_TARBALL_URL.format(arch=arch)
+    sha_url = tarball_url + ".sha512"
+
+    with tempfile.TemporaryDirectory(prefix="safeyolo-gvisor-tar-") as tmpdir:
+        tarball = Path(tmpdir) / "gvisor.tar.bz2"
+        sha_file = Path(tmpdir) / "gvisor.tar.bz2.sha512"
+
+        console.print(f"    downloading {tarball_url}")
+        # Not curl-to-shell: fetch to temp, verify sha512 against the
+        # signed-manifest file gVisor publishes alongside, only then
+        # extract into place.
+        with urllib.request.urlopen(tarball_url) as resp:
+            tarball.write_bytes(resp.read())
+        with urllib.request.urlopen(sha_url) as resp:
+            sha_file.write_bytes(resp.read())
+
+        expected = sha_file.read_text().split()[0].strip().lower()
+        actual = hashlib.sha512(tarball.read_bytes()).hexdigest()
+        if expected != actual:
+            raise RuntimeError(
+                "gVisor tarball SHA-512 mismatch — refusing to install.\n"
+                f"  expected: {expected}\n"
+                f"  actual:   {actual}"
+            )
+
+        # Decompress via Python's stdlib `bz2` so we don't require
+        # system `bzip2` (Fedora Cloud Base and others don't ship it
+        # by default; `tar -xjf` would fail with
+        # "bzip2: Cannot exec: No such file or directory"). Then
+        # `sudo tar -xf` (uncompressed) into /usr/local/bin.
+        # Since 2026-07 the archive contains runsc,
+        # containerd-shim-runsc-v1, and gvisor-bin/; extracting the
+        # whole thing keeps that layout intact.
+        plain_tar = Path(tmpdir) / "gvisor.tar"
+        with bz2.open(tarball, "rb") as src, plain_tar.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        subprocess.run(
+            ["sudo", "tar", "-xf", str(plain_tar), "-C", "/usr/local/bin"],
+            check=True,
+        )
+
+
 def _install_linux_runtime_packages(
     *, need_runsc: bool, need_uidmap: bool, need_acl: bool,
 ) -> bool:
-    """Install missing apt-managed Linux runtime prerequisites."""
+    """Install missing Linux runtime prerequisites (multi-distro).
+
+    Detects the host's package manager and installs `newuidmap`/
+    `newgidmap` + `setfacl` via native packages. Installs gVisor
+    `runsc` via the signed apt repository on Debian/Ubuntu, and via
+    the official verified-tarball path on Fedora/Alpine/Arch/openSUSE.
+    """
     if not (need_runsc or need_uidmap or need_acl):
         return True
 
-    if not all(shutil.which(command) for command in ("sudo", "apt-get", "dpkg")):
+    if not shutil.which("sudo"):
         console.print(
-            "  [red]FAIL[/red]  Automatic runtime installation requires "
-            "an apt-based Linux host with sudo."
+            "  [red]FAIL[/red]  Automatic runtime installation requires sudo."
         )
         return False
 
-    packages = []
+    # Import here to avoid a bootstrap → setup circular import at module load.
+    from .bootstrap import _detect_package_manager
+
+    pm = _detect_package_manager()
+    if pm is None:
+        console.print(
+            "  [red]FAIL[/red]  Could not detect the host's package manager "
+            "(need apt / dnf / apk / pacman)."
+        )
+        return False
+
+    pkg_map = _RUNTIME_PACKAGES[pm]
+    packages: list[str] = []
     if need_uidmap:
-        packages.append("uidmap")
-    if need_acl:
-        packages.append("acl")
+        packages.append(pkg_map["uidmap"])
+    if need_acl and pkg_map["acl"] not in packages:
+        packages.append(pkg_map["acl"])
 
     console.print("\n[bold]`safeyolo setup` needs sudo to install:[/bold]")
     if need_runsc:
-        console.print(
-            "  • [bold]gVisor (`runsc`)[/bold] from its official signed apt repository\n"
-            f"      write   {_GVISOR_KEYRING}\n"
-            f"      write   {_GVISOR_APT_SOURCE}"
-        )
+        if pm == "apt":
+            console.print(
+                "  • [bold]gVisor (`runsc`)[/bold] from its official signed apt repository\n"
+                f"      write   {_GVISOR_KEYRING}\n"
+                f"      write   {_GVISOR_APT_SOURCE}"
+            )
+        else:
+            console.print(
+                "  • [bold]gVisor[/bold] via official verified tarball "
+                "(SHA-512 checked) → [dim]/usr/local/bin/[/dim]"
+            )
     if packages:
-        console.print(f"  • [bold]Host packages[/bold]: {', '.join(packages)}")
+        console.print(f"  • [bold]Host packages[/bold] ({pm}): {', '.join(packages)}")
     console.print()
 
     try:
-        subprocess.run(["sudo", "apt-get", "update"], check=True)
-
-        if need_runsc:
-            subprocess.run(
-                [
-                    "sudo", "apt-get", "install", "-y",
-                    "apt-transport-https", "ca-certificates", "curl", "gnupg",
-                ],
-                check=True,
-            )
-            architecture = subprocess.run(
-                ["dpkg", "--print-architecture"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if architecture not in {"amd64", "arm64"}:
-                console.print(
-                    f"  [red]FAIL[/red]  gVisor does not support apt architecture "
-                    f"{architecture!r}."
-                )
-                return False
-
-            with tempfile.TemporaryDirectory(prefix="safeyolo-gvisor-key-") as tmp:
-                key = Path(tmp) / "archive.key"
-                keyring = Path(tmp) / "archive.gpg"
-                subprocess.run(
-                    ["curl", "-fsSL", "https://gvisor.dev/archive.key", "-o", str(key)],
-                    check=True,
-                )
-                subprocess.run(
-                    [
-                        "gpg", "--batch", "--yes", "--dearmor",
-                        "--output", str(keyring), str(key),
-                    ],
-                    check=True,
-                )
-                subprocess.run(
-                    ["sudo", "install", "-m", "0644", str(keyring), str(_GVISOR_KEYRING)],
-                    check=True,
-                )
-
-            apt_source = (
-                f"deb [arch={architecture} signed-by={_GVISOR_KEYRING}] "
-                "https://storage.googleapis.com/gvisor/releases release main\n"
-            )
-            subprocess.run(
-                ["sudo", "tee", str(_GVISOR_APT_SOURCE)],
-                input=apt_source,
-                text=True,
-                stdout=subprocess.DEVNULL,
-                check=True,
-            )
-            subprocess.run(["sudo", "apt-get", "update"], check=True)
-            packages.append("runsc")
-
         if packages:
-            subprocess.run(
-                ["sudo", "apt-get", "install", "-y", *packages],
-                check=True,
-            )
-    except (FileNotFoundError, subprocess.CalledProcessError) as err:
+            _install_via_pm(pm, packages)
+        if need_runsc:
+            if pm == "apt":
+                _install_gvisor_apt()
+            else:
+                _install_gvisor_tarball()
+    except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError) as err:
         console.print(f"  [red]FAIL[/red]  Runtime package installation failed: {err}")
         return False
 
