@@ -21,12 +21,14 @@ flowchart TD
     ev.gateway_recheck_after_approval["After operator approval, GET /gateway/services again -- capability should now be 'authorized' with an 'sgw_' token"]
     ev.gateway_check_auth_header_name["Read the service definition: which header does the sgw_ token belong in, and is it HTTPS-only?"]
     ev.gateway_check_route["Compare the URL I'm calling to the service's configured routes -- capability + route must both be authorized"]
+    ev.gateway_check_injection_event["GET /explain?request_id=req-... -- confirm a credential-injection / gateway swap event fired for the failing request"]
     cls.gateway_service_not_registered{{"The service simply has no gateway config on this host; nothing to grant"}}
     cls.gateway_needs_grant{{"Capability exists but this agent is not authorized; needs operator grant"}}
     cls.gateway_needs_binding_submit{{"Capability grant approved conditionally; must submit the requested binding first"}}
     cls.gateway_impossible{{"SafeYolo cannot enforce the requested contract; broader capability will not be granted"}}
     cls.gateway_wrong_route{{"The route I'm calling is not part of the granted capability (even if the service is authorized)"}}
     cls.gateway_token_in_wrong_place{{"sgw_ token was sent in the wrong header, over http:// instead of https://, or leaked into body/URL"}}
+    cls.gateway_swap_not_running{{"Swap logic did not fire despite /gateway/services showing an authorized capability with an sgw_ token"}}
     con.gateway_request_narrow_capability(["Request only the specific capability needed ('read_messages', 'create_issue'), never a blanket grant"])
     con.gateway_submit_only_requested_bindings(["Submit ONLY the binding variables the gateway requested; do not add extras"])
     con.gateway_do_not_broaden(["If contract_not_enforceable: do NOT try a broader capability. Explain to operator, stop."])
@@ -35,6 +37,7 @@ flowchart TD
     con.gateway_correct_route(["Restrict my call to routes the capability actually covers; other routes will 403"])
     ask.gateway_register_service[["Ask operator whether the service should be registered at all; do not assume it will be"]]
     ask.gateway_watch_grant[["Ask operator to run 'safeyolo watch' and grant the specific capability I requested"]]
+    ask.gateway_restart_after_yaml_change[["Ask operator to restart SafeYolo ('safeyolo stop && safeyolo start') so the service_gateway addon re-reads the on-disk service registry after a new service YAML or credential binding was added post-startup"]]
 
     sym.gateway_want_to_call_service -->|"next_check"| ev.gateway_list_services
     sym.gateway_no_capability_listed -->|"next_check"| ev.gateway_list_services
@@ -60,6 +63,9 @@ flowchart TD
     ev.gateway_check_auth_header_name -->|"implies: token in wrong header, or http:// used, or token appears in body/URL"| cls.gateway_token_in_wrong_place
     cls.gateway_token_in_wrong_place -->|"implies"| con.gateway_use_configured_header
     cls.gateway_token_in_wrong_place -->|"implies"| con.gateway_never_share_token
+    ev.gateway_check_auth_header_name -->|"next_check: token IS in the configured auth header, over HTTPS, not in body/URL"| ev.gateway_check_injection_event
+    ev.gateway_check_injection_event -->|"implies: only traffic.request / traffic.response events on the request_id; no credential-injection or gateway.swap event fired"| cls.gateway_swap_not_running
+    cls.gateway_swap_not_running -->|"escalates_to"| ask.gateway_restart_after_yaml_change
     ev.gateway_check_route -->|"implies: URL path or method is not covered by the granted capability"| cls.gateway_wrong_route
     cls.gateway_wrong_route -->|"implies"| con.gateway_correct_route
 
@@ -77,12 +83,14 @@ flowchart TD
     class ev.gateway_recheck_after_approval evidence
     class ev.gateway_check_auth_header_name evidence
     class ev.gateway_check_route evidence
+    class ev.gateway_check_injection_event evidence
     class cls.gateway_service_not_registered classification
     class cls.gateway_needs_grant classification
     class cls.gateway_needs_binding_submit classification
     class cls.gateway_impossible classification
     class cls.gateway_wrong_route classification
     class cls.gateway_token_in_wrong_place classification
+    class cls.gateway_swap_not_running classification
     class con.gateway_request_narrow_capability conclusion
     class con.gateway_submit_only_requested_bindings conclusion
     class con.gateway_do_not_broaden conclusion
@@ -91,6 +99,7 @@ flowchart TD
     class con.gateway_correct_route conclusion
     class ask.gateway_register_service operator_ask
     class ask.gateway_watch_grant operator_ask
+    class ask.gateway_restart_after_yaml_change operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.gateway_want_to_call_service stroke-width:3px
