@@ -80,23 +80,59 @@ def add(  # DOC: docs/CONFIGURATION.md
         "-t",
         help="Credential type: oauth2, api_key, or bearer",
     ),
+    token: str = typer.Option(None, "--token", help="Credential value (inline)"),
+    token_file: Path = typer.Option(
+        None,
+        "--token-file",
+        help="Read credential from file (use for long values that exceed terminal paste limits)",
+    ),
+    token_env: str = typer.Option(
+        None,
+        "--token-env",
+        help="Read credential from named environment variable",
+    ),
 ) -> None:
     """Store a credential in the vault.
 
-    Prompts for the credential value securely (not echoed).
+    With no source flag, prompts for the credential value securely (not echoed).
+    For long values that exceed the terminal's paste line limit, use
+    --token-file or --token-env instead of the interactive prompt.
 
     Examples:
 
         safeyolo vault add gmail-oauth2 --type oauth2
         safeyolo vault add minifuse-key --type api_key
+        safeyolo vault add heartbeat-token --type bearer --token-file /tmp/hb.tok
+        safeyolo vault add heartbeat-token --type bearer --token-env HB_TOKEN
     """
     if credential_type not in ("oauth2", "api_key", "bearer"):
         console.print(f"[red]Error:[/red] Invalid type '{credential_type}'. Use: oauth2, api_key, bearer")
         raise typer.Exit(1)
 
-    import getpass
+    sources_given = sum(1 for s in (token, token_file, token_env) if s)
+    if sources_given > 1:
+        console.print("[red]Error:[/red] Use at most one of --token, --token-file, --token-env")
+        raise typer.Exit(1)
 
-    value = getpass.getpass("Credential value: ")
+    if token:
+        value = token
+    elif token_file:
+        if not token_file.exists():
+            console.print(f"[red]Error:[/red] File not found: {token_file}")
+            raise typer.Exit(1)
+        value = token_file.read_text().strip()
+    elif token_env:
+        import os
+
+        value = os.environ.get(token_env, "")
+        if not value:
+            console.print(f"[red]Error:[/red] Environment variable '{token_env}' is empty or not set")
+            raise typer.Exit(1)
+    else:
+        import getpass
+
+        value = getpass.getpass("Credential value: ")
+
     if not value:
         console.print("[red]Error:[/red] Empty credential value")
         raise typer.Exit(1)
