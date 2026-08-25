@@ -119,7 +119,7 @@ config_path.write_text(yaml.dump(config, default_flow_style=False))
 
 # Configure target_hosts for test_context addon so the flow recorder
 # captures tagged flows. The blackbox cross-agent isolation test uses
-# X-Test-Context headers on httpbin.org probes — without target_hosts,
+# X-SafeYolo-Test-Context headers on httpbin.org probes — without target_hosts,
 # test_context doesn't tag them and the flow recorder drops them.
 python3 -c "
 import yaml
@@ -127,9 +127,9 @@ from pathlib import Path
 addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
 addons = yaml.safe_load(addons_path.read_text())
 # target_hosts enables test_context to tag matching traffic with
-# ccapt_context metadata → flow recorder captures it. Blocking is
+# test_context metadata → flow recorder captures it. Blocking is
 # disabled in test mode via proxy.py (test_context_block=false) so
-# host-side proxy tests without X-Test-Context aren't 428'd.
+# host-side proxy tests without X-SafeYolo-Test-Context aren't 428'd.
 addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = ['httpbin.org']
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "

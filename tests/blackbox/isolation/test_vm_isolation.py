@@ -345,7 +345,7 @@ class TestNetworkEscape:
         """HTTP via the proxy to an allowlisted host succeeds (200).
 
         What: curl through HTTP_PROXY to an allowlisted host with
-        an X-Test-Context header; assert 200.
+        an X-SafeYolo-Test-Context header; assert 200.
         Why: Positive control for the entire isolation suite. If
         this fails, the agent has no connectivity at all — all
         other "reachability blocked" assertions become meaningless
@@ -353,13 +353,13 @@ class TestNetworkEscape:
         """
         proxy = os.environ.get("HTTP_PROXY", "")
         assert proxy, "HTTP_PROXY not set — cannot test proxy reachability"
-        # Include X-Test-Context so the test_context addon doesn't
+        # Include X-SafeYolo-Test-Context so the test_context addon doesn't
         # 428-reject the request when httpbin.org is a declared
         # target host (as it is in the blackbox test instance).
         result = subprocess.run(
             ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
              "--proxy", proxy,
-             "-H", "X-Test-Context: run=isolation;agent=bbtest",
+             "-H", "X-SafeYolo-Test-Context: run=isolation;agent=bbtest",
              "http://httpbin.org/get"],
             capture_output=True, text=True, timeout=15,
         )

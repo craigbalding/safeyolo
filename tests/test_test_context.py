@@ -199,7 +199,7 @@ class TestTestContextAddon:
         flow = _make_mock_flow(
             host="ordinary.example.com",
             headers={
-                "X-Test-Context": (
+                "X-SafeYolo-Test-Context": (
                     "run=acceptance;agent=codey;role=auditor;test=CTX-001;"
                     "intent=verify;expect=recorded"
                 )
@@ -214,8 +214,8 @@ class TestTestContextAddon:
             addon.request(flow)
 
         assert flow.response is None
-        assert "X-Test-Context" not in flow.request.headers
-        assert flow.metadata["ccapt_context"]["test"] == "CTX-001"
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
+        assert flow.metadata["test_context"]["test"] == "CTX-001"
         assert flow.metadata["test_id"] == "CTX-001"
         assert flow.metadata["test_agent_match"] is True
         assert addon.stats.checks == 1
@@ -225,7 +225,7 @@ class TestTestContextAddon:
         addon = _make_addon_with_targets(["target.example.com"])
         flow = _make_mock_flow(
             host="ordinary.example.com",
-            headers={"X-Test-Context": "not-valid"},
+            headers={"X-SafeYolo-Test-Context": "not-valid"},
         )
 
         with (
@@ -235,8 +235,8 @@ class TestTestContextAddon:
             addon.request(flow)
 
         assert flow.response is None
-        assert "X-Test-Context" not in flow.request.headers
-        assert "ccapt_context" not in flow.metadata
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
+        assert "test_context" not in flow.metadata
         assert addon.stats.checks == 1
         assert addon.stats.warned == 1
 
@@ -253,7 +253,7 @@ class TestTestContextAddon:
         body = json.loads(flow.response.content)
         assert body["type"] == "missing_context"
         assert body["destination"] == "target.example.com"
-        assert body["header"] == "X-Test-Context"
+        assert body["header"] == "X-SafeYolo-Test-Context"
         assert "format" in body
         assert "example" in body
         assert flow.metadata.get("blocked_by") == "test-context"
@@ -262,7 +262,7 @@ class TestTestContextAddon:
     def test_target_host_malformed_header_blocks_428(self):
         """Malformed context header triggers 428."""
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "garbage-no-equals"})
 
         with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
@@ -275,7 +275,7 @@ class TestTestContextAddon:
         """Header missing required keys triggers 428."""
         addon = _make_addon_with_targets()
         # Missing 'agent' key
-        flow = _make_mock_flow(headers={"X-Test-Context": "run=sec1;test=IDOR-003"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "run=sec1;test=IDOR-003"})
 
         with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
@@ -287,7 +287,7 @@ class TestTestContextAddon:
         """Valid context header lets request through."""
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
 
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
@@ -295,7 +295,7 @@ class TestTestContextAddon:
             addon.request(flow)
 
         assert flow.response is None
-        assert flow.metadata["ccapt_context"] == {
+        assert flow.metadata["test_context"] == {
             "run": "sec1",
             "agent": "idor",
             "test": "IDOR-003",
@@ -304,25 +304,25 @@ class TestTestContextAddon:
         assert addon.stats.blocked == 0
 
     def test_context_header_stripped_before_upstream(self):
-        """X-Test-Context header is removed from request before it hits the wire."""
+        """X-SafeYolo-Test-Context header is removed from request before it hits the wire."""
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
 
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
             addon.request(flow)
 
-        assert "X-Test-Context" not in flow.request.headers
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
         # Context still preserved in metadata for response logging
-        assert flow.metadata["ccapt_context"]["run"] == "sec1"
+        assert flow.metadata["test_context"]["run"] == "sec1"
 
     def test_canonical_context_is_promoted_without_overwriting_trusted_agent(self):
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(
             headers={
-                "X-Test-Context": (
+                "X-SafeYolo-Test-Context": (
                     "run=sec1;agent=declared;role=guest;suite=payments;"
                     "subject=CTRL-1;step=4;test=FLOW-05;intent=forge;expect=blocked;"
                     "extra=retained"
@@ -347,7 +347,7 @@ class TestTestContextAddon:
         assert flow.metadata["test_expect"] == "blocked"
         assert flow.metadata["test_agent_match"] is False
         assert "extra" not in flow.metadata
-        assert flow.metadata["ccapt_context"]["extra"] == "retained"
+        assert flow.metadata["test_context"]["extra"] == "retained"
         details = mock_write.call_args.kwargs["details"]
         assert details["trusted_agent"] == "trusted"
         assert details["test_agent_match"] is False
@@ -355,11 +355,11 @@ class TestTestContextAddon:
     def test_matching_agent_is_explicit_and_absent_trusted_agent_is_unknown(self):
         addon = _make_addon_with_targets()
         matching = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=cody"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=cody"}
         )
         matching.metadata["agent"] = "cody"
         unattributed = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=cody"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=cody"}
         )
 
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
@@ -399,7 +399,7 @@ class TestTestContextAddon:
         flow = _make_mock_flow(
             host="ordinary.example.com",
             headers={
-                "X-Test-Context": "run=acceptance;agent=codey;test=CTX-001"
+                "X-SafeYolo-Test-Context": "run=acceptance;agent=codey;test=CTX-001"
             },
         )
         flow.metadata["agent"] = "codey"
@@ -411,8 +411,8 @@ class TestTestContextAddon:
             addon.request(flow)
 
         assert flow.response is None
-        assert "X-Test-Context" not in flow.request.headers
-        assert flow.metadata["ccapt_context"]["test"] == "CTX-001"
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
+        assert flow.metadata["test_context"]["test"] == "CTX-001"
         assert addon.stats.allowed == 1
 
     def test_already_blocked_flow_skipped(self):
@@ -448,7 +448,7 @@ class TestTestContextAddon:
         """
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor;test=IDOR-003"}
         )
         flow.metadata["agent"] = "resolved-agent"
 
@@ -493,7 +493,7 @@ class TestTestContextAddon:
         flow = _make_mock_flow(
             method="POST",
             path="/v1/entries/42",
-            headers={"X-Test-Context": "run=sec1;agent=idor;test=IDOR-003"},
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor;test=IDOR-003"},
             content=b'{"title": "test"}',
         )
 
@@ -595,17 +595,19 @@ class TestTestContextAddon:
         assert flow2.response is None
 
     def test_response_duration_calculated(self):
-        """Response event includes duration_ms from request timing."""
+        """Response event includes duration_ms computed from
+        flow.metadata["start_time"], which the request_id addon stamps
+        before test_context runs. test_context no longer stores its own
+        request-time key (see #319: `ccapt_request_time` removed)."""
         addon = _make_addon_with_targets()
         flow = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=idor"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor"}
         )
+        # Simulate request_id addon having run first.
+        flow.metadata["start_time"] = 1000.0
 
-        # Request phase sets timing
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
-             patch("test_context.write_event"), \
-             patch("test_context.time") as mock_time:
-            mock_time.time.return_value = 1000.0
+             patch("test_context.write_event"):
             addon.request(flow)
 
         flow.response = MagicMock()
@@ -722,7 +724,7 @@ class TestTestContextBlockBody:
     def test_malformed_header_body_has_type_field(self):
         """Block body for malformed header includes type=malformed_context."""
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": "not;valid;pairs"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "not;valid;pairs"})
 
         with patch("safeyolo.core.base.get_option_safe", return_value=True):
             addon.request(flow)
@@ -753,7 +755,7 @@ class TestTestContextBlockBody:
         assert "reflection" in body
         assert "action" in body
         assert body["action"] == "add_header"
-        assert "X-Test-Context" in body["reflection"]
+        assert "X-SafeYolo-Test-Context" in body["reflection"]
 
 
 class TestTestContextCounters:
@@ -771,7 +773,7 @@ class TestTestContextCounters:
 
         # Valid header -> allowed, checks still counts
         flow2 = _make_mock_flow(
-            headers={"X-Test-Context": "run=sec1;agent=idor"}
+            headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor"}
         )
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
@@ -833,7 +835,7 @@ class TestTestContextWarnMode:
     def test_warn_mode_with_malformed_header(self):
         """Malformed header in warn mode logs warning, does not block."""
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "garbage-no-equals"})
 
         with patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"):
             addon.request(flow)
@@ -1013,7 +1015,7 @@ class TestDeclaredInjection:
         self._run(addon, flow)
 
         assert flow.response is None
-        assert flow.metadata["ccapt_context"] == {"run": "r1", "agent": "pickup", "test": "T"}
+        assert flow.metadata["test_context"] == {"run": "r1", "agent": "pickup", "test": "T"}
         assert flow.metadata["test_context_source"] == "declared"
         assert flow.metadata["agent"] == "pickup"
         assert addon.stats.allowed == 1
@@ -1022,10 +1024,10 @@ class TestDeclaredInjection:
     def test_empty_header_strips_and_injects(self):
         addon = _make_addon_with_targets()
         addon.set_declaration("192.168.1.1", "pickup", {"run": "r1", "agent": "pickup"}, 120)
-        flow = _make_mock_flow(headers={"X-Test-Context": ""})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": ""})
         self._run(addon, flow)
 
-        assert "X-Test-Context" not in flow.request.headers
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
         assert flow.metadata["test_context_source"] == "declared"
 
     def test_missing_header_no_declaration_blocks(self):
@@ -1054,27 +1056,27 @@ class TestDeclaredInjection:
     def test_valid_header_ignores_declaration(self):
         addon = _make_addon_with_targets()
         addon.set_declaration("192.168.1.1", "pickup", {"run": "declared", "agent": "pickup"}, 120)
-        flow = _make_mock_flow(headers={"X-Test-Context": "run=hdr;agent=pickup"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "run=hdr;agent=pickup"})
         self._run(addon, flow)
-        assert flow.metadata["ccapt_context"] == {"run": "hdr", "agent": "pickup"}
+        assert flow.metadata["test_context"] == {"run": "hdr", "agent": "pickup"}
         assert flow.metadata["test_context_source"] == "header"
         assert addon._declared_injections_total == 0
 
     def test_malformed_header_never_rescued_block_mode(self):
         addon = _make_addon_with_targets()
         addon.set_declaration("192.168.1.1", "pickup", {"run": "r", "agent": "pickup"}, 120)
-        flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "garbage-no-equals"})
         self._run(addon, flow)
         assert flow.response.status_code == 428
-        assert "X-Test-Context" not in flow.request.headers  # leak fix
-        assert "ccapt_context" not in flow.metadata
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers  # leak fix
+        assert "test_context" not in flow.metadata
 
     def test_malformed_header_warn_mode_strips_and_forwards(self):
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": "garbage-no-equals"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "garbage-no-equals"})
         self._run(addon, flow, block=False)
         assert flow.response is None
-        assert "X-Test-Context" not in flow.request.headers  # warn-mode leak fix
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers  # warn-mode leak fix
         assert addon.stats.warned == 1
 
     def test_feature_disabled_ignores_declaration(self):
@@ -1093,7 +1095,7 @@ class TestDeclaredInjection:
              patch.object(addon, "_inject_declared_enabled", return_value=True):
             addon.request(flow)
         assert flow.response is None
-        assert "ccapt_context" not in flow.metadata
+        assert "test_context" not in flow.metadata
 
 
 class TestProvenanceAuditContract:
@@ -1107,7 +1109,7 @@ class TestProvenanceAuditContract:
 
     def test_header_source_in_request_and_response_events(self):
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": "run=sec1;agent=idor"})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": "run=sec1;agent=idor"})
         with patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event") as we:
             addon.request(flow)          # flow.response is None here
@@ -1185,27 +1187,77 @@ class TestEmptyHeaderNoDeclaration:
 
     def test_empty_header_block_mode_strips_and_428(self):
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": ""})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": ""})
         with _mock_discovery("pickup"), \
              patch.object(addon, "_inject_declared_enabled", return_value=True), \
              patch("safeyolo.core.base.get_option_safe", return_value=True), \
              patch("test_context.write_event"):
             addon.request(flow)
         assert flow.response.status_code == 428
-        assert "X-Test-Context" not in flow.request.headers
-        assert "ccapt_context" not in flow.metadata
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
+        assert "test_context" not in flow.metadata
 
     def test_empty_header_warn_mode_strips_and_forwards(self):
         addon = _make_addon_with_targets()
-        flow = _make_mock_flow(headers={"X-Test-Context": ""})
+        flow = _make_mock_flow(headers={"X-SafeYolo-Test-Context": ""})
         with _mock_discovery("pickup"), \
              patch.object(addon, "_inject_declared_enabled", return_value=True), \
              patch("safeyolo.core.base.get_option_safe", side_effect=lambda name, default=True: name != "test_context_block"), \
              patch("test_context.write_event"):
             addon.request(flow)
         assert flow.response is None
-        assert "X-Test-Context" not in flow.request.headers
+        assert "X-SafeYolo-Test-Context" not in flow.request.headers
         assert addon.stats.warned == 1
+
+
+class TestLegacyHeaderNameNotAccepted:
+    """Regression for the hard rename (#319): the pre-rename header name
+    `X-Test-Context` is NOT a SafeYolo context header. A request that
+    carries only that header must be treated exactly like a request with
+    no context header at all — same 428 on target hosts (block mode),
+    same pass-through on non-target hosts (warn mode / no target).
+
+    This test intentionally does NOT go through the parser/formatter; it
+    sets the raw legacy header name directly, mirroring the request an
+    older test harness or third-party client would send unchanged."""
+
+    def test_legacy_header_alone_treated_as_missing_on_target_host(self):
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(headers={"X-Test-Context": "run=r1;agent=pickup"})
+
+        with _mock_discovery("pickup"), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event"):
+            addon.request(flow)
+
+        # Block mode + no valid new header + no declaration → 428.
+        assert flow.response is not None
+        assert flow.response.status_code == 428
+        # No context state promoted from the legacy header.
+        assert "test_context" not in flow.metadata
+        # The legacy header is NOT the reserved SafeYolo header, so we
+        # don't strip it — it just isn't recognised as provenance and
+        # falls through to the missing-header path.
+        assert flow.request.headers.get("X-Test-Context") == "run=r1;agent=pickup"
+
+    def test_legacy_header_alone_passes_through_on_non_target_host(self):
+        """On hosts NOT in target_hosts, missing context is fine (no
+        enforcement). The legacy header still isn't parsed as SafeYolo
+        provenance — it's just a random application header."""
+        addon = _make_addon_with_targets()
+        flow = _make_mock_flow(
+            headers={"X-Test-Context": "run=r1;agent=pickup"},
+            host="not-a-target.example.com",
+        )
+
+        with _mock_discovery("pickup"), \
+             patch("safeyolo.core.base.get_option_safe", return_value=True), \
+             patch("test_context.write_event"):
+            addon.request(flow)
+
+        assert flow.response is None
+        assert "test_context" not in flow.metadata
+        assert flow.request.headers.get("X-Test-Context") == "run=r1;agent=pickup"
 
 
 class TestDeclarationReplacementRace:

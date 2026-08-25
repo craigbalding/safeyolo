@@ -93,7 +93,7 @@ addons:
       - host.docker.internal
       - api.anthropic.com
 
-  # test_context — requires X-Test-Context header for specified hosts.
+  # test_context — requires X-SafeYolo-Test-Context header for specified hosts.
   # Only active if target_hosts is non-empty.
   test_context:
     target_hosts: []

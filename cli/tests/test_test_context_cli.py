@@ -1,4 +1,4 @@
-"""Tests for the first-party X-Test-Context command."""
+"""Tests for the first-party X-SafeYolo-Test-Context command."""
 
 from safeyolo.cli import app
 
@@ -54,7 +54,7 @@ def test_header_output_and_sorted_additional_fields(cli_runner):
     )
 
     assert result.exit_code == 0
-    assert result.output.strip() == ("X-Test-Context: run=sec3;agent=logic;alpha=first;zeta=last")
+    assert result.output.strip() == ("X-SafeYolo-Test-Context: run=sec3;agent=logic;alpha=first;zeta=last")
 
 
 def test_write_atomically_replaces_watched_file_and_still_prints_value(cli_runner, tmp_path):

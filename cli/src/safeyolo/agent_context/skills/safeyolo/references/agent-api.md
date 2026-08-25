@@ -17,8 +17,8 @@ the most common cause of wrong-diagnosis loops.
 
 **1. Detection plane.** Sensor addons inspect requests and attach metadata
 without making policy decisions. Examples: `test_context` looks for the
-canonical `X-Test-Context` header and, if valid, tags the flow with
-`ccapt_context`; `credential_guard` runs `analyze_headers` to identify
+canonical `X-SafeYolo-Test-Context` header and, if valid, tags the flow with
+`test_context`; `credential_guard` runs `analyze_headers` to identify
 credentials in Authorization / API-key headers; scanner patterns look for
 credential leaks in bodies and URLs. Detection can be silent (no rule
 matched → no metadata attached).
@@ -35,7 +35,7 @@ only asks the `network:request` question, not the `credential:use` question.
 
 **3. Observability plane.** The `flow_recorder` writes selected requests to
 the FlowStore for later inspection. Recording is gated on detection metadata
-(specifically `ccapt_context`), so absence of a flow means the detection
+(specifically `test_context`), so absence of a flow means the detection
 plane did not tag it — never that policy denied it or that retention expired.
 
 Endpoints in this reference by plane:
@@ -179,7 +179,7 @@ module. Only trace-participating addons appear here (defined by
 | `allowed` | Valid context header present and applied. |
 | `not_target_host` | Host not in `test_context.target_hosts` and no context header — nothing to enforce. |
 | `response_recorded` | Response hook captured a completed context flow's response event. |
-| `not_applicable` | Response hook ran but no `ccapt_context` was set for this flow. |
+| `not_applicable` | Response hook ran but no `test_context` was set for this flow. |
 
 **service-gateway** (`OUTCOME_*` in `mitm_addons/service_gateway.py`):
 | Literal | Meaning |
@@ -250,7 +250,7 @@ Status precedence:
 Flow recording is **opt-in per request**, not automatic. A request is
 written to the FlowStore only when both hold:
 
-1. It carries the canonical `X-Test-Context` header, parsed and accepted
+1. It carries the canonical `X-SafeYolo-Test-Context` header, parsed and accepted
    by the `test_context` addon. The format is defined by
    `safeyolo.test_context_contract`; presence alone is not enough.
 2. The active policy has a non-empty `test_context.target_hosts` list,

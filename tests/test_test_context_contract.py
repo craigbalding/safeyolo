@@ -1,4 +1,4 @@
-"""Tests for the shared X-Test-Context parser and formatter contract."""
+"""Tests for the shared X-SafeYolo-Test-Context parser and formatter contract."""
 
 import os
 from unittest.mock import patch
@@ -8,9 +8,9 @@ import pytest
 import safeyolo.test_context_contract as context_contract
 from safeyolo.test_context_contract import (
     CANONICAL_KEYS,
-    CONTEXT_HEADER,
     MAX_CONTEXT_PAIRS,
     REQUIRED_KEYS,
+    TEST_CONTEXT_HEADER,
     atomic_write_test_context,
     format_test_context,
     format_test_context_header,
@@ -31,7 +31,7 @@ ALL_CANONICAL_FIELDS = {
 
 
 def test_contract_constants_are_complete_and_ordered():
-    assert CONTEXT_HEADER == "X-Test-Context"
+    assert TEST_CONTEXT_HEADER == "X-SafeYolo-Test-Context"
     assert REQUIRED_KEYS == ("run", "agent")
     assert CANONICAL_KEYS == tuple(ALL_CANONICAL_FIELDS)
 
@@ -60,7 +60,7 @@ def test_additional_fields_sort_after_canonical_fields():
 
 
 def test_complete_header_uses_canonical_value():
-    assert format_test_context_header({"agent": "logic", "run": "sec3"}) == ("X-Test-Context: run=sec3;agent=logic")
+    assert format_test_context_header({"agent": "logic", "run": "sec3"}) == ("X-SafeYolo-Test-Context: run=sec3;agent=logic")
 
 
 @pytest.mark.parametrize(

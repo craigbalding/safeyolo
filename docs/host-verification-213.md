@@ -103,7 +103,7 @@ sy_api() {
 # and mitmproxy's HTTP/1.0 parser is strict about it.
 send_probe() {
   local ctx_run="$1"
-  printf 'GET /__pipeline_probe HTTP/1.0\r\nHost: _safeyolo.probe.internal\r\nX-SafeYolo-Trace: 1\r\nX-Test-Context: run=%s;agent=%s;test=host-verification\r\nConnection: close\r\n\r\n' \
+  printf 'GET /__pipeline_probe HTTP/1.0\r\nHost: _safeyolo.probe.internal\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Test-Context: run=%s;agent=%s;test=host-verification\r\nConnection: close\r\n\r\n' \
     "$ctx_run" "$AGENT_NAME" \
     | socat - "UNIX-CONNECT:$AGENT_SOCK"
 }

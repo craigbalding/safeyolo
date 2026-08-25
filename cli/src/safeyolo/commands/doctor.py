@@ -588,7 +588,7 @@ def _probe_one_socket(sock_path: Path, token: str) -> DiagResult:
 
     # Real UDS layout is `<sockets_dir>/<ip>_<agent>/proxy.sock` — the file
     # itself is always literally `proxy.sock`. Use the canonical parser so
-    # DiagResult messages and X-Test-Context attribution name the real agent,
+    # DiagResult messages and X-SafeYolo-Test-Context attribution name the real agent,
     # not "proxy". Fall back defensively to a name-guess only if the path
     # doesn't match the SafeYolo shape (e.g. legacy or hand-crafted paths).
     try:
@@ -606,7 +606,7 @@ def _probe_one_socket(sock_path: Path, token: str) -> DiagResult:
         f"GET {PROBE_PATH} HTTP/1.0\r\n"
         f"Host: {PROBE_HOST}\r\n"
         f"X-SafeYolo-Trace: 1\r\n"
-        f"X-Test-Context: {x_test_context}\r\n"
+        f"X-SafeYolo-Test-Context: {x_test_context}\r\n"
         f"Connection: close\r\n\r\n"
     ).encode()
 

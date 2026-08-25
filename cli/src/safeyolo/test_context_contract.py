@@ -1,4 +1,4 @@
-"""Parser and formatter contract for ``X-Test-Context`` provenance."""
+"""Parser and formatter contract for ``X-SafeYolo-Test-Context`` provenance."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-CONTEXT_HEADER = "X-Test-Context"  # SKILL: agent-api.md#flow-inspection
+TEST_CONTEXT_HEADER = "X-SafeYolo-Test-Context"  # SKILL: agent-api.md#flow-inspection
 REQUIRED_KEYS = ("run", "agent")
 CANONICAL_KEYS = (
     "run",
@@ -28,7 +28,7 @@ _CANONICAL_ORDER = {key: index for index, key in enumerate(CANONICAL_KEYS)}
 
 
 class TestContextError(ValueError):
-    """An ``X-Test-Context`` value does not satisfy the shared contract."""
+    """An ``X-SafeYolo-Test-Context`` value does not satisfy the shared contract."""
 
 
 def validate_context_pair(key: str, value: str) -> tuple[str, str]:
@@ -84,7 +84,7 @@ def parse_test_context(value: str) -> dict[str, str]:
 def format_test_context(
     fields: Mapping[str, str] | Iterable[tuple[str, str]],
 ) -> str:
-    """Validate and deterministically format an ``X-Test-Context`` value."""
+    """Validate and deterministically format an ``X-SafeYolo-Test-Context`` value."""
     pairs = fields.items() if isinstance(fields, Mapping) else fields
     validated = _validate_pairs(pairs)
     ordered = sorted(
@@ -101,8 +101,8 @@ def format_test_context(
 def format_test_context_header(
     fields: Mapping[str, str] | Iterable[tuple[str, str]],
 ) -> str:
-    """Return a complete ``X-Test-Context: <value>`` header line."""
-    return f"{CONTEXT_HEADER}: {format_test_context(fields)}"
+    """Return a complete ``X-SafeYolo-Test-Context: <value>`` header line."""
+    return f"{TEST_CONTEXT_HEADER}: {format_test_context(fields)}"
 
 
 def atomic_write_test_context(path: Path, value: str) -> None:

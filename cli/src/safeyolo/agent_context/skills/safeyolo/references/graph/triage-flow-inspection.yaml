@@ -56,7 +56,7 @@ nodes:
   # ---- Evidence --------------------------------------------------------
   - id: ev.flow_check_x_test_context
     kind: evidence
-    label: "Did the request carry `X-Test-Context` with a value that `test_context_contract.parse_test_context` accepts?"
+    label: "Did the request carry `X-SafeYolo-Test-Context` with a value that `test_context_contract.parse_test_context` accepts?"
     detail: "Presence of a syntactically valid header is what causes flow_recorder to write the flow at all."
     source: authored
 
@@ -94,7 +94,7 @@ nodes:
   # ---- Classifications -------------------------------------------------
   - id: cls.flow_recording_precondition_missing
     kind: classification
-    label: "Recording precondition not met (missing X-Test-Context OR empty target_hosts)"
+    label: "Recording precondition not met (missing X-SafeYolo-Test-Context OR empty target_hosts)"
     source: authored
 
   - id: cls.flow_attribution_scoped_out
@@ -120,7 +120,7 @@ nodes:
   # ---- Conclusions -----------------------------------------------------
   - id: con.flow_add_x_test_context
     kind: conclusion
-    label: "Self-correct: add a valid `X-Test-Context` header to future outbound requests I want recorded"
+    label: "Self-correct: add a valid `X-SafeYolo-Test-Context` header to future outbound requests I want recorded"
     detail: "See `safeyolo.test_context_contract` for the required keys (`run`, `agent`) and canonical order."
     source: authored
 
