@@ -158,13 +158,58 @@ def _rollback_preview_tailnet_port(
         )
 
 
+# Bundled host-script aliases. Keep in sync with pyproject.toml
+# [tool.hatch.build.targets.wheel.force-include]. `--host-script @<name>`
+# resolves to `contrib/<value>` under the installed package.
+_HOST_SCRIPT_ALIASES: dict[str, str] = {
+    "claude": "claude-host-setup.sh",
+    "codex": "codex-host-setup.sh",
+    "mise-shell": "mise-shell-host-setup.sh",
+}
+
+
+def _resolve_host_script_alias(alias: str) -> Path | None:
+    """Resolve @alias → bundled contrib/*.sh path, or None if not found.
+
+    Tries the installed-package location first (wheel install path), then
+    falls back to the repo-root contrib/ (for `uv tool install --editable .`
+    from a checkout where hatch.force-include hasn't been re-run).
+    """
+    if alias not in _HOST_SCRIPT_ALIASES:
+        return None
+    script_name = _HOST_SCRIPT_ALIASES[alias]
+    from .. import __file__ as _safeyolo_pkg_init
+
+    pkg_dir = Path(_safeyolo_pkg_init).resolve().parent  # cli/src/safeyolo or site-packages/safeyolo
+    candidates = [
+        pkg_dir / "contrib" / script_name,                        # wheel install path
+        pkg_dir.parent.parent.parent / "contrib" / script_name,   # editable-from-checkout fallback
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
 def _resolve_host_script_path(host_script: str | None) -> Path | None:
     if not host_script:
         return None
-    host_script_path = Path(host_script).expanduser().resolve()
-    if not host_script_path.is_file():
-        console.print(f"[red]Host script not found: {host_script_path}[/red]")
-        raise typer.Exit(1)
+    # @alias — bundled contrib script. Errors clearly if unknown.
+    if host_script.startswith("@"):
+        alias = host_script[1:]
+        resolved = _resolve_host_script_alias(alias)
+        if resolved is None:
+            available = ", ".join(sorted(f"@{a}" for a in _HOST_SCRIPT_ALIASES))
+            console.print(f"[red]Unknown host-script alias: {host_script}[/red]")
+            console.print(f"  Available aliases: {available}")
+            console.print("  Or pass a path: --host-script /path/to/setup.sh")
+            raise typer.Exit(1)
+        host_script_path = resolved
+    else:
+        host_script_path = Path(host_script).expanduser().resolve()
+        if not host_script_path.is_file():
+            console.print(f"[red]Host script not found: {host_script_path}[/red]")
+            raise typer.Exit(1)
     if not os.access(host_script_path, os.X_OK):
         console.print(f"[red]Host script is not executable: {host_script_path}[/red]")
         console.print(f"  Fix: chmod +x {host_script_path}")

@@ -111,6 +111,17 @@ members = [
 [tool.hatch.build.targets.wheel]
 packages = ["cli/src/safeyolo"]
 
+# Bundle the three curated host scripts + their shared lib as package data,
+# so `--host-script @claude` (etc.) resolves from a wheel install without
+# requiring a repo checkout. Kept in sync with commands/agent.py
+# _HOST_SCRIPT_ALIASES.
+[tool.hatch.build.targets.wheel.force-include]
+"contrib/claude-host-setup.sh"          = "safeyolo/contrib/claude-host-setup.sh"
+"contrib/codex-host-setup.sh"           = "safeyolo/contrib/codex-host-setup.sh"
+"contrib/mise-shell-host-setup.sh"      = "safeyolo/contrib/mise-shell-host-setup.sh"
+"contrib/lib/stage-safeyolo-context.sh" = "safeyolo/contrib/lib/stage-safeyolo-context.sh"
+"contrib/HOST_SCRIPT_GUIDE.md"          = "safeyolo/contrib/HOST_SCRIPT_GUIDE.md"
+
 [tool.hatch.build.targets.wheel.sources]
 "cli/src" = ""
 
