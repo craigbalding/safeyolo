@@ -1,9 +1,4 @@
-"""Host-side mitmproxy process management for SafeYolo.
-
-Replaces the Docker-based proxy container with a direct host process.
-The addon stack, options, and behavior are identical — only the
-execution environment changes (host process vs. container).
-"""
+"""Host-side mitmproxy process management for SafeYolo."""
 
 import json
 import logging
@@ -264,12 +259,11 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
         admin_token_file.write_text(admin_token)
         admin_token_file.chmod(0o600)  # DOC: docs/security-verification.md, SECURITY.md
 
-    # Agent token: persist across restarts. In the Docker era this was
-    # a bind-mount so regeneration was transparent (container saw the
-    # new file immediately). In the microVM era the token is copied at
-    # staging time — regenerating it breaks running sandboxes (401 on
-    # agent API). The token's threat model doesn't benefit from rotation
-    # anyway: the agent always holds the current value via /app/agent_token.
+    # Agent token: persist across restarts. The token is copied into the
+    # guest at staging time, so regenerating it here would break any
+    # running sandbox (401 on agent API) until it restarts. The threat
+    # model does not benefit from rotation — the guest always holds the
+    # current value via /app/agent_token.
     agent_token_file = data_dir / "agent_token"
     if agent_token_file.exists():
         agent_token = agent_token_file.read_text().strip()
@@ -607,8 +601,7 @@ def _merge_system_cas_into_certifi() -> None:
     Cross-signed chains (e.g. Cloudflare → SSL.com → Comodo "AAA Certificate
     Services") may chain to roots present in only one bundle.  Merging both
     prevents upstream TLS failures when either bundle drops a root the other
-    still carries.  This mirrors the Dockerfile RUN step that was lost in the
-    Docker-to-host migration.
+    still carries.
     """
     try:
         import certifi
@@ -769,9 +762,9 @@ def start_proxy(
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = ":".join(python_paths) + (":" + existing if existing else "")
 
-    # Map container paths to host paths.
-    # Addons hardcode /safeyolo (config bind-mount) and /app/logs (log dir)
-    # from the Docker container layout. These env vars override the defaults.
+    # Addons hardcode /safeyolo and /app/logs as defaults for the guest
+    # layout. When running the mitmproxy master on the host these env vars
+    # redirect writes to the operator's config + logs directories.
     env["CONFIG_DIR"] = str(config_dir)
     env["LOG_DIR"] = str(logs_dir)
     env["SAFEYOLO_LOG_PATH"] = str(logs_dir / "safeyolo.jsonl")

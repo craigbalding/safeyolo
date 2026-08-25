@@ -199,7 +199,6 @@ class CircuitBreaker(SecurityAddon):
         self._excluded_domains: set[str] = {
             "localhost",
             "127.0.0.1",
-            "host.docker.internal",
             PROBE_HOST,
         }
 

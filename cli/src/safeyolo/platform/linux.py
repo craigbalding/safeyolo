@@ -4,7 +4,7 @@ Auto-detects KVM availability for best isolation:
   - /dev/kvm accessible → runsc --platform=kvm (hardware isolation)
   - otherwise → runsc --platform=systrap (seccomp-bpf interception)
 
-No Docker, containerd, sudo, or other daemon required. Only needs:
+No daemon required. Only needs:
   - runsc binary (single Go binary, ~30MB)
   - iproute2 (standard)
   - systemd user session (resource limits via cgroup delegation)

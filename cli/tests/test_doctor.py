@@ -16,12 +16,12 @@ from safeyolo.commands.doctor import (
     _check_ca_cert,
     _check_config_dir,
     _check_crash_logs,
-    _check_docker,
     _check_firewall,
     _check_flow_store,
     _check_guest_images,
     _check_log_health,
     _check_pipeline_probe,
+    _check_proxy_process,
     _check_tokens,
     _check_upstream_ca_cert,
     _check_vault,
@@ -50,13 +50,12 @@ class TestCheckConfigDir:
 
 
 class TestCheckProxyRunning:
-    """_check_docker was repurposed (kept the old name) to check the
-    host mitmproxy process — Docker is no longer part of the runtime."""
+    """_check_proxy_process verifies the host mitmproxy is running."""
 
     def test_proxy_running(self, tmp_config_dir, monkeypatch):
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
         (tmp_config_dir / "data" / "proxy.pid").write_text("12345\n")
-        result = _check_docker()
+        result = _check_proxy_process()
         assert result.status == "pass"
         assert "PID 12345" in result.message
 
@@ -64,14 +63,14 @@ class TestCheckProxyRunning:
         # Race: is_proxy_running() saw the pidfile but it's gone now.
         # Falls back to a generic message rather than crashing.
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
-        result = _check_docker()
+        result = _check_proxy_process()
         assert result.status == "pass"
         assert "mitmdump" in result.message.lower()
         assert "PID" not in result.message
 
     def test_proxy_not_running(self, monkeypatch):
         monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
-        result = _check_docker()
+        result = _check_proxy_process()
         assert result.status == "fail"
 
 
@@ -729,11 +728,7 @@ class TestRunChecks:
 
 
 class TestBuildBundle:
-    def test_bundle_structure(self, monkeypatch):
-        monkeypatch.setattr(
-            "subprocess.run",
-            MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="27.0", stderr="")),
-        )
+    def test_bundle_structure(self):
         results = [
             DiagResult(name="test1", status="pass", message="ok"),
             DiagResult(name="test2", status="fail", message="bad", detail="traceback here"),
@@ -743,7 +738,7 @@ class TestBuildBundle:
         assert len(bundle["checks"]) == 2
         assert bundle["summary"]["pass"] == 1
         assert bundle["summary"]["fail"] == 1
-        assert "docker_version" in bundle["system"]
+        assert "platform" in bundle["system"]
 
 
 class TestDoctorCLI:

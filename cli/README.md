@@ -36,12 +36,12 @@ safeyolo doctor
 | Command | Description |
 |---------|-------------|
 | `safeyolo init` | Initialize configuration with interactive wizard |
-| `safeyolo start` | Start the proxy container |
-| `safeyolo stop` | Stop the proxy container |
+| `safeyolo start` | Start the host proxy process |
+| `safeyolo stop` | Stop the host proxy process |
 | `safeyolo status` | Show proxy status, addon stats, and memory usage |
-| `safeyolo build` | Build SafeYolo Docker image from source |
+| `safeyolo build` | Build guest rootfs and VM images from source |
 | `safeyolo check` | Verify setup is working correctly |
-| `safeyolo doctor` | Run 11-check diagnostic cascade (config, Docker, proxy, addons) |
+| `safeyolo doctor` | Run diagnostic cascade (config, proxy, addons, sandbox runtime) |
 | `safeyolo demo` | Guided tour of SafeYolo security features |
 
 **Aliases:** `safeyolo up` = `start` (accepts `--wait/--no-wait` and `--profile`), `safeyolo down` = `stop`
@@ -344,7 +344,7 @@ eval $(safeyolo cert env)
 
 | Command | Description |
 |---------|-------------|
-| `safeyolo setup check` | Check system prerequisites (Docker group, network) |
+| `safeyolo setup check` | Check system prerequisites (KVM/gVisor, network) |
 
 ## Configuration
 
@@ -355,7 +355,6 @@ safeyolo/
 ├── config.yaml          # Main configuration
 ├── policy.toml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
-├── docker-compose.yml   # Generated compose file
 ├── services/            # User service definitions (one YAML per service)
 ├── logs/                # Audit logs (safeyolo.jsonl)
 ├── certs/               # mitmproxy CA certificate
@@ -435,7 +434,8 @@ When a credential is blocked:
 ## Requirements
 
 - Python 3.12 or 3.13
-- Docker
+- macOS: Apple Virtualization.framework (built into macOS 13+)
+- Linux: gVisor (`runsc`), `newuidmap`/`newgidmap`, KVM group membership
 
 ## Environment Variables
 

@@ -8,8 +8,8 @@ Contract:
   C4. Requests to a blocked port on a non-local host pass through (no response set).
   C5. Requests to a non-blocked port on a local host pass through (no response set).
   C6. Allowed flows have no metadata pollution (no blocked_by/block_reason keys).
-  C7. _LOCAL_HOSTS contains: localhost, 127.0.0.1, ::1, 0.0.0.0,
-      host.docker.internal, safeyolo. Host matching is case-insensitive.
+  C7. _LOCAL_HOSTS contains: localhost, 127.0.0.1, ::1, 0.0.0.0.
+      Host matching is case-insensitive.
   C8. Any host ending in ".localhost" is treated as local (case-insensitive).
   C9. shield_extra_ports adds additional ports to the block set.
   C10. shield_extra_ports handles whitespace, ignores non-digit entries, handles empty string.
@@ -177,8 +177,6 @@ class TestLocalHosts:
         "127.0.0.1",
         "::1",
         "0.0.0.0",
-        "host.docker.internal",
-        "safeyolo",
     ])
     def test_local_host_is_blocked(self, host):
         shield = AdminShield()
@@ -189,12 +187,26 @@ class TestLocalHosts:
         assert flow.response.status_code == 403
 
     @pytest.mark.parametrize("host", [
+        "host.docker.internal",
+        "safeyolo",
+    ])
+    def test_non_local_hostnames_fall_through(self, host):
+        """Only the entries in _LOCAL_HOSTS trigger admin_shield's
+        block. Hostnames that don't resolve to a local loopback under
+        the current architecture (e.g. legacy container-runtime aliases)
+        must not be treated as local — they fall through to normal
+        handling."""
+        shield = AdminShield()
+        flow = _make_flow(host=host, port=9090)
+
+        _call_request(shield, flow)
+
+        assert flow.response is None
+
+    @pytest.mark.parametrize("host", [
         "LOCALHOST",
         "Localhost",
-        "HOST.DOCKER.INTERNAL",
-        "Host.Docker.Internal",
-        "SAFEYOLO",
-        "SafeYolo",
+        "127.0.0.1",
     ])
     def test_local_host_matching_is_case_insensitive(self, host):
         shield = AdminShield()

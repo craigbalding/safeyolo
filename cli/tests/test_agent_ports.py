@@ -79,7 +79,9 @@ def _setup_agent(config_dir, name="test-agent", ports=None):
     """Helper to create a minimal agent directory with metadata in policy.toml."""
     agent_dir = config_dir / "agents" / name
     agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "docker-compose.yml").write_text("version: '3'\n")
+    # A stub file so the directory looks like a real agent home; the port
+    # commands don't read it, they only care about the on-disk agent entry.
+    (agent_dir / ".stub").write_text("")
     metadata = {"folder": "/tmp/project"}
     if ports:
         metadata["ports"] = ports

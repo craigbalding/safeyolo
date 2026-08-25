@@ -1,10 +1,9 @@
-"""Tests for VM-era CLI commands.
+"""Tests for the VM-management CLI commands.
 
-These tests verify the contracts of commands rewritten from Docker to microVM
-management: lifecycle (start/stop/status/build), agent (add/list/remove/shell/stop),
-init, setup, doctor, sandbox, cert, and admin.
-
-All subprocess/vm/proxy/firewall calls are mocked. No real processes are started.
+Verifies the contracts of lifecycle (start/stop/status/build), agent
+(add/list/remove/shell/stop), init, setup, doctor, sandbox, cert, and
+admin. All subprocess/vm/proxy/firewall calls are mocked; no real
+processes are started.
 """
 
 import json
@@ -1957,22 +1956,22 @@ class TestSetup:
 class TestDoctorProxyCheck:
 
     def test_proxy_running_returns_pass(self, runner, config_dir):
-        """_check_docker returns pass when proxy is running."""
-        from safeyolo.commands.doctor import _check_docker
+        """_check_proxy_process returns pass when proxy is running."""
+        from safeyolo.commands.doctor import _check_proxy_process
 
         with patch("safeyolo.commands.doctor.is_proxy_running", return_value=True):
-            result = _check_docker()
+            result = _check_proxy_process()
 
         assert result.status == "pass"
         assert result.name == "Proxy running"
         assert "mitmdump" in result.message.lower()
 
     def test_proxy_not_running_returns_fail_with_remediation(self, runner, config_dir):
-        """_check_docker returns fail with remediation when proxy not running."""
-        from safeyolo.commands.doctor import _check_docker
+        """_check_proxy_process returns fail with remediation when proxy not running."""
+        from safeyolo.commands.doctor import _check_proxy_process
 
         with patch("safeyolo.commands.doctor.is_proxy_running", return_value=False):
-            result = _check_docker()
+            result = _check_proxy_process()
 
         assert result.status == "fail"
         assert result.name == "Proxy running"

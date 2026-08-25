@@ -7,8 +7,9 @@ to inspect those HTTP apps from the host browser without weakening SafeYolo's
 main guarantee: agents operate naturally inside the sandbox, but any bridge to
 other systems is explicit, scoped, attributable, and auditable.
 
-This is not Docker-style port publishing. A service listening inside an agent
-must not become reachable from the host merely because it bound a port.
+A service listening inside an agent must not become reachable from the host
+merely because it bound a port — every route is opened by an explicit,
+audited operator action.
 
 ## Goals
 

@@ -1,10 +1,11 @@
 """Live-agent lifecycle test — verify egress survives proxy restart.
 
-In the Docker era, the agent_token file was bind-mounted into the
-container, so the proxy could regenerate it on restart and the
-container immediately saw the new value. The microVM migration
-replaced the bind mount with a copy (shutil.copy2 at staging time +
-cp in guest-init), breaking the live-update path.
+The agent_token is copied into the guest at staging time and again by
+guest-init on boot; there is no live-update channel back to the sandbox
+after the proxy regenerates the token or the UDS inode. The token- and
+socket-refresh path has to be reproduced correctly on every proxy
+restart, and any regression only shows up when a running sandbox tries
+to use the agent API after the restart.
 
 This test exercises the full lifecycle:
 1. Start proxy (token generated)
@@ -12,7 +13,7 @@ This test exercises the full lifecycle:
 3. Restart proxy (token may regenerate)
 4. Verify the recreated UDS is reachable from the SAME running sandbox
 
-This catches both stale token copies and stale bind-mounted UDS inodes.
+This catches stale token copies and stale UDS inode references.
 """
 
 import json
@@ -42,9 +43,8 @@ class TestLiveAgentLifecycle:
     sandbox still holds the old value, the agent gets 401 on every
     diagnostic call — breaking `safeyolo explain`, credential
     approval UX, and any other observability feature the agent
-    exposes to itself. In the Docker stack this worked via bind-mount;
-    the microVM migration introduced a copy step that is the common
-    regression point.
+    exposes to itself. Token- and UDS-inode refresh across a proxy
+    restart is the common regression point this test catches.
     """
 
     def _safeyolo(self, *args, **kwargs):
@@ -142,8 +142,8 @@ class TestLiveAgentLifecycle:
         assert status == 200, (
             f"Agent API returned {status} after proxy restart "
             f"(token {'changed' if token_changed else 'unchanged'}) — "
-            f"this is the Docker→microVM token lifecycle regression. "
-            f"The sandbox holds a stale copy of the agent token."
+            f"token lifecycle regression: the sandbox holds a stale "
+            f"copy of the agent token or the UDS inode was not refreshed."
         )
         assert socket_path.is_socket(), "proxy restart did not recreate the agent UDS"
         assert socket_path.parent.stat().st_ino == socket_directory_inode, (

@@ -20,10 +20,9 @@ echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # Hostname -- set to agent name so `hostname`, the shell prompt, syslog,
-# and sshd all identify the guest correctly. The Docker stack did this
-# via container-name=hostname inheritance; the VM stack has to do it
-# explicitly. Runs pre-snapshot so the hostname lands in the captured
-# memory state and restores along with everything else.
+# and sshd all identify the guest correctly. Runs pre-snapshot so the
+# hostname lands in the captured memory state and restores along with
+# everything else.
 # --------------------------------------------------------------------------
 _agent_name=""
 if [ -f /safeyolo/agent-name ]; then

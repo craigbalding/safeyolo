@@ -50,7 +50,7 @@ def tmp_config_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def mock_subprocess(monkeypatch):
-    """Mock subprocess.run for docker commands."""
+    """Mock subprocess.run for external commands."""
     mock_run = MagicMock()
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     monkeypatch.setattr("subprocess.run", mock_run)

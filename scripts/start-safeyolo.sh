@@ -447,6 +447,7 @@ fi
 # ==============================================================================
 echo ""
 echo "=== Starting in headless mode (mitmdump) ==="
-# File logging configured via file_logging.py addon's running() hook
-# exec replaces shell - Docker manages process lifecycle
+# File logging configured via file_logging.py addon's running() hook.
+# exec replaces the shell so mitmdump is the top-level process the
+# supervising `safeyolo start` command tracks.
 exec mitmdump -p ${PROXY_PORT} ${ADDON_ARGS} ${MITM_OPTS} "$@"

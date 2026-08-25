@@ -177,7 +177,7 @@ Detects and breaks proxy loops using the RFC 7230 Via header mechanism.
 - If not found: inject `1.1 safeyolo` into `Via` so looped-back requests carry it
 
 **Why this matters:**
-When a request targets an address that resolves back to SafeYolo's own listen port (e.g. `host.docker.internal:8080`), it creates an infinite request amplification loop — thousands of requests per second filling logs and consuming resources.
+When a request targets an address that resolves back to SafeYolo's own listen port (e.g. an agent that resolves the host loopback and re-enters the proxy), it creates an infinite request amplification loop — thousands of requests per second filling logs and consuming resources.
 
 **Example blocked response:**
 ```json
@@ -293,10 +293,9 @@ Maps client IPs to projects for per-project credential policy isolation.
 **Use case:** Different agents get different credential approval policies.
 
 **How it works:**
-- Reads `services.yaml` (static configuration, no Docker socket access)
+- Reads `services.yaml` (static configuration)
 - CLI manages services.yaml when adding agents (`safeyolo agent add`)
 - Pro teams provide their own services.yaml with IP ranges
-- No Docker socket mount required
 
 **Setup:** See [SERVICE_DISCOVERY.md](SERVICE_DISCOVERY.md) for configuration.
 

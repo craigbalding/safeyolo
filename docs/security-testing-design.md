@@ -4,7 +4,7 @@
 
 Security tests run against real infrastructure — real proxy, real
 sandbox, real microVM or rootless gVisor container. No mocks, no
-Docker, no shortcuts. Every test class has a structured docstring
+shortcuts. Every test class has a structured docstring
 (Title + Why) and every test function states the probe and the
 consequence if the property didn't hold; `docs/blackbox-coverage.md`
 is generated from those docstrings.
