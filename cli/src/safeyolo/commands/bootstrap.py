@@ -65,8 +65,17 @@ def _stdout_to_stderr():
 # mmdebstrap + debootstrap: fallback rootfs build path.
 # acl: setfacl on /dev/kvm for the subordinate uid (gVisor KVM platform).
 # jq: used by helper scripts and by this bootstrap for JSON emission.
+# rsync: `safeyolo build` invokes `sudo rsync -aHAX --numeric-ids --delete ...`
+#   to install the rootfs tree into ~/.safeyolo/share/ preserving ownership.
+#   Ubuntu server cloudimg ships rsync by default; Debian trixie genericcloud
+#   does not. Naming it up-front means Debian users see one apt-install line
+#   rather than a mid-build failure with sudo: rsync: command not found.
+# tmux: `safeyolo start` runs the mitmproxy master inside a private tmux
+#   session (see traffic_session.py). Ubuntu server cloudimg ships tmux by
+#   default; Debian trixie genericcloud does not. Without it `safeyolo start`
+#   fails with "SafeYolo's private tmux runtime is missing".
 LINUX_BUILD_APT_DEPS = (
-    "skopeo", "umoci", "mmdebstrap", "debootstrap", "acl", "jq",
+    "skopeo", "umoci", "mmdebstrap", "debootstrap", "acl", "jq", "rsync", "tmux",
 )
 
 
