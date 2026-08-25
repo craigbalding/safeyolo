@@ -231,9 +231,47 @@ def _ensure_umoci(pm: str | None) -> dict:
 
 def _detect_package_manager() -> str | None:
     """Return "apt" | "dnf" | "apk" | "pacman" for the current Linux host,
-    or None if none detected (unknown distro or non-Linux)."""
+    or None if none detected (unknown distro or non-Linux).
+
+    We key on ``/etc/os-release``'s ``ID`` / ``ID_LIKE`` first so we pick
+    the *native* package manager for the distro, not whichever query tool
+    happens to be on PATH. That matters after `bootstrap` installs
+    `debootstrap` on Fedora / Alpine / Arch — debootstrap pulls `dpkg`
+    (needed to bootstrap Debian rootfs), which puts `dpkg-query` on PATH
+    of a non-apt host. Without the os-release check we'd start
+    reporting `package_manager=apt` on a Fedora box that just installed
+    debootstrap, and the next bootstrap run would produce a bogus
+    ``sudo apt-get install …`` line. Falls back to tool detection when
+    os-release is missing or has no recognised ID.
+    """
     if _platform.system() != "Linux":
         return None
+
+    ids: set[str] = set()
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                key, _, value = line.strip().partition("=")
+                if key in ("ID", "ID_LIKE"):
+                    ids.update(v.strip().strip('"') for v in value.strip('"').split())
+    except OSError:
+        pass
+
+    # Debian family
+    if {"debian", "ubuntu"} & ids and shutil.which("dpkg-query"):
+        return "apt"
+    # RHEL family (fedora, rhel, centos, rocky, almalinux, ...)
+    if {"fedora", "rhel", "centos"} & ids and shutil.which("rpm"):
+        return "dnf"
+    # Alpine
+    if "alpine" in ids and shutil.which("apk"):
+        return "apk"
+    # Arch family
+    if {"arch"} & ids and shutil.which("pacman"):
+        return "pacman"
+
+    # Fallback for hosts without a recognised /etc/os-release ID: probe
+    # the query tools in the historical order.
     for tool, name in (
         ("dpkg-query", "apt"),
         ("rpm",        "dnf"),

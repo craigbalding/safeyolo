@@ -29,6 +29,14 @@ from safeyolo.commands.bootstrap import (
 )
 
 
+def _fake_os_release(tmp_path, ids: list[str], id_like: list[str] | None = None) -> None:
+    """Write a minimal /etc/os-release fixture and patch bootstrap to read it."""
+    content_lines = [f"ID={ids[0]}"]
+    if id_like:
+        content_lines.append(f"ID_LIKE=\"{' '.join(id_like)}\"")
+    (tmp_path / "os-release").write_text("\n".join(content_lines) + "\n")
+
+
 class TestDetectPackageManager:
     def test_returns_none_on_non_linux(self, monkeypatch):
         monkeypatch.setattr(
@@ -37,15 +45,19 @@ class TestDetectPackageManager:
         assert _detect_package_manager() is None
 
     @pytest.mark.parametrize(
-        "tool,expected",
+        "distro_id,tool,expected",
         [
-            ("dpkg-query", "apt"),
-            ("rpm", "dnf"),
-            ("apk", "apk"),
-            ("pacman", "pacman"),
+            ("ubuntu", "dpkg-query", "apt"),
+            ("debian", "dpkg-query", "apt"),
+            ("fedora", "rpm", "dnf"),
+            ("rhel", "rpm", "dnf"),
+            ("alpine", "apk", "apk"),
+            ("arch", "pacman", "pacman"),
         ],
     )
-    def test_dispatches_by_first_available_tool(self, monkeypatch, tool, expected):
+    def test_dispatches_by_os_release_id(self, monkeypatch, tmp_path, distro_id, tool, expected):
+        """Prefer the distro-native manager, not whatever query tool is on PATH."""
+        (tmp_path / "os-release").write_text(f'ID={distro_id}\n')
         monkeypatch.setattr(
             "safeyolo.commands.bootstrap._platform.system", lambda: "Linux"
         )
@@ -53,18 +65,49 @@ class TestDetectPackageManager:
             "safeyolo.commands.bootstrap.shutil.which",
             lambda name: f"/usr/bin/{name}" if name == tool else None,
         )
+        real_open = open
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda p, *a, **k: real_open(tmp_path / "os-release", *a, **k) if p == "/etc/os-release" else real_open(p, *a, **k),  # noqa: E501
+        )
         assert _detect_package_manager() == expected
 
-    def test_apt_wins_over_others_when_multiple_present(self, monkeypatch):
-        """apt is checked first, mirroring the historical assumption."""
+    def test_fedora_with_dpkg_query_installed_stays_dnf(self, monkeypatch, tmp_path):
+        """Regression: after `dnf install debootstrap` on Fedora, dpkg-query
+        lands on PATH as a debootstrap dep. Detection must keep returning
+        'dnf' — not silently flip to 'apt' — or bootstrap starts printing
+        `sudo apt-get install …` lines on Fedora."""
+        (tmp_path / "os-release").write_text('ID=fedora\n')
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap._platform.system", lambda: "Linux"
+        )
+        # Both dpkg-query AND rpm present. Native detection must win.
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name in ("dpkg-query", "rpm") else None,
+        )
+        real_open = open
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda p, *a, **k: real_open(tmp_path / "os-release", *a, **k) if p == "/etc/os-release" else real_open(p, *a, **k),  # noqa: E501
+        )
+        assert _detect_package_manager() == "dnf"
+
+    def test_falls_back_to_tool_probe_without_os_release(self, monkeypatch, tmp_path):
+        """No /etc/os-release → probe query tools in the historical order."""
         monkeypatch.setattr(
             "safeyolo.commands.bootstrap._platform.system", lambda: "Linux"
         )
         monkeypatch.setattr(
             "safeyolo.commands.bootstrap.shutil.which",
-            lambda name: f"/usr/bin/{name}",
+            lambda name: f"/usr/bin/{name}" if name == "rpm" else None,
         )
-        assert _detect_package_manager() == "apt"
+        real_open = open
+        monkeypatch.setattr(
+            "builtins.open",
+            lambda p, *a, **k: (_ for _ in ()).throw(OSError("no os-release")) if p == "/etc/os-release" else real_open(p, *a, **k),  # noqa: E501
+        )
+        assert _detect_package_manager() == "dnf"
 
 
 class TestInstallCommand:
