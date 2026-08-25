@@ -436,15 +436,16 @@ uv run pytest cli/tests/ -v
 
 **Test credential detection:**
 ```bash
-# Start SafeYolo
+# Start SafeYolo and add a test agent
 safeyolo start
+safeyolo agent add scratch --host-script @claude
 
-# Test with fake credential
-safeyolo test -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1/models
+# Shell into the agent and issue requests through its per-agent socket
+safeyolo agent shell scratch
+$ curl -H "Authorization: Bearer sk-test123..." https://api.openai.com/v1/models
 # Should return 403 (blocked) with X-Blocked-By header
 
-# Test without credential
-safeyolo test https://httpbin.org/get
+$ curl https://httpbin.org/get
 # Should return 200 (allowed)
 ```
 
