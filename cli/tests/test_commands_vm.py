@@ -1608,7 +1608,13 @@ class TestSetup:
     # any CI host regardless of its /etc/pf.conf state.
 
     def test_linux_runtime_installer_adds_signed_gvisor_repo(self):
-        """The apt installer uses gVisor's signed release repository."""
+        """On apt hosts, gVisor is installed via its signed release repository.
+
+        Base packages (uidmap, acl) install first via the pm dispatch;
+        then the gVisor apt repository is added and runsc is installed
+        separately. Different `apt-get install` commands by design —
+        the repo has to be set up between them.
+        """
         from safeyolo.commands.setup import _install_linux_runtime_packages
 
         calls = []
@@ -1621,6 +1627,7 @@ class TestSetup:
         with (
             patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/tool"),
             patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+            patch("safeyolo.commands.bootstrap._detect_package_manager", return_value="apt"),
         ):
             assert _install_linux_runtime_packages(
                 need_runsc=True,
@@ -1629,10 +1636,105 @@ class TestSetup:
             )
 
         commands = [command for command, _kwargs in calls]
+        # gVisor signed repository added.
         assert ["sudo", "tee", "/etc/apt/sources.list.d/gvisor.list"] in commands
-        assert [
-            "sudo", "apt-get", "install", "-y", "uidmap", "acl", "runsc",
-        ] in commands
+        # Base runtime packages installed via pm dispatch (before the repo add).
+        assert ["sudo", "apt-get", "install", "-y", "uidmap", "acl"] in commands
+        # runsc installed AFTER the gVisor repo is set up.
+        assert ["sudo", "apt-get", "install", "-y", "runsc"] in commands
+
+    def test_gvisor_tarball_verifies_sha512_and_refuses_on_mismatch(self):
+        """The tarball path must verify the published SHA-512 before
+        extracting anything to /usr/local/bin. Mismatch aborts."""
+        import hashlib
+        import io
+
+        from safeyolo.commands.setup import _install_gvisor_tarball
+
+        tarball_bytes = b"pretend-this-is-a-gvisor-tarball"
+        wrong_sha_bytes = ("0" * 128).encode()  # 128 hex chars = sha512 shape
+        right_sha_bytes = (hashlib.sha512(tarball_bytes).hexdigest() + "  gvisor.tar.bz2\n").encode()
+
+        class _Resp:
+            def __init__(self, data):
+                self._buf = io.BytesIO(data)
+            def __enter__(self):
+                return self._buf
+            def __exit__(self, *a):
+                return False
+
+        # Mismatch — must raise, must NOT call `sudo tar`.
+        def fake_urlopen_mismatch(url):
+            return _Resp(tarball_bytes if url.endswith(".bz2") else wrong_sha_bytes)
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with (
+            patch("safeyolo.commands.setup._platform.machine", return_value="x86_64"),
+            patch("safeyolo.commands.setup.urllib.request.urlopen", side_effect=fake_urlopen_mismatch),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+        ):
+            with pytest.raises(RuntimeError, match="SHA-512 mismatch"):
+                _install_gvisor_tarball()
+        assert not any("tar" in c for c in calls), "tar was invoked despite sha mismatch"
+
+        # Match — must extract via `sudo tar`.
+        calls.clear()
+        def fake_urlopen_match(url):
+            return _Resp(tarball_bytes if url.endswith(".bz2") else right_sha_bytes)
+
+        with (
+            patch("safeyolo.commands.setup._platform.machine", return_value="x86_64"),
+            patch("safeyolo.commands.setup.urllib.request.urlopen", side_effect=fake_urlopen_match),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+        ):
+            _install_gvisor_tarball()
+        assert any(c[:3] == ["sudo", "tar", "-xjf"] and c[-2:] == ["-C", "/usr/local/bin"] for c in calls)
+
+    def test_linux_runtime_installer_uses_tarball_on_non_apt(self):
+        """On dnf/apk/pacman hosts, gVisor comes from the verified tarball
+        (no apt repo). Runtime prereqs come from the native package
+        manager with the correct per-distro package names."""
+        from safeyolo.commands.setup import _install_linux_runtime_packages
+
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, stdout="")
+
+        # Patch _install_gvisor_tarball to a no-op recorder — the tarball
+        # download itself hits the network and has its own test coverage.
+        # We only assert that the tarball path is the one taken here.
+        tarball_called = []
+
+        def _fake_tarball():
+            tarball_called.append(True)
+
+        with (
+            patch("safeyolo.commands.setup.shutil.which", return_value="/usr/bin/sudo"),
+            patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
+            patch("safeyolo.commands.bootstrap._detect_package_manager", return_value="dnf"),
+            patch("safeyolo.commands.setup._install_gvisor_tarball", side_effect=_fake_tarball),
+        ):
+            assert _install_linux_runtime_packages(
+                need_runsc=True,
+                need_uidmap=True,
+                need_acl=True,
+            )
+
+        commands = [command for command, _kwargs in calls]
+        # dnf install with Fedora's package names for uidmap (shadow-utils)
+        # + acl (unchanged).
+        assert ["sudo", "dnf", "install", "-y", "shadow-utils", "acl"] in commands
+        # gVisor came from the tarball path, not from any dnf/apt call.
+        assert tarball_called == [True]
+        # No apt commands at all.
+        assert not any(c[:2] == ["sudo", "apt-get"] for c in commands)
 
     def test_guest_images_ok(self, runner, config_dir):
         """Reports OK when guest images are available."""

@@ -364,26 +364,55 @@ def _needs_build() -> bool:
 
 
 def _needs_setup() -> bool:
-    """True when AppArmor profile or /dev/kvm ACL is missing on Linux; always False on macOS.
+    """True when the Linux host needs `safeyolo setup` to run.
 
-    On a truly bare host the `acl` package (which provides `getfacl`) may not
-    be installed yet. In that case we can't inspect the /dev/kvm ACL, but we
-    definitely need setup to run (setup will install `acl` as part of its
-    Linux runtime-packages step). Return True in that case.
+    On macOS: always False (no runsc / no AppArmor).
+
+    On Linux, setup is needed when any of these hold:
+      * runsc isn't installed
+      * newuidmap / newgidmap / setfacl aren't available
+      * AppArmor is restricting unprivileged userns AND the
+        SafeYolo profile isn't loaded (distros without AppArmor —
+        Fedora, Arch, Alpine, etc. — never trigger this)
+      * KVM is present and usable by the operator but the /dev/kvm ACL
+        for the subordinate uid is missing.
+
+    Historically the AppArmor check was "does
+    /etc/apparmor.d/safeyolo-runsc exist" — always False on Fedora /
+    Arch / Alpine, wrongly forcing setup to run every time on those
+    hosts. Ask whether AppArmor actually restricts userns instead
+    (`check_userns_prerequisites` handles the introspection).
     """
     if _platform.system() != "Linux":
         return False
-    apparmor_missing = not Path("/etc/apparmor.d/safeyolo-runsc").exists()
-    kvm_acl_missing = True
-    if shutil.which("getfacl") and Path("/dev/kvm").exists():
-        r = subprocess.run(
-            ["getfacl", "-p", "/dev/kvm"], capture_output=True, text=True,
-        )
-        if r.returncode == 0 and "user:100000" in r.stdout:
-            kvm_acl_missing = False
-    # If getfacl is missing, kvm_acl_missing stays True — setup needs to run
-    # (it'll apt-install acl as part of the Linux runtime packages step).
-    return apparmor_missing or kvm_acl_missing
+
+    # Deferred import — platform.linux imports safeyolo config which
+    # imports commands, so bringing it in at module load creates a cycle
+    # on some import orderings.
+    from ..platform.linux import (
+        check_userns_prerequisites,
+        detect_runsc_platform,
+        find_runsc,
+    )
+
+    if find_runsc() is None:
+        return True
+
+    userns = check_userns_prerequisites()
+    if not (userns["newuidmap"] and userns["newgidmap"] and userns["setfacl"]):
+        return True
+    if userns["apparmor_restricts"] and not userns["apparmor_profile_loaded"]:
+        return True
+
+    kvm = detect_runsc_platform()
+    if (
+        kvm.get("kvm_exists")
+        and kvm.get("kvm_operator_access")
+        and not kvm.get("kvm_subordinate_access")
+    ):
+        return True
+
+    return False
 
 
 def _print_missing_deps_hint(missing: list[str], pm: str | None) -> None:

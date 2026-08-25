@@ -388,6 +388,107 @@ class TestEnsureUmoci:
             int(sha, 16)  # raises ValueError if non-hex
 
 
+class TestNeedsSetup:
+    """Regression: `_needs_setup()` was hard-coded to
+    `not Path('/etc/apparmor.d/safeyolo-runsc').exists()`, always True
+    on distros that don't use AppArmor at all (Fedora, Arch, Alpine).
+    That forced `safeyolo bootstrap` to think setup was required every
+    time on those hosts. Fix keys off
+    `check_userns_prerequisites()['apparmor_restricts']`."""
+
+    def _stub_userns(self, monkeypatch, **overrides):
+        base = {
+            "newuidmap": True,
+            "newgidmap": True,
+            "setfacl": True,
+            "apparmor_restricts": False,
+            "apparmor_profile_loaded": False,
+        }
+        base.update(overrides)
+        monkeypatch.setattr(
+            "safeyolo.platform.linux.check_userns_prerequisites",
+            lambda: base,
+        )
+
+    def _stub_platform(self, monkeypatch, runsc="/usr/local/bin/runsc",
+                       kvm_exists=True, kvm_operator_access=True,
+                       kvm_subordinate_access=True):
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap._platform.system", lambda: "Linux"
+        )
+        monkeypatch.setattr(
+            "safeyolo.platform.linux.find_runsc", lambda: runsc
+        )
+        monkeypatch.setattr(
+            "safeyolo.platform.linux.detect_runsc_platform",
+            lambda: {
+                "kvm_exists": kvm_exists,
+                "kvm_operator_access": kvm_operator_access,
+                "kvm_subordinate_access": kvm_subordinate_access,
+            },
+        )
+
+    def test_false_on_non_linux(self, monkeypatch):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        monkeypatch.setattr(
+            "safeyolo.commands.bootstrap._platform.system", lambda: "Darwin"
+        )
+        assert _needs_setup() is False
+
+    def test_true_when_runsc_missing(self, monkeypatch):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch, runsc=None)
+        self._stub_userns(monkeypatch)
+        assert _needs_setup() is True
+
+    def test_true_when_uidmap_missing(self, monkeypatch):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch)
+        self._stub_userns(monkeypatch, newuidmap=False)
+        assert _needs_setup() is True
+
+    def test_apparmor_check_ignores_hosts_without_apparmor(self, monkeypatch):
+        """Fedora / Arch / Alpine — no AppArmor. Must NOT report setup
+        needed just because /etc/apparmor.d/safeyolo-runsc doesn't exist."""
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch)
+        self._stub_userns(
+            monkeypatch, apparmor_restricts=False, apparmor_profile_loaded=False
+        )
+        assert _needs_setup() is False
+
+    def test_apparmor_check_fires_on_ubuntu_when_profile_missing(self, monkeypatch):
+        """Ubuntu 24.04 — AppArmor restricts userns and no SafeYolo
+        profile is loaded → setup needed."""
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch)
+        self._stub_userns(
+            monkeypatch, apparmor_restricts=True, apparmor_profile_loaded=False
+        )
+        assert _needs_setup() is True
+
+    def test_apparmor_check_passes_when_profile_loaded(self, monkeypatch):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch)
+        self._stub_userns(
+            monkeypatch, apparmor_restricts=True, apparmor_profile_loaded=True
+        )
+        assert _needs_setup() is False
+
+    def test_true_when_kvm_subordinate_acl_missing(self, monkeypatch):
+        from safeyolo.commands.bootstrap import _needs_setup
+
+        self._stub_platform(monkeypatch, kvm_subordinate_access=False)
+        self._stub_userns(monkeypatch)
+        assert _needs_setup() is True
+
+
 class TestPrependSafeyoloBinToPath:
     def test_prepends_and_is_idempotent(self, monkeypatch, tmp_config_dir):
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
