@@ -8,6 +8,7 @@ from rich.console import Console
 from . import __version__
 from .commands.admin import check, mode, policies, test
 from .commands.agent import agent_app
+from .commands.bootstrap import bootstrap
 from .commands.cert import cert_app
 from .commands.demo import demo
 from .commands.doctor import doctor
@@ -66,6 +67,7 @@ def main(
 
 
 # Register commands
+app.command()(bootstrap)
 app.command()(doctor)
 app.command()(init)
 app.command()(start)
