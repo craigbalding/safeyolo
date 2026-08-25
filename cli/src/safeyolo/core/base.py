@@ -229,6 +229,15 @@ class SecurityAddon:
         """
         self.stats.blocked += 1
         flow.metadata["blocked_by"] = self.name
+        # Surface the PDP / addon-specific deny reason to downstream readers
+        # (request_logger, traffic view, `safeyolo logs`) via the same
+        # metadata channel as `blocked_by`, so operators don't have to
+        # correlate the security event by request_id (issue #337). Every
+        # existing block() caller passes the reason in `body["reason"]` —
+        # promote it here rather than change every caller.
+        reason = body.get("reason") if isinstance(body, dict) else None
+        if reason:
+            flow.metadata["block_reason"] = reason
         flow.response = make_block_response(
             status,
             body,
