@@ -19,7 +19,9 @@ Design rules:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import platform as _platform
 import shutil
 import subprocess
@@ -34,6 +36,28 @@ from ..config import get_config_dir
 from ..vm import check_guest_images
 
 console = Console()
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr():
+    """Redirect fd 1 to fd 2 for the duration of the block.
+
+    Used by --json mode so that inner sub-commands (init/build/setup) which
+    write to stdout via their own rich Consoles don't leak human text into
+    the JSON output stream. Operates at the file-descriptor level so it
+    catches subprocess output and rich Consoles whose file handle was
+    captured at import time.
+    """
+    stdout_fd = 1
+    saved = os.dup(stdout_fd)
+    try:
+        os.dup2(2, stdout_fd)
+        yield
+    finally:
+        # Ensure Python's buffered writes to stdout land in stderr, then restore.
+        sys.stdout.flush()
+        os.dup2(saved, stdout_fd)
+        os.close(saved)
 
 
 # Ubuntu / Debian package names required by `safeyolo build` on Linux.
@@ -75,18 +99,25 @@ def _needs_build() -> bool:
 
 
 def _needs_setup() -> bool:
-    """True when AppArmor profile or /dev/kvm ACL is missing on Linux; always False on macOS."""
+    """True when AppArmor profile or /dev/kvm ACL is missing on Linux; always False on macOS.
+
+    On a truly bare host the `acl` package (which provides `getfacl`) may not
+    be installed yet. In that case we can't inspect the /dev/kvm ACL, but we
+    definitely need setup to run (setup will install `acl` as part of its
+    Linux runtime-packages step). Return True in that case.
+    """
     if _platform.system() != "Linux":
         return False
-    # Cheap probes; safeyolo setup is idempotent so a false negative just runs a no-op.
     apparmor_missing = not Path("/etc/apparmor.d/safeyolo-runsc").exists()
     kvm_acl_missing = True
-    if Path("/dev/kvm").exists():
+    if shutil.which("getfacl") and Path("/dev/kvm").exists():
         r = subprocess.run(
             ["getfacl", "-p", "/dev/kvm"], capture_output=True, text=True,
         )
         if r.returncode == 0 and "user:100000" in r.stdout:
             kvm_acl_missing = False
+    # If getfacl is missing, kvm_acl_missing stays True — setup needs to run
+    # (it'll apt-install acl as part of the Linux runtime packages step).
     return apparmor_missing or kvm_acl_missing
 
 
@@ -144,7 +175,7 @@ def bootstrap(  # DOC: README.md
         if json_out:
             _emit_json(result)
         else:
-            console.print(f"[bold]bootstrap plan:[/bold]")
+            console.print("[bold]bootstrap plan:[/bold]")
             console.print(f"  would run:    {result['would_run'] or '(none — already bootstrapped)'}")
             console.print(f"  already done: {result['already_done']}")
             if missing_deps:
@@ -173,56 +204,62 @@ def bootstrap(  # DOC: README.md
     steps_skipped: list[str] = []
     step_errors: dict[str, str] = {}
 
-    # init
-    if plan["init"]:
-        if not json_out:
-            console.print("[bold]▶ safeyolo init[/bold]")
-        from .init import init as _init
-        try:
-            _init(force=False, interactive=False)
-            steps_run.append("init")
-        except SystemExit as e:
-            if e.code not in (0, None):
-                step_errors["init"] = f"exit={e.code}"
+    # When --json, redirect subcommand stdout to stderr for the whole run so
+    # human-facing rich output (from init/build/setup) doesn't corrupt the
+    # single JSON line stdout will carry at the end.
+    redirect_ctx = _stdout_to_stderr() if json_out else contextlib.nullcontext()
+
+    with redirect_ctx:
+        # init
+        if plan["init"]:
+            if not json_out:
+                console.print("[bold]▶ safeyolo init[/bold]")
+            from .init import init as _init
+            try:
+                _init(force=False, interactive=False)
                 steps_run.append("init")
-    else:
-        steps_skipped.append("init")
-        if not json_out:
-            console.print("  [dim]init: already done[/dim]")
+            except SystemExit as e:
+                if e.code not in (0, None):
+                    step_errors["init"] = f"exit={e.code}"
+                    steps_run.append("init")
+        else:
+            steps_skipped.append("init")
+            if not json_out:
+                console.print("  [dim]init: already done[/dim]")
 
-    # build
-    if plan["build"]:
-        if not json_out:
-            console.print("[bold]▶ safeyolo build[/bold]  (may take several minutes on first run)")
-        from .lifecycle import build as _build
-        try:
-            _build()
-            steps_run.append("build")
-        except SystemExit as e:
-            if e.code not in (0, None):
-                step_errors["build"] = f"exit={e.code}"
+        # build
+        if plan["build"]:
+            if not json_out:
+                console.print("[bold]▶ safeyolo build[/bold]  (may take several minutes on first run)")
+            from .lifecycle import build as _build
+            try:
+                _build()
                 steps_run.append("build")
-    else:
-        steps_skipped.append("build")
-        if not json_out:
-            console.print("  [dim]build: already done[/dim]")
+            except SystemExit as e:
+                if e.code not in (0, None):
+                    step_errors["build"] = f"exit={e.code}"
+                    steps_run.append("build")
+        else:
+            steps_skipped.append("build")
+            if not json_out:
+                console.print("  [dim]build: already done[/dim]")
 
-    # setup (Linux only; on macOS _needs_setup always returns False so plan['setup'] is False)
-    if plan["setup"]:
-        if not json_out:
-            console.print("[bold]▶ safeyolo setup[/bold]  (may prompt for sudo)")
-        from .setup import setup as _setup
-        try:
-            _setup()
-            steps_run.append("setup")
-        except SystemExit as e:
-            if e.code not in (0, None):
-                step_errors["setup"] = f"exit={e.code}"
+        # setup (Linux only; on macOS _needs_setup always returns False so plan['setup'] is False)
+        if plan["setup"]:
+            if not json_out:
+                console.print("[bold]▶ safeyolo setup[/bold]  (may prompt for sudo)")
+            from .setup import setup as _setup
+            try:
+                _setup()
                 steps_run.append("setup")
-    else:
-        steps_skipped.append("setup")
-        if not json_out:
-            console.print("  [dim]setup: already done[/dim]")
+            except SystemExit as e:
+                if e.code not in (0, None):
+                    step_errors["setup"] = f"exit={e.code}"
+                    steps_run.append("setup")
+        else:
+            steps_skipped.append("setup")
+            if not json_out:
+                console.print("  [dim]setup: already done[/dim]")
 
     duration_ms = int((time.monotonic() - t0) * 1000)
     status = "ok" if not step_errors else "partial"
