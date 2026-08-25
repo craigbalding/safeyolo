@@ -514,7 +514,7 @@ def _build_command(
 
     # test-context: defaults to BLOCK (428 soft-reject for missing context).
     # In test mode (blackbox harness), disable blocking so host-side proxy
-    # tests that don't include X-Test-Context aren't 428'd. The isolation
+    # tests that don't include X-SafeYolo-Test-Context aren't 428'd. The isolation
     # tests explicitly include the header on probes they want recorded.
     if test_config:
         tc_block = False

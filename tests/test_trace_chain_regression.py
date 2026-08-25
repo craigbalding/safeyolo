@@ -358,7 +358,7 @@ class TestTracedVsUntracedParity:
             "gateway_agent",
             "gateway_account",
             "gateway_injected_header",
-            "ccapt_context",
+            "test_context",
             "test_agent_match",
             "test_context_source",
         )

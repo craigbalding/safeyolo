@@ -130,7 +130,7 @@ fi
 # Layer 2: Security Inspection (credential and content scanning)
 #  11. credential_guard - API key protection and routing
 #  12. pattern_scanner  - Fast regex for secrets/jailbreaks
-#  13. test_context     - X-Test-Context header enforcement for target hosts
+#  13. test_context     - X-SafeYolo-Test-Context header enforcement for target hosts
 #
 # Layer 3: Observability (observe but don't block)
 #  14. request_logger - JSONL structured logging

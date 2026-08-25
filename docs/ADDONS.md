@@ -59,7 +59,7 @@ Addons are loaded in this order (order matters for security):
 | 2 | credential_guard | Block credentials to wrong hosts | **Block** |
 | 2 | pattern_scanner | Regex scanning for secrets | Warn |
 | 2 | service_gateway | Credential injection for agent→service routing | Always on |
-| 2 | test_context | Require X-Test-Context header on target hosts | **Block** |
+| 2 | test_context | Require X-SafeYolo-Test-Context header on target hosts | **Block** |
 | 3 | request_logger | JSONL audit logging | Always on |
 | 3 | metrics | Per-domain statistics | Always on |
 | 3 | admin_api | REST API on :9090 | Always on |
@@ -662,7 +662,7 @@ Fast regex scanning for secrets and suspicious patterns.
 
 ## test_context.py
 
-Links HTTP traffic to test activities via `X-Test-Context` header on operator-declared target hosts.
+Links HTTP traffic to test activities via `X-SafeYolo-Test-Context` header on operator-declared target hosts.
 
 **Default: Block mode** (428 soft-reject)
 
@@ -670,7 +670,7 @@ Links HTTP traffic to test activities via `X-Test-Context` header on operator-de
 
 **How it works:**
 1. Requests without the header to non-target hosts pass through untouched
-2. Requests to target hosts must include `X-Test-Context` header
+2. Requests to target hosts must include `X-SafeYolo-Test-Context` header
 3. Missing or malformed header → 428 response with instructions
 4. A valid header on any host opts the request into test provenance and FlowStore recording
 5. Valid headers are parsed, stored in metadata, and stripped before upstream
@@ -698,7 +698,7 @@ safeyolo test-context \
 ```
 
 The default output is the canonical value. `--header` emits the complete
-`X-Test-Context: ...` line for `curl -H`, and `--write FILE` atomically
+`X-SafeYolo-Test-Context: ...` line for `curl -H`, and `--write FILE` atomically
 replaces a watched context file while still printing the value. Repeat
 `--field key=value` for additional parser-supported fields. Invalid values
 are rejected, not rewritten or slugged, and duplicate helper fields fail.
@@ -719,7 +719,7 @@ addons:
 
 ### Declared context (mobile / header-less traffic)
 
-Native mobile apps under test cannot attach `X-Test-Context` to their own
+Native mobile apps under test cannot attach `X-SafeYolo-Test-Context` to their own
 requests, so on a target host they are `428`'d (block mode) or
 forwarded-but-unrecorded (warn mode). When enabled, the operating agent can
 **declare** its current test context out-of-band via the Agent API; a
@@ -757,7 +757,7 @@ curl http://_safeyolo.proxy.internal/api/test-context/current -H "Authorization:
 curl -X DELETE http://_safeyolo.proxy.internal/api/test-context/current -H "Authorization: Bearer <token>"  # clear
 ```
 
-`context` is the canonical `X-Test-Context` string (same parser as the header);
+`context` is the canonical `X-SafeYolo-Test-Context` string (same parser as the header);
 `ttl` is optional and bounded by the policy maximum. POST/DELETE emit
 `security.test_context_declared` / `security.test_context_cleared` audit events.
 
@@ -784,9 +784,9 @@ declared context) and `declared_active` (unexpired declarations held).
   "error": "Test context required",
   "type": "missing_context",
   "destination": "target.example.com",
-  "header": "X-Test-Context",
+  "header": "X-SafeYolo-Test-Context",
   "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
-  "example": "X-Test-Context: run=sec1;agent=logic;test=PAY-003"
+  "example": "X-SafeYolo-Test-Context: run=sec1;agent=logic;test=PAY-003"
 }
 ```
 

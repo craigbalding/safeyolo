@@ -5,8 +5,9 @@ Mitmproxy addon that captures completed/blocked/errored HTTP flows and
 writes them to the FlowStore. Runs as Layer 3 (Observability), after
 all security addons.
 
-Scope gate: Only records flows that have flow.metadata["ccapt_context"]
-(set by test_context.py for any valid X-Test-Context header).
+Scope gate: Only records flows that have flow.metadata["test_context"]
+(set by test_context.py for any valid X-SafeYolo-Test-Context header, or
+an inherited declaration for header-less mobile traffic).
 
 Does NOT extend SecurityAddon — this is observability, not a security gate.
 
@@ -85,27 +86,29 @@ class FlowRecorder:
         log.info(f"Flow recorder active, db={db_path}")
 
     def _should_record(self, flow: http.HTTPFlow) -> bool:
-        """Check scope gate: only record flows with ccapt_context."""
+        """Check scope gate: only record flows with test_context."""
         if not ctx.options.flow_store_enabled:
             return False
         if self.store is None:
             return False
         # Skip doctor pipeline-probe flows (issue #213 B4). Doctor sends a
-        # valid X-Test-Context so test_context runs its normal parse/apply
-        # path — that would satisfy the ccapt_context gate below and pull
-        # every doctor run into FlowStore as evidence. The early marker
-        # (set by probe_sink's requestheaders BEFORE test_context runs)
-        # short-circuits before ccapt_context is even considered, so
-        # suppression works whether the flow eventually reaches the sink
-        # or gets synthetically blocked by a pathological pre-sink addon.
-        # Strict `is True` (not truthiness) — the contract is a boolean
-        # marker set by probe_sink; an accidental truthy value in a
-        # collision-adjacent metadata key must not silently suppress
-        # non-probe flows (issue #213 review, second-pass cleanup).
+        # valid X-SafeYolo-Test-Context so test_context runs its normal
+        # parse/apply path — that would satisfy the test_context gate
+        # below and pull every doctor run into FlowStore as evidence. The
+        # early marker (set by probe_sink's requestheaders BEFORE
+        # test_context runs) short-circuits before test_context is even
+        # considered, so suppression works whether the flow eventually
+        # reaches the sink or gets synthetically blocked by a
+        # pathological pre-sink addon. Strict `is True` (not truthiness)
+        # — the contract is a boolean marker set by probe_sink; an
+        # accidental truthy value in a collision-adjacent metadata key
+        # must not silently suppress non-probe flows (issue #213 review,
+        # second-pass cleanup).
         if flow.metadata.get("safeyolo_probe") is True:
             return False
-        # Must have test context (set by test_context.py for valid headers)
-        if "ccapt_context" not in flow.metadata:
+        # Must have test context (set by test_context.py for valid headers
+        # or an inherited declaration; see #282).
+        if "test_context" not in flow.metadata:
             return False
         # Skip agent API internal traffic
         if flow.request.host == AGENT_API_HOST:
@@ -117,7 +120,7 @@ class FlowRecorder:
         from safeyolo.core.utils import get_client_ip
         from safeyolo.storage.flow_store import headers_to_json
 
-        context = flow.metadata.get("ccapt_context", {})
+        context = flow.metadata.get("test_context", {})
         start_time = flow.metadata.get("start_time")
         ts_start = int(start_time * 1000) if start_time else int(time.time() * 1000)
         ts_end = int(time.time() * 1000)

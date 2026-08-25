@@ -13,7 +13,7 @@ def make_flow(identifier: str = "source") -> http.HTTPFlow:
     item.id = identifier
     item.request = http.Request.make("GET", "https://example.com/path")
     item.response = http.Response.make(200, b"original")
-    item.metadata.update(request_id="req-original", agent="cody", ccapt_context={"run": "r1"})
+    item.metadata.update(request_id="req-original", agent="cody", test_context={"run": "r1"})
     return item
 
 

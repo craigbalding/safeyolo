@@ -172,7 +172,7 @@ nodes:
 
   - id: ev.check_context_header_and_targets
     kind: evidence
-    label: "Confirm request carried X-Test-Context AND policy test_context.target_hosts non-empty"
+    label: "Confirm request carried X-SafeYolo-Test-Context AND policy test_context.target_hosts non-empty"
     source: authored
 
   - id: ev.check_goaway_debug_string

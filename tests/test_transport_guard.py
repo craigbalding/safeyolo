@@ -420,8 +420,8 @@ class TestRequestHookFailsafe:
         normally set by `probe_sink.requestheaders`, but the very
         failure this failsafe exists to handle includes probe_sink
         being absent entirely. Without setting the marker here, doctor's
-        diagnostic 502 (with a valid X-Test-Context) would satisfy
-        FlowStore's ccapt_context gate and end up recorded.
+        diagnostic 502 (with a valid X-SafeYolo-Test-Context) would satisfy
+        FlowStore's test_context gate and end up recorded.
 
         Explicit follow-through: the same helper `flow_recorder._should_record()`
         is exercised in the FlowStore-suppression regression test.
@@ -435,22 +435,22 @@ class TestRequestHookFailsafe:
         flow.metadata["trace"] = True
         flow.metadata["agent"] = "test-agent"
         # Simulate real missing-sink state: NO safeyolo_probe marker
-        # (probe_sink.requestheaders never ran) but ccapt_context set
-        # by test_context because doctor sent a valid X-Test-Context.
-        flow.metadata["ccapt_context"] = {"run": "doctor", "agent": "x", "test": "y"}
+        # (probe_sink.requestheaders never ran) but test_context set
+        # by test_context because doctor sent a valid X-SafeYolo-Test-Context.
+        flow.metadata["test_context"] = {"run": "doctor", "agent": "x", "test": "y"}
         assert "safeyolo_probe" not in flow.metadata
 
         with patch("transport_guard.write_event"):
             addon.request(flow)
 
         # Marker set — flow_recorder's _should_record will now short-
-        # circuit before the ccapt_context gate.
+        # circuit before the test_context gate.
         assert flow.metadata.get("safeyolo_probe") is True
 
     def test_flowstore_regression_end_to_end_on_missing_sink(self, tmp_path):
         """End-to-end proof of the B4 invariant on the missing-sink path.
         Drives the exact scenario the reviewer flagged:
-          - doctor sends X-Test-Context → test_context sets ccapt_context
+          - doctor sends X-SafeYolo-Test-Context → test_context sets test_context
           - probe_sink is absent (no marker on requestheaders)
           - transport_guard.request synthesises 502 AND sets marker
           - flow_recorder.response sees the flow → skips (marker present)
@@ -467,8 +467,8 @@ class TestRequestHookFailsafe:
         flow.metadata["trace"] = True
         flow.metadata["agent"] = "test-agent"
         flow.metadata["start_time"] = 0
-        # Simulate test_context having accepted a valid X-Test-Context.
-        flow.metadata["ccapt_context"] = {"run": "doctor", "agent": "x", "test": "y"}
+        # Simulate test_context having accepted a valid X-SafeYolo-Test-Context.
+        flow.metadata["test_context"] = {"run": "doctor", "agent": "x", "test": "y"}
 
         with patch("transport_guard.write_event"):
             addon.request(flow)

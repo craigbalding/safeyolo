@@ -1,18 +1,20 @@
 """
 test_context.py - Link HTTP traffic to test activities
 
-Requires operator-declared test target hosts to include an X-Test-Context
-header. Valid headers on any host opt that request into test provenance and
-FlowStore recording, even when the host is not an enforcement target.
+Requires operator-declared test target hosts to include an
+X-SafeYolo-Test-Context header. Valid headers on any host opt that request
+into test provenance and FlowStore recording, even when the host is not an
+enforcement target.
 
 Requests without the header to non-target hosts pass through untouched.
 
 Declared context (mobile / header-less traffic):
-- Native apps cannot attach X-Test-Context. When enabled, the operating agent
-  can declare its current test context out-of-band via the Agent API. A
-  target-host request that arrives WITHOUT a usable header then inherits the
-  caller's active declaration (bound to (source_id, trusted_agent), monotonic
-  TTL) and is recorded exactly as a valid-header flow would be.
+- Native apps cannot attach X-SafeYolo-Test-Context. When enabled, the
+  operating agent can declare its current test context out-of-band via the
+  Agent API. A target-host request that arrives WITHOUT a usable header then
+  inherits the caller's active declaration (bound to (source_id,
+  trusted_agent), monotonic TTL) and is recorded exactly as a valid-header
+  flow would be.
 - A valid explicit header always wins. The declaration fallback is never used
   for a non-empty malformed header. When neither a usable header nor an
   applicable declaration is present, ordinary block/warn policy applies (428 in
@@ -47,8 +49,8 @@ from safeyolo.core.utils import (
     write_event,
 )
 from safeyolo.test_context_contract import (
-    CONTEXT_HEADER,
     MAX_CONTEXT_PAIRS,
+    TEST_CONTEXT_HEADER,
     TestContextError,
     parse_test_context,
 )
@@ -67,7 +69,7 @@ OUTCOME_ALLOWED = "allowed"
 OUTCOME_NOT_TARGET_HOST = "not_target_host"
 # Response-hook outcomes.
 OUTCOME_RESPONSE_RECORDED = "response_recorded"     # captured response event for a tracked flow
-OUTCOME_NOT_APPLICABLE = "not_applicable"           # response hook ran; no ccapt_context on flow
+OUTCOME_NOT_APPLICABLE = "not_applicable"           # response hook ran; no test_context on flow
 
 _MAX_CONTEXT_PAIRS = MAX_CONTEXT_PAIRS
 
@@ -143,7 +145,7 @@ def _promote_live_metadata(flow: http.HTTPFlow, context: dict[str, str]) -> bool
 
 
 class TestContext(SecurityAddon):
-    """Link test HTTP traffic to test activities via X-Test-Context header."""
+    """Link test HTTP traffic to test activities via X-SafeYolo-Test-Context header."""
 
     name = "test-context"
     trace_expected = True
@@ -382,17 +384,21 @@ class TestContext(SecurityAddon):
     ) -> bool | None:
         """Apply a validated context (explicit or declared) to a flow.
 
-        Sets ccapt_context (the flow_recorder recording gate), promotes live
-        metadata, and emits the request security.test_context audit event with
-        honest provenance. `source` is one of "header" | "declared".
+        Sets flow.metadata["test_context"] (the flow_recorder recording gate),
+        promotes live metadata, and emits the request security.test_context
+        audit event with honest provenance. `source` is one of
+        "header" | "declared".
+
+        Response duration is calculated from flow.metadata["start_time"]
+        (stamped by the request_id addon before test_context runs), so this
+        method does not store a separate request-time key.
         """
-        flow.metadata["ccapt_context"] = dict(context)
+        flow.metadata["test_context"] = dict(context)
         # Internal correlation only — NOT a FlowStore field. response() reads it
         # back to stamp the same provenance on the response audit event.
         flow.metadata["test_context_source"] = source
 
         test_agent_match = _promote_live_metadata(flow, context)
-        flow.metadata["ccapt_request_time"] = time.time()
 
         request_body = _capture_body(flow.request.content or b"")
 
@@ -446,10 +452,10 @@ class TestContext(SecurityAddon):
                 "type": reason,
                 "destination": flow.request.host,
                 "action": "add_header",
-                "header": CONTEXT_HEADER,
+                "header": TEST_CONTEXT_HEADER,
                 "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
-                "example": f"{CONTEXT_HEADER}: run=sec1;agent=idor;test=IDOR-003",
-                "reflection": f"Add {CONTEXT_HEADER} header to link this request to your test activity.",
+                "example": f"{TEST_CONTEXT_HEADER}: run=sec1;agent=idor;test=IDOR-003",
+                "reflection": f"Add {TEST_CONTEXT_HEADER} header to link this request to your test activity.",
             }
             self.block(flow, 428, body)
         else:
@@ -479,13 +485,13 @@ class TestContext(SecurityAddon):
         self._maybe_reload_config()
 
         is_target = self._is_target_host(flow.request.host)
-        header_present = CONTEXT_HEADER in flow.request.headers
-        header_value = flow.request.headers.get(CONTEXT_HEADER, "")
+        header_present = TEST_CONTEXT_HEADER in flow.request.headers
+        header_value = flow.request.headers.get(TEST_CONTEXT_HEADER, "")
 
         # An explicitly empty reserved header is semantically "missing", but the
         # reserved header must never leak upstream — strip it now.
         if header_present and not header_value:
-            del flow.request.headers[CONTEXT_HEADER]
+            del flow.request.headers[TEST_CONTEXT_HEADER]
 
         # Optional provenance is inert unless the caller supplies a usable header.
         if not is_target and not header_value:
@@ -506,8 +512,8 @@ class TestContext(SecurityAddon):
                 # reserved header must not leak upstream, but an invalid optional
                 # annotation must not turn an ordinary host into an enforcement
                 # target.
-                if CONTEXT_HEADER in flow.request.headers:
-                    del flow.request.headers[CONTEXT_HEADER]
+                if TEST_CONTEXT_HEADER in flow.request.headers:
+                    del flow.request.headers[TEST_CONTEXT_HEADER]
                 self.log_decision(
                     flow,
                     Decision.WARN,
@@ -530,8 +536,8 @@ class TestContext(SecurityAddon):
                 # must not be masked); ordinary block/warn policy applies below.
                 # Strip the reserved header before block/warn so it never leaks
                 # upstream (fixes a warn-mode leak in the previous behavior).
-                if CONTEXT_HEADER in flow.request.headers:
-                    del flow.request.headers[CONTEXT_HEADER]
+                if TEST_CONTEXT_HEADER in flow.request.headers:
+                    del flow.request.headers[TEST_CONTEXT_HEADER]
                 self._reject_missing_or_malformed(flow, "malformed_context")
                 return
 
@@ -551,19 +557,21 @@ class TestContext(SecurityAddon):
             return
 
         # Valid context - strip before sending upstream, then apply + record.
-        del flow.request.headers[CONTEXT_HEADER]
+        del flow.request.headers[TEST_CONTEXT_HEADER]
         self._apply_context(flow, context, source="header")
 
     @trace_addon_hook("response")
     def response(self, flow: http.HTTPFlow):
         """Log response for requests that had valid context."""
-        context = flow.metadata.get("ccapt_context")
+        context = flow.metadata.get("test_context")
         if context is None:
             self._trace_evaluated(flow, outcome=OUTCOME_NOT_APPLICABLE, hook="response")
             return
 
-        request_time = flow.metadata.get("ccapt_request_time", 0)
-        duration_ms = int((time.time() - request_time) * 1000) if request_time else 0
+        # Response duration comes from the request_id addon's start_time stamp
+        # (set before test_context runs). No separate request-time key needed.
+        start_time = flow.metadata.get("start_time", 0)
+        duration_ms = int((time.time() - start_time) * 1000) if start_time else 0
 
         response_body = _capture_body(flow.response.content or b"") if flow.response else ""
 

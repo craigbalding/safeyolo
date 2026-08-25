@@ -236,7 +236,7 @@ Addons process requests in order (defined in `scripts/start-safeyolo.sh`):
 **Layer 2 - Security Inspection:**
 11. `credential_guard` - Credential routing validation
 12. `pattern_scanner` - Content pattern detection
-13. `test_context` - X-Test-Context header enforcement for target hosts
+13. `test_context` - X-SafeYolo-Test-Context header enforcement for target hosts
 
 **Layer 3 - Observability:**
 14. `request_logger` - JSONL audit logging
@@ -378,7 +378,7 @@ safeyolo/
 │   ├── circuit_breaker.py   # Upstream failure protection
 │   ├── credential_guard.py  # Credential routing protection
 │   ├── pattern_scanner.py   # Content pattern detection
-│   ├── test_context.py      # X-Test-Context header enforcement
+│   ├── test_context.py      # X-SafeYolo-Test-Context header enforcement
 │   ├── request_logger.py    # JSONL audit logging
 │   ├── metrics.py           # Per-domain statistics
 │   ├── admin_api.py         # REST control plane

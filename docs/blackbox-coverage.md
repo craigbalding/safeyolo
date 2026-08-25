@@ -666,7 +666,7 @@ traffic goes; confirming that guarantees no Host-based
 domain-fronting evasion.
 - **`test_proxy_reachable`** — HTTP via the proxy to an allowlisted host succeeds (200).
   - *Probe:* curl through HTTP_PROXY to an allowlisted host with
-an X-Test-Context header; assert 200.
+an X-SafeYolo-Test-Context header; assert 200.
   - *Consequence if unasserted:* Positive control for the entire isolation suite. If
 this fails, the agent has no connectivity at all — all
 other "reachability blocked" assertions become meaningless

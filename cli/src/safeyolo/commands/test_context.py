@@ -1,4 +1,4 @@
-"""Build canonical ``X-Test-Context`` values for test harnesses."""
+"""Build canonical ``X-SafeYolo-Test-Context`` values for test harnesses."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def test_context(
         help="Atomically replace a watched context file",
     ),
 ) -> None:
-    """Build a deterministic X-Test-Context value."""
+    """Build a deterministic X-SafeYolo-Test-Context value."""
     canonical = {
         "run": run,
         "agent": agent,

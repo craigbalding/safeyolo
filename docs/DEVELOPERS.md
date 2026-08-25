@@ -73,7 +73,7 @@ safeyolo/
 │   ├── sensor_utils.py       # HttpEvent builders for sensors
 │   ├── service_discovery.py  # Client IP to project mapping
 │   ├── sse_streaming.py      # Server-sent events handling
-│   ├── test_context.py       # X-Test-Context header enforcement
+│   ├── test_context.py       # X-SafeYolo-Test-Context header enforcement
 │   └── utils.py              # Shared utilities (logging, blocking)
 ├── pdp/                      # Policy Decision Point (library + service)
 │   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums

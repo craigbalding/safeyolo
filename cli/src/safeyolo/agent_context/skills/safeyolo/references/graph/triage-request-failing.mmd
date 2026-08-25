@@ -26,7 +26,7 @@ flowchart TD
     ev.check_trace_request_id["GET /trace?request_id=req-... — per-addon state+outcome+reason for the request pipeline"]
     ev.check_budgets["GET /budgets — remaining for the target host"]
     ev.check_circuits["GET /circuits — state for the target host"]
-    ev.check_context_header_and_targets["Confirm request carried X-Test-Context AND policy test_context.target_hosts non-empty"]
+    ev.check_context_header_and_targets["Confirm request carried X-SafeYolo-Test-Context AND policy test_context.target_hosts non-empty"]
     ev.check_goaway_debug_string["Read the GOAWAY debug field for the specific reason (header name, value pattern, forbidden chars)"]
     ev.check_client_version_string["Verify the client sends a valid version string (e.g. 'gh --version', 'curl --version') — an empty version can produce a trailing space in a User-Agent template like 'GitHub CLI '"]
     ev.reproduce_with_curl_same_ua["Reproduce with curl from the same sandbox, sending the same User-Agent value verbatim: 'curl -v -H 'User-Agent: <exact value>' https://HOST/PATH'"]

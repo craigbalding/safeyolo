@@ -92,7 +92,7 @@ def _make_test_flow(
     flow.metadata["agent"] = agent
 
     if with_context:
-        flow.metadata["ccapt_context"] = {
+        flow.metadata["test_context"] = {
             "run": "sec1",
             "agent": "idor",
             "test": "IDOR-003",
@@ -102,8 +102,8 @@ def _make_test_flow(
 
 
 class TestScopeGate:
-    def test_flow_without_ccapt_context_is_skipped(self, recorder):
-        """Flows without ccapt_context metadata are not recorded."""
+    def test_flow_without_test_context_is_skipped(self, recorder):
+        """Flows without test_context metadata are not recorded."""
         flow = _make_test_flow(with_context=False)
         recorder.response(flow)
         assert recorder._stats["skipped"] == 1
@@ -127,12 +127,12 @@ class TestScopeGate:
             disabled.response(flow)
             assert disabled._stats["skipped"] == 1
 
-    def test_probe_flow_suppressed_even_with_ccapt_context(self, recorder):
-        """Doctor sends a valid X-Test-Context (issue #213 B4) so
+    def test_probe_flow_suppressed_even_with_test_context(self, recorder):
+        """Doctor sends a valid X-SafeYolo-Test-Context (issue #213 B4) so
         test-context runs its normal parse/apply path — which would set
-        ccapt_context and pull every doctor run into FlowStore as
+        test_context and pull every doctor run into FlowStore as
         evidence. The safeyolo_probe marker (set early by probe_sink)
-        short-circuits before ccapt_context matters. Verifies the
+        short-circuits before test_context matters. Verifies the
         successful-sink case: probe reached the sink normally and its
         flow must not be recorded.
         """
@@ -232,7 +232,7 @@ class TestResponseRecording:
 
     def test_context_fields_extracted(self, recorder):
         flow = _make_test_flow()
-        flow.metadata["ccapt_context"] = {
+        flow.metadata["test_context"] = {
             "run": "recon1",
             "agent": "scanner",
             "test": "SQLI-001",
@@ -259,7 +259,7 @@ class TestResponseRecording:
             "expect": "blocked",
             "extra": "retained",
         }
-        flow.metadata["ccapt_context"] = context
+        flow.metadata["test_context"] = context
 
         recorder.response(flow)
 

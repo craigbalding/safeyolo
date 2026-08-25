@@ -344,7 +344,7 @@ class AgentAPI:
         )
 
     def _test_context_post(self, flow, tc, agent, source_id):
-        """Set the caller's declared context from a canonical X-Test-Context string."""
+        """Set the caller's declared context from a canonical X-SafeYolo-Test-Context string."""
         body = self._read_json_body(flow)
         if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
