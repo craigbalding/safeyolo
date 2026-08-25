@@ -60,40 +60,118 @@ def _stdout_to_stderr():
         os.close(saved)
 
 
-# Ubuntu / Debian package names required by `safeyolo build` on Linux.
-# skopeo + umoci: pull + unpack the debian OCI image used for the guest rootfs.
-# mmdebstrap + debootstrap: fallback rootfs build path.
-# acl: setfacl on /dev/kvm for the subordinate uid (gVisor KVM platform).
-# jq: used by helper scripts and by this bootstrap for JSON emission.
-# rsync: `safeyolo build` invokes `sudo rsync -aHAX --numeric-ids --delete ...`
-#   to install the rootfs tree into ~/.safeyolo/share/ preserving ownership.
-#   Ubuntu server cloudimg ships rsync by default; Debian trixie genericcloud
-#   does not. Naming it up-front means Debian users see one apt-install line
-#   rather than a mid-build failure with sudo: rsync: command not found.
-# tmux: `safeyolo start` runs the mitmproxy master inside a private tmux
-#   session (see traffic_session.py). Ubuntu server cloudimg ships tmux by
-#   default; Debian trixie genericcloud does not. Without it `safeyolo start`
-#   fails with "SafeYolo's private tmux runtime is missing".
+# Guest-build prerequisites, per Linux package manager (#353).
+#
+# apt (Ubuntu / Debian):
+#   skopeo + umoci: pull + unpack the debian OCI image used for the guest rootfs.
+#   mmdebstrap + debootstrap: fallback rootfs build path.
+#   acl: setfacl on /dev/kvm for the subordinate uid (gVisor KVM platform).
+#   jq: used by helper scripts and by this bootstrap for JSON emission.
+#   rsync: `safeyolo build` invokes `sudo rsync -aHAX --numeric-ids --delete ...`
+#     to install the rootfs tree into ~/.safeyolo/share/ preserving ownership.
+#   tmux: `safeyolo start` runs the mitmproxy master inside a private tmux
+#     session (see traffic_session.py).
+#
+# dnf (Fedora / RHEL): no mmdebstrap (Debian-only); everything else in
+# standard Fedora repos. debootstrap is available for Debian rootfs builds.
+#
+# apk (Alpine): no mmdebstrap; umoci lives in the community repository.
+#
+# pacman (Arch): no mmdebstrap; umoci and debootstrap are in AUR (the
+# operator will need an AUR helper — flagged in the install hint).
 LINUX_BUILD_APT_DEPS = (
     "skopeo", "umoci", "mmdebstrap", "debootstrap", "acl", "jq", "rsync", "tmux",
 )
 
+LINUX_BUILD_DEPS = {
+    "apt":    LINUX_BUILD_APT_DEPS,
+    "dnf":    ("skopeo", "umoci", "debootstrap", "acl", "jq", "rsync", "tmux"),
+    "apk":    ("skopeo", "umoci", "debootstrap", "acl", "jq", "rsync", "tmux"),
+    "pacman": ("skopeo", "umoci", "debootstrap", "acl", "jq", "rsync", "tmux"),
+}
 
-def _missing_apt_deps() -> list[str]:
-    """Return LINUX_BUILD_APT_DEPS entries not installed. Empty on non-apt hosts."""
+
+def _detect_package_manager() -> str | None:
+    """Return "apt" | "dnf" | "apk" | "pacman" for the current Linux host,
+    or None if none detected (unknown distro or non-Linux)."""
     if _platform.system() != "Linux":
-        return []
-    if not shutil.which("dpkg"):
-        return []
-    missing: list[str] = []
-    for pkg in LINUX_BUILD_APT_DEPS:
+        return None
+    for tool, name in (
+        ("dpkg-query", "apt"),
+        ("rpm",        "dnf"),
+        ("apk",        "apk"),
+        ("pacman",     "pacman"),
+    ):
+        if shutil.which(tool):
+            return name
+    return None
+
+
+def _package_installed(pm: str, pkg: str) -> bool:
+    """True if `pkg` is installed under package manager `pm`."""
+    if pm == "apt":
         r = subprocess.run(
             ["dpkg-query", "-W", "-f=${Status}", pkg],
             capture_output=True, text=True,
         )
-        if r.returncode != 0 or "install ok installed" not in r.stdout:
-            missing.append(pkg)
-    return missing
+        return r.returncode == 0 and "install ok installed" in r.stdout
+    if pm == "dnf":
+        return subprocess.run(
+            ["rpm", "-q", pkg], capture_output=True, text=True,
+        ).returncode == 0
+    if pm == "apk":
+        return subprocess.run(
+            ["apk", "info", "-e", pkg], capture_output=True, text=True,
+        ).returncode == 0
+    if pm == "pacman":
+        return subprocess.run(
+            ["pacman", "-Q", pkg], capture_output=True, text=True,
+        ).returncode == 0
+    return True  # unknown pm: no way to tell → assume present so we don't block
+
+
+def _install_command(pm: str, missing: list[str]) -> str:
+    """Render the operator-ready install command for the detected manager."""
+    pkgs = " ".join(missing)
+    if pm == "apt":
+        return f"sudo apt-get install -y {pkgs}"
+    if pm == "dnf":
+        return f"sudo dnf install -y {pkgs}"
+    if pm == "apk":
+        return f"sudo apk add {pkgs}"
+    if pm == "pacman":
+        # umoci + debootstrap are typically AUR on Arch; flag it so the
+        # operator knows why a plain `pacman -S` won't cover everything.
+        return (
+            f"sudo pacman -S --needed {pkgs}"
+            "   # NOTE: umoci and debootstrap are AUR — install via your AUR helper"
+        )
+    return f"# unknown package manager; install: {pkgs}"
+
+
+def _missing_deps() -> tuple[list[str], str | None]:
+    """Return (missing packages, detected package manager).
+
+    Empty list on non-Linux hosts and on unknown package managers (in the
+    latter case bootstrap won't refuse — but the operator sees the
+    detected manager as None in the JSON output).
+    """
+    pm = _detect_package_manager()
+    if pm is None:
+        return [], None
+    deps = LINUX_BUILD_DEPS.get(pm, ())
+    missing = [pkg for pkg in deps if not _package_installed(pm, pkg)]
+    return missing, pm
+
+
+def _missing_apt_deps() -> list[str]:
+    """Back-compat wrapper: return the apt-side missing list only.
+
+    Kept because some tests import it by name; prefer `_missing_deps()`
+    in new code.
+    """
+    missing, pm = _missing_deps()
+    return missing if pm == "apt" else []
 
 
 def _needs_init() -> bool:
@@ -130,11 +208,11 @@ def _needs_setup() -> bool:
     return apparmor_missing or kvm_acl_missing
 
 
-def _print_missing_deps_hint(missing: list[str]) -> None:
+def _print_missing_deps_hint(missing: list[str], pm: str | None) -> None:
     console.print("[red]Missing build prerequisites:[/red] " + ", ".join(missing))
     console.print()
     console.print("Install with:")
-    console.print(f"  [bold]sudo apt-get install -y {' '.join(missing)}[/bold]")
+    console.print(f"  [bold]{_install_command(pm or 'unknown', missing)}[/bold]")
     console.print()
     console.print("Then re-run: [bold]safeyolo bootstrap[/bold]")
 
@@ -172,14 +250,23 @@ def bootstrap(  # DOC: README.md
         "build": _needs_build(),
         "setup": _needs_setup(),
     }
-    missing_deps = _missing_apt_deps()
+    missing_deps, package_manager = _missing_deps()
+    # Back-compat for the harness scenario that reads .missing_apt_deps —
+    # populated only when the detected manager is apt, empty otherwise.
+    missing_apt_deps = missing_deps if package_manager == "apt" else []
 
     if check:
         result = {
             "check": True,
             "would_run": [k for k, v in plan.items() if v],
             "already_done": [k for k, v in plan.items() if not v],
-            "missing_apt_deps": missing_deps,
+            "package_manager": package_manager,
+            "missing_deps": missing_deps,
+            "install_command": (
+                _install_command(package_manager, missing_deps)
+                if missing_deps and package_manager else None
+            ),
+            "missing_apt_deps": missing_apt_deps,
         }
         if json_out:
             _emit_json(result)
@@ -188,7 +275,9 @@ def bootstrap(  # DOC: README.md
             console.print(f"  would run:    {result['would_run'] or '(none — already bootstrapped)'}")
             console.print(f"  already done: {result['already_done']}")
             if missing_deps:
-                console.print(f"  [red]blocked on missing apt deps:[/red] {missing_deps}")
+                console.print(
+                    f"  [red]blocked on missing deps ({package_manager}):[/red] {missing_deps}"
+                )
         needs_work = bool(result["would_run"]) or bool(missing_deps)
         raise typer.Exit(1 if needs_work else 0)
 
@@ -199,14 +288,17 @@ def bootstrap(  # DOC: README.md
         if json_out:
             _emit_json({
                 "status": "blocked",
-                "reason": "missing_apt_deps",
-                "missing_apt_deps": missing_deps,
+                "reason": "missing_deps",
+                "package_manager": package_manager,
+                "missing_deps": missing_deps,
+                "install_command": _install_command(package_manager or "unknown", missing_deps),
+                "missing_apt_deps": missing_apt_deps,
                 "steps_run": [],
                 "steps_skipped": [k for k, v in plan.items() if not v],
                 "duration_ms": int((time.monotonic() - t0) * 1000),
             })
         else:
-            _print_missing_deps_hint(missing_deps)
+            _print_missing_deps_hint(missing_deps, package_manager)
         raise typer.Exit(2)
 
     steps_run: list[str] = []
@@ -278,7 +370,9 @@ def bootstrap(  # DOC: README.md
         "steps_run": steps_run,
         "steps_skipped": steps_skipped,
         "step_errors": step_errors,
-        "missing_apt_deps": missing_deps,
+        "package_manager": package_manager,
+        "missing_deps": missing_deps,
+        "missing_apt_deps": missing_apt_deps,
         "duration_ms": duration_ms,
     }
 
