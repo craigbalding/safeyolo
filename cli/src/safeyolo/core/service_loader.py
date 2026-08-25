@@ -36,6 +36,11 @@ class AuthConfig:
     header: str = "Authorization"
     scheme: str = "Bearer"
     refresh_on_401: bool = False
+    # Operator opt-in: allow sgw_ credential injection over plain HTTP.
+    # Only set true when the transport is trusted end-to-end by another layer
+    # (tailnet / WireGuard / private VLAN / same-host loopback). Default denies
+    # HTTP injection to prevent sgw_ token leakage on untrusted networks.
+    allow_http: bool = False
 
     @classmethod
     def from_dict(cls, d: dict) -> "AuthConfig":
@@ -44,6 +49,7 @@ class AuthConfig:
             header=d.get("header", "Authorization"),
             scheme=d.get("scheme", "Bearer"),
             refresh_on_401=d.get("refresh_on_401", False),
+            allow_http=d.get("allow_http", False),
         )
 
 
