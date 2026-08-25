@@ -52,18 +52,13 @@ cd safeyolo
 cd guest && ./build-all.sh && cd ..
 mkdir -p ~/.safeyolo/share && sudo cp -a guest/out/* ~/.safeyolo/share/
 
-# Install SafeYolo onto your PATH (survives shell restarts).
-# Requires `uv` (https://docs.astral.sh/uv/).
-#
-# --editable keeps the checkout wired into the installed command while
-# installing the proxy runtime dependencies, including mitmproxy, into the
-# same tool environment.
-uv tool install --editable . --overrides <(printf '%s\n' \
-    'flask>=3.1.3' 'pygments>=2.20.0' 'cryptography>=50.0.0' \
-    'msgpack>=1.2.1' 'pyopenssl>=26.0.0' 'tornado>=6.5.5')
+# Install SafeYolo onto your PATH (survives shell restarts). Requires `uv`.
+# ./install.sh wraps `uv tool install --editable .` and passes the security
+# pins mitmproxy hasn't cut a release for yet (see pyproject `[tool.uv]`).
+./install.sh
 ```
 
-`uv tool install` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later, rerun the same command with `--reinstall` added.
+`./install.sh` puts `safeyolo` in `~/.local/bin/safeyolo`. Make sure that directory is on your `PATH` (uv will tell you if it isn't). To pick up upstream changes later, run `./install.sh reinstall`.
 
 **Then, one platform-specific step:**
 
