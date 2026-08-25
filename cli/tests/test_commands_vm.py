@@ -1645,13 +1645,20 @@ class TestSetup:
 
     def test_gvisor_tarball_verifies_sha512_and_refuses_on_mismatch(self):
         """The tarball path must verify the published SHA-512 before
-        extracting anything to /usr/local/bin. Mismatch aborts."""
+        extracting anything to /usr/local/bin. Mismatch aborts.
+
+        Uses a real bz2-compressed payload so the match-branch actually
+        exercises the Python-side decompression (we don't shell out to
+        system `bzip2` — Fedora Cloud Base doesn't ship it).
+        """
+        import bz2
         import hashlib
         import io
 
         from safeyolo.commands.setup import _install_gvisor_tarball
 
-        tarball_bytes = b"pretend-this-is-a-gvisor-tarball"
+        raw_bytes = b"pretend-this-is-a-tar-payload"
+        tarball_bytes = bz2.compress(raw_bytes)  # real bz2 stream
         wrong_sha_bytes = ("0" * 128).encode()  # 128 hex chars = sha512 shape
         right_sha_bytes = (hashlib.sha512(tarball_bytes).hexdigest() + "  gvisor.tar.bz2\n").encode()
 
@@ -1682,7 +1689,8 @@ class TestSetup:
                 _install_gvisor_tarball()
         assert not any("tar" in c for c in calls), "tar was invoked despite sha mismatch"
 
-        # Match — must extract via `sudo tar`.
+        # Match — must extract via `sudo tar -xf` (uncompressed; we
+        # bz2-decompressed via Python's stdlib first).
         calls.clear()
         def fake_urlopen_match(url):
             return _Resp(tarball_bytes if url.endswith(".bz2") else right_sha_bytes)
@@ -1693,7 +1701,7 @@ class TestSetup:
             patch("safeyolo.commands.setup.subprocess.run", side_effect=fake_run),
         ):
             _install_gvisor_tarball()
-        assert any(c[:3] == ["sudo", "tar", "-xjf"] and c[-2:] == ["-C", "/usr/local/bin"] for c in calls)
+        assert any(c[:3] == ["sudo", "tar", "-xf"] and c[-2:] == ["-C", "/usr/local/bin"] for c in calls)
 
     def test_linux_runtime_installer_uses_tarball_on_non_apt(self):
         """On dnf/apk/pacman hosts, gVisor comes from the verified tarball

@@ -1,5 +1,6 @@
 """Setup commands for SafeYolo system integration."""
 
+import bz2
 import hashlib
 import os
 import platform as _platform
@@ -270,11 +271,19 @@ def _install_gvisor_tarball() -> None:
                 f"  actual:   {actual}"
             )
 
-        # Extract under /usr/local/bin. Since 2026-07 the archive
-        # contains runsc, containerd-shim-runsc-v1, and gvisor-bin/;
-        # extracting the whole thing keeps that layout intact.
+        # Decompress via Python's stdlib `bz2` so we don't require
+        # system `bzip2` (Fedora Cloud Base and others don't ship it
+        # by default; `tar -xjf` would fail with
+        # "bzip2: Cannot exec: No such file or directory"). Then
+        # `sudo tar -xf` (uncompressed) into /usr/local/bin.
+        # Since 2026-07 the archive contains runsc,
+        # containerd-shim-runsc-v1, and gvisor-bin/; extracting the
+        # whole thing keeps that layout intact.
+        plain_tar = Path(tmpdir) / "gvisor.tar"
+        with bz2.open(tarball, "rb") as src, plain_tar.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
         subprocess.run(
-            ["sudo", "tar", "-xjf", str(tarball), "-C", "/usr/local/bin"],
+            ["sudo", "tar", "-xf", str(plain_tar), "-C", "/usr/local/bin"],
             check=True,
         )
 
